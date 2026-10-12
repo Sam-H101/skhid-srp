@@ -116,6 +116,7 @@ The sign-in information is no longer pointer-based. 0.26g `sign_in` takes (host[
 ```
 
 - The version is copied as 4+2+1 bytes from 0x9dae98 (`"0.26g0"`) into a zeroed 12-byte field (0x380847..0x380889).
+- **srp's client patch** (since 2026-10-12, `client_patch.md` §6) puts its revision into byte 7 of the field, past the text's zero: `0.26g0 00 NN 00 00 00 00`. The login server reads it (`patch_revision`) and writes it in the log; an exe without that patch says 0.
 - Total 19 + n, capped at 0xA7 (0x3808dd), the same as 0.21d.
 - The email buffer is still 100 bytes (`sign_in` 0x3809a1 `cmp esi,0x64`).
 - The queue id is login_impl+0x18c; it is −1 unless the client is rejoining the queue (ctor 0x37c126).
@@ -463,11 +464,12 @@ The text formats for the new types (key/value parsing with `id`, `level`, `facti
 5. Meaning of the extra u32 in the 5-field 0x4D (clan or team id, GUESS), and the text formats of important-message types 6, 7, 10, 13 and 14.
 6. Arguments of the clan system message after `\x0E`, and the body format of the sender_type 8 / channel 4 "additional drop" notice.
 7. TLS method constant not traced (LIKELY SSLv23). It needs a live handshake test with srp's OpenSSL against OpenSSL 1.0.1h.
-8. The other uses of `"0.26g0"` look like non-network uses (LIKELY):
-   - 0x12395: `sprintf("%s (%d)", version, build)` in preinitialize.
-   - 0x1ea69b: copied into a 7-byte buffer for a display/config call.
-   - 0x1f0647: `strcmp` against a version read from loaded data, probably a replay header.
+8. **Answered (2026-10-12, PROVEN):** the other uses of `"0.26g0"` (0x9dae98; all four references to the string are these and §4.1's) are not network uses:
+   - 0x12395: `sprintf("%s (%d)", version, build)` (format 0x9daea0) in preinitialize.
+   - 0x1ea69b: copied into a 7-byte buffer for the title `"%s v%s - Copyright© VOSTOK GAMES. …"` (0x9fa814).
+   - 0x1f0647: compared with the version in a replay's header; another one stops with "Replay of other engine version is used" (0x9faedc).
+   - A second copy of the string stands at 0xa711b4, after `survarium_version_header_mark!!` (0xa71194), with no reference in the code: for a program that reads the exe (the launcher has the same mark).
 
-   None of them feeds a socket write that I could see, so the login step-1 field is the only version sent. The lobby study should confirm that the lobby sign-in carries no version.
+   So the login step-1 field is the only thing a client tells a server about its build: the lobby sign-in `2E` is the session and one flag (lobby.md, "Sign-in `2E`"), the match connect `D8` the session and the debug byte (match.md §1). No message carries a hash or a checksum of the exe or of its files (the `DF` hash is the world's). What this means for telling client patches apart: `client_patch.md` §6.
 9. Does srp's IP encoding in 0x08 match the client byte-for-byte? It is the same code pattern as 0.21d. Needs a live test.
 10. The launcher (`game/launcher`) is what passes `-server=` (and possibly `-account_name` / `-account_password`). Its config was not examined.
