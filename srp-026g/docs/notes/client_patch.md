@@ -228,7 +228,7 @@ starts at 0x7F80 and has 128 data bytes.
 - **Without the patch:** start every client with `-hash_check_interval_in_ms=50` (LIKELY syntax, as `-server=`; not tried live). The key still wins over the patched default.
 - The match server logs "… opposite hash phases …" when it sees the starved state (match.md §13).
 
-### 3.5 Minimum video-memory startup check
+### 3.7 Minimum video-memory startup check
 
 The full patch includes the one-byte bypass already used by `play_skhid.sh`.
 Verified against the original build 2777 executable (sha256 checked by the
