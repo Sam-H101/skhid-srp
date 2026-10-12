@@ -153,7 +153,9 @@ fn cosmetics_go_on_and_come_off() {
 
     // A decal moved to the other slot comes off the first and takes the
     // place of the one there.
+    let before_move = account.kits[0].revision;
     let moved = attach_upgrade(&mut account, vest, first, 1).unwrap();
+    assert_eq!(account.kits[0].revision, before_move + 1);
     assert!(moved.detach_first);
     let message = lobby::permitted_upgrade_attached(vest, first, 1, 0, true);
     takes(&mut client, &message, &account);
@@ -199,6 +201,47 @@ fn cosmetics_go_on_and_come_off() {
     // A cosmetic that is sold is on no item any more.
     crate::v026g::rules::sell(&mut account, first, 1).unwrap();
     assert!(account.item(vest).unwrap().upgrades.is_empty());
+}
+
+#[test]
+fn moving_cosmetics_refreshes_every_kit_wearing_either_host() {
+    for (cosmetic_dict, cosmetic_slot) in [(dict("camo_city"), 3), (decal(), 0)] {
+        for equip_destination in [false, true] {
+            let mut account = rich();
+            let source = give(&mut account, "edge_torso_2", &[]);
+            let destination = give(&mut account, "bm_torso_1", &[]);
+            let cosmetic = account.add_item(cosmetic_dict, FULL_CONDITION);
+            let torso = (0..23)
+                .find(|&slot| Dictionary::shared().fits(dict("edge_torso_2"), slot))
+                .unwrap() as usize;
+            // Two alternate kits share the source; the third either wears
+            // the destination or is unrelated and must keep its revision.
+            for kit in &mut account.kits[..2] {
+                kit.slots[torso] = Some(KitSlot {
+                    item_id: source,
+                    count: 1,
+                });
+            }
+            if equip_destination {
+                account.kits[2].slots[torso] = Some(KitSlot {
+                    item_id: destination,
+                    count: 1,
+                });
+            }
+            attach_upgrade(&mut account, source, cosmetic, cosmetic_slot).unwrap();
+            let before: Vec<_> = account.kits.iter().map(|kit| kit.revision).collect();
+            let moved = attach_upgrade(&mut account, destination, cosmetic, cosmetic_slot).unwrap();
+            assert!(moved.detach_first);
+            assert!(account.item(source).unwrap().upgrades.is_empty());
+            assert_eq!(account.item(destination).unwrap().upgrades[0].id, cosmetic);
+            assert_eq!(account.kits[0].revision, before[0] + 1);
+            assert_eq!(account.kits[1].revision, before[1] + 1);
+            assert_eq!(
+                account.kits[2].revision,
+                before[2] + u32::from(equip_destination)
+            );
+        }
+    }
 }
 
 #[test]
