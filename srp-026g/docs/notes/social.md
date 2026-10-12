@@ -554,8 +554,8 @@ deliberate exception for these lines, at the owner's request).
   said. A join is said at most once in 30 s for a player, so a Play/Leave loop
   is not repeated.
 - **A match** (`Match found: Alice, Bob vs Carol`, team 1 against team 2) goes
-  to the players put in it; over 255 bytes it is two lines (one for each
-  team).
+  to everybody who listens to the general channel, like a join; over 255 bytes
+  it is two lines (one for each team).
 - `SRP_QUEUE_CHAT=off` turns all of it off.
 - **Not verified in a live client:** what the client draws for an empty sender
   name (`add_message` 0x208AD0 puts it in the line's `name` field; a name equal

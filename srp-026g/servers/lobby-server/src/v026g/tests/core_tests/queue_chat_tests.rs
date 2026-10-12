@@ -61,7 +61,7 @@ fn a_join_and_a_leave_are_said_to_everybody_who_listens() {
 }
 
 #[test]
-fn a_match_is_announced_to_its_players_with_whom_they_play() {
+fn a_match_is_announced_to_everybody_with_whom_its_players_play() {
     let mut world = World::new(Duration::from_secs(60));
     let [alice, bob, carol] = listening(&mut world, &["Alice", "Bob", "Carol"])[..] else {
         unreachable!()
@@ -77,8 +77,8 @@ fn a_match_is_announced_to_its_players_with_whom_they_play() {
     let (to_alice, to_bob) = (said(&world.take(alice)), said(&world.take(bob)));
     assert_eq!(to_alice, ["Match found: Alice vs Bob"]);
     assert_eq!(to_bob, to_alice);
-    // Carol is not in it, and is not told.
-    assert!(said(&world.take(carol)).is_empty());
+    // Carol is not in it, and hears it too.
+    assert_eq!(said(&world.take(carol)), to_alice);
     world.assert_clean();
 }
 

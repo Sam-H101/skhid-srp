@@ -6,8 +6,7 @@
 //! default, no name (`SRP_QUEUE_CHAT_NAME`), on the general channel
 //! (`resources/notes/v026g/social.md` §1.2). The client shows the body as it
 //! is (censored, never localized). A line about the search goes to every
-//! client that listens to the general channel; the line of a match, to the
-//! players put in it.
+//! client that listens to the general channel, and so does the line of a match.
 //!
 //! Nothing is said twice for a player who presses Play and leaves in a loop:
 //! a join is announced at most once in [`REPEAT`], and a leave only for a
@@ -41,20 +40,6 @@ impl Core<'_> {
             })
             .collect();
         for addr in listeners {
-            for line in &lines {
-                self.send(addr, line_of(&name, line));
-            }
-        }
-    }
-
-    /// Say `text` in the general chat to these accounts.
-    fn say_to(&mut self, accounts: &[u32], text: &str) {
-        let lines = fit(text);
-        let name = self.settings.queue_chat_name.clone();
-        for account_id in accounts {
-            let Some(addr) = self.by_account.get(account_id).copied() else {
-                continue;
-            };
             for line in &lines {
                 self.send(addr, line_of(&name, line));
             }
@@ -138,8 +123,8 @@ impl Core<'_> {
         self.say_to_all(&text);
     }
 
-    /// A match was made: tell its players with whom they play, team 1
-    /// against team 2. `teams[0]` and `teams[1]` are the players' names.
+    /// A match was made: tell everybody who listens to the general chat
+    /// with whom its players play, team 1 against team 2. `teams[0]` and `teams[1]` are the players' names.
     pub(super) fn announce_match(&mut self, accounts: &[u32], teams: [Vec<String>; 2]) {
         for account_id in accounts {
             if let Some(addr) = self.by_account.get(account_id).copied()
@@ -154,14 +139,11 @@ impl Core<'_> {
         let [first, second] = teams;
         let text = format!("Match found: {} vs {}", first.join(", "), second.join(", "));
         if text.len() <= LINE {
-            self.say_to(accounts, &text);
+            self.say_to_all(&text);
         } else {
             // Too long for one line: one for each team.
-            self.say_to(
-                accounts,
-                &format!("Match found. Team 1: {}", first.join(", ")),
-            );
-            self.say_to(accounts, &format!("Team 2: {}", second.join(", ")));
+            self.say_to_all(&format!("Match found. Team 1: {}", first.join(", ")));
+            self.say_to_all(&format!("Team 2: {}", second.join(", ")));
         }
     }
 }

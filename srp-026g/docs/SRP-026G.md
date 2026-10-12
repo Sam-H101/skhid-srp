@@ -144,7 +144,7 @@ A port that is not a number stops srp at start.
 | `SRP_MATCH_JOIN_EXTENSION_SECONDS` | 30 | Each press of Play adds this to what is left of the countdown |
 | `SRP_MATCH_MAX_COUNTDOWN_SECONDS` | 120 | No countdown runs longer than this from its start |
 | `SRP_MATCH_TEAM_SIZE` | 10 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
-| `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and, to its players, when a match starts (`Match found: Alice, Bob vs Carol`) |
+| `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and when a match starts (`Match found: Alice, Bob vs Carol`) |
 | `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
 | `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
 | `SRP_MATCH_MODES` | `2,3,4` | The modes played |
