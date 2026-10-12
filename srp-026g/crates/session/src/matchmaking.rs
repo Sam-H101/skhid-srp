@@ -342,7 +342,6 @@ impl Matchmaking {
             // Nobody joined or left: keep the shared countdown, including
             // its maximum duration. Only the parties' range timers restart.
             inner.queue.extend(restarted);
-            inner.last_joined = Some(now);
         }
         players
     }
@@ -1859,30 +1858,46 @@ mod tests {
 
     #[test]
     fn changing_equipment_does_not_restart_the_shared_countdown() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
-            4,
-            Duration::from_secs(15),
-            Duration::from_secs(120),
-        );
-        for id in 1..=4 {
-            mm.queue_leveled(&[player(id)], &[at(0)], false, start);
-        }
-        let levels: Vec<_> = (1..=4).map(|id| (player(id).account_id, at(10))).collect();
-        assert_eq!(mm.refresh_levels(&levels, after(start, 59)).len(), 4);
-        assert!(matches!(
-            mm.poll_with(1, after(start, 59), Some(&EIGHT)),
-            Some(QueueState::Waiting { since, .. }) if since == after(start, 59)
-        ));
-        assert!(matches!(
-            mm.poll_with(1, after(start, 60), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        // Once seated, changes cannot put players back into search.
-        assert!(
-            mm.refresh_levels(&[(player(1).account_id, at(0))], after(start, 61))
+        // Four players use the gathering countdown; ten use the quiet period.
+        for (count, changed_at, starts_at) in [(4, 59, 60), (10, 29, 30)] {
+            let start = Instant::now();
+            let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
+                4,
+                Duration::from_secs(15),
+                Duration::from_secs(120),
+            );
+            {
+                let mut inner = mm.inner.locked();
+                inner.fill_players = 10;
+                inner.quiet = Duration::from_secs(30);
+            }
+            for id in 1..=count {
+                mm.queue_leveled(&[player(id)], &[at(0)], false, start);
+            }
+            let levels: Vec<_> = (1..=count)
+                .map(|id| (player(id).account_id, at(10)))
+                .collect();
+            assert_eq!(
+                mm.refresh_levels(&levels, after(start, changed_at)).len(),
+                count as usize
+            );
+            assert!(matches!(
+                mm.poll_with(1, after(start, changed_at), Some(&EIGHT)),
+                Some(QueueState::Waiting { since, .. }) if since == after(start, changed_at)
+            ));
+            assert!(matches!(
+                mm.poll_with(1, after(start, starts_at), Some(&EIGHT)),
+                Some(QueueState::Placed { .. })
+            ));
+            // Once seated, changes cannot put players back into search.
+            assert!(
+                mm.refresh_levels(
+                    &[(player(1).account_id, at(0))],
+                    after(start, starts_at + 1)
+                )
                 .is_empty()
-        );
+            );
+        }
     }
 
     #[test]

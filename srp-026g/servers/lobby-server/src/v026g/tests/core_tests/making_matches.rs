@@ -295,8 +295,7 @@ fn equipment_moves_that_keep_the_level_preserve_the_search_wait() {
         .player(world.clients[alice].0)
         .unwrap()
         .queued_since;
-    // Moving the starter weapon out and back leaves another usable
-    // starter weapon, so the equipment level stays at zero.
+    // Moving the starter weapon out and back keeps the search level at zero.
     world.ask(alice, request::move_item(1, 1, 18, 7, INVENTORY_SLOT, 1));
     world.ask(alice, request::move_item(1, 1, 18, INVENTORY_SLOT, 7, 1));
     // A rejected move must not restart search either.
