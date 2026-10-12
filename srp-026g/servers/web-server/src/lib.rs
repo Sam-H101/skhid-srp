@@ -1528,8 +1528,8 @@ fn home(lang: Lang, stats: Stats) -> String {
         lang.tr("How to play", "Як зіграти"),
         if v026g {
             lang.tr(
-                "Download our files and unpack them over the game's <code>game</code> folder. They add <code>survarium_skhid.exe</code> and <code>play_skhid.bat</code> beside the game's own exe and replace one certificate; nothing else changes.",
-                "Завантажте наші файли й розпакуйте їх поверх теки <code>game</code> гри. Вони додають <code>survarium_skhid.exe</code> і <code>play_skhid.bat</code> поруч із exe гри та замінюють один сертифікат; більше нічого не змінюється."
+                "Download our files and unpack them over the game's <code>game</code> folder. They add <code>survarium_skhid.exe</code>, <code>play_skhid.bat</code> and, for Linux, <code>play_skhid.sh</code> beside the game's own exe, and replace two of the game's files: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of those two if you want the originals back; nothing else changes.",
+                "Завантажте наші файли й розпакуйте їх поверх теки <code>game</code> гри. Вони додають <code>survarium_skhid.exe</code>, <code>play_skhid.bat</code> і, для Linux, <code>play_skhid.sh</code> поруч із exe гри та замінюють два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть копії цих двох файлів, якщо хочете повернути оригінали; більше нічого не змінюється."
             )
         } else {
             lang.tr("Download the patched game and unpack it.", "Завантажте пропатчену гру та розпакуйте її.")
