@@ -618,6 +618,28 @@ impl Timelimit {
     }
 }
 
+/// A bool as the client's writer puts it: 0x00 or 0xFF. PROVEN: the bool
+/// writer 0x80FA0 stores `neg al; sbb al,al` (0x8103D), and it is what
+/// `kd_stats_rule::serialize` calls for `online` (0x3238E7) and the
+/// blackboard for its two flags (0x323D8A, 0x323DB2). The client's readers
+/// take any byte but 0 as true (0x323952, 0x323DCA, 0x323E0B); this one is
+/// stricter, because where the section ends is found by what reads. The
+/// rules of 897 live dumps of five matches read with this (2026-10-12; no
+/// byte but 0x00 and 0xFF is in these places in any of them); with 0 and 1
+/// only, none did. 0x01 is taken as true too: it is what this file wrote
+/// until then.
+/// `None`: no bool.
+fn wire_bool(byte: u8) -> Option<bool> {
+    match byte {
+        0x00 => Some(false),
+        0x01 | WIRE_TRUE => Some(true),
+        _ => None,
+    }
+}
+
+/// `true` on the wire.
+const WIRE_TRUE: u8 = 0xFF;
+
 /// A roster place in `kd_stats_rule` (0x323870): 5 bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KillsDeaths {
@@ -632,7 +654,7 @@ impl KillsDeaths {
     pub fn write(&self, out: &mut Vec<u8>) {
         out.extend(self.kills.to_le_bytes());
         out.extend(self.deaths.to_le_bytes());
-        out.push(self.online.into());
+        out.push(if self.online { WIRE_TRUE } else { 0 });
     }
 }
 
@@ -1019,18 +1041,25 @@ impl Rules {
         }
         let flags_at = bytes.len() - 2;
         let kd_at = flags_at - KillsDeaths::LEN * players;
-        if bytes[flags_at] > 1 || bytes[flags_at + 1] > 1 {
-            return None;
-        }
+        // The bools of the section are 0x00 or 0xFF. Until 2026-10-12
+        // only 0 and 1 were taken, and the rules of no live world read:
+        // not one of the 37 matches that ended by themselves until then
+        // had its rules looked at (the standing is in the statistics, so
+        // battery matches ended all the same; a Team Deathmatch could not
+        // have ended by its rule).
+        let team_respawn = [
+            wire_bool(bytes[flags_at])?,
+            wire_bool(bytes[flags_at + 1])?,
+        ];
         let kills_deaths = bytes[kd_at..flags_at]
             .as_chunks::<{ KillsDeaths::LEN }>()
             .0
             .iter()
             .map(|record| {
-                (record[4] <= 1).then(|| KillsDeaths {
+                Some(KillsDeaths {
                     kills: u16::from_le_bytes([record[0], record[1]]),
                     deaths: u16::from_le_bytes([record[2], record[3]]),
-                    online: record[4] == 1,
+                    online: wire_bool(record[4])?,
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -1080,7 +1109,7 @@ impl Rules {
             gather,
             tdm,
             kills_deaths,
-            team_respawn: [bytes[flags_at] == 1, bytes[flags_at + 1] == 1],
+            team_respawn,
         })
     }
 
@@ -1111,7 +1140,7 @@ impl Rules {
         for record in &self.kills_deaths {
             record.write(&mut out);
         }
-        out.extend(self.team_respawn.map(u8::from));
+        out.extend(self.team_respawn.map(|flag| if flag { WIRE_TRUE } else { 0 }));
         out
     }
 }
@@ -1466,7 +1495,8 @@ mod tests {
     /// active.
     const TDM: [u8; 12] = [97, 0, 100, 0, 3, 0, 0, 0, 3, 0, 0, 0];
     /// Kills, deaths, online for two players (§2.7), then the two flags.
-    const KD_AND_FLAGS: [u8; 12] = [3, 0, 0, 0, 1, 0, 0, 3, 0, 1, 1, 1];
+    /// `true` is 0xFF, as the client writes it.
+    const KD_AND_FLAGS: [u8; 12] = [3, 0, 0, 0, 0xFF, 0, 0, 3, 0, 0xFF, 0xFF, 0xFF];
 
     fn tdm_rules() -> Vec<u8> {
         [&TIMELIMIT[..], &RESPAWN, &TDM, &KD_AND_FLAGS].concat()
@@ -1526,6 +1556,65 @@ mod tests {
         // and 12 bytes are no gather rule.
         let rules = Rules::decode(&bytes, TIME, 2, mode::BATTERIES, 10).unwrap();
         assert_eq!((rules.tdm, rules.gather, rules.respawn), (None, None, None));
+    }
+
+    /// The rules section of a live world (match 0x25ee80b6 of 2026-10-12,
+    /// level_07, mode 2, seven players, at 914 900 ms): the bools are 0xFF.
+    /// Team 0 has nine batteries in its container (id 0 on level_07) and
+    /// the tenth lies in the world.
+    const LIVE_BATTERY_RULES: &[&str] = &[
+        "885e0000d4f50d007f000000030000000053fd5f92000000000000000000000000000000000000000000000000000000",
+        "00000000000000000000000000000000000000000000000000000000000000000000001b7f10470900ff0300000000ff",
+        "0000000000ff0000000000ff0001000000ffff867e6fbf00000000d3deb43e00000000000000000000803f0000000000",
+        "000000d3deb4be00000000867e6fbf000000009cec4e42d138a641e8db02400000803f869240bfb0c4c23d1fe9263f00",
+        "0000000899a6bbed187d3f30ad19be00000000ffab28bfa1fdedbdde433ebf00000000b34c5142f0a3a6415d893d4000",
+        "00803f0000000000000000000000000000000000000000000000000c110140020000000000000000ff0000000000ff00",
+        "00000000ff0000000000ff0000000000ff0000000000ff00000900000006000501020907040800000000000f001400ff",
+        "0c000b00ff11000900ff0d000f00ff0c000800ff0e001100ff05000a00ffffff",
+    ];
+
+    #[test]
+    fn the_rules_of_a_live_battery_match_read() {
+        let bytes: Vec<u8> = LIVE_BATTERY_RULES
+            .concat()
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(bytes.len(), 368);
+        let rules = Rules::decode(&bytes, 914_900, 7, mode::BATTERIES, 10).expect("the rules");
+        assert_eq!(rules.timelimit.start, Some(24_200));
+        assert_eq!(rules.timelimit.state, rules::state::IN_PROCESS);
+        assert_eq!(rules.team_respawn, [true, true]);
+        assert!(rules.kills_deaths.iter().all(|record| record.online));
+        assert_eq!(
+            rules
+                .kills_deaths
+                .iter()
+                .map(|record| (record.kills, record.deaths))
+                .collect::<Vec<_>>(),
+            [(15, 20), (12, 11), (17, 9), (13, 15), (12, 8), (14, 17), (5, 10)]
+        );
+        // The map's respawn points (`rules::respawn_points`).
+        assert_eq!(
+            rules.respawn.as_ref().map(|respawn| respawn.points.len()),
+            rules::respawn_points(7, mode::BATTERIES)
+        );
+        let gather = rules.gather.expect("the gather rule");
+        assert_eq!(gather.team_points, [9, 0]);
+        assert_eq!(gather.containers[0].items, [6, 0, 5, 1, 2, 9, 7, 4, 8]);
+        assert!(gather.containers[1].items.is_empty());
+        for (number, battery) in gather.batteries.iter().enumerate() {
+            if number == 3 {
+                assert!(matches!(battery, Battery::Free { spotted_mask: 1, .. }));
+            } else {
+                assert_eq!(*battery, Battery::InContainer(0));
+            }
+        }
+        // A byte that is no bool is still refused.
+        let mut wrong = bytes.clone();
+        *wrong.last_mut().unwrap() = 7;
+        assert_eq!(Rules::decode(&wrong, 914_900, 7, mode::BATTERIES, 10), None);
     }
 
     #[test]

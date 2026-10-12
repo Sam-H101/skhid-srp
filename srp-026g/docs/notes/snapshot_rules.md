@@ -366,3 +366,21 @@ Ammunition, grenades, traps, boosters, armour: the header only (5 or 7 bytes). A
 - `PlayerState::read`: the head (§7.3), exact, given M from the static info.
 - `Supplies::read`: per profile item `stored` (the head's u32); for the kit `current_index`, each slot's item is looked for after the head by its three id bytes `[roster place, kit, slot]`, in slot order, with an amount no larger than the slot's count before them (a stack) or a finite f32 ≥ 0 (anything else): `in_hand`, `condition`, and for an item whose config `type` is `wpn_…` the byte at h+16, `magazine`. LIKELY (that `player_id` is the roster place; that nothing else in a state has these bytes in this order). `inventory_read` says whether anything was found.
 - `Supplies::left`: a stack item's total as §7.3 says; a magazine's rounds go to the ammunition in the slot after the weapon's, or the one after that (LIKELY: the lobby's kit layout; which of the two is loaded, `m_current_ammo_id`, is not read; a chambered round is not seen).
+
+## Correction (2026-10-12): the bools of the rules section are 0x00 and 0xFF
+
+`kd_stats_rule`'s `online` (§2.7) and the blackboard's two respawn flags at the end of the section (§2.1) are written as 0x00 or 0xFF, like the bools of a player's block (§7).
+
+- PROVEN in the exe: the bool writer 0x80FA0 stores `neg al; sbb al,al` of the byte it is given (0x81038..0x81061), so 0x00 or 0xFF. `kd_stats_rule::serialize` 0x323870 writes two u16 (0x2F5DA0) and calls it for `online` (0x3238E7); the blackboard's serializer calls it for `team_1_respawn` (0x323D8A) and `team_2_respawn` (0x323DB2).
+- The client's readers take any byte but 0 as true (`test` / `setnz`: the kd rule 0x323952, the blackboard 0x323DCA and 0x323E0B). `Rules::decode` is stricter on purpose: where the parts of the section end is found by what reads.
+- `Rules::decode` took 0 and 1 only until this day and read the rules of no live world (432 dumps of four matches tried, none read). It takes 0x00, 0xFF and 1 now and writes 0xFF. All 897 dumps of five live matches read (four battery matches, one Team Deathmatch); no byte but 0x00 and 0xFF is in these places in any of them.
+- What the match server does with the rules, and so did in no live match until then (`game.rs`):
+  - a Team Deathmatch's end by its rule, and its standing from the rule's tickets and alive mask (`observe`);
+  - the second start of a player back in a Team Deathmatch in play (match.md §21): `first_load_loses_the_standing` answers "not known" without the rules, and the kept logs have not one such start;
+  - following the clients' own time rule, state and start, from the countdown on;
+  - the warning when a world's respawn points are not the map's;
+  - kills and deaths of the results from the kd rule, in place of the statistics' counters;
+  - refusing an initial world whose kd rule has a kill or a death.
+- Compared in those 897 dumps before the change went live: the kd rule's kills and deaths are the statistics' counters in every one; the mode rule's points (batteries, tickets) are the statistics' in every one; the respawn points are the maps'; the time rule's countdown and start of play are, to the millisecond, what the server's own copy logged in each of the five matches. Where the server had another source the two agree, so the ends and results of those matches would have been the same.
+- Read again in the exe on the same day, because these paths were about to run with real clients for the first time: the tdm rule's bytes (`serialize` 0x316340: u16 for +0x110 and +0x112, u32 for +0x120 and +0x124), its end (0x316470: a team's tickets 0 and its alive count 0 set the completion to now + 3000), `rule_completed` (0x316520: completion < time), the leader (0x316550) and the time rule's reader (0x317FD0: start, current, mask, state). They are as §2.2, §2.6 and modes_maps.md §11 say.
+- Not seen live yet: a Team Deathmatch that ends by its rule, and a second start.
