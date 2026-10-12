@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 
-def exception_stream(path):
+def exception_stream(path, snapshot=False):
     data = path.read_bytes()
     assert data[:4] == b"MDMP", path
     count, directory = struct.unpack_from("<II", data, 8)
@@ -37,7 +37,8 @@ def exception_stream(path):
                 modules.append(data[name_rva+4:name_rva+4+length].decode("utf-16le").lower())
         if kind == 10:
             comment = data[offset:offset+size]
-    assert exception is not None, "dump has no exception stream"
+    if not snapshot:
+        assert exception is not None, "dump has no exception stream"
     assert any(m.endswith("crash_probe.exe") for m in modules), "missing EXE module"
     assert any(m.endswith("bugtrap.dll") for m in modules), "missing BugTrap module"
     assert comment == b"SRP probe: preserved assertion message\0", "missing game error message"
@@ -60,13 +61,13 @@ def main():
         previous = {}
         modes = sys.argv[2:] or ("silent", "cpp", "thread", "pre-handler", "stack", "cancel", "silent",
                      "continue-cpp", "continue-seh", "continue-net",
-                     "execute-cpp", "execute-seh", "execute-net", "recursive", "concurrent",
+                     "execute-cpp", "execute-seh", "execute-net", "recursive", "concurrent", "snapshot-overlap",
                      "fallback", "failure")
         for mode in modes:
             folder = fallback if mode == "fallback" else exe
             before = set(folder.glob("*.dmp"))
             run_env = env.copy()
-            if mode == "concurrent":
+            if mode in ("concurrent", "snapshot-overlap"):
                 shutil.copy2(build / "delayed_dbghelp.dll", exe / "dbghelp.dll")
                 run_env["WINEDLLOVERRIDES"] = env.get("WINEDLLOVERRIDES", "") + ";dbghelp=n,b"
             if mode in ("fallback", "failure"):
@@ -89,6 +90,14 @@ def main():
                 assert not new and "failed_dump_dialog" in output, (mode, output, result.returncode)
                 print("PASS failure: explicit failure dialog when neither folder is writable", flush=True)
                 continue
+            if mode == "snapshot-overlap":
+                assert len(new) == 2, (mode, output, result.returncode, new)
+                snapshots = [p for p in new if exception_stream(p, snapshot=True) is None]
+                assert len(snapshots) == 1, "expected a snapshot and a separate crash dump"
+                snapshot = snapshots[0]
+                previous[snapshot] = hashlib.sha256(snapshot.read_bytes()).digest()
+                new.remove(snapshot)
+                assert "snapshot_saved" in output and "recursive_capture_rejected" in output, output
             assert len(new) == 1, (mode, result.returncode, output, result.stderr.decode(errors="replace"), new)
             dump = new.pop()
             thread = int(re.search(r"fault_thread=(\d+)", output)[1])
@@ -101,7 +110,8 @@ def main():
             expected = ("outer_handler_reached" if mode.startswith("continue-") else
                         "synthetic_returned" if mode.startswith("execute-") else
                         "recursive_capture_rejected" if mode == "recursive" else
-                        "concurrent_crash_waited_for_dump_only" if mode == "concurrent" else None)
+                        "concurrent_crash_waited_for_dump_only" if mode == "concurrent" else
+                        "snapshot_overlap_completed" if mode == "snapshot-overlap" else None)
             if expected:
                 assert expected in output and result.returncode == 0, (mode, output, result.returncode)
             assert not list(cwd.glob("*.dmp")), "dump used CWD instead of EXE directory"

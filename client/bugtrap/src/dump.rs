@@ -13,8 +13,9 @@ use windows_sys::Win32::{
 };
 
 const IDLE: u32 = 0;
-const WRITING: u32 = 1;
-const CLOSED: u32 = 2;
+const SNAPSHOT: u32 = 1;
+const CRASH_WRITING: u32 = 2;
+const CRASH_CLOSED: u32 = 3;
 static PHASE: AtomicU32 = AtomicU32::new(IDLE);
 static OWNER: AtomicU32 = AtomicU32::new(0);
 static WORKER: AtomicU32 = AtomicU32::new(0);
@@ -49,24 +50,31 @@ type WriteDump = unsafe extern "system" fn(
 
 pub unsafe fn capture(exception: *mut EXCEPTION_POINTERS, crash: bool) -> bool {
     let caller = GetCurrentThreadId();
-    if PHASE
-        .compare_exchange(IDLE, WRITING, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        // Snapshot callers can retry. Recursive faults on the capture owner or
-        // writer must never wait for themselves. Other crashing threads must not
-        // let the OS terminate the process while the primary dump is still open.
-        if crash
-            && OWNER.load(Ordering::Acquire) != caller
-            && WORKER.load(Ordering::Acquire) != caller
+    let phase = if crash { CRASH_WRITING } else { SNAPSHOT };
+    loop {
+        let busy = match PHASE.compare_exchange(IDLE, phase, Ordering::Acquire, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(busy) => busy,
+        };
+        // Recursive capture must not wait for its own owner or writer.
+        if !crash
+            || OWNER.load(Ordering::Acquire) == caller
+            || WORKER.load(Ordering::Acquire) == caller
         {
-            while PHASE.load(Ordering::Acquire) == WRITING {
+            SetLastError(ERROR_BUSY);
+            return false;
+        }
+        if busy == CRASH_WRITING || busy == CRASH_CLOSED {
+            // A concurrent crash may exit once the primary crash dump closes,
+            // without waiting for its callbacks or modal dialog.
+            while PHASE.load(Ordering::Acquire) == CRASH_WRITING {
                 Sleep(1);
             }
             return true;
         }
-        SetLastError(ERROR_BUSY);
-        return false;
+        // A snapshot has no crash context or UI. Wait for its owner to release
+        // the request, then retry with this thread's exception pointers.
+        Sleep(1);
     }
     OWNER.store(caller, Ordering::Release);
     let request = REQUEST.0.get();
@@ -277,7 +285,9 @@ unsafe extern "system" fn worker(parameter: *mut c_void) -> u32 {
     }
     // Publish only after save() has flushed/closed its file (or all attempts
     // failed). Contending crashes need not wait for callbacks or a modal dialog.
-    PHASE.store(CLOSED, Ordering::Release);
+    if request.crash {
+        PHASE.store(CRASH_CLOSED, Ordering::Release);
+    }
     if !library.is_null() {
         FreeLibrary(library);
     }

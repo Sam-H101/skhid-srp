@@ -39,7 +39,9 @@ its scope. Native Windows testing is still outstanding.
 - Serializes its own captures without acquiring a configuration or logging lock.
   Concurrent crashing threads wait until the primary dump is closed, then apply
   their exit mode without waiting for callbacks or the dialog. Recursive captures
-  on the owner/writer thread and overlapping snapshot requests return busy.
+  on the owner/writer thread and overlapping snapshot requests return busy. A crash
+  during a manual snapshot waits for it, then captures a separate crash report
+  with the faulting thread context and normal callbacks/dialog.
 - Synthetic SEH/C++/native .NET entry points propagate an exception to an outer
   native handler in `BTEM_CONTINUESEARCH` mode, and return in `BTEM_EXECUTEHANDLER`
   mode. Propagation happens after the Rust capture frames have returned.
@@ -108,14 +110,16 @@ rustc --edition 2024 --test src/arithmetic.rs -o target/arithmetic-test
 ./target/arithmetic-test
 ```
 
-The seventeen crash cases verify exception codes and thread IDs, module presence, the
+The eighteen crash cases verify exception codes and thread IDs, module presence, the
 game error comment, callback ordering, stack overflow, dialog closure, repeated
 crashes, Unicode paths, a different working directory, read-only EXE fallback,
 and explicit failure when neither folder is writable. They also cover all three
 synthetic entry points in continue-search/execute-handler modes, recursive worker
 callbacks, and a second crash while a test-only DbgHelp shim holds the primary
 writer behind a gate. The concurrency case verifies that the dump survives and
-the second crash does not wait for the primary callback. Run as a normal user so
+the second crash does not wait for the primary callback. A snapshot-overlap case
+checks that a real crash saves its own exception stream and runs its callback
+after the snapshot finishes. Run as a normal user so
 permission tests are effective. The ABI check also rejects runtime/network import
 changes and checks all 82 legacy ordinals.
 

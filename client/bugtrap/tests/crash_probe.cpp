@@ -77,6 +77,42 @@ static void CALLBACK RecursiveCapture(INT_PTR)
     fflush(stdout);
 }
 
+static DWORD WINAPI Snapshot(PVOID)
+{
+    if (!BT_SaveSnapshot(NULL)) ExitProcess(70);
+    puts("snapshot_saved");
+    return 0;
+}
+
+static DWORD WINAPI CrashDuringSnapshot(PVOID)
+{
+    printf("fault_thread=%lu\n", GetCurrentThreadId());
+    fflush(stdout);
+    return SecondCrash(NULL);
+}
+
+static int SnapshotOverlap()
+{
+    char name[100];
+    sprintf_s(name, "Local\\SRPProbeWriterStarted-%lu", GetCurrentProcessId());
+    HANDLE started = CreateEventA(NULL, TRUE, FALSE, name);
+    sprintf_s(name, "Local\\SRPProbeWriterRelease-%lu", GetCurrentProcessId());
+    HANDLE release = CreateEventA(NULL, TRUE, FALSE, name);
+    secondEntered = CreateEvent(NULL, TRUE, FALSE, NULL);
+    // A snapshot must not run this callback; the subsequent crash must.
+    BT_SetPreErrHandler(RecursiveCapture, 0);
+    HANDLE snapshot = CreateThread(NULL, 0, Snapshot, NULL, 0, NULL);
+    if (WaitForSingleObject(started, 10000) != WAIT_OBJECT_0) return 71;
+    HANDLE crash = CreateThread(NULL, 0, CrashDuringSnapshot, NULL, 0, NULL);
+    if (WaitForSingleObject(secondEntered, 10000) != WAIT_OBJECT_0) return 72;
+    if (WaitForSingleObject(crash, 250) != WAIT_TIMEOUT) return 73;
+    SetEvent(release);
+    if (WaitForSingleObject(snapshot, 10000) != WAIT_OBJECT_0) return 74;
+    if (WaitForSingleObject(crash, 10000) != WAIT_OBJECT_0) return 79;
+    puts("snapshot_overlap_completed");
+    return 0;
+}
+
 static int SyntheticMode(const char* mode)
 {
     void (__cdecl *entry)() = strstr(mode, "seh") ? BT_CallSehFilter :
@@ -185,6 +221,7 @@ int main(int argc, char** argv)
     if (!strncmp(mode, "continue-", 9) || !strncmp(mode, "execute-", 8))
         return SyntheticMode(mode);
     if (!strcmp(mode, "concurrent")) return ConcurrentCrashes();
+    if (!strcmp(mode, "snapshot-overlap")) return SnapshotOverlap();
     if (!strcmp(mode, "recursive")) BT_SetPreErrHandler(RecursiveCapture, 0);
     expectFailure = !strcmp(mode, "failure");
     if (!strcmp(mode, "cancel") || expectFailure)
