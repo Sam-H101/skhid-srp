@@ -419,11 +419,12 @@ builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
 `client-patches/make_client_026g.py <game folder> <output>
 --server=<host>:<port>` makes the players' overlay without touching the game
 folder: `game/binaries/x86/survarium_skhid.exe` (the patched exe),
-`bugtrap.dll` (the Rust local crash reporter), `play_skhid.bat` beside them,
-srp's login certificate and a player `README.txt`. Build the Rust DLL first
+`bugtrap.dll` (the Rust local crash reporter), `play_skhid.bat` and the Linux
+launcher `play_skhid.sh` beside them, srp's login certificate, a player
+`README.txt` and `LINUX.txt`. Build the Rust DLL first
 with `../client/bugtrap/build.sh`; the overlay builder includes it by default.
 `--pack-zip` creates the player archive directly instead of a folder, with exactly
-those five files and no source, symbols or tests. `--check` writes nothing.
+those seven files and no source, symbols or tests. `--check` writes nothing.
 The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the
 whole game.
 

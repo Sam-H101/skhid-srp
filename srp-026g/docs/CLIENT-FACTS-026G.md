@@ -491,9 +491,11 @@ MATCH-SYNC-026G.md.
 | Base relocation under the request hook | 0x27A507 | type → 0 | full | PROVEN |
 
 Builds: `--cert-only` (only the first row; what step 0 installed), the full
-section build (**installed 2026-10-12**; the players' download has the one
-with the video-memory check and the patch revision since 18:43 UTC that
-day, sha256 `3c7d7bf0…9c9d`), the full hash-mismatch build.
+section build (**installed 2026-10-12**; the players' download had the one
+with the video-memory check and the patch revision from 18:43 UTC that
+day, sha256 `3c7d7bf0…9c9d`, and has since 21:10 UTC the one that also
+holds the login address `skhid.link:1234`, patch revision 2, sha256
+`30e928dd…4883`), the full hash-mismatch build.
 
 ## Not proven against a client yet
 
