@@ -9,7 +9,7 @@
 //! plays on one team. A seat is kept for the whole match: Play sends a
 //! player who left back to it.
 //!
-//! Who plays whom is 0.26g's (`docs/notes/matchmaking.md`,
+//! Who plays whom is 0.26g's (`resources/notes/v026g/matchmaking.md`,
 //! `session::v026g::matchmaking`):
 //! - a match has two sides of at most [`Settings::team_size`] (8), as even
 //!   as the squads allow, in players and then in levels;
@@ -283,6 +283,7 @@ impl Core<'_> {
             state.queued_since = Some(now);
             state.order_id = order_id;
         }
+        let waiting_before = self.store.matchmaking().queued_players();
         let mut mates = Vec::new();
         match self.store.squads().set_ready(who.account_id, true) {
             None => {
@@ -327,6 +328,15 @@ impl Core<'_> {
         }
         self.squads_dirty = true;
         log::info!("{} pressed Play with kit {kit_id}", who.name);
+        if self.store.matchmaking().queued_players() > waiting_before {
+            // A squad in its own order; a player alone.
+            let joined = if mates.is_empty() {
+                vec![who.account_id]
+            } else {
+                mates.clone()
+            };
+            self.announce_joined(&who, &joined, now);
+        }
         self.queue_status(who.addr, now);
         for mate in mates {
             if mate != who.account_id
@@ -345,7 +355,7 @@ impl Core<'_> {
                 account.locked().play = None;
             }
             // Its squad's group leaves the queue with it.
-            self.store.matchmaking().leave_queue(who.session_id);
+            self.leave_queue_announced(who.session_id, who.account_id, &who.name);
             self.store.squads().set_ready(who.account_id, false);
         }
         if let Some(player) = self.player_mut(who.addr) {
@@ -600,6 +610,15 @@ impl Core<'_> {
                         self.accounts.mark_dirty(account_id);
                     }
                 }
+                let mut accounts = Vec::new();
+                let mut teams: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+                for seat in &formed.seats {
+                    accounts.push(seat.player.account_id);
+                    if let Some(account) = self.accounts.get(seat.player.account_id) {
+                        teams[usize::from(seat.team.min(1))].push(account.locked().name.clone());
+                    }
+                }
+                self.announce_match(&accounts, teams);
                 self.matches.insert(
                     match_id,
                     Running {

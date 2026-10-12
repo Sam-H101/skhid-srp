@@ -854,7 +854,8 @@ impl Core<'_> {
                 out_of_queue = true;
             }
             if out_of_queue {
-                self.store.matchmaking().leave_queue(session_id);
+                let name = self.player(addr).map(|player| player.name.clone());
+                self.leave_queue_announced(session_id, me, &name.unwrap_or_default());
                 if let Some(player) = self.player_mut(addr) {
                     player.queued_since = None;
                 }
