@@ -4,7 +4,7 @@ Version scope: client 0.26g (build 2777, "0.26g0", linked 2015-01-15, no PDB) vs
 
 Tags: **[V]** read in the exe/disassembly; **[I]** inferred. Patch-site status: **PROVEN** (0.26g VA + original bytes + the 0.21d site it corresponds to), **LIKELY**, **GUESS**.
 
-Summary: the mutex patch ports 1:1 (PROVEN). One patch is 0.26g's own: two instructions of the battery rule (§3.7, added 2026-10-12). The snapshot upload is still needed (the world is still frozen until the 0xE8 snapshot, and the client never sends its state); it ports with new addresses. Only 0x5D bytes of .text padding exist, so the upload code goes into a new PE section `.srp` (default) or over the dead `on_hash_mismatch` (fallback). The patcher, the assembly and a self-test are in `srp-026g/client-patches/` (reviewed against the disassembly 2026-10-12, §3.1–§3.5; not run live yet). The mode 3 battery patch is not needed: 0.26g serializes the next-battery time.
+Summary: the mutex patch ports 1:1 (PROVEN). One patch is 0.26g's own: two instructions of the battery rule (§3.8, added 2026-10-12). The snapshot upload is still needed (the world is still frozen until the 0xE8 snapshot, and the client never sends its state); it ports with new addresses. Only 0x5D bytes of .text padding exist, so the upload code goes into a new PE section `.srp` (default) or over the dead `on_hash_mismatch` (fallback). The patcher, the assembly and a self-test are in `srp-026g/client-patches/` (reviewed against the disassembly 2026-10-12, §3.1–§3.5; not run live yet). The mode 3 battery patch is not needed: 0.26g serializes the next-battery time.
 
 ## Function map (`tools/re-kit/v026g/functions_matched.txt`)
 
@@ -216,7 +216,7 @@ starts at 0x7F80 and has 128 data bytes.
 
 - `snapshot_upload_026g.asm` → `nasm -f bin -DCAVE=0xA425000 … -o snapshot_upload_026g.section.bin` and `-DCAVE=0x325A60 … -o snapshot_upload_026g.hash-mismatch.bin` (433 bytes each = 420 cave + 6 + 7 hook bytes; both checked in).
 - `patch_026g.py <survarium.exe> <out.exe> [--cave=section|hash-mismatch] [--cert-only] [--bin=<file>]`, or `<survarium.exe> --check …` (everything in memory, nothing written). It checks the exe sha256 (`ac33d993…f153`), each site's original bytes, the free section table entry and the file layout (section mode) or the function's sha256 (hash-mismatch mode), and refuses a .bin assembled for the other cave. `--cert-only` output is byte-identical to the `survarium_srp.exe` installed in step 0.
-- (Since §3.7, 2026-10-12: the counts below are 53 bytes in 14 ranges for the section build and 1213 in 57 for hash-mismatch, the two battery rule sites being 13 bytes in 2 ranges; and the cert-only output is no longer the installed `survarium_srp.exe`, which is the section build of that morning.)
+- (Since §3.7 and §3.8, 2026-10-12: the self-test counts 54 bytes in 15 ranges for the section build and 1213 in 58 for hash-mismatch, the two battery rule sites being 13 bytes in 2 ranges and the VRAM check 1 byte in 1; and the cert-only output is no longer the installed `survarium_srp.exe`, which is the section build of that morning.)
 - `selftest_026g.py` builds the three variants into `srp-026g/target-a4/scratch/` and checks each: PE re-parse (sections aligned and contiguous, SizeOfImage, data directories, certificate table last and identical); every byte outside the intended ranges equals the original (section build: 40 changed bytes in 12 ranges below the old end of file, plus the 0x200 new bytes; hash-mismatch: 1199 bytes in 55 ranges; the counts include the checksum's bytes that happen to differ); no active relocation under rewritten bytes and the rest of `.reloc` untouched; ndisasm of the cave and hooks (every direct branch inside the cave or to one of the 7 external addresses, the two indirect calls are `[eax+18h]` / `[eax+1Ch]`, both entries start with `pushad`); no branch or pointer into the hooks anywhere in `.text`; imagehlp's checksum equals the header's; the client's own `CryptQueryObject` call still yields the survarium.com certificate; the hash interval site (§3.6) is `mov dword [esp+18h],32h` in the full builds and the original in `--cert-only`. **All checks pass (2026-10-12, again with §3.6).** Nothing was run or installed; the builds in the scratch folder are for inspection only.
 - Not tested: the code itself running (needs a 0.26g match server to reach `on_match_ready`).
 
@@ -229,16 +229,36 @@ starts at 0x7F80 and has 128 data bytes.
 - **Without the patch:** start every client with `-hash_check_interval_in_ms=50` (LIKELY syntax, as `-server=`; not tried live). The key still wins over the patched default.
 - The match server logs "… opposite hash phases …" when it sees the starved state (match.md §13).
 
-### 3.7 The battery rule: two instructions become nops (added 2026-10-12) — PROVEN bytes, not run live
+### 3.7 Minimum video-memory startup check
+
+The full patch includes the one-byte bypass already used by `play_skhid.sh`.
+Verified against the original build 2777 executable (sha256 checked by the
+patcher) and its disassembly:
+
+- VA **0x106411**, file offset **0xF5811**: `73 0F` (`jae 0x106422`) becomes
+  `EB 0F` (`jmp 0x106422`). The preceding `cmp ebx,0x14000000` compares the
+  detected video-memory size against **320 MiB**. The skipped path pushes
+  320 and a warning string, then calls 0x113580. [V]
+- The target at 0x106422 returns the original detected size from EDI:EBX
+  in EDX:EAX. The zero/unknown-size path at 0x1063F1 still returns
+  0x14000000. Neither the measurement nor the fallback is changed. [V]
+- This bypasses the startup rejection for a low reported VRAM size; it does
+  not increase memory or replace the allocator launch options.
+- Applied to `section` and `hash-mismatch` builds, before the existing PE
+  checksum update. `--cert-only` stays unchanged. The self-test checks the
+  branch target, unchanged return paths, exact changed byte, relocation
+  coverage, and rejection of unexpected instruction bytes.
+
+### 3.8 The battery rule: two instructions become nops (added 2026-10-12) — PROVEN bytes, not run live
 
 - **Why.** match.md §26: the rule's completion (the time at +0x15C, the "containers can be used" byte at +0x160) is not serialized, a rollback of the completing tick leaves it set, and the tenth battery cannot be put in again; the containers are closed for the rest of the match.
 - **Where.** `gather_victory_items_rule_core`'s event handler 0x313A50 (mode 3's rule shares it):
   - 0x313A62 `0F 85 D3 00 00 00` (`jnz 313B3Bh`, after `cmp dword [ecx+15Ch],-1`) → six `90`: an event after a completion is counted.
   - 0x313B34 `C6 81 60 01 00 00 00` (`mov byte [ecx+160h],0`, between `mov [ecx+15Ch],edx` and `ret 0Ch`) → seven `90`: the containers stay usable.
 - **What is left:** the handler counts every put and take, sets the completion time when a team has all and takes it back when not: 0.21d's handler 0x1FB8A9, with 0.26g's 3 s.
-- **Checked** (`selftest_026g.py` check 10): the instructions around each site, no base relocation on either, no branch into either, `mov byte [reg+160h],0` nowhere else in the rule's code. The section build differs from the exe of 2026-10-12 06:05 in these 13 bytes and the PE checksum only.
+- **Checked** (`selftest_026g.py` check 10; the VRAM check of §3.7 is check 11): the instructions around each site, no base relocation on either, no branch into either, `mov byte [reg+160h],0` nowhere else in the rule's code. The section build differs from the exe of 2026-10-12 06:05 in these 13 bytes and the PE checksum only.
 - Full builds only; `--cert-only` keeps the handler.
-- **Builds:** section sha256 `a39162d1587e8b7f026569b8e7594ef451512eaaab282dba3249954a6f4891ba` (12 895 352 bytes), hash-mismatch `2477e934352782efad9a8549876659d431cc7b23790366bfb343d20bb638ca73`. The players' download of 2026-10-12 holds the section build without this patch, `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`: until a new overlay is made and given out, `patch_026g.py` no longer gives the players' exe byte for byte (the 13 bytes and the checksum differ).
+- **Builds** (with the VRAM check of §3.7, merged the same evening): section sha256 `053c359586aaef3d04fb6de541366b719fe413d53f8634575c118ca06bb1fd86` (12 895 352 bytes), hash-mismatch `a8aadcc2482107a599a2541f0fe684b0a746a993370735e1c3d61d1e635660d4`. Before §3.7 was merged they were `a39162d1…91ba` and `2477e934…ca73`; with §3.7 and without this patch the section build is `2cb92dff…0dac`. The players' download of 2026-10-12 holds the section build with neither, `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`: until a new overlay is made and given out, `patch_026g.py` no longer gives the players' exe byte for byte (the 13 bytes, the VRAM byte and the checksum differ).
 - **Not done:** a run in a match of two or more players; publishing (every player's exe changes; old and new games part at the tenth battery, match.md §26).
 
 ## 4. Mode 3 batteries: not needed in 0.26g

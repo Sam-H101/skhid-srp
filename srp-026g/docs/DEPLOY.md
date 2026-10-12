@@ -123,3 +123,52 @@ Read-only root file system, every capability dropped, no new privileges, the
 memory and CPU limits above, 512 processes. The web page inside is plain
 HTTP and is published on the host's 127.0.0.1 only: reach it through caddy
 or an SSH tunnel, never publish that port (it carries passwords).
+
+## Public stats and deploying the endpoint
+
+`GET /api/stats` on the existing 0.26g web listener returns JSON without
+login or an admin token, with `Content-Type: application/json` and
+`Cache-Control: no-store`. For example (illustrative counts):
+
+```json
+{"online":12,"registered":45,"matches":3,"queued":4}
+```
+
+- `online`: distinct accounts with an active lobby/chat connection or a
+  session waiting for matchmaking or seated in a match.
+- `registered`: registered accounts.
+- `matches`: matches created in the match server and not yet ended. This
+  includes matches still loading or waiting for their clients to arrive.
+- `queued`: players currently in the regular matchmaking queue, counting
+  each squad member separately. Players already assigned to a match, and
+  players waiting for squad/clan readiness outside matchmaking, are excluded.
+
+All four fields are nonnegative integers. Counts are read from live state;
+separate locks mean they are not a single atomic snapshot. Reading the endpoint
+never forms a match. No names, identifiers, addresses or credentials are
+returned. It is independent of the page language. Poll about once a minute.
+The endpoint is only added to `srp-026g`; other version folders are unchanged.
+
+After the endpoint PR is merged, on the host with the existing checkout:
+
+```bash
+cd /path/to/skhid-srp
+git switch main
+git pull --ff-only
+cd srp-026g
+docker compose build srp26
+# When no matches are running; restarting drops lobby links and the queue.
+docker compose up -d --no-deps srp26
+docker compose ps srp26
+docker compose logs --tail=50 srp26
+curl --fail --show-error https://026g.skhid.link/api/stats
+```
+
+Use the existing deployment directory, `.env`, Compose project and data volume.
+If the host receives copied sources instead of using Git, copy the updated
+`srp-026g` source into that same deployment directory while preserving `.env`,
+then run the Compose commands there. Do not remove volumes. No database
+migration, client patch, new port or bot deployment is required. The existing
+reverse proxy must forward `/api/stats` to the same web listener as `/`.
+For a local check, use the configured `SRP26_WEB_PORT` (default 8098):
+`curl --fail http://127.0.0.1:8098/api/stats`.

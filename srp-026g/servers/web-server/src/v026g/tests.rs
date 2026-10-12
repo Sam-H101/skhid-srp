@@ -18,6 +18,13 @@ struct Told {
     changed: Mutex<Vec<u32>>,
     text: Mutex<Option<(String, String)>>,
     cleared: AtomicU32,
+    matches: AtomicU32,
+}
+
+impl super::MatchCounter for Told {
+    fn active_matches(&self) -> usize {
+        self.matches.load(std::sync::atomic::Ordering::Relaxed) as usize
+    }
 }
 
 impl LobbyLink for Told {
@@ -58,6 +65,7 @@ fn world() -> World {
         game: Some(Game {
             accounts: accounts.clone(),
             lobby: told.clone(),
+            matches: told.clone(),
         }),
     };
     World {
@@ -551,4 +559,97 @@ fn the_pages_are_the_026g_ones() {
     let mut elsewhere = get("/hidden");
     elsewhere.client = "203.0.113.5".parse().ok();
     assert_eq!(world.web.route(&elsewhere, "t").status, "404 Not Found");
+}
+
+#[test]
+fn public_stats_count_players_queue_and_hosted_matches() {
+    let mut world = world();
+    // The endpoint is public even with the admin disabled.
+    world.web.token = None;
+    world.web.admin_path = None;
+    let stats = || world.web.route(&get("/api/stats"), "t");
+    assert_eq!(
+        stats().body,
+        r#"{"online":0,"registered":0,"matches":0,"queued":0}"#
+    );
+    let account = world.player("player-a", "test-password");
+    let session = world.web.store.create_session(account);
+    let hold = world.web.store.hold(session).unwrap();
+    let second_session = world.web.store.create_session(account);
+    let second_hold = world.web.store.hold(second_session).unwrap();
+    // Multiple connections for one account count once.
+    assert_eq!(
+        stats().body,
+        r#"{"online":1,"registered":1,"matches":0,"queued":0}"#
+    );
+    world.web.store.matchmaking().queue(
+        &[session::Player {
+            session_id: session,
+            account_id: account,
+            profile_id: 1,
+        }],
+        false,
+        Instant::now(),
+    );
+    drop(hold);
+    drop(second_hold);
+    // A player waiting without a lobby connection remains present.
+    assert_eq!(
+        stats().body,
+        r#"{"online":1,"registered":1,"matches":0,"queued":1}"#
+    );
+    world
+        .told
+        .matches
+        .store(2, std::sync::atomic::Ordering::Relaxed);
+    let response = stats();
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response.content_type.as_str(), "application/json");
+    assert_eq!(
+        response.body,
+        r#"{"online":1,"registered":1,"matches":2,"queued":1}"#
+    );
+    assert_eq!(world.web.store.match_count(), 0); // Use the host, not formed queue rosters.
+    world.web.store.matchmaking().leave_queue(session);
+    assert_eq!(
+        stats().body,
+        r#"{"online":0,"registered":1,"matches":2,"queued":0}"#
+    );
+    assert_eq!(
+        world.web.route(&post("/api/stats", &[]), "t").status,
+        "404 Not Found"
+    );
+}
+
+#[test]
+fn public_stats_http_has_json_headers_and_ignores_language() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+    let world = world();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        world.web.serve(stream);
+    });
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client
+        .write_all(b"GET /api/stats?lang=uk HTTP/1.0\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    server.join().unwrap();
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("HTTP/1.0 200 OK\r\n"));
+    assert!(headers.contains("\r\nContent-Type: application/json\r\n"));
+    assert!(headers.contains("\r\nCache-Control: no-store\r\n"));
+    assert!(headers.contains(&format!("\r\nContent-Length: {}\r\n", body.len())));
+    assert_eq!(
+        body,
+        r#"{"online":0,"registered":0,"matches":0,"queued":0}"#
+    );
 }

@@ -1,6 +1,6 @@
 """Builds the srp copy of the 0.26g client (build 2777) from the original
-survarium.exe. The full patch is what players of 026g.skhid.link run since
-2026-10-12.
+survarium.exe. The full patch includes the startup VRAM-check bypass used
+by the Linux launcher.
 
 USAGE (this script never touches the source exe):
 
@@ -40,6 +40,9 @@ Patches:
   (see --cave=section below);
 - the single-instance check (0x124F9 `jz fail` -> two nops), so several
   clients run on one PC;
+- the minimum VRAM check (0x106411 `jae` -> `jmp`), skipping the fatal
+  warning when detected video memory is below 320 MiB. The detected size
+  and the original fallback for an unknown size are kept;
 - the default of -hash_check_interval_in_ms, 100 -> 50 (the imm32 of
   `mov dword [esp+18h],64h` at 0x27CC4F, one byte at 0x27CC53). A stock
   client reports its world hash (0xDF) for every second 50 ms tick, on a
@@ -99,6 +102,11 @@ CERT = (0x12A10, bytes.fromhex("83ec2c"), bytes.fromhex("31c0c3"))
 
 # survarium_or_its_installer_is_already_running: cmp eax,0B7h / jz fail
 MUTEX = (0x124F9, bytes.fromhex("7409"), bytes.fromhex("9090"))
+
+# Skip the fatal low-VRAM warning after cmp ebx,14000000h (320 MiB).
+# Same one-byte change as play_skhid.sh: file offset 0xF5811, 73 -> EB.
+# The branch still targets 0x106422, which returns the detected size.
+MEMORY_CHECK = (0x106411, bytes.fromhex("730f"), bytes.fromhex("eb0f"))
 
 # network_client::try_send_all, the one-time read of the option object
 # 0xAA19F8 (-hash_check_interval_in_ms) into the static 0xA2B393C:
@@ -286,8 +294,10 @@ def build(original, mode, code=None):
     cave_va = CAVES[mode]
     cave, hooks, sizes = split_code(code)
     patch(data, *MUTEX)
+    patch(data, *MEMORY_CHECK)
     patch(data, *HASH_INTERVAL)
-    rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1)]
+    rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1),
+                 (MEMORY_CHECK[0], MEMORY_CHECK[0] + 1)]
     for site in GATHER:
         patch(data, *site)
         rewritten.append((site[0], site[0] + len(site[1])))
@@ -324,7 +334,7 @@ def build(original, mode, code=None):
         data = add_section(data, cave)
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
-    return data, (f"certificate check, mutex, hash interval {HASH_INTERVAL_MS} ms, battery rule, "
+    return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, battery rule, "
                   f"{len(cave)} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} hooks")
 

@@ -300,10 +300,14 @@ pub fn attach_upgrade(
         return Err(ItemError::Upgrade("the item holds no more"));
     }
     let mut detach_first = false;
+    let mut changed_hosts = vec![host_item_id];
     for item in &mut account.inventory {
         let before = item.upgrades.len();
         item.upgrades.retain(|held| held.id != upgrade_item_id);
-        detach_first |= item.upgrades.len() != before;
+        if item.upgrades.len() != before {
+            detach_first = true;
+            changed_hosts.push(item.item_id);
+        }
     }
     let host = account
         .item_mut(host_item_id)
@@ -315,7 +319,13 @@ pub fn attach_upgrade(
         value: 0,
         param: slot,
     });
-    bump_kits_wearing(account, host_item_id);
+    // Removing the cosmetic changes the old host's appearance too. Refresh
+    // every affected kit once, including alternate kits sharing either host.
+    for kit in &mut account.kits {
+        if changed_hosts.iter().any(|&id| kit.slot_of(id).is_some()) {
+            kit.revision = kit.revision.wrapping_add(1);
+        }
+    }
     Ok(Attached {
         host_item_id,
         upgrade_item_id,

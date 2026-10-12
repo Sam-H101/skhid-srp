@@ -44,11 +44,17 @@ pub trait LobbyLink: Send + Sync {
     fn admin_text(&self) -> Option<(String, String)>;
 }
 
+/// The match server's count of matches created and not yet ended.
+pub trait MatchCounter: Send + Sync {
+    fn active_matches(&self) -> usize;
+}
+
 /// What makes the page a 0.26g one.
 #[derive(Clone)]
 pub struct Game {
     pub accounts: Arc<GameAccounts>,
     pub lobby: Arc<dyn LobbyLink>,
+    pub matches: Arc<dyn MatchCounter>,
 }
 
 /// The longest password the 0.26g client sends (its buffer is 48 bytes).
@@ -122,6 +128,7 @@ impl Web {
             ("POST", path) if self.is_admin_page(path, request) => self.admin(request, peer),
             _ => Response {
                 status: "404 Not Found",
+                content_type: super::ContentType::Html,
                 body: page(lang, Form::None26, &lang.tr("Not found.", "Не знайдено.")).body,
             },
         }

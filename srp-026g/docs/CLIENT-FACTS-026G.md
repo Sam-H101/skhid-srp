@@ -495,11 +495,13 @@ Builds: `--cert-only` (only the first row; what step 0 installed), the full
 section build (**installed 2026-10-12**), the full hash-mismatch build.
 
 The two battery rule rows were added on the evening of 2026-10-12
-(`client_patch.md` §3.7; why: `match.md` §26, the tenth battery of modes 2
+(`client_patch.md` §3.8; why: `match.md` §26, the tenth battery of modes 2
 and 3 cannot be put in). The exe installed that morning and the players'
 download (sha256 `166d25bc…1ddf`) are the full section build **without**
-them; with them the section build is sha256 `a39162d1…91ba`, and differs
-from that exe in those 13 bytes and the PE checksum only.
+them; with them and the minimum video-memory check patch (`client_patch.md`
+§3.7, merged the same evening) the section build is sha256
+`053c3595…fd86`, and differs from that exe in those 13 bytes, the one byte
+of the video-memory check and the PE checksum only.
 
 ## Not proven against a client yet
 

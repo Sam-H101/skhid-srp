@@ -19,7 +19,7 @@
 //! - [`Stack`]: the three servers and the session collector, each on a
 //!   thread that is started again if it fails.
 //!
-//! The 0.21d servers of this repository (login, presence, browser, lobby,
+//! The retained 0.21d servers (login, presence, lobby,
 //! match) are not started with it: the two lobbies share the store's queue
 //! and squads, and the two login servers one port.
 
@@ -47,6 +47,12 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 /// The match server's registry as the lobby's match host: each struct is
 /// moved over field for field.
 pub struct RegistryHost(pub Arc<MatchRegistry>);
+
+impl web_server::MatchCounter for RegistryHost {
+    fn active_matches(&self) -> usize {
+        self.0.match_count()
+    }
+}
 
 impl MatchHost for RegistryHost {
     fn create(&self, setup: lobby::MatchSetup) -> Result<lobby::MatchTicket, String> {
@@ -464,6 +470,7 @@ impl Stack {
     pub fn web_game(&self) -> web_server::Game {
         web_server::Game {
             accounts: self.accounts.clone(),
+            matches: Arc::new(RegistryHost(self.registry.clone())),
             lobby: Arc::new(WebLink {
                 accounts: self.accounts.clone(),
                 inbox: self.inbox.clone(),

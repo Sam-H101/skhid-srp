@@ -218,4 +218,4 @@ pass. None of it was seen by a client.
 
 ## 0.26g, added 2026-10-12 (evening)
 
-- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team cannot put its last battery in, and after the try nobody can use a container (match.md §26; 9 of 9 live matches). The fix is two instructions of the client (client_patch.md §3.7): built (`target-a4/scratch/survarium_srp.section.exe`), self-tested, not run in a match, not published. Publishing means a new overlay zip and every player taking it.
+- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team cannot put its last battery in, and after the try nobody can use a container (match.md §26; 9 of 9 live matches). The fix is two instructions of the client (client_patch.md §3.8): built (`target-a4/scratch/survarium_srp.section.exe`), self-tested, not run in a match, not published. Publishing means a new overlay zip and every player taking it.

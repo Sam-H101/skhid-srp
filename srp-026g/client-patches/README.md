@@ -8,9 +8,9 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `a39162d1587e8b7f026569b8e7594ef451512eaaab282dba3249954a6f4891ba` |
-| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, made on 2026-10-12, holds the full patch **without patch 4** (added later that day): sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`. The two exes differ in the 13 bytes of patch 4 and the PE checksum, and in nothing else |
-| Checked | 2026-10-12: with patch 4 left out, the tools here, run on the original, give exactly the exe and the certificate of that download, byte for byte. With it: `selftest_026g.py` passes its checks of every site; the patched rule has **not been run in a match yet** |
+| Result (full patch) | 12 895 352 bytes, sha256 `053c359586aaef3d04fb6de541366b719fe413d53f8634575c118ca06bb1fd86` |
+| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, made on 2026-10-12, holds the full patch **without patches 4 and 7** (added later that day): sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`. The two exes differ in the 13 bytes of patch 4, the one byte of patch 7 and the PE checksum, and in nothing else |
+| Checked | 2026-10-12: with patches 4 and 7 left out, the tools here, run on the original, give exactly the exe and the certificate of that download, byte for byte. With them: `selftest_026g.py` passes its checks of every site; the patched rule has **not been run in a match yet** |
 
 ## The files
 
@@ -112,7 +112,7 @@ original bytes first, so another build or an already patched file is refused.
   client with it stay in step until a team's last battery goes in, and part
   there (the server then starts the fewer of them from the others' world).
 - Evidence: `../docs/notes/match.md` section 26,
-  `../docs/notes/client_patch.md` section 3.7.
+  `../docs/notes/client_patch.md` section 3.8.
 
 ### 5. The snapshot upload (needed for any match)
 
@@ -147,6 +147,19 @@ original bytes first, so another build or an already patched file is refused.
   key and ran out in 2015. This one is the game's own name issued again
   (valid to 2037), and its key is in `../certs/`, which the login server
   reads.
+
+### 7. The minimum video-memory check
+
+- **Where:** `jae` at VA 0x106411 (file offset 0xF5811) becomes `jmp`:
+  `73 0F` → `EB 0F`, the same one-byte patch used by `play_skhid.sh`.
+- **Why:** the client otherwise calls its fatal warning when detected
+  video memory is below 320 MiB, which can prevent startup under Wine.
+- **What stays:** the function returns the detected video-memory size;
+  its existing 320 MiB fallback for an unknown size is unchanged. The
+  allocator launch options above still apply.
+- Included in both full builds (`section` and `hash-mismatch`).
+  `--cert-only` keeps the original check. The self-test verifies the jump
+  target, unchanged return paths, and absence of overlapping relocations.
 
 ## Not ported, not done
 
