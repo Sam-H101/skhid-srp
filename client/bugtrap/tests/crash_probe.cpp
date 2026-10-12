@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
 #include <dbghelp.h>
 #include <stdio.h>

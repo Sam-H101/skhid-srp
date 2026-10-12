@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::text::Wide;
 use core::{fmt::Write, ptr::null_mut};
 use windows_sys::Win32::{

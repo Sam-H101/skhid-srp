@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 use crate::text::Text;
 use core::{
     ffi::c_void,

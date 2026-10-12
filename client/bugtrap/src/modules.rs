@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 //! Repair only a missing module list from Wine DbgHelp. Use documented minidump
 //! records and a snapshot of this process; never change kernel ptrace policy.
 use core::{

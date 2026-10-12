@@ -22,9 +22,10 @@ the EXE or the Windows system directory when capturing a dump.
 
 ## Install
 
-Build or unpack `BugTrap-rust-win32.zip`, keep a backup of the game's original
-`BugTrap.dll`, and replace it with the supplied DLL of the same name. Keep the
-matching `BugTrap.pdb` for debugging. An EXE rebuild is unnecessary. This build
+Use the 0.26g player overlay, or build the DLL for manual installation. Keep a
+backup of the game's original `bugtrap.dll` and replace it with the built DLL
+under that filename. Keep the matching `BugTrap.pdb` locally for debugging.
+An EXE rebuild is unnecessary. This build
 supports the native ANSI Win32 interface; x64 and BugTrapN/managed UI are outside
 its scope. Native Windows testing is still outstanding.
 
@@ -134,12 +135,13 @@ DLLs in `finally`, checks the EXE and earlier dump hashes, and keeps evidence in
 `--output`. Its server address is loopback. Do not use this against a running
 play session. The test does not change host ptrace policy.
 
-To create a distributable containing DLL, PDB, source, licences and checksums:
+The existing player-overlay builder includes the built DLL. From the repository
+root, create the player ZIP with:
 
 ```sh
-python3 package.py
+python3 srp-026g/client-patches/make_client_026g.py /path/to/game \
+  target/Survarium-0.26g-srp-files.zip --server=026g.skhid.link:1234
 ```
 
-`target/package/BugTrap-rust-win32.zip` excludes game binaries, crash dumps and
-machine-specific test logs. A crash dump can contain private process memory;
-review it before sharing.
+It contains the patched EXE, `bugtrap.dll`, launcher, login certificate and player
+README. Symbols, sources, tests and crash dumps stay outside the player ZIP.

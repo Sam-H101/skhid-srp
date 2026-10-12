@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Check exports/ordinals and runtime imports using LLVM's PE inspector."""
 from pathlib import Path
 import re

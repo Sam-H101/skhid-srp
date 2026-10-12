@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise crash_probe.exe under Wine and inspect the resulting minidumps.
 
 Usage: python3 check_dumps.py /absolute/path/to/build [case ...]

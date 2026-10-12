@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 // x86 MSVC stack probe ABI: EAX holds the frame size. Touch each page so
 // Windows commits guard pages before moving ESP into the newly reserved frame.
 core::arch::global_asm!(

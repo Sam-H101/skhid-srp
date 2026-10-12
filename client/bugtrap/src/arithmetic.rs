@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 // Division-free implementation for x86 MSVC compiler helper symbols.
 pub fn div_rem(mut n: u64, d: u64) -> (u64, u64) {
     assert!(d != 0);

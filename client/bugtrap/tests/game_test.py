@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 """Intentionally crash an installed 0.26g Skhid client; restore its DLL afterward.
 
 Requires the three test binaries from build.cmd in --build. Run only against an

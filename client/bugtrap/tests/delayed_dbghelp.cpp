@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 // Test-only forwarding shim. Hold the real writer behind a gate so a second
 // crash reliably enters BugTrap while the first dump file is still open.
 #include <windows.h>

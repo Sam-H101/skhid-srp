@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 // Minimal native ANSI BugTrap declarations used by the independent C ABI probe.
 #pragma once
 #include <windows.h>
