@@ -536,6 +536,34 @@ So: on the general, match and team channels a stock client lets through at most 
 - srp's side: the ten ids are stored for each client (`dispatch.rs`, `Subscribe`); a general line goes to every client whose slot 1 is set, whatever its value; the `channel_id` of `4C` and the language byte are not used (`social.rs` `chat`).
 - Test: `the_general_channel_is_one_room_for_every_language` (an English, a Ukrainian, a Russian and a German client, each with its own room id and language byte, each hears the three others, byte for byte).
 
+### 9.7 Lines about the search (since 2026-10-13, `queue_chat.rs`)
+
+The game has no text for "somebody joined the search", so these lines are the
+server's own (the owner's rule was game-native text only; this is a
+deliberate exception for these lines, at the owner's request).
+
+- An `A2` line of sender type 5 (an account), id 0, an empty name (default;
+  `SRP_QUEUE_CHAT_NAME` gives one), no clan tag, channel 1 (general); the body
+  is shown as it is (§1.2). Id 0 is in no ignore list.
+- **A join or a leave** goes to every client that listens to the general
+  channel (`4F` slot 1 set): `Alice joined the search (3 waiting)`,
+  `Alice left the search (2 waiting)`; a squad is one line, naming it:
+  `Alice, Bob joined the search as a squad (2 waiting)`, `Bob left the search
+  with their squad (0 waiting)`. A leave is said for every way out of the
+  queue (Leave, a closed link, the squad changed) and only for a join that was
+  said. A join is said at most once in 30 s for a player, so a Play/Leave loop
+  is not repeated.
+- **A match** (`Match found: Alice, Bob vs Carol`, team 1 against team 2) goes
+  to the players put in it; over 255 bytes it is two lines (one for each
+  team).
+- `SRP_QUEUE_CHAT=off` turns all of it off.
+- **Not verified in a live client:** what the client draws for an empty sender
+  name (`add_message` 0x208AD0 puts it in the line's `name` field; a name equal
+  to `st_clan_system_message_sender` or `st_clan_daily_message` skips it, but
+  those are the clan's lines) and whether `add_to_recent_list("")` (0x209330)
+  is harmless. If it shows a stray colon or a blank recent contact, set
+  `SRP_QUEUE_CHAT_NAME` to a short name.
+
 ## Correction (2026-10-12): the order of an accepted squad invite
 
 `important_message_read` 0x28C5E0 sends the two messages of an accept in this order: `4D` type 3 "membership accepted" (the sender 0x26AFB0, called at 0x28C698), then `50 <id> 00` (0x26B1B0, called at 0x28C7E1). PROVEN. Where this note says the acceptance is passed on "only for an invite that was accepted", read: it is passed on once both have come, whichever came first (`social.rs`: `Request::accepted_text`). Until then srp dropped the first and every first accept was lost (12 of 12 live). A squad invite that waits already is sent again under its id when the inviter invites again (the client skips an id it holds, 0x26BCDA).

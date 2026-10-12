@@ -101,6 +101,9 @@ Every setting has a default; none is needed on a dev PC.
   goes after the first (the second for a player in a match), and its
   session waits the third for the client to connect again (transport.md
   §6.1).
+- `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none): lines in
+  the general chat when somebody joins or leaves the search and when a match
+  starts, with whom (social.md §9.7).
 - `SRP_MATCH_MODES` (default `2,3,4`), `SRP_MATCH_MAPS` (default: every
   playable map, 72 of them): a match gets the map its players played least
   and a mode and weather at random, so for a first test name one, e.g.

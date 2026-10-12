@@ -68,6 +68,10 @@ pub(super) struct Player<'a> {
     pub channel_ids: [u32; 10],
     /// When it pressed Play, while it waits.
     pub queued_since: Option<Instant>,
+    /// When its join was last said in the general chat, and whether that
+    /// join is still to be answered by a leave line (`queue_chat`).
+    pub queue_line: Option<Instant>,
+    pub queue_announced: bool,
     /// The order id of its Play (0x85), which `31` gives back.
     pub order_id: u32,
     /// The match (the queue's id) it was sent to, while it lasts.
@@ -576,6 +580,8 @@ impl<'a> Core<'a> {
             reached: reached_address(from),
             channel_ids: [0; 10],
             queued_since: None,
+            queue_line: None,
+            queue_announced: false,
             order_id: 0,
             in_match,
             connect: None,
@@ -673,7 +679,7 @@ impl<'a> Core<'a> {
         if self.by_account.get(&player.account_id) == Some(&addr) {
             self.by_account.remove(&player.account_id);
         }
-        self.store.matchmaking().leave_queue(player.session_id);
+        self.leave_queue_said(player.session_id, &player.name, player.queue_announced);
         self.store.squads().set_ready(player.account_id, false);
         // Nor in its clan team, which it leaves with its session.
         self.clan_link_gone(player.account_id, end_session);
