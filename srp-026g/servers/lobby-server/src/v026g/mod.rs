@@ -1,4 +1,4 @@
-//! The 0.26g lobby (`docs/notes/lobby.md`, `lobby_requests.md`,
+//! The 0.26g lobby (`resources/notes/v026g/lobby.md`, `lobby_requests.md`,
 //! `social.md`; `PLAN-026G.md` steps 3 and 8), beside the 0.21d one.
 //!
 //! What 0.26g changed: the lobby is one UDP link on the match transport
@@ -50,8 +50,10 @@
 //!   address (`vostok::config`), the one the 0.26g login server announces;
 //! - `SRP_MATCH_GATHER_SECONDS`, `SRP_MATCH_FILL_PLAYERS`,
 //!   `SRP_MATCH_QUIET_SECONDS`: the queue's, as for 0.21d (read where the
-//!   store is made);
-//! - `SRP_MATCH_TEAM_SIZE` (default 8, 1 to 10): the most players of a
+//!   store is made); and the 0.26g queue's own: `SRP_MATCH_MIN_PLAYERS`
+//!   (default 4), `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30),
+//!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
+//! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
 //!   side; a match has two sides;
 //! - `SRP_MATCH_SEARCH_STEP_SECONDS` (default 4, 1 to 3600): a waiting
 //!   player's range of levels grows by one at each end every so many
@@ -111,7 +113,7 @@ pub use play::{MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
 
 /// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
 /// wiki of February 2015; `progression_sources.md` §9).
-const DEFAULT_TEAM_SIZE: usize = 8;
+const DEFAULT_TEAM_SIZE: usize = 10;
 /// The most a side can be: the client's roster has 20 places.
 const MAX_TEAM_SIZE: usize = session::MAX_PLAYERS_PER_MATCH / 2;
 /// `SRP_MATCH_SEARCH_STEP_SECONDS` when unset. [choice] The step is not in

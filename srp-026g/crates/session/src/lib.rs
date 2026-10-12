@@ -34,12 +34,13 @@ pub mod password;
 pub mod persist;
 mod reports;
 mod squads;
-// The 0.26g account model, beside the 0.21d one (`docs/notes/`).
+// The 0.26g account model, beside the 0.21d one (`resources/notes/v026g/`).
 pub mod v026g;
 pub use bans::{Ban, IpBan, Net};
 pub use matchmaking::{
     DEFAULT_GATHER_WINDOW, FormedMatch, Level, LevelRules, MAX_PLAYERS_PER_MATCH, Matchmaking,
-    Player, QueueState, Seat, fill_from_env, gather_window_from_env, quiet_from_env,
+    Player, QueueState, Seat, fill_from_env, gather_window_from_env, leveled_start_rules_from_env,
+    quiet_from_env,
 };
 use persist::{AccountRecord, AccountRepository, PersistError, StoredSession};
 pub use reports::{MatchReport, Reports};
@@ -313,6 +314,27 @@ impl SessionStore {
     /// A store whose queue gathers players for the default window.
     pub fn new() -> Self {
         Self::with_gather_window(DEFAULT_GATHER_WINDOW)
+    }
+
+    /// [`Self::with_gather_window`] with the start rules of the leveled
+    /// queue set (`Matchmaking::with_start_rules`), for tests.
+    pub fn with_start_rules(
+        gather: Duration,
+        min_players: usize,
+        extension: Duration,
+        longest: Duration,
+    ) -> Self {
+        let mut store = Self::with_gather_window(gather);
+        store.matchmaking = store
+            .matchmaking
+            .with_start_rules(min_players, extension, longest);
+        store
+    }
+
+    /// The start rules of the leveled queue (`Matchmaking::set_start_rules`).
+    pub fn set_start_rules(&self, min_players: usize, extension: Duration, longest: Duration) {
+        self.matchmaking
+            .set_start_rules(min_players, extension, longest);
     }
 
     /// A store whose queue gathers players for `gather` before a match

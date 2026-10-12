@@ -1,6 +1,6 @@
 //! 0.21d matchmaking. A 0.21d match has a fixed roster: every client is sent
 //! the whole player list (0x51) before it loads, and a player not on it can
-//! never join (`../srp-021d/docs/notes/match_start_spec.md`). So players wait
+//! never join (`resources/notes/v021d/match_start_spec.md`). So players wait
 //! in the queue for a gathering window, and then everyone waiting goes to a
 //! new match together, up to its 20 places.
 //! - A match needs two parties: two players alone, or a squad and at least
@@ -8,6 +8,17 @@
 //!   starts when the second party joins; a player or a squad alone waits
 //!   for as long as it takes, and if the queue drops back to one party,
 //!   the window starts over.
+//! - A queue that looks at levels (0.26g's, [`Matchmaking::poll_with`]) is
+//!   stricter, and its rules are, for the players:
+//!   1. A full match starts at once.
+//!   2. 10 or more waiting: it starts when nobody has pressed Play for 30 s.
+//!   3. 4 to 9 waiting: a countdown of 60 s starts when the queue gets its
+//!      4th player; each time somebody presses Play, 30 s are added to what
+//!      is left of it.
+//!   4. No countdown runs longer than 2 minutes from its start.
+//!   5. Fewer than 4 players, or only one side (one player alone, one squad
+//!      alone), wait; if the queue drops under 4 the countdown is cancelled
+//!      and starts anew at the 4th.
 //! - A squad queues as one group and plays on one team, so a squad alone
 //!   would have nobody against it: it is one party, whatever its size.
 //!   (Until 2026-10-12 the count was of players, and two squadmates alone
@@ -32,9 +43,18 @@ const FIRST_MATCH_ID: u32 = 0x123;
 /// With this many waiting (5 v 5), a match starts once nobody has joined the
 /// queue for [`DEFAULT_QUIET_PERIOD`], without waiting out the whole window.
 pub const DEFAULT_FILL_PLAYERS: usize = 10;
-pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(10);
+pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(30);
 /// How long the queue gathers players by default.
 pub const DEFAULT_GATHER_WINDOW: Duration = Duration::from_secs(60);
+/// A queue that looks at levels (0.26g's) starts no match with fewer players
+/// than this (`SRP_MATCH_MIN_PLAYERS`).
+pub const DEFAULT_MIN_PLAYERS: usize = 4;
+/// Each time somebody presses Play while the countdown runs, that much is
+/// added to what is left of it (`SRP_MATCH_JOIN_EXTENSION_SECONDS`).
+pub const DEFAULT_JOIN_EXTENSION: Duration = Duration::from_secs(30);
+/// No countdown runs longer than this from its start
+/// (`SRP_MATCH_MAX_COUNTDOWN_SECONDS`).
+pub const DEFAULT_MAX_COUNTDOWN: Duration = Duration::from_secs(120);
 
 /// A player who pressed Play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +169,17 @@ struct Inner {
     gather: Duration,
     fill_players: usize,
     quiet: Duration,
+    /// The fewest players a leveled queue starts a match with.
+    min_players: usize,
+    /// What a press of Play adds to the countdown left.
+    extension: Duration,
+    /// The longest a countdown runs.
+    max_countdown: Duration,
+    /// When the leveled queue got its `min_players`th player (and two
+    /// parties); `None` while it has fewer.
+    countdown_since: Option<Instant>,
+    /// What the presses of Play since then added to the countdown.
+    countdown_extra: Duration,
     /// When someone last pressed Play.
     last_joined: Option<Instant>,
     /// When the queue got its second party (a player alone or a squad:
@@ -178,6 +209,13 @@ impl Matchmaking {
                 gather,
                 fill_players: fill_from_env(),
                 quiet: quiet_from_env(),
+                min_players: env_number("SRP_MATCH_MIN_PLAYERS").unwrap_or(DEFAULT_MIN_PLAYERS),
+                extension: env_number("SRP_MATCH_JOIN_EXTENSION_SECONDS")
+                    .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
+                max_countdown: env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
+                    .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
+                countdown_since: None,
+                countdown_extra: Duration::ZERO,
                 last_joined: None,
                 gathering_since: None,
                 next_match_id: FIRST_MATCH_ID,
@@ -188,6 +226,27 @@ impl Matchmaking {
                 given_up: HashSet::new(),
             }),
         }
+    }
+
+    /// The start rules of the leveled queue ([`Self::poll_with`]) in place
+    /// of the environment's: the fewest players for a match, what a press
+    /// of Play adds to the countdown left, and the longest a countdown runs.
+    pub fn with_start_rules(
+        self,
+        min_players: usize,
+        extension: Duration,
+        longest: Duration,
+    ) -> Self {
+        self.set_start_rules(min_players, extension, longest);
+        self
+    }
+
+    /// [`Self::with_start_rules`] on a queue already made.
+    pub fn set_start_rules(&self, min_players: usize, extension: Duration, longest: Duration) {
+        let mut inner = self.inner.locked();
+        inner.min_players = min_players;
+        inner.extension = extension;
+        inner.max_countdown = longest;
     }
 
     /// Players press Play: one alone, or a whole squad (`squad`) once all
@@ -232,6 +291,7 @@ impl Matchmaking {
             })
         });
         let joined = waiting.len();
+        let counting = inner.countdown_since.is_some();
         inner.queue.push(Group {
             players: waiting,
             levels: waiting_levels,
@@ -240,6 +300,10 @@ impl Matchmaking {
         });
         inner.last_joined = Some(now);
         inner.track(now);
+        if counting && inner.countdown_since.is_some() {
+            let extension = inner.extension;
+            inner.countdown_extra += extension;
+        }
         log::info!(
             "Queue: {joined} joined{}; {} waiting",
             if squad { " as a squad" } else { "" },
@@ -508,6 +572,15 @@ impl Inner {
         } else if self.gathering_since.is_none() {
             self.gathering_since = Some(now);
         }
+        if parties >= 2 && self.waiting() >= self.min_players {
+            if self.countdown_since.is_none() {
+                self.countdown_since = Some(now);
+                self.countdown_extra = Duration::ZERO;
+            }
+        } else {
+            self.countdown_since = None;
+            self.countdown_extra = Duration::ZERO;
+        }
     }
 
     /// Start a match for those waiting once the queue has had two parties for
@@ -574,21 +647,25 @@ impl Inner {
     /// [`Self::form`] by `rules`. A match is formed around a waiting group
     /// (the one that waited longest first) from the groups whose level is
     /// in its range, which starts as its own [`Level`] and grows with its
-    /// wait. The conditions are `form`'s, counted over those groups: the
-    /// queue has had two parties for the gathering window, or enough
-    /// players wait and nobody has joined for the quiet period, or they
-    /// fill a match; and at least two parties are taken, so that each side
-    /// has somebody (a squad is one party, on one side). So a level only
-    /// delays a match until the range has grown over it, and nobody waits
-    /// for a number of players.
+    /// wait. The conditions, counted over those groups, are the ones in the
+    /// module's docs: at least two parties and `min_players` players, and
+    /// either a full match, or 10 or more players and nobody pressing Play
+    /// for the quiet period, or fewer and the countdown over (60 s from the
+    /// `min_players`th player, a press of Play adding 30 s to what is left);
+    /// no countdown runs longer than `max_countdown`. So a level only
+    /// delays a match until the range has grown over it.
     fn form_leveled(&mut self, now: Instant, rules: &LevelRules) {
         let size = rules.match_size();
+        let min_players = self.min_players.min(size);
         loop {
             self.track(now);
-            let Some(since) = self.gathering_since else {
+            let Some(since) = self.countdown_since else {
                 return;
             };
-            let window_over = now.saturating_duration_since(since) >= self.gather;
+            let elapsed = now.saturating_duration_since(since);
+            let longest = self.max_countdown.max(self.gather);
+            let window_over = elapsed >= (self.gather + self.countdown_extra).min(longest);
+            let capped = elapsed >= longest;
             let quiet = self
                 .last_joined
                 .is_none_or(|joined| now.saturating_duration_since(joined) >= self.quiet);
@@ -604,7 +681,13 @@ impl Inner {
                     .map(|&index| self.queue[index].parties())
                     .sum();
                 let ready = parties >= 2
-                    && (window_over || players >= size || (players >= self.fill_players && quiet));
+                    && players >= min_players
+                    && (players >= size
+                        || if players >= self.fill_players {
+                            quiet || capped
+                        } else {
+                            window_over
+                        });
                 ready.then_some(chosen)
             });
             let Some(mut chosen) = found else {
@@ -633,6 +716,7 @@ impl Inner {
             self.formed_at.insert(id, now);
             // Whoever is left waits a new window.
             self.gathering_since = None;
+            self.countdown_since = None;
         }
     }
 
@@ -799,8 +883,28 @@ fn seats_of(groups: Vec<Group>, team_of: &[u8]) -> Vec<Seat> {
     seats
 }
 
+/// What the leveled queue (0.26g's) is set to, for the pages that tell
+/// the players: the fewest players for a match, what a press of Play adds
+/// to the countdown, and the longest a countdown runs.
+pub fn leveled_start_rules_from_env() -> (usize, Duration, Duration) {
+    (
+        env_number("SRP_MATCH_MIN_PLAYERS").unwrap_or(DEFAULT_MIN_PLAYERS),
+        env_number("SRP_MATCH_JOIN_EXTENSION_SECONDS")
+            .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
+        env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
+            .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
+    )
+}
+
+/// A number from the environment; `None` if it is unset or bad.
+fn env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
 /// `SRP_MATCH_FILL_PLAYERS` (default 10) and `SRP_MATCH_QUIET_SECONDS`
-/// (default 10): with that many waiting and nobody joining for that long, the
+/// (default 30): with that many waiting and nobody joining for that long, the
 /// match starts before the window ends. A bad value falls back to the default.
 pub fn fill_from_env() -> usize {
     std::env::var("SRP_MATCH_FILL_PLAYERS")
@@ -867,6 +971,12 @@ mod tests {
         assert_eq!(mm.match_count(), 1);
         mm.end_match(match_id);
         assert_eq!(mm.queued_players(), 0);
+    }
+
+    /// A leveled queue as it was before the start rules of 2026-10-13: two
+    /// players are enough, and a press of Play adds nothing.
+    fn classic(gather: Duration) -> Matchmaking {
+        Matchmaking::new(gather).with_start_rules(2, Duration::ZERO, Duration::from_secs(3600))
     }
 
     fn after(start: Instant, seconds: u64) -> Instant {
@@ -987,13 +1097,13 @@ mod tests {
         for id in 1..=10 {
             mm.queue(&[player(id)], false, after(start, id.into()));
         }
-        // Someone joined at 10 s: the quiet period runs from there.
+        // Someone joined at 10 s: the quiet period (30 s) runs from there.
         assert!(
-            mm.poll(1, after(start, 19))
+            mm.poll(1, after(start, 39))
                 .is_some_and(|s| matches!(s, QueueState::Waiting { .. }))
         );
         assert!(matches!(
-            mm.poll(1, after(start, 20)),
+            mm.poll(1, after(start, 40)),
             Some(QueueState::Placed { .. })
         ));
         assert_eq!(mm.match_count(), 1);
@@ -1026,10 +1136,10 @@ mod tests {
         // 20 at once, 15 left: they have been quiet since the start.
         mm.poll(1, start);
         assert_eq!(mm.match_count(), 1);
-        mm.poll(1, after(start, 10));
+        mm.poll(1, after(start, 30));
         assert_eq!(mm.match_count(), 2);
         assert!(matches!(
-            mm.poll(35, after(start, 10)),
+            mm.poll(35, after(start, 30)),
             Some(QueueState::Placed { .. })
         ));
     }
@@ -1289,7 +1399,7 @@ mod tests {
     fn sixteen_fill_a_match_of_eight_a_side_and_the_rest_wait() {
         let start = Instant::now();
         let mm = Matchmaking::new(Duration::from_secs(60));
-        for id in 1..=19 {
+        for id in 1..=20 {
             mm.queue_leveled(&[player(id)], &[at(3)], false, start);
         }
         assert!(matches!(
@@ -1298,13 +1408,13 @@ mod tests {
         ));
         let teams = teams(&mm, FIRST_MATCH_ID);
         assert_eq!((teams[0].len(), teams[1].len()), (8, 8));
-        // The first sixteen that came; the other three wait a window.
+        // The first sixteen that came; the other four wait a countdown.
         assert!(teams.iter().flatten().all(|&session| session <= 16));
         assert_eq!(
             mm.poll_with(17, after(start, 59), Some(&EIGHT)),
             Some(QueueState::Waiting {
                 place: 1,
-                total: 3,
+                total: 4,
                 since: start
             })
         );
@@ -1341,7 +1451,7 @@ mod tests {
     #[test]
     fn two_players_still_start_after_the_window_and_one_waits_alone() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
+        let mm = classic(Duration::from_secs(60));
         mm.queue_leveled(&[player(1)], &[at(0)], false, start);
         assert!(matches!(
             mm.poll_with(1, after(start, 900), Some(&EIGHT)),
@@ -1376,7 +1486,7 @@ mod tests {
     #[test]
     fn a_squad_alone_gets_no_match_by_levels_either() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
+        let mm = classic(Duration::from_secs(60));
         mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
         assert_eq!(
             mm.poll_with(1, after(start, 900), Some(&EIGHT)),
@@ -1405,7 +1515,7 @@ mod tests {
     #[test]
     fn a_squad_is_not_matched_with_itself_while_another_is_out_of_its_levels() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
+        let mm = classic(Duration::ZERO);
         mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
         mm.queue_leveled(&[player(3)], &[at(5)], false, start);
         // Two parties wait, so the window (none here) is over; but each is
@@ -1425,7 +1535,7 @@ mod tests {
     #[test]
     fn a_squad_stays_on_one_side_and_the_sides_are_even() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
+        let mm = classic(Duration::ZERO);
         mm.queue_leveled(&[player(1)], &[at(0)], false, start);
         mm.queue_leveled(&[player(2), player(3), player(4)], &[at(0); 3], true, start);
         mm.queue_leveled(&[player(5), player(6)], &[at(0); 2], true, start);
@@ -1508,7 +1618,7 @@ mod tests {
     #[test]
     fn the_range_of_levels_grows_with_the_wait() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
+        let mm = classic(Duration::ZERO);
         // Levels 2 and 9: 6 outside the first's 2..=3.
         mm.queue_leveled(&[player(1)], &[at(2)], false, start);
         mm.queue_leveled(&[player(2)], &[at(9)], false, start);
@@ -1530,7 +1640,7 @@ mod tests {
     #[test]
     fn the_range_reaches_down_as_well_as_up() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
+        let mm = classic(Duration::ZERO);
         // The one who waited longest is the higher: 9 down to 2 is 7.
         mm.queue_leveled(&[player(1)], &[at(9)], false, start);
         mm.queue_leveled(&[player(2)], &[at(2)], false, after(start, 20));
@@ -1549,7 +1659,7 @@ mod tests {
     #[test]
     fn nobody_waits_for_ever_whatever_the_levels() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
+        let mm = classic(Duration::from_secs(60));
         // The lowest and the highest level there is.
         mm.queue_leveled(&[player(1)], &[at(0)], false, start);
         mm.queue_leveled(&[player(2)], &[Level { min: 15, max: 15 }], false, start);
@@ -1563,7 +1673,7 @@ mod tests {
             team_size: 8,
             step: Duration::from_secs(60),
         };
-        let mm = Matchmaking::new(Duration::from_secs(60));
+        let mm = classic(Duration::from_secs(60));
         mm.queue_leveled(&[player(1)], &[at(0)], false, start);
         mm.queue_leveled(&[player(2)], &[Level { min: 15, max: 15 }], false, start);
         assert!(matches!(
@@ -1622,7 +1732,7 @@ mod tests {
     #[test]
     fn a_squad_is_looked_for_by_its_highest_player() {
         let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
+        let mm = classic(Duration::ZERO);
         mm.queue_leveled(&[player(1), player(2)], &[at(1), at(10)], true, start);
         mm.queue_leveled(&[player(3)], &[at(10)], false, start);
         assert!(matches!(
@@ -1661,6 +1771,177 @@ mod tests {
         }
         assert!(matches!(mm.poll(1, start), Some(QueueState::Placed { .. })));
         assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 20);
+    }
+
+    const TEN: LevelRules = LevelRules {
+        team_size: 10,
+        step: Duration::ZERO,
+    };
+
+    /// Joins `count` players (ids from `first`) one by one, `gap` s apart
+    /// from `at_s`; returns the time of the last.
+    fn join_all(mm: &Matchmaking, first: u32, count: u32, at_s: u64, gap: u64, start: Instant) {
+        for n in 0..count {
+            mm.queue_leveled(
+                &[player(first + n)],
+                &[at(0)],
+                false,
+                after(start, at_s + u64::from(n) * gap),
+            );
+        }
+    }
+
+    fn placed(mm: &Matchmaking, session: u32, at_s: u64, start: Instant) -> bool {
+        matches!(
+            mm.poll_with(session, after(start, at_s), Some(&TEN)),
+            Some(QueueState::Placed { .. })
+        )
+    }
+
+    #[test]
+    fn fewer_than_four_players_wait_however_long() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 3, 0, 1, start);
+        assert!(!placed(&mm, 1, 5000, start));
+        // The 4th starts a countdown of 60 s.
+        join_all(&mm, 4, 1, 5000, 0, start);
+        assert!(!placed(&mm, 1, 5059, start));
+        assert!(placed(&mm, 1, 5060, start));
+    }
+
+    #[test]
+    fn each_press_of_play_adds_thirty_seconds_to_what_is_left() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 4, 0, 0, start);
+        // 4th at 0: ends at 60. A 5th at 50 (10 s left) makes it 90.
+        join_all(&mm, 5, 1, 50, 0, start);
+        assert!(!placed(&mm, 1, 89, start));
+        assert!(placed(&mm, 1, 90, start));
+    }
+
+    #[test]
+    fn a_countdown_never_runs_longer_than_two_minutes() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 4, 0, 0, start);
+        // One more player every 20 s would push the end out for ever.
+        join_all(&mm, 5, 5, 20, 20, start);
+        assert!(!placed(&mm, 1, 119, start));
+        assert!(placed(&mm, 1, 120, start));
+        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 9);
+    }
+
+    #[test]
+    fn ten_or_more_start_after_thirty_quiet_seconds_and_twenty_at_once() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 10, 0, 5, start);
+        // The 10th joined at 45 s, and the countdown (from the 4th, at 15 s)
+        // is over: it waits for 30 s without a press (75 s).
+        assert!(!placed(&mm, 1, 74, start));
+        assert!(placed(&mm, 1, 75, start));
+        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 10);
+
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 20, 0, 0, start);
+        assert!(placed(&mm, 1, 0, start));
+        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 20);
+    }
+
+    #[test]
+    fn ten_or_more_that_keep_coming_start_by_two_minutes() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        // 10 at 0 s, then one every 20 s: never quiet for 30 s.
+        join_all(&mm, 1, 10, 0, 0, start);
+        join_all(&mm, 11, 5, 20, 20, start);
+        assert!(!placed(&mm, 1, 119, start));
+        assert!(placed(&mm, 1, 120, start));
+    }
+
+    #[test]
+    fn the_countdown_is_cancelled_under_four_and_starts_anew() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        join_all(&mm, 1, 4, 0, 0, start);
+        mm.leave_queue(4);
+        join_all(&mm, 4, 1, 50, 0, start);
+        // Not 60 s from the first 4th, but from the new one at 50 s.
+        assert!(!placed(&mm, 1, 109, start));
+        assert!(placed(&mm, 1, 110, start));
+    }
+
+    #[test]
+    fn a_squad_alone_waits_even_with_four_players() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        let squad: Vec<Player> = (1..=4).map(player).collect();
+        mm.queue_leveled(&squad, &[at(0); 4], true, start);
+        assert!(!placed(&mm, 1, 5000, start));
+    }
+
+    #[test]
+    fn a_squad_counts_its_players_toward_four_but_is_one_side() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        // A squad of 3 and one player: 4 players, two sides.
+        let squad: Vec<Player> = (1..=3).map(player).collect();
+        mm.queue_leveled(&squad, &[at(0); 3], true, start);
+        mm.queue_leveled(&[player(4)], &[at(0)], false, after(start, 10));
+        // The countdown starts with the 4th player, at 10 s.
+        assert!(!placed(&mm, 1, 69, start));
+        assert!(placed(&mm, 1, 70, start));
+        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
+        let team = |session: u32| {
+            seats
+                .iter()
+                .find(|seat| seat.player.session_id == session)
+                .unwrap()
+                .team
+        };
+        assert_eq!((team(1), team(2)), (team(3), team(3)));
+        assert_ne!(team(1), team(4));
+    }
+
+    #[test]
+    fn two_squads_of_two_make_a_match_on_two_sides() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
+        mm.queue_leveled(&[player(3), player(4)], &[at(0); 2], true, start);
+        assert!(placed(&mm, 1, 60, start));
+        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
+        let teams: Vec<_> = seats.iter().map(|seat| (seat.team, seat.squad)).collect();
+        assert_eq!(teams, [(0, 1), (0, 1), (1, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn squads_are_never_split_when_a_match_is_full() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
+        // 20 places: two squads of 9 and two players; a squad of 5 waits.
+        for first in [1_u32, 20] {
+            let squad: Vec<Player> = (first..first + 9).map(player).collect();
+            mm.queue_leveled(&squad, &[at(0); 9], true, start);
+        }
+        mm.queue_leveled(&[player(40)], &[at(0)], false, start);
+        mm.queue_leveled(&[player(41)], &[at(0)], false, start);
+        let squad: Vec<Player> = (50..55).map(player).collect();
+        mm.queue_leveled(&squad, &[at(0); 5], true, start);
+        assert!(placed(&mm, 1, 0, start));
+        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
+        assert_eq!(seats.len(), 20);
+        assert!(seats.iter().all(|seat| seat.player.session_id < 50));
+        for squad in [1, 2] {
+            let teams: HashSet<u8> = seats
+                .iter()
+                .filter(|seat| seat.squad == squad)
+                .map(|seat| seat.team)
+                .collect();
+            assert_eq!(teams.len(), 1, "squad {squad} was split");
+        }
     }
 
     #[test]

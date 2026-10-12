@@ -44,8 +44,12 @@ struct World {
 impl World {
     /// A lobby whose queue gathers players for `gather`.
     fn new(gather: Duration) -> Self {
-        let store: &'static SessionStore =
-            Box::leak(Box::new(SessionStore::with_gather_window(gather)));
+        let store: &'static SessionStore = Box::leak(Box::new(SessionStore::with_start_rules(
+            gather,
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        )));
         let accounts: &'static GameAccounts = Box::leak(Box::new(GameAccounts::new()));
         let results: &'static Results = Box::leak(Box::new(Results::new()));
         let host: &'static TestHost = Box::leak(Box::new(TestHost::default()));
