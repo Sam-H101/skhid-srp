@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `2cb92dffca51941cfe1c8527f45a1a339ab0f01dfd22d2cb9c2fb1d9739e0dac` |
-| Previous full patch | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, checked against the 2026-10-12 players' download; the current build additionally skips the minimum VRAM check and updates the PE checksum |
+| Result (full patch) | 12 895 352 bytes, sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d` |
+| The players' download of 2026-10-12 | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`: the full patch without patches 6 and 7. The current build differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte) |
 
 ## The files
 
@@ -131,6 +131,28 @@ original bytes first, so another build or an already patched file is refused.
 - Included in both full builds (`section` and `hash-mismatch`).
   `--cert-only` keeps the original check. The self-test verifies the jump
   target, unchanged return paths, and absence of overlapping relocations.
+
+### 7. The patch revision in the sign-in
+
+- **Where:** `mov cl,[9DAE9Eh]` at VA 0x380862 (file offset 0x36FC62) in
+  `sign_in_on_connected` becomes `mov byte [esp+27h],REVISION` / `nop`:
+  `8A 0D 9E AE 9D 00` → `C6 44 24 27 01 90`. The base relocation under
+  it (0x380864) is disabled.
+- **Why:** nothing a client sends tells a server which patches its exe
+  has. The first login message has a 12-byte version field, `0.26g0` and
+  six zero bytes; the patch puts a revision number into byte 7 of it.
+  The text stays `0.26g0`, so a server that does not read the byte takes
+  the exe as before, and an exe without this patch says 0.
+- **What reads it:** the login server writes it in its log
+  (`Client version: 0.26g0, patch revision 1`). It refuses nobody for it.
+- **The number:** `REVISION` in `patch_026g.py`, 1 now. Raise it in the
+  change that makes a full build something else for the game, so that
+  the two kinds of client can be told apart.
+- It is what the exe says of itself, not proof: a changed exe can say
+  anything.
+- Full builds only; `--cert-only` keeps the code. The self-test works the
+  field out from the instructions that fill it. Not tried with a real
+  client yet. Evidence: `../docs/notes/client_patch.md` section 6.
 
 ## Not ported, not done
 

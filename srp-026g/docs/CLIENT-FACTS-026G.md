@@ -482,6 +482,8 @@ MATCH-SYNC-026G.md.
 | Certificate chain check | 0x12A10 | `83 EC 2C` → `31 C0 C3` | all | PROVEN live |
 | Single-instance mutex | 0x124F9 | `74 09` → `90 90` | full | PROVEN |
 | Default hash interval 100 → 50 ms | 0x27CC4F (the byte at 0x27CC53, file 0x26C053) | `C7 44 24 18 64 00 00 00` → `… 32 …` | full | PROVEN bytes; effect not tried live |
+| Minimum video-memory check | 0x106411 (file 0xF5811) | `73 0F` → `EB 0F` | full | PROVEN bytes (`client_patch.md` §3.7) |
+| Patch revision in the sign-in's version field (byte 7) | 0x380862 (file 0x36FC62), in `sign_in_on_connected` 0x3807D0 | `8A 0D 9E AE 9D 00` → `C6 44 24 27 01 90`; the relocation at 0x380864 → type 0 | full | PROVEN bytes (`client_patch.md` §6); not run with a client |
 | First-sync hook, in `on_match_ready` 0x27AA20 | 0x27AEA1 | `8B 9B 48 1C 1F 00` → `E9 rel32 90` | full | PROVEN |
 | Upload-request hook, 0xF6 case | 0x27A505 | `80 3D 2C D3 F1 01 00` → `E9 rel32 90 90` | full | PROVEN |
 | Upload code, section build (default) | new section `.srp`, RVA 0xA415000, VA 0xA425000, file 0xC4AA00, 0x200 bytes | 8th section; the Authenticode blob moves to 0xC4AC00 | `--cave=section` | PROVEN by the self-test; whether the client minds an 8th section: LIKELY harmless |
