@@ -8,7 +8,7 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `2cb92dffca51941cfe1c8527f45a1a339ab0f01dfd22d2cb9c2fb1d9739e0dac` |
+| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `2cb92dffca51941cfe1c8527f45a1a339ab0f01dfd22d2cb9c2fb1d9739e0dac`; embedding a server changes the hash and may increase the size |
 | Previous full patch | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, checked against the 2026-10-12 players' download; the current build additionally skips the minimum VRAM check and updates the PE checksum |
 
 ## The files
@@ -18,6 +18,7 @@ published.
 | `patch_026g.py` | Builds the patched exe from the original. Python 3, nothing else |
 | `snapshot_upload_026g.asm` | The source of the upload code (nasm) |
 | `snapshot_upload_026g.section.bin`, `.hash-mismatch.bin` | That code assembled, for the two places it can go; `patch_026g.py` reads them. Assembling the source again gives the same bytes |
+| `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the whole players' overlay from a game folder: the patched exe, the certificate, a start file, a README |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
@@ -44,10 +45,22 @@ python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--
 ```
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
-`game/binaries/x86/play_skhid.bat` (the launch line; `SERVER` and `LANGUAGE`
-at its top), `game/resources/ssl/survarium_login_server.crt` and
+`game/binaries/x86/play_skhid.bat` (the launch line and language setting),
+`game/resources/ssl/survarium_login_server.crt` and
 `README.txt` into the new folder, to be copied over the game. `--check` does
 every check and writes nothing.
+
+Full overlays embed the supplied `--server` address in the executable, so
+players do not need `-server=` at launch. The generated batch file retains
+the language and allocator options. To use another server, add
+`-server=host:port` to its start command. Login supplies the lobby address;
+the lobby supplies the match address. Neither needs embedding.
+
+For the standalone patcher, add `--server=host:port` at patch time to embed
+the default. Without that option it retains the original address behavior.
+An embedded hostname is limited to 63 ASCII bytes and the port to 1–65535.
+`--cert-only` does not support embedding; cert-only overlays still pass the
+address through their batch file.
 
 Other builds of the patch: `--cert-only` (only patch 1), `--cave=hash-mismatch`
 (patch 4 in another place, see below), `--check`.
@@ -131,6 +144,19 @@ original bytes first, so another build or an already patched file is refused.
 - Included in both full builds (`section` and `hash-mismatch`).
   `--cert-only` keeps the original check. The self-test verifies the jump
   target, unchanged return paths, and absence of overlapping relocations.
+
+### 7. An embedded default login server (optional)
+
+- **Where:** the missing-server error at VA 0x1EB25B becomes a jump to a
+  40-byte stub after the snapshot upload, followed by the address string.
+- **When:** only when neither `-server` nor `-replay` was supplied. Explicit
+  options keep their original behavior, including invalid-address handling.
+- **How:** the stub copies the address into the client's existing 512-byte
+  buffer, updates its end pointer, and resumes the original host/port
+  parsing at 0x1EAE90. It uses relative addressing, so rebasing works.
+- Both full variants support it. The PE section grows when needed, and the
+  existing relocation and checksum handling covers the new hook. Build
+  hashes depend on the embedded address.
 
 ## Not ported, not done
 

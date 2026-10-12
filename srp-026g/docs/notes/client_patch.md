@@ -248,6 +248,44 @@ patcher) and its disassembly:
   branch target, unchanged return paths, exact changed byte, relocation
   coverage, and rejection of unexpected instruction bytes.
 
+### 3.8 Embedded default login server (optional)
+
+`patch_026g.py --server=host:port` embeds a login address in either full
+build. `make_client_026g.py` supplies its existing `--server` argument to
+this patch and omits `-server=` from the generated full-build launch line.
+Without an embedded address, the old behavior is unchanged. Cert-only
+builds retain the old behavior too.
+
+- Original path: `game::on_base_resources_created` reads the `server`
+  option at 0x1EAE5F, then checks `replay` at 0x1EB0A4 if it is absent.
+  Only when both are absent does `jz` at 0x1EB0AB reach the fatal error at
+  **0x1EB25B** (`push 0x9FA990; call 0x113580`). [V]
+- Replace those ten error bytes with a relative jump and five NOPs. The
+  hook enters `default_server_026g.asm`, appended after the unchanged
+  420-byte snapshot code in either cave. Its assembled stub is 40 bytes;
+  the patcher appends the validated ASCII address and NUL. [V]
+- The stack string has start/end/capacity pointers at EBP-0x494/-0x490/
+  -0x48C, initialized before either option read. The stub copies into its
+  512-byte buffer, updates the end pointer excluding the NUL, and jumps
+  back to **0x1EAE90** for the original colon check and network-client
+  creation. ECX, ESI and EDI are saved/restored; EBX, EBP and EDX are
+  untouched. EAX is reloaded at the return site. [V]
+- The string is located with call/pop and the return jump is relative;
+  no injected absolute pointer needs relocation. The original hook's
+  push operand relocation is neutralized by the existing range logic.
+- Explicit server values (including malformed ones) and replay selection
+  remain untouched. Only the login address is embedded: the TLS login
+  reply supplies the lobby address, and the lobby supplies the match
+  address (`login_chat.md` sections 2 and 4.1).
+- Hostnames are at most 63 ASCII bytes (the login host field is 64 bytes
+  including NUL), and ports are 1..65535. The self-test checks both caves,
+  a normal address and the maximum length, and the unmodified variants.
+  Byte/disassembly checks pass for all seven variants. Live startup with
+  Wine Staging 11.8 and DXVK 3.1.1 reaches the login screen without
+  `-server=` in the section build; an explicit `-server=` also starts.
+  Login and the lobby handoff were not verified: automated input did
+  not reach the game in the isolated test display.
+
 ## 4. Mode 3 batteries: not needed in 0.26g
 
 - 0.26g splits the rule: `match_time_vi_spawn_rule` (vtable 0xA06C04) wraps `match_time_vi_spawn_rule_core` (vtable 0xA15CAC). The battery tick is no longer a vtable slot: the core's ctor 0x3147A0 stores a delegate `{this, 0x3148A0}` at +0x1C4 / +0x1C8 (0x3147F1). [V]
