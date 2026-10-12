@@ -7,7 +7,7 @@
 //! (`web_server::run_026g`): its exchange and admin act on the 0.26g accounts
 //! and tell the lobby.
 //!
-//! The 0.21d servers of this repository (login, presence, browser, lobby,
+//! The retained 0.21d servers (login, presence, lobby,
 //! match) are kept and tested but no longer started here: the two lobbies
 //! share the store's queue and squads, and the two login servers one port.
 //!
@@ -150,7 +150,6 @@ fn log_panics() {
         let target = [
             ("login-server", "login_server"),
             ("lobby-server", "lobby_server"),
-            ("browser-server", "browser_server"),
             ("match-server", "match_server"),
         ]
         .into_iter()

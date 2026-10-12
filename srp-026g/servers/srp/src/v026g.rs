@@ -19,7 +19,7 @@
 //! - [`Stack`]: the three servers and the session collector, each on a
 //!   thread that is started again if it fails.
 //!
-//! The 0.21d servers of this repository (login, presence, browser, lobby,
+//! The retained 0.21d servers (login, presence, lobby,
 //! match) are not started with it: the two lobbies share the store's queue
 //! and squads, and the two login servers one port.
 

@@ -148,16 +148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "browser-server"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "log",
- "session",
- "vostok",
-]
-
-[[package]]
 name = "build-engine-structure"
 version = "0.1.0"
 
