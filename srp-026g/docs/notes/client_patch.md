@@ -286,7 +286,10 @@ builds retain the old behavior too.
   on 2026-10-12, both the original fallback and the corrected fallback
   accepted typing with the same shell launcher and Wine prefix. Only the
   fallback payload and PE checksum differed. The absent-key explanation
-  is therefore unsupported; the original input failure remains unreproduced.
+  is therefore unsupported. The user later reproduced a startup-layout
+  dependency under Wine: starting in Russian then switching to English
+  failed, while starting in English allowed later layout switches. The
+  underlying Wine/game mechanism has not been established.
 - Re-entry regression: 0x1EAE47 skipped the `lea edx,[ebp-0x288]` that
   sets the temporary string's buffer limit, then stored the stale EDX
   at +8. An execution harness using the original startup instructions
@@ -307,8 +310,12 @@ builds retain the old behavior too.
   replay, and both options together, including the stack buffer limit.
   Under Wine Staging 11.8 / DXVK 3.1.1, the section build was launched
   through the existing shell launcher with `-server=` removed; the user
-  confirmed the final revision-2 build accepts input. Lobby handoff and match
-  entry were not separately verified.
+  confirmed the final revision-2 build accepts input. The same executable,
+  still embedding the public login address, was then launched with an
+  explicit loopback login override on port 2234 through the same shell
+  launcher. The user confirmed local login/lobby access works. Match entry
+  and lobby handoff using the embedded public address were not separately
+  verified.
 
 ## 4. Mode 3 batteries: not needed in 0.26g
 
