@@ -249,6 +249,67 @@ patcher) and its disassembly:
   branch target, unchanged return paths, exact changed byte, relocation
   coverage, and rejection of unexpected instruction bytes.
 
+### 3.8 Embedded default login server (optional)
+
+`patch_026g.py --server=host:port` embeds a login address in either full
+build. `make_client_026g.py` supplies its existing `--server` argument to
+this patch and omits `-server=` from the generated full-build launch line.
+Without an embedded address, the old behavior is unchanged. Cert-only
+builds retain the old behavior too.
+
+- Original path: `game::on_base_resources_created` reads the `server`
+  option at 0x1EAE5F, then checks `replay` at 0x1EB0A4 if it is absent.
+  Only when both are absent does `jz` at 0x1EB0AB reach the fatal error at
+  **0x1EB25B** (`push 0x9FA990; call 0x113580`). [V]
+- Replace those ten error bytes with a relative jump and five NOPs. The
+  hook enters `default_server_026g.asm`, appended after the unchanged
+  420-byte snapshot code in either cave. Its assembled stub is 51 bytes;
+  the patcher appends the validated ASCII address and NUL. [V]
+- The stub initializes the parsed `server` key at **0xA9C550**: copy to
+  its existing 512-byte buffer, update the end pointer at +4 excluding
+  NUL, and set the type at +0x224 to **4 (`type_string`)**. It jumps back
+  to **0x1EAE2D** to rebuild the temporary string (begin, end and buffer
+  limit), then the original `is_set_as_string` call at 0x1EAE5F fills it
+  and selects the normal startup path. ECX, EDX,
+  ESI and EDI are saved/restored; EBX and EBP are untouched. [V]
+- Both the string and key are located relative to call/pop; the return
+  jump is also relative. No injected absolute pointer needs relocation.
+  The original hook's push operand relocation is neutralized by the
+  existing range logic.
+- Input investigation: filling only the temporary stack string and jumping to
+  0x1EAE90 left the parsed key `type_unset`. That draft displayed the
+  login screen but did not accept typing in manual tests; supplying an
+  explicit `-server=` restored input. Initialize the key and re-enter
+  the original option read instead. This is an observed correlation; the
+  downstream cause of the typing failure has not been established. No
+  direct keyboard use of this key was found. In the controlled A/B retest
+  on 2026-10-12, both the original fallback and the corrected fallback
+  accepted typing with the same shell launcher and Wine prefix. Only the
+  fallback payload and PE checksum differed. The absent-key explanation
+  is therefore unsupported; the original input failure remains unreproduced.
+- Re-entry regression: 0x1EAE47 skipped the `lea edx,[ebp-0x288]` that
+  sets the temporary string's buffer limit, then stored the stale EDX
+  at +8. An execution harness using the original startup instructions
+  reproduced the wrong limit; returning to 0x1EAE2D fixes it. This is a
+  separate proven defect, not an established cause of the input failure.
+- Explicit server values (including malformed ones) and replay selection
+  remain untouched. Only the login address is embedded: the TLS login
+  reply supplies the lobby address, and the lobby supplies the match
+  address (`login_chat.md` sections 2 and 4.1).
+- Hostnames are at most 63 ASCII bytes (the login host field is 64 bytes
+  including NUL), and ports are 1..65535. The self-test checks both caves,
+  a normal address and the maximum length, and the unmodified variants.
+  Byte/disassembly checks cover all seven variants. A native 32-bit
+  execution harness verifies both caves, normal/max-length addresses,
+  rebasing, buffer bounds, key type and register/stack preservation.
+  Sixteen further cases execute the original startup and key-read code
+  for both caves and address lengths, covering fallback, explicit server,
+  replay, and both options together, including the stack buffer limit.
+  Under Wine Staging 11.8 / DXVK 3.1.1, the section build was launched
+  through the existing shell launcher with `-server=` removed; the user
+  confirmed the final revision-2 build accepts input. Lobby handoff and match
+  entry were not separately verified.
+
 ## 4. Mode 3 batteries: not needed in 0.26g
 
 - 0.26g splits the rule: `match_time_vi_spawn_rule` (vtable 0xA06C04) wraps `match_time_vi_spawn_rule_core` (vtable 0xA15CAC). The battery tick is no longer a vtable slot: the core's ctor 0x3147A0 stores a delegate `{this, 0x3148A0}` at +0x1C4 / +0x1C8 (0x3147F1). [V]
@@ -266,12 +327,13 @@ A server cannot tell one patched exe from another: nothing a client sends depend
 - **PROVEN, the field** (`sign_in_on_connected`, 0x380847..0x38088C): eight zero bytes on the stack (`pxor` / `movq [esp+20h]`), `"0.26"` at +0, `"g0"` at +4, the string's own zero at +6 (`mov cl,[9DAE9Eh]` 0x380862, `mov [esp+26h],cl` 0x38086C) and a zero again at +6 (`mov [esp+26h],al` 0x38087B, `eax` being 0); then the eight bytes and four more zero bytes (`mov [edi+8],eax`) go into the message. Bytes 7..11 of the field are always 0.
 - **PROVEN, the server:** `parse_sign_in` takes the field up to its first zero, so what stands after it is not read by any server built from this repository so far.
 - **The patch** (`REVISION_SITE`, full builds only; `--cert-only` keeps the code): the six bytes at 0x380862, `8A 0D 9E AE 9D 00` (`mov cl,[9DAE9Eh]`), become `C6 44 24 27 NN 90` (`mov byte [esp+27h],NN` / `nop`): byte 7 of the field is the revision NN. Byte 6 still gets its zero at 0x38087B (0x38086C then writes the `'0'` left in `cl` there first, which is overwritten). The base relocation at 0x380864 (HIGHLOW; the three of this code are at 0x380849, 0x380850, 0x380864) is made a no-op as the hooks' are. The string, the title and replays are untouched. NN is `REVISION` of `patch_026g.py`. It is raised in the change that makes a full build something else for the game: **1** is the patch set of this change (the VRAM check of §3.7 and this byte beside what the download of 2026-10-12 has). 0 is every exe without this patch: the download of 2026-10-12 and anything built before.
+- **Revision 2:** adds the optional embedded login server in §3.8. Full builds now advertise 2, whether or not an address is supplied at patch time; cert-only remains 0. The revision-1 build hashes and live test below describe the earlier published download.
 - **Checked** (`selftest_026g.py` check 11): the field is worked out from the instructions that fill it (the bytes of the string are read from the image): `0.26g0` and six zero bytes in the original and in cert-only; `0.26g0`, a zero, the revision in byte 7 and four zero bytes in the full builds, the EULA flag following as before. Of the three relocations only the one at 0x380864 is disabled; no branch of the function lands inside the instruction.
 - **Why nothing else changes** (read in the exe, 2026-10-12): the replaced instruction only loaded `cl`, which `mov ecx,[ebp+0Ch]` (0x380870) overwrites before any other use; neither it nor its replacement touches a flag. The eight stack bytes are read once, by the `movq` at 0x38087F, and nothing of the function reads them after that (to its `ret` at 0x380930 it builds the send callback above them and sends). The message's length does not change. The four references to the version string are this code, the title, the `%s (%d)` text and the replay check (login_chat.md §7.8); the patch touches none of the string's bytes. Nothing of it is in the world a match computes, so a patched and an unpatched client play one match as two unpatched ones do.
 - **Builds:** section sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d`, hash-mismatch `9f7f8b65203df7abf9720a174ad6782db42a5e42517430ec700a0c97f4707e91`; 48 bytes in 15 ranges and 1207 in 58 differ from the original. The section build differs from the exe of the first download of 2026-10-12 (`166d25bc…1ddf`) in the VRAM byte (file 0xF5811), these six bytes (file 0x36FC62), one relocation entry (file 0xB86623, `38` → `08`) and the PE checksum, and in nothing else (compared byte by byte).
 - **The server** (2026-10-12): `parse_sign_in` reads byte 7 of a whole 12-byte field whose text ends before it (`patch_revision`; 0 otherwise), and the login server writes it in the sign-in's log line: `Client version: 0.26g0, patch revision 1 (…)`. Nothing else is done with it yet (the owner: "only log at first"). Tests: `a_patched_0_26g_client_says_its_patch_revision`, `a_client_that_says_a_patch_revision_signs_in_as_any_other`.
 - **Run with a client** (2026-10-12, a local server and one game with the section build): the sign-in was logged as `Client version: 0.26g0, patch revision 1`, a client that sends the stock field (the test bot) as `patch revision 0`; the game went through the lobby and a match. The players' download of 026g.skhid.link has this exe since 2026-10-12 18:43 UTC (`Survarium-0.26g-srp-files.zip`, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`); the first download's exe says nothing, so 0.
-- **What it gives:** the version text stays `0.26g0`, so a server that knows nothing of the byte takes the new exe as it takes the old, and a server that reads it sees 0 from every exe given out so far. 
+- **What it gives:** the version text stays `0.26g0`, so a server that knows nothing of the byte takes the new exe as it takes the old, and a server that reads it sees 0 from the earlier unversioned exes.
 - **What a server can do with it beyond the log:** show it on the admin page; refuse a sign-in under a set minimum with the answer 0x22, for which the client shows its own `st_login_menu_status_invalid_version`, "You're using an outdated version of the game." (PROVEN: 0x22 → 0x21ACE5 → `set_status(9)` 0x21AD8D → the text key 0xA0005C at 0x21F0F3; the server has sent 0x22 to two sign-ins of another build, 0.26e0, in the kept logs); or, in a match of both kinds whose worlds part, take the newer one's world.
 - **What it is not:** proof. The byte is what the exe says of itself; a changed exe can say anything.
 - **Not taken:** changing the string itself (`0.26g1`): one byte, no code, but the title and the replay check change with it, and every server not yet updated refuses the new exe. A hash of the exe sent by the client: new code in the exe for no more than the byte gives.

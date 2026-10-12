@@ -21,20 +21,23 @@ USAGE
     --server        where the srp login server is reached: the host players
                     use and SRP_LOGIN_PORT (1234 by default; 2234 with the
                     0.26g docker-compose.yml beside the 0.21d server).
+                    Embedded in full builds; cert-only passes it at launch.
 
 WHAT IT WRITES (the overlay mirrors the game's layout)
 
     <output>/game/binaries/x86/survarium_skhid.exe
         the patched client (patch_026g.py: the certificate check, and in
-        the full builds the single-instance check, the 50 ms hash interval
-        and the snapshot upload). The original survarium.exe is not in the
+        the full builds the single-instance check, minimum VRAM bypass,
+        50 ms hash interval, snapshot upload and default login server).
+        The original survarium.exe is not in the
         overlay and stays as it is.
     <output>/game/binaries/x86/play_skhid.bat
         starts it from that folder (the client finds its certificate by a
         path relative to the working directory) with the launch line:
         survarium_skhid.exe -localization=<..>
-            -server=<host>:<port> -mt_allocator=768
-            -minimum_resources_memory_size=768
+            -mt_allocator=768 -minimum_resources_memory_size=768
+        Full builds use the embedded server; -server=host:port can still
+        override it. Cert-only passes -server= at launch as before.
         (-mt_allocator: the global multithreaded arena, 376 MiB by
         default, which map loading ran out of in upstream's live runs;
         -minimum_resources_memory_size: the resources arenas' floor.
@@ -57,7 +60,6 @@ from SRP_GAME_URL.
 
 import hashlib
 import os
-import re
 import sys
 import zipfile
 
@@ -114,35 +116,38 @@ def inside(path, folder):
 
 
 def parse_server(text):
-    match = re.fullmatch(r"([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?):(\d{1,5})", text)
-    if not match or not 1 <= int(match.group(2)) <= 65535:
-        sys.exit(f"--server={text}: it must be <host>:<port>, e.g. 203.0.113.9:1234")
-    return f"{match.group(1)}:{int(match.group(2))}"
+    return P.parse_server(text)
 
 
-def launch_line(server, localization):
+def launch_line(server, localization, embedded=False):
     return (f"survarium_skhid.exe -localization={localization} "
-            f"-server={server} -mt_allocator=768 -minimum_resources_memory_size=768")
+            + ("" if embedded else f"-server={server} ")
+            + "-mt_allocator=768 -minimum_resources_memory_size=768")
 
 
-def bat(server, localization):
+def bat(server, localization, embedded=False):
     lines = [
         "@echo off",
-        "rem Put the server address (host:1234) here, as given on the server page.",
-        f"set SERVER={server}",
+    ]
+    if embedded:
+        lines += [f"rem Default login server embedded in the exe: {server}",
+                  "rem To override it, add -server=host:port to the start command below."]
+    else:
+        lines += ["rem Put the server address (host:1234) here, as given on the server page.",
+                  f"set SERVER={server}"]
+    lines += [
         "rem Game language: english, russian, ukrainian, german or polish.",
         f"set LANGUAGE={localization}",
         "rem It must run from this folder (game\\binaries\\x86): the game finds",
         "rem ..\\..\\resources\\ssl\\survarium_login_server.crt from where it is started.",
         'cd /d "%~dp0"',
-        'start "" survarium_skhid.exe -localization=%LANGUAGE% -server=%SERVER% '
-        "-mt_allocator=768 -minimum_resources_memory_size=768",
+        'start "" ' + launch_line("%SERVER%", "%LANGUAGE%", embedded),
         "",
     ]
     return "\r\n".join(lines).encode("ascii")
 
 
-def readme(server, localization, description, files):
+def readme(server, localization, description, files, embedded=False):
     lines = [
         "SURVARIUM 0.26g - SKHID COMMUNITY SERVER FILES (UNOFFICIAL)",
         "",
@@ -177,7 +182,9 @@ def readme(server, localization, description, files):
         "LANGUAGE.",
         "",
         "OPTIONS (in play_skhid.bat)",
-        "  -server=         server to sign in to (host:port)",
+        (f"  Default server: {server} (embedded in survarium_skhid.exe)" if embedded
+         else f"  Server: {server} (SERVER in play_skhid.bat)"),
+        "  -server=         override the login server (host:port)",
         "  -localization=   language: english, russian, ukrainian, german or polish",
         "  -mt_allocator=768, -minimum_resources_memory_size=768",
         "                   memory for the game, MB (maps need more than the default)",
@@ -235,7 +242,8 @@ def main():
     # The exe: patch_026g.py refuses anything but the original.
     original = open(os.path.join(source, EXE_DIR, "survarium.exe"), "rb").read()
     code = None if mode == "cert-only" else open(P.default_bin(mode), "rb").read()
-    exe, description = P.build(original, mode, code)
+    embedded = mode != "cert-only"
+    exe, description = P.build(original, mode, code, server if embedded else None)
     exe = bytes(exe)
 
     # The certificates.
@@ -251,11 +259,11 @@ def main():
     files = [
         (os.path.join("game", EXE_DIR, "survarium_skhid.exe"), exe),
         (os.path.join("game", EXE_DIR, "bugtrap.dll"), bugtrap),
-        (os.path.join("game", EXE_DIR, "play_skhid.bat"), bat(server, localization)),
+        (os.path.join("game", EXE_DIR, "play_skhid.bat"), bat(server, localization, embedded)),
         (os.path.join("game", CERT_REL), srp_cert),
     ]
     listed = [(name.replace(os.sep, "/"), sha256(data)) for name, data in files]
-    files.append(("README.txt", readme(server, localization, description, listed)))
+    files.append(("README.txt", readme(server, localization, description, listed, embedded)))
 
     if not check and archive:
         os.makedirs(os.path.dirname(output), exist_ok=True)
@@ -270,7 +278,7 @@ def main():
                 out.write(data)
         print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {sha256(data)})")
     print(f"exe: {description}")
-    print(f"launch line: {launch_line(server, localization)}")
+    print(f"launch line: {launch_line(server, localization, embedded)}")
     if check:
         print("--check: nothing was written")
 
