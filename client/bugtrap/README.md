@@ -12,11 +12,12 @@ never overwritten. If the EXE folder is unwritable, it tries the Windows tempora
 folder; the dialog shows the filename and folder in separate labeled fields,
 or a failure message. Long folders use middle ellipsis. It uses static text
 without selection or scrollbars. The layout follows the original C++
-`IDD_SIMPLE_DLG`: an 8-point MS Shell Dlg font, white message panel, thin divider,
+`IDD_SIMPLE_DLG`: an explicit 8-point Tahoma font with smoothing, white message panel, thin divider,
 and gray footer with Submit Bug and Close buttons. The panel is taller to fit
 the dump details; the original Mail and More controls are omitted. The original
 green beetle icon (`vostok/sources/BugTrap/res/Bug.ico`) is embedded in the DLL
-and used in both the message panel and window title.
+and used in both the message panel and the “Vostok Engine” window title.
+Both button labels are centered horizontally and vertically.
 
 Submit Bug opens [SRP Discord](https://discord.gg/Pxa4prXfwu) in the default
 browser, only when clicked. The dialog stays open so the player can attach the

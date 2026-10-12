@@ -55,6 +55,7 @@ struct Template {
 }
 struct DialogData {
     message: *const u16,
+    font: HFONT,
     icon: HICON,
     small_icon: HICON,
     folder: *const u16,
@@ -100,6 +101,24 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
     match msg {
         WM_INITDIALOG => {
             let data = &mut *(lp as *mut DialogData);
+            // Use the same compact TrueType face for every control. Explicit
+            // smoothing avoids Wine's jagged small-font rendering.
+            let base = SendMessageW(window, WM_GETFONT, 0, 0) as HFONT;
+            let mut font: LOGFONTW = core::mem::zeroed();
+            if GetObjectW(
+                base,
+                core::mem::size_of::<LOGFONTW>() as i32,
+                (&mut font as *mut LOGFONTW).cast(),
+            ) != 0
+            {
+                font.lfQuality = ANTIALIASED_QUALITY;
+                data.font = CreateFontIndirectW(&font);
+                if !data.font.is_null() {
+                    for id in [1030, 1031, 1034, 1035, 1036, 1037, 1038, 1013, IDCANCEL] {
+                        SendDlgItemMessageW(window, id, WM_SETFONT, data.font as usize, 1);
+                    }
+                }
+            }
             SetDlgItemTextW(window, 1031, data.message);
             if data.have_dump {
                 SetDlgItemTextW(window, 1034, data.filename);
@@ -215,11 +234,11 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
     t.word(126);
     t.word(0);
     t.word(0);
-    t.text("SRP crash report");
+    t.text("Vostok Engine");
     // Match IDD_SIMPLE_DLG in the original BugTrap.rc. The white panel is
     // taller to fit our persistent dump location and local-reporting text.
     t.word(8);
-    t.text("MS Shell Dlg");
+    t.text("Tahoma");
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         [0, 0, 330, 85],
@@ -291,14 +310,14 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
         "",
     );
     t.control(
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON | BS_CENTER | BS_VCENTER) as u32,
         [271, 105, 52, 14],
         IDCANCEL as u16,
         0x80,
         "Close",
     );
     t.control(
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON | BS_CENTER | BS_VCENTER) as u32,
         [7, 105, 52, 14],
         1013,
         0x80,
@@ -306,6 +325,7 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
     );
     let mut data = DialogData {
         message: message.ptr(),
+        font: null_mut(),
         icon: null_mut(),
         small_icon: null_mut(),
         folder: folder.ptr(),
@@ -319,6 +339,9 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
         Some(dialog),
         (&mut data as *mut DialogData) as isize,
     );
+    if !data.font.is_null() {
+        DeleteObject(data.font);
+    }
     for icon in [data.icon, data.small_icon] {
         if !icon.is_null() {
             DestroyIcon(icon);
@@ -333,7 +356,7 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
         MessageBoxW(
             null_mut(),
             message.ptr(),
-            windows_sys::w!("SRP crash report"),
+            windows_sys::w!("Vostok Engine"),
             MB_OK | MB_ICONERROR | MB_TASKMODAL,
         );
     }
