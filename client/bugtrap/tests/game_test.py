@@ -129,7 +129,7 @@ def main():
     summary = verify_dump(dumps.pop(), int(thread_file.read_text().strip()))
     summary.update(exe_sha256=exe_hash, replacement_dll_sha256=digest(replacement),
                    original_dll_restored=True, temporary_test_dlls_removed=True,
-                   submit_disabled=True, dump_survived_dialog_close=True)
+                   discord_button_present=True, dump_survived_dialog_close=True)
     (output / "validation.json").write_text(json.dumps(summary, indent=2) + "\n")
     print("PASS: installed 0.26g crash, exception/register context, module list and PDB identity, persistent dump, no submission, original files restored")
 

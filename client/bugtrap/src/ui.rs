@@ -4,7 +4,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::SystemServices::*,
-    UI::{Shell::ShellExecuteW, WindowsAndMessaging::*},
+    UI::{Controls::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
 };
 
 // Original BugTrap icon and white message panel above a system-color footer.
@@ -132,11 +132,9 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                 window,
                 1036,
                 if data.have_dump {
-                    windows_sys::w!(
-                        "Use Submit Bug to open SRP Discord and attach this file.\r\nNothing was uploaded."
-                    )
+                    windows_sys::w!("Use Submit Bug to open SRP Discord and attach this file.")
                 } else {
-                    windows_sys::w!("Use Submit Bug to open SRP Discord.\r\nNothing was uploaded.")
+                    windows_sys::w!("Use Submit Bug to open SRP Discord.")
                 },
             );
             data.icon = bug_icon(false);
@@ -160,6 +158,74 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
             SetBkColor(wp as HDC, GetSysColor(COLOR_WINDOW));
             GetSysColorBrush(COLOR_WINDOW) as isize
         }
+        WM_DRAWITEM if wp == 1013 => {
+            let item = &*(lp as *const DRAWITEMSTRUCT);
+            let saved = SaveDC(item.hDC);
+            let mut rect = item.rcItem;
+            let pressed = item.itemState & ODS_SELECTED != 0;
+            let disabled = item.itemState & ODS_DISABLED != 0;
+            FillRect(item.hDC, &rect, GetSysColorBrush(COLOR_BTNFACE));
+            DrawFrameControl(
+                item.hDC,
+                &mut rect,
+                DFC_BUTTON,
+                DFCS_BUTTONPUSH
+                    | if pressed { DFCS_PUSHED } else { 0 }
+                    | if disabled { DFCS_INACTIVE } else { 0 },
+            );
+            // Draw directly in the button's full client rectangle, using the
+            // same font for measurement and painting. Wine's native caption
+            // path can offset this label even with BS_CENTER set.
+            SelectObject(
+                item.hDC,
+                SendMessageW(item.hwndItem, WM_GETFONT, 0, 0) as HFONT,
+            );
+            SetBkMode(item.hDC, TRANSPARENT as i32);
+            SetTextColor(
+                item.hDC,
+                GetSysColor(if disabled {
+                    COLOR_GRAYTEXT
+                } else {
+                    COLOR_BTNTEXT
+                }),
+            );
+            rect = item.rcItem;
+            if pressed {
+                OffsetRect(&mut rect, 1, 1);
+            }
+            let mut size: SIZE = core::mem::zeroed();
+            let mut advances = [0; 10];
+            GetTextExtentExPointW(
+                item.hDC,
+                windows_sys::w!("Submit Bug"),
+                10,
+                0,
+                null_mut(),
+                advances.as_mut_ptr(),
+                &mut size,
+            );
+            for i in (1..advances.len()).rev() {
+                advances[i] -= advances[i - 1];
+            }
+            SetTextAlign(item.hDC, TA_LEFT | TA_TOP | TA_NOUPDATECP);
+            ExtTextOutW(
+                item.hDC,
+                rect.left + (rect.right - rect.left - size.cx) / 2,
+                rect.top + (rect.bottom - rect.top - size.cy) / 2,
+                ETO_CLIPPED,
+                &rect,
+                windows_sys::w!("Submit Bug"),
+                10,
+                advances.as_ptr(),
+            );
+            if item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0 {
+                rect = item.rcItem;
+                InflateRect(&mut rect, -3, -3);
+                DrawFocusRect(item.hDC, &rect);
+            }
+            RestoreDC(item.hDC, saved);
+            1
+        }
         WM_COMMAND if wp as u16 == 1013 => {
             let result = ShellExecuteW(
                 window,
@@ -173,7 +239,7 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                 MessageBoxW(
                     window,
                     windows_sys::w!(
-                        "Could not open your browser. Visit discord.gg/Pxa4prXfwu to report the crash.\r\nNothing was uploaded."
+                        "Could not open your browser. Visit discord.gg/Pxa4prXfwu to report the crash."
                     ),
                     windows_sys::w!("SRP Discord"),
                     MB_OK | MB_ICONINFORMATION,
@@ -231,7 +297,7 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
     t.word(0);
     t.word(0);
     t.word(330);
-    t.word(126);
+    t.word(118);
     t.word(0);
     t.word(0);
     t.text("Vostok Engine");
@@ -241,7 +307,7 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
     t.text("Tahoma");
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        [0, 0, 330, 85],
+        [0, 0, 330, 77],
         1039,
         0x82,
         "",
@@ -297,28 +363,28 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
-        [35, 62, 288, 16],
+        [35, 62, 288, 8],
         1036,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        [0, 84, 330, 1],
+        [0, 76, 330, 1],
         1033,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON | BS_CENTER | BS_VCENTER) as u32,
-        [271, 105, 52, 14],
+        [271, 97, 52, 14],
         IDCANCEL as u16,
         0x80,
         "Close",
     );
     t.control(
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_PUSHBUTTON | BS_CENTER | BS_VCENTER) as u32,
-        [7, 105, 52, 14],
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
+        [7, 97, 52, 14],
         1013,
         0x80,
         "Submit Bug",
@@ -352,7 +418,6 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
             let _ = write!(message, "\r\n");
             let _ = message.wide(&path.buf[..path.len]);
         }
-        let _ = write!(message, "\r\n\r\nNothing was uploaded.");
         MessageBoxW(
             null_mut(),
             message.ptr(),

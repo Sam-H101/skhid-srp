@@ -17,7 +17,9 @@ and gray footer with Submit Bug and Close buttons. The panel is taller to fit
 the dump details; the original Mail and More controls are omitted. The original
 green beetle icon (`vostok/sources/BugTrap/res/Bug.ico`) is embedded in the DLL
 and used in both the message panel and the “Vostok Engine” window title.
-Both button labels are centered horizontally and vertically.
+Both button labels are centered horizontally and vertically. Submit Bug uses
+the same measured character advances for painting, avoiding the caption offset
+seen under Wine.
 
 Submit Bug opens [SRP Discord](https://discord.gg/Pxa4prXfwu) in the default
 browser, only when clicked. The dialog stays open so the player can attach the
