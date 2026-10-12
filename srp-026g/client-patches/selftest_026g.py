@@ -20,8 +20,14 @@ Checks, per variant (cert-only, section, hash-mismatch):
  9. full builds only: the default hash interval at 0x27CC4F is 50 ms, one
     byte changed, under no relocation; cert-only keeps the original 100.
 10. full builds only: the minimum VRAM check jumps over the fatal warning;
-    the detected size and unknown-size fallback remain unchanged.
-11. optional embedded login server: the missing-server hook, relative stub,
+    the detected size and unknown-size fallback remain unchanged;
+11. the version field of the first login message, worked out from the
+    instructions that fill it (0x380847..0x38088F): "0.26g0" and six zero
+    bytes in the original and in cert-only; in the full builds byte 7 is
+    patch_026g.REVISION and nothing else differs. The relocation under the
+    rewritten instruction is disabled, the two beside it are not, and no
+    branch of the function lands inside it.
+12. optional embedded login server: the missing-server hook, relative stub,
     address bytes and unchanged explicit-server/replay paths in both caves.
 """
 
@@ -223,6 +229,8 @@ def allowed_ranges(original, mode, cave_size, server=None):
         va, old = P.DEFAULT_SERVER_HOOK
         ranges.append((P.file_offset(va), len(old)))
         rewritten.append((va, va + len(old)))
+    ranges.append((P.file_offset(P.REVISION_SITE[0]), len(P.REVISION_SITE[1])))
+    rewritten.append((P.REVISION_SITE[0], P.REVISION_SITE[0] + len(P.REVISION_SITE[1])))
     for va, old in P.HOOKS:
         ranges.append((P.file_offset(va), len(old)))
         rewritten.append((va, va + len(old)))
@@ -415,11 +423,13 @@ def test_default_server(original, image, mode, server):
         "mov dword [edx+0x224],0x4", "pop edi", "pop esi", "pop edx", "pop ecx",
         f"jmp {P.DEFAULT_SERVER_RETURN:#x}"],
         "stub initializes the server key and type_string, preserves registers and repeats the original option read")
-    # Regression: filling only the stack string reached the login screen,
-    # but left the parsed key unset and native login input did not work.
-    check(P.DEFAULT_SERVER_RETURN == 0x1EAE47 and image.read(P.DEFAULT_SERVER_RETURN, 11)
-          == bytes.fromhex("8d856cfbffffb950c5a900"),
-          "fallback resumes before the original server-key read, not just host:port parsing")
+    # Re-enter before all string initialization. At the hook EDX no longer
+    # holds the server buffer limit; entering at 0x1EAE47 stores a stale EDX.
+    check(P.DEFAULT_SERVER_RETURN == 0x1EAE2D and image.read(P.DEFAULT_SERVER_RETURN, 50)
+          == bytes.fromhex("8d8578fbffff8bc889856cfbffff898d70fbffff"
+                           "8d9578fdffff8d856cfbffffb950c5a900"
+                           "899574fbffffc68578fbffff00"),
+          "fallback rebuilds the stack string, including its 512-byte buffer limit, before reading the key")
     encoded = P.parse_server(server).encode("ascii") + b"\0"
     check(image.read(start + len(stub), len(encoded)) == encoded,
           "embedded host:port is terminated and fits the client buffers")
@@ -458,6 +468,104 @@ def test_server_options(original):
         start = next(line for line in batch.splitlines() if line.startswith('start "" '))
         check(("-server=" in line) != embedded and ("-server=" in start) != embedded,
               f"overlay launch line and batch use {'embedded' if embedded else 'explicit'} server")
+
+
+# sign_in_on_connected: from the copy of the version string to the write of
+# the byte after the field (client_patch.md section 6).
+VERSION_FIELD = (0x380847, 0x38088F)
+SIGN_IN_ON_CONNECTED = (0x3807D0, 0x380940)   # to `sign_in`
+REGISTERS = {"eax": ("eax", 4), "ax": ("eax", 2), "al": ("eax", 1),
+             "ecx": ("ecx", 4), "cx": ("ecx", 2), "cl": ("ecx", 1),
+             "edx": ("edx", 4), "dx": ("edx", 2), "dl": ("edx", 1)}
+
+
+def version_field(image):
+    """The 13 bytes sign_in_on_connected writes at edi after the user name
+    (the 12-byte version field and the byte after it), worked out from its
+    instructions. A byte is an int, "eula" (the flag read from [ebp+10h]) or
+    None (not known). Returns None and says why when an instruction is not
+    one of the forms the original has."""
+    start, end = VERSION_FIELD
+    registers = {"eax": [None] * 4, "ecx": [None] * 4, "edx": [None] * 4}
+    xmm0, stack, out = [None] * 8, {}, [None] * 13
+
+    def get(name):
+        register, size = REGISTERS[name]
+        return registers[register][:size]
+
+    def put(name, values):
+        register, size = REGISTERS[name]
+        assert len(values) == size
+        registers[register][:size] = values
+
+    absolute = re.compile(r"^mov (\w+),\[(?:dword )?0x([0-9a-f]+)\]$")
+    to_stack = re.compile(r"^mov \[esp\+0x([0-9a-f]+)\],(\w+)$")
+    immediate = re.compile(r"^mov byte \[esp\+0x([0-9a-f]+)\],0x([0-9a-f]+)$")
+    to_field = re.compile(r"^mov \[edi\+0x([0-9a-f]+)\],(\w+)$")
+    for address, _, text in ndisasm(image.read(start, end - start), start):
+        if m := absolute.match(text):
+            size = REGISTERS[m.group(1)][1]
+            put(m.group(1), list(image.read(int(m.group(2), 16), size)))
+        elif text == "pxor xmm0,xmm0":
+            xmm0 = [0] * 8
+        elif m := re.match(r"^movq \[esp\+0x([0-9a-f]+)\],xmm0$", text):
+            for i, value in enumerate(xmm0):
+                stack[int(m.group(1), 16) + i] = value
+        elif m := re.match(r"^movq xmm0,\[esp\+0x([0-9a-f]+)\]$", text):
+            xmm0 = [stack.get(int(m.group(1), 16) + i) for i in range(8)]
+        elif m := to_stack.match(text):
+            for i, value in enumerate(get(m.group(2))):
+                stack[int(m.group(1), 16) + i] = value
+        elif m := immediate.match(text):
+            stack[int(m.group(1), 16)] = int(m.group(2), 16)
+        elif text == "xor eax,eax":
+            put("eax", [0] * 4)
+        elif text == "mov ecx,[ebp+0xc]":
+            put("ecx", [None] * 4)
+        elif text == "mov dl,[ebp+0x10]":
+            put("dl", ["eula"])
+        elif text == "movq [edi],xmm0":
+            out[:8] = xmm0
+        elif m := to_field.match(text):
+            for i, value in enumerate(get(m.group(2))):
+                out[int(m.group(1), 16) + i] = value
+        elif text not in ("nop", "add edi,esi"):
+            check(False, f"{address:#x}: `{text}` is not an instruction of the version field's code")
+            return None
+    return out
+
+
+def test_revision(original, image, mode):
+    """The patch revision in the sign-in (client_patch.md section 6)."""
+    va, old, new = P.REVISION_SITE
+    stock = list(b"0.26g0" + bytes(6)) + ["eula"]
+    check(version_field(Image(original)) == stock,
+          'the original fills the version field with "0.26g0" and six zero bytes, then the EULA flag')
+    field = version_field(image)
+    if mode == "cert-only":
+        check(image.read(va, len(old)) == old and field == stock, "cert-only: the version field's code is the original's")
+        return
+    check(1 <= P.REVISION <= 255 and new == bytes([0xC6, 0x44, 0x24, 0x27, P.REVISION, 0x90]),
+          f"the revision is {P.REVISION}: a byte, not 0")
+    rows = {address: text for address, _, text in ndisasm(image.read(*[VERSION_FIELD[0], VERSION_FIELD[1] - VERSION_FIELD[0]]),
+                                                         VERSION_FIELD[0])}
+    check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{P.REVISION:#x}"
+          and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
+          f"{va:#x}: `mov byte [esp+0x27],{P.REVISION:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
+    expected = list(b"0.26g0" + bytes([0, P.REVISION]) + bytes(4)) + ["eula"]
+    check(field == expected,
+          f'the version field is "0.26g0", a zero, the revision {P.REVISION} in byte 7 and four zero bytes; '
+          "the EULA flag follows as before")
+    inside = lambda relocations: sorted((address, kind) for kind, address in relocations.values()
+                                        if VERSION_FIELD[0] <= address < VERSION_FIELD[1])
+    check(inside(Image(original).relocations()) == [(0x380849, 3), (0x380850, 3), (0x380864, 3)],
+          "the original has three base relocations in this code: 0x380849, 0x380850, 0x380864")
+    check(inside(image.relocations()) == [(0x380849, 3), (0x380850, 3), (0x380864, 0)],
+          "the one under the rewritten instruction (0x380864) is disabled, the other two are untouched")
+    start, end = SIGN_IN_ON_CONNECTED
+    hits = [f"{address:#x}: {text}" for address, _, text in ndisasm(Image(original).read(start, end - start), start)
+            if branch_target(text) is not None and va < branch_target(text) < va + len(old)]
+    check(not hits, "no branch of sign_in_on_connected lands inside that instruction")
 
 
 def test_no_branch_into_hooks(original):
@@ -591,6 +699,7 @@ def main():
         test_hash_interval(original, image, mode)
         test_memory_check(original, image, mode)
         test_default_server(original, image, mode, server)
+        test_revision(original, image, mode)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
                 check(open(INSTALLED_CERT_ONLY, "rb").read() == bytes(data),

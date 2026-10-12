@@ -39,5 +39,5 @@ org CAVE + 420
     pop esi
     pop edx
     pop ecx
-    jmp 0x1EAE47               ; reread the key through the original code
+    jmp 0x1EAE2D               ; reread the key through the original code
 address:

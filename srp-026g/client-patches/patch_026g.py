@@ -58,6 +58,16 @@ Patches:
   tick, and the match server then cannot compare their worlds (match.md
   section 14). With 50 every client reports every tick. The key on the
   command line still overrides it;
+- the patch revision in the sign-in (sign_in_on_connected 0x3807D0). The
+  first login message has a 12-byte version field: "0.26g0" and six zero
+  bytes. `mov cl,[9DAE9Eh]` at 0x380862 (it reads the string's own zero,
+  which 0x38087B writes into the field once more) becomes
+  `mov byte [esp+27h],REVISION` / `nop`: byte 7 of the field says which
+  of these patches the exe has. The text stays "0.26g0", so a server that
+  does not read the byte is not affected, and an exe without this patch
+  says 0. REVISION is raised in the change that makes a full build
+  something else for the game; a server can only tell two clients apart
+  by it;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -108,7 +118,7 @@ MEMORY_CHECK = (0x106411, bytes.fromhex("730f"), bytes.fromhex("eb0f"))
 # options were absent. Replace the push+call with jmp + nops when embedding.
 DEFAULT_SERVER_HOOK = (0x1EB25B, bytes.fromhex("6890a99f00e81b83f2ff"))
 DEFAULT_SERVER_OFFSET = 420  # immediately after the snapshot upload code
-DEFAULT_SERVER_RETURN = 0x1EAE47
+DEFAULT_SERVER_RETURN = 0x1EAE2D
 DEFAULT_SERVER_OPTION = 0xA9C550
 
 
@@ -120,6 +130,17 @@ HASH_INTERVAL_VA = 0x27CC4F
 HASH_INTERVAL = (HASH_INTERVAL_VA, bytes.fromhex("c744241864000000"), bytes.fromhex("c744241832000000"))
 HASH_INTERVAL_BYTE_VA = HASH_INTERVAL_VA + 4  # the one byte that differs
 HASH_INTERVAL_MS = 50                         # = one tick
+
+# sign_in_on_connected 0x3807D0 builds the 12-byte version field of the first
+# login message on the stack at [esp+20h]: eight zero bytes, "0.26" at +0,
+# "g0" at +4, the string's own zero at +6 (through cl, read here) and a zero
+# at +6 again (`mov [esp+26h],al`, 0x38087B); four more zero bytes follow in
+# the message. mov cl,[9DAE9Eh] -> mov byte [esp+27h],REVISION / nop.
+# The base relocation of the address (0x380864) is disabled with the rest.
+# 0: an exe without this patch (the download of 2026-10-12). 1: the patches
+# above and the revision field. 2: adds the optional embedded-server patch.
+REVISION = 2
+REVISION_SITE = (0x380862, bytes.fromhex("8a0d9eae9d00"), bytes([0xC6, 0x44, 0x24, 0x27, REVISION, 0x90]))
 
 # game_world_core::on_hash_mismatch, 0x47B bytes of code + 5 int3 of padding
 HASH_MISMATCH_VA, HASH_MISMATCH_SIZE, HASH_MISMATCH_REGION = 0x325A60, 0x47B, 0x480
@@ -306,6 +327,8 @@ def build(original, mode, code=None, server=None):
     patch(data, *HASH_INTERVAL)
     rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1),
                  (MEMORY_CHECK[0], MEMORY_CHECK[0] + 1)]
+    patch(data, *REVISION_SITE)
+    rewritten.append((REVISION_SITE[0], REVISION_SITE[0] + len(REVISION_SITE[1])))
     upload_size = len(cave)
     if server is not None:
         if upload_size != DEFAULT_SERVER_OFFSET:
@@ -356,6 +379,7 @@ def build(original, mode, code=None, server=None):
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
     return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, "
+                  f"patch revision {REVISION}, "
                   f"{upload_size} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", default login server {server}" if server is not None else ""))

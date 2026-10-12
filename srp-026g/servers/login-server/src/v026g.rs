@@ -468,8 +468,9 @@ fn handle_sign_in(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut stre
     let user_name = sign_in.user_name;
     log::info!("User name: {user_name}");
     log::info!(
-        "Client version: {} (from the EULA window: {}, queue order: {:#x})",
+        "Client version: {}, patch revision {} (from the EULA window: {}, queue order: {:#x})",
         sign_in.version,
+        sign_in.patch_revision,
         sign_in.from_eula_window,
         sign_in.queue_order_id
     );
@@ -974,6 +975,27 @@ mod tests {
         let (answer, reply) = sign_in(addr, b"", &remembered(DIGEST_1));
         assert_eq!((answer, reply), (0x0A, Vec::new()));
         assert_eq!(store.session_count(), 1);
+    }
+
+    #[test]
+    fn a_client_that_says_a_patch_revision_signs_in_as_any_other() {
+        let store = Arc::new(SessionStore::new());
+        let addr = start(store.clone(), local_lobby());
+        // Byte 7 of the version field, past the text's zero (client_patch.md §6).
+        for (revision, user_name) in [(1, &b"e2e-user-1"[..]), (255, b"e2e-user-2")] {
+            let (answer, reply) = sign_in_as(
+                addr,
+                &[b'0', b'.', b'2', b'6', b'g', b'0', 0, revision],
+                user_name,
+                &typed(b"test-password-1"),
+            );
+            assert_eq!(answer, 0x0B, "revision {revision}");
+            assert_eq!(
+                reply,
+                connection_info_bytes(session_of(&reply), [0x01, 0x00, 0x00, 0x7F])
+            );
+        }
+        assert_eq!(store.session_count(), 2);
     }
 
     #[test]

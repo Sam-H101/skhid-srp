@@ -8,8 +8,10 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `2cb92dffca51941cfe1c8527f45a1a339ab0f01dfd22d2cb9c2fb1d9739e0dac`; embedding a server changes the hash and may increase the size |
-| Previous full patch | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, checked against the 2026-10-12 players' download; the current build additionally skips the minimum VRAM check and updates the PE checksum |
+| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `448f691608b56ed14e985c4e5c84d17c6862cab7fce415d940c2b88821701b72` (patch revision 2); embedding a server changes the hash and may increase the size |
+| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, since 2026-10-12 18:43 UTC: 4 871 691 bytes, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`. Its exe is the previous full patch (revision 1, sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d`) |
+| Checked | 2026-10-12: the revision-1 tools, run on the original, gave exactly the exe, the certificate, the launcher and the README of that download, byte for byte. A game with this exe signed in to a local server (logged as patch revision 1) and played a match |
+| The first download | 2026-10-12, until 18:43 UTC: exe sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, the full patch without patches 6 and 7 (it says patch revision 0). The revision-1 exe differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte). The two play together |
 
 ## The files
 
@@ -145,15 +147,39 @@ original bytes first, so another build or an already patched file is refused.
   `--cert-only` keeps the original check. The self-test verifies the jump
   target, unchanged return paths, and absence of overlapping relocations.
 
-### 7. An embedded default login server (optional)
+### 7. The patch revision in the sign-in
+
+- **Where:** `mov cl,[9DAE9Eh]` at VA 0x380862 (file offset 0x36FC62) in
+  `sign_in_on_connected` becomes `mov byte [esp+27h],REVISION` / `nop`:
+  `8A 0D 9E AE 9D 00` → `C6 44 24 27 01 90`. The base relocation under
+  it (0x380864) is disabled.
+- **Why:** nothing a client sends tells a server which patches its exe
+  has. The first login message has a 12-byte version field, `0.26g0` and
+  six zero bytes; the patch puts a revision number into byte 7 of it.
+  The text stays `0.26g0`, so a server that does not read the byte takes
+  the exe as before, and an exe without this patch says 0.
+- **What reads it:** the login server writes it in its log
+  (`Client version: 0.26g0, patch revision 1`). It refuses nobody for it.
+- **The number:** `REVISION` in `patch_026g.py`, 2 now. Revision 1 introduced this
+  field; revision 2 adds the optional embedded login server. Raise it in the
+  change that makes a full build something else for the game, so that
+  the two kinds of client can be told apart.
+- It is what the exe says of itself, not proof: a changed exe can say
+  anything.
+- Full builds only; `--cert-only` keeps the code. The self-test works the
+  field out from the instructions that fill it. Tried on 2026-10-12: a
+  game with the revision-1 exe signed in to a local server, which logged patch
+  revision 1 (a client sending the stock field: 0). Evidence: `../docs/notes/client_patch.md` section 6.
+
+### 8. An embedded default login server (optional)
 
 - **Where:** the missing-server error at VA 0x1EB25B becomes a jump to a
   51-byte stub after the snapshot upload, followed by the address string.
 - **When:** only when neither `-server` nor `-replay` was supplied. Explicit
   options keep their original behavior, including invalid-address handling.
 - **How:** the stub initializes the parsed `server` key's 512-byte buffer,
-  end pointer and string type, then repeats the original option read at
-  0x1EAE47. It uses relative addressing, so rebasing works.
+  end pointer and string type, then rebuilds the temporary string and repeats
+  the original option read from 0x1EAE2D. It uses relative addressing, so rebasing works.
 - Both full variants support it. The PE section grows when needed, and the
   existing relocation and checksum handling covers the new hook. Build
   hashes depend on the embedded address.
