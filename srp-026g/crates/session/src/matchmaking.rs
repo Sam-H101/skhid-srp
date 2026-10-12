@@ -311,6 +311,42 @@ impl Matchmaking {
         );
     }
 
+    /// Replace changed search levels, restarting the affected parties at
+    /// the back of the queue. All members of a squad restart together.
+    /// Unchanged parties and seats in already formed matches are untouched.
+    /// Returns the players whose search restarted.
+    pub fn refresh_levels(&self, levels: &[(u32, Level)], now: Instant) -> Vec<Player> {
+        let mut inner = self.inner.locked();
+        let mut restarted = Vec::new();
+        let mut players = Vec::new();
+        let queue = std::mem::take(&mut inner.queue);
+        for mut group in queue {
+            let mut changed = false;
+            for (player, level) in group.players.iter().zip(&mut group.levels) {
+                if let Some((_, current)) = levels.iter().find(|(id, _)| *id == player.account_id)
+                    && level != current
+                {
+                    *level = *current;
+                    changed = true;
+                }
+            }
+            if changed {
+                group.since = now;
+                players.extend_from_slice(&group.players);
+                restarted.push(group);
+            } else {
+                inner.queue.push(group);
+            }
+        }
+        if !restarted.is_empty() {
+            // Nobody joined or left: keep the shared countdown, including
+            // its maximum duration. Only the parties' range timers restart.
+            inner.queue.extend(restarted);
+            inner.last_joined = Some(now);
+        }
+        players
+    }
+
     /// A player leaves the queue, and its squad with it.
     pub fn leave_queue(&self, session_id: u32) {
         let mut inner = self.inner.locked();
@@ -1819,6 +1855,34 @@ mod tests {
         join_all(&mm, 5, 1, 50, 0, start);
         assert!(!placed(&mm, 1, 89, start));
         assert!(placed(&mm, 1, 90, start));
+    }
+
+    #[test]
+    fn changing_equipment_does_not_restart_the_shared_countdown() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
+            4,
+            Duration::from_secs(15),
+            Duration::from_secs(120),
+        );
+        for id in 1..=4 {
+            mm.queue_leveled(&[player(id)], &[at(0)], false, start);
+        }
+        let levels: Vec<_> = (1..=4).map(|id| (player(id).account_id, at(10))).collect();
+        assert_eq!(mm.refresh_levels(&levels, after(start, 59)).len(), 4);
+        assert!(matches!(
+            mm.poll_with(1, after(start, 59), Some(&EIGHT)),
+            Some(QueueState::Waiting { since, .. }) if since == after(start, 59)
+        ));
+        assert!(matches!(
+            mm.poll_with(1, after(start, 60), Some(&EIGHT)),
+            Some(QueueState::Placed { .. })
+        ));
+        // Once seated, changes cannot put players back into search.
+        assert!(
+            mm.refresh_levels(&[(player(1).account_id, at(0))], after(start, 61))
+                .is_empty()
+        );
     }
 
     #[test]
