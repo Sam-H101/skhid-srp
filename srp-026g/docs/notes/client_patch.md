@@ -276,13 +276,17 @@ builds retain the old behavior too.
   jump is also relative. No injected absolute pointer needs relocation.
   The original hook's push operand relocation is neutralized by the
   existing range logic.
-- Regression: filling only the temporary stack string and jumping to
+- Input investigation: filling only the temporary stack string and jumping to
   0x1EAE90 left the parsed key `type_unset`. That draft displayed the
   login screen but did not accept typing in manual tests; supplying an
   explicit `-server=` restored input. Initialize the key and re-enter
   the original option read instead. This is an observed correlation; the
   downstream cause of the typing failure has not been established. No
-  direct keyboard use of this key was found.
+  direct keyboard use of this key was found. In the controlled A/B retest
+  on 2026-10-12, both the original fallback and the corrected fallback
+  accepted typing with the same shell launcher and Wine prefix. Only the
+  fallback payload and PE checksum differed. The absent-key explanation
+  is therefore unsupported; the original input failure remains unreproduced.
 - Re-entry regression: 0x1EAE47 skipped the `lea edx,[ebp-0x288]` that
   sets the temporary string's buffer limit, then stored the stale EDX
   at +8. An execution harness using the original startup instructions
@@ -303,7 +307,7 @@ builds retain the old behavior too.
   replay, and both options together, including the stack buffer limit.
   Under Wine Staging 11.8 / DXVK 3.1.1, the section build was launched
   through the existing shell launcher with `-server=` removed; the user
-  confirmed the revised build accepts input. Lobby handoff and match
+  confirmed the final revision-2 build accepts input. Lobby handoff and match
   entry were not separately verified.
 
 ## 4. Mode 3 batteries: not needed in 0.26g
