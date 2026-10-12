@@ -22,7 +22,6 @@ published.
 | `snapshot_upload_026g.section.bin`, `.hash-mismatch.bin` | That code assembled, for the two places it can go; `patch_026g.py` reads them. Assembling the source again gives the same bytes |
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
-| `selftest_overlay_026g.py` | Checks the exact five-file ZIP/folder payload, DLL inclusion, dry runs and output preservation; needs the original game and built Rust DLL |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
 
 ## How to apply
