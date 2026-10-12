@@ -20,9 +20,10 @@
 //! [`run_026g`] the 0.26g one ([`v026g`]: the 0.26g accounts, the lobby told
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
+mod stats;
 mod v026g;
 
-pub use v026g::{Game, LobbyLink};
+pub use v026g::{Game, LobbyLink, MatchCounter};
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -414,8 +415,24 @@ impl Request {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ContentType {
+    Html,
+    Json,
+}
+
+impl ContentType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Html => "text/html; charset=utf-8",
+            Self::Json => "application/json",
+        }
+    }
+}
+
 struct Response {
     status: &'static str,
+    content_type: ContentType,
     body: String,
 }
 
@@ -454,13 +471,14 @@ impl Web {
         }
         let response = self.route(&request, &peer);
         let head = format!(
-            "HTTP/1.0 {}\r\nContent-Type: text/html; charset=utf-8\r\n\
+            "HTTP/1.0 {}\r\nContent-Type: {}\r\n\
              Content-Length: {}\r\nCache-Control: no-store\r\n\
              X-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\n\
              Referrer-Policy: no-referrer\r\n\
              Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
              form-action 'self'\r\nConnection: close\r\n\r\n",
             response.status,
+            response.content_type.as_str(),
             response.body.len()
         );
         let _ = stream.write_all(head.as_bytes());
@@ -563,7 +581,10 @@ impl Web {
     }
 
     fn route(&self, request: &Request, peer: &str) -> Response {
-        if self.game.is_some() {
+        if let Some(game) = &self.game {
+            if request.method == "GET" && request.path == "/api/stats" {
+                return stats::response(&self.store, game);
+            }
             return self.route_026g(request, peer);
         }
         match (request.method.as_str(), request.path.as_str()) {
@@ -586,6 +607,7 @@ impl Web {
             ("POST", path) if self.is_admin_page(path, request) => self.admin(request, peer),
             _ => Response {
                 status: "404 Not Found",
+                content_type: ContentType::Html,
                 body: page(
                     request.lang,
                     Form::None,
@@ -1207,7 +1229,9 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
     let other_link = other_server_link(
         lang,
         other_version,
-        CONNECT.get().and_then(|connect| connect.other_url.as_deref()),
+        CONNECT
+            .get()
+            .and_then(|connect| connect.other_url.as_deref()),
     );
     let body = match form {
         Form::Exchange => exchange_form(lang),
@@ -1224,6 +1248,7 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
     );
     Response {
         status: "200 OK",
+        content_type: ContentType::Html,
         body: format!(
             "<!doctype html><html lang={code}><meta charset=utf-8>\
              <meta name=viewport content=\"width=device-width,initial-scale=1\">\
@@ -2139,7 +2164,11 @@ mod tests {
             " <a href=\"https://026g.skhid.link/?lang=uk\">Survarium 0.26g</a>"
         );
         // Without the setting the pages are as they were.
-        assert!(!page(Lang::En, Form::Exchange, "").body.contains("Survarium 0.26g</a>"));
+        assert!(
+            !page(Lang::En, Form::Exchange, "")
+                .body
+                .contains("Survarium 0.26g</a>")
+        );
     }
 
     #[test]
