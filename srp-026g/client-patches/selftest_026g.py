@@ -27,6 +27,8 @@ Checks, per variant (cert-only, section, hash-mismatch):
     patch_026g.REVISION and nothing else differs. The relocation under the
     rewritten instruction is disabled, the two beside it are not, and no
     branch of the function lands inside it.
+12. optional embedded login server: the missing-server hook, relative stub,
+    address bytes and unchanged explicit-server/replay paths in both caves.
 """
 
 import ctypes
@@ -68,7 +70,7 @@ EXTERNAL = {
 }
 INDIRECT = {"call [eax+0x18]": "new_packet", "call [eax+0x1c]": "enqueue"}
 # The functions that hold the hooks: [start, end) of straight code.
-HOSTS = [(0x27A300, 0x27A738), (0x27AA20, 0x27AEC8)]
+HOSTS = [(0x27A300, 0x27A738), (0x27AA20, 0x27AEC8), (0x1EA9F0, 0x1EB2C1)]
 JUMP_TABLE = (0x27A738, 20)                   # on_match_packet_received, ids 0xE3..0xF6
 
 failures = []
@@ -147,14 +149,15 @@ class Image:
 def test_bins():
     print("assembled code")
     for mode, cave in P.CAVES.items():
-        path = P.default_bin(mode)
-        with tempfile.TemporaryDirectory() as tmp:
-            out = os.path.join(tmp, "out.bin")
-            subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={cave:#x}",
-                            os.path.join(HERE, "snapshot_upload_026g.asm"), "-o", out],
-                           check=True, timeout=60)
-            fresh = open(out, "rb").read()
-        check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+        for stem in ("snapshot_upload_026g", "default_server_026g"):
+            path = os.path.join(HERE, f"{stem}.{mode}.bin")
+            with tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "out.bin")
+                subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={cave:#x}",
+                                os.path.join(HERE, stem + ".asm"), "-o", out],
+                               check=True, timeout=60)
+                fresh = open(out, "rb").read()
+            check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -210,7 +213,7 @@ def test_pe(original, image, mode):
           "file characteristics 0x122, DLL characteristics 0x8000 (no ASLR flag), as the original")
 
 
-def allowed_ranges(original, mode, cave_size):
+def allowed_ranges(original, mode, cave_size, server=None):
     """File ranges that may differ from the original (same offsets)."""
     headers = P.Headers(original)
     ranges = [(P.file_offset(P.CERT[0]), len(P.CERT[1]))]
@@ -222,6 +225,10 @@ def allowed_ranges(original, mode, cave_size):
     rewritten.append((P.HASH_INTERVAL_BYTE_VA, P.HASH_INTERVAL_BYTE_VA + 1))
     ranges.append((P.file_offset(P.MEMORY_CHECK[0]), 1))
     rewritten.append((P.MEMORY_CHECK[0], P.MEMORY_CHECK[0] + 1))
+    if server is not None:
+        va, old = P.DEFAULT_SERVER_HOOK
+        ranges.append((P.file_offset(va), len(old)))
+        rewritten.append((va, va + len(old)))
     ranges.append((P.file_offset(P.REVISION_SITE[0]), len(P.REVISION_SITE[1])))
     rewritten.append((P.REVISION_SITE[0], P.REVISION_SITE[0] + len(P.REVISION_SITE[1])))
     for va, old in P.HOOKS:
@@ -237,9 +244,9 @@ def allowed_ranges(original, mode, cave_size):
     return ranges, rewritten
 
 
-def test_bytes(original, image, mode, cave):
+def test_bytes(original, image, mode, cave, server=None):
     data = image.data
-    ranges, rewritten = allowed_ranges(original, mode, len(cave))
+    ranges, rewritten = allowed_ranges(original, mode, len(cave), server)
     old_relocations = Image(original).relocations()
     disabled = [at for at, (kind, va) in old_relocations.items()
                 if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in rewritten)]
@@ -248,7 +255,9 @@ def test_bytes(original, image, mode, cave):
     if mode == "section":
         common = struct.unpack_from("<I", original, P.Headers(original).security_at)[0]
         raw_size = len(data) - len(original)
-        check(raw_size == 0x200 and bytes(data[common:common + raw_size]) == cave + b"\xCC" * (raw_size - len(cave)),
+        alignment = image.headers.file_alignment
+        check(raw_size == (len(cave) + alignment - 1) // alignment * alignment
+              and bytes(data[common:common + raw_size]) == cave + b"\xCC" * (raw_size - len(cave)),
               f"the new section's file data is the cave ({len(cave)} bytes) + int3 padding")
     else:
         check(len(data) == len(original), "file size unchanged")
@@ -393,6 +402,74 @@ def test_memory_check(original, image, mode):
         check(False, "a changed VRAM instruction must be rejected")
 
 
+def test_default_server(original, image, mode, server):
+    va, old = P.DEFAULT_SERVER_HOOK
+    if server is None:
+        check(image.read(va, len(old)) == old, "without an embedded server the original missing-server path stays")
+        return
+    start = P.CAVES[mode] + P.DEFAULT_SERVER_OFFSET
+    stub = open(P.default_server_bin(mode), "rb").read()
+    hook = ndisasm(image.read(va, len(old)), va)
+    check(hook[0][2].startswith("jmp ") and branch_target(hook[0][2]) == start
+          and all(text == "nop" for _, _, text in hook[1:]),
+          "missing-server error jumps to the embedded-address stub")
+    rows = ndisasm(image.read(start, len(stub)), start)
+    key_delta = P.DEFAULT_SERVER_OPTION - (start + 9)
+    key_operand = f"esi{'+' if key_delta >= 0 else '-'}{abs(key_delta):#x}"
+    check([text.replace(",byte +", ",") for _, _, text in rows] == [
+        "push ecx", "push edx", "push esi", "push edi", f"call {start + 9:#x}", "pop esi",
+        f"lea edx,[{key_operand}]", "add esi,0x2a", "mov edi,[edx]", "cld", "lodsb", "stosb",
+        "test al,al", f"jnz {start + 22:#x}", "dec edi", "mov [edx+0x4],edi",
+        "mov dword [edx+0x224],0x4", "pop edi", "pop esi", "pop edx", "pop ecx",
+        f"jmp {P.DEFAULT_SERVER_RETURN:#x}"],
+        "stub initializes the server key and type_string, preserves registers and repeats the original option read")
+    # Re-enter before all string initialization. At the hook EDX no longer
+    # holds the server buffer limit; entering at 0x1EAE47 stores a stale EDX.
+    check(P.DEFAULT_SERVER_RETURN == 0x1EAE2D and image.read(P.DEFAULT_SERVER_RETURN, 50)
+          == bytes.fromhex("8d8578fbffff8bc889856cfbffff898d70fbffff"
+                           "8d9578fdffff8d856cfbffffb950c5a900"
+                           "899574fbffffc68578fbffff00"),
+          "fallback rebuilds the stack string, including its 512-byte buffer limit, before reading the key")
+    encoded = P.parse_server(server).encode("ascii") + b"\0"
+    check(image.read(start + len(stub), len(encoded)) == encoded,
+          "embedded host:port is terminated and fits the client buffers")
+    # Preserve all option checks, address parsing and client creation up to
+    # the old error. Explicit -server and -replay never enter our stub.
+    begin = 0x1EAE2D
+    check(image.read(begin, va - begin) == Image(original).read(begin, va - begin),
+          "explicit-server and replay selection, parsing and connection code are unchanged")
+    missing = ndisasm(image.read(0x1EB0AB, 6), 0x1EB0AB)
+    check(missing[0][2].startswith("jz ") and branch_target(missing[0][2]) == va,
+          "the original no-server/no-replay branch is what reaches the hook")
+
+
+def test_server_options(original):
+    import make_client_026g as overlay
+
+    for value in ("026g.skhid.link:1234", "localhost:1", "a" * 63 + ":65535"):
+        check(P.parse_server(value) == value, f"accepts build-time server {value}")
+    for value in ("host", "host:0", "host:65536", "host:-1", "host:１２３４",
+                  "a" * 64 + ":1234", "host:1234\0", "host:1234\n", "host;other:1234"):
+        try:
+            P.parse_server(value)
+        except SystemExit:
+            pass
+        else:
+            check(False, f"invalid address accepted: {value!r}")
+    try:
+        P.build(original, "cert-only", server="localhost:1234")
+    except SystemExit:
+        check(True, "cert-only refuses an embedded server")
+    else:
+        check(False, "cert-only must refuse an embedded server")
+    for embedded in (False, True):
+        line = overlay.launch_line("localhost:1234", "english", embedded)
+        batch = overlay.bat("localhost:1234", "english", embedded).decode("ascii")
+        start = next(line for line in batch.splitlines() if line.startswith('start "" '))
+        check(("-server=" in line) != embedded and ("-server=" in start) != embedded,
+              f"overlay launch line and batch use {'embedded' if embedded else 'explicit'} server")
+
+
 # sign_in_on_connected: from the copy of the version string to the write of
 # the byte after the field (client_patch.md section 6).
 VERSION_FIELD = (0x380847, 0x38088F)
@@ -421,7 +498,7 @@ def version_field(image):
         assert len(values) == size
         registers[register][:size] = values
 
-    absolute = re.compile(r"^mov (\w+),\[dword 0x([0-9a-f]+)\]$")
+    absolute = re.compile(r"^mov (\w+),\[(?:dword )?0x([0-9a-f]+)\]$")
     to_stack = re.compile(r"^mov \[esp\+0x([0-9a-f]+)\],(\w+)$")
     immediate = re.compile(r"^mov byte \[esp\+0x([0-9a-f]+)\],0x([0-9a-f]+)$")
     to_field = re.compile(r"^mov \[edi\+0x([0-9a-f]+)\],(\w+)$")
@@ -494,7 +571,7 @@ def test_revision(original, image, mode):
 def test_no_branch_into_hooks(original):
     print("branches into the hooks (original exe)")
     image = Image(original)
-    interiors = [(va + 1, va + len(old)) for va, old in P.HOOKS]
+    interiors = [(va + 1, va + len(old)) for va, old in [*P.HOOKS, P.DEFAULT_SERVER_HOOK]]
     inside = lambda target: any(lo <= target < hi for lo, hi in interiors)
     hits = []
     for start, end in HOSTS:
@@ -502,7 +579,7 @@ def test_no_branch_into_hooks(original):
             target = branch_target(text)
             if target is not None and inside(target):
                 hits.append(f"{address:#x}: {text}")
-    check(not hits, "no branch of the two host functions lands inside a hook" + "".join("\n   " + h for h in hits))
+    check(not hits, "no branch of the host functions lands inside a hook" + "".join("\n   " + h for h in hits))
     table = struct.unpack_from(f"<{JUMP_TABLE[1]}I", original, image.offset(JUMP_TABLE[0]))
     check(not any(inside(t) for t in table) and table[19] == 0x27A4F4,
           "the dispatcher's jump table has no entry inside a hook; 0xF6 -> 0x27A4F4")
@@ -604,18 +681,24 @@ def main():
         sys.exit("the scratch directory must not be inside the game folder")
     test_bins()
     test_no_branch_into_hooks(original)
-    for mode in ("cert-only", "section", "hash-mismatch"):
-        print(f"variant {mode}")
+    test_server_options(original)
+    variants = [(mode, None) for mode in ("cert-only", "section", "hash-mismatch")]
+    variants += [(mode, "026g.skhid.link:1234") for mode in P.CAVES]
+    variants += [(mode, "a" * 63 + ":65535") for mode in P.CAVES]
+    for mode, server in variants:
+        print(f"variant {mode}, embedded server {server}")
         code = None if mode == "cert-only" else open(P.default_bin(mode), "rb").read()
-        data, description = P.build(original, mode, code)
+        data, description = P.build(original, mode, code, server)
         print("  " + description)
         check(hashlib.sha256(original).hexdigest() == P.EXE_SHA256, "the original in memory is untouched")
         image = Image(data)
         cave = b"" if code is None else P.split_code(code)[0]
+        payload = cave if server is None else cave + open(P.default_server_bin(mode), "rb").read() + server.encode("ascii") + b"\0"
         test_pe(original, image, mode)
-        test_bytes(original, image, mode, cave)
+        test_bytes(original, image, mode, payload, server)
         test_hash_interval(original, image, mode)
         test_memory_check(original, image, mode)
+        test_default_server(original, image, mode, server)
         test_revision(original, image, mode)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
@@ -627,7 +710,8 @@ def main():
             test_code(original, image, mode, cave)
             check(image.read(P.MUTEX[0], 2) == b"\x90\x90" and image.read(P.CERT[0], 3) == P.CERT[2],
                   "mutex and certificate patches present")
-        path = os.path.join(SCRATCH, f"survarium_srp.{mode}.exe")
+        suffix = "" if server is None else (".embedded-max" if len(server) > 63 else ".embedded")
+        path = os.path.join(SCRATCH, f"survarium_srp.{mode}{suffix}.exe")
         with open(path, "wb") as out:
             out.write(data)
         print(f"  written: {path} (sha256 {hashlib.sha256(data).hexdigest()})")

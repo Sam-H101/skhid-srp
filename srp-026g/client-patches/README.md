@@ -8,10 +8,10 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d` |
-| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, since 2026-10-12 18:43 UTC: 4 871 691 bytes, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`. Its exe is the full patch above (patch revision 1) |
-| Checked | 2026-10-12: the tools here, run on the original, give exactly the exe, the certificate, the launcher and the README of that download, byte for byte. A game with this exe signed in to a local server (logged as patch revision 1) and played a match |
-| The first download | 2026-10-12, until 18:43 UTC: exe sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, the full patch without patches 6 and 7 (it says patch revision 0). The current exe differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte). The two play together |
+| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `448f691608b56ed14e985c4e5c84d17c6862cab7fce415d940c2b88821701b72` (patch revision 2); embedding a server changes the hash and may increase the size |
+| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, since 2026-10-12 18:43 UTC: 4 871 691 bytes, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`. Its exe is the previous full patch (revision 1, sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d`) |
+| Checked | 2026-10-12: the revision-1 tools, run on the original, gave exactly the exe, the certificate, the launcher and the README of that download, byte for byte. A game with this exe signed in to a local server (logged as patch revision 1) and played a match |
+| The first download | 2026-10-12, until 18:43 UTC: exe sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, the full patch without patches 6 and 7 (it says patch revision 0). The revision-1 exe differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte). The two play together |
 
 ## The files
 
@@ -20,6 +20,7 @@ published.
 | `patch_026g.py` | Builds the patched exe from the original. Python 3, nothing else |
 | `snapshot_upload_026g.asm` | The source of the upload code (nasm) |
 | `snapshot_upload_026g.section.bin`, `.hash-mismatch.bin` | That code assembled, for the two places it can go; `patch_026g.py` reads them. Assembling the source again gives the same bytes |
+| `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the whole players' overlay from a game folder: the patched exe, the certificate, a start file, a README |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
@@ -46,10 +47,22 @@ python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--
 ```
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
-`game/binaries/x86/play_skhid.bat` (the launch line; `SERVER` and `LANGUAGE`
-at its top), `game/resources/ssl/survarium_login_server.crt` and
+`game/binaries/x86/play_skhid.bat` (the launch line and language setting),
+`game/resources/ssl/survarium_login_server.crt` and
 `README.txt` into the new folder, to be copied over the game. `--check` does
 every check and writes nothing.
+
+Full overlays embed the supplied `--server` address in the executable, so
+players do not need `-server=` at launch. The generated batch file retains
+the language and allocator options. To use another server, add
+`-server=host:port` to its start command. Login supplies the lobby address;
+the lobby supplies the match address. Neither needs embedding.
+
+For the standalone patcher, add `--server=host:port` at patch time to embed
+the default. Without that option it retains the original address behavior.
+An embedded hostname is limited to 63 ASCII bytes and the port to 1–65535.
+`--cert-only` does not support embedding; cert-only overlays still pass the
+address through their batch file.
 
 Other builds of the patch: `--cert-only` (only patch 1), `--cave=hash-mismatch`
 (patch 4 in another place, see below), `--check`.
@@ -147,15 +160,29 @@ original bytes first, so another build or an already patched file is refused.
   the exe as before, and an exe without this patch says 0.
 - **What reads it:** the login server writes it in its log
   (`Client version: 0.26g0, patch revision 1`). It refuses nobody for it.
-- **The number:** `REVISION` in `patch_026g.py`, 1 now. Raise it in the
+- **The number:** `REVISION` in `patch_026g.py`, 2 now. Revision 1 introduced this
+  field; revision 2 adds the optional embedded login server. Raise it in the
   change that makes a full build something else for the game, so that
   the two kinds of client can be told apart.
 - It is what the exe says of itself, not proof: a changed exe can say
   anything.
 - Full builds only; `--cert-only` keeps the code. The self-test works the
   field out from the instructions that fill it. Tried on 2026-10-12: a
-  game with this exe signed in to a local server, which logged patch
+  game with the revision-1 exe signed in to a local server, which logged patch
   revision 1 (a client sending the stock field: 0). Evidence: `../docs/notes/client_patch.md` section 6.
+
+### 8. An embedded default login server (optional)
+
+- **Where:** the missing-server error at VA 0x1EB25B becomes a jump to a
+  51-byte stub after the snapshot upload, followed by the address string.
+- **When:** only when neither `-server` nor `-replay` was supplied. Explicit
+  options keep their original behavior, including invalid-address handling.
+- **How:** the stub initializes the parsed `server` key's 512-byte buffer,
+  end pointer and string type, then rebuilds the temporary string and repeats
+  the original option read from 0x1EAE2D. It uses relative addressing, so rebasing works.
+- Both full variants support it. The PE section grows when needed, and the
+  existing relocation and checksum handling covers the new hook. Build
+  hashes depend on the embedded address.
 
 ## Not ported, not done
 
