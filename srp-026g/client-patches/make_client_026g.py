@@ -1,20 +1,23 @@
 """Makes what a player needs to play Survarium 0.26g on an srp server, as a
-small overlay folder. The ORIGINAL game folder is only read; nothing in it
+small overlay folder or ZIP. The ORIGINAL game folder is only read; nothing in it
 is changed, and nothing is run.
 
 USAGE
 
     cd srp-026g/client-patches
-    python make_client_026g.py <game folder> <output folder> --server=<host>:<port>
+    python make_client_026g.py <game folder> <output> --server=<host>:<port>
         [--localization=ukrainian]   english, russian, ukrainian, german, polish
         [--cert-only | --cave=hash-mismatch]   another build of the exe (see patch_026g.py)
         [--check]                    every check, nothing written
+        [--pack-zip]                 write the output as a ZIP instead of a folder
+        [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
                     folder), or its parent. The exe must be the original
                     (patch_026g.py checks its sha256).
-    <output folder> a new or empty folder OUTSIDE the game folder.
+    <output>        a new/empty folder, or a new ZIP with --pack-zip,
+                    OUTSIDE the game folder.
     --server        where the srp login server is reached: the host players
                     use and SRP_LOGIN_PORT (1234 by default; 2234 with the
                     0.26g docker-compose.yml beside the 0.21d server).
@@ -39,6 +42,8 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
         default, which map loading ran out of in upstream's live runs;
         -minimum_resources_memory_size: the resources arenas' floor.
         Two different arenas: docs/notes/README.md.)
+    <output>/game/binaries/x86/bugtrap.dll
+        the Rust SRP crash reporter; saves dumps locally; Submit Bug opens SRP Discord in the browser.
     <output>/game/resources/ssl/survarium_login_server.crt
         srp's login certificate (beside this script; the same file as in ../certs): the client accepts the
         login server only with this very file.
@@ -46,18 +51,23 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
         what to do with it, and where the original game is had.
 
 A player copies the overlay's `game` folder over the game's own `game`
-folder (two new files, one replaced) and starts play_skhid.bat. Zip the
-overlay to make the download the web page offers (SRP_DOWNLOAD_FILE); the
-game itself is had from SRP_GAME_URL.
+folder and starts play_skhid.bat. --pack-zip directly makes
+the download the web page offers (SRP_DOWNLOAD_FILE). Only the five player
+files are included: no source, PDBs, tests or development tools. Build the
+Rust DLL first with ../../client/bugtrap/build.sh. The game itself is had
+from SRP_GAME_URL.
 """
 
 import hashlib
 import os
 import sys
+import zipfile
 
 import patch_026g as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BUGTRAP_DLL = os.path.abspath(os.path.join(
+    HERE, "..", "..", "client", "bugtrap", "target", "i686-pc-windows-msvc", "release", "BugTrap.dll"))
 # Where the original game is had: the web archive's copy of build 2777.
 GAME_URL = (
     "https://archive.org/download/"
@@ -73,6 +83,23 @@ LOCALIZATIONS = ("english", "russian", "ukrainian", "german", "polish")
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def read_bugtrap(path):
+    try:
+        with open(path, "rb") as dll:
+            data = dll.read()
+    except OSError as e:
+        sys.exit(f"{path}: cannot read Rust BugTrap DLL ({e}). Build client/bugtrap/build.sh first, "
+                 "or pass --bugtrap=<path>.")
+    pe = int.from_bytes(data[0x3c:0x40], "little")
+    if (len(data) < 64 or data[:2] != b"MZ" or pe + 26 > len(data)
+            or data[pe:pe + 4] != b"PE\0\0"
+            or int.from_bytes(data[pe + 4:pe + 6], "little") != 0x14c
+            or int.from_bytes(data[pe + 24:pe + 26], "little") != 0x10b
+            or not int.from_bytes(data[pe + 22:pe + 24], "little") & 0x2000):
+        sys.exit(f"{path}: expected a 32-bit x86 Windows DLL")
+    return data
 
 
 def game_root(folder):
@@ -142,9 +169,9 @@ def readme(server, localization, description, files, embedded=False):
         "   The game is in its Survarium\\game folder.",
         "2. Copy the `game` folder of this archive over the game's own `game`",
         "   folder. It adds survarium_skhid.exe and play_skhid.bat to",
-        "   game\\binaries\\x86 and replaces",
-        "   game\\resources\\ssl\\survarium_login_server.crt (keep a copy if you",
-        "   want the original back). The game's own survarium.exe is not changed.",
+        "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
+        "   game\\resources\\ssl\\survarium_login_server.crt. Back up those two",
+        "   original files first. The game's own survarium.exe is not changed.",
         "3. Double-click game\\binaries\\x86\\play_skhid.bat. It connects to the",
         "   Skhid server. Do not run survarium_skhid.exe by hand without the",
         "   options.",
@@ -168,6 +195,11 @@ def readme(server, localization, description, files, embedded=False):
         "survarium_skhid.exe is the game's survarium.exe patched to work with this",
         "server. The launcher and the updater of the original game are not needed.",
         "",
+        "CRASH REPORTS",
+        "Crash dumps are saved beside survarium_skhid.exe, or in the Windows",
+        "temporary folder if that folder cannot be written. The crash dialog",
+        "shows the location. Nothing is uploaded automatically.",
+        "",
     ]
     return "\r\n".join(lines).encode("utf-8")
 
@@ -176,9 +208,13 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     options = [a for a in sys.argv[1:] if a.startswith("--")]
     mode, check, server, localization = "section", False, None, "ukrainian"
+    bugtrap_path = BUGTRAP_DLL
+    archive = False
     for option in options:
         if option == "--check":
             check = True
+        elif option == "--pack-zip":
+            archive = True
         elif option == "--cert-only":
             mode = "cert-only"
         elif option.startswith("--cave=") and option[7:] in P.CAVES:
@@ -187,6 +223,8 @@ def main():
             server = parse_server(option[9:])
         elif option.startswith("--localization=") and option[15:] in LOCALIZATIONS:
             localization = option[15:]
+        elif option.startswith("--bugtrap="):
+            bugtrap_path = option[len("--bugtrap="):]
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) != 2 or server is None:
@@ -195,8 +233,11 @@ def main():
     # Never into the game: not its folder, nor the install that holds it.
     if inside(output, source) or inside(output, os.path.dirname(source)):
         sys.exit(f"{output}: the output folder must be outside the game folder {os.path.dirname(source)}")
-    if not check and os.path.isdir(output) and os.listdir(output):
-        sys.exit(f"{output}: the output folder is not empty")
+    if not check and os.path.lexists(output):
+        if archive or not os.path.isdir(output) or os.listdir(output):
+            sys.exit(f"{output}: output already exists; use a new ZIP or an empty folder")
+
+    bugtrap = read_bugtrap(bugtrap_path)
 
     # The exe: patch_026g.py refuses anything but the original.
     original = open(os.path.join(source, EXE_DIR, "survarium.exe"), "rb").read()
@@ -217,15 +258,21 @@ def main():
 
     files = [
         (os.path.join("game", EXE_DIR, "survarium_skhid.exe"), exe),
+        (os.path.join("game", EXE_DIR, "bugtrap.dll"), bugtrap),
         (os.path.join("game", EXE_DIR, "play_skhid.bat"), bat(server, localization, embedded)),
         (os.path.join("game", CERT_REL), srp_cert),
     ]
     listed = [(name.replace(os.sep, "/"), sha256(data)) for name, data in files]
     files.append(("README.txt", readme(server, localization, description, listed, embedded)))
 
+    if not check and archive:
+        os.makedirs(os.path.dirname(output), exist_ok=True)
+        with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as out:
+            for name, data in files:
+                out.writestr(name.replace(os.sep, "/"), data)
     for name, data in files:
-        target = os.path.join(output, name)
-        if not check:
+        target = (output + "!/" + name.replace(os.sep, "/") if archive else os.path.join(output, name))
+        if not check and not archive:
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "xb") as out:   # never over a file that is there
                 out.write(data)

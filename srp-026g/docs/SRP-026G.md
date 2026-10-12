@@ -416,13 +416,16 @@ check, the default hash interval (100 → 50 ms), and adds the snapshot upload
 in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the other
 builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
 
-`scripts/client-patch-026g/make_client_026g.py <game folder> <new folder>
+`client-patches/make_client_026g.py <game folder> <output>
 --server=<host>:<port>` makes the players' overlay without touching the game
 folder: `game/binaries/x86/survarium_skhid.exe` (the patched exe),
-`play_skhid.bat` beside it (the launch line; `SERVER` and `LANGUAGE` at its
-top), srp's login certificate and a `README.txt` that says where the
-original game is had. `--check` writes nothing. The sites hand out only this
-overlay (`Survarium-0.26g-srp-files.zip`, 4.9 MB), never the whole game.
+`bugtrap.dll` (the Rust local crash reporter), `play_skhid.bat` beside them,
+srp's login certificate and a player `README.txt`. Build the Rust DLL first
+with `../client/bugtrap/build.sh`; the overlay builder includes it by default.
+`--pack-zip` creates the player archive directly instead of a folder, with exactly
+those five files and no source, symbols or tests. `--check` writes nothing.
+The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the
+whole game.
 
 ## Deploying
 

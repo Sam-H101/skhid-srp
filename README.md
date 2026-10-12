@@ -42,6 +42,7 @@ At the root:
 | [`docs/RE-TOOLKIT.md`](docs/RE-TOOLKIT.md) | How the game client was read: disassembly, symbols, game data, and the scripts in `tools/re-kit` |
 | [`docs/PUBLISHING.md`](docs/PUBLISHING.md) | What must never be written into this repository (players' names, addresses, secrets) |
 | `tools/re-kit/` | The reverse-engineering and log-analysis scripts |
+| [`client/bugtrap/`](client/bugtrap/) | Rust crash DLL for the native Win32 client: saves dumps beside the EXE, with report submission removed |
 | `LICENSE` | GPL-3.0, as the SRP project |
 
 ## Start here

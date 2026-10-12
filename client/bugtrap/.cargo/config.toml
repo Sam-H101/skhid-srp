@@ -1,0 +1,10 @@
+[build]
+target = "i686-pc-windows-msvc"
+
+[target.i686-pc-windows-msvc]
+linker = "rust-lld"
+rustflags = ["-C", "link-arg=/ENTRY:DllMain@12", "-C", "link-arg=/NODEFAULTLIB", "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.1"]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]

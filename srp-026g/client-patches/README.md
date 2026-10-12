@@ -21,7 +21,7 @@ published.
 | `snapshot_upload_026g.asm` | The source of the upload code (nasm) |
 | `snapshot_upload_026g.section.bin`, `.hash-mismatch.bin` | That code assembled, for the two places it can go; `patch_026g.py` reads them. Assembling the source again gives the same bytes |
 | `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
-| `make_client_026g.py` | Makes the whole players' overlay from a game folder: the patched exe, the certificate, a start file, a README |
+| `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
 
@@ -40,17 +40,25 @@ relative to where it is started):
 survarium_skhid.exe -localization=english -server=<host>:<login port> -mt_allocator=768 -minimum_resources_memory_size=768
 ```
 
-Or let `make_client_026g.py` do all of it, without touching the game folder:
+Or let `make_client_026g.py` do all of it, without touching the game folder.
+First build the crash reporter with `../../client/bugtrap/build.sh`, then:
 
 ```
 python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> [--localization=ukrainian] [--check]
 ```
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
+`game/binaries/x86/bugtrap.dll` (the Rust crash reporter),
 `game/binaries/x86/play_skhid.bat` (the launch line and language setting),
 `game/resources/ssl/survarium_login_server.crt` and
-`README.txt` into the new folder, to be copied over the game. `--check` does
-every check and writes nothing.
+`README.txt` into the new folder, or a ZIP with `--pack-zip`, to be copied over
+the game. These are
+the only five files shipped; source, symbols, tests and development tools are
+excluded. Back up the original `bugtrap.dll` and login certificate before
+installing. `--check` does every check and writes nothing. Existing ZIPs are
+never overwritten. `--bugtrap=<path>` selects another built DLL; by default
+the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
 
 Full overlays embed the supplied `--server` address in the executable, so
 players do not need `-server=` at launch. The generated batch file retains
