@@ -406,12 +406,20 @@ def test_default_server(original, image, mode, server):
           and all(text == "nop" for _, _, text in hook[1:]),
           "missing-server error jumps to the embedded-address stub")
     rows = ndisasm(image.read(start, len(stub)), start)
+    key_delta = P.DEFAULT_SERVER_OPTION - (start + 9)
+    key_operand = f"esi{'+' if key_delta >= 0 else '-'}{abs(key_delta):#x}"
     check([text.replace(",byte +", ",") for _, _, text in rows] == [
-        "push ecx", "push esi", "push edi", f"call {start + 8:#x}", "pop esi",
-        "add esi,0x20", "mov edi,[ebp-0x494]", "cld", "lodsb", "stosb",
-        "test al,al", f"jnz {start + 19:#x}", "dec edi", "mov [ebp-0x490],edi",
-        "pop edi", "pop esi", "pop ecx", f"jmp {P.DEFAULT_SERVER_RETURN:#x}"],
-        "stub copies the NUL-terminated address, sets the string end, restores registers and resumes parsing")
+        "push ecx", "push edx", "push esi", "push edi", f"call {start + 9:#x}", "pop esi",
+        f"lea edx,[{key_operand}]", "add esi,0x2a", "mov edi,[edx]", "cld", "lodsb", "stosb",
+        "test al,al", f"jnz {start + 22:#x}", "dec edi", "mov [edx+0x4],edi",
+        "mov dword [edx+0x224],0x4", "pop edi", "pop esi", "pop edx", "pop ecx",
+        f"jmp {P.DEFAULT_SERVER_RETURN:#x}"],
+        "stub initializes the server key and type_string, preserves registers and repeats the original option read")
+    # Regression: filling only the stack string reached the login screen,
+    # but left the parsed key unset and native login input did not work.
+    check(P.DEFAULT_SERVER_RETURN == 0x1EAE47 and image.read(P.DEFAULT_SERVER_RETURN, 11)
+          == bytes.fromhex("8d856cfbffffb950c5a900"),
+          "fallback resumes before the original server-key read, not just host:port parsing")
     encoded = P.parse_server(server).encode("ascii") + b"\0"
     check(image.read(start + len(stub), len(encoded)) == encoded,
           "embedded host:port is terminated and fits the client buffers")

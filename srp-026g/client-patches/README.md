@@ -148,12 +148,12 @@ original bytes first, so another build or an already patched file is refused.
 ### 7. An embedded default login server (optional)
 
 - **Where:** the missing-server error at VA 0x1EB25B becomes a jump to a
-  40-byte stub after the snapshot upload, followed by the address string.
+  51-byte stub after the snapshot upload, followed by the address string.
 - **When:** only when neither `-server` nor `-replay` was supplied. Explicit
   options keep their original behavior, including invalid-address handling.
-- **How:** the stub copies the address into the client's existing 512-byte
-  buffer, updates its end pointer, and resumes the original host/port
-  parsing at 0x1EAE90. It uses relative addressing, so rebasing works.
+- **How:** the stub initializes the parsed `server` key's 512-byte buffer,
+  end pointer and string type, then repeats the original option read at
+  0x1EAE47. It uses relative addressing, so rebasing works.
 - Both full variants support it. The PE section grows when needed, and the
   existing relocation and checksum handling covers the new hook. Build
   hashes depend on the embedded address.

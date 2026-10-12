@@ -47,9 +47,9 @@ Patches:
   warning when detected video memory is below 320 MiB. The detected size
   and the original fallback for an unknown size are kept;
 - optionally, a default login server (--server=host:port at patch time).
-  The missing-server error at 0x1EB25B becomes a jump into a 40-byte stub
-  appended to the upload code. It fills the existing address string and
-  resumes the original connection path. Explicit server/replay options
+  The missing-server error at 0x1EB25B becomes a jump into a 51-byte stub
+  appended to the upload code. It initializes the parsed server key and
+  repeats the original option read and connection path. Explicit server/replay options
   take their original paths. The lobby address still comes from login;
 - the default of -hash_check_interval_in_ms, 100 -> 50 (the imm32 of
   `mov dword [esp+18h],64h` at 0x27CC4F, one byte at 0x27CC53). A stock
@@ -108,7 +108,8 @@ MEMORY_CHECK = (0x106411, bytes.fromhex("730f"), bytes.fromhex("eb0f"))
 # options were absent. Replace the push+call with jmp + nops when embedding.
 DEFAULT_SERVER_HOOK = (0x1EB25B, bytes.fromhex("6890a99f00e81b83f2ff"))
 DEFAULT_SERVER_OFFSET = 420  # immediately after the snapshot upload code
-DEFAULT_SERVER_RETURN = 0x1EAE90
+DEFAULT_SERVER_RETURN = 0x1EAE47
+DEFAULT_SERVER_OPTION = 0xA9C550
 
 
 # network_client::try_send_all, the one-time read of the option object
@@ -311,7 +312,7 @@ def build(original, mode, code=None, server=None):
             sys.exit("embedding a server requires the standard 420-byte snapshot cave")
         stub = open(default_server_bin(mode), "rb").read()
         # The checked-in stub ends with the relative jump to the original
-        # host:port path; reject a stub assembled for the other placement.
+        # server-option read; reject a stub assembled for the other placement.
         if len(stub) < 5 or stub[-5] != 0xE9 or \
                 cave_va + upload_size + len(stub) + struct.unpack_from("<i", stub, len(stub) - 4)[0] != DEFAULT_SERVER_RETURN:
             sys.exit("the default-server stub has the wrong return target")
