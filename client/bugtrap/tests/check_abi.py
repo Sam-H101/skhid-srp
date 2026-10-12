@@ -11,6 +11,6 @@ for line in Path(__file__).with_name("exports.txt").read_text().splitlines():
     ordinal, name = line.split()
     assert actual.get(name) == int(ordinal), (name, actual.get(name), ordinal)
 imports = re.findall(r"Import \{\s+Name: (\S+)", text)
-assert set(name.lower() for name in imports) == {"kernel32.dll", "user32.dll", "gdi32.dll"}, imports
+assert set(name.lower() for name in imports) == {"kernel32.dll", "user32.dll", "gdi32.dll", "shell32.dll"}, imports
 assert "Arch: i386" in text
-print("PASS ABI: all 82 legacy exports and ordinals; Win32; imports only kernel32/user32/gdi32")
+print("PASS ABI: all 82 legacy exports and ordinals; Win32; imports only kernel32/user32/gdi32/shell32")

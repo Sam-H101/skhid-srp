@@ -43,7 +43,7 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
         -minimum_resources_memory_size: the resources arenas' floor.
         Two different arenas: docs/notes/README.md.)
     <output>/game/binaries/x86/bugtrap.dll
-        the Rust SRP crash reporter; saves dumps locally with no upload button.
+        the Rust SRP crash reporter; saves dumps locally; Submit Bug opens SRP Discord in the browser.
     <output>/game/resources/ssl/survarium_login_server.crt
         srp's login certificate (beside this script; the same file as in ../certs): the client accepts the
         login server only with this very file.

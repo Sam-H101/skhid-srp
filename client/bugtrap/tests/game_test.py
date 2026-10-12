@@ -120,7 +120,7 @@ def main():
     content = log.read_text(errors="replace")
     print(content)
     assert result.returncode == 0, "Controller failed; see game-test.log"
-    assert "SUBMIT_DISABLED=1" in content and "CRASH_DIALOG_CLOSED" in content
+    assert "DISCORD_BUTTON=1" in content and "CRASH_DIALOG_CLOSED" in content
     assert "Crash dump saved:" in content
     dumps = set(game.glob("SRP-crash-*.dmp")) - set(before)
     assert len(dumps) == 1, dumps

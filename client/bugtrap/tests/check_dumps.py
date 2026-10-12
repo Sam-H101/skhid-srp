@@ -59,7 +59,7 @@ def main():
             shutil.copy2(build / name, exe / name)
         env = os.environ.copy()
         previous = {}
-        modes = sys.argv[2:] or ("silent", "cpp", "thread", "pre-handler", "stack", "cancel", "silent",
+        modes = sys.argv[2:] or ("silent", "cpp", "thread", "pre-handler", "stack", "cancel", "discord", "silent",
                      "continue-cpp", "continue-seh", "continue-net",
                      "execute-cpp", "execute-seh", "execute-net", "recursive", "concurrent", "snapshot-overlap",
                      "fallback", "failure")
@@ -105,8 +105,10 @@ def main():
             assert exception_stream(dump) == (thread, code), mode
             if mode == "pre-handler":
                 assert result.returncode == 23, result.returncode
-            if mode == "cancel":
+            if mode in ("cancel", "discord"):
                 assert "closed_dialog" in output, (output, result.returncode)
+            if mode == "discord":
+                assert "discord_invite_opened_dialog_kept" in output, output
             expected = ("outer_handler_reached" if mode.startswith("continue-") else
                         "synthetic_returned" if mode.startswith("execute-") else
                         "recursive_capture_rejected" if mode == "recursive" else

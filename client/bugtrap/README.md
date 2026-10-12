@@ -11,14 +11,21 @@ callbacks or the dialog. Closing the dialog keeps the dump. Existing files are
 never overwritten. If the EXE folder is unwritable, it tries the Windows temporary
 folder; the dialog shows the filename and folder in separate labeled fields,
 or a failure message. Long folders use middle ellipsis. It uses static text
-without selection or scrollbars, a larger heading and a Close footer in the
-style of BugTrap. Fonts are 11-point Segoe UI on Windows and DejaVu Sans under Wine.
+without selection or scrollbars. The layout follows the original C++
+`IDD_SIMPLE_DLG`: an 8-point MS Shell Dlg font, white message panel, thin divider,
+and gray footer with Submit Bug and Close buttons. The panel is taller to fit
+the dump details; the original Mail and More controls are omitted. The original
+green beetle icon (`vostok/sources/BugTrap/res/Bug.ico`) is embedded in the DLL
+and used in both the message panel and window title.
 
-There is no submit button. Email/upload entry points fail with
-`ERROR_NOT_SUPPORTED`, and legacy support destinations are discarded. Nothing is
-sent to the original developers or Discord. The DLL imports only `kernel32.dll`,
-`user32.dll` and `gdi32.dll`; it loads `dbghelp.dll` by absolute path from beside
-the EXE or the Windows system directory when capturing a dump.
+Submit Bug opens [SRP Discord](https://discord.gg/Pxa4prXfwu) in the default
+browser, only when clicked. The dialog stays open so the player can attach the
+saved dump manually. A browser-launch failure displays the invite address.
+Nothing is uploaded automatically. Email/upload entry points fail with
+`ERROR_NOT_SUPPORTED`, and legacy support destinations are discarded. The DLL
+imports `kernel32.dll`, `user32.dll`, `gdi32.dll` and `shell32.dll` (for the browser
+link); it loads `dbghelp.dll` by absolute path from beside the EXE or the Windows
+system directory when capturing a dump.
 
 ## Install
 
@@ -110,7 +117,7 @@ rustc --edition 2024 --test src/arithmetic.rs -o target/arithmetic-test
 ./target/arithmetic-test
 ```
 
-The eighteen crash cases verify exception codes and thread IDs, module presence, the
+The nineteen crash cases verify exception codes and thread IDs, module presence, the
 game error comment, callback ordering, stack overflow, dialog closure, repeated
 crashes, Unicode paths, a different working directory, read-only EXE fallback,
 and explicit failure when neither folder is writable. They also cover all three
@@ -120,7 +127,9 @@ writer behind a gate. The concurrency case verifies that the dump survives and
 the second crash does not wait for the primary callback. A snapshot-overlap case
 checks that a real crash saves its own exception stream and runs its callback
 after the snapshot finishes. Run as a normal user so
-permission tests are effective. The ABI check also rejects runtime/network import
+permission tests are effective. The Discord case intercepts only the browser
+API call and checks the exact invite, absence of automatic launches, and that
+the dialog and dump survive the click; it does not contact Discord. The ABI check also rejects runtime/network import
 changes and checks all 82 legacy ordinals.
 
 For an **idle, disposable installed 0.26g client** with `survarium_skhid.exe`:

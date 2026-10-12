@@ -126,13 +126,13 @@ int main(int argc, char** argv)
         GetDlgItemTextW(crashDialog, IDC_INTRO2, text, 33000);
         WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, sizeof(utf8), NULL, NULL);
         printf("CRASH_DIALOG %s\n", utf8);
-        BOOL disabled = !IsWindowEnabled(GetDlgItem(crashDialog, IDC_SUBMIT_BUG));
-        printf("SUBMIT_DISABLED=%d\n", disabled);
+        BOOL discord = IsWindowEnabled(GetDlgItem(crashDialog, IDC_SUBMIT_BUG));
+        printf("DISCORD_BUTTON=%d\n", discord);
         Sleep(500);
         Screenshot(crashDialog, "crash-dialog.bmp");
         PostMessage(crashDialog, WM_COMMAND, IDCANCEL, 0);
         puts("CRASH_DIALOG_CLOSED"); fflush(stdout);
-        result = disabled ? 0 : 9;
+        result = discord ? 0 : 9;
     } else puts("NO_CRASH_DIALOG");
     if (WaitForSingleObject(process.hProcess, 15000) != WAIT_OBJECT_0) {
         puts("GAME_DID_NOT_EXIT; terminating only the test process");

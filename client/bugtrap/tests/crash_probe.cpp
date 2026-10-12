@@ -5,6 +5,8 @@
 #include "bugtrap_abi.h"
 
 static BOOL expectFailure;
+static BOOL testDiscord;
+static LONG browserCalls;
 static HANDLE callbackRelease;
 static HANDLE secondEntered;
 
@@ -133,6 +135,41 @@ static int SyntheticMode(const char* mode)
     return 0;
 }
 
+static HINSTANCE WINAPI BrowserProbe(HWND, LPCWSTR verb, LPCWSTR url,
+                                    LPCWSTR parameters, LPCWSTR directory, INT)
+{
+    if (wcscmp(verb, L"open") || wcscmp(url, L"https://discord.gg/Pxa4prXfwu") ||
+        parameters || directory) ExitProcess(95);
+    InterlockedIncrement(&browserCalls);
+    return (HINSTANCE)33;
+}
+
+static BOOL InterceptBrowser()
+{
+    // Intercept only this DLL's browser import. Exercise its button handler
+    // without launching a real browser or contacting Discord from the test.
+    BYTE* module = (BYTE*)GetModuleHandleA("BugTrap.dll");
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)module;
+    IMAGE_NT_HEADERS* pe = (IMAGE_NT_HEADERS*)(module + dos->e_lfanew);
+    IMAGE_IMPORT_DESCRIPTOR* import = (IMAGE_IMPORT_DESCRIPTOR*)(module +
+        pe->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+    for (; import->Name; ++import) {
+        if (_stricmp((char*)module + import->Name, "shell32.dll")) continue;
+        IMAGE_THUNK_DATA* name = (IMAGE_THUNK_DATA*)(module + import->OriginalFirstThunk);
+        IMAGE_THUNK_DATA* slot = (IMAGE_THUNK_DATA*)(module + import->FirstThunk);
+        for (; name->u1.AddressOfData; ++name, ++slot) {
+            if (IMAGE_SNAP_BY_ORDINAL(name->u1.Ordinal)) continue;
+            IMAGE_IMPORT_BY_NAME* symbol = (IMAGE_IMPORT_BY_NAME*)(module + name->u1.AddressOfData);
+            if (strcmp((char*)symbol->Name, "ShellExecuteW")) continue;
+            DWORD old;
+            if (!VirtualProtect(&slot->u1.Function, sizeof(DWORD), PAGE_READWRITE, &old)) return FALSE;
+            slot->u1.Function = (DWORD)BrowserProbe;
+            return VirtualProtect(&slot->u1.Function, sizeof(DWORD), old, &old);
+        }
+    }
+    return FALSE;
+}
+
 static BOOL CALLBACK CloseDialog(HWND window, LPARAM)
 {
     DWORD process;
@@ -143,8 +180,14 @@ static BOOL CALLBACK CloseDialog(HWND window, LPARAM)
     GetDlgItemTextW(window, IDC_INTRO2, text, 33000);
     if (!wcsstr(text, expectFailure ? L"Could not save a crash dump" : L"Crash dump saved:"))
         return TRUE;
-    if (IsWindowEnabled(GetDlgItem(window, IDC_SUBMIT_BUG)))
+    if (!IsWindowEnabled(GetDlgItem(window, IDC_SUBMIT_BUG)))
         ExitProcess(92);
+    if (testDiscord) {
+        if (browserCalls != 0) ExitProcess(96);
+        SendMessage(window, WM_COMMAND, IDC_SUBMIT_BUG, 0);
+        if (browserCalls != 1 || !IsWindow(window)) ExitProcess(97);
+        puts("discord_invite_opened_dialog_kept");
+    }
     puts(expectFailure ? "failed_dump_dialog" : "closed_dialog");
     fflush(stdout);
     PostMessage(window, WM_COMMAND, IDCANCEL, 0);
@@ -224,7 +267,9 @@ int main(int argc, char** argv)
     if (!strcmp(mode, "snapshot-overlap")) return SnapshotOverlap();
     if (!strcmp(mode, "recursive")) BT_SetPreErrHandler(RecursiveCapture, 0);
     expectFailure = !strcmp(mode, "failure");
-    if (!strcmp(mode, "cancel") || expectFailure)
+    testDiscord = !strcmp(mode, "discord");
+    if (testDiscord && !InterceptBrowser()) return 98;
+    if (!strcmp(mode, "cancel") || expectFailure || testDiscord)
     {
         BT_SetActivityType(BTA_SHOWUI);
         CloseHandle(CreateThread(NULL, 0, DismissUI, NULL, 0, NULL));
