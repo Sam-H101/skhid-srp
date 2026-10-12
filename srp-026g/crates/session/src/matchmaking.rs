@@ -313,6 +313,12 @@ impl Matchmaking {
         None
     }
 
+    /// Players waiting for matchmaking, counting every squad member separately.
+    /// Reading this count does not form matches or advance the queue.
+    pub fn queued_players(&self) -> usize {
+        self.inner.locked().waiting()
+    }
+
     /// How many players wait at each level (a level over the last counts
     /// as the last).
     pub fn waiting_by_level<const N: usize>(&self) -> [u16; N] {
@@ -839,6 +845,28 @@ mod tests {
             account_id: 1000 + id,
             profile_id: 1,
         }
+    }
+
+    #[test]
+    fn queued_players_counts_members_without_forming_matches() {
+        let mm = Matchmaking::new(Duration::ZERO);
+        let now = Instant::now();
+        assert_eq!(mm.queued_players(), 0);
+        mm.queue(&[player(1), player(2)], true, now);
+        mm.queue(&[player(3)], false, now);
+        assert_eq!(mm.queued_players(), 3);
+        assert_eq!(mm.queued_players(), 3);
+        assert_eq!(mm.match_count(), 0);
+        mm.leave_queue(3);
+        assert_eq!(mm.queued_players(), 2);
+        mm.queue(&[player(3)], false, now);
+        let Some(QueueState::Placed { match_id, .. }) = mm.poll(3, now) else {
+            panic!("match should form");
+        };
+        assert_eq!(mm.queued_players(), 0);
+        assert_eq!(mm.match_count(), 1);
+        mm.end_match(match_id);
+        assert_eq!(mm.queued_players(), 0);
     }
 
     fn after(start: Instant, seconds: u64) -> Instant {

@@ -48,6 +48,12 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 /// moved over field for field.
 pub struct RegistryHost(pub Arc<MatchRegistry>);
 
+impl web_server::MatchCounter for RegistryHost {
+    fn active_matches(&self) -> usize {
+        self.0.match_count()
+    }
+}
+
 impl MatchHost for RegistryHost {
     fn create(&self, setup: lobby::MatchSetup) -> Result<lobby::MatchTicket, String> {
         let setup = matches::MatchSetup {
@@ -464,6 +470,7 @@ impl Stack {
     pub fn web_game(&self) -> web_server::Game {
         web_server::Game {
             accounts: self.accounts.clone(),
+            matches: Arc::new(RegistryHost(self.registry.clone())),
             lobby: Arc::new(WebLink {
                 accounts: self.accounts.clone(),
                 inbox: self.inbox.clone(),
