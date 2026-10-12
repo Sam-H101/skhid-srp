@@ -47,6 +47,19 @@ Patches:
   tick, and the match server then cannot compare their worlds (match.md
   section 14). With 50 every client reports every tick. The key on the
   command line still overrides it;
+- the battery rule of modes 2 and 3 (gather_victory_items_rule_core's
+  container event handler 0x313A50): two instructions become nops. When a
+  team's count reaches the number of batteries the handler stores the
+  completion time (+0x15C) and clears the "containers can be used" byte
+  (+0x160); from then on it counts no event (`jnz` at 0x313A62) and no
+  container can be used (0x31CB16). Neither field is in the rule's
+  serialize/deserialize, so a rollback takes the tenth battery out of the
+  container again and leaves both as they were: the replay of the same
+  tick cannot put it in, and nobody can use a container for the rest of
+  the match (9 of 9 live matches in which a team had nine; match.md
+  section 26). Without the two instructions every event is counted and
+  the containers stay usable, so the replay ends as the first run did.
+  The match's end is the server's (it reads the points);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -95,6 +108,15 @@ HASH_INTERVAL_VA = 0x27CC4F
 HASH_INTERVAL = (HASH_INTERVAL_VA, bytes.fromhex("c744241864000000"), bytes.fromhex("c744241832000000"))
 HASH_INTERVAL_BYTE_VA = HASH_INTERVAL_VA + 4  # the one byte that differs
 HASH_INTERVAL_MS = 50                         # = one tick
+
+# gather_victory_items_rule_core's container event handler 0x313A50:
+# `cmp dword [ecx+15Ch],-1` / `jnz 313B3Bh` (an event after the completion
+# is not counted) -> the jnz becomes nops;
+GATHER_EVENTS = (0x313A62, bytes.fromhex("0f85d3000000"), b"\x90" * 6)
+# `mov [ecx+15Ch],edx` / `mov byte [ecx+160h],0` / `ret 0Ch` (at the
+# completion no container can be used any more) -> the mov byte becomes nops.
+GATHER_LOCK = (0x313B34, bytes.fromhex("c6816001000000"), b"\x90" * 7)
+GATHER = (GATHER_EVENTS, GATHER_LOCK)
 
 # game_world_core::on_hash_mismatch, 0x47B bytes of code + 5 int3 of padding
 HASH_MISMATCH_VA, HASH_MISMATCH_SIZE, HASH_MISMATCH_REGION = 0x325A60, 0x47B, 0x480
@@ -266,6 +288,9 @@ def build(original, mode, code=None):
     patch(data, *MUTEX)
     patch(data, *HASH_INTERVAL)
     rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1)]
+    for site in GATHER:
+        patch(data, *site)
+        rewritten.append((site[0], site[0] + len(site[1])))
     if mode == "hash-mismatch":
         if len(cave) > HASH_MISMATCH_SIZE:
             sys.exit(f"the cave code is {len(cave)} bytes; {HASH_MISMATCH_SIZE} fit")
@@ -299,7 +324,8 @@ def build(original, mode, code=None):
         data = add_section(data, cave)
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
-    return data, (f"certificate check, mutex, hash interval {HASH_INTERVAL_MS} ms, {len(cave)} bytes of upload code {where} "
+    return data, (f"certificate check, mutex, hash interval {HASH_INTERVAL_MS} ms, battery rule, "
+                  f"{len(cave)} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} hooks")
 
 

@@ -215,3 +215,7 @@ pass. None of it was seen by a client.
 
 - **Done, staged on 026g.skhid.link (restart when no match runs):** a player who left its match by the menu is queued for another match instead of being sent back to the one it left (match.md §25; `srp-026g/WORK.md`). The same is in the `srp-021d` tree, not deployed.
 - **The owner's to decide:** a match of two whose one player left for good goes on with the other alone to the time limit. Should it end at once, and who has won?
+
+## 0.26g, added 2026-10-12 (evening)
+
+- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team cannot put its last battery in, and after the try nobody can use a container (match.md §26; 9 of 9 live matches). The fix is two instructions of the client (client_patch.md §3.7): built (`target-a4/scratch/survarium_srp.section.exe`), self-tested, not run in a match, not published. Publishing means a new overlay zip and every player taking it.

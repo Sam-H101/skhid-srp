@@ -18,7 +18,10 @@ Checks, per variant (cert-only, section, hash-mismatch):
  8. Windows still reads the survarium.com certificate out of the file with
     the exact CryptQueryObject call the client makes at start (0x13310);
  9. full builds only: the default hash interval at 0x27CC4F is 50 ms, one
-    byte changed, under no relocation; cert-only keeps the original 100.
+    byte changed, under no relocation; cert-only keeps the original 100;
+10. full builds only: the battery rule's two instructions (0x313A62,
+    0x313B34) are nops between the instructions they stood between, under
+    no relocation, and no branch lands inside them; cert-only keeps them.
 """
 
 import ctypes
@@ -209,6 +212,9 @@ def allowed_ranges(original, mode, cave_size):
     rewritten = [(P.CERT[0], P.CERT[0] + 3), (P.MUTEX[0], P.MUTEX[0] + 2)]
     ranges.append((P.file_offset(P.HASH_INTERVAL_BYTE_VA), 1))
     rewritten.append((P.HASH_INTERVAL_BYTE_VA, P.HASH_INTERVAL_BYTE_VA + 1))
+    for va, old, _ in P.GATHER:
+        ranges.append((P.file_offset(va), len(old)))
+        rewritten.append((va, va + len(old)))
     for va, old in P.HOOKS:
         ranges.append((P.file_offset(va), len(old)))
         rewritten.append((va, va + len(old)))
@@ -342,6 +348,51 @@ def test_hash_interval(original, image, mode):
     check(not hits, "no branch of try_send_all lands inside that instruction")
 
 
+def test_gather(original, image, mode):
+    """The battery rule's container event handler (match.md section 26)."""
+    # The handler: 0x313A50 to its last `ret 0Ch` at 0x313B3B.
+    start, end = 0x313A50, 0x313B3E
+    before = {text for _, _, text in ndisasm(Image(original).read(start, end - start), start)}
+    check({"cmp dword [ecx+0x15c],byte -0x1", "jnz near 0x313b3b", "mov [ecx+0x15c],edx",
+           "mov byte [ecx+0x160],0x0", "ret 0xc"} <= before,
+          "the original handler has `cmp [ecx+0x15c],-1` / `jnz 0x313b3b` and `mov [ecx+0x15c],edx` / "
+          "`mov byte [ecx+0x160],0` / `ret 0xc`")
+    rows = ndisasm(image.read(start, end - start), start)
+    at = {address: text for address, _, text in rows}
+    if mode == "cert-only":
+        check(all(image.read(va, len(old)) == old for va, old, _ in P.GATHER),
+              "cert-only: the handler is the original's")
+        return
+    (events_va, events_old, _), (lock_va, lock_old, _) = P.GATHER
+    nops = lambda va, size: all(at.get(va + i) == "nop" for i in range(size))
+    check(at.get(0x313A5B) == "cmp dword [ecx+0x15c],byte -0x1" and nops(events_va, len(events_old))
+          and at.get(0x313A68) == "mov eax,[esp+0x8]",
+          f"{events_va:#x}: six nops between `cmp dword [ecx+0x15c],-1` and `mov eax,[esp+0x8]`: "
+          "an event after the completion is counted")
+    check(at.get(0x313B2E) == "mov [ecx+0x15c],edx" and nops(lock_va, len(lock_old))
+          and at.get(0x313B3B) == "ret 0xc",
+          f"{lock_va:#x}: seven nops between `mov [ecx+0x15c],edx` and `ret 0xc`: "
+          "the containers stay usable")
+    relocated = sorted(rva for kind, rva in Image(original).relocations().values()
+                       if kind == 3 and any(rva + 4 > va and rva < va + len(old) for va, old, _ in P.GATHER))
+    check(not relocated, "no base relocation of the original covers either instruction")
+    interiors = [(va + 1, va + len(old)) for va, old, _ in P.GATHER]
+    hits = [f"{address:#x}: {text}" for address, _, text in ndisasm(Image(original).read(start, end - start), start)
+            if branch_target(text) is not None
+            and any(lo <= branch_target(text) < hi for lo, hi in interiors)]
+    check(not hits, "no branch of the handler lands inside either instruction")
+    # The byte the second one cleared: set by the rule's constructor,
+    # tested by the container's can_use, and written nowhere else as a
+    # `mov byte [reg+160h],imm` of this class.
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    clears = sorted(P.TEXT_VA + m.start() for m in re.finditer(rb"\xC6[\x80-\x87]\x60\x01\x00\x00\x00", text))
+    sets = sorted(P.TEXT_VA + m.start() for m in re.finditer(rb"\xC6[\x80-\x87]\x60\x01\x00\x00\x01", text))
+    check(lock_va in clears and 0x313A1F in sets
+          and not any(0x313000 <= va < 0x315000 for va in clears if va != lock_va),
+          f"`mov byte [reg+0x160],0` is at {lock_va:#x} and nowhere else in the rule's code "
+          "(the constructor sets it at 0x313A1F)")
+
+
 def test_no_branch_into_hooks(original):
     print("branches into the hooks (original exe)")
     image = Image(original)
@@ -466,6 +517,7 @@ def main():
         test_pe(original, image, mode)
         test_bytes(original, image, mode, cave)
         test_hash_interval(original, image, mode)
+        test_gather(original, image, mode)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
                 check(open(INSTALLED_CERT_ONLY, "rb").read() == bytes(data),

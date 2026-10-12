@@ -23,8 +23,9 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
 
     <output>/game/binaries/x86/survarium_skhid.exe
         the patched client (patch_026g.py: the certificate check, and in
-        the full builds the single-instance check, the 50 ms hash interval
-        and the snapshot upload). The original survarium.exe is not in the
+        the full builds the single-instance check, the 50 ms hash interval,
+        the battery rule and the snapshot upload). The original
+        survarium.exe is not in the
         overlay and stays as it is.
     <output>/game/binaries/x86/play_skhid.bat
         starts it from that folder (the client finds its certificate by a

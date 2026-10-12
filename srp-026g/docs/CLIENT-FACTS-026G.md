@@ -11,7 +11,8 @@
 > real clients play on it (SRP-026G.md); a fact that live play confirmed or
 > corrected says so, and `srp-026g/WORK.md` has the day's findings. The
 > players' exe is the full patch (section build, 50 ms hash interval); its
-> upload code runs in every live match.
+> upload code runs in every live match. It does not have the battery rule
+> patch of that evening yet (the table of patch sites below).
 
 Addresses are virtual addresses in `survarium.exe` 0.26g (image base
 0x10000; `.text` VA 0x11000 = file 0x400, so file offset = VA − 0x10C00 in
@@ -482,6 +483,8 @@ MATCH-SYNC-026G.md.
 | Certificate chain check | 0x12A10 | `83 EC 2C` → `31 C0 C3` | all | PROVEN live |
 | Single-instance mutex | 0x124F9 | `74 09` → `90 90` | full | PROVEN |
 | Default hash interval 100 → 50 ms | 0x27CC4F (the byte at 0x27CC53, file 0x26C053) | `C7 44 24 18 64 00 00 00` → `… 32 …` | full | PROVEN bytes; effect not tried live |
+| Battery rule: an event after the completion is counted | 0x313A62 (file 0x302E62), in the container event handler 0x313A50 | `0F 85 D3 00 00 00` → six `90` | full | PROVEN bytes; not run in a match |
+| Battery rule: the containers stay usable | 0x313B34 (file 0x302F34), same handler | `C6 81 60 01 00 00 00` → seven `90` | full | PROVEN bytes; not run in a match |
 | First-sync hook, in `on_match_ready` 0x27AA20 | 0x27AEA1 | `8B 9B 48 1C 1F 00` → `E9 rel32 90` | full | PROVEN |
 | Upload-request hook, 0xF6 case | 0x27A505 | `80 3D 2C D3 F1 01 00` → `E9 rel32 90 90` | full | PROVEN |
 | Upload code, section build (default) | new section `.srp`, RVA 0xA415000, VA 0xA425000, file 0xC4AA00, 0x200 bytes | 8th section; the Authenticode blob moves to 0xC4AC00 | `--cave=section` | PROVEN by the self-test; whether the client minds an 8th section: LIKELY harmless |
@@ -490,6 +493,13 @@ MATCH-SYNC-026G.md.
 
 Builds: `--cert-only` (only the first row; what step 0 installed), the full
 section build (**installed 2026-10-12**), the full hash-mismatch build.
+
+The two battery rule rows were added on the evening of 2026-10-12
+(`client_patch.md` §3.7; why: `match.md` §26, the tenth battery of modes 2
+and 3 cannot be put in). The exe installed that morning and the players'
+download (sha256 `166d25bc…1ddf`) are the full section build **without**
+them; with them the section build is sha256 `a39162d1…91ba`, and differs
+from that exe in those 13 bytes and the PE checksum only.
 
 ## Not proven against a client yet
 

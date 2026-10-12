@@ -139,6 +139,9 @@ section build of `patch_026g.py` (certificate check, single-instance check,
 the certificate patch (`--cert-only`), is beside it as
 `survarium_srp.cert-only.bak.exe`. The upload code runs in live matches
 since 2026-10-12 (`WORK.md`; `client_patch.md` was written before that).
+Since the evening of that day `patch_026g.py` also patches the battery rule
+(`client_patch.md` §3.7): the installed exe and the players' download do not
+have that yet.
 
 ### A match alone: the test bot (added 2026-10-12)
 

@@ -8,8 +8,9 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf` |
-| Checked | 2026-10-12: the tools here, run on the original, give exactly the exe and the certificate of the players' download of 026g.skhid.link (`Survarium-0.26g-srp-files.zip`), byte for byte |
+| Result (full patch) | 12 895 352 bytes, sha256 `a39162d1587e8b7f026569b8e7594ef451512eaaab282dba3249954a6f4891ba` |
+| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, made on 2026-10-12, holds the full patch **without patch 4** (added later that day): sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`. The two exes differ in the 13 bytes of patch 4 and the PE checksum, and in nothing else |
+| Checked | 2026-10-12: with patch 4 left out, the tools here, run on the original, give exactly the exe and the certificate of that download, byte for byte. With it: `selftest_026g.py` passes its checks of every site; the patched rule has **not been run in a match yet** |
 
 ## The files
 
@@ -50,7 +51,7 @@ at its top), `game/resources/ssl/survarium_login_server.crt` and
 every check and writes nothing.
 
 Other builds of the patch: `--cert-only` (only patch 1), `--cave=hash-mismatch`
-(patch 4 in another place, see below), `--check`.
+(patch 5 in another place, see below), `--check`.
 
 ## What each patch does
 
@@ -85,7 +86,35 @@ original bytes first, so another build or an already patched file is refused.
   every client reports every tick (`../docs/MATCH-SYNC-026G.md`). The key on
   the command line still overrides it.
 
-### 4. The snapshot upload (needed for any match)
+### 4. The battery rule of modes 2 and 3 (the last battery)
+
+- **Where:** two instructions of the rule's container event handler
+  (0x313A50) become `nop`s: `jnz 313B3Bh` at 0x313A62 (6 bytes) and
+  `mov byte [ecx+160h],0` at 0x313B34 (7 bytes).
+- **Why:** when a team's count reaches the number of batteries, the rule
+  stores its completion time and clears a byte that every container asks
+  before it lets anybody use it; from then on it counts no event. Neither
+  of the two is part of the world a client saves and loads. A client plays
+  a tick, and plays it again when an older input of another player arrives
+  (a rollback): the battery is in the player's hands again and the count is
+  one less again, but the byte stays cleared. So the last battery cannot be
+  put in on the replay, and nobody can put a battery in or take one out
+  for the rest of the match. Seen on the server: every match in which a
+  team had all batteries but one ended on time with that count (9 of 9);
+  the one match that ended by the rule was played by a player alone.
+- **What stays:** the rule counts every battery put in and taken out, sets
+  the completion time when a team has all of them and takes it back when
+  not, which is what the 0.21d client's rule does. The containers are never
+  closed. The match is ended by the server, 3 s after it reads the full
+  count, as before.
+- **State:** added on 2026-10-12, built and self-tested; not run in a match
+  yet, and not in the players' download yet. A client without it and a
+  client with it stay in step until a team's last battery goes in, and part
+  there (the server then starts the fewer of them from the others' world).
+- Evidence: `../docs/notes/match.md` section 26,
+  `../docs/notes/client_patch.md` section 3.7.
+
+### 5. The snapshot upload (needed for any match)
 
 - **Why:** 0.26g matches are lockstep: every client simulates, the server
   only relays inputs. A client can start or rejoin only from a snapshot of
@@ -109,7 +138,7 @@ original bytes first, so another build or an already patched file is refused.
 - Base relocations that overlap rewritten bytes are made no-ops, and the PE
   checksum is recomputed.
 
-### 5. The login certificate (a file, not an exe patch)
+### 6. The login certificate (a file, not an exe patch)
 
 - **What:** `survarium_login_server.crt` goes over
   `game/resources/ssl/survarium_login_server.crt`.
@@ -122,7 +151,7 @@ original bytes first, so another build or an already patched file is refused.
 ## Not ported, not done
 
 - The 0.21d mode 3 battery patch is not needed: 0.26g serializes the
-  next-battery time.
+  next-battery time. (Patch 4 above is another defect, 0.26g's own.)
 - A defect of the client itself is known and not patched: an input with the
   "previous weapon" bit from a player who holds something other than its two
   weapons can crash every client of a match
