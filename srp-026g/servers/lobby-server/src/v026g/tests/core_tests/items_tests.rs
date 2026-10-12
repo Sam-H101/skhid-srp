@@ -223,6 +223,114 @@ fn a_camouflage_and_decals_go_on_a_vest() {
     world.assert_clean();
 }
 
+/// Exercise the owner's account update without requiring a squad, and
+/// optionally the independent squadmate cache that uses the same revision.
+fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
+    let mut world = World::new(Duration::from_secs(60));
+    let observer = with_squad.then(|| world.connect("Alice"));
+    let actor = world.connect("Bob");
+    let source = give(&mut world, actor, "edge_torso_2", &[]);
+    let destination = give(&mut world, actor, "bm_torso_1", &[]);
+    let cosmetic = give(&mut world, actor, "camo_city", &[]);
+    let torso = (0..23)
+        .find(|&slot| Dictionary::shared().fits(dict("edge_torso_2"), slot))
+        .unwrap();
+    world.ask(
+        actor,
+        request::move_item(1, source, dict("edge_torso_2"), INVENTORY_SLOT, torso, 1),
+    );
+    world.ask(actor, ask::attach(source, cosmetic, 3));
+    let revision = world.account(actor).kits[0].revision;
+    let actor_id = world.ids[actor].0;
+    let squad_revision = |messages: &[Decoded]| {
+        messages.iter().rev().find_map(|message| {
+            let Decoded::SquadInfo { members, .. } = message else {
+                return None;
+            };
+            members
+                .iter()
+                .find(|member| member.account_id == actor_id)
+                .map(|member| (member.kit_id, member.kit_revision))
+        })
+    };
+    let listed = observer.map(|observer| {
+        form_squad(&mut world, observer, actor);
+        world.advance(Duration::from_secs(2));
+        // An unacknowledged earlier squad update would defer the next one.
+        for (address, _) in &world.clients {
+            let link = &world.core.links[address];
+            let crate::v026g::core::Stage::Player(player) = &link.stage else {
+                panic!("connected player")
+            };
+            assert!(
+                player
+                    .squad_serial
+                    .is_some_and(|serial| link.transport.is_delivered(serial))
+            );
+        }
+        assert!(!world.core.squads_dirty);
+        squad_revision(&world.take(observer)).expect("initial squad revision")
+    });
+    world.take(actor);
+    world.ask(actor, ask::attach(destination, cosmetic, 3));
+    let messages = world.take(actor);
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Decoded::Permitted(Permitted::UpgradeAttached {
+            detach_first: true,
+            ..
+        })
+    )));
+    let updated = messages
+        .iter()
+        .find_map(|message| match message {
+            Decoded::Account(account) => Some(account),
+            _ => None,
+        })
+        .expect("owner receives updated account");
+    assert_eq!(
+        updated.revisions[0],
+        revision + 1,
+        "owner must refresh the equipped vest"
+    );
+    assert!(
+        world
+            .account(actor)
+            .item(source)
+            .unwrap()
+            .upgrades
+            .is_empty()
+    );
+    assert_eq!(
+        world.account(actor).item(destination).unwrap().upgrades[0].id,
+        cosmetic
+    );
+    assert_same_items(&mut world, actor);
+    if let Some(observer) = observer {
+        world.advance(Duration::from_secs(2));
+        let before = listed.unwrap();
+        let after =
+            squad_revision(&world.take(observer)).expect("squadmate receives changed revision");
+        assert_eq!(before.0, after.0);
+        assert_ne!(before.1, after.1);
+        world.ask(observer, request::squad_member(actor_id, after.0));
+        assert!(world.take(observer).iter().any(|message| matches!(message,
+            Decoded::SquadMemberAccount { revision, .. } if *revision == after.1
+        )));
+    }
+    world.assert_clean();
+}
+
+#[test]
+fn moving_camouflage_refreshes_the_owner_without_a_squad() {
+    moving_camouflage_to_a_spare_vest(false);
+}
+
+#[test]
+fn moving_camouflage_refreshes_the_squadmate() {
+    moving_camouflage_to_a_spare_vest(true);
+}
+
 #[test]
 fn a_modification_is_rerolled_and_chosen() {
     let mut world = World::new(Duration::from_secs(60));
