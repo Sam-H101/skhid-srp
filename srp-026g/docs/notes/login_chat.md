@@ -63,7 +63,7 @@ The lobby address now comes straight from the login reply 0x08 (§4.1). `network
 
 There is no messaging address at all, because messaging rides inside the lobby connection (§5.1).
 
-**srp:** `servers/browser-server` is not used by a 0.26g client. The login reply must carry the lobby address instead.
+**srp:** the unused `servers/browser-server` crate has been removed from this workspace; the 0.21d copy remains in `srp-021d/servers/browser-server`. The 0.26g login reply carries the lobby address directly.
 
 ---
 

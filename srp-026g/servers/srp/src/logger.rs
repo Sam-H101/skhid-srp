@@ -4,9 +4,8 @@
 //!
 //! Each record is routed by its `target()` — the `log!` macros default the target
 //! to the module path, which starts with the originating crate name
-//! (`login_server`, `lobby_server`, `browser_server`, …). actix's own logs
-//! (target `actix*`) are folded into the browser server's file. Anything else
-//! (including this `srp` orchestrator) goes to `srp.log`.
+//! (`login_server`, `lobby_server`, `match_server`, `web_server`). Anything
+//! else (including this `srp` orchestrator) goes to `srp.log`.
 //!
 //! The bootstrap scripts open a tab per `logs/<server>.log` and tail it, so logs
 //! remain separable even though everything runs in one process.
@@ -25,7 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::{LevelFilter, Log, Metadata, Record};
 
-const SERVERS: [&str; 6] = ["login", "lobby", "browser", "match", "web", "srp"];
+const SERVERS: [&str; 5] = ["login", "lobby", "match", "web", "srp"];
 
 /// Where the log of each day is kept: unset, empty or `off` for nowhere.
 const LOG_DIR_VAR: &str = "SRP_LOG_DIR";
@@ -218,8 +217,6 @@ fn server_for_target(target: &str) -> &'static str {
         "login"
     } else if target.starts_with("lobby_server") || target.starts_with("messaging") {
         "lobby"
-    } else if target.starts_with("browser_server") || target.starts_with("actix") {
-        "browser"
     } else if target.starts_with("match_server") {
         "match"
     } else if target.starts_with("web_server") {

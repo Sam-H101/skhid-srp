@@ -26,10 +26,10 @@ send its world, which the client patch adds (`client-patches/`). An unpatched
 0.26g client does not even start: its code-signing certificate ran out in
 2015.
 
-This folder began as a copy of `srp-021d`, and the 0.21d servers are still in
-it, compile and are tested (the shared crates and several tests use them), but
-`srp` here starts only the 0.26g servers. The 0.21d server that is hosted is
-built from `srp-021d`.
+This folder began as a copy of `srp-021d`. Its unused browser-server crate
+has been removed; the remaining 0.21d server code still compiles and is
+tested (the shared crates and several tests use it). `srp` here starts only
+the 0.26g servers. The hosted 0.21d server is built from `srp-021d`.
 
 ## Build, run, test
 
@@ -37,7 +37,7 @@ A recent Rust toolchain and OpenSSL (`flake.nix` gives a dev shell with both).
 
 ```bash
 cargo run -p srp
-cargo test --workspace       # 1016 tests
+cargo test --workspace
 ```
 
 On Windows, point cargo at OpenSSL first:

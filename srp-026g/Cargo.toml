@@ -6,7 +6,6 @@ members = [
   "crates/udp-transport",
   "crates/vostok",
 
-  "servers/browser-server",
   "servers/lobby-server",
   "servers/login-server",
   "servers/match-server",
