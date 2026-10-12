@@ -9,7 +9,9 @@ published.
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
 | Result (full patch) | 12 895 352 bytes, sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d` |
-| The players' download of 2026-10-12 | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`: the full patch without patches 6 and 7. The current build differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte) |
+| The players' download | `Survarium-0.26g-srp-files.zip` of 026g.skhid.link, since 2026-10-12 18:43 UTC: 4 871 691 bytes, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`. Its exe is the full patch above (patch revision 1) |
+| Checked | 2026-10-12: the tools here, run on the original, give exactly the exe, the certificate, the launcher and the README of that download, byte for byte. A game with this exe signed in to a local server (logged as patch revision 1) and played a match |
+| The first download | 2026-10-12, until 18:43 UTC: exe sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, the full patch without patches 6 and 7 (it says patch revision 0). The current exe differs from it in the one byte of patch 6, the six bytes and one relocation entry of patch 7 and the PE checksum, and in nothing else (compared byte by byte). The two play together |
 
 ## The files
 
@@ -151,8 +153,9 @@ original bytes first, so another build or an already patched file is refused.
 - It is what the exe says of itself, not proof: a changed exe can say
   anything.
 - Full builds only; `--cert-only` keeps the code. The self-test works the
-  field out from the instructions that fill it. Not tried with a real
-  client yet. Evidence: `../docs/notes/client_patch.md` section 6.
+  field out from the instructions that fill it. Tried on 2026-10-12: a
+  game with this exe signed in to a local server, which logged patch
+  revision 1 (a client sending the stock field: 0). Evidence: `../docs/notes/client_patch.md` section 6.
 
 ## Not ported, not done
 
