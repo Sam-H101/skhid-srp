@@ -53,7 +53,8 @@ use the game's own 1234, 1235, 1236.
 4. `docker compose config` (checks the file and the settings), then
    `docker compose build srp26`, then `docker compose up -d srp26`.
 5. For HTTPS on the web page, on a host whose port 443 is free: point a
-   domain at the host, set `SRP_WEB_DOMAIN` and `SRP_WEB_TRUST_PROXY=on`,
+   domain at the host, set `SRP_WEB_DOMAIN` (several names: commas between
+   them, the whole in quotes) and `SRP_WEB_TRUST_PROXY=on`,
    then `docker compose --profile tls up -d`.
 6. Check: `docker compose ps` shows the container healthy (the check opens
    the web page's port; the game ports are UDP), and the log's first lines
@@ -75,7 +76,7 @@ Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 | `SRP26_DOWNLOAD_DIR` | The folder with the download (default `./download`) |
 | `SRP26_CPUS`, `SRP26_MEMORY` | The container's limits (1 CPU, 512 MB) |
 | `SRP_ADMIN_TOKEN`, `SRP_ADMIN_PATH`, `SRP_ADMIN_IPS`, `SRP_WEB_TRUST_PROXY`, `SRP_WEB_DOMAIN` | The admin page and the web page, as for 0.21d: the admin page is on only with a token and a path, for the listed addresses only |
-| `SRP_DOWNLOAD_FILE`, `SRP_DOWNLOAD_URL`, `SRP_DOWNLOAD_SHA256`, `SRP_GAME_URL`, `SRP_OTHER_SERVER_URL` | The home page's download, where the original game is had, the link to a server for another game version |
+| `SRP_DOWNLOAD_FILE`, `SRP_DOWNLOAD_URL`, `SRP_DOWNLOAD_SHA256`, `SRP_GAME_URL`, `SRP_OTHER_SERVER_URL`, `SRP_TEST_SERVER` | The home page's download, where the original game is had, the link to another server of ours, and `on` for a test server: every page then says that it is one and names the other server as the players' |
 
 **Only the settings named under `environment:` in the compose file reach the
 server.** A game setting of `SRP-026G.md` that is not in that list (for
@@ -172,3 +173,10 @@ migration, client patch, new port or bot deployment is required. The existing
 reverse proxy must forward `/api/stats` to the same web listener as `/`.
 For a local check, use the configured `SRP26_WEB_PORT` (default 8098):
 `curl --fail http://127.0.0.1:8098/api/stats`.
+
+## The test server
+
+A second 0.26g server, on a host of its own, takes `main` when a maintainer
+starts the workflow "Deploy the test server" by hand. How it is set up, and
+why a job on its runner can do nothing but deploy `main`:
+[`deploy/test-server/README.md`](../deploy/test-server/README.md).

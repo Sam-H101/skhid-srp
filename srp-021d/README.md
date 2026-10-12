@@ -1,8 +1,8 @@
 # srp-021d: the server for Survarium 0.21d
 
 The server side for the 0.21d client (build 2010, April 2014, the last build
-that shipped with a PDB). Live on [skhid.link](https://skhid.link) since
-2026-10-10.
+that shipped with a PDB). It was hosted on skhid.link from 2026-10-10 to 2026-10-12 and is not hosted
+now: that name leads to the 0.26g server since.
 
 One process, `srp`, is every server a client talks to:
 

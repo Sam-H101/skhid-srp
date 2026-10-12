@@ -1,0 +1,23 @@
+# Puts `main` on the test server. The runner is the test host itself; the job
+# only starts the host's own deploy script, which fetches `main` by itself
+# (nothing of this checkout or of the event reaches it).
+name: Deploy the test server
+on:
+  # By hand only (Actions -> Deploy the test server -> Run workflow). The job
+  # then waits for a reviewer of the `test-server` environment.
+  workflow_dispatch:
+
+concurrency:
+  group: test-server
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, srp-test]
+    environment: test-server
+    timeout-minutes: 45
+    steps:
+      - name: Deploy main
+        run: sudo /usr/local/sbin/srp-test-deploy

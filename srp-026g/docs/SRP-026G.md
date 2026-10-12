@@ -1,11 +1,13 @@
 # srp-026g: the server for client 0.26g
 
 > **Version scope: everything on this page is for client 0.26g** (build 2777,
-> build string "0.26g0", January 2015, no PDB). The 0.21d server (live on
-> skhid.link) is in SRP-021D.md. No 0.21d message is wire-compatible with 0.26g:
+> build string "0.26g0", January 2015, no PDB). The 0.21d server (hosted on
+> skhid.link until 2026-10-12, stopped since) is in SRP-021D.md. No 0.21d message is wire-compatible with 0.26g:
 > every message id changed and the lobby moved from TCP to UDP.
 
-> **Status, 2026-10-12. Live on 026g.skhid.link** (a host of its own). A
+> **Status, 2026-10-12. Live on 026g.skhid.link**, and since that evening on
+> skhid.link and www.skhid.link too (the same server, on a host of its own; a
+> test server is test.skhid.link, `srp-026g/deploy/test-server/README.md`). A
 > real client first signed in that morning, and matches
 > between real players have run since 08:13 UTC. What they showed and what was
 > fixed is in `srp-026g/WORK.md` (newest at the top) and OPEN-ISSUES.md. Until
@@ -228,7 +230,8 @@ name belongs to whoever registers it first, as any name does.
 | `SRP_DOWNLOAD_FILE` | unset | A file handed out at `/download` (5 at a time, resumable) |
 | `SRP_DOWNLOAD_URL` | unset | Or a `https://` link for the download button |
 | `SRP_DOWNLOAD_SHA256` | unset | Its checksum, shown on the home page |
-| `SRP_OTHER_SERVER_URL` | unset | The page of the server for the other game version (plain `https://`): a link to it in every page's header. Set on both hosts: `https://skhid.link` here, `https://026g.skhid.link` on the 0.21d server |
+| `SRP_OTHER_SERVER_URL` | unset | The page of another server of ours (plain `https://`). Every page's header links to it, named as the server for the other game version; on a test server (`SRP_TEST_SERVER=on`) it is named in the notice as the players' server instead. Not set on the players' server since 2026-10-12 (the 0.21d server it named is stopped) |
+| `SRP_TEST_SERVER` | unset | `on`: every page says this is the test server: a badge beside the name, the title, and a notice that the server can restart at any moment and that accounts and progress there can be reset |
 | `SRP_GAME_URL` | unset | Where the original game is had (plain `https://`): the home page's first step. The compose file's default is the web archive's copy of build 2777 |
 
 Tests only: `SRP_TEST_LOG` (the servers' log on stderr). `SRP_WEB_DOMAIN` is

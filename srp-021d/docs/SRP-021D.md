@@ -5,7 +5,7 @@
 > protocol research: login, lobby and match formats all changed between
 > 0.100b and 0.21d.
 
-This folder is what runs on skhid.link. Client 0.21d is build 2010 (April
+This folder is what ran on skhid.link from 2026-10-10 to 2026-10-12 19:48 UTC. The server is stopped since (its data is kept), its host is the 0.26g test server, and the name skhid.link leads to the 0.26g server. Client 0.21d is build 2010 (April
 2014), the last build with a PDB.
 
 ## The parts
