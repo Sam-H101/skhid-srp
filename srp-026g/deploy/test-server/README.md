@@ -88,3 +88,10 @@ takes pull requests only.
   remove that volume.
 - The server restarts whenever a deploy brings a new image, with no regard
   for a match that runs there.
+- A deploy says it is done only when the container is healthy and the login
+  port answers inside it. The health check of the compose file is the web
+  page's port alone, and the login server can fail while the page answers:
+  on the first evening its certificate was readable by root only (the
+  checkout had been made under a tight umask, and the image keeps the
+  files' modes), and two deploys called that healthy. The script now sets
+  its own umask and makes the checkout readable before it builds.
