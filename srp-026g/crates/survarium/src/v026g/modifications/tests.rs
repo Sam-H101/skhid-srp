@@ -1,0 +1,444 @@
+//! The embedded files against the dump of 0.26g's `resources.db`
+//! (`tools/re-kit/v026g/data/items/gameplay_items_modifications_*.txt`,
+//! `..._craft_craft.options.txt`, `..._reroll_reroll.options.txt` and the
+//! item configs beside them).
+
+use super::*;
+use crate::v026g::dictionary::Dictionary;
+
+fn dict(name: &str) -> u16 {
+    Dictionary::shared().item_named(name).unwrap().dict_id
+}
+
+#[test]
+fn the_three_files_parse_to_what_the_dump_shows() {
+    let data = Modifications::shared();
+    assert_eq!(data.modifications.len(), 158);
+    assert_eq!(data.defects.len(), 20);
+    assert_eq!(data.defect_slots.len(), 3);
+    // Sorted by id, each once.
+    assert!(
+        data.modifications
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+    );
+    assert!(data.defects.windows(2).all(|pair| pair[0].id < pair[1].id));
+
+    // 2000: the first strength of the barrel's quality, 1 % more damage.
+    let barrel = data.modification(2000).unwrap();
+    assert_eq!(barrel.kind, 1);
+    assert_eq!(barrel.drop_weight, 10.0);
+    assert_eq!(barrel.name, "st_modify_barrel_quality");
+    assert_eq!(
+        barrel.modifiers,
+        [Modifier {
+            path: "parameters/bullet_damage".into(),
+            value: 0.01,
+            kind: 2
+        }]
+    );
+    assert_eq!(barrel.lobby_info, [("bullet_damage".to_owned(), 0.01)]);
+    // The five strengths of a type weigh 10, 8, 6.4, 5.12 and 4.096.
+    let weights: Vec<f32> = (2000..=2004)
+        .map(|id| data.modification(id).unwrap().drop_weight)
+        .collect();
+    assert_eq!(weights, [10.0, 8.0, 6.4, 5.12, 4.096]);
+    // Armour: 76 changes (19 body parts, 4 kinds of hit), each adding 0.02.
+    let armour = data.modification(1000).unwrap();
+    assert_eq!(armour.kind, 13);
+    assert_eq!(armour.modifiers.len(), 76);
+    assert!(
+        armour
+            .modifiers
+            .iter()
+            .all(|m| m.kind == 1 && m.value == 0.02)
+    );
+    assert_eq!(
+        armour.modifiers[0].path,
+        "hit_params/body/hit_types/ranged/armor"
+    );
+    // The last type, 40: the Fringe Settlers' reputation.
+    let edge = data.modification(1280).unwrap();
+    assert_eq!((edge.kind, edge.drop_weight), (40, 0.0));
+    // 40 types, 1..=40.
+    let mut kinds: Vec<u8> = data.modifications.iter().map(|m| m.kind).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    assert_eq!(kinds, (1..=40).collect::<Vec<u8>>());
+
+    let defect = data.defect(3000).unwrap();
+    assert_eq!(defect.name, "st_defect_barrel_deformation");
+    assert_eq!(
+        (
+            defect.kind,
+            defect.fix_cost_general,
+            defect.fix_cost_gold,
+            defect.fix_time_general
+        ),
+        (1, 100, 50, 360)
+    );
+    assert_eq!(defect.required_modifications, None);
+    assert_eq!(defect.modifiers[0].value, -0.1);
+    // The three defects that take away what a modification gave.
+    let required: Vec<(u32, Option<(u32, u32)>)> = data
+        .defects
+        .iter()
+        .filter(|defect| defect.required_modifications.is_some())
+        .map(|defect| (defect.id, defect.required_modifications))
+        .collect();
+    assert_eq!(
+        required,
+        [
+            (4030, Some((1030, 1039))),
+            (4040, Some((1040, 1049))),
+            (4050, Some((1050, 1059)))
+        ]
+    );
+    let mut kinds: Vec<u8> = data.defects.iter().map(|d| d.kind).collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, (1..=20).collect::<Vec<u8>>());
+    // Every defect costs and takes the same.
+    assert!(data.defects.iter().all(|d| {
+        (
+            d.fix_cost_general,
+            d.fix_cost_gold,
+            d.fix_time_general,
+            d.drop_weight,
+        ) == (100, 50, 360, 10.0)
+    }));
+
+    assert_eq!(
+        data.defect_slots,
+        [
+            DefectSlot {
+                condition: (0.9, 0.0),
+                probability: (0.1, 0.5)
+            },
+            DefectSlot {
+                condition: (0.5, 0.0),
+                probability: (0.3, 0.7)
+            },
+            DefectSlot {
+                condition: (0.1, 0.0),
+                probability: (0.5, 1.0)
+            },
+        ]
+    );
+
+    #[rustfmt::skip]
+    assert_eq!(
+        data.craft.price_general,
+        [400, 400, 800, 1600, 2400, 3400, 4400, 5400, 6600, 8000, 10000, 12000, 14000, 16000, 18000, 20000]
+    );
+    assert_eq!(
+        data.craft.price_premium,
+        [2, 2, 4, 8, 12, 17, 22, 27, 33, 40, 50, 60, 70, 80, 90, 100]
+    );
+    assert_eq!(
+        data.craft.chances_general,
+        [(50.0, 0.0), (25.0, 25.0), (12.5, 67.5)]
+    );
+    assert_eq!(
+        data.craft.chances_premium,
+        [(100.0, 0.0), (50.0, 0.0), (25.0, 25.0)]
+    );
+    #[rustfmt::skip]
+    assert_eq!(
+        data.reroll.price_general,
+        [200, 200, 400, 400, 600, 800, 1000, 1200, 1600, 2000, 2400, 2800, 3200, 3800, 4400, 5000]
+    );
+    assert_eq!(
+        data.reroll.price_premium,
+        [1, 1, 2, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 19, 22, 25]
+    );
+    assert_eq!(data.reroll.multiplicator, 1.1);
+}
+
+#[test]
+fn the_client_is_asked_only_for_rows_it_has() {
+    let data = Modifications::shared();
+    assert!(data.is_known(2000, false));
+    assert!(data.is_known(3000, true));
+    // A defect's id is no modification, and the other way round.
+    assert!(!data.is_known(3000, false));
+    assert!(!data.is_known(2000, true));
+    assert!(!data.is_known(0, false));
+    assert!(!data.is_known(0x0A0B_0C0D, true));
+    // Every default modification of every item is a row.
+    for item in crate::v026g::item_params::ITEM_PARAMS {
+        for &id in item.default_modifications {
+            assert!(data.is_known(id, false), "{} has {id}", item.dict_id);
+        }
+    }
+}
+
+#[test]
+fn the_item_masks_are_the_configs() {
+    // ak_74m: "1111101111110..." and "11111010...": character j is type
+    // j + 1.
+    let rifle = item_mods(dict("ak_74m")).unwrap();
+    assert_eq!(rifle.modifications, 0b1_1111_1011_1110);
+    assert_eq!(rifle.defects, 0b1011_1110);
+    assert!(!rifle.camo && !rifle.decal);
+    // A bolt-action rifle chambers a round (6) and has no rate of fire
+    // (4); an automatic one the other way round.
+    let bolt = item_mods(dict("mosin_nagant")).unwrap();
+    assert_eq!(bolt.modifications & 0b101_0000, 0b100_0000);
+    assert_eq!(rifle.modifications & 0b101_0000, 0b001_0000);
+    // A vest: armour and the like, and it takes a camouflage and decals.
+    let vest = item_mods(dict("edge_torso_2")).unwrap();
+    assert_eq!(vest.modifications, 0x1_31E7_E000);
+    assert!(vest.camo && vest.decal);
+    // Nothing for ammo or a camouflage itself.
+    assert_eq!(item_mods(dict("ammo_7.62x25")), None);
+    assert_eq!(item_mods(dict("camo_city")), None);
+    // 47 items take cosmetics: the vests and the trousers.
+    assert_eq!(ITEM_MODS.iter().filter(|item| item.camo).count(), 47);
+    assert!(ITEM_MODS.iter().all(|item| item.camo == item.decal));
+    assert!(
+        ITEM_MODS
+            .windows(2)
+            .all(|pair| pair[0].dict_id < pair[1].dict_id)
+    );
+    // No item names a type that has no modification or defect.
+    for item in ITEM_MODS {
+        assert_eq!(item.modifications >> 41, 0);
+        assert_eq!(item.defects >> 21, 0);
+        assert_eq!(item.modifications & 1, 0);
+    }
+}
+
+#[test]
+fn cosmetics_go_into_their_slots() {
+    let vest = dict("edge_torso_2");
+    let camo = dict("camo_city");
+    let decal = Dictionary::shared()
+        .items
+        .iter()
+        .find(|item| item.category == 26)
+        .unwrap()
+        .dict_id;
+    assert_eq!(upgrade_slots(vest, camo), [CAMO_SLOT]);
+    assert_eq!(upgrade_slots(vest, decal), DECAL_SLOTS);
+    // Not on a rifle, and a rifle is no upgrade.
+    assert!(upgrade_slots(dict("ak_74m"), camo).is_empty());
+    assert!(upgrade_slots(vest, dict("ak_74m")).is_empty());
+    assert!(upgrade_slots(vest, 9999).is_empty());
+}
+
+#[test]
+fn a_roll_gives_what_the_item_takes() {
+    let data = Modifications::shared();
+    let rifle = dict("ak_74m");
+    let mut rng = Rng::new(7);
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..2000 {
+        let rolled = data.roll_for_rarity(rifle, 3, &mut rng);
+        assert_eq!(rolled.len(), 3);
+        let kinds: Vec<u8> = rolled
+            .iter()
+            .map(|&id| data.modification(id).unwrap().kind)
+            .collect();
+        // Three types, each the rifle's.
+        assert!(kinds[0] != kinds[1] && kinds[1] != kinds[2] && kinds[0] != kinds[2]);
+        for (index, &id) in rolled.iter().enumerate() {
+            let mut others = rolled.clone();
+            others.remove(index);
+            assert!(data.fits(rifle, &others, id));
+        }
+        seen.extend(kinds);
+    }
+    // Types 1..=5, 7..=10 and 12: 11 has no drop weight, 6 is a bolt
+    // action's.
+    assert_eq!(
+        seen.into_iter().collect::<Vec<u8>>(),
+        [1, 2, 3, 4, 5, 7, 8, 9, 10, 12]
+    );
+    assert!(data.roll_for_rarity(rifle, 0, &mut rng).is_empty());
+    // An item that takes nothing gets nothing.
+    assert!(
+        data.roll_for_rarity(dict("camo_city"), 3, &mut rng)
+            .is_empty()
+    );
+    // A full item takes no more.
+    assert_eq!(data.roll(rifle, &[2000, 2010, 2020], &mut rng), None);
+    // A type held is not rolled again: the trousers' ammo bags are a
+    // default.
+    let trousers = dict("bm_legs_4");
+    assert!(!data.fits(trousers, &[], 1051));
+    assert!(!data.fits(rifle, &[2001], 2000));
+    assert!(data.fits(rifle, &[2001], 2010));
+    assert!(!data.fits(rifle, &[], 1000));
+    // The stronger a modification, the rarer.
+    let mut counts = [0_u32; 5];
+    for _ in 0..20_000 {
+        let id = data.roll(rifle, &[], &mut rng).unwrap();
+        counts[(id % 10) as usize] += 1;
+    }
+    assert!(
+        counts.windows(2).all(|pair| pair[0] > pair[1]),
+        "{counts:?}"
+    );
+}
+
+#[test]
+fn a_reroll_offers_three_other_modifications() {
+    let data = Modifications::shared();
+    let rifle = dict("ak_74m");
+    let mut rng = Rng::new(3);
+    let mut same_type = false;
+    for _ in 0..500 {
+        let choices = data
+            .reroll_choices(rifle, &[2000, 2010], 2000, &mut rng)
+            .unwrap();
+        let kinds: Vec<u8> = choices
+            .iter()
+            .map(|&id| data.modification(id).unwrap().kind)
+            .collect();
+        assert!(kinds[0] != kinds[1] && kinds[1] != kinds[2] && kinds[0] != kinds[2]);
+        for &choice in &choices {
+            // Not what it replaces, not the type the item keeps, and it
+            // fits in its place.
+            assert_ne!(choice, 2000);
+            assert!(data.fits(rifle, &[2010], choice));
+        }
+        same_type |= kinds.contains(&1);
+    }
+    // Another strength of the replaced type may be offered.
+    assert!(same_type);
+    assert_eq!(
+        data.reroll_choices(dict("camo_city"), &[], 2000, &mut rng),
+        None
+    );
+}
+
+#[test]
+fn defects_come_with_wear() {
+    let data = Modifications::shared();
+    // No defect at all over 90 %.
+    assert_eq!(data.defect_chance(1.0, 0), 0.0);
+    assert_eq!(data.defect_chance(0.9, 0), 0.0);
+    // The first slot: 10 % just under 90 %, 50 % at nothing.
+    assert!((data.defect_chance(0.8999, 0) - 0.1).abs() < 1e-3);
+    assert!((data.defect_chance(0.45, 0) - 0.3).abs() < 1e-5);
+    assert!((data.defect_chance(0.0, 0) - 0.5).abs() < 1e-6);
+    // The second opens under 50 %, the third under 10 %; there is no
+    // fourth.
+    assert_eq!(data.defect_chance(0.6, 1), 0.0);
+    assert!((data.defect_chance(0.25, 1) - 0.5).abs() < 1e-5);
+    assert_eq!(data.defect_chance(0.2, 2), 0.0);
+    assert!((data.defect_chance(0.0, 2) - 1.0).abs() < 1e-6);
+    assert_eq!(data.defect_chance(0.0, 3), 0.0);
+
+    let rifle = dict("ak_74m");
+    let ids = |list: Vec<&Defect>| list.iter().map(|d| d.id).collect::<Vec<u32>>();
+    // The rifle's mask: types 1..=5 and 7.
+    assert_eq!(
+        ids(data.defect_candidates(rifle, &[], &[])),
+        [3000, 3010, 3020, 3030, 3040, 3060]
+    );
+    assert_eq!(
+        ids(data.defect_candidates(rifle, &[], &[3000, 3060])),
+        [3010, 3020, 3030, 3040]
+    );
+    // Trousers with ammo bags (a default modification 1050) may lose one;
+    // those without may not.
+    let with_bags = dict("bm_legs_4");
+    assert!(ids(data.defect_candidates(with_bags, &[], &[])).contains(&4050));
+    let plain = dict("scav_legs_1");
+    assert!(item_mods(plain).unwrap().defects & (1 << 12) != 0);
+    assert!(!ids(data.defect_candidates(plain, &[], &[])).contains(&4050));
+
+    let mut rng = Rng::new(11);
+    // A whole item never breaks; one at nothing does half the time.
+    assert!((0..500).all(|_| { data.roll_defect(rifle, &[], &[], 0.95, &mut rng).is_none() }));
+    let broke = (0..4000)
+        .filter(|_| data.roll_defect(rifle, &[], &[], 0.0, &mut rng).is_some())
+        .count();
+    assert!((1800..2200).contains(&broke), "{broke}");
+    // At nothing the third slot always fills, with a defect it has not.
+    let third = data
+        .roll_defect(rifle, &[], &[3000, 3010], 0.0, &mut rng)
+        .unwrap();
+    assert!([3020, 3030, 3040, 3060].contains(&third));
+}
+
+#[test]
+fn craft_and_reroll_go_by_the_tables() {
+    let data = Modifications::shared();
+    assert_eq!(data.craft.price(0, false), 400);
+    assert_eq!(data.craft.price(10, false), 10_000);
+    assert_eq!(data.craft.price(10, true), 50);
+    // Level 16 (the highest an item has) costs the table's last.
+    assert_eq!(data.craft.price(16, false), 20_000);
+    assert_eq!(data.craft.chances(0, false), Some((50.0, 0.0)));
+    assert_eq!(data.craft.chances(2, true), Some((25.0, 25.0)));
+    assert_eq!(data.craft.chances(3, false), None);
+    use CraftOutcome::{Failure, Neutral, Success};
+    assert_eq!(data.craft.outcome_at(0, false, 49.9), Some(Success));
+    assert_eq!(data.craft.outcome_at(0, false, 50.0), Some(Neutral));
+    assert_eq!(data.craft.outcome_at(0, true, 99.9), Some(Success));
+    assert_eq!(data.craft.outcome_at(2, false, 12.4), Some(Success));
+    assert_eq!(data.craft.outcome_at(2, false, 12.5), Some(Failure));
+    assert_eq!(data.craft.outcome_at(2, false, 79.9), Some(Failure));
+    assert_eq!(data.craft.outcome_at(2, false, 80.0), Some(Neutral));
+    assert_eq!(data.craft.outcome_at(3, false, 0.0), None);
+    // The lobby's rows: silver success and failure, gold success and
+    // failure, for a difference of 0, 1 and 2.
+    let (chances, general, premium) = data.craft.tables();
+    #[rustfmt::skip]
+    assert_eq!(
+        chances,
+        [50.0, 0.0, 100.0, 0.0,  25.0, 25.0, 50.0, 0.0,  12.5, 67.5, 25.0, 25.0]
+    );
+    assert_eq!((general[2], premium[2]), (800, 4));
+
+    assert_eq!(data.reroll.price(0, false, 0), 200);
+    assert_eq!(data.reroll.price(10, false, 0), 2400);
+    assert_eq!(data.reroll.price(10, true, 0), 12);
+    assert_eq!(data.reroll.price(10, false, 1), 2640);
+    assert_eq!(data.reroll.price(10, false, 2), 2904);
+    assert_eq!(data.reroll.price(16, true, 0), 25);
+    // It does not run away.
+    assert!(data.reroll.price(15, false, 100_000) > 5000);
+}
+
+#[test]
+fn reliability_slows_wear_and_premium_gear_pays_more() {
+    let data = Modifications::shared();
+    let rifle = dict("ak_74m");
+    assert_eq!(data.wear_factor(rifle, &[], "degrade_per_match"), 1.0);
+    // 2090: 5 % less wear; 2094: 25 %.
+    let factor = data.wear_factor(rifle, &[(2090, false)], "degrade_per_match");
+    assert!((factor - 0.95).abs() < 1e-6);
+    let factor = data.wear_factor(rifle, &[(2094, false)], "degrade_per_use");
+    assert!((factor - 0.75).abs() < 1e-6);
+    // Another modification changes nothing of it, and a defect's id is
+    // not read as a modification's.
+    assert_eq!(
+        data.wear_factor(rifle, &[(2000, false)], "degrade_per_match"),
+        1.0
+    );
+    assert_eq!(
+        data.wear_factor(rifle, &[(2090, true)], "degrade_per_match"),
+        1.0
+    );
+    // The premium rifle has 2094 as a default.
+    let premium = dict("ak_74n_premium");
+    let factor = data.wear_factor(premium, &[], "degrade_per_death");
+    assert!((factor - 0.75).abs() < 1e-6);
+
+    // And 1230: 10 % more silver.
+    let bonuses = data.bonuses(premium, &[]);
+    assert!((bonuses.money - 0.1).abs() < 1e-6);
+    assert_eq!(bonuses.experience, 0.0);
+    // Premium trousers: experience and the Black Market's reputation.
+    let bonuses = data.bonuses(dict("bm_legs_4_premium"), &[]);
+    assert!((bonuses.experience - 0.05).abs() < 1e-6);
+    assert_eq!(bonuses.money, 0.0);
+    assert!((bonuses.reputation[1] - 0.05).abs() < 1e-6);
+    assert_eq!(bonuses.reputation[0], 0.0);
+    let bonuses = data.bonuses(dict("scav_torso_4_premium"), &[]);
+    assert!((bonuses.reputation[0] - 0.05).abs() < 1e-6);
+    assert_eq!(data.bonuses(rifle, &[(2000, false)]), Bonuses::default());
+}

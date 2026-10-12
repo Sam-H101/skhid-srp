@@ -1,0 +1,6 @@
+[package]
+name = "cfgdump"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+binary-config-parser = { path = "../../../../srp-021d/crates/binary-config-parser" }

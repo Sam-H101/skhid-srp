@@ -1,0 +1,34 @@
+# Settings for the 0.21d server's docker-compose.yml. Copy to `.env` beside
+# the compose file and fill in. Secrets live only in that `.env`, never in a
+# repository.
+
+# The address players reach the host at (an IP address or a name). Required.
+SRP_PUBLIC_HOST=203.0.113.9
+
+# The admin page: off unless both are set. Make both long and random; the
+# page is served at /<SRP_ADMIN_PATH>.
+SRP_ADMIN_TOKEN=
+SRP_ADMIN_PATH=
+# Who may open it. Behind caddy (the `tls` profile) set SRP_WEB_TRUST_PROXY
+# to on and put your own public address here; without caddy the page sees
+# Docker's bridge gateway, not 127.0.0.1.
+SRP_ADMIN_IPS=127.0.0.1
+SRP_WEB_TRUST_PROXY=off
+
+# The web page's public name, for HTTPS (docker compose --profile tls up -d).
+# SRP_WEB_DOMAIN=example.org
+
+# The download the home page offers: a zip in ./download, or a https link,
+# and its checksum.
+# SRP_DOWNLOAD_FILE=/srv/srp/download/Survarium-0.21d-srp-files.zip
+# SRP_DOWNLOAD_URL=
+# SRP_DOWNLOAD_SHA256=
+# Where the original game is had (the compose file's default is the web
+# archive's copy of build 2010).
+# SRP_GAME_URL=
+# A link to the page of a server for another game version (https only).
+# SRP_OTHER_SERVER_URL=
+
+# CPUs the container may use, and the log level.
+SRP_CPUS=1
+RUST_LOG=info

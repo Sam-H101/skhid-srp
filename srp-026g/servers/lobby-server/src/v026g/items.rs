@@ -1,0 +1,264 @@
+//! The requests about one item (`lobby_requests.md`): its cosmetics
+//! (`46 01`, `02`, `05`), changing a modification (`46 06`..`08`),
+//! upgrading it with a donor (`46 09`) and the repair (`47 03`). The rules
+//! are `session::v026g::items_rules`; here is what the client is sent for
+//! each, and what it needs to get out of the state its window is in:
+//!
+//! | request | done | refused |
+//! |---|---|---|
+//! | `46 01` attach | `83 46 01`, then the inventory and the account | `84 46` `st_cannot_upgrade_item`, then the inventory and the account (the window showed the cosmetic in its slot already) |
+//! | `46 02` detach | `83 46 02`, then the same | the same |
+//! | `46 05` place a decal | nothing: the client wrote the value itself and has no handler for an answer | `84 46`, then the inventory and the account |
+//! | `46 06` window opened | `83 46 06`, and `83 46 07` again for a change not chosen yet | `84 46` `st_cannot_select_rerolled_modification` |
+//! | `46 07` reroll | `83 46 07` and the money | `84 46`, then `83 46 06`: the window is locked until it is filled again |
+//! | `46 08` choose | `83 46 08` (the client changes its copies itself) | `84 46`, then `83 46 06` (and `07`) |
+//! | `46 09` craft | `83 46 09`, then the inventory, the account and the money | `83 46 09 FE`: the window waits for a result, and shows `st_cannot_craft_item` for this one |
+//! | `47 03` repair | `83 47 03`, then the inventory (the client leaves the defects on its copy), the account and the money | `84 47` with the rule's text |
+//!
+//! A repair paid in silver for an item with defects takes time: when it is
+//! over the client is told with an important message, `#ir[<item>]`.
+
+use session::LockExt;
+use session::v026g::items_rules::{self, ItemError, RerollWindow};
+use session::v026g::{quests, wire};
+use survarium::v026g::lobby::requests::{RepairPayment, id};
+use survarium::v026g::lobby::{self, Crafted};
+
+use super::core::{Core, Who};
+
+impl Core<'_> {
+    fn refuse_item(&mut self, who: &Who, op: u8, what: &str, error: ItemError) {
+        log::info!("{}: {what} refused: {error}", who.name);
+        self.deny(who.addr, op, error.text_key());
+    }
+
+    /// The account's kits or what they wear changed in a way its squad
+    /// mates see.
+    fn item_changed(&mut self, who: &Who) {
+        self.push_account(who);
+        self.squads_dirty = true;
+    }
+
+    // ------------------------------------------------------- cosmetics
+
+    /// `46 01 <kit> <host> <upgrade> <slot> <u64 0>`.
+    pub(super) fn attach_upgrade(&mut self, who: &Who, host: u32, upgrade: u32, slot: u8) {
+        let attached =
+            items_rules::attach_upgrade(&mut who.account.locked(), host, upgrade, slot);
+        match attached {
+            Ok(attached) => self.send(
+                who.addr,
+                lobby::permitted_upgrade_attached(
+                    attached.host_item_id,
+                    attached.upgrade_item_id,
+                    attached.slot,
+                    attached.value,
+                    attached.detach_first,
+                ),
+            ),
+            Err(error) => {
+                self.refuse_item(who, id::INVENTORY, "an upgrade", error);
+                None
+            }
+        };
+        self.item_changed(who);
+    }
+
+    /// `46 02 <kit> <upgrade>`.
+    pub(super) fn detach_upgrade(&mut self, who: &Who, upgrade: u32) {
+        let detached = items_rules::detach_upgrade(&mut who.account.locked(), upgrade);
+        match detached {
+            Ok(_) => {
+                self.send(who.addr, lobby::permitted_upgrade_detached(upgrade));
+            }
+            Err(error) => self.refuse_item(who, id::INVENTORY, "taking an upgrade off", error),
+        }
+        self.item_changed(who);
+    }
+
+    /// `46 05 <kit> <host> <upgrade> <u64>`: the decal editor's value. The
+    /// client has written it into its own copy and reads no answer.
+    pub(super) fn place_upgrade(&mut self, who: &Who, host: u32, upgrade: u32, value: u64) {
+        let placed = items_rules::place_upgrade(&mut who.account.locked(), host, upgrade, value);
+        match placed {
+            Ok(()) => {
+                self.accounts.mark_dirty(who.account_id);
+                self.squads_dirty = true;
+            }
+            Err(error) => {
+                self.refuse_item(who, id::INVENTORY, "a decal's place", error);
+                // The client's copy, as it is here.
+                self.push_account(who);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- reroll
+
+    /// `83 46 06`, and `83 46 07` for a change that waits for its choice.
+    fn send_reroll_window(&mut self, who: &Who, window: &RerollWindow) {
+        self.send(
+            who.addr,
+            lobby::permitted_reroll_window(
+                window.item_id,
+                window.regular_cost,
+                window.premium_cost,
+                window.changed,
+            ),
+        );
+        if let Some(choices) = window.offer {
+            let wait = window.changed.map_or(0, |(_, seconds)| seconds);
+            self.send(
+                who.addr,
+                lobby::permitted_reroll_result(window.item_id, choices, wait),
+            );
+        }
+    }
+
+    /// The window as it is, after a refusal: the client's is locked until
+    /// it is filled again.
+    fn refill_reroll_window(&mut self, who: &Who, item_id: u32) {
+        let window = items_rules::reroll_window(&who.account.locked(), item_id, quests::now());
+        if let Ok(window) = window {
+            self.send_reroll_window(who, &window);
+        }
+    }
+
+    /// `46 06 <item>`.
+    pub(super) fn open_reroll(&mut self, who: &Who, item_id: u32) {
+        let window = items_rules::reroll_window(&who.account.locked(), item_id, quests::now());
+        match window {
+            Ok(window) => self.send_reroll_window(who, &window),
+            Err(error) => self.refuse_item(who, id::INVENTORY, "a reroll window", error),
+        }
+    }
+
+    /// `46 07 <item> <modification> <gold>`.
+    pub(super) fn reroll_modifier(&mut self, who: &Who, item_id: u32, modification: u32, gold: bool) {
+        let rolled = {
+            let mut account = who.account.locked();
+            items_rules::reroll(
+                &mut account,
+                item_id,
+                modification,
+                gold,
+                quests::now(),
+                &mut self.rng,
+            )
+            .map(|rolled| (rolled, wire::money(&account)))
+        };
+        match rolled {
+            Ok((rolled, money)) => {
+                log::info!(
+                    "{} changes modification {modification} of item {item_id} for {:?}",
+                    who.name,
+                    rolled.paid
+                );
+                self.accounts.mark_dirty(who.account_id);
+                self.send(
+                    who.addr,
+                    lobby::permitted_reroll_result(item_id, rolled.choices, rolled.reroll_seconds),
+                );
+                self.send(who.addr, money);
+                if let Some(player) = self.player_mut(who.addr) {
+                    let account = who.account.locked();
+                    player.money_sent = (account.generic_money, account.premium_money);
+                }
+            }
+            Err(error) => {
+                self.refuse_item(who, id::INVENTORY, "a reroll", error);
+                self.refill_reroll_window(who, item_id);
+            }
+        }
+    }
+
+    /// `46 08 <item> <old modification> <choice>`.
+    pub(super) fn choose_modifier(&mut self, who: &Who, item_id: u32, old: u32, choice: u32) {
+        let chosen = items_rules::choose_modifier(
+            &mut who.account.locked(),
+            item_id,
+            old,
+            choice,
+            quests::now(),
+        );
+        match chosen {
+            Ok(chosen) => {
+                self.accounts.mark_dirty(who.account_id);
+                self.squads_dirty = true;
+                let window = chosen.window;
+                let (changed, wait) = window.changed.unwrap_or((chosen.new_modification, 0));
+                debug_assert_eq!(changed, chosen.new_modification);
+                self.send(
+                    who.addr,
+                    lobby::permitted_modifier_chosen(
+                        item_id,
+                        chosen.old_modification,
+                        chosen.new_modification,
+                        [window.regular_cost, window.premium_cost, wait],
+                    ),
+                );
+            }
+            Err(error) => {
+                self.refuse_item(who, id::INVENTORY, "a modification's choice", error);
+                self.refill_reroll_window(who, item_id);
+            }
+        }
+    }
+
+    // ----------------------------------------------------------- craft
+
+    /// `46 09 <item> <donor> <gold>`.
+    pub(super) fn craft(&mut self, who: &Who, item_id: u32, donor: u32, gold: bool) {
+        let queued = self
+            .player(who.addr)
+            .is_some_and(|player| player.queued_since.is_some());
+        let crafted = items_rules::craft(
+            &mut who.account.locked(),
+            item_id,
+            donor,
+            gold,
+            queued,
+            quests::now(),
+            &mut self.rng,
+        );
+        match crafted {
+            Ok(crafted) => {
+                log::info!("{} upgraded item {item_id} with {donor}: {crafted:?}", who.name);
+                self.send_made(who.addr, lobby::permitted_crafted(item_id, crafted));
+                self.item_changed(who);
+            }
+            Err(why) => {
+                log::info!("{}: an upgrade of item {item_id} refused: {why}", who.name);
+                self.send_made(who.addr, lobby::permitted_crafted(item_id, Crafted::Failed));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- repair
+
+    /// `47 03 <item> <kind> [<kit item>]`.
+    pub(super) fn repair(&mut self, who: &Who, item_id: u32, payment: RepairPayment) {
+        let repaired =
+            items_rules::repair(&mut who.account.locked(), item_id, payment, quests::now());
+        match repaired {
+            Ok(repaired) => {
+                self.send_made(who.addr, lobby::permitted_repaired(item_id, repaired));
+                self.item_changed(who);
+            }
+            Err(error) => self.refuse_item(who, id::SHOP, "a repair", error),
+        }
+    }
+
+    /// The pass of every tick: the repairs of a player in the lobby that
+    /// are over are told to its client (`#ir[<item>]`), which unlocks the
+    /// item.
+    pub(super) fn item_timers(&mut self, who: &Who) {
+        let done = items_rules::finish_repairs(&mut who.account.locked(), quests::now());
+        if done.is_empty() {
+            return;
+        }
+        self.accounts.mark_dirty(who.account_id);
+        let notices: Vec<_> = done.into_iter().map(items_rules::repaired_notice).collect();
+        self.notify(who, &notices);
+    }
+}

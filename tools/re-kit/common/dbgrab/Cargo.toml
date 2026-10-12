@@ -1,0 +1,9 @@
+[package]
+name = "dbgrab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# A checkout of https://github.com/srp-survarium/vostok-resources-db in
+# `tools/vostok-resources-db` (see docs/RE-TOOLKIT.md).
+resources-db = { path = "../../../vostok-resources-db" }

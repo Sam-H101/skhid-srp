@@ -1,0 +1,500 @@
+//! The item requests (`items`): cosmetics, rerolls, upgrades with a donor
+//! and the repair, each from the client's request to what its strict model
+//! holds afterwards.
+
+use session::v026g::items_rules;
+use survarium::v026g::lobby::Crafted;
+use survarium::v026g::lobby::client_model::Decoded;
+use survarium::v026g::modifications::Modifications;
+
+use super::*;
+
+/// The requests of `items`, as the client writes them
+/// (`lobby_requests.md`).
+mod ask {
+    fn body(sub: u8, values: &[u32]) -> Vec<u8> {
+        let mut body = vec![sub];
+        for value in values {
+            body.extend(value.to_le_bytes());
+        }
+        body
+    }
+
+    /// `46 01 <kit> <host> <upgrade> <slot> <u64 0>`.
+    pub fn attach(host: u32, upgrade: u32, slot: u8) -> (u8, Vec<u8>) {
+        let mut body = body(1, &[1, host, upgrade]);
+        body.push(slot);
+        body.extend([0; 8]);
+        (0x46, body)
+    }
+
+    /// `46 02 <kit> <upgrade>`.
+    pub fn detach(upgrade: u32) -> (u8, Vec<u8>) {
+        (0x46, body(2, &[1, upgrade]))
+    }
+
+    /// `46 05 <kit> <host> <upgrade> <u64>`.
+    pub fn place(host: u32, upgrade: u32, value: u64) -> (u8, Vec<u8>) {
+        let mut body = body(5, &[1, host, upgrade]);
+        body.extend(value.to_le_bytes());
+        (0x46, body)
+    }
+
+    /// `46 06 <item>`.
+    pub fn open_reroll(item: u32) -> (u8, Vec<u8>) {
+        (0x46, body(6, &[item]))
+    }
+
+    /// `46 07 <item> <modification> <gold>`.
+    pub fn reroll(item: u32, modification: u32, gold: bool) -> (u8, Vec<u8>) {
+        let mut body = body(7, &[item, modification]);
+        body.push(u8::from(gold));
+        (0x46, body)
+    }
+
+    /// `46 08 <item> <old modification> <choice>`.
+    pub fn choose(item: u32, old: u32, choice: u32) -> (u8, Vec<u8>) {
+        (0x46, body(8, &[item, old, choice]))
+    }
+
+    /// `46 09 <item> <donor> <gold>`.
+    pub fn craft(item: u32, donor: u32, gold: bool) -> (u8, Vec<u8>) {
+        let mut body = body(9, &[item, donor]);
+        body.push(u8::from(gold));
+        (0x46, body)
+    }
+
+    /// `47 03 <item> 02 <kit item>`.
+    pub fn repair_with_kit(item: u32, kit: u32) -> (u8, Vec<u8>) {
+        let mut body = body(3, &[item]);
+        body.push(2);
+        body.extend(kit.to_le_bytes());
+        (0x47, body)
+    }
+}
+
+fn dict(name: &str) -> u16 {
+    Dictionary::shared().item_named(name).unwrap().dict_id
+}
+
+/// A whole item of `name` with these modifications, behind the lobby's
+/// back.
+fn give(world: &mut World, index: usize, name: &str, modifications: &[u32]) -> u32 {
+    let mut given = 0;
+    world.change(index, |account| {
+        given = account.add_item(dict(name), FULL_CONDITION);
+        account.item_mut(given).unwrap().modifications =
+            modifications.iter().map(|&id| (id, false)).collect();
+    });
+    given
+}
+
+/// An item's id, its `(modification, state)` and its `(upgrade, slot)`.
+type Held = (u32, Vec<(u32, bool)>, Vec<(u32, u8)>);
+
+/// The client holds the account's items: the same ids, modifications and
+/// upgrades.
+#[track_caller]
+fn assert_same_items(world: &mut World, index: usize) {
+    let mut held: Vec<Held> = world
+        .account(index)
+        .inventory
+        .iter()
+        .map(|item| {
+            (
+                item.item_id,
+                item.modifications.clone(),
+                item.upgrades.iter().map(|u| (u.id, u.param)).collect(),
+            )
+        })
+        .collect();
+    let mut seen: Vec<Held> = world
+        .client(index)
+        .model
+        .inventory()
+        .iter()
+        .map(|item| {
+            (
+                item.item_id,
+                item.modifications.iter().map(|m| (m.id, m.state)).collect(),
+                item.upgrades.iter().map(|u| (u.id, u.param)).collect(),
+            )
+        })
+        .collect();
+    for list in [&mut held, &mut seen] {
+        list.sort();
+        for item in list.iter_mut() {
+            item.2.sort();
+        }
+    }
+    assert_eq!(seen, held);
+}
+
+#[test]
+fn a_sign_in_brings_the_craft_tables() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let tables = world.take(alice).into_iter().find_map(|message| {
+        if let Decoded::CraftTables {
+            chances,
+            prices_general,
+            prices_premium,
+        } = message
+        {
+            Some((chances, prices_general, prices_premium))
+        } else {
+            None
+        }
+    });
+    let (chances, general, premium) = tables.expect("0x9B at sign-in");
+    let craft = &Modifications::shared().craft;
+    assert_eq!((chances, general, premium), craft.tables());
+    world.assert_clean();
+}
+
+#[test]
+fn a_camouflage_and_decals_go_on_a_vest() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let vest = give(&mut world, alice, "edge_torso_2", &[]);
+    let camo = give(&mut world, alice, "camo_city", &[]);
+    let decal_name = Dictionary::shared()
+        .items
+        .iter()
+        .find(|item| item.category == 26)
+        .unwrap()
+        .name
+        .clone();
+    let decal = give(&mut world, alice, &decal_name, &[]);
+
+    world.ask(alice, ask::attach(vest, camo, 3));
+    assert_eq!(world.client(alice).ids, [0x83, 0x89, 0x87, 0x8B]);
+    let decoded = world.take(alice);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeAttached {
+            host_item_id: vest,
+            upgrade_item_id: camo,
+            slot: 3,
+            value: 0,
+            detach_first: false
+        })
+    );
+    assert_same_items(&mut world, alice);
+    assert_eq!(world.account(alice).item(vest).unwrap().upgrades.len(), 1);
+
+    world.ask(alice, ask::attach(vest, decal, 0));
+    world.take(alice);
+    // The decal's place: no answer, and it is kept.
+    world.ask(alice, ask::place(vest, decal, 0x1122_3344_5566_7788));
+    assert!(world.take(alice).is_empty());
+    let value = world.account(alice).item(vest).unwrap().upgrades[1].value;
+    assert_eq!(value, 0x1122_3344_5566_7788);
+
+    // A camouflage does not go into a decal's slot: the game's text, and
+    // the client's window is put right.
+    world.ask(alice, ask::attach(vest, camo, 1));
+    let decoded = world.take(alice);
+    assert_eq!(
+        denial(&decoded, 0x46).as_deref(),
+        Some("st_cannot_upgrade_item")
+    );
+    assert!(decoded.iter().any(|m| matches!(m, Decoded::Inventory { .. })));
+    assert_same_items(&mut world, alice);
+    // A place for a cosmetic that is not on the item.
+    world.ask(alice, ask::place(vest, 999, 1));
+    assert_eq!(
+        denial(&world.take(alice), 0x46).as_deref(),
+        Some("st_cannot_upgrade_item")
+    );
+
+    world.ask(alice, ask::detach(camo));
+    let decoded = world.take(alice);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeDetached { item_id: camo })
+    );
+    assert_same_items(&mut world, alice);
+    world.ask(alice, ask::detach(camo));
+    assert_eq!(
+        denial(&world.take(alice), 0x46).as_deref(),
+        Some("st_cannot_upgrade_item")
+    );
+    world.assert_clean();
+}
+
+#[test]
+fn a_modification_is_rerolled_and_chosen() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    world.change(alice, |account| {
+        account.generic_money = 100_000;
+        // A new account has no gold.
+        account.premium_money = 1_000;
+    });
+    let rifle = give(&mut world, alice, "ak_74m", &[2000, 2010]);
+
+    world.ask(alice, ask::open_reroll(rifle));
+    assert_eq!(
+        world.take(alice),
+        [Decoded::Permitted(Permitted::RerollWindow {
+            item_id: rifle,
+            a: 2400,
+            b: 12,
+            more: None
+        })]
+    );
+
+    world.ask(alice, ask::reroll(rifle, 2000, false));
+    assert_eq!(world.client(alice).ids, [0x83, 0x8B]);
+    let decoded = world.take(alice);
+    let Decoded::Permitted(Permitted::RerollResult {
+        item_id,
+        choices,
+        reroll_time,
+    }) = decoded[0]
+    else {
+        panic!("{:?}", decoded[0]);
+    };
+    assert_eq!(item_id, rifle);
+    // Six hours, less the moment the answer took.
+    assert!((6 * 3600 - 5..=6 * 3600).contains(&reroll_time));
+    assert_eq!(
+        decoded[1],
+        Decoded::Money {
+            generic: 100_000 - 2400,
+            premium: 1000
+        }
+    );
+    assert_eq!(world.account(alice).generic_money, 100_000 - 2400);
+
+    // The window opened again (the client came back): the choice still
+    // waits.
+    world.ask(alice, ask::open_reroll(rifle));
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::RerollWindow {
+            more: Some((2000, _)),
+            ..
+        })
+    ));
+    assert!(matches!(
+        decoded[1],
+        Decoded::Permitted(Permitted::RerollResult { choices: again, .. }) if again == choices
+    ));
+
+    // A choice that is none: refused, and the window is filled again.
+    world.ask(alice, ask::choose(rifle, 2000, 7));
+    let decoded = world.take(alice);
+    assert_eq!(
+        denial(&decoded, 0x46).as_deref(),
+        Some("st_cannot_select_rerolled_modification")
+    );
+    assert!(decoded.iter().any(|message| matches!(
+        message,
+        Decoded::Permitted(Permitted::RerollWindow { .. })
+    )));
+
+    world.ask(alice, ask::choose(rifle, 2000, 2));
+    let decoded = world.take(alice);
+    let Decoded::Permitted(Permitted::ModifierChosen {
+        item_id,
+        old_modification,
+        new_modification,
+        rest,
+    }) = decoded[0]
+    else {
+        panic!("{:?}", decoded[0]);
+    };
+    assert_eq!(
+        (item_id, old_modification, new_modification),
+        (rifle, 2000, choices[2])
+    );
+    // The next change costs a tenth more.
+    assert_eq!(rest[..2], [2640, 13]);
+    assert!(rest[2] > 6 * 3600 - 60);
+    assert_eq!(decoded.len(), 1);
+    // The client changed its copy itself, as the account was.
+    assert_same_items(&mut world, alice);
+    assert_eq!(
+        items_rules::own_modifications(world.account(alice).item(rifle).unwrap()),
+        [choices[2], 2010]
+    );
+
+    // Silver again within the six hours: refused, the window refilled.
+    world.ask(alice, ask::reroll(rifle, choices[2], false));
+    let decoded = world.take(alice);
+    assert_eq!(
+        denial(&decoded, 0x46).as_deref(),
+        Some("st_cannot_select_rerolled_modification")
+    );
+    assert!(matches!(
+        decoded.last(),
+        Some(Decoded::Permitted(Permitted::RerollWindow {
+            a: 2640,
+            b: 13,
+            ..
+        }))
+    ));
+    // Gold pays at any time.
+    world.ask(alice, ask::reroll(rifle, choices[2], true));
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::RerollResult { .. })
+    ));
+    assert_eq!(world.account(alice).premium_money, 1000 - 13);
+    // An item that is none.
+    world.ask(alice, ask::open_reroll(999));
+    assert_eq!(
+        denial(&world.take(alice), 0x46).as_deref(),
+        Some("st_cannot_select_rerolled_modification")
+    );
+    world.assert_clean();
+}
+
+#[test]
+fn an_item_is_crafted_with_a_donor() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    world.change(alice, |account| account.premium_money = 500);
+    let rifle = give(&mut world, alice, "ak_74m", &[2000]);
+    let donor = give(&mut world, alice, "ak_74m", &[2011]);
+    let pistol = 1;
+
+    // The pistol is no donor for the rifle: the window gets its "can't".
+    world.ask(alice, ask::craft(rifle, pistol, true));
+    assert_eq!(
+        world.take(alice),
+        [Decoded::Permitted(Permitted::Crafted {
+            item_id: rifle,
+            crafted: Crafted::Failed
+        })]
+    );
+    assert_eq!(world.account(alice).premium_money, 500);
+
+    // In gold, with as many modifications as the donor: one more, always.
+    world.ask(alice, ask::craft(rifle, donor, true));
+    assert_eq!(world.client(alice).ids, [0x83, 0x89, 0x87, 0x8B]);
+    let decoded = world.take(alice);
+    let Decoded::Permitted(Permitted::Crafted {
+        item_id,
+        crafted:
+            Crafted::Added {
+                consumed_item_id,
+                modification,
+            },
+    }) = decoded[0]
+    else {
+        panic!("{:?}", decoded[0]);
+    };
+    assert_eq!((item_id, consumed_item_id), (rifle, donor));
+    {
+        let account = world.account(alice);
+        assert_eq!(account.premium_money, 500 - 50);
+        assert!(account.item(donor).is_none());
+        assert_eq!(
+            items_rules::own_modifications(account.item(rifle).unwrap()),
+            [2000, modification]
+        );
+    }
+    assert_same_items(&mut world, alice);
+    world.assert_clean();
+}
+
+#[test]
+fn defects_are_repaired_in_time_or_at_once() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let rifle = give(&mut world, alice, "ak_74m", &[]);
+    let spare = give(&mut world, alice, "ak_74m", &[]);
+    let mut kits = 0;
+    world.change(alice, |account| {
+        account.generic_money = 1_000_000;
+        kits = account.add_item(dict("repair_voucher"), 2);
+        for item_id in [rifle, spare] {
+            let item = account.item_mut(item_id).unwrap();
+            item.condition_or_stack = 500_000;
+            item.modifications.push((3000, true));
+        }
+    });
+    // The client sees the damage.
+    assert_same_items(&mut world, alice);
+    let (silver, _, seconds, _) =
+        items_rules::repair_quote(world.account(alice).item(rifle).unwrap());
+    assert_eq!(seconds, 360);
+
+    // In silver: six minutes a defect.
+    world.ask(alice, request::repair(rifle, 0));
+    assert_eq!(world.client(alice).ids, [0x83, 0x89, 0x87, 0x8B]);
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::Repaired {
+            repaired: survarium::v026g::lobby::Repaired::Timed { repair_time: 360 },
+            ..
+        })
+    ));
+    assert_eq!(world.account(alice).generic_money, 1_000_000 - silver);
+    assert_same_items(&mut world, alice);
+    let held = world.client(alice).model.inventory().to_vec();
+    let seen = held.iter().find(|item| item.item_id == rifle).unwrap();
+    assert_eq!(seen.condition_or_stack, FULL_CONDITION);
+    assert!((350..=360).contains(&seen.repair_time), "{}", seen.repair_time);
+    // Not again while it lasts.
+    world.ask(alice, request::repair(rifle, 0));
+    assert_eq!(
+        denial(&world.take(alice), 0x47).as_deref(),
+        Some("st_cannot_repair_item")
+    );
+
+    // The time is over: the client is told which item, once.
+    world.account(alice).item_mut(rifle).unwrap().repair_time = 1;
+    world.advance(Duration::from_millis(1500));
+    let told: Vec<String> = world
+        .take(alice)
+        .into_iter()
+        .filter_map(|message| match message {
+            Decoded::Important { kind: 6, text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(told, [format!("#ir[{rifle}]")]);
+    assert_eq!(world.account(alice).item(rifle).unwrap().repair_time, 0);
+    world.advance(Duration::from_millis(1500));
+    assert!(
+        !world
+            .take(alice)
+            .iter()
+            .any(|message| matches!(message, Decoded::Important { kind: 6, .. }))
+    );
+
+    // With a repair kit: at once, one a defect.
+    world.ask(alice, ask::repair_with_kit(spare, kits));
+    let decoded = world.take(alice);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::Repaired {
+            item_id: spare,
+            repaired: survarium::v026g::lobby::Repaired::WithKit {
+                kit_item_id: kits,
+                used: 1
+            }
+        })
+    );
+    assert_eq!(world.account(alice).item(kits).unwrap().condition_or_stack, 1);
+    assert_same_items(&mut world, alice);
+    // No kit for an item with no defect; gold neither.
+    world.ask(alice, ask::repair_with_kit(spare, kits));
+    assert_eq!(
+        denial(&world.take(alice), 0x47).as_deref(),
+        Some("st_cannot_repair_item")
+    );
+    world.ask(alice, request::repair(spare, 1));
+    assert_eq!(
+        denial(&world.take(alice), 0x47).as_deref(),
+        Some("st_cannot_repair_item")
+    );
+    world.assert_clean();
+}

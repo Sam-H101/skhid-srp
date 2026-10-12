@@ -1,0 +1,94 @@
+# srp for a Linux host. Set SRP_PUBLIC_HOST to the address players reach it at:
+#   SRP_PUBLIC_HOST=203.0.113.9 docker compose up -d --build
+# Open 80/tcp, 1234/tcp+udp, 1235/tcp, 1236/udp in the host's firewall.
+services:
+  srp:
+    build: .
+    image: srp:latest
+    restart: unless-stopped
+    environment:
+      SRP_PUBLIC_HOST: ${SRP_PUBLIC_HOST:?set SRP_PUBLIC_HOST to the server's public IP or name}
+      # Turns on /admin (set any player's silver and gold); leave unset to keep it off.
+      SRP_ADMIN_TOKEN: ${SRP_ADMIN_TOKEN:-}
+      # ... at /<SRP_ADMIN_PATH> (a long random name), for these addresses only.
+      # Behind caddy set SRP_WEB_TRUST_PROXY=on and your own public IP here;
+      # on the host itself Docker shows the bridge gateway, not 127.0.0.1.
+      SRP_ADMIN_PATH: ${SRP_ADMIN_PATH:-}
+      SRP_ADMIN_IPS: ${SRP_ADMIN_IPS:-127.0.0.1}
+      SRP_WEB_TRUST_PROXY: ${SRP_WEB_TRUST_PROXY:-off}
+      # The home page's download button and checksum (https links only).
+      # The zip srp hands out itself at /download (5 at a time), read-only from
+      # ./download (SRP_DOWNLOAD_DIR). Leave the file out to show SRP_DOWNLOAD_URL.
+      SRP_DOWNLOAD_FILE: ${SRP_DOWNLOAD_FILE:-/srv/srp/download/Survarium-0.21d-srp-files.zip}
+      SRP_DOWNLOAD_URL: ${SRP_DOWNLOAD_URL:-}
+      # Where the original game is had (the page's first step). The download
+      # above is only the files that go over it.
+      SRP_GAME_URL: ${SRP_GAME_URL:-https://archive.org/download/vostok_engine_v0.21d_build_2010_internal_id_839_apr_24_2014/survarium_full_021d.7z}
+      # The page of the server for the other game version (0.26g): a link
+      # to it in the header of every page. https:// only; empty: no link.
+      SRP_OTHER_SERVER_URL: ${SRP_OTHER_SERVER_URL:-}
+      SRP_DOWNLOAD_SHA256: ${SRP_DOWNLOAD_SHA256:-}
+      # With a domain, a browser that opens http://<domain> on port 80 is sent
+      # to https://<domain> (the game itself only asks /hello there).
+      SRP_WEB_DOMAIN: ${SRP_WEB_DOMAIN:-}
+      # The worlds of clients that fall out of step are kept here to compare.
+      SRP_SNAPSHOT_DIR: /srv/srp/data/snapshots
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "80:8080/tcp"
+      - "1234:1234/tcp"
+      - "1234:1234/udp"
+      - "1235:1235/tcp"
+      - "1236:1236/udp"
+      # The web page (silver for gold, admin) is plain HTTP: this host only.
+      # For players, use the caddy service below.
+      - "127.0.0.1:8088:8088/tcp"
+    volumes:
+      - srp-data:/srv/srp/data
+      - ${SRP_DOWNLOAD_DIR:-./download}:/srv/srp/download:ro
+    # Keeps what the game does not need away from it.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 512m
+    cpus: ${SRP_CPUS:-2}
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/1235' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  # HTTPS for the web page: docker compose --profile tls up -d, with
+  # SRP_WEB_DOMAIN set to a name that points at this host. Only 443 is
+  # published (80 is the game's); the certificate comes by TLS-ALPN.
+  caddy:
+    profiles: [tls]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${SRP_WEB_DOMAIN:?set SRP_WEB_DOMAIN} --to srp:8088
+    ports:
+      - "443:443/tcp"
+    volumes:
+      - caddy-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    pids_limit: 128
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    depends_on: [srp]
+volumes:
+  srp-data:
+  caddy-data:

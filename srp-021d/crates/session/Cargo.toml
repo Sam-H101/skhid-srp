@@ -1,0 +1,15 @@
+[package]
+name = "session"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+survarium = { workspace = true }
+argon2 = { workspace = true }
+log = { workspace = true }
+password-hash = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }

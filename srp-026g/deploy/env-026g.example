@@ -1,0 +1,89 @@
+# Settings for the 0.26g server's docker-compose.yml. Copy to `.env` beside
+# the compose file and fill in. Secrets live only in that `.env`, never in a
+# repository.
+
+# The address players reach the host at (IPv4, or a name with an A record).
+SRP_PUBLIC_HOST=203.0.113.9
+
+# The game ports, the same inside and outside the container. These defaults
+# do not clash with a 0.21d server on the same host (1234 tcp+udp, 1235 tcp,
+# 1236 udp).
+# On a host of its own use the game's: 1234, 1235, 1236.
+SRP26_LOGIN_PORT=2234
+SRP26_LOBBY_PORT=2235
+SRP26_MATCH_PORT=2236
+# The web page, on 127.0.0.1 of the host (the 0.21d page has 8088).
+SRP26_WEB_PORT=8098
+
+# The admin page: off unless both are set. The path is a long random name.
+SRP_ADMIN_TOKEN=
+SRP_ADMIN_PATH=
+# Who may open it. Through an SSH tunnel the page sees Docker's bridge
+# gateway (for example 172.19.0.1): list that address.
+SRP_ADMIN_IPS=127.0.0.1
+SRP_WEB_TRUST_PROXY=off
+
+# The web page's public name, for HTTPS (the caddy26 service, profile
+# `tls`, on a host whose port 443 is free). With it set SRP_WEB_TRUST_PROXY
+# to on and put your own public IP in SRP_ADMIN_IPS.
+# SRP_WEB_DOMAIN=example.org
+# The page of a server for another game version (0.21d): every page here
+# links to it. https only.
+# SRP_OTHER_SERVER_URL=
+
+# The download the home page offers: a zip in ./download, or a https link.
+# SRP_DOWNLOAD_FILE=/srv/srp/download/Survarium-0.26g-srp-files.zip
+# Where the original game is had (the compose file's default is the web
+# archive's copy of build 2777).
+# SRP_GAME_URL=
+# SRP_DOWNLOAD_URL=
+# SRP_DOWNLOAD_SHA256=
+
+# Resources. Beside another server on a small host, check `free -m` first.
+SRP26_CPUS=1
+SRP26_MEMORY=512m
+
+RUST_LOG=info
+
+# FOR TESTING ONLY, never on a public server: the accounts that are test
+# bots (srp-bot). A match of one real client and bots trusts that client's
+# world on its word alone. Leave it out.
+# SRP_BOT_ACCOUNTS=bot-1,bot-2
+
+# Optional game settings (srp's defaults when left out; see SRP-026G.md):
+# SRP_REGISTRATION=closed
+# SRP_MATCH_GATHER_SECONDS=60
+# SRP_MATCH_MODES=2,3,4
+# The most players of a side (1 to 10), and how many seconds of waiting
+# widen a player's range of levels by one (raise it on a full server).
+# SRP_MATCH_TEAM_SIZE=8
+# SRP_MATCH_SEARCH_STEP_SECONDS=4
+# A silent client: its lobby link goes after the first (the second for a
+# player in a match), and its session waits the third for the client to
+# connect again by itself.
+# SRP_LOBBY_LINK_TIMEOUT_SECONDS=30
+# SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS=120
+# SRP_LOBBY_SESSION_GRACE_SECONDS=60
+# SRP_MATCH_MAPS=
+# What a match pays: its experience and reputation times this (1 is the
+# original's pace), and this percent of the original's silver (the owner's
+# choice: 80).
+# SRP_EXPERIENCE_RATE=1
+# SRP_MONEY_RATE=80
+# A weapon or armour found after a match arrives at this percent of its
+# condition, and with one defect (off: without).
+# SRP_DROP_CONDITION=40
+# SRP_DROP_DEFECT=on
+# The daily bonus (double experience and reputation for a day's first three
+# victories, a reward for seven such days). off: none of it. A bonus day
+# starts at this hour of UTC (0 to 23).
+# SRP_DAILY_BONUS=on
+# SRP_DAILY_BONUS_RESET_HOUR=0
+# Clans: silver to register one, and its most members (srp's defaults).
+# SRP_CLAN_COST=50000
+# SRP_CLAN_MAX_MEMBERS=30
+
+# Players who must accept before a clan is registered. The code's default is
+# 1; the game's own text (`st_clan_creation_info_description`) says "you need
+# to enlist at least 5 players".
+SRP_CLAN_PLAYERS_REQUIRED=5

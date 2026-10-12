@@ -1,0 +1,6 @@
+[package]
+name = "syms"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+pdb = "0.8"

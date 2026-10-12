@@ -1,0 +1,11 @@
+# Never published
+/private/
+
+# Local agent folders
+.claude/
+
+# Build output, wherever a build was started
+target/
+target-*/
+**/__pycache__/
+*.pdb

@@ -1,0 +1,468 @@
+# srp-026g: the server for client 0.26g
+
+> **Version scope: everything on this page is for client 0.26g** (build 2777,
+> build string "0.26g0", January 2015, no PDB). The 0.21d server (live on
+> skhid.link) is in SRP-021D.md. No 0.21d message is wire-compatible with 0.26g:
+> every message id changed and the lobby moved from TCP to UDP.
+
+> **Status, 2026-10-12. Live on 026g.skhid.link** (a host of its own). A
+> real client first signed in that morning, and matches
+> between real players have run since 08:13 UTC. What they showed and what was
+> fixed is in `srp-026g/WORK.md` (newest at the top) and OPEN-ISSUES.md. Until
+> that day everything was from disassembly, the game's data, scripted clients
+> and tests, and much of it still is: where a line below says LIKELY, or "not
+> seen with a real client", it means that. A local test with one game and a
+> bot: "Run locally" below.
+
+`srp-026g` began as a copy of `srp-021d`; the 0.26g code was added beside the
+0.21d code. The work order is
+PLAN-026G.md; the client facts are in CLIENT-FACTS-026G.md; how a match
+stays in step is in MATCH-SYNC-026G.md; the research is in
+`srp-026g/docs/notes/` (start with its `README.md`).
+
+## What it is
+
+One process, `srp` (`cargo run -p srp`), runs the whole 0.26g stack and
+shares one account store between its servers:
+
+```
+survarium_srp.exe -server=<host>:1234
+      |
+      1. login   TCP 1234   the sign-in in the clear, then TLS: the password as a SHA-1
+      |                     digest. The answer: a session id and the lobby's IPv4:port
+      2. lobby   UDP 1235   one reliable-UDP link a client: account, inventory, shop,
+      |                     skills, quests, chat, friends, squads, the queue, results
+      3. match   UDP 1236   lockstep: the server relays inputs and compares world
+                            hashes; the world itself comes from a patched client
+      web page   HTTP 8088  home, silver and gold exchange, the admin page
+```
+
+0.26g has no browser server (port 80) and no presence pings. The 0.21d
+servers are still in the tree, compile and are tested, but `srp` does not
+start them: the two lobbies share the store's queue and the two login
+servers one port.
+
+## The parts
+
+| Crate / module | Does |
+|---|---|
+| `crates/udp-transport` | The 0.26g reliable UDP transport, shared by the lobby and the match server: the per-message delivery table, split messages, ordered and unique channels, the packet log (`SRP_PACKET_LOG`) |
+| `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs (`resources/binary-config-examples/*_026g*`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
+| `crates/session` | Shared with 0.21d: accounts by user name, argon2id passwords, sessions, the queue (`matchmaking.rs`), squads, bans, limits, `srp.db` |
+| `crates/session/src/v026g/` | The 0.26g account (`account`: money, gold, premium time, experience and level, skills, reputations, three kits, inventory, quests), the lobby's actions (`rules`), `quests`, the account as messages (`wire`), match rewards (`rewards`), and its tables in the same `srp.db` (`persist`: `g26_*`, versioned on their own in `g26_meta`). `GameAccounts` is the store. `clans`, `extras`, `premium`, `bonus`, `items_rules`, `pay` (the match pay rule), `matchmaking` (a player's level, the map choice) |
+| `servers/login-server/src/v026g.rs` | The TLS sign-in. First sign-in of a name registers it. Bans, limits, closed registration, the game's own status codes |
+| `servers/lobby-server/src/v026g/` | The lobby: `core` (links, sign-in, the tick), `dispatch` (every request answered or refused), `play` (queue, match made through `MatchHost`), `social` (chat, friends, squads), `Inbox` (what other servers tell it: a match is over, an account changed, a push, the operator's text) |
+| `servers/match-server/src/v026g/` | The match server: `registry` (the lobby makes a match here), `game` (sync, relay, hashes, resync, the end), `server` (socket and loop) |
+| `servers/srp/src/v026g.rs` | Joins them: `Stack` (the three servers and the session collector, each on a supervised thread), `RegistryHost` (lobby → match server), `Settler` (match result → rewards → database → lobby), `WebLink` (web page → lobby) |
+| `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
+| `scripts/client-patch-026g/` | `patch_026g.py` (the client patch), `selftest_026g.py`, `make_client_026g.py` (the players' overlay) |
+| `scripts/gen-data-026g/` | How the embedded data was taken from the 0.26g `resources.db` |
+
+## How a player gets into a match
+
+1. Login: the user name and build in the clear, then TLS, then the password
+   message (a SHA-1 digest as 40 hex characters; with a typed password the
+   password too). srp keeps only the argon2id hash of the digest. The answer
+   is the session and the lobby's address.
+2. Lobby sign-in (`2E` with the session). `0x80` goes alone; once it is
+   acked the rest of the account follows, unasked.
+3. Play: when a match starts is 0.21d's rule
+   (`crates/session/src/matchmaking.rs`). A match needs two players who did
+   not come as one squad (a squad alone waits for somebody who is not of
+   it, as a player alone waits; since 2026-10-12); the gather window (60 s)
+   starts with the second; with 10 or more waiting and nobody new for 10 s
+   it starts sooner; at once when full. Who plays whom
+   is 0.26g's (`resources/notes/v026g/matchmaking.md`): two sides of at most
+   8, squads together, sides even in players and levels. A player's level
+   is the client's own "equipment level" (its highest kit, moved up by its
+   rating); a match is formed from players whose level is in the range of
+   the one who waited longest, and the range grows by a level every 4 s, so
+   after 56 s any two players meet. The match's level (the reward
+   multipliers) is the mean of its players'. The map is the one its players
+   have played least, within `SRP_MATCH_MODES` / `SRP_MATCH_MAPS`; the mode
+   and weather are drawn.
+4. The lobby makes the match at the match server and sends its address
+   (`0x82`) once "match found" (`0x85`) is acked.
+5. The match: MATCH-SYNC-026G.md. **Only a client with the snapshot-upload
+   patch can start one**: the world stays frozen until a client uploads it.
+6. The end: the match server's result is settled
+   (`session::v026g::rewards`), written, and the lobby shows the results
+   screen (`0x97`) when the client is back.
+
+## Settings (`SRP_*` environment variables)
+
+Every setting has a default; none is needed on a dev PC. Taken from the code
+on 2026-10-12 (grep `SRP_` in `crates` and `servers`).
+
+### Addresses (`crates/vostok/src/config.rs`)
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_BIND_HOST` | `127.0.0.1` | The interface every server listens on (`0.0.0.0`: all) |
+| `SRP_PUBLIC_HOST` | `127.0.0.1` | The host clients are told. For 0.26g an IPv4 address, or a name with one (looked up once, at start) |
+| `SRP_LOGIN_BIND`, `SRP_LOBBY_BIND`, `SRP_MATCH_BIND` | `SRP_BIND_HOST` | One server's interface |
+| `SRP_LOGIN_PORT` | `1234` | Login, TCP. What `-server=` names |
+| `SRP_LOBBY_PORT` | `1235` | Lobby, UDP. Bound and told to the client: the same number |
+| `SRP_MATCH_PORT` | `1236` | Match server, UDP. Bound and told: the same number |
+| `SRP_LOGIN_PUBLIC_HOST`, `SRP_LOBBY_PUBLIC_HOST`, `SRP_MATCH_PUBLIC_HOST` | `SRP_PUBLIC_HOST` | One server's public host |
+| `SRP_LOCAL_PEERS` | on | A client on this machine or its network is told the address it reached srp at. `off`: everyone is told the public host (a container) |
+| `SRP_BROWSER_PORT`, `SRP_LOGIN_UDP_BIND`, `SRP_LOGIN_UDP_PORT` | | Still read by the shared config; the 0.26g stack starts neither a browser server nor presence pings |
+
+A port that is not a number stops srp at start.
+
+### Data and logs
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_DATA_DIR` | `./data` | `srp.db` (accounts, sessions, and the 0.26g `g26_*` tables; since 2026-10-12 also the finished matches' results screens not shown yet and each account's play period, `g26_results`), `backups/` (a copy at every start) |
+| `SRP_DB` | on | `off`: everything in memory only |
+| `SRP_LOG_FILES` | on | `off`: no `logs/<server>.log`, stdout only |
+| `SRP_LOG_DIR` | unset | A folder: every line srp prints, in one file per UTC day (`srp-YYYY-MM-DD.log`), added to across restarts. The compose file sets `/srv/srp/data/logs` (the data volume): a container's own output is gone at every update |
+| `SRP_LOG_KEEP_DAYS` | 14 | Files of `SRP_LOG_DIR` older than this are deleted (at least 1) |
+| `RUST_LOG` | `info` | The log level |
+| `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where the match server keeps accepted worlds; `off`: nowhere |
+| `SRP_PACKET_LOG` | unset | A folder: every datagram of the lobby and the match server, one file a connection (the lobby sign-in's session id left out). **Set it for every live test** |
+
+### Sign-in
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_REGISTRATION` | open | `closed`: new names are refused; the admin page can switch it while srp runs |
+| `SRP_SIGN_INS_PER_MINUTE` | 20 | Password checks an address may ask for a minute |
+| `SRP_REGISTRATIONS_PER_DAY` | 3 | New accounts an address may make a day |
+
+### Queue and lobby
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_MATCH_GATHER_SECONDS` | 60 | How long the queue gathers players once there are two who did not come as one squad (0: at once). A bad value stops srp |
+| `SRP_MATCH_FILL_PLAYERS` | 10 | With this many waiting … |
+| `SRP_MATCH_QUIET_SECONDS` | 10 | … and nobody new for this long, the match starts before the window ends |
+| `SRP_MATCH_TEAM_SIZE` | 8 | The most players of a side, 1 to 10; a match has two sides |
+| `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
+| `SRP_MATCH_MODES` | `2,3,4` | The modes played |
+| `SRP_MATCH_MAPS` | every playable map of those modes | `maps_dict` ids, e.g. `117` (Team Deathmatch on level_01) for a first test. Of these a match gets the map its players played least |
+| `SRP_LOBBY_LINK_TIMEOUT_SECONDS` | 30 | A client silent this long loses its lobby link: out of the queue, not ready in its squad, offline for its friends |
+| `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` | 120 | The same for a player in a match that runs (its level may be loading); never less than the one above |
+| `SRP_LOBBY_SESSION_GRACE_SECONDS` | 60 | How long the session of a link that went silent waits for its client to connect again (the client tries by itself, every 5 s); for a player in a match, counted from the match's end. 0: the session ends with the link |
+
+### Match server (`servers/match-server/src/v026g/mod.rs`)
+
+Each is an escape hatch for one thing not proven against a live client.
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_LATE_INPUTS` | `discard` | `move`: move late inputs (0xEF/0xF0) instead of telling the sender to drop them (0xF1/0xF2) |
+| `SRP_CLOCK_CORRECTION` | on | `off`: no 0xE7 (the 0xDB clock field is LIKELY) |
+| `SRP_CHECK_INITIAL_WORLD` | on | `off`: take a first world that already has statistics in it |
+| `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` | 10 | A playing client silent this long is gone. A client that loads its level has 60 s, or this if it is longer (since 2026-10-12) |
+| `SRP_RESYNC_WORLD_ONLY` | off | `on`: a playing client is resynced with 0xE8 alone |
+| `SRP_RESTORE_LIMIT` | 0 | Resyncs in a row without agreement after which a client is disconnected; 0: no limit |
+
+### Test bots (testing only; `crates/session/src/v026g/bots.rs`)
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_BOT_ACCOUNTS` | not set: nothing about bots is on | The names of the accounts that are test bots, comma-separated, e.g. `bot-1,bot-2`. **For a test alone on one PC; never on a public server** |
+
+A match needs two players. `srp-bot` (`servers/srp/src/bin/srp-bot.rs`,
+`srp::bot`) is a scripted client that signs in, presses Play and sits in the
+match so that one real client gets one: "Run locally" below. It cannot
+simulate the game, so it has no world to hash or upload, and it makes none
+up. With its account named here the server knows that instead:
+
+- **Match server** (`game.rs`, "Bots"): a bot's place is a player (roster,
+  0xE9, relays, pings, the end) and never a witness of the world. Its hash
+  reports and uploads are dropped, it is never asked for a world, never
+  counted among the clients that must agree, and never resynced for its
+  hashes. It is started only once a real client is in. The trust rule
+  counts the real clients only: with two or more of them nothing changes
+  (a world needs two vouchers); with **one** real client it is the rule a
+  client alone in a match always had: its world is trusted on its own word
+  (`trusted_by` 1), within the plausibility limits. A match with bots and no
+  real client connected for 45 s is over.
+- **Rewards**: a bot's account is settled as any account. A match with a bot
+  in it moves nobody's rating; a bot gets no daily bonus and starts no run
+  of bonus days; bots are not in the ranking.
+
+Without the setting a bot is a player like any other, and a match of one
+real client and one bot never gets a trusted world after the first (two
+must agree, the bot says nothing): no end by the mode's rule, empty results.
+
+Why it is not for a public server: the one real client could claim any
+plausible result, and whoever holds a named account is never checked. The
+name belongs to whoever registers it first, as any name does.
+
+### Rewards and features
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_EXPERIENCE_RATE` | 1 | What a match's experience and reputation are multiplied by (1 to 100). 1 is the original's pace (it was 3 until 2026-10-12) |
+| `SRP_MONEY_RATE` | 80 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 80 is the owner's choice |
+| `SRP_DROP_CONDITION` | 40 | The condition, in percent, a weapon or armour piece found after a match arrives in (1 to 100; the owner's choice) |
+| `SRP_DROP_DEFECT` | on | `off`: such an item arrives without a defect |
+| `SRP_DAILY_BONUS` | on | `off`: no doubled victories, no seven-day reward, and no daily bonus message to the client |
+| `SRP_DAILY_BONUS_RESET_HOUR` | 0 | The hour of UTC (0 to 23) a daily bonus day starts at |
+| `SRP_PREMIUM_PRICES` | `100,200,400,1000,2500,4500,8000` | Gold for premium time, shortest first: a day, 3 days, a week, a month, 90 days, 180 days, a year. 90 days = 2,500 is from a January 2015 sale notice; the rest is the owner's choice (2026-10-12). |
+| `SRP_CLAN_COST` | 50000 | Silver to register a clan (owner's choice) |
+| `SRP_CLAN_MAX_MEMBERS` | 30 | Most members of a clan (owner's choice) |
+| `SRP_CLAN_PLAYERS_REQUIRED` | 1 | Players who must accept before a clan is registered. The game's text says 5: the example `.env` sets 5 for the live server |
+| `SRP_CLAN_TEAM_MIN`, `SRP_CLAN_TEAM_MAX` | 1, 10 | Players a clan team presses Play with |
+| `SRP_PREMIUM_DISCOUNT` | 0 | Percent off premium time for a player without premium (0 to 90); 0 offers none |
+| `SRP_PREMIUM_OFFER_SECONDS` | 3600 | How long the premium offer after a match stands (the client counts it down) |
+| `SRP_RENAME_COST` | the rename voucher's price in the game's dictionary | Gold for a nickname change |
+| `SRP_TUTORIAL` | on | `off`: the client's tutorial stays disabled |
+| `SRP_AMMO_USE` | on | `off`: a match takes no ammo off the account |
+| `SRP_ITEM_DEFECTS` | on | `off`: items get no defects |
+
+### Web page (`servers/web-server`)
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_WEB_BIND` | `127.0.0.1` | Never the shared bind host: the page carries passwords over plain HTTP |
+| `SRP_WEB_PORT` | `8088` | |
+| `SRP_ADMIN_TOKEN` | unset | The admin page is off without it … |
+| `SRP_ADMIN_PATH` | unset | … and without this: it is served at `/<SRP_ADMIN_PATH>` (a long random name) |
+| `SRP_ADMIN_IPS` | `127.0.0.1,::1` | Addresses or ranges that may open it; anyone else gets the plain 404 |
+| `SRP_WEB_TRUST_PROXY` | off | `on`: the client is the last `X-Forwarded-For` entry (a reverse proxy in front) |
+| `SRP_DOWNLOAD_FILE` | unset | A file handed out at `/download` (5 at a time, resumable) |
+| `SRP_DOWNLOAD_URL` | unset | Or a `https://` link for the download button |
+| `SRP_DOWNLOAD_SHA256` | unset | Its checksum, shown on the home page |
+| `SRP_OTHER_SERVER_URL` | unset | The page of the server for the other game version (plain `https://`): a link to it in every page's header. Set on both hosts: `https://skhid.link` here, `https://026g.skhid.link` on the 0.21d server |
+| `SRP_GAME_URL` | unset | Where the original game is had (plain `https://`): the home page's first step. The compose file's default is the web archive's copy of build 2777 |
+
+Tests only: `SRP_TEST_LOG` (the servers' log on stderr). `SRP_WEB_DOMAIN` is
+read by the 0.21d browser server and by the compose file's caddy, not by the
+0.26g stack. The compose file's own variables (`SRP26_*`) are in
+`srp-026g/docs/DEPLOY.md`.
+
+## The web page and the admin
+
+`http://127.0.0.1:8088` by default. English and Ukrainian.
+
+- `/`: what the server is; step one, where the original game is had
+  (`SRP_GAME_URL`); step two, the download of the few files that go over it;
+  the launch line (`-localization=… -server=<host>:<port> -mt_allocator=768
+  -minimum_resources_memory_size=768`); players online; how matches start.
+- `/exchange`: user name, the password typed in the game, an amount of gold,
+  and the way. Gold for silver is the game's own action
+  (`rules::exchange_premium`, 100 silver a gold); silver for gold is srp's
+  own, at the same rate (the client has no such button). 1 to 10 000 gold a
+  time. The password is checked as the 0.26g login keeps it (argon2id of the
+  lower-case hex SHA-1 of what was typed), with the same lockout; an unknown
+  name is never registered; nothing of it is logged. An account that never
+  signed in to the 0.26g lobby has nothing to exchange.
+- The admin page (token, path and address as in the table). Tabs:
+  money (silver and gold, `+500` / `-100`); account (premium hours, set the
+  level, experience, reputation with a faction 1 to 4); item (an item of the
+  0.26g dictionary by id or exact name: up to 8 of an item, up to 100 000
+  units of a stack; an id the dictionary lacks is refused, since the client
+  crashes on one); text (two lines, 63 bytes each, shown to everyone in the
+  lobby and to who signs in, until cleared: `0xA5` / `0xA6`); ban, unban,
+  bans; maintenance; signups.
+- Every change is written and the player's open game is told
+  (`Inbox::account_changed`: inventory, account, money, level and skills,
+  reputations, quests; then the services message for the premium time).
+- A ban ends the account's session; the 0.26g lobby signs its link out
+  (`AA`, then the link is closed) within a second, and the next sign-in gets
+  the game's own ban status. Maintenance minutes reach the clients in the
+  online counts (`0x9F`). Closed registration refuses new names at login.
+  These are the store's, the same code 0.21d uses.
+- Not there: the 0.21d-era console in the srp terminal (`status`, `start`,
+  `end`) does not exist in this tree; nothing replaced it.
+
+The page is of one game version by how it is started (`web_server::run` for
+0.21d, `run_026g` for 0.26g), not by a setting: `srp` here starts the 0.26g
+servers only, so a switch would have nothing to switch.
+
+## What is implemented, and what is refused
+
+Implemented (coded and tested; what live play has shown so far is in
+OPEN-ISSUES.md, "0.26g"):
+
+| Area | State |
+|---|---|
+| Login | Sign-in, registration on first sign-in, wrong password, bans with the game's ban reasons, limits, closed registration, wrong build |
+| Lobby account | The sign-in push in the order the client needs; inventory with its three "spent" lists; kits (three, the third with premium), move, autobuy flag, active kit, kit names |
+| Shop | Buy, sell, repair, gold for silver (`47 04`); sellers by reputation level |
+| Skills | Set, reset for silver or gold |
+| Quests | Choosing a faction, daily quests, progress and pay after a match |
+| Queue and matches | Play alone or as a squad, leave, rejoin after a new sign-in (`MatchRegistry::reseat`) |
+| Results | Rewards (experience, silver, reputation, levels, rating, drops, item wear), the results screen, player details, the drop card |
+| Social | Chat (one general channel for every language: the owner's rule, as on 0.21d; private, squad), friends, ignore list, squads, important messages, online counts, the ranking. A name that is no player gets the game's "Player not found." (`social.md` §9) |
+| Operator | The web page above; the operator's text |
+
+Coded on 2026-10-12 and tested; most of it not looked at with a real client
+yet (`WORK.md` has each one's entry; what each message gets is in
+`srp-026g/docs/notes/coverage.md`):
+
+| Area | Notes |
+|---|---|
+| Item modifications, upgrades, reroll, craft, using an item, defects and repair | `items.md` |
+| Premium shop, buying premium (also from the results screen), bundles, bonuses, offers, nickname change | `premium.md` |
+| Clans (create, invite, ranks, clan teams, clan play) | `social.md` |
+| Match pay by the results screen's rows, drops, the seven-day bonus | `results.md` §10, `progression_sources.md` |
+| Matchmaking by level, 8 a side, least-played map | `matchmaking.md` |
+| Silent lobby clients and their return | `transport.md` §6.1 |
+| Match server: sync order, paired uploads, hash phases | MATCH-SYNC-026G.md |
+
+Refused or absent, and nobody is on it:
+
+- Comments about a user (`49 05`): refused.
+- A browser server and presence pings: 0.26g has none.
+- The mode 3 battery patch of 0.21d: not needed (0.26g serializes the
+  next-battery time).
+- Public HTTPS for the page beside the live server (DEPLOY.md).
+
+srp's own choices (the client does not reveal a rule): the level table is
+0.21d's, 50 levels; the reward rules are 0.21d's; one queue; a second sign-in
+signs the first out; chat limit 10 lines then 1 a second (the client's own
+spam filter is stricter and prints the game's notice itself); a match's
+report is kept while a results screen of it may be open (two hours); silver for gold on
+the page at the game's gold-for-silver rate; the admin's limits above.
+
+## Build and test on Windows
+
+```bash
+export OPENSSL_DIR="C:/Program Files/OpenSSL-Win64-3" OPENSSL_STATIC=true OPENSSL_LIB_DIR="C:/Program Files/OpenSSL-Win64-3/lib/VC/x64/MD"
+cd srp-026g && cargo test --workspace --offline
+```
+
+- `servers/srp/tests/v026g_end_to_end.rs`: the real servers on free ports
+  with a database file, two scripted clients from the TLS sign-in through a
+  purchase, the queue, a whole match, the rewards and the results screen, to
+  a second sign-in.
+- `servers/srp/tests/v026g_web.rs`: the same servers with the web page: the
+  exchange with a typed password, the admin's changes reaching an open game,
+  the operator's text, a ban ending the lobby link.
+- Every server message has a byte-exact test, and every push in the tests
+  goes through the strict client model.
+
+These prove the servers agree with each other and with the notes; they do
+not prove the notes agree with the client. Format only the files you touched
+(`rustfmt --edition 2024 <file>`).
+
+## Run locally
+
+```
+cd srp-026g        (the certificates are read from .\certs)
+cargo run -p srp
+survarium_srp.exe -localization=ukrainian -splash_screen=0 -server=127.0.0.1:1234 -mt_allocator=768 -minimum_resources_memory_size=768
+```
+
+The two memory keys are different arenas (read in the exe 2026-10-12):
+`-mt_allocator=<MiB>` is the global multithreaded allocator (option object
+0xA80150, read at 0xE0FF5: without the key the arena is 16 + 360 = 376 MiB,
+with it `value << 20`), and `-minimum_resources_memory_size=<MiB>` is the
+floor of the resources arenas (option object 0xA83080, a float read at
+0xE9966, default 0x150 = 336 MiB). Neither covers the other. Upstream
+(`origin/feature/server-026g`, live under Wine) ran out of the 376 MiB arena
+while loading a map and fixed it with `-mt_allocator=768`
+(`upstream_compare.md` §10). Both keys together are what the players' start
+file and the shortcuts use, and maps load with them (live since 2026-10-12).
+
+Start the game from its `game\binaries\x86` folder (the client finds its
+login certificate by a path relative to the working directory). The game
+folder needs the patched exe and srp's certificate
+(`client-patches/README.md`). What to watch in a first session, step by
+step: `srp-026g/docs/notes/README.md`. For a quick first match:
+`SRP_MATCH_GATHER_SECONDS=5 SRP_MATCH_MAPS=117 SRP_PACKET_LOG=logs/packets`.
+
+### A match alone: the test bot (added 2026-10-12)
+
+One PC, one game, and a match needs two. Start srp with
+`SRP_BOT_ACCOUNTS=bot-1,bot-2,bot-3`, then the bot:
+
+```
+cd srp-026g
+cargo build -p srp --offline                    (builds srp.exe and srp-bot.exe)
+target\debug\srp-bot.exe --server 127.0.0.1:1234
+```
+
+`srp-bot [--server HOST:PORT] [--name NAME] [--password PASSWORD] [--count N]
+[--once] [--kit ID]`; also `SRP_BOT_SERVER`, `SRP_BOT_NAME`,
+`SRP_BOT_PASSWORD`. The default name is `bot-1` (a new name registers
+itself), `--count 3` runs `bot-1`..`bot-3`, the password is never printed
+(without one a built-in password for local tests is used). It prints one
+line a step: signed in, in the lobby, pressed Play, in the queue, match
+found, static info, the world, in the match, the match's end, the results;
+then it presses Play again (`--once`: it stops). When srp is restarted it
+signs in again by itself.
+
+Then press Play in the game: the queue has its two, and the match is made
+`SRP_MATCH_GATHER_SECONDS` later. The bot is on the other team. It sends no
+inputs: its player is put on a respawn point by the game's own respawn rule
+(no input or kit choice is needed for that: PROVEN in the exe, match.md
+§19) and stands there. With `--count N` the first bot waits in the queue
+and the others join once somebody else waits there.
+
+With the setting it is proven by the scripted clients only
+(`v026g_end_to_end.rs`, the match server's `tests/bots.rs`). Seen with a real
+client once without it (2026-10-12 07:50 UTC, on the public host before bots
+were ruled out there): the match ended by the clock with no trusted world, as
+the paragraph above says.
+
+## The client patch and the players' download
+
+`scripts/client-patch-026g/patch_026g.py <survarium.exe> <survarium_srp.exe>`
+builds the patched client from the original exe (its sha256 is checked; each
+site is checked against the original bytes). It patches the code-signing
+certificate check (without it every stock 0.26g client stops with "Resources
+archive is corrupted": the certificate ran out in 2015), the single-instance
+check, the default hash interval (100 → 50 ms), and adds the snapshot upload
+in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the other
+builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
+
+`scripts/client-patch-026g/make_client_026g.py <game folder> <new folder>
+--server=<host>:<port>` makes the players' overlay without touching the game
+folder: `game/binaries/x86/survarium_skhid.exe` (the patched exe),
+`play_skhid.bat` beside it (the launch line; `SERVER` and `LANGUAGE` at its
+top), srp's login certificate and a `README.txt` that says where the
+original game is had. `--check` writes nothing. The sites hand out only this
+overlay (`Survarium-0.26g-srp-files.zip`, 4.9 MB), never the whole game.
+
+## Deploying
+
+Live on a host of its own since 2026-10-12 (026g.skhid.link; `DEPLOY.md`
+has the layout and how it is updated). The Dockerfile and
+`docker-compose.yml` in `srp-026g` build and run the 0.26g stack as compose
+project `srp26` (services `srp26` and, with the profile `tls`, `caddy26`),
+with the game's own ports there: login 1234/tcp, lobby 1235/udp, match
+1236/udp, the web page behind caddy on 443. `deploy/env-026g.example` is the
+`.env` to fill in.
+
+The compose file's defaults are another block of ports (2234/tcp, 2235/udp,
+2236/udp, the page on 127.0.0.1:8098), made so that the stack can also run
+beside a 0.21d server on one host without sharing a name, a volume or a port
+with it; that way was not taken. Both ways, and what each needs, are in
+`srp-026g/docs/DEPLOY.md`.
+
+## The cross-check: upstream's 0.26g branch
+
+Upstream has its own 0.26g work: branch `origin/feature/server-026g` of the
+`srp` repo (`srp`, commit `8204c88b7`). It is a **dev match
+server with a fixed roster**: no lobby service, no matchmaking, no accounts.
+But it was **live-tested with real 0.26g clients, under Wine** (Linux; never
+on Windows), before ours had met a real client.
+
+`srp-026g/docs/notes/upstream_compare.md` sets their findings
+against our notes and code, topic by topic, with the strength of each piece
+of evidence (live, oracle, static) and a list of recommended changes. The
+points it raised before our first live session:
+
+- the launch line needs `-mt_allocator=768` (done in `make_client_026g.py`,
+  the web page, the docs and the shortcuts);
+- the client joins messages into one datagram by default (our transport
+  note said it does not);
+- after a resync, a client's own inputs must not be replayed to it;
+- an unfocused client can stall for close to a minute (Wine evidence), and
+  our match server drops a silent client after 10 s. The lobby link is
+  ticked by the client in every state, focus or not (transport.md §6.1);
+  the lobby drops a silent link after 30 s (120 s in a match) and keeps
+  the session a minute more for the client's own reconnect
+  (`SRP_LOBBY_LINK_TIMEOUT_SECONDS`, `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS`,
+  `SRP_LOBBY_SESSION_GRACE_SECONDS`);
+- under Wine only, the client dies in `qwave.dll` when it connects to the
+  lobby.
+
+The match server points were applied on 2026-10-12 (`WORK.md`).

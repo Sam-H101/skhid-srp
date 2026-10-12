@@ -1,0 +1,25 @@
+[package]
+name = "srp"
+version.workspace = true
+edition.workspace = true
+# `cargo run -p srp` is the server; the test bot is `--bin srp-bot`.
+default-run = "srp"
+
+[lints]
+workspace = true
+
+[dependencies]
+ctrlc = { workspace = true }
+log = { workspace = true }
+
+session = { workspace = true }
+survarium = { workspace = true }
+vostok = { workspace = true }
+
+lobby-server = { path = "../lobby-server" }
+login-server = { path = "../login-server" }
+match-server = { path = "../match-server" }
+web-server = { path = "../web-server" }
+
+# The test bot's sign-in (`src/bot.rs`): TLS, as the client does it.
+openssl = { workspace = true }

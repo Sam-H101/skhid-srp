@@ -1,0 +1,18 @@
+[package]
+name = "session"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+survarium = { workspace = true }
+argon2 = { workspace = true }
+log = { workspace = true }
+password-hash = { workspace = true }
+rusqlite = { workspace = true }
+# The finished matches' reports are kept as JSON (`v026g::rewards`).
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

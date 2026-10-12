@@ -1,0 +1,16 @@
+[package]
+name = "match-server"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crc32fast = { workspace = true }
+log = { workspace = true }
+
+session = { workspace = true }
+survarium = { workspace = true }
+udp-transport = { workspace = true }
+vostok = { workspace = true }

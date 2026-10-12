@@ -1,0 +1,10 @@
+target
+data
+logs
+.git
+resources/*
+!resources/binary-config-examples
+client-patches
+database
+*.md
+**/__pycache__

@@ -1,0 +1,52 @@
+[workspace]
+members = [
+  "crates/binary-config-parser",
+  "crates/session",
+  "crates/survarium",
+  "crates/vostok",
+
+  "servers/browser-server",
+  "servers/lobby-server",
+  "servers/login-server",
+  "servers/match-server",
+  "servers/srp",
+
+  "scripts/binary-config-cli",      # Parser for binary config files
+  "scripts/build-engine-structure", # IDA helper for buidling directory structure based on C++ namespaces
+  "scripts/nasm-decompiler",        # Patcher for `survarium.exe`
+  "scripts/parse-journal-file",     # Parser for .journal files available in ~0.20 versions
+]
+exclude = []
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.lints.clippy]
+new_without_default = "allow"
+
+[workspace.dependencies]
+arrayref = "0.3.9" # TODO: Remove
+bytemuck = { version = "1.23.1", features = ["derive", "min_const_generics"] }
+clap = { version = "4.5.41", features = ["derive", "env"] }
+crc32fast = "1.4.2"
+encoding_rs = "0.8.35"
+iced-x86 = "1.21.0"
+num-derive = "0.4" # TODO: Remove
+num-traits = "0.2" # TODO: Remove
+openssl = "0.10"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["std"] }
+thiserror = "2.0.12"
+
+actix-web = "4.10.2"
+env_logger = "0.10"
+log = "0.4"
+sqlx = { version = "0.8", features = [ "runtime-tokio" ] }
+
+binary-config-parser = { path = "crates/binary-config-parser" }
+resources-db = { git = "https://github.com/srp-survarium/vostok-resources-db", rev = "9498aca14014ef74460429f51eb41a6af333522c" }
+session = { path = "crates/session" }
+survarium = { path = "crates/survarium" }
+vostok = { path = "crates/vostok" }

@@ -1,0 +1,18 @@
+[package]
+name = "login-server"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+openssl = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+
+session = { workspace = true }
+vostok = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "lobby-server"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+bytemuck = { workspace = true }
+openssl = { workspace = true }
+thiserror = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+
+session = { workspace = true }
+vostok = { workspace = true }
+survarium = { workspace = true }
+udp-transport = { workspace = true }

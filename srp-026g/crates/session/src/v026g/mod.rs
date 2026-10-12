@@ -1,0 +1,441 @@
+//! The 0.26g account model (`docs/notes/lobby.md`,
+//! `lobby_requests.md`): what a 0.26g lobby keeps of an account, the rules
+//! of the client's actions, the pushes it is sent, and where it is kept.
+//!
+//! It stands beside the 0.21d model ([`crate::Account::game`]) and changes
+//! nothing of it: a 0.26g account is found by the same account id the
+//! [`crate::SessionStore`] hands out at sign-in, in a store of its own,
+//! [`GameAccounts`].
+//!
+//! - [`account`]: the state ([`Account`]): money, experience and level,
+//!   skills, reputations, three kits, the inventory, quests.
+//! - [`rules`]: the lobby's actions (move, buy, sell, repair, exchange,
+//!   skills, kits), each refusing with an [`ActionError`] that names the
+//!   game's own text for it.
+//! - [`quests`]: choosing a quest faction, being given and paid quests.
+//! - [`wire`]: the account as lobby messages, and the sign-in's pushes in
+//!   the order the client needs.
+//! - [`persist`]: the repositories (SQLite tables `g26_*` in `srp.db`,
+//!   memory).
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Condvar, Mutex};
+
+pub mod account;
+pub mod autobuy;
+pub mod bonus;
+pub mod bots;
+pub mod clans;
+pub mod extras;
+pub mod items_rules;
+pub mod matchmaking;
+pub mod names;
+pub mod notices;
+pub mod pay;
+pub mod persist;
+pub mod premium;
+pub mod quests;
+pub mod rewards;
+pub mod rules;
+pub mod tutorial;
+pub mod wire;
+
+pub use account::{Account, Item, Kit, KitSlot, QuestInstance};
+pub use persist::{GameRepository, MemoryGameRepository, SqliteGameRepository};
+pub use rules::ActionError;
+
+use crate::LockExt;
+use crate::persist::PersistError;
+
+struct Writer {
+    repository: Box<dyn GameRepository>,
+    /// What was last written of each account: one equal to it is skipped.
+    saved: HashMap<u32, Account>,
+}
+
+/// Something else kept in the accounts' repository, written at every
+/// [`GameAccounts::flush`] after the accounts
+/// ([`GameAccounts::on_flush`]).
+pub type FlushHook = Box<dyn Fn(&mut dyn GameRepository) + Send + Sync>;
+
+/// The 0.26g accounts of a running srp, by account id. Shared as an
+/// `Arc<GameAccounts>`; each account is handed out as `Arc<Mutex<Account>>`
+/// so a change in the lobby is seen wherever the account is held. Whoever
+/// changes one marks it with [`GameAccounts::mark_dirty`]; the saver
+/// ([`GameAccounts::spawn_saver`]) or [`GameAccounts::flush`] writes it.
+pub struct GameAccounts {
+    accounts: Mutex<HashMap<u32, Arc<Mutex<Account>>>>,
+    dirty: Mutex<HashSet<u32>>,
+    wake: Condvar,
+    /// `None`: kept in memory only.
+    writer: Option<Mutex<Writer>>,
+    /// The clans, kept by the same repository.
+    clans: clans::Clans,
+    /// The accounts that are test bots, by name in lower case
+    /// ([`bots`], `SRP_BOT_ACCOUNTS`): none unless the operator set it.
+    bots: Mutex<HashSet<String>>,
+    /// What the repository had of the finished matches when it was opened
+    /// ([`GameRepository::load_results`]), until
+    /// [`rewards::Results::attached`] takes it.
+    restored_results: Mutex<Vec<(String, String)>>,
+    flush_hooks: Mutex<Vec<FlushHook>>,
+}
+
+impl Default for GameAccounts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GameAccounts {
+    /// A store kept in memory only.
+    pub fn new() -> Self {
+        Self {
+            accounts: Mutex::new(HashMap::new()),
+            dirty: Mutex::new(HashSet::new()),
+            wake: Condvar::new(),
+            writer: None,
+            clans: clans::Clans::new(),
+            bots: Mutex::new(HashSet::new()),
+            restored_results: Mutex::new(Vec::new()),
+            flush_hooks: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A store that keeps its accounts in `repository`, with what the
+    /// repository holds loaded and made consistent ([`Account::repair`]; an
+    /// account that needed it is written again).
+    pub fn with_repository(mut repository: Box<dyn GameRepository>) -> Result<Self, PersistError> {
+        let loaded = repository.load_all()?;
+        let clans = repository.load_clans()?;
+        let results = repository.load_results()?;
+        log::info!("Loaded {} clans", clans.len());
+        log::info!(
+            "Loaded {} 0.26g accounts from {}",
+            loaded.len(),
+            repository.describe()
+        );
+        let mut accounts = HashMap::new();
+        let mut saved = HashMap::new();
+        let mut dirty = HashSet::new();
+        for (account_id, mut account) in loaded {
+            let kept = account.clone();
+            if account.repair() {
+                log::warn!("0.26g account {account_id} was not consistent; repaired");
+                dirty.insert(account_id);
+            }
+            saved.insert(account_id, kept);
+            accounts.insert(account_id, Arc::new(Mutex::new(account)));
+        }
+        Ok(Self {
+            accounts: Mutex::new(accounts),
+            dirty: Mutex::new(dirty),
+            wake: Condvar::new(),
+            writer: Some(Mutex::new(Writer { repository, saved })),
+            clans: clans::Clans::loaded(clans),
+            bots: Mutex::new(HashSet::new()),
+            restored_results: Mutex::new(results),
+            flush_hooks: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The rows the repository had for [`rewards::Results`] when it was
+    /// opened, once: empty for a store kept in memory, and at every call
+    /// after the first.
+    pub fn take_restored_results(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.restored_results.locked())
+    }
+
+    /// `hook` is called at every [`Self::flush`] with the repository, after
+    /// the accounts are written and with no account locked: for what is
+    /// kept beside them. Never called for a store kept in memory.
+    pub fn on_flush(&self, hook: FlushHook) {
+        self.flush_hooks.locked().push(hook);
+    }
+
+    /// The store srp's environment asks for: in `srp.db` under
+    /// `SRP_DATA_DIR`, or in memory with `SRP_DB=off`.
+    pub fn from_env() -> Result<Self, PersistError> {
+        match SqliteGameRepository::from_env()? {
+            Some(repository) => Self::with_repository(Box::new(repository)),
+            None => Ok(Self::new()),
+        }
+    }
+
+    /// The clans and clan teams.
+    pub fn clans(&self) -> &clans::Clans {
+        &self.clans
+    }
+
+    /// The account with this id, if it has 0.26g state.
+    pub fn get(&self, account_id: u32) -> Option<Arc<Mutex<Account>>> {
+        self.accounts.locked().get(&account_id).cloned()
+    }
+
+    /// The account with this id; at its first 0.26g sign-in it is made, with
+    /// the game's starting state ([`Account::new`]) under `name`.
+    pub fn get_or_create(&self, account_id: u32, name: &str) -> Arc<Mutex<Account>> {
+        let mut accounts = self.accounts.locked();
+        if let Some(account) = accounts.get(&account_id) {
+            return account.clone();
+        }
+        let account = Arc::new(Mutex::new(Account::new(name)));
+        accounts.insert(account_id, account.clone());
+        drop(accounts);
+        self.mark_dirty(account_id);
+        account
+    }
+
+    /// How many accounts have 0.26g state.
+    pub fn len(&self) -> usize {
+        self.accounts.locked().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// **Testing only**: the accounts with these names are test bots
+    /// ([`bots`]; `SRP_BOT_ACCOUNTS`). An empty list, the default, turns
+    /// everything about bots off.
+    pub fn set_bots(&self, names: &[String]) {
+        *self.bots.locked() = names
+            .iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+    }
+
+    /// The names set with [`Self::set_bots`], sorted.
+    pub fn bot_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.bots.locked().iter().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Whether an account of this name is a test bot. Locks no account.
+    pub fn is_bot_name(&self, name: &str) -> bool {
+        let bots = self.bots.locked();
+        !bots.is_empty() && bots.contains(&name.to_ascii_lowercase())
+    }
+
+    /// Whether the account is a test bot. It locks the account: call it
+    /// with that account not locked.
+    pub fn is_bot(&self, account_id: u32) -> bool {
+        if self.bots.locked().is_empty() {
+            return false;
+        }
+        let Some(account) = self.get(account_id) else {
+            return false;
+        };
+        let name = account.locked().name.clone();
+        self.is_bot_name(&name)
+    }
+
+    /// `(account id, name, rating, rating before)` of every account, best
+    /// rating first (ties by id): the ranking. Test bots ([`bots`]) are
+    /// not in it.
+    pub fn ranking(&self) -> Vec<(u32, String, u16, u16)> {
+        let accounts: Vec<(u32, Arc<Mutex<Account>>)> = self
+            .accounts
+            .locked()
+            .iter()
+            .map(|(&id, account)| (id, account.clone()))
+            .collect();
+        let mut rows: Vec<(u32, String, u16, u16)> = accounts
+            .into_iter()
+            .map(|(id, account)| {
+                let account = account.locked();
+                (
+                    id,
+                    account.name.clone(),
+                    account.rating,
+                    account.rating_before,
+                )
+            })
+            .collect();
+        {
+            let bots = self.bots.locked();
+            if !bots.is_empty() {
+                rows.retain(|row| !bots.contains(&row.1.to_ascii_lowercase()));
+            }
+        }
+        rows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+        rows
+    }
+
+    /// The account changed: it is written on the next pass. Never waits on
+    /// an account, so it may be called with one locked.
+    pub fn mark_dirty(&self, account_id: u32) {
+        if self.writer.is_some() {
+            self.dirty.locked().insert(account_id);
+            self.wake.notify_one();
+        }
+    }
+
+    /// Whether the account is marked and not written yet.
+    pub fn is_dirty(&self, account_id: u32) -> bool {
+        self.dirty.locked().contains(&account_id)
+    }
+
+    /// Write every account marked since the last pass, now. Each is copied
+    /// out under its own lock and written with none held; one equal to what
+    /// was last written is skipped, and one that fails stays marked. Call
+    /// it with no account locked. Returns how many were written.
+    pub fn flush(&self) -> usize {
+        let Some(writer) = &self.writer else {
+            return 0;
+        };
+        let mut writer = writer.locked();
+        // The clans that changed, disbanded ones first (an id is not used
+        // twice, but a write that failed is tried again in any order).
+        let (changed, deleted) = self.clans.take_changes();
+        for clan_id in deleted {
+            if let Err(error) = writer.repository.delete_clan(clan_id) {
+                log::error!("Clan {clan_id} not deleted: {error}; retrying");
+                self.clans.mark_unsaved(clan_id, true);
+            }
+        }
+        for clan in changed {
+            if let Err(error) = writer.repository.save_clan(&clan) {
+                log::error!("Clan {} not saved: {error}; retrying", clan.id);
+                self.clans.mark_unsaved(clan.id, false);
+            }
+        }
+        let mut dirty: Vec<u32> = std::mem::take(&mut *self.dirty.locked())
+            .into_iter()
+            .collect();
+        dirty.sort_unstable();
+        let mut written = 0;
+        for account_id in dirty {
+            let Some(account) = self.get(account_id) else {
+                continue;
+            };
+            let copy = account.locked().clone();
+            if writer.saved.get(&account_id) == Some(&copy) {
+                continue;
+            }
+            match writer.repository.save(account_id, &copy) {
+                Ok(()) => {
+                    writer.saved.insert(account_id, copy);
+                    written += 1;
+                }
+                Err(error) => {
+                    log::error!("0.26g account {account_id} not saved: {error}; retrying");
+                    self.dirty.locked().insert(account_id);
+                }
+            }
+        }
+        // After the accounts: a match's report is never kept ahead of what
+        // the match gave them.
+        for hook in self.flush_hooks.locked().iter() {
+            hook(writer.repository.as_mut());
+        }
+        written
+    }
+
+    /// Start the saver: every [`crate::SAVE_INTERVAL`], or sooner when an
+    /// account is marked, it writes the marked accounts. `None` for a store
+    /// kept in memory.
+    pub fn spawn_saver(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
+        self.writer.as_ref()?;
+        let store = self.clone();
+        let saver = std::thread::Builder::new()
+            .name("saver-026g".to_owned())
+            .spawn(move || {
+                loop {
+                    {
+                        let dirty = store.dirty.locked();
+                        let _ = store.wake.wait_timeout(dirty, crate::SAVE_INTERVAL);
+                    }
+                    let saved = store.flush();
+                    if saved > 0 {
+                        log::debug!("Saved {saved} 0.26g accounts");
+                    }
+                }
+            })
+            .expect("failed to spawn the 0.26g saver thread");
+        Some(saver)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_first_sign_in_makes_the_account() {
+        let store = GameAccounts::new();
+        assert!(store.is_empty());
+        assert!(store.get(5).is_none());
+        let account = store.get_or_create(5, "Alice");
+        assert_eq!(account.locked().name, "Alice");
+        // The same account from then on, whatever name is given.
+        let again = store.get_or_create(5, "Other");
+        assert!(Arc::ptr_eq(&account, &again));
+        assert_eq!(store.len(), 1);
+        // In memory only: nothing is marked or written.
+        store.mark_dirty(5);
+        assert!(!store.is_dirty(5));
+        assert_eq!(store.flush(), 0);
+        assert!(Arc::new(store).spawn_saver().is_none());
+    }
+
+    #[test]
+    fn changes_are_written_and_come_back() {
+        let repository = MemoryGameRepository::default();
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        let account = store.get_or_create(5, "Alice");
+        assert!(store.is_dirty(5));
+        assert_eq!(store.flush(), 1);
+        assert_eq!(repository.saves(), 1);
+        // Nothing marked: nothing written.
+        assert_eq!(store.flush(), 0);
+        // Marked but equal to what was written: skipped.
+        store.mark_dirty(5);
+        assert_eq!(store.flush(), 0);
+        assert_eq!(repository.saves(), 1);
+        // A change.
+        account.locked().generic_money = 77;
+        store.mark_dirty(5);
+        assert_eq!(store.flush(), 1);
+        assert_eq!(repository.get(5).unwrap().generic_money, 77);
+
+        // A new store over the same repository has it.
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        assert_eq!(store.get(5).unwrap().locked().generic_money, 77);
+        assert!(!store.is_dirty(5));
+    }
+
+    #[test]
+    fn a_damaged_account_is_repaired_at_load_and_written_again() {
+        let mut repository = MemoryGameRepository::default();
+        let mut account = Account::new("Alice");
+        account.active_kit = 99;
+        account.kits[0].slots[0] = Some(KitSlot {
+            item_id: 1234,
+            count: 1,
+        });
+        repository.save(5, &account).unwrap();
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        {
+            let account = store.get(5).unwrap();
+            let account = account.locked();
+            assert_eq!(account.active_kit, 1);
+            assert_eq!(account.kits[0].slots[0], None);
+        }
+        assert!(store.is_dirty(5));
+        assert_eq!(store.flush(), 1);
+        assert_eq!(repository.get(5).unwrap().active_kit, 1);
+    }
+
+    #[test]
+    fn the_ranking_is_by_rating() {
+        let store = GameAccounts::new();
+        store.get_or_create(1, "Alice");
+        store.get_or_create(2, "Bob").locked().rating = 1200;
+        store.get_or_create(3, "Eve");
+        let names: Vec<String> = store.ranking().into_iter().map(|row| row.1).collect();
+        assert_eq!(names, ["Bob", "Alice", "Eve"]);
+    }
+}

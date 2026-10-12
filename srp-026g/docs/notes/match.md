@@ -1,0 +1,488 @@
+# 0.26g match: what changed against 0.21d
+
+**Version scope:** client 0.26g (build 2777, "0.26g0", compiled Jan 14 2015, no PDB) vs client 0.21d (build 2010, April 2014, with PDB). Every address is a VA (image base 0x10000 in both). The 0.21d baseline is `srp-021d/docs/notes/match.md` and the files it names.
+
+Tags: **PROVEN** = read in both disassemblies (0.26g VA or string cited, plus the 0.21d symbol/VA it matches). **LIKELY** = strong inference. **GUESS** = weak inference. "[V]" in older notes means the same as PROVEN.
+
+The transport layer (datagram header, acks, lengths, fragmentation) is in the sibling file `transport.md`; only the parts the message layer needs are here.
+
+## 0. Headline
+
+- **0.26g is still client-side deterministic lockstep with rollback.** The server relays inputs, decides finality, syncs clocks, collects hashes and must supply world snapshots. PROVEN:
+  - `pvp_match_core_cook` static at 0x9261E38 (class id 0x5F), its `server_mode` byte cook+0x2C = 0x9261E64 is set to 0 at 0x2CBBC1 (0.21d: cook 0x56E823C, byte +0x21 = 0x56E825D set to 0 at 0x151603).
+  - The cook's `on_resources_loaded` (0x2CBC60) passes that byte to the `pvp_match_core` constructor (0x2D55B0), which picks the event horizon: 250 ms if server, else `max_ping_time_in_ms` + 250 (0x2D5691..0x2D56A4; 0.21d 0x1DC92D). The server variant of the core still exists in the client, the client never runs it.
+  - World history size (0x2CBFDC..0x2CC012): 128 items with `-debug_hash_mismatch`, 1 if server, else (max_ping+250)/50+1 = 11; item size 0xC0BCC (0.21d 0xB9940).
+  - The world is frozen until the first snapshot: `game_world_core` +0x18FDF (0.21d +0xC80E) is set to 1 by the constructor (0x2D0130) unless server/replay, `game_world_core::move` 0x2D2E40 returns at once while it is set (0x2D2E4A; 0.21d 0x1CCCB4), and only the snapshot load clears it (0x2D0FE7, the "THE VERY FIRST SYNCHRONIZATION" path, string 0xA0F750 ref 0x2D0E4C; 0.21d 0x1CAC5F).
+  - So the 0.21d "snapshot upload" client patch (option_b.md) is still needed, re-targeted.
+- **But the match message layer was rewritten.** New ids, 1-byte tick times instead of u32 ms, half-float rotations, compressed static info and snapshots, a sync generation counter, new input kinds ("profile input"), new server messages (multi-player input batch, "move input", RTT ping), and a different time-sync exchange. Nothing of srp-021d's message code works unchanged.
+- **The snapshot gained two blobs** (physics world, game effect player): 6 blobs instead of 4. CRC definition unchanged.
+- **The UDP transport was rewritten too** (transport.md): 3-byte header with u8 sequence numbers and 128-bit varint acks, per-id fixed lengths, no ordered channel any more, new low-level ids. Same 508-byte datagram, same port-range scheme.
+- **The client now re-stamps relayed inputs that arrive too late or too early** instead of rejecting them (unless started with `-reject_inputs`), and there are new server messages to move a client's own input to another tick (§5).
+
+## 1. Message ids and where they are decided
+
+- The orderer is configured with **server→client ids 0xE3..0xF6** and **client→server ids 0xD8..0xE1** (0x2792CC..0x2792D8 and again 0x27A14F..0x27A15B: bytes `E3 F6 D8 E1` at orderer+4..+7). 0.21d: 0x50..0x59 and 0x40..0x47. PROVEN.
+- 0xE2 has no message (hole in the length table). PROVEN (table entry 0 at 0x2799E0+0x28).
+- Server→client dispatcher: `network_client::on_match_packet_received(u8, buffer_reader&)` **0x27A300**, jump table 0x27A738 (20 entries, id−0xE3); FUNCSIG string 0xA08908, "unknown message type : %d" 0xA089A8. 0.21d: 0x1A1520, table 0x1A1908. PROVEN.
+- The connection state is at `network_client`+0x1F1C64 (0.21d +0x7A1C): 0 connecting, 1 ports known, 2 static info received; a message in the wrong state is skipped, as before. PROVEN.
+- **Every message id now has a known length**: `network_messages_info_getter<client::messages_enum, server::messages_enum>::get_message_length(u8 id, buffer_reader, bool, bool&)` **0x279670**, jump table 0x2799E0 (FUNCSIG 0xA08090). Fixed-size messages carry no length on the wire; variable ones (0xFFFF) do. 0.21d had no such function. How the transport uses it: transport.md. PROVEN for the table; the wire consequence is transport.md's.
+
+### 1.1 Client → server (0.26g)
+
+| 0.26g id | len | 0.21d | payload 0.26g | sender (0.26g) | status |
+|---|---|---|---|---|---|
+| 0xD8 connect | 5 | 0x40 | `u32 session`, `u8 debug` = the `g_debug_hash_mismatches` byte 0x1F1D32C (the same flag that gates 0xF6 parsing at 0x27A505 and selects 128 history items at 0x2CBFDC) turned into 0x00 / **0xFF** by `neg bl; sbb bl,bl` (0x27A213..0x27A21F); 0.21d sent the bool itself | 0x27A1B0 (push 0xD8 at 0x27A1DD) | same content; the debug byte is 0/0xFF. PROVEN |
+| 0xD9 port probe | 4 | 0x41 | `u32 session` | ports handler 0x27B830 (push 0xD9 at 0x27B86F; match_client vtbl+0xC = set_connection_ports(id, session, min, max)) | same. PROVEN |
+| 0xDA ready | 0 | 0x42 | empty. Just before it the client sets its sync generation `network_client`+0x1F1C68 = 0xFF (0x27AE9A) | push 0xDA at 0x27AEAE | same, plus the generation reset. PROVEN |
+| 0xDB time reply | 6 | 0x43 (`u32 echo, u32 client ms`) | `u16 f1, u16 f2, u16 client_ms16` (§4) | 0x27B5E7 (answer to 0xE5) and 0x27CE7A (answer to 0xE6) | **changed**. PROVEN |
+| 0xDC input | 9 | 0x45 (16 B) | `u8 tick`, `half2 rotation` (2 × IEEE half: dx, dy), `u32 actions_mask` (bit 31 = a per-input flag, input node +0x27) | `synchronize` sender 0x27EA90.., id = 0xDC + (node+0x24 != 0) at 0x27EB24; payload writer 0x3184A0 | **changed** (1-byte time, half floats, field order). PROVEN |
+| 0xDD input, precise time | 10 | — | `u8 tick, u8 ms_in_tick (0..49)`, `half2 rotation`, `u32 actions_mask` | same; used when node+0x24 is set (input time off the 50 ms grid). An off-grid input without that flag is not sent at all (0x27EAB5..0x27EACC) | **new**. PROVEN |
+| 0xDE profile input | 2 | — | `u8 tick, u8 value` (writer 0x3185A0) | 0x27EB90 (push 0xDE at 0x27ECAF) | **new**: `client_update<profile_input,222,243,222,243>`. What the byte means: LIKELY the index of the equipment profile (kit) the player picks for the next respawn: the in-match UI has `root.show_profiles_selector` (0xA03704, ref 0x238451) and a `profile_changed` callback (0xA03280, ref 0x233F07) next to the death-camera callbacks `select_player`/`select_free_view`; the code from that callback to 0xDE was not traced |
+| 0xDF hash | 5 | 0x46 (`u32 time, u32 crc`) | `u8 tick` (event-horizon item time /50), `u32 crc` (0xFFFFFFFF after the force-mismatch hotkey, flag 0x1F1D9EC) | try_send_all 0x27CBF0 (push 0xDF at 0x27CDC9; tick writer 0x3185F0, crc writer 0x1F3D90) | **changed** (1-byte time). PROVEN |
+| 0xE0 leave | 0 | 0x47 (`u32 elapsed ms`) | empty | 0x27A828 (in `close_current_match`, FUNCSIG ref 0x27A8FA) | **changed** (no payload). PROVEN |
+| 0xE1 keep-alive | 0 | 0x44 (`u32 client ms`, every 1000 ms) | empty, every 1000 ms once the world runs (0x27CE02..0x27CE4F) | try_send_all | **changed** (no clock value). Bytes PROVEN; that it is 0x44's successor: LIKELY |
+
+Payload names come from serializer assert strings: `survarium::player_input::serialize` 0xA0E578, field `actions_mask` 0xA0E5B0, `math::half2( rotation )` 0xA0E560, `serialize_local_fixed_time` 0xA1626C, `serialize_local_time` 0xA162F0 (`local_fixed_time_serialization.cpp`). PROVEN.
+
+### 1.2 Server → client (0.26g)
+
+All handlers run only in state 2, except 0xE3 (state 0) and 0xE4 (state 1). Handlers that need the match core (`network_client`+0x1F1C40, 0.21d +0x7A00) count the message as code 5 in the statistics and skip it when there is no core yet (0x27C1F0 = `register_message_in_stats`, 0.21d 0x1A2EEE).
+
+| 0.26g id | len | 0.21d | payload 0.26g | handler | status |
+|---|---|---|---|---|---|
+| 0xE3 ports | 4 | 0x50 | `u16 min_port, u16 max_port`; the client probes each port with 0xD9 | 0x27B830 | same. PROVEN |
+| 0xE4 static info | var | 0x51 | a first `u8`, then an **LZMA2** body decompressed into a 0x578A0-byte buffer, then `process_static_match_info` (FUNCSIG refs 0x27B9B6..0x27BDFB). Layout: §6 | 0x27B880 | **changed** (compressed). PROVEN for the decompress call |
+| 0xE5 set time | 7 | 0x52 (`u32 echo, u32 match ms`) | `u8 sync_generation`, `u16 echo`, `u32 match_time_ms` | 0x27B570 | **changed**. PROVEN |
+| 0xE6 ping | 4 | — | `u16 a, u16 b`. The client keeps them, and on its next send pass answers 0xDB `{b, a + hold time, client_ms16}`; `b` is also stored at game+0x578 | 0x27B770 | **new**. Bytes PROVEN; meaning (a = server timestamp, b = last measured RTT shown to the player): LIKELY |
+| 0xE7 clock offset | 2 | 0x55 | `i16 offset_ms` → `floating_timer::set_offset` (0x1EE9E0 on game+0x52D8) | 0x27B7F0 | same. PROVEN |
+| 0xE8 snapshot | var | 0x53 | `u8 sync_generation`, `u8 compressed`, then the state: LZMA2 into a 0x8000-byte buffer when `compressed` != 0, raw otherwise → `game_world_core::deserialize(reader, history_on_deserialization_enum 1, 8)` 0x2D0B70 | 0x27BFF0 | **changed** (generation, optional compression, 6 blobs: §3). PROVEN |
+| 0xE9 player entered | 2 | 0x56 (`u8 player, u32 time`) | `u8 tick, u8 player` → `enter_match` 0x2D1470 | 0x27C5F0 | **changed** (1-byte time, order). PROVEN |
+| 0xEA player left | 2 | 0x57 | `u8 tick, u8 player` → `leave_match` 0x2D18A0; if the player is the local one the client disconnects (vtbl+0x58, reason 3) | 0x27C690 | **changed** (1-byte time, order). PROVEN |
+| 0xEB input relay | 10 | 0x54 (`u8 player, f32, f32, u32, u32`) | `u8 tick, u8 player, half2 rotation, u32 actions_mask` (reader 0x318400) → `change_input<player_input>` 0x1FAB50 | 0x27C280 | **changed**. PROVEN |
+| 0xEC input relay, precise time | 11 | — | `u8 tick, u8 ms, u8 player, half2, u32` | 0x27C280 | **new**. PROVEN |
+| 0xED multi-player input relay | var | — | `u8 tick`; `ceil(N/8)` bytes of player mask (N = roster size, given to the length getter through match_client vtbl slot 0xE = 0x27A2E0, and read from match options +0x577B5 by the handler); then for the k set bits, **k × `u32 actions_mask`, then k × `u16 rotation.x`, then k × `u16 rotation.y`** (half floats), all at the same tick. The mask is little-endian by byte: byte j holds players 8j..8j+7 (0x27C3F0..0x27C407); the inputs follow in ascending player order. At least 2 players: the length getter first wants `head + B + 16` bytes to be there (`lea edi,[ecx+edi+0x10]`, 0x279783), then takes `head + B + 8·popcount` (0x27975B, error string 0xA08008) | 0x27C340 | **new**. PROVEN |
+| 0xEE same, precise time | var | — | `u8 tick, u8 ms`, then as 0xED | 0x27C340 | **new**. PROVEN |
+| 0xEF move local input | 2 | — | `u8 from_tick, u8 to_tick` → `move_input<player_input>(local player, from, to)` 0x27D2D0 | 0x27C7B0 | **new**. Bytes PROVEN; meaning (the server re-stamped the client's late input to a later tick, instead of discarding it): LIKELY |
+| 0xF0 same, precise times | 4 | — | `u8 tick, u8 ms` × 2 | 0x27C7B0 | **new**. PROVEN |
+| 0xF1 discard local input | 1 | 0x58 (`u32 time`) | `u8 tick` → `discard_input<player_input>` 0x27D820 | 0x27C8D0 | **changed** (1-byte time). PROVEN |
+| 0xF2 same, precise time | 2 | — | `u8 tick, u8 ms` | 0x27C8D0 | **new**. PROVEN |
+| 0xF3 profile input relay | 3 | — | `u8 tick, u8 player, u8 value` (reader 0x318540) → `change_input<profile_input>` 0x1FB730 | 0x27C980 | **new**. PROVEN |
+| 0xF4 move local profile input | 2 | — | `u8 from_tick, u8 to_tick` → `move_input<profile_input>` 0x27DCD0 | 0x27CA30 | **new**. PROVEN |
+| 0xF5 discard local profile input | 1 | — | `u8 tick` → `discard_input<profile_input>` 0x27E200 | 0x27CB50 | **new**. PROVEN |
+| 0xF6 hash mismatch (debug) | var | 0x59 | only parsed with `-debug_hash_mismatch` (flag 0x1F1D32C); else skipped with the hint string 0xA088A0. Body decompressed (0x20000 buffer) and passed to `game_world_core::on_hash_mismatch(buffer_reader)` 0x325A60 (FUNCSIG 0xA17DF8; 0.21d took a descriptor table) | 0x27A4F4 | still debug-only, format changed (not worked out). PROVEN that stock clients ignore it |
+
+The template ids in the FUNCSIGs agree: `client_update<player_input,220,235,221,236>` = 0xDC/0xEB/0xDD/0xEC and `client_update<profile_input,222,243,222,243>` = 0xDE/0xF3 (strings 0x9FBAB0, 0xA091B8, 0xA092A0 and the `change_input` FUNCSIG refs 0x1FACC4..). PROVEN.
+
+The srp-021d option-B patch borrowed the ignored 0x59 as its "upload request"; in 0.26g the ignored id is 0xF6. LIKELY usable the same way.
+
+### 1.3 Time on the wire: 1-byte ticks
+
+- **PROVEN**: every time in a match message, except the absolute `u32` in 0xE5, is a tick number modulo 256 relative to the receiver's own clock.
+  - Reader (0x318416, and inline copies in each handler): `cur = game_time / 50` (`mul 0x51EB851F; shr edx,4`), `t = (cur + sdiff8(byte, cur & 0xFF)) * 50`, where `sdiff8` (0x20FF90) is the signed 8-bit sequence difference. The wire byte must be within ±127 ticks (±6.35 s) of the receiver's clock.
+  - Precise variant (`serialize_local_time`, writer 0x318620, reader 0x318690): the tick byte, then `u8 remainder` (time mod 50); `t = tick_time + remainder`.
+  - Writer (`serialize_local_fixed_time` 0x3185F0): `u8 (time / 50)` (assert `static_cast< local_fixed_time_type >( result )`, 0xA1623C).
+- 0.21d sent `u32` ms everywhere. Server work: write every time as `(t/50) as u8` (plus `(t%50) as u8` for the precise ids), and read client times against the server's own match clock with the same signed 8-bit rule. A message more than ~6 s away from the receiver's clock decodes to the wrong tick, silently.
+- "Game time" here is the core's current time `[game_world_core+0x18FC0]` (= `[pvp_match_core+0x191B8]`, set by 0xE5). PROVEN.
+
+## 2. Lockstep model, handshake and lifecycle
+
+### 2.1 Still lockstep (details for §0)
+
+| fact | 0.21d | 0.26g | status |
+|---|---|---|---|
+| server mode hard-coded off | cook 0x56E823C, byte +0x21 := 0 at 0x151603 | cook 0x9261E38 (vtable 0xA0F1A0, class 0x5F), byte +0x2C (0x9261E64) := 0 at 0x2CBBC1, read at 0x2CC114 and passed to `pvp_match_core` ctor 0x2D55B0 | same. PROVEN |
+| event horizon | server 250, client `max_ping_time_in_ms`+250 (0x1DC92D) | same choice at 0x2D5691..0x2D56A4; stored at `game_world_core`+0x18FB4 by the ctor (0x2D00C7) | same. PROVEN |
+| `max_ping_time_in_ms` | option 0x56D8C20, default 250, max 1000 | option object 0xAA1DF8 (name 0xA0F0D8), value at 0xA71148 = 250, min 250 (0xAA1E3C), max 1000 (0xAA1E40); initialiser 0x854900 | same values. PROVEN |
+| tick | 50 ms (C7F0) | 50 ms (`game_world_core`+0x18FBC := 0x32 at 0x2D00CD) | same. PROVEN |
+| history items | server 1, client 11 (0x1DC8C1) | server 1, client (max_ping+250)/50+1 = 11, 128 with `-debug_hash_mismatch` (0x2CBFDC) | same. PROVEN |
+| frozen until first snapshot | C80E, `move` 0x1CCCB4 | +0x18FDF; set by ctor 0x2D0130 (unless server or the second ctor flag); `move` 0x2D2E40 returns at once (0x2D2E4A); cleared only at 0x2D0FE7 in `deserialize` | same. PROVEN |
+| roster | fixed for the match; `match_options` holds `player_profile[20]` (0.21d match.md §2) | `game_world_core`+0x18FDC := 20 (0x2D00DD); `change_input` names a player index < 20 from the player table at +0x18FAC (stride 0x45FC) and calls anything else `<server>`/`<invalid>` (0x1FAC58..0x1FAC80); match options always carry 20 profiles (sibling static_info.md) | LIKELY same model, max 20 |
+| no client state upload | no C→S state message | no C→S message carries state (§1.1) | same. PROVEN |
+
+**So a stock 0.26g client still cannot start without a byte-exact world snapshot from the server**, and srp still needs a snapshot source (the option-B client patch, ported; see the sibling client_patch.md). PROVEN.
+
+### 2.2 Handshake up to the first controllable tick
+
+Same shape as 0.21d (match.md §2), with the new ids and the sync generation:
+
+1. C→S 0xD8 `{u32 session, u8 debug}`.
+2. S→C 0xE3 `{min_port, max_port}`; C→S 0xD9 on each port.
+3. S→C 0xE4 static info (`u8 local index` + LZMA2 body, per the sibling static_info.md). The client loads.
+4. C→S 0xDA ready. The client now expects sync generation > 0xFF (mod 256).
+5. S→C 0xE5 `{u8 gen, u16 echo, u32 match_time}`. **Only taken when `gen` is strictly newer (mod 256, half range) than the client's stored generation** (0x27B59E..0x27B5D1); 0xE5 does not store `gen`. It sets the game time (0x1EE4A0), answers 0xDB, calls 0x2D0550(0, 1) (LIKELY the `game_world_core::clear` equivalent: it walks the history and input structures), stores the time at core+0x191B8, and zeroes the send timers +0x1F1C3C/+0x1F1C50/+0x1F1C54. It dereferences the core, so it must come after 0xDA (as 0x52 after 0x42). PROVEN.
+6. S→C 0xE8 `{u8 gen, u8 compressed, state}`. **Taken when `gen` is equal to or newer than the stored one; it then stores `gen`** (0x27C006..0x27C040); an older one is skipped whole. First one logs "THE VERY FIRST SYNCHRONIZATION" and unfreezes `move()`; later ones log "FULL RESYNC" (0xA0F840 ref 0x2D0F37). PROVEN. (A resync UI callback as 0.21d `game_world::on_resync` 0x15BE5E: LIKELY, not traced.)
+   - "Newer" in both tests is: ahead by 1..127, or behind by 128..255 (so exactly 128 ahead is not newer; 0x27B5A9..0x27B5CD, 0x27C00C..0x27C02C). With the client's 0xFF after 0xDA the first sync is generation 0. PROVEN (re-read 2026-10-12).
+   - 0xE5 is in the client's table as send-once, but that is the sender's choice (transport.md §4): a lost 0xE5(g) followed by a delivered 0xE8(g) loads the world onto the old clock. Send 0xE5 reliably, or resend the pair. LIKELY (not seen live).
+   - So **every resync must bump the generation**: 0xE5(g+1) then 0xE8(g+1). A late 0xE8 of an older resync is dropped by the client. This is new; srp-021d's resync code (`game.rs::start_sync`/`send_sync`) has no generation. PROVEN.
+7. S→C 0xE9 `{tick, idx}` for each player who becomes active after the snapshot time, then relays (0xEB/0xEC/0xED/0xEE, 0xF3) of every input after it.
+8. Running: C→S 0xDC/0xDD/0xDE/0xDF/0xE1/0xDB; S→C 0xEB..0xF5, 0xE6, 0xE7, 0xE9, 0xEA.
+
+### 2.3 Client send loop (`try_send_all` equivalent 0x27CBF0, called from 0x27CFB0)
+
+- Game time is quantised to 50 ms (`/50*50`, 0x27CC21..0x27CC2E). PROVEN.
+- Inputs: `synchronize<packet_sender>` 0x27E6D0 → per-player senders 0x27E9F0 / 0x27EB90: a node is sent when a history item has exactly its time and the player's changed bit (as 0.21d 0x1A34ED). An input whose time is off the 50 ms grid is only sent if its node is flagged "precise" (+0x24), as 0xDD; otherwise its changed bit is cleared and it is not sent (0x27EAB5..0x27EACC). PROVEN.
+- Hash 0xDF: every 100 ms (static 0xA2B393C, lazily initialised from the object at 0xAA19F8 with default 0x64; LIKELY a command-line override exists, name not found), when `has_event_horizon_item` (0x2D1070) is true. That function returns false if the event-horizon item **was loaded from a snapshot** (item+0xC0BB9, set by the snapshot reader at 0x325134) or is newer than now − horizon. So no 0xDF is sent for a snapshot's own time. Same as 0.21d `pvp_match_core::is_there_event_horizon_item` 0x1DCBE6 (item+0xB9941). PROVEN, unchanged.
+- 0xE1 every 1000 ms (0x27CE02). PROVEN.
+- 0xDB after a 0xE6, on the next pass (flag +0x1F1C69, 0x27CE51). PROVEN.
+- The flush (match_client vtbl+0x20) runs every pass while connected, else at most every 100 ms (0x27CF28..0x27CF4A). PROVEN.
+- Every 500 ms something is refreshed through the match client (0x27CF60, `[x+0x1EE608]+0x1F4`); not wire-visible. LIKELY stats.
+
+### 2.4 End of match and results
+
+- No "match finished" or results message exists in either direction (§1). The end is decided by the rule objects inside the simulation, as in 0.21d. PROVEN (message table); the rest per modes_maps.md.
+- 0xE0 leave carries nothing now (0.21d 0x47 had the elapsed ms). PROVEN.
+- Results still have to come from the simulation's statistics (snapshot blob 2, §3) or another source (see results.md); srp-021d's `snapshot.rs` decoder must be updated (§3).
+
+## 3. The world snapshot (0xE8 body) and the hash
+
+`game_world_core::deserialize(buffer_reader&, history_on_deserialization_enum, unsigned)` 0x2D0B70 (FUNCSIG 0xA0F780; 0.21d `game_world_core::deserialize` 0x1CAB3B) → `game_state_history_item::deserialize` **0x324D80** (0.21d 0x1FE021). Layout, PROVEN:
+
+| # | 0.21d | 0.26g | notes |
+|---|---|---|---|
+| 1 | `u32 time_ms` | `u32 time_ms` → item+0xC0BB0 | 0x324D95 |
+| 2 | `u32 active_clients_mask` | same (writer field name `active_clients_mask` 0xA17D6C) | 0x324DA6 |
+| 3 | per set bit: `player_history_item` (`u16 len + state`, `bool`, compressed animation state) | per set bit: `player_history_item` (writer 0x33FDE0; reader 0x33FEE0: `u16 len` + the player state via 0x33FD80, then `u8` flag, then the animation state through 0x395D00 into a 0x7000 buffer); stride 0x9054 per player in the item | same structure; the envelope, the animation state's length and the state's head are in snapshot_rules.md §7 (2026-10-12) |
+| 4 | `u16 len` + bullet_manager | `u16 len` + **bullet_manager_history_item** (writer 0x323F90; item+0xB4690) | same |
+| 5 | `u16 len` + statistics | `u16 len` + **statistics_history_item** (writer 0x324090; +0xB6AB8) | same position; format: 28 score events per modes_maps.md (LIKELY changed) |
+| 6 | `u16 len` + game_objects | `u16 len` + **game_objects_serialized_state** (writer 0x324210; +0xBBF30) | same position |
+| 7 | `u16 len` + game_rules | `u16 len` + **physics_world_history_item** (writer 0x324410; +0xB7F08) | **new** |
+| 8 | — | `u16 len` + **game_rules_history_item** (writer 0x324110; +0xB76E0) | moved one place later |
+| 9 | — | `u16 len` + **game_effect_player_history_item** (writer 0x324310; +0xBFF80) | **new** |
+
+- Blob names: serializer assert strings 0xA179E0, 0xA17A6C, 0xA17B70, 0xA17C90, 0xA17AF0, 0xA17BFC, each with `(u16)m_buffer.size()` 0xA17974. Order from `game_state_history_item::serialize` 0x324BE0 (calls at 0x324D2B..0x324D62) and the reader 0x324D80 (blobs read inline at 0x324E21..0x325123, each `u16 len` + bytes into the item's buffer at the offsets given); both agree. PROVEN.
+- A trailing debug section (0x323E50) is written only with `-debug_hash_mismatch` (flag 0x1F1D32C) and the hotkey flag 0x1F1D32D. PROVEN.
+- After loading, the reader marks the item as "from a snapshot" (+0xC0BB9 = 1, 0x325134). PROVEN.
+- **Hash** `game_state_history_item::hash` 0x325150 (0.21d 0x1FE15A): serialises the item with `serialize(writer, mask)` (0x324BE0) into a 0x8000-byte stack buffer, the mask being the first node of the players-mask list (`game_world_core`+0x12280; nodes `{+0 next, +4 prev, +8 mask, +0xC time}`) with time ≤ item time, and runs **boost CRC-32** (table built by 0x1C210 with `xor 0x04C11DB7`, reflected, init 0xFFFFFFFF via the bit-reversal loop 0x3251DC..0x325200, final `not`). The result is cached in the item (+0xC0BB4, flag +0xC0BB8). Same definition as 0.21d: CRC over the body **without** the leading `u32 time`. PROVEN.
+- So srp's CRC check of uploaded snapshots (game.rs `vouchers`/`trusted_crc`) is unchanged in principle, but the snapshot decoder (`servers/match-server/src/snapshot.rs::decode`) must chain **five** trailing u16-prefixed sections from the end instead of three, and statistics are now followed by four sections (objects, physics, rules, effects). Rules (for `timelimit_rule_core` state and batteries) are the 5th blob. PROVEN for the order; statistics/rules formats: see modes_maps.md (rule state fields).
+- Snapshot size: the compressed path decompresses into a **0x8000-byte (32 KB)** buffer (0x27C059), so a compressed snapshot must decompress to ≤ 32 KB; an uncompressed one has no such limit in the handler (the transport's message limit applies). 0.21d snapshots were 11-14 KB. PROVEN for the buffer size.
+
+## 4. Time sync
+
+| | 0.21d | 0.26g |
+|---|---|---|
+| absolute time | 0x52 `{u32 echo, u32 match_ms}` → reply 0x43 `{u32 echo, u32 client_ms}` | 0xE5 `{u8 gen, u16 echo, u32 match_ms}` → reply 0xDB `{u16 abs(sdiff16(low16(match_ms), echo)), u16 echo, u16 client_ms16}` (0x27B5D3..0x27B6D8; `sdiff16` = 0x27D0F0) |
+| round-trip probe | — (only 0x52/0x43) | **0xE6** `{u16 a, u16 b}` → on the next send pass 0xDB `{u16 b, u16 a + (client time since 0xE6 arrived), u16 client_ms16}` (0x27B770, 0x27CE5E..0x27CF26); `b` also goes to game+0x578 |
+| client clock report | 0x44 `{u32 client_ms}` every 1000 ms | 0xE1, empty, every 1000 ms |
+| correction | 0x55 `{i16}` | 0xE7 `{i16}` (same handler logic) |
+
+- PROVEN for all bytes. In both 0xDB forms the second field is "the server's u16 stamp, adjusted for how long the client held it", so `rtt = server_now16 − f2` works for both (LIKELY intended). The first field echoes `b` (0xE6) or the gap between the two times in 0xE5 (0 if the server puts `low16(match_ms)` in `echo`). The third field is the client's game clock in ms, low 16 bits: `floating_timer` game+0x52D8 read through 0x147110 (0xE5 path, 0x27B5EE..0x27B623) or 0x1EEA90 (0xE6 path), the very timer 0xE5 sets (`game::set_time_in_ms` 0x1EE4A0 writes game+0x52D8) and 0xE7 shifts (`set_offset` 0x1EE9E0 on it). PROVEN (re-read 2026-10-12, §17).
+- `client_ms16` is only 16 bits: the server must unwrap it against its own clock (it was u32 in 0.21d). srp-021d's `sample_lag`/`estimated_lag`/`correct_clock` (game.rs) work on u32 ms and must be changed. PROVEN that the field is u16.
+- The client's 0xDB answer to 0xE6 is delayed to its next send pass (≤ one frame), but the hold time is added, so the RTT is not inflated. PROVEN.
+- What the original server's correction policy was: unknown, as for 0.21d.
+
+## 5. Input rules on the client
+
+### 5.1 Relayed inputs (`change_input<client_update<player_input,…>>` 0x1FAB50, FUNCSIG 0x9FBAB0 family; 0.21d `change_input` 0x1CB12C)
+
+- `T ≤ last resync time` (`game_world_core`+0x18FD4, 0.21d C804): rejected, log "older than last resync" (0x9FB820). Same as 0.21d. PROVEN.
+- **"too old" (`T + 500 ≤ now`) is no longer a rejection.** The 0.21d strings "REJECTED, reason: too old" / "too new" (0x819D90, 0x819DE0) have no 0.26g counterpart in `change_input`. Instead, when `T + horizon ≤ now` (horizon 0 if server, +0x18FB4 otherwise; now = +0x18FC4; 0x1FAD1E..0x1FAD47):
+  - the input is **moved** to `ceil50(base) + (T mod 50)`, where `base = now + [+0x18FB8]*50`, lowered to `[+0x18FC8] + 50` when that is set and smaller (client only), and logged "input is moved %d.%03d => %d.%03d" (0x9FBA70);
+  - unless the client runs with **`-reject_inputs`** ("reject players inputs if too old or too new", option 0xAA2290 / 0xA0F6B0; `game_world_core`+0x18FDE = option state != 1, 0x2D00EA..0x2D0120), then it is dropped with "input is SKIPPED ... -reject_inputs is set" (0x9FB9F8).
+  - PROVEN for the code path and strings; `+0x18FB8` and `+0x18FC8` not identified (LIKELY an input delay in ticks and the newest history time).
+  - **Consequence for the server:** a relay that arrives after the client's horizon is no longer silently lost; the client re-stamps it to a tick of its own choosing, which differs between clients, so the worlds still diverge (hash mismatch), just differently. The server must still never relay an input that can arrive after a client's horizon. PROVEN (logic); effect: LIKELY.
+- "Too new" is also no longer a rejection: for a network input with `T > now + 5 × horizon` (the same limit as 0.21d) and a non-empty history, the input is moved **back** to a grid tick just under that limit, keeping `T mod 50` (0x1FAFA3..0x1FB00C), again with "input is moved" (or "SKIPPED" under `-reject_inputs`). With the 1-byte tick encoding (±127 ticks = ±6.35 s) and a 500 ms horizon (limit 2.5 s) this can happen. PROVEN.
+- Duplicate (same time, same contents) returns 1 as before (0x1FAC29..0x1FAC4E). PROVEN.
+- enter/leave (`enter_match` 0x2D1470, `leave_match` 0x2D18A0) keep 0.21d's rules and texts: "older than last resync" rejected, "CORRECTED from ... to ..." (stamped onto a later tick), "too old" rejected (0xA0F948, 0xA0FA28, 0xA0FA78, 0xA0FAC8, 0xA0FBA8, 0xA0FBF8; 0.21d 0x81A0B0..0x81A350). PROVEN.
+
+### 5.2 Local input lists, discard and move
+
+- `discard_input<player_input>` 0x27D820 / `<profile_input>` 0x27E200 (0.21d `discard_input` 0x1CB54F): refuse `T ≤ last resync` (+0x18FD4), "too new" beyond the newest history time, and no history item before T ("cannot find game state"), with 0.21d's texts (0xA08F80, 0xA090A0, 0xA09110, 0xA09168). **The 0.21d refusal "cannot find player input" (0x819FC8) is gone**: if the player's first node at or after T is not exactly at T, it now returns 1 quietly (0x27DB7E..0x27DB8E). PROVEN.
+- **New `move_input`** (0x27D2D0 player, 0x27DCD0 profile; FUNCSIG 0xA091B8 family): moves the local player's input from tick A to tick B, with the same refusals ("older than last resync" 0xA08D38, "too new" 0xA08E70/0xA08ED8, "cannot find game state" 0xA08F30). It is driven by 0xEF/0xF0/0xF4. PROVEN. LIKELY use: when the server re-stamps a late client input (instead of 0.21d's 0x58 discard), it relays it at the new tick and tells the owner with 0xEF so all worlds agree.
+- Input storage: each input kind (player, profile) has two per-player structures in `game_world_core`, at +0x2FCC (pointer, `+ player*0x480`, nodes with time at +0x20, walked by the local `change_input`) and at +0xE3E4 (pointer, `+ player*0x190`, consulted first by the network `change_input` 0x1FAB70); the mode-0 snapshot load walks both families (2 iterations, strides 0x5A0C and 0x1F4C, 0x2D0C11..0x2D0C71). 0xE8 loads with mode 1, which skips that loop (0x2D0BD6 `test ebx,ebx; jnz 0x2D0C7A`), so **input lists survive a resync, as in 0.21d** (match.md §6). PROVEN (§17: neither 0xE5's nor 0xE8's clear walks them; one unsent local input is the exception). Which structure is which: +0x2FCC holds the nodes, +0xE3E4 the times of the inputs that came from the network (§16).
+- Local `change_input` (the `from network` argument 0; path 0x1FB216..0x1FB416; 0.21d 0x1CB3AD): `g` = the grid point below the input's time (0x1FDCC0). It walks the player's local list (`[game_world_core+0x2FCC] + player*0x480`, newest first) for the newest node older than the input. PROVEN:
+  - The input is **precise** if its `actions_mask` **bit 5** differs from that node's bit 5 and its time is off the 50 ms grid (0x1FB2AE..0x1FB2E6). Precise inputs become their own node with flag +0x24 and go out as 0xDD; the node before them is flagged precise too.
+  - Otherwise, if that node is later than `g` and not precise, it is **pulled to the input's time and the input merged into it** (0x1FB2F2..0x1FB367: node time := T, contents combined by 0x2C5B60). This is 0.21d's "pulled back" behaviour (match.md §6), unchanged.
+  - Else a new node is appended. An off-grid input time is remembered in `+0x18FCC` (keeps the minimum; reset to −1 when a precise node is made). PROVEN; its use: not traced.
+  - Which action bit 5 is: open (LIKELY fire or another action whose exact moment matters).
+
+## 6. Static info (0xE4), match options and player profiles
+
+Worked out in the sibling file **static_info.md** (PROVEN there unless it says otherwise). Summary:
+- **Envelope:** `u8 local_player_index` **first** (0.21d: last byte), then all remaining bytes are a raw LZMA2 stream (§7) holding `match_options` (0x578A0 bytes decoded; 0.21d 0xC4F4, uncompressed).
+- **`match_options::deserialize` 0x1F0E70** (0.21d 0x1F59A4), in wire order: `player_profile[20]` (**always 20**, before the options; 0.21d sent N after them) · `u8 map_id` (index into `maps_dict`; replaces the project string, mode, battery count, respawn, duration, start fraction, waiting time, countdown and loading picture, which now all come from `gameplay/game_modes/*.options`) · `u8 N` (roster size, ≤ 20; also sizes the 0xED/0xEE mask) · `u32` seed / match id (0.21d C440) · `u16` match level (new) · **28** × f32 score weights (0.21d 24) · **20** × u8 squad ids (0.21d N).
+- **`player_profile` is new:** team, name, a new clan-abbreviation string, the protection u32, **up to 3 kits** (each: state, id, name, 23 slots of `u16 item index + u16 count`, and a 68-float modifier block with a 128-bit mask), and an item list (≤ 69 items) the kit slots index into. The 0.21d per-slot mode table (0x877168) is gone; an item's serialize mode now comes from the item dictionary's `is_stack`. The client only loads kits whose state is 0. The same profile reader is used by 0.26g lobby profile messages. The kits are what the new **profile input** (0xDE/0xF3) most likely selects between (LIKELY, §1.1).
+- **No new player in a running match (checked 2026-10-12).** A second 0xE4 is dropped unread: the dispatcher takes 0xE4 only in state 1 and sets state 2 after it (0x27A378..0x27A38D; otherwise 0x27A5AB skips the message). PROVEN. `enter_match` 0x2D1470 does not compare the index with N (it tests only the time and the tick's entered mask; `cmp al,0x14` at 0x2D1504 picks a name for the log), so 0xE9 for a place ≥ N is taken. PROVEN. What the world then does with it was not traced; N sized the player resources loaded with the level (0x2CC684), the statistics and the 0xED mask, so a place past N has none of them. LIKELY a crash or a broken player.
+- **Roster model unchanged:** fixed roster for the whole match, players activated by 0xE9 and deactivated by 0xEA, the index byte in 0xE9/0xEA/0xEB/0xF3 indexes it. PROVEN (handlers §1.2; 20 profiles always sent).
+
+## 7. Compression (new)
+
+- `network_client`+0x4C is an **LZMA2** codec object (vtable 0x9FAFF4: +0 compress 0x357E30, +4 decompress 0x357EB0; `compressor_lzma2.cpp` 0xA1F3CC, `vostok::lzma2_allocator::malloc_impl` 0xA1F3E4). It is built in the network client constructor at 0x219A43 (`0x357DD0`) with dictionary size 0x8000; 0x357DD0 turns that into the LZMA2 dictionary property byte (`(2 | p&1) << (p/2 + 11) >= dict`, so **p = 6, 32 KB**), the decoder's work buffer is sized from lc+lp (0x219B20..0x219B54). Encoder settings: level 9, lc 4, lp 0, pb 2, fb 273 (0x219A06..0x219A3E; static_info.md). PROVEN.
+- Decompress = `Lzma2Decode`-style call 0x3EE810 with the stored property byte: **the wire carries a bare LZMA2 chunk stream, no property byte and no xz/7z container**. PROVEN (the property comes from the object, 0x357ECB).
+- Used by 0xE4 (always), 0xE8 (when its `compressed` byte is non-zero) and 0xF6. 0.21d used no compression in match messages (its only codec, `ppmd_compressor`, is for resources). PROVEN.
+- Server side: any LZMA2 encoder with dictionary ≤ 32 KB and lc+lp ≤ 4 will do (e.g. liblzma raw LZMA2 filter, or `lzma-rs`). Simplest valid alternative: LZMA2 **uncompressed chunks** (`0x01` + `u16 BE (size−1)` + up to 64 KB of data, then `0x02` + … for later chunks, ending with `0x00`), which every LZMA2 decoder accepts. LIKELY (LZMA2 format; not tested against this client).
+
+## 8. Game modes and maps
+
+See **modes_maps.md** (sibling). In short: map+mode are chosen by one `maps_dict` id; modes 2 (batteries), 3 (timed batteries, reworked), 4 (Team Deathmatch, new); maps level_01..08; rule class ids renumbered (timelimit 0x5D, player_respawn 0x5B, gather 0x58, match_time_vi_spawn 0x59, tdm 0x5A, kd_stats 0x5E; 0.21d 0x5C, 0x5B, 0x59, 0x5A, —, 0x5D); timings (900 s, 20 s countdown, start at 80 % of the roster, 8 s respawn) now come from data. The client still picks and runs the rules itself (§2), so these change the server only through static info, roster sizing and results.
+
+## 9. What srp-021d's match server must change
+
+| area | 0.21d code | change for 0.26g | basis |
+|---|---|---|---|
+| transport | `servers/match-server/src/transport.rs` (12-byte header, u16 seq, u64 acks, `message_info`, 0xFF multipart, per-message u8/u16 lengths) | rewrite to transport.md: 3-byte header, u8 seq, 128-bit varint acks (tail bytes at the end of the datagram), fixed per-id lengths from the 0x279670 table (no length byte for fixed-size ids), no ordering any more (0xE4..0xE8 and 0xF6 are "unique" with one shared u8 counter; everything else plain, so the server must dedup client resends), one-byte low-level ids 0xFA..0xFD (never send 0xFE), unacked limit 256 | transport.md |
+| ids | `game.rs` `mod id` (0x40..0x47, 0x50..0x59) | C→S 0xD8..0xE1, S→C 0xE3..0xF6 (§1) | PROVEN |
+| time encoding | `game.rs` (u32 ms in every message) | u8 tick (+u8 ms for the precise ids), decode against the server clock with the signed 8-bit rule (§1.3) | PROVEN |
+| input in/out | `game.rs::input` (16-byte 0x45 → 0x54 with `u8 player` first) | parse 0xDC/0xDD (9/10 B, half2 + u32); relay as 0xEB/0xEC (`tick, [ms,] player, half2, u32`), or batch several players' inputs of one tick into 0xED/0xEE; keep the half floats bit-exact (never convert through f32) | PROVEN |
+| profile input | — | relay 0xDE → 0xF3 `{tick, player, value}`; late ones: 0xF4 move / 0xF5 discard to the owner; log for late joiners like player inputs | PROVEN (bytes); use LIKELY |
+| late inputs | `game.rs` sends 0x58 for an input past the server horizon | either 0xF1/0xF2 discard (as 0x58), or the new way: re-stamp to the next open tick, relay at that tick and send the owner 0xEF/0xF0 `{from, to}` | PROVEN (messages); which the original server did: LIKELY move |
+| enter/leave | 0x56/0x57 `{u8 player, u32 time}` | 0xE9/0xEA `{u8 tick, u8 player}` (order swapped) | PROVEN |
+| time sync | 0x52/0x43, 0x44, 0x55; `sample_lag`, `estimated_lag`, `correct_clock` | 0xE5 `{gen, u16 echo, u32 time}` / 0xDB `{u16,u16,u16}`; add 0xE6 pings and handle their 0xDB; 0xE1 has no clock, so lag must come from 0xDB's u16 client clock (unwrap mod 65536); 0xE7 as 0x55 | PROVEN |
+| resync | `start_sync`, `send_sync`, `finish_sync` | keep a per-client sync generation: each sync sends 0xE5(g+1) then 0xE8(g+1) `{gen, compressed, body}`; body has 6 blobs | PROVEN |
+| snapshot decode | `snapshot.rs::decode` (3 trailing sections chained from the end) | 5 trailing sections after statistics (objects, physics, rules, effects); statistics with 28 events; rules blob is 5th | PROVEN (order); formats per modes_maps.md/results.md |
+| CRC check | `vouchers`, `majority`, `trusted_crc` | unchanged definition; 0xDF carries a u8 tick, so key the reports by the decoded tick | PROVEN |
+| static info | `crates/survarium/src/v021d/match_start.rs::static_info`, `MatchOptions::new`; `lobby.rs` `write_profile_static`/`write_item`; `skills.rs` | new writer (static_info.md): `u8 local index` + LZMA2(20 profiles with up to 3 kits each, `u8 map_id`, `u8 N`, `u32 match id/seed`, `u16 match level`, 28 f32, 20 squad bytes); 68 modifiers; map/mode chosen by `maps_dict` id (modes_maps.md) | PROVEN per siblings |
+| leave | 0x47 with u32 (and option-B chunks told apart by length) | 0xE0 is empty; the upload patch needs a new carrier (client_patch.md) | PROVEN |
+| snapshot upload | option-B patch hooks (`on_match_ready`, ignored 0x59 branch) | re-target to 0.26g (0x27AE9A..0x27AEBD ready path, ignored 0xF6 branch 0x27A505..0x27A5AB); serializer 0x324BE0, item time +0xC0BB0, players-mask list +0x12280 | LIKELY sites; client_patch.md |
+| hash interval, heartbeat | 100 ms hashes, 1 s clock | 100 ms hashes (0xDF), 1 s 0xE1 | PROVEN |
+
+## 10. Biggest risks
+
+1. **Snapshot source.** Unchanged in kind, bigger in size: the state now includes a physics world and game-effect players, and the per-player state grew (item 0xC0BCC vs 0xB9940 bytes). Only the client can make it, so the upload patch must be re-done on a binary without symbols.
+2. **Transport rewrite** (transport.md): 8-bit sequence numbers and fixed per-id lengths mean one wrong length table entry desynchronises the whole datagram parse.
+3. **1-byte times.** Any message more than ±127 ticks off the client's clock is read as a different tick without error; a stalled client that catches up, or a server clock jump, corrupts inputs silently.
+4. **Half-float inputs** must be relayed byte-for-byte; any re-encoding changes the simulation.
+5. **The client now re-stamps late relays itself** instead of dropping them (unless `-reject_inputs`), so a late relay gives a different world rather than a missing input; the server's horizon rule matters as before.
+6. **LZMA2** for static info (always) and big snapshots: a new dependency or the uncompressed-chunk trick.
+
+## 11. Open questions
+
+1. Meaning of the first u16 of 0xDB in the 0xE5 case and of `b` in 0xE6 (displayed ping?), and the original server's clock policy.
+2. `game_world_core`+0x18FB8 and +0x18FC8 in the "moved" input rule (an input delay in ticks? the newest history time?), and the use of +0x18FCC (§5.2).
+3. Exact meaning of bit 31 of `actions_mask` (input node +0x27), and which action is bit 5 (the one whose change mid-tick makes an input "precise", §5.2).
+4. The profile-input byte (LIKELY the kit index for the next respawn) and where the simulation applies it.
+5. Whether `history_on_deserialization_enum` values other than 1 (0 resets input lists, 2 skips the history clear) are ever needed by a server; 0xE8 always passes 1.
+6. Whether the original server re-stamped late client inputs (0xEF/0xF0, then relayed at the new tick) or discarded them (0xF1/0xF2). Both work on the client; re-stamping keeps the player's input. What each does on the client is settled (§16); srp moves by default.
+7. The 0xF6 hash-mismatch body layout (debug only).
+8. Whether `max_ping_time_in_ms` and `-reject_inputs` can be set by players on the command line (both are command-line options).
+9. Statistics and per-player state formats inside the snapshot (needed for results): see results.md / modes_maps.md.
+
+## 12. Code (added 2026-10-12)
+
+`crates/survarium/src/v026g/match_msgs.rs` and its folder hold the message
+layer of this note: ids and per-id lengths (§1), `parse_client` /
+`ServerMessage::payload` for every message, `tick_byte` / `tick_time` /
+`WireTime` (§1.3), `Generation` (§2.2), `TimeReply` (§4), `snapshot` (§3,
+with snapshot_rules.md), `static_info` (§6), `upload` (client_patch.md
+§3.4), `rules` (modes_maps.md §10–11) and `client_model` (a strict reader of
+what the server sends, with the state and generation rules of §1.2 and
+§2.2). No sockets; the match server's loop is §13.
+
+## 13. The match server (added 2026-10-12)
+
+`servers/match-server/src/v026g/` (beside the 0.21d server, which is untouched): `registry.rs` (the lobby's hand-off and the result type), `server.rs` (one UDP socket, routing by address, `run`), `game.rs` (one match), `tests/` (scripted clients on `match_msgs::client_model`, in memory and over localhost UDP). Nothing of it has met a real 0.26g client yet. What it decides, and on what ground:
+
+**Order of a sync** (§2.2 steps 5–6). 0xE5, 0xE6 and 0xE7 are send-once in the client's table, 0xE8 lives 1.75 s, relays, roster changes and discards 250 ms (transport.md §4). So:
+- A sync is **0xE5(g) alone first**, again every 150 ms, until the client's 0xDB answers it (matched by `stamp == echo`, the PROVEN part of the reply); then 0xE5(g) once more, the other players' inputs since the snapshot, and 0xE8(g) behind them (§18). A world never arrives without its time. The client takes every 0xE5 of a generation until it has taken that generation's 0xE8 (PROVEN: 0xE5 does not store the generation). After 5 unanswered 0xE5 the snapshot goes anyway, so a misread 0xDB cannot stop a match.
+- Between the first 0xE5 and the 0xE8 a client being resynced runs its old world on the new clock with its history cleared, for about a round trip. What 0xE5 does is PROVEN (§17): game clock set, every history item freed (and every node of the list at core+0x12740, not identified), the three send timers zeroed, input lists kept. `move()` has its own branches for an empty history (0x2D2EE8 → 0x2D3096, 0x2D3388 → 0x2D3485), and no hash goes out (no event-horizon item). That nothing else minds it: LIKELY (0.21d clients were in that state while a 0x53 was resent, up to 500 ms).
+- A 0xE8 not acked in its 1.75 s is taken as lost (`Transport::is_lost`): the sync starts again as generation g+1.
+- A relay, discard or roster change never acked in its 250 ms marks the client as having missed that tick; with no hash majority it is then the one resynced. A lost 0xE9/0xEA is also sent once more.
+- The end of the match (0xEA with the client's own index) is sent again while it stays unacked.
+
+**Clocks** (§4). 0.26g clients send no clock (0xE1 is empty), so each live client gets a 0xE6 every second: `a` = the server's ms (low 16 bits), `b` = the last round trip. The 0xDB answer gives the round trip (`now16 − stamp`) and the client's clock (third field, unwrapped against the match clock; PROVEN, §4). The lag estimate and the 0xE7 correction are 0.21d's (smallest of the last 4 samples; the client makes a correction up at 5 % speed, PROVEN, §17). A sample more than 5 s off is not used (the field has 16 bits). `SRP_CLOCK_CORRECTION=off` turns 0xE7 off: an operator's switch, no longer a hedge.
+
+**Ticks.** A wire time is resolved against the match clock (`tick_time`). No client is started from a snapshot more than 5 s old while others play: its clock would be more than 127 ticks from theirs and every relay would be read at a wrong tick (0.21d, with whole times, took any after 20 s).
+
+**Late inputs** (§5, §16). `SRP_LATE_INPUTS=discard` (default, the owner's decision: what 0.21d does and what is live-proven there; 0xF1/0xF2 to the owner, nothing relayed) or `move` (the input goes to the first open tick that is free and keeps the player's inputs in order; 0xEF/0xF0 to the owner, the relay at the new tick to the others). The rules and their grounds are in §16. Neither was tried against a 0.26g client.
+
+**Batched relays** (0xED/0xEE) are not sent. They are send-once in the client's table (transport.md §4: lifetime 0), where a single relay (0xEB/0xEC) is resent for 250 ms: a lost batch would lose every input in it. What a batch saves is 3 bytes for each pair of players whose inputs for the very same time reach the server within one 5 ms pass, and the datagram count stays the same (the transport joins messages anyway). Not worth a lost input.
+
+**Hash reports** (§2.3). Reports are keyed by their resolved tick, as in 0.21d, and only taken from clients in the simulation. A stock client reports every second 50 ms tick, on a phase of its own that is drawn again at each 0xE5 (PROVEN, §14): two stock clients name either the same ticks always or never, until one hitches or is resynced. A tick with one report is not judged, and an uploaded world is vouched for by another client only when that client reported the same tick. For two clients on opposite phases no tick has two hash reports, so worlds are compared only at an upload's tick (an upload is itself a report for its tick), and only when that tick happens to be one of the other client's: about one upload in two. The others have one voucher and are not trusted. The full client patch sets the interval to 50 ms (client_patch.md §3.6), and then every client reports every tick. The server keeps the same-tick rule and notices the starved state: when two or more clients in the simulation are reporting and for 5 s no tick got two reports, it logs "… on opposite hash phases …" once, and again every 30 s while it lasts (`HASH_STARVED_AFTER`, `HASH_STARVED_LOG` in `game.rs`). While it lasts, two clients are asked for the world of one tick every 3 s and those worlds are compared (§15).
+
+**What a player has left** (added 2026-10-12). Each `PlayerResult` carries `supplies` from the last trusted world's player blocks (snapshot_rules.md §7): alive or not, the kit in use, and for every item of the profile what is in store, in its slot and in its weapon. The lobby's rewards get it unchanged (`session::v026g::rewards::PlayerResult::supplies`).
+
+**Results.** Read only from a world whose CRC two clients reported for its tick, or one when a single client is in the match (`MatchResult::trusted_by` says which), and whose numbers are possible (0.21d's plausibility rules). The mode's end is taken from such a world: all batteries home (statistics tail), or in Team Deathmatch no tickets and nobody alive (the tdm rule's 12 bytes before the kd stats; the rule order is PROVEN, snapshot_rules.md §2.1), in both only once play has begun; the match is then over `END_DELAY_MS` after that world's time. The time limit comes from the server's own copy of `timelimit_rule_core`, stepped by the 0xE9/0xEA it sends and set right from each trusted world's rule state.
+
+**The initial world's time** is taken from the first upload (0.21d: 50 ms). GUESS that it is on the 50 ms grid; if not it is rounded up.
+
+**A world the reader cannot split** (`Sections::candidates` empty) is still used to start and resync clients, is saved (`SRP_SNAPSHOT_DIR`, kind `unreadable`) and gives no results: the reader has not seen a real 0.26g world.
+
+## 14. Which ticks a client hashes (added 2026-10-12)
+
+Corrected the "about every other time" sentence §13 (Hash reports) used to have. Read from `network_client::try_send_all` 0x27CBF0.
+
+- **The 0xDF timer is per client, not derived from the simulation time.** PROVEN:
+  - `now_q` = game time `/50*50` (0x27CC21..0x27CC2E, in `edi`).
+  - Gate (0x27CD52..0x27CD74): `mov edx,[ebx+0x1f1c50]` / `add edx,[0xa2b393c]` / `cmp edx,edi` / `ja 0x27ce02` (skip), else `mov [ebx+0x1f1c50],edi`. That is `last_sent + interval <= now_q`, then `last_sent = now_q`. There is no `% 100` and no item counter.
+  - `last_sent` is stored **before** `is_there_event_horizon_item` (0x27CD7A) is asked, so a pass with nothing to report still re-arms the timer.
+  - The tick sent is not `now_q` but the time of the event-horizon item (0x2D0B30: newest history item with `time <= now - horizon`, `[item+0xC0BB0]`, read at 0x27CDA3).
+- **Writers of `+0x1F1C50`** (byte search of the whole image): the constructor (0x219AF5), the 0xE5 handler (`mov [ebx+0x1f1c50],esi`, esi = 0, 0x27B74F) and the gate itself. The 0xE8 handler does not touch it. PROVEN.
+- **So the phase is drawn anew at every 0xE5 a client takes** (first sync, late join, every resync, and every repeat of 0xE5 in §13's sync order): with `last_sent = 0` the first send pass after it fires at once, and from then on the client reports every second tick from that one. Which of the two parities it gets depends on when its frame ran. PROVEN (logic).
+- With frames under 50 ms the phase then stays put; it flips when a pass misses the due grid step (a frame over 50 ms, or a game-time step from 0xE7). LIKELY (follows from the gate, not seen live).
+- **Correction (2026-10-12, seen in the in-memory test):** the next point overstates one thing. An upload is itself a report for its tick, and its tick is the horizon item at the moment the request is handled, not a tick of the uploader's hash phase. So on opposite phases an upload that falls on the other client's tick has two vouchers and is accepted and trusted; one on the uploader's own tick is not. About half the uploads are lost that way (the end by the rule and the results come later, or not at all with bad luck), and the worlds are compared only at those lucky upload ticks, one every few seconds instead of every tick: a client out of step is found late (in the test the 1-to-1 disagreement at an upload tick did lead to a resync, of the client `judge` took for wrong).
+- **Consequence:** two clients are either on the same phase (every report coincides) or on opposite phases (no tick ever has two reports) until one hitches or is resynced; about even odds per pair. It is not "every other time". On opposite phases `game.rs::majority` returns `None` for every tick with 2 live clients, so `check_candidates` accepts no upload, no divergence is judged and no results are trusted. With 3 or more clients at least two always share a phase.
+- **The interval is a command-line key.** The static 0xA2B393C is filled once from the option object 0xAA19F8 (registered at 0x853F50; its name pointer at 0xAA1C08 = "hash_check_interval_in_ms" 0xA08AC8, description "hash check interval in ms"), default 0x64 (0x27CC4F), read as a number by 0x141B0. PROVEN. Starting clients with `-hash_check_interval_in_ms=50` makes the gate pass on every grid step, so every client reports every tick and the phases cannot differ. LIKELY (syntax as `-server=`; not tried live). The neighbour object 0xAA17C8 is `-force_send_hashes` (name pointer 0xAA19D8, value 0xAA19EC, passed as the third argument at 0x27D0D4): it only lifts the "connection is up" test at 0x27CD3C, not the interval.
+- **Fixed by the client patch** (2026-10-12): the full builds of `patch_026g.py` change the default at 0x27CC4F from 100 to 50 (one byte, 0x27CC53 `64` → `32`; client_patch.md §3.6). `-hash_check_interval_in_ms=50` on the command line is the alternative for an exe without it (LIKELY syntax). Neither was tried live.
+- **What the server does** (done 2026-10-12): it keeps the same-tick rule (CRCs of different ticks cannot be compared); the §13 sentence and the comments in `game.rs` / `test_client.rs` say the above; and for stock-interval clients it notices the starved state (two or more live clients reporting, no tick with two reports for 5 s) and logs it rather than wait silently (§13, Hash reports). Only 0xDF reports count for that, not uploads. While starved, two clients are asked for the upload of one tick, each at its own moment (§15, done 2026-10-12). `HASH` retention and the per-tick map need no change for 50 ms reports (twice the entries).
+
+## 15. Paired uploads while hashes are starved (added 2026-10-12)
+
+`game.rs`: `aim`, `aim_at`, `observe_upload`, `send_requests`. Tests: `tests/game.rs` (two patched clients with clocks 30 ms apart; one patched client and a stock one), unit tests in `game.rs`.
+
+- **The cheap fix does not exist.** 0xE5 does zero the client's hash timer (0x27B74F), but it is taken only with a generation newer than the stored one (0x27B5A9..0x27B5CD), and then it also sets the game clock (0x27B5D7), frees the whole history (0x27B72C → 0x2D0550(0, 1): every item with time ≥ 0, and the list at core+0x12740) and zeroes the other send timers. A 0xE5 of the current generation is skipped whole. So "0xE5 to one client" is a resync without its world, not a phase redraw. PROVEN; not used.
+- **What a client uploads.** On 0xF6 the patch uploads the event-horizon item of that moment (client_patch.md §3.4): the newest item with `time ≤ now − horizon` on the client's own clock (0x2D0B30). So for a request sent at match clock `c` the tick is `floor((c + offset) / 50) · 50`, with `offset = (the way there) − (the client's lag behind the match clock) − horizon`, a constant while the client's clock and link hold. Two clients asked at the same moment upload the same tick only when their offsets fall in the same 50 ms cell: by chance.
+- **Learning the offset.** An upload of tick `t` for a request sent at `c` says `t − c ≤ offset < t − c + 50`. The server keeps these bounds for each client, narrows them with every upload that agrees, and starts again from the newest when one does not (the clock was corrected, the link changed). They are dropped when the client is resynced or sent a 0xE7.
+- **Aiming.** While starved the periodic request goes to two clients (`sources`), every 3 s (`STARVED_REFRESH`) instead of 5. With bounds for both, a tick `T` is picked (the first both can still be asked for) and each is asked at `T + 22 − (the middle of its bounds)`: 22 ms into the tick by its own clock if the middle is right (25 less half the 5 ms the loop may be late). With no bounds for one of them, both are asked at once: that round gives the bounds.
+- **It converges.** Bounds are at most 50 ms wide, so a request aimed by their middle lands at most one tick off. A miss is itself an upload: it cuts the bounds to under the loop's 5 ms (unit test `an_aimed_request_misses_its_tick_once_at_most`: for every offset and lateness, one miss at most, the truth always inside). From then on every request hits, for as long as offset and link hold. A link that jitters by more than about 20 ms gives bounds that disagree; the newest then count and it is hit or miss, as before this change.
+- **What the two worlds do.** Each upload is a report for its tick, as before. Two for one tick with one CRC: `majority` has its two reports, the world is accepted and trusted by two (`trusted_by` 2), results and the end by the mode's rule come from it. Two with different CRCs: a 1-to-1 disagreement, judged as any (`judge`: a missed relay, the better link, the last one synced), and the loser is resynced. The same-tick rule is untouched: nothing is trusted on one report.
+- **One patched client only** (the other's exe has no upload): its request is aimed at a tick the other client sends a hash for (the last two of its hash ticks give period and phase), so the upload and that hash are the two reports.
+- **Pacing.** One request for each client at a time, at least `SNAPSHOT_WAIT`/the refresh apart (3 s here; the patch asks for 1 s), sent by the loop when its moment comes (`ask_at`, at most 1 s ahead). A request the client's pool guard skipped is simply not answered; the next round asks again.
+- **Cost.** Two uploads (each up to 32 KB, 11–14 KB seen in 0.21d) every 3 s while it lasts, against one every 5 s. The 50 ms hash interval (client patch or `-hash_check_interval_in_ms=50`) is still the fix; the log says so.
+
+## 16. Late inputs: what the client does with 0xF1 and 0xEF (added 2026-10-12)
+
+Read from `discard_input<player_input>` 0x27D820 and `move_input<player_input>` 0x27D2D0 (the profile-input twins 0x27E200 / 0x27DCD0 are the same template). PROVEN unless tagged.
+
+- **A local input node** (list at core+0x2FCC + player·0x480): `+0x08` the effective input (8 bytes: rotation, mask), `+0x10` the player's own part, `+0x18` the part that came from the network, `+0x20` time, `+0x24` precise, `+0x25` "has an own part" (1 from the allocator 0x1FCB60), `+0x26` "has a network part". The network path of `change_input` merges into a node of the local player that already exists at that time (0x1FB568: own part saved to +0x10, the new one to +0x18, `+0x08 = combine` by 0x2C5B60, `+0x26 = 1`).
+- **0xF1 discard(T)**: refused for `T ≤ last resync`, for a T past the newest node, for a T with no history item. Then, if the first node at or after T is exactly at T, **the whole node is unlinked** (0x27DC8C), whatever parts it has, and the history is marked changed from T (0x2D1340). Otherwise nothing happens, quietly.
+- **0xEF move(A → B)**: the same refusals for A. Then, if the node at A exists and has an own part (+0x25): with no network part the node is unlinked; with one, the node keeps it (`+0x08 = +0x18`, `+0x25 = 0`) and only the own part is taken out (0x27D768..0x27D788). The input taken out is then put in at B by **`change_input` with "from network" = 1** (0x27D7FD → 0x1FAB50), the code a relay goes through, with the node's precise flag. So after a move the owner's list is what every other client's list is after the relay at B.
+- **What follows for a server:**
+  - Discard and move are equally safe where the node at A is a plain own input: all worlds agree (without the input, or with it at B). They fail alike when the client can no longer find the tick's state (A older than its history, 500 ms).
+  - An input is the state of the keys. Discarded, the player's keys stay as its input before had them until its next input (a released trigger keeps firing); moved, the change is only late. That speaks for moving; that the original server did it is LIKELY (0xEF/0xF0/0xF4 exist for nothing else, and the client moves late relays itself, §5.1).
+  - A moved input must not pass a later input of the same player that the others already have: it would bring old keys back. Such an input is stale and is discarded.
+  - The player's own input for the very time B, made before the 0xEF came, sits in the same node as the moved one. It **must be moved on** (a second 0xEF from B takes exactly the own part out and leaves the moved one); a 0xF1 for B would remove both and leave the others with an input the owner no longer has.
+  - B must be in the owner's past when the 0xEF arrives. If the owner makes a new input at B after the move, the local path merges it into the node without filling `+0x10` (0x1FB2F2..0x1FB367), and a later move would take out nothing. So a client whose clock runs behind (just resynced) gets a discard instead.
+- **`game.rs::place`** is these rules: keep an input in time; move a late one to the first open tick that is free, after every earlier input of the player and before every later one, within 4 ticks, and in the owner's past (by its measured lag); else discard; an input for a time a moved one sits at is always moved on. `SRP_LATE_INPUTS=discard` drops every late input as 0.21d did. The others get the relay at the new time, byte for byte but the time, precise if it came precise (0xEC), and a client that starts from a snapshot later gets it there too.
+- Not tried live. The combine function 0x2C5B60 was not read (what the owner's node at B plays between the two moves; it is replaced within a round trip).
+
+## 17. Settled by disassembly (added 2026-10-12)
+
+| question | answer | where |
+|---|---|---|
+| 0xDB's third field | the client's game clock, low 16 bits: `floating_timer` game+0x52D8, the timer 0xE5 sets and 0xE7 shifts | 0x27B5EE..0x27B623 (0x147110), 0x27CE86 (0x1EEA90), 0x1EE4A0, 0x1EE9E0. PROVEN |
+| speed of a 0xE7 correction | 5 %: `set_offset` stores `± [timer+0x28]` as the rate, and the `game` constructor puts 0.05 there | 0x1EE9F6..0x1EEA27, 0x1E9848 (constant 0xA799C8 = 0.05), 0x1E986D. PROVEN |
+| what 0xE5 clears | `0x2D0550(time 0, flag 1)`: every history item (0x2D06A2.. frees all with `time ≥ 0`) and every node of the list at core+0x12740; with flag 1 it first removes the local player's one unsent off-grid input (the node at the time kept in +0x18FCC). It sets the game clock, core+0x191B8, and zeroes +0x1F1C3C / +0x1F1C50 / +0x1F1C54. It answers 0xDB before any of that | 0x27B5D3..0x27B761. PROVEN |
+| the state until 0xE8 | no history: no hash (no event-horizon item), no rollback; `move()` goes on from the live world through its empty-history branches | 0x2D2EE8, 0x2D3388. PROVEN for the branches; harmless: LIKELY |
+| do input lists survive a resync | yes. 0xE8's `deserialize(mode 1)` calls `0x2D0550(0, 0)` (history only) and skips the loop that resets the two input structures of each kind (mode 0 only, 0x2D0BDE..0x2D0C71). Stale own nodes after the snapshot's time stay, which is why the server tells a resynced client to drop its own ticks | 0x2D0BA5..0x2D0C7A. PROVEN |
+| can 0xE5 redraw a hash phase alone | no: §15 | PROVEN |
+| rule order in a snapshot, respawn point count, gather rule, events 24 and 26 | snapshot_rules.md §2.1, §2.3, §2.4, §3.1 | PROVEN |
+| a player block's length | snapshot_rules.md §7 | PROVEN |
+| batched relays | not worth it: §13 | PROVEN (table) |
+| score weights | none in the client or its data: static_info.md §8 | PROVEN negative |
+
+## 18. A sync's order, resync kinds, the restore limit (added 2026-10-12, after upstream_compare.md)
+
+`game.rs`: `send_sync`, `finish_sync`, `relay_to_others`, `begin_timing`, `check_hashes`. The design is the 0.21d server's of the same day (`srp-021d/docs/notes/upstream_recovery.md`), checked against the 0.26g exe.
+
+- **The inputs since the snapshot go between 0xE5 and 0xE8**, and a client loading its snapshot gets new inputs as they come; nothing is replayed after the load. Why the 0.26g client takes them:
+  - 0xE5 → `0x2D0550(0, 1)` ends as 0.21d's `game_world_core::clear` does: tick 50, core time 50, **world time +0x18FC4 = 50**, +0x18FC8 = −1, **last resync +0x18FD4 = 0** (0x2D075F..0x2D0786), with the history empty. PROVEN.
+  - `change_input` (network path, 0x1FAB50) then refuses nothing: "older than last resync" compares with 0 (0x1FABBC); "too old, move it" compares `T + horizon` with +0x18FC4 = 50 (0x1FAD37..0x1FAD47); "too new, move it back" is skipped while the history is empty (`cmp [core+0x2FBC],0; jz` at 0x1FAFC0). PROVEN. The node goes into the player's list (0x1FB41B..).
+  - The load (mode 1) does not touch the input lists (§17), sets world time and last resync to the snapshot's time (0x2D0FC5..0x2D0FD7), and nodes after it are played by the first move. PROVEN for the fields; the catch-up itself as 0.21d: LIKELY.
+  - Not settled: what +0x18FC4 becomes if a **running** client's `move()` runs between the 0xE5 and the inputs (in 0.21d it stays 50: the same code deployed live there on 2026-10-12). The inputs are queued right behind the 0xE5, so they are read in the same network pass in the common case. LIKELY.
+- **A client's own inputs are never sent back to it** (they were, until this change). The duplicate test of `change_input` looks at the list of times that came from the network for that player (core+0xE3E4, 0x1FAB70..0x1FAB8E), where the local player's own inputs are not: an own input sent back is not a duplicate, and if it is older than the horizon by then, the client moves it to another tick and has it twice. Another server saw exactly that live as a lasting divergence (upstream_compare.md topic 7). PROVEN (code) + live (theirs). The client still has its own inputs after the load (the lists survive); the ones the others lack it is told to drop, as before.
+- **Replayed inputs are kept until acked** (`Transport::send_kept`): a relay's own 250 ms would lose them on a slow link, and a sync's inputs are not late however late they come.
+- **The clock after a restore stays snapshot + 350 ms** (`SYNC_LEAD_MS`), not the match clock: the owner's decision for 0.21d, and the grounds hold here (the after-load discards need the client's history to still hold the snapshot's item).
+- **Resync by the world alone** (`SRP_RESYNC_WORLD_ONLY=on`; default off): 0xE8 of the next generation with no 0xE5, which the client takes (0x27C006..0x27C040) and which another server ran live. Not the default, on these grounds: the client's clock and world time stay at the present, the uploaded world is its uploader's horizon item and so at least 500 ms old, and an input the client lacks between the two is then older than the horizon when it comes: the client **moves** it (0x1FAD4D..), so exactly the inputs whose loss made it diverge cannot be put right. With 0xE5 first nothing is too old (above). PROVEN (code); neither was tried here.
+- **Restore limit** (`SRP_RESTORE_LIMIT=n`; default 0 = none, the owner's open decision): a client that is out of sync again after `n` restores in a row, with no report of its that agreed in between, is disconnected (FD, then the others see it leave) instead of restored again. A report that agrees clears the count.
+- **Roster changes** (0xE9, 0xEA) are for a tick 300 ms ahead (`ROSTER_LEAD_MS`), as the other server's live runs had them: no client gets one after its tick and stamps it onto a later one of its own.
+- **The own-index 0xEA** carries the current tick, also when it is sent again. The handler closes the match whatever `leave_match` returns (0x27C720..0x27C76F: no branch on its result before the test of the local index), so a tick it refuses still ends the match for that client; only its world would keep the player. PROVEN.
+- **A silent client** is taken as gone after `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10; a loading client has 60). No stock value was found to copy: the client's own link timeout is not the server's. A game window out of focus can stall for long (58 s seen by the other server under Wine): for tests with two clients on one PC raise it (60–120). The lobby link has its own 30 s (`DEFAULT_LINK_TIMEOUT`, lobby code, not changed here).
+- **Transport**: a snapshot chunk (0xE0 with a payload) is also taken inside a multi datagram, by its own header's length (clients join messages by default: live, theirs); up to 18 tail ack bytes are read (the client's reader has no limit but the datagram's length, 0x3FA157..0x3FA1C3).
+- **Score**: `snapshot::score` follows 0x26DC30 exactly: per event the three kits added as u16, as f32 times the weight (times 0.01 for 6, 17, 18), summed in f32, `floor(x + 0.5)` once. PROVEN.
+
+
+## 19. Test bots in a match (added 2026-10-12)
+
+`srp-bot` (`servers/srp/src/bot.rs`) is a scripted client for testing with one real client. On the wire it is a stock client that simulates nothing: 0xD8, 0xD9, 0xDA, 0xDB to every 0xE5 and 0xE6, 0xE1 every second, acks; no 0xDC/0xDD/0xDE, no 0xDF, no 0xE0 chunks. `SRP_BOT_ACCOUNTS` (off by default, testing only) tells the server which accounts are bots; the lobby marks their places (`MatchPlayer::bot`).
+
+**What the client needs for a player who never sends inputs** (read in the exe 2026-10-12; PROVEN unless tagged):
+- A player who entered is spawned by the respawn rule with no input and no kit choice. Enter (0x2D1EF0) sets the entered-mask bit and calls every rule's slot 8 with `(player, enter_time)`; the respawn rule's (0x316BC0) is `m_player_respawn_times[player] = enter_time`: no delay, no condition. The rule's tick (0x316820) queues every entered player whose respawn time **equals** now (0x3168BA), gives it a free respawn point of its team (0x3171D0; none free: time += 50 ms, 0x3169D8) and spawns it (0x316DA0). It reads neither the timelimit state nor any input: a player is spawned while the match still waits or counts down.
+- The kit: the slot's init (0x321820) takes the lowest of the player's profile kits as current and next kit. A profile input (0xDE → 0xF3, consumed at 0x321790) only changes the next kit, used at the next spawn. So 0xDE is not needed; the profile must have one loadable kit (state 0), which every account's has.
+- After a death the respawn is automatic too (slot 7, 0x316AA0): now + `respawn_time`, rounded up to the grid, unless the team's respawn flag is cleared (Team Deathmatch with no tickets).
+- Because the spawn test is an equality, a 0xE9 for a tick the client has already played must be re-stamped by the client to spawn the player (the "CORRECTED" path of §5.1; LIKELY, `enter_match` 0x2D1470 was not read for it). The server sends a roster change 300 ms ahead (`ROSTER_LEAD_MS`), and a bot is started only once a real client simulates (`bot_waits`), so the bot's 0xE9 reaches that client ahead of its tick, as a second real player's does.
+- The countdown needs `popcount(entered) ≥ floor(0.8 × N)`: with one player and one bot (N = 2) that is 1.
+- Not known: what a character with no input stream looks like to the real client beyond standing (nothing was run).
+
+**What the server does with a bot's place** (`game.rs`, "Bots"): handshake, sync, 0xE9, relays, pings and the end as for any stock client; its 0xDF and 0xE0 chunks are dropped; it is no voter in `majority`, not counted in `check_candidates`' needed vouchers, not a source of worlds, and "others simulate" (`others_live`) means real clients. With one real client and bots the rule is the one of a client alone in a match (one voucher, `trusted_by` 1); with two or more real clients nothing changes. A match with bots and no real client connected for 45 s (`BOTS_ALONE`) ends as `Deserted`. A client that was never given a time (it waited for a world that did not come) is not sent 0xEA at the end, which means nothing without a clock: its link is closed.
+
+Without the setting, a client that reports nothing beside one real client leaves every upload after the first with one voucher of two needed: no trusted world, no end by the mode's rule (`tests/bots.rs`).
+
+## 20. What of a relayed input every client trusts (added 2026-10-12)
+
+0.26i's notes (23 January 2015): "Fixed a bug which caused crashes of all clients in the game associated with sending "bad" input of one of the clients". Read in the 0.26g exe after match 0x5825bf7, in which all five clients died within four seconds. PROVEN unless tagged.
+
+- **Nothing of a relayed input is checked.** The reader 0x318400 stores the rotation's four bytes and the mask as they came (bit 31 split off to node+0xD). `base_player` applies an input in 0x2D86E0: nothing happens when the mask is the one it has and both halves are 0; else 0x2D8BB0 takes the mask and 0x2D89A4 the rotation.
+- **The rotation** (0x2D89A4 → 0x2D8AD0): the two halves are made floats (0xF66D0) and `yaw` (player+0x490) `+= dx`; the rotation built from it (0x15AE50) goes to the physics world (0x39F360, 0x39F690); `dy` goes to the item in the player's hands (its vtable +0xC). An infinity or a NaN therefore stays in that player's state in every world. What the physics world does with it was not read. Two inputs merged into one node have their rotations added as halves (0x2C5B60 → 0x2C6640 → 0xF67B0, integer code): two large ones can reach infinity inside the client.
+  - **srp:** `PlayerInput::rotation_is_sane` (both halves numbers under 1024 radians); `game.rs::input` does not relay an input that fails it, tells its owner to drop it (0xF1) and counts it (`inputs_refused`, in the player's summary line). Tests `a_rotation_is_a_number_under_1024`, `an_input_with_a_rotation_no_client_makes_goes_to_nobody`.
+- **The mask's weapon bits** (0x2D8C82..0x2D8D7D). `current` = the item in the player's hands (`[player+0x128]`, vtable +0x70); `which` = 0 or 1 when that item's slot (item+0x264) is the first or the second entry of the table at 0x927DF0 = {7, 10} (the two weapon slots), else 0xFF.
+  - bits 12 and 13 (actions 0x1D, 0x1E): slot 7, slot 10.
+  - bit 25 (action 0x24) with an item in hands: slot 10 when `which` is 0, else slot 7.
+  - **bit 26 (action 0x25) with an item in hands: slot 10 when `which` is 0, else `[which*4 + 0x927DEC]`** (0x2D8D0A..0x2D8D1C: `movzx eax,al; mov ebp,[eax*4+0x927DEC]`). For `which` = 1 that is 7. **For `which` = 0xFF it reads 0x9281E8, which holds 0x2F: slot 47 of 23.** The code then tests `[inventory + 0x10C + 47*4]` = inventory+0x1C8 and, if that is not 0, takes it for an item and calls through its vtable (+0x50, then +0x4). The inventory object is 0x188 bytes (allocated at 0x2C75D3, constructor 0x2FC4B0): the dword is 0x40 past its end, in whatever the pool has next.
+  - So: a player who has something other than its two weapons in its hands and whose input has bit 26 makes every client read memory that is not the inventory's; 0 there and nothing happens, anything else and the client calls through it. The actions 0x24 and 0x25 are the next-weapon and previous-weapon keys (strings `st_next_weapon` 0x9EB5C0, `st_prev_weapon` 0x9EB5B0; which of the two is 0x25: LIKELY previous, by the order of the strings), set by the local controller with no condition (0x242122..0x242158). Which items count as "in hands" besides the weapons was not read [LIKELY a grenade or a medkit while it is used].
+  - **The server cannot tell such an input from a harmless one** (it does not know what a player holds), and it cannot change the bit (the owner has applied its own input already). The fix that is exact is in the client: at 0x2D8D19 take slot 0x17 ("none") when `which` is over 1, which is what an unpatched client does whenever the stray dword is 0. Not done: a change of the game's exe is the owner's decision.
+- **The kit byte of a profile input is checked** (0x321790: a value of 3 or more, or a kit the player has not, leaves the next kit as it was).
+- Whether the crash of 0x5825bf7 was the weapon bits, a rotation or something else is not known: the inputs of that match were not kept (`SRP_PACKET_LOG` was off) and no dump was seen.
+
+## 21. A game's first world in a Team Deathmatch in play, and the second start (added 2026-10-12)
+
+Seen live on 2026-10-12: every player back in a Team Deathmatch (4 of 4) was out of step from its first tick, was resynced 4–7 s later and was right from then on. The saved worlds of match 0x2490635b differ in the statistics' tail only: the returned game has `m_team_points` 100, 100 and a draw where the others have 88, 78 and team 0; its tdm rule has 88, 78. Read in the exe, PROVEN:
+
+- A world is applied (`0x2D2770`) statistics first (`[core+0x18FA8]`, vtable +0x34, 0x2D2B18), then the rules in the order of the core's vector (`[core+0x18824]..[core+0x18828]`, vtable +0x40, 0x2D2B42..0x2D2B5D): the timelimit, the respawn rule, the mode's rule, the kd stats (snapshot_rules.md §2.1).
+- `timelimit_rule_core::deserialize` 0x317FD0 keeps the state it had (`[rule+0x148]`), stores the one it reads, and when the two differ and the new one is 3 ("in process") calls 0x2D1EA0 (0, 0): every rule's handler (vtable +0x1C) gets event 0, "the match started" (0x31802B..0x31803E). True of a game's first world, whose rule was in "waiting" until then; of no later world, the state being 3 already.
+- The tdm rule's handler 0x316090 answers event 0 with 0x3161F0, which writes the rule's tickets (`+0x110`, `+0x112`) to the statistics (`+0x31D4`, `+0x31D6`) and the winner they give (`+0x31E4`: more tickets; equal and not zero, a draw). The rule still has the constructor's tickets (`tickets_count` each): its own `deserialize` (0x3163D0) comes after and writes the statistics no more.
+- So after a first load the statistics have `tickets_count`, `tickets_count` and a draw, whatever the world had; the tdm rule itself is right. The next event that calls 0x3161F0 (a death, 0x3161CF; a player leaving, 0x316616) puts the statistics right too.
+- Not serialized and stale after such a load: the per-team alive counts (`+0x11C`, `+0x11D`; counted from the alive mask the rule had at the event, the constructor's). They are read only by the end test 0x316470, whose two callers (0x3161D8, 0x31661F) each come right after a recount (0x3161CF, 0x316616). So nothing reads them stale. PROVEN.
+- Modes 2 and 3 are not touched by this: their rules write the statistics on the container event only (snapshot_rules.md §3.3), and the worlds of players back in mode 2 were the others' (2 of 2 live).
+- 0xE8's handler loads the world in the handler itself (`0x2D0B70(core, reader, 1, 8)` at 0x27C0D9 and 0x27C111, right after the generation test 0x27C006..0x27C040), with mode 1 for a first world and for any later one alike. So a second world that comes a round trip after the first finds the first one loaded, and is taken as it is.
+
+**srp** (`game.rs`: `first_load_loses_the_standing`, `reload`; `snapshot.rs`: `Decoded::first_load_loses_the_standing`):
+
+- When a player **back in a match** (it entered for the others first, `enter_early`) is sent its first world, the server reads that world: mode 4, the timelimit in process, and the statistics' points or winner other than `tickets_count`, `tickets_count`, draw. Then the load will lose the standing.
+- As soon as that world is acked (`finish_sync`) the client is started once more, as a resync is (`start_sync(index, false)`: 0xE5 of the next generation, the inputs since, 0xE8): from the same snapshot when it is still fresh enough (700 ms), else from the next upload. Counted apart from resyncs (`reloads`, in the player's summary line: "started once more after its first world N times").
+- Why at once and not when its reports are wrong: the wrong reports are confirmed after 2.5 s, and the resync then waits for the clock correction of the first start to end (about 300 ms behind at 5 %: 6 s). The player was 7 s in a world with the wrong score and then had a second 6 s of inputs too late to relay. Started twice in a row it has one correction.
+- Only with another client simulating and a patched one to give a world; a client alone is left as it is (its world is the only one, and the next death puts its statistics right).
+- **Not covered: a player who is in the match for the first time when it is in play already** (a slow load). Its entry comes after its first world, so a second start would have to wait for a world newer than the entry, and a client waiting for that while the others leave would have none to start from. The resync that follows its wrong reports puts it right, as before. Test `a_first_entry_into_a_team_deathmatch_in_play_is_put_right_by_a_resync`.
+- With the tickets still those of the start the first world is right as it is, and nothing is done.
+- The test client has the defect (`scripted.rs`, `Sim::load`, `stale_tickets_from`): a first world that is a Team Deathmatch in play leaves the tickets of the start in its statistics until its next world. Without `reload` the test `a_player_back_in_a_team_deathmatch_is_started_twice_and_is_in_step_at_once` fails (checked).
+
+## 22. A client that connects is waited for (added 2026-10-12)
+
+Seen live on 2026-10-12, 10:28:22 UTC: one of six players going to a match sent "3 datagrams without connecting", was told to disconnect, twice, and got into the match 32 s later through a new sign-in.
+
+- The client sends 0xD8 in its first datagram and again every 500 ms until it is acked, with no end (transport.md §4: D8, lifetime none, resend 500). With nothing else to send it sends a keep-alive (`FC`) every 100 ms (§6: `now ≥ last_send + idle`, idle 100; 0x3FC1B1..0x3FC1D5). PROVEN.
+- So a client whose first datagram was lost on the way has sent three datagrams without a 0xD8 after 300 ms. The server's rule was "three datagrams from an address that is in no match and did not connect: 0xFD" (meant for the client of a match that ended with a restart, which never stops sending), and 0xFD drops the connection at once in any state (0x3FDEED..0x3FDF0E): the second 0xD8, 200 ms later, was never sent.
+- **srp** (`server.rs`, `STRAY_PATIENCE`): an address is told to disconnect only when it has sent three datagrams or more **and has been heard for 3 s** without a 0xD8 (six of its 0xD8 fit in that). Until then it is answered as any client is, so the client does not time out (5 s without a datagram, §6). Tests `a_client_whose_first_datagram_was_lost_still_connects` (1 to 4 lost), `a_client_with_no_seat_and_one_that_never_connects_are_told_to_go`.
+- LIKELY, not PROVEN, that the first datagram was lost: the server saw no 0xD8 from that address, the same player connected at once in other matches, and its link is one that loses datagrams (a tunnel). The inputs were not kept (`SRP_PACKET_LOG` off).
+
+## 23. A spawn with a kit that has no weapon ends every game of the match (added 2026-10-12)
+
+Seen live three times on 2026-10-12 (0x5825bf7, 0x1f793b8, 0x5cc8cc52): every client of a match stopped giving worlds within one 5 s refresh, and their links went silent 1 to 78 s later. A player's crash report of 0x1f793b8 gave the place. PROVEN unless tagged.
+
+- **The crash.** Access violation reading 0 at 0x1F25BF (`mov edx,[ecx]`, ecx = 0) in the logic thread: `game::tick` → `game_world_core::move` 0x2D2E40 → the respawn rule's tick 0x316820 → spawn 0x316DA0 → `player::respawn` 0x1F2540.
+- `player::respawn` calls `base_player::respawn` 0x2DAC00, which puts an item into the hands (+0x12C): the inventory's slot 7 (`[inventory+0x128]`) if it holds one, else slot 10 (`[inventory+0x134]`), else it writes 0 (0x2DADC6..0x2DAE0C). Back in `player::respawn`, with +0x12C still 0 the player's own object at **+0xF47C** is taken for the hands (0x1F25A4..0x1F25B9) and called through (`[ecx]`, vtable +0x10). That pointer is null: it is written once, in the constructor (0x1F1BCA `lea esi,[ebp+0xf47c]` … 0x1F1BDE `call 0x1f5410` with the cook's resource at +0x1EC), and read only here and in the destructor (0x1F2267, 0x1F227F). What it is meant to hold was not read.
+- **Which kit a spawn uses.** A place has up to three player objects, one for each kit of state 0 (static_info.md §3.1). The slot's init 0x321820 takes the lowest that exists as current and next. A kit choice (0xDE, relayed as 0xF3) is consumed by 0x321790: the value must be under 3 **and the slot must have an object for it** (`cmp dword [ecx+eax*4],0`), nothing else; then it is the next kit, used at the next spawn. A dead player picks it on the death screen (`root.show_profiles_selector`).
+- So: a kit of state 0 with nothing in slots 7 and 10 can be picked by a dead player, and its spawn ends every game of the match at one tick, the picker's too. The server cannot stop the pick once it is relayed; it can leave the kit out.
+- **srp** (`lobby-server` `play.rs::match_profile`): a kit goes into a match with state 0 only when the player could press Play with it (`session::v026g::rules::check_play`, the client's own check 0x2F7DA0); any other with `KIT_NOT_LOADED` (2, the kit's constructor default). No client then has an object for it and a pick of it changes nothing, on every client alike. Until 2026-10-12 every kit of an account went with state 0.
+- The evidence for 0x5cc8cc52: its last agreed world (49,550 ms) has a dead player whose state's `target_index` is 1, and that account's second kit was empty.
+- Very likely this is what 0.26i fixed ("crashes of all clients … "bad" input of one of the clients"; §20 has two other candidates, neither seen).
+- The exact fix would be in the exe (the no-item path when +0xF47C is null): not done.
+
+## 24. A match whose world is lost, and how a game that never had a world is told the end (added 2026-10-12)
+
+`game.rs`: `world_lost`, `check_world_lost`, `simulating_at`, `farewell_tick`. Tests in `tests/game.rs`.
+
+- **A link that is up says nothing of the game.** A game that no longer simulates acks and answers pings for as long as its process lives: seen live for 78 s (0x1f793b8), with acks every 16 ms. With the window not active the logic thread does not call `game::tick` at all and still sends (transport.md §6.1). Such a client is "live" for the server, is asked for worlds, and gives none of the present (an upload is the event-horizon item, which stands still: out of the 5 s window, dropped).
+- **What shows a running game** (`Peer::simulating_at`): it loaded a world; a hash report that goes on from its last one by a second at most (a game that stands still names one tick again and again, and that byte reads as a tick 12.8 s later each time the clock has gone on as far, which is no going on); an upload that was asked for and is of the present; an input of its that was relayed.
+- **The rule.** No real client has shown a running game for 20 s **and** a real client has waited 20 s for a world (`Stage::WaitingSnapshot`): the match's world is lost and the match is over (`MatchEnd::Deserted`). Without it the player who waits holds the match open ("everyone left" needs every link gone), and the lobby sends every player who presses Play back to its place in it (live: 9.5 minutes, six players).
+- **Not lost:** a match somebody plays, whatever the one who waits cannot get (the playing client has no upload, or its uploads are refused); a match nobody waits to get into.
+- **Starting the player alone from the last world kept is not done.** The clock would have to go back to that world's time (§1.3: ticks are one byte), and the world is the one just before every game stopped; when the cause is in the world (§23) the player meets it again.
+- **The end, for a game that never had a time.** PROVEN:
+  - 0xFD (`instant_disconnect(4)`, 0x3FDF0A) ends as `close_current_match(4)`, and the jump table at 0x27A958 has the function's return for 4: nothing is closed. (0: the world is ended; 1 and 5, "connection lost" and "expired … message": the lobby is told `31` and the world ended; 2, "by initiator": 0xE0 first; 3: the world ended and the results shown, 0x1F96F0 and 0x29AAF0.) The link is closed by the transport before that, so the game stays on the screen it had, with no match link.
+  - `pvp_match_core`'s init (0x2D57F0) clears the world core with `0x2D0550(0, 1)`: core time and world time 50 ms, last resync 0. So for a game that took no 0xE5 the tick byte 0 is 0 ms (`(1 + sdiff8(0, 1)) × 50`).
+  - `leave_match` 0x2D18A0 first tests `time <= last resync` (0x2D18B9) and returns 6 ("older than last resync") with nothing done.
+  - The 0xEA handler calls `close_current_match(3)` for the local index whatever `leave_match` returned (0x27C720..0x27C76F).
+- So the server sends such a game 0xEA with its own index and **tick 0** (`farewell_tick`), again while unacked, where it used to close the link.
+- Not seen with a real client: the results screen of a game whose world never ran.
+
+## 25. A player who leaves by its own will gives its place up (added 2026-10-12)
+
+`game.rs`: `take_quits`; `server.rs`: `Server::receive`; `session::Matchmaking::give_up_seat`.
+
+- **What the client sends.** PROVEN. `close_current_match` 0x27A790, by reason (jump table 0x27A958):
+  - 2, "disconnected_by_initiator": 0xE0 (empty) on the match link (0x27A828..0x27A838), then as 1.
+  - 1, "disconnected_by_connection_lost", and 5, "disconnected_on_expired_multipacket_ordered_message": the log line, `31 <order> 01` to the lobby (0x27A930..0x27A93C), the world ended (0x27A867 on).
+  - So 0xE0 is the player's own word, the only one; the lobby's `31 .. 01` comes for all three and tells nothing. A game that died sends nothing on either link.
+  - LIKELY: the reason 2 is the menu's "leave the match" (its name; live, 0xE0 came each time a player left by the menu). The callers go through the vtable (+0x58) and were not listed.
+- **The rule.** 0xE0 while the match runs: the session's seat is freed at the match server (`MatchRegistry::release`) and in the queue (`give_up_seat`), so Play queues the player for another match. The place stays in the roster and in the result. A link or a game that broke (a timeout, a new connection for the place, a transport disconnect) keeps the seat, and Play sends the player back (§22, matchmaking.md §3).
+- Until 2026-10-12 every player who had left was sent back for as long as the match ran (live: a player who left a match of two by the menu, twice).
+- **A gap.** 0xE0 goes once, the match link is closed right after it; lost, it is a timeout for the server and the seat is kept.
+- **Open.** A match of two whose one player left for good goes on with the other alone to the time limit. What the client's rule does with a team nobody is in was not read.
