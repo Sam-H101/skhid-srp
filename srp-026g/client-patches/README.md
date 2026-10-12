@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch) | 12 895 352 bytes, sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf` |
-| Checked | 2026-10-12: the tools here, run on the original, give exactly the exe and the certificate of the players' download of 026g.skhid.link (`Survarium-0.26g-srp-files.zip`), byte for byte |
+| Result (full patch) | 12 895 352 bytes, sha256 `2cb92dffca51941cfe1c8527f45a1a339ab0f01dfd22d2cb9c2fb1d9739e0dac` |
+| Previous full patch | sha256 `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`, checked against the 2026-10-12 players' download; the current build additionally skips the minimum VRAM check and updates the PE checksum |
 
 ## The files
 
@@ -118,6 +118,19 @@ original bytes first, so another build or an already patched file is refused.
   key and ran out in 2015. This one is the game's own name issued again
   (valid to 2037), and its key is in `../certs/`, which the login server
   reads.
+
+### 6. The minimum video-memory check
+
+- **Where:** `jae` at VA 0x106411 (file offset 0xF5811) becomes `jmp`:
+  `73 0F` → `EB 0F`, the same one-byte patch used by `play_skhid.sh`.
+- **Why:** the client otherwise calls its fatal warning when detected
+  video memory is below 320 MiB, which can prevent startup under Wine.
+- **What stays:** the function returns the detected video-memory size;
+  its existing 320 MiB fallback for an unknown size is unchanged. The
+  allocator launch options above still apply.
+- Included in both full builds (`section` and `hash-mismatch`).
+  `--cert-only` keeps the original check. The self-test verifies the jump
+  target, unchanged return paths, and absence of overlapping relocations.
 
 ## Not ported, not done
 

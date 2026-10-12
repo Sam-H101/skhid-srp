@@ -228,6 +228,26 @@ starts at 0x7F80 and has 128 data bytes.
 - **Without the patch:** start every client with `-hash_check_interval_in_ms=50` (LIKELY syntax, as `-server=`; not tried live). The key still wins over the patched default.
 - The match server logs "… opposite hash phases …" when it sees the starved state (match.md §13).
 
+### 3.5 Minimum video-memory startup check
+
+The full patch includes the one-byte bypass already used by `play_skhid.sh`.
+Verified against the original build 2777 executable (sha256 checked by the
+patcher) and its disassembly:
+
+- VA **0x106411**, file offset **0xF5811**: `73 0F` (`jae 0x106422`) becomes
+  `EB 0F` (`jmp 0x106422`). The preceding `cmp ebx,0x14000000` compares the
+  detected video-memory size against **320 MiB**. The skipped path pushes
+  320 and a warning string, then calls 0x113580. [V]
+- The target at 0x106422 returns the original detected size from EDI:EBX
+  in EDX:EAX. The zero/unknown-size path at 0x1063F1 still returns
+  0x14000000. Neither the measurement nor the fallback is changed. [V]
+- This bypasses the startup rejection for a low reported VRAM size; it does
+  not increase memory or replace the allocator launch options.
+- Applied to `section` and `hash-mismatch` builds, before the existing PE
+  checksum update. `--cert-only` stays unchanged. The self-test checks the
+  branch target, unchanged return paths, exact changed byte, relocation
+  coverage, and rejection of unexpected instruction bytes.
+
 ## 4. Mode 3 batteries: not needed in 0.26g
 
 - 0.26g splits the rule: `match_time_vi_spawn_rule` (vtable 0xA06C04) wraps `match_time_vi_spawn_rule_core` (vtable 0xA15CAC). The battery tick is no longer a vtable slot: the core's ctor 0x3147A0 stores a delegate `{this, 0x3148A0}` at +0x1C4 / +0x1C8 (0x3147F1). [V]

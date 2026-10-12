@@ -19,6 +19,8 @@ Checks, per variant (cert-only, section, hash-mismatch):
     the exact CryptQueryObject call the client makes at start (0x13310);
  9. full builds only: the default hash interval at 0x27CC4F is 50 ms, one
     byte changed, under no relocation; cert-only keeps the original 100.
+10. full builds only: the minimum VRAM check jumps over the fatal warning;
+    the detected size and unknown-size fallback remain unchanged.
 """
 
 import ctypes
@@ -85,7 +87,10 @@ def ndisasm(code, va):
     for line in out.splitlines():
         parts = line.split(None, 2)
         if len(parts) == 3 and not parts[0].startswith("-"):
-            rows.append((int(parts[0], 16), parts[1], parts[2]))
+            # ndisasm 3 spells the same 32-bit indirect call with explicit
+            # size/distance qualifiers; keep the 2.x spelling for checks.
+            text = parts[2].replace("call dword near [", "call [")
+            rows.append((int(parts[0], 16), parts[1], text))
     return rows
 
 
@@ -209,6 +214,8 @@ def allowed_ranges(original, mode, cave_size):
     rewritten = [(P.CERT[0], P.CERT[0] + 3), (P.MUTEX[0], P.MUTEX[0] + 2)]
     ranges.append((P.file_offset(P.HASH_INTERVAL_BYTE_VA), 1))
     rewritten.append((P.HASH_INTERVAL_BYTE_VA, P.HASH_INTERVAL_BYTE_VA + 1))
+    ranges.append((P.file_offset(P.MEMORY_CHECK[0]), 1))
+    rewritten.append((P.MEMORY_CHECK[0], P.MEMORY_CHECK[0] + 1))
     for va, old in P.HOOKS:
         ranges.append((P.file_offset(va), len(old)))
         rewritten.append((va, va + len(old)))
@@ -342,6 +349,42 @@ def test_hash_interval(original, image, mode):
     check(not hits, "no branch of try_send_all lands inside that instruction")
 
 
+def test_memory_check(original, image, mode):
+    """The launcher's 73 -> EB patch skips only the fatal 320 MiB gate."""
+    va, old, new = P.MEMORY_CHECK
+    found = image.read(va, len(old))
+    check(P.file_offset(va) == 0xF5811, "VRAM patch uses the Linux launcher's file offset 0xF5811")
+    if mode == "cert-only":
+        check(found == old, "cert-only keeps the original minimum VRAM check")
+        return
+    rows = ndisasm(found, va)
+    check(found == new and len(rows) == 1 and rows[0][2].startswith("jmp ")
+          and branch_target(rows[0][2]) == 0x106422,
+          "0x106411 unconditionally jumps to the detected-size return at 0x106422")
+    check([i for i in range(len(old)) if found[i] != old[i]] == [0],
+          "only the branch opcode changes: 73 -> EB; displacement 0F stays")
+    # A zero/unknown size returns 320 MiB before reaching the patched gate.
+    fallback = bytes.fromhex("8bc30bc7750eb80000001433d25f5e5b83c408c3")
+    measured = bytes.fromhex("8bd75f5e8bc35b83c408c3")
+    check(image.read(0x1063F1, len(fallback)) == Image(original).read(0x1063F1, len(fallback)) == fallback,
+          "unknown-size detection and its 320 MiB fallback are unchanged")
+    check(image.read(0x106422, len(measured)) == Image(original).read(0x106422, len(measured)) == measured,
+          "the return still uses the detected size in EDI:EBX without inflating it")
+    relocated = [rva for kind, rva in Image(original).relocations().values()
+                 if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not relocated, "no base relocation overlaps the VRAM branch")
+    # Exercise the site's byte guard separately from the full-file hash guard.
+    bad = bytearray(original)
+    bad[P.file_offset(va)] ^= 1
+    before = bytes(bad)
+    try:
+        P.patch(bad, *P.MEMORY_CHECK)
+    except SystemExit:
+        check(bytes(bad) == before, "a changed VRAM instruction is rejected without modifying it")
+    else:
+        check(False, "a changed VRAM instruction must be rejected")
+
+
 def test_no_branch_into_hooks(original):
     print("branches into the hooks (original exe)")
     image = Image(original)
@@ -466,6 +509,7 @@ def main():
         test_pe(original, image, mode)
         test_bytes(original, image, mode, cave)
         test_hash_interval(original, image, mode)
+        test_memory_check(original, image, mode)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
                 check(open(INSTALLED_CERT_ONLY, "rb").read() == bytes(data),
