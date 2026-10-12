@@ -5,17 +5,19 @@ is changed, and nothing is run.
 USAGE
 
     cd srp-026g/client-patches
-    python make_client_026g.py <game folder> <output folder or .zip> --server=<host>:<port>
+    python make_client_026g.py <game folder> <output> --server=<host>:<port>
         [--localization=ukrainian]   english, russian, ukrainian, german, polish
         [--cert-only | --cave=hash-mismatch]   another build of the exe (see patch_026g.py)
         [--check]                    every check, nothing written
+        [--pack-zip]                 write the output as a ZIP instead of a folder
         [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
                     folder), or its parent. The exe must be the original
                     (patch_026g.py checks its sha256).
-    <output>        a new ZIP or new/empty folder OUTSIDE the game folder.
+    <output>        a new/empty folder, or a new ZIP with --pack-zip,
+                    OUTSIDE the game folder.
     --server        where the srp login server is reached: the host players
                     use and SRP_LOGIN_PORT (1234 by default; 2234 with the
                     0.26g docker-compose.yml beside the 0.21d server).
@@ -46,7 +48,7 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
         what to do with it, and where the original game is had.
 
 A player copies the overlay's `game` folder over the game's own `game`
-folder and starts play_skhid.bat. An output ending in .zip directly makes
+folder and starts play_skhid.bat. --pack-zip directly makes
 the download the web page offers (SRP_DOWNLOAD_FILE). Only the five player
 files are included: no source, PDBs, tests or development tools. Build the
 Rust DLL first with ../../client/bugtrap/build.sh. The game itself is had
@@ -200,9 +202,12 @@ def main():
     options = [a for a in sys.argv[1:] if a.startswith("--")]
     mode, check, server, localization = "section", False, None, "ukrainian"
     bugtrap_path = BUGTRAP_DLL
+    archive = False
     for option in options:
         if option == "--check":
             check = True
+        elif option == "--pack-zip":
+            archive = True
         elif option == "--cert-only":
             mode = "cert-only"
         elif option.startswith("--cave=") and option[7:] in P.CAVES:
@@ -218,7 +223,6 @@ def main():
     if len(args) != 2 or server is None:
         sys.exit(__doc__)
     source, output = game_root(args[0]), os.path.abspath(args[1])
-    archive = output.lower().endswith(".zip")
     # Never into the game: not its folder, nor the install that holds it.
     if inside(output, source) or inside(output, os.path.dirname(source)):
         sys.exit(f"{output}: the output folder must be outside the game folder {os.path.dirname(source)}")

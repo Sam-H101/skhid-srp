@@ -75,12 +75,14 @@ valid native pointers and coordinate configuration changes.
 
 ## Build
 
-Use the pinned nightly in `rust-toolchain.toml`, its `rust-src` component, a host C
-linker for Cargo build scripts, and `rust-lld` from the Rust toolchain. No Windows
+Use the same nightly Rust environment as the game workspaces;
+`srp-026g/flake.nix` supplies it with `rust-src`. The build also needs a host C
+linker for Cargo build scripts and `rust-lld` from that toolchain. No Windows
 SDK or proprietary compiler is required for the DLL when cross-building on Linux.
 The two locked dependencies are Microsoft's `windows-sys` and `windows-link`.
 
 ```sh
+nix develop ./srp-026g
 cd client/bugtrap
 ./build.sh
 ```
@@ -140,7 +142,7 @@ root, create the player ZIP with:
 
 ```sh
 python3 srp-026g/client-patches/make_client_026g.py /path/to/game \
-  target/Survarium-0.26g-srp-files.zip --server=026g.skhid.link:1234
+  target/Survarium-0.26g-srp-files.zip --pack-zip --server=026g.skhid.link:1234
 ```
 
 It contains the patched EXE, `bugtrap.dll`, launcher, login certificate and player

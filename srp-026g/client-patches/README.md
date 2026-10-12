@@ -44,14 +44,15 @@ First build the crash reporter with `../../client/bugtrap/build.sh`, then:
 
 ```
 python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--localization=ukrainian] [--check]
-python make_client_026g.py <game folder> <new file.zip> --server=<host>:<port> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> [--localization=ukrainian] [--check]
 ```
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
 `game/binaries/x86/bugtrap.dll` (the Rust crash reporter),
 `game/binaries/x86/play_skhid.bat` (the launch line and language setting),
 `game/resources/ssl/survarium_login_server.crt` and
-`README.txt` into the new folder or ZIP, to be copied over the game. These are
+`README.txt` into the new folder, or a ZIP with `--pack-zip`, to be copied over
+the game. These are
 the only five files shipped; source, symbols, tests and development tools are
 excluded. Back up the original `bugtrap.dll` and login certificate before
 installing. `--check` does every check and writes nothing. Existing ZIPs are
