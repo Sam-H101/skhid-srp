@@ -57,6 +57,9 @@ struct Connect {
     /// can be had; `https://` only. The page's own download is then only
     /// the few files that go over it.
     game_url: Option<String>,
+    /// `SRP_TEST_SERVER=on`: every page says this is the test server. The
+    /// link of `SRP_OTHER_SERVER_URL` is then the players' server.
+    test_server: bool,
 }
 
 /// Downloads of that file at one time; more get "busy, try again".
@@ -284,6 +287,8 @@ fn run_from_env(store: Arc<SessionStore>, game: Option<Game>) -> io::Result<()> 
             .filter(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())),
         other_url: env_text("SRP_OTHER_SERVER_URL").and_then(|url| other_url(&url)),
         game_url: env_text("SRP_GAME_URL").filter(|url| url.starts_with("https://")),
+        test_server: env_text("SRP_TEST_SERVER")
+            .is_some_and(|value| value.eq_ignore_ascii_case("on")),
     });
     let token = std::env::var("SRP_ADMIN_TOKEN")
         .ok()
@@ -1213,7 +1218,62 @@ fn other_server_link(lang: Lang, version: &str, url: Option<&str>) -> String {
     })
 }
 
+/// The page's title: a test server says so (`SRP_TEST_SERVER`).
+fn page_title(lang: Lang, version: &str, test: bool) -> String {
+    match (test, lang) {
+        (false, Lang::En) => format!("Skhid · Survarium {version} community server"),
+        (false, Lang::Uk) => format!("Схід · ком'юніті сервер Survarium {version}"),
+        (true, Lang::En) => format!("Skhid · Survarium {version} TEST server"),
+        (true, Lang::Uk) => format!("Схід · ТЕСТОВИЙ сервер Survarium {version}"),
+    }
+}
+
+/// The line beside the name in the header.
+fn page_tag(lang: Lang, version: &str, test: bool) -> String {
+    let version = version.to_uppercase();
+    match (test, lang) {
+        (false, Lang::En) => {
+            format!("SKHID · COMMUNITY SERVER FOR SURVARIUM {version} · UNOFFICIAL")
+        }
+        (false, Lang::Uk) => format!("КОМ'ЮНІТІ СЕРВЕР SURVARIUM {version} · НЕОФІЦІЙНИЙ"),
+        (true, Lang::En) => format!("SKHID · TEST SERVER FOR SURVARIUM {version} · UNOFFICIAL"),
+        (true, Lang::Uk) => format!("ТЕСТОВИЙ СЕРВЕР SURVARIUM {version} · НЕОФІЦІЙНИЙ"),
+    }
+}
+
+/// What a test server puts at the top of every page: what it is, and where
+/// the players' server is (`SRP_OTHER_SERVER_URL`, when set).
+fn test_server_notice(lang: Lang, players_url: Option<&str>) -> String {
+    let players = players_url.map_or_else(String::new, |url| {
+        format!(
+            " {} <a href=\"{}/?lang={}\">{}</a>.",
+            lang.tr("The players' server:", "Сервер для гравців:"),
+            escape(url),
+            lang.code(),
+            escape(url.trim_start_matches("https://")),
+        )
+    });
+    format!(
+        "<p class=\"note test\"><b>{}</b> {}{players}</p>",
+        lang.tr("Test server.", "Тестовий сервер."),
+        lang.tr(
+            "Changes are tried here before they reach the players: it can restart at any \
+             moment, and accounts and progress here can be reset.",
+            "Тут перевіряються зміни, перш ніж вони потраплять до гравців: сервер може \
+             перезапуститися будь-якої миті, а облікові записи й прогрес можуть бути скинуті.",
+        ),
+    )
+}
+
 fn page(lang: Lang, form: Form, message: &str) -> Response {
+    let connect = CONNECT.get();
+    let test = connect.is_some_and(|connect| connect.test_server);
+    let other_url = connect.and_then(|connect| connect.other_url.as_deref());
+    page_as(lang, form, message, test, other_url)
+}
+
+/// `page` with what the settings say given to it.
+fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<&str>) -> Response {
     let notice = if message.is_empty() {
         String::new()
     } else {
@@ -1226,13 +1286,20 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
     };
     let version = if form.is_026g() { "0.26g" } else { "0.21d" };
     let other_version = if form.is_026g() { "0.21d" } else { "0.26g" };
-    let other_link = other_server_link(
-        lang,
-        other_version,
-        CONNECT
-            .get()
-            .and_then(|connect| connect.other_url.as_deref()),
-    );
+    // A test server names the other server in its notice, as the players'.
+    let (other_link, badge, test_notice) = if test {
+        (
+            String::new(),
+            format!(" <span class=badge>{}</span>", lang.tr("TEST", "ТЕСТ")),
+            test_server_notice(lang, other_url),
+        )
+    } else {
+        (
+            other_server_link(lang, other_version, other_url),
+            String::new(),
+            String::new(),
+        )
+    };
     let body = match form {
         Form::Exchange => exchange_form(lang),
         Form::Exchange26 => v026g::exchange_form(lang),
@@ -1253,25 +1320,13 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
             "<!doctype html><html lang={code}><meta charset=utf-8>\
              <meta name=viewport content=\"width=device-width,initial-scale=1\">\
              <title>{}</title><style>{STYLE}</style>\
-             <header><span class=brand>СХІД</span>\
+             <header><span class=brand>СХІД</span>{badge}\
              <span class=tag>{}</span>\
              <nav><a href=\"/?lang={code}\">{}</a> <a href=\"/exchange?lang={code}\">{}</a>{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>\
-             <main>{notice}{body}</main>\
+             <main>{test_notice}{notice}{body}</main>\
              <footer>{}</footer></html>",
-            lang.tr(
-                &format!("Skhid · Survarium {version} community server"),
-                &format!("Схід · ком'юніті сервер Survarium {version}")
-            ),
-            lang.tr(
-                &format!(
-                    "SKHID · COMMUNITY SERVER FOR SURVARIUM {} · UNOFFICIAL",
-                    version.to_uppercase()
-                ),
-                &format!(
-                    "КОМ'ЮНІТІ СЕРВЕР SURVARIUM {} · НЕОФІЦІЙНИЙ",
-                    version.to_uppercase()
-                )
-            ),
+            escape(&page_title(lang, version, test)),
+            page_tag(lang, version, test),
             lang.tr("Home", "Головна"),
             lang.tr("Exchange", "Обмін"),
             escape(&disclaimer),
@@ -1279,7 +1334,7 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
     }
 }
 
-const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
+const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
 
 /// A file's size as the download button shows it.
 fn file_size(bytes: u64) -> String {
@@ -2146,6 +2201,38 @@ mod tests {
         assert_eq!(Lang::pick("de", "uk-UA,uk;q=0.9"), Lang::Uk);
         assert_eq!(Lang::pick("", "ru-RU,ru"), Lang::En);
         assert_eq!(Lang::pick("", ""), Lang::En);
+    }
+
+    #[test]
+    fn a_test_server_says_so_on_every_page() {
+        let plain = page_as(Lang::En, Form::Exchange, "", false, None).body;
+        assert!(plain.contains("<title>Skhid · Survarium 0.21d community server</title>"));
+        assert!(!plain.contains("class=badge>"));
+        assert!(!plain.contains("Test server."));
+
+        let url = Some("https://skhid.link");
+        for form in [Form::Exchange, Form::Exchange26, Form::None26] {
+            let test = page_as(Lang::En, form, "", true, url).body;
+            assert!(test.contains(" TEST server</title>"), "{test}");
+            assert!(test.contains("<span class=badge>TEST</span>"));
+            assert!(test.contains("TEST SERVER FOR SURVARIUM 0."));
+            assert!(test.contains("<b>Test server.</b>"));
+            assert!(test.contains("accounts and progress here can be reset"));
+            // The other server is the players', named in the notice and
+            // not as the other game version in the header.
+            assert!(test.contains(
+                "The players' server: <a href=\"https://skhid.link/?lang=en\">skhid.link</a>."
+            ));
+            assert!(!test.contains(">Survarium 0.21d</a>"));
+            assert!(!test.contains(">Survarium 0.26g</a>"));
+        }
+        let uk = page_as(Lang::Uk, Form::None26, "", true, None).body;
+        assert!(uk.contains("<span class=badge>ТЕСТ</span>"));
+        assert!(uk.contains("<b>Тестовий сервер.</b>"));
+        assert!(!uk.contains("Сервер для гравців:"));
+        // A server that is not one links the other version as before.
+        let live = page_as(Lang::En, Form::None26, "", false, url).body;
+        assert!(live.contains(" <a href=\"https://skhid.link/?lang=en\">Survarium 0.21d</a>"));
     }
 
     #[test]

@@ -15,13 +15,13 @@ repository.
 | Folder | Game build | What it is | State |
 |---|---|---|---|
 | [`srp-0100b/`](srp-0100b/) | 0.100b (early 2013) | Server-authoritative matches: the server runs combat, spawns, batteries and traps | Works locally; not hosted |
-| [`srp-021d/`](srp-021d/) | 0.21d, build 2010 (April 2014) | Lockstep matches: clients simulate, the server relays inputs and compares world hashes | Live on [skhid.link](https://skhid.link) since 2026-10-10 |
-| [`srp-026g/`](srp-026g/) | 0.26g, build 2777 (January 2015) | Still lockstep, but a new protocol at every layer (the lobby runs over UDP); items, clans, premium shop | Live on [026g.skhid.link](https://026g.skhid.link) since 2026-10-12 |
+| [`srp-021d/`](srp-021d/) | 0.21d, build 2010 (April 2014) | Lockstep matches: clients simulate, the server relays inputs and compares world hashes | Hosted on skhid.link from 2026-10-10 to 2026-10-12; not hosted now |
+| [`srp-026g/`](srp-026g/) | 0.26g, build 2777 (January 2015) | Still lockstep, but a new protocol at every layer (the lobby runs over UDP); items, clans, premium shop | Live on [skhid.link](https://skhid.link) (also 026g.skhid.link) since 2026-10-12; a test server on [test.skhid.link](https://test.skhid.link) |
 
 Each folder is a complete Rust workspace that builds and tests by itself.
 `srp-026g` began as a copy of `srp-021d` and still holds the 0.21d code beside
-its own (its shared crates and tests use it); the 0.21d server that is hosted
-is built from `srp-021d`.
+its own (its shared crates and tests use it); the 0.21d server that was hosted
+was built from `srp-021d`.
 
 ## What is in each folder
 
