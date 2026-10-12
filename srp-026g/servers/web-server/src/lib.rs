@@ -1440,7 +1440,7 @@ fn home(lang: Lang, stats: Stats) -> String {
     );
     let version = if v026g { "0.26g" } else { "0.21d" };
     // 0.26g: `-server=` (it has no `-client=`), and the exe that takes srp's
-    // certificate (`client-patches`).
+    // certificate (`scripts/client-patch-026g`).
     let server_key = if v026g { "-server" } else { "-client" };
     let mut options = format!(
         "<ul class=opts><li><code>{server_key}</code> {}</li><li><code>-localization</code> {}</li>",
@@ -1484,31 +1484,78 @@ fn home(lang: Lang, stats: Stats) -> String {
     let fill = session::fill_from_env();
     let quiet = session::quiet_from_env().as_secs();
     let max = session::MAX_PLAYERS_PER_MATCH;
-    let rules = format!(
-        "<li>{}</li><li>{}</li><li>{}</li><li>{}</li>",
-        lang.tr(
-            &format!("{max} players: the match starts at once."),
-            &format!("{max} гравців: матч починається одразу.")
-        ),
-        lang.tr(
-            &format!(
-                "{fill} to {} players: it starts when nobody has pressed Play for {quiet} s, or when {window} s are up, whichever is first.",
-                max - 1
+    let rules = if v026g {
+        let (min_players, extension, longest) = session::leveled_start_rules_from_env();
+        let (extension, longest) = (extension.as_secs(), longest.as_secs());
+        let team: usize = std::env::var("SRP_MATCH_TEAM_SIZE")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .filter(|team| (1..=max / 2).contains(team))
+            .unwrap_or(max / 2);
+        let full = team * 2;
+        let longest_min = longest / 60;
+        format!(
+            "<li>{}</li><li>{}</li><li>{}</li><li>{}</li><li>{}</li>",
+            lang.tr(
+                &format!("{full} players: the match starts at once."),
+                &format!("{full} гравців: матч починається одразу.")
             ),
-            &format!(
-                "від {fill} до {} гравців: матч починається, коли {quiet} с ніхто не натискав «Грати», або через {window} с, що настане раніше.",
-                max - 1
-            )
-        ),
-        lang.tr(
-            &format!("2 to {} players: they wait the full {window} s.", fill - 1),
-            &format!("від 2 до {} гравців: чекають повні {window} с.", fill - 1)
-        ),
-        lang.tr(
-            "One player alone: no match starts until another joins.",
-            "Один гравець: матч не починається, доки не приєднається ще хтось."
-        ),
-    );
+            lang.tr(
+                &format!(
+                    "{fill} to {} players: it starts when nobody has pressed Play for {quiet} s.",
+                    full - 1
+                ),
+                &format!(
+                    "від {fill} до {} гравців: матч починається, коли {quiet} с ніхто не натискав «Грати».",
+                    full - 1
+                )
+            ),
+            lang.tr(
+                &format!(
+                    "{min_players} to {} players: a {window} s countdown starts when the {min_players}th player joins. Each time somebody presses Play, {extension} s are added to what is left.",
+                    fill - 1
+                ),
+                &format!(
+                    "від {min_players} до {} гравців: відлік {window} с починається, коли приєднується {min_players}-й гравець. Щоразу, коли хтось натискає «Грати», до залишку додається {extension} с.",
+                    fill - 1
+                )
+            ),
+            lang.tr(
+                &format!("The wait never lasts longer than {longest_min} minutes from the start of the countdown."),
+                &format!("Очікування ніколи не триває довше {longest_min} хв від початку відліку.")
+            ),
+            lang.tr(
+                &format!("Fewer than {min_players} players: no match starts until there are {min_players}. A squad counts as one side, so a squad alone waits too."),
+                &format!("Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загін — це одна сторона, тож загін сам теж чекає.")
+            ),
+        )
+    } else {
+        format!(
+            "<li>{}</li><li>{}</li><li>{}</li><li>{}</li>",
+            lang.tr(
+                &format!("{max} players: the match starts at once."),
+                &format!("{max} гравців: матч починається одразу.")
+            ),
+            lang.tr(
+                &format!(
+                    "{fill} to {} players: it starts when nobody has pressed Play for {quiet} s, or when {window} s are up, whichever is first.",
+                    max - 1
+                ),
+                &format!(
+                    "від {fill} до {} гравців: матч починається, коли {quiet} с ніхто не натискав «Грати», або через {window} с, що настане раніше.",
+                    max - 1
+                )
+            ),
+            lang.tr(
+                &format!("2 to {} players: they wait the full {window} s.", fill - 1),
+                &format!("від 2 до {} гравців: чекають повні {window} с.", fill - 1)
+            ),
+            lang.tr(
+                "One player alone: no match starts until another joins.",
+                "Один гравець: матч не починається, доки не приєднається ще хтось."
+            ),
+        )
+    };
     format!(
         "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{}{launch}{}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section> <p><a class=button href=\"/exchange?lang={}\">{}</a></p>",
         lang.tr("Skhid", "Схід"),

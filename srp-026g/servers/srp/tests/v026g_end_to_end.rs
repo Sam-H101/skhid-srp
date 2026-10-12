@@ -118,6 +118,9 @@ fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
         Box::new(session::persist::open_in(dir).expect("the database")),
     )
     .expect("the accounts");
+    // Two players are enough, and a press of Play adds nothing: the
+    // scripted clients are two, not four (`SRP_MATCH_MIN_PLAYERS`).
+    store.set_start_rules(2, Duration::ZERO, Duration::from_secs(3600));
     let accounts = GameAccounts::with_repository(Box::new(
         SqliteGameRepository::open_in(dir).expect("the 0.26g tables"),
     ))

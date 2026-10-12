@@ -88,10 +88,13 @@ Every setting has a default; none is needed on a dev PC.
   `SRP_LOG_KEEP_DAYS` (default 14): older files are deleted. The compose
   file sets it to `/srv/srp/data/logs`, in the data volume (since
   2026-10-12: a container's own output is gone at every update).
-- `SRP_MATCH_GATHER_SECONDS` (default 60), `SRP_MATCH_FILL_PLAYERS`,
-  `SRP_MATCH_QUIET_SECONDS`: the queue. A match needs two players who did
-  not come as one squad; the window starts with the second (a squad alone
-  waits: matchmaking.md §3). For a quick test: `SRP_MATCH_GATHER_SECONDS=5`.
+- `SRP_MATCH_GATHER_SECONDS` (default 60), `SRP_MATCH_FILL_PLAYERS` (10),
+  `SRP_MATCH_QUIET_SECONDS` (30), `SRP_MATCH_MIN_PLAYERS` (4),
+  `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30), `SRP_MATCH_MAX_COUNTDOWN_SECONDS`
+  (120): the queue. A match needs 4 players on two sides (a squad is one
+  side and waits for somebody who is not of it); the countdown starts with
+  the 4th (matchmaking.md §3). For a quick test:
+  `SRP_MATCH_GATHER_SECONDS=5 SRP_MATCH_MIN_PLAYERS=2 SRP_MATCH_JOIN_EXTENSION_SECONDS=0`.
 - `SRP_LOBBY_LINK_TIMEOUT_SECONDS` (default 30),
   `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` (120),
   `SRP_LOBBY_SESSION_GRACE_SECONDS` (60): a silent client's lobby link
@@ -102,7 +105,7 @@ Every setting has a default; none is needed on a dev PC.
   playable map, 72 of them): a match gets the map its players played least
   and a mode and weather at random, so for a first test name one, e.g.
   `SRP_MATCH_MAPS=117` (Team Deathmatch on level_01).
-- `SRP_MATCH_TEAM_SIZE` (default 8), `SRP_MATCH_SEARCH_STEP_SECONDS`
+- `SRP_MATCH_TEAM_SIZE` (default 10), `SRP_MATCH_SEARCH_STEP_SECONDS`
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 1), `SRP_MONEY_RATE` (percent, default

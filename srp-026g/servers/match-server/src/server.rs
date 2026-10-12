@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(store.matchmaking().match_count(), 1);
         store
             .matchmaking()
-            .poll(sessions[34], start + Duration::from_secs(10));
+            .poll(sessions[34], start + Duration::from_secs(30));
         assert_eq!(store.matchmaking().match_count(), 2);
 
         let mut server = Server {
@@ -732,7 +732,7 @@ mod tests {
             stray_datagrams: HashMap::new(),
             next_housekeeping: start,
         };
-        let now = start + Duration::from_secs(11);
+        let now = start + Duration::from_secs(31);
         for (n, session_id) in sessions.iter().enumerate() {
             let addr: SocketAddr = format!("127.0.0.1:{}", 40000 + n).parse().unwrap();
             server.pending.insert(addr, Transport::new(now));
