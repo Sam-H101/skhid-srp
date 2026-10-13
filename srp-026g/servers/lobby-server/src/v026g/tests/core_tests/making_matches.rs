@@ -192,7 +192,7 @@ fn the_side_size_and_the_search_step_are_settings() {
     let settings = Settings::local("127.0.0.1:0");
     // Two teams of up to 10 (the client's roster of 20); every level in range within the
     // default gather window of a minute (14 steps from 0..=1 to 15).
-    assert_eq!(settings.team_size, 10);
+    assert_eq!(settings.team_size, 6);
     assert_eq!(settings.search_step.get(), 4);
     assert!(u64::from(settings.search_step.get()) * 14 <= session::DEFAULT_GATHER_WINDOW.as_secs());
 

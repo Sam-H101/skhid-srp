@@ -16,6 +16,49 @@ fn running() -> Bench {
     bench
 }
 
+#[test]
+fn admission_closes_at_two_minutes_remaining_and_stale_publications_expire() {
+    let bench = running();
+    let deadline = bench.game().admission_deadline(bench.now()).unwrap();
+    assert!(
+        bench
+            .game()
+            .admission_deadline(deadline - Duration::from_millis(1))
+            .is_some()
+    );
+    assert!(bench.game().admission_deadline(deadline).is_none());
+    assert!(
+        bench
+            .game()
+            .admission_deadline(deadline + Duration::from_millis(1))
+            .is_none()
+    );
+    assert_eq!(
+        bench
+            .registry
+            .admission_remaining(bench.match_id, deadline - Duration::from_millis(1)),
+        Some(Duration::from_millis(120_001))
+    );
+    assert!(
+        bench
+            .registry
+            .admission_remaining(bench.match_id, deadline)
+            .is_none()
+    );
+    // No game-loop update is needed to reject a reservation after its deadline.
+    bench
+        .registry
+        .set_admitting(bench.match_id, 2, Some(Instant::now()));
+    assert_eq!(
+        bench.registry.join_running(bench.match_id, player(2)),
+        Err(JoinError::Unavailable)
+    );
+    assert_eq!(
+        bench.registry.formed(bench.match_id).unwrap().places.len(),
+        2
+    );
+}
+
 fn player(place: usize) -> MatchPlayer {
     MatchPlayer {
         session_id: session_of(place),
@@ -346,7 +389,11 @@ fn registry_admission_is_atomic_and_rejects_invalid_profiles() {
     assert!(bench.registry.seat(session_of(2)).is_none());
     reserve(&mut bench);
     // Even a stale game-loop observation cannot admit a second player.
-    bench.registry.set_admitting(bench.match_id, 2, true);
+    bench.registry.set_admitting(
+        bench.match_id,
+        2,
+        Some(bench.now() + Duration::from_secs(600)),
+    );
     assert_eq!(
         bench.registry.join_running(bench.match_id, player(3)),
         Err(JoinError::Unavailable)

@@ -106,6 +106,20 @@ impl Game {
                 .all(|p| p.resources_loaded && p.installed_roster == self.players())
     }
 
+    pub(crate) fn admission_deadline(&self, now: Instant) -> Option<Instant> {
+        if !self.admitting() {
+            return None;
+        }
+        let remaining = Duration::from_millis(u64::from(
+            self.rule.time_limit_at()?.saturating_sub(self.clock(now)),
+        ));
+        let open_for = remaining.checked_sub(session::matchmaking_policy::JOIN_CUTOFF)?;
+        if open_for.is_zero() {
+            return None;
+        }
+        now.checked_add(open_for)
+    }
+
     /// Failed newcomers can queue elsewhere. Their descriptors remain
     /// reserved here so partially installed slots are never repurposed.
     pub(crate) fn take_rejected_joins(&mut self) -> Vec<(usize, u32)> {

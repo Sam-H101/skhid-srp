@@ -364,7 +364,7 @@ impl Server {
                 }
             }
             self.registry
-                .set_admitting(game.id, game.roster_size(), game.admitting());
+                .set_admitting(game.id, game.roster_size(), game.admission_deadline(now));
             results.extend(game.take_result());
         }
         // Before the clients hear the end: back in the lobby, they ask.
