@@ -391,7 +391,9 @@ impl Settings {
             balance.trust_matches
         );
         log::info!(
-            "A match being played: a battery of lead counts for {} of a player, a ticket for              {}; from a lead of {} players the side that trails may get two players more; a              player who would make it less even waits {} s",
+            "A match being played: a battery of lead counts for {} of a player, a ticket for \
+             {}; from a lead of {} players the side that trails may get two players more; a \
+             player who would make it less even waits {} s",
             balance.battery_lead,
             balance.ticket_lead,
             balance.dramatic_lead,
