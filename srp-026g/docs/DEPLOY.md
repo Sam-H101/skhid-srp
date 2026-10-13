@@ -80,7 +80,7 @@ Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 
 **Only the settings named under `environment:` in the compose file reach the
 server.** A game setting of `SRP-026G.md` that is not in that list (for
-example `SRP_MONEY_RATE` or `SRP_MATCH_TEAM_SIZE`) keeps its default even
+example `SRP_ITEM_WEAR` or `SRP_DROP_CONDITION`) keeps its default even
 when `.env` sets it: add its name to the list first.
 
 Never set `SRP_BOT_ACCOUNTS` on a public server (`SRP-026G.md`, "Test

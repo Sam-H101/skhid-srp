@@ -120,11 +120,44 @@ pub fn cell(plain: f64, k: f64) -> f64 {
     (plain * k + 1e-6).floor().max(0.0)
 }
 
-/// The owner's choice (2026-10-13): match silver is paid at 120 % of the
-/// original (from the start, 2026-10-12, until then it was 80 %).
-pub const DEFAULT_MONEY_RATE: u32 = 120;
-/// The experience and reputation stay at the original's pace.
-pub const DEFAULT_EXPERIENCE_RATE: u32 = 1;
+/// The owner's choice (2026-10-14): the percent of the original's silver a
+/// match's rows pay, by the match's level: 150 to level 5, ten more each
+/// level after, 220 from level 12. The kits' prices grow faster than
+/// `money_k` does (`progression_pace.md`: a tier's kit was 20 to 26
+/// matches of silver up to tier 6 and 53 to 72 from tier 12), and past 220
+/// the faction's rank is what a player waits for. It was 120 at every level
+/// from 2026-10-13 and 80 from the start.
+pub const MONEY_RATES: [u32; 13] = [
+    150, 150, 150, 150, 150, 150, 160, 170, 180, 190, 200, 210, 220,
+];
+/// The owner's choice (2026-10-14): a match's experience is paid twice
+/// over. The account level was the longest road by far
+/// (`progression_pace.md`: level 20 after 67 hours of play, the top kit
+/// after 72). It was the original's pace, 1, from 2026-10-12.
+pub const DEFAULT_EXPERIENCE_RATE: u32 = 2;
+/// The owner's choice (2026-10-14, "increase reputation a bit for all"; the
+/// 120 is srp's reading of "a bit"): the percent of the original's
+/// reputation a match's rows and its quests pay.
+pub const DEFAULT_REPUTATION_RATE: u32 = 120;
+
+/// The percent of the original's silver the rows of a match pay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoneyRate {
+    /// [`MONEY_RATES`], by the match's level.
+    ByLevel,
+    /// One percent at every level (`SRP_MONEY_RATE`).
+    Flat(u32),
+}
+
+impl MoneyRate {
+    /// The percent a match of `match_level` pays.
+    pub fn at(self, match_level: u16) -> u32 {
+        match self {
+            Self::ByLevel => MONEY_RATES[usize::from(match_level).min(MONEY_RATES.len() - 1)],
+            Self::Flat(percent) => percent,
+        }
+    }
+}
 
 fn setting(name: &str, default: u32, most: u32) -> u32 {
     match std::env::var(name) {
@@ -139,19 +172,41 @@ fn setting(name: &str, default: u32, most: u32) -> u32 {
     }
 }
 
-/// `SRP_MONEY_RATE`: the percent of the original's silver the three rows
-/// of a match pay, 1 to 1000 (default 120). Premium's half is counted from
-/// the rows, so it follows. Read once.
-pub fn money_rate() -> u32 {
-    static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *RATE.get_or_init(|| setting("SRP_MONEY_RATE", DEFAULT_MONEY_RATE, 1000))
+/// `SRP_MONEY_RATE`: one percent of the original's silver for the three
+/// rows of a match at every level, 1 to 1000; unset, [`MONEY_RATES`] by
+/// the match's level. Premium's half is counted from the rows, so it
+/// follows. Read once.
+pub fn money_rate() -> MoneyRate {
+    static RATE: std::sync::OnceLock<MoneyRate> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| match std::env::var("SRP_MONEY_RATE") {
+        Ok(value) => match value.trim().parse::<u32>() {
+            Ok(rate) if (1..=1000).contains(&rate) => MoneyRate::Flat(rate),
+            _ => {
+                log::error!(
+                    "SRP_MONEY_RATE is `{value}`; it must be 1 to 1000. Using the rates by match level"
+                );
+                MoneyRate::ByLevel
+            }
+        },
+        Err(_) => MoneyRate::ByLevel,
+    })
 }
 
-/// `SRP_EXPERIENCE_RATE`: what a match's experience and reputation are
-/// multiplied by, 1 to 100 (default 1; 0.21d's default was 3). Read once.
+/// `SRP_EXPERIENCE_RATE`: what a match's experience is multiplied by, 1 to
+/// 100 (default 2; 1 is the original's pace). The reputation has its own
+/// rate ([`reputation_rate`]); until 2026-10-14 this one multiplied it too.
+/// Read once.
 pub fn experience_rate() -> u32 {
     static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *RATE.get_or_init(|| setting("SRP_EXPERIENCE_RATE", DEFAULT_EXPERIENCE_RATE, 100))
+}
+
+/// `SRP_REPUTATION_RATE`: the percent of the original's reputation the
+/// rows of a match and the quests completed in it pay, 1 to 1000 (default
+/// 120). Read once.
+pub fn reputation_rate() -> u32 {
+    static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| setting("SRP_REPUTATION_RATE", DEFAULT_REPUTATION_RATE, 1000))
 }
 
 /// The rating a new 0.26g account has (LIKELY: SHOT1 shows 118 on an
@@ -330,6 +385,28 @@ mod tests {
                 assert!((hundredths - hundredths.round()).abs() < 1e-9, "{k}");
             }
         }
+    }
+
+    #[test]
+    fn the_silver_rate_rises_with_the_match_level() {
+        let by_level = MoneyRate::ByLevel;
+        for level in 0..=5 {
+            assert_eq!(by_level.at(level), 150);
+        }
+        assert_eq!(
+            (6..=12).map(|level| by_level.at(level)).collect::<Vec<_>>(),
+            [160, 170, 180, 190, 200, 210, 220]
+        );
+        // Every level of the data past 12 pays as 12 does.
+        let levels = survarium::v026g::dictionary::Dictionary::shared()
+            .match_levels
+            .len() as u16;
+        assert!(levels > 13);
+        for level in 12..levels + 5 {
+            assert_eq!(by_level.at(level), 220);
+        }
+        assert_eq!(MoneyRate::Flat(80).at(0), 80);
+        assert_eq!(MoneyRate::Flat(80).at(20), 80);
     }
 
     #[test]
