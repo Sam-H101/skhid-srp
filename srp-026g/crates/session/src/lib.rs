@@ -30,6 +30,7 @@ use survarium::v021d;
 pub mod bans;
 pub mod limits;
 mod matchmaking;
+pub mod matchmaking_policy;
 pub mod password;
 pub mod persist;
 mod reports;

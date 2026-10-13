@@ -1,30 +1,19 @@
 //! Play: the queue, making a match, and coming back from it.
 //!
-//! When a match starts is 0.21d's rule (`session::Matchmaking`; the
-//! owner's standing rule): a match needs two players; the gather window
-//! (`SRP_MATCH_GATHER_SECONDS`) starts when the second one queues, and a
-//! player alone waits; with `SRP_MATCH_FILL_PLAYERS` waiting and nobody
-//! joining for `SRP_MATCH_QUIET_SECONDS` it starts sooner, and at once when
-//! full. A squad queues as one group once every member pressed Play and
-//! plays on one team. A seat is kept for the whole match: Play sends a
-//! player who left back to it.
+//! Experimental growing rosters first try running matches with more than two
+//! minutes remaining. Whole squads are selected as an atomic batch, keeping
+//! team sizes within one and minimizing the resulting team-average level gap.
+//! Candidates are ranked by resulting population^p * remaining minutes.
+//! Departed players still count; historical roster slots are never reused.
 //!
-//! Who plays whom is 0.26g's (`resources/notes/v026g/matchmaking.md`,
-//! `session::v026g::matchmaking`):
-//! - a match has two sides of at most [`Settings::team_size`] (8), as even
-//!   as the squads allow, in players and then in levels;
-//! - a player has a level, the client's own "equipment level": the highest
-//!   of its kits, moved up by its rating. A match is formed around a
-//!   waiting player from those whose level is in its range, which grows by
-//!   one level at each end every [`Settings::search_step`] of its wait
-//!   (the client draws that range on its search screen), so a level delays
-//!   a match and never forbids it;
-//! - the match's level (the reward multipliers' row) is the mean of its
-//!   players' levels;
-//! - the map is the one its players have played least, the mode and the
-//!   weather drawn among the playable `maps_dict` ids of
-//!   [`Settings::maps`] for it. 0.26g's Play (`2F <kit id>`) does not say
-//!   where to play: there is one queue.
+//! When no running match qualifies, the growing queue waits two minutes from
+//! its second player, or starts a full balanced match sooner. Levels guide
+//! placement; they do not exclude opponents. Standard clients retain the
+//! existing level-range and gathering rules (`docs/notes/matchmaking.md`).
+//!
+//! The reward match level is fixed at formation. Team averages are independent
+//! admission-time values, updated as each batch joins. Map selection still
+//! favors maps played least by the initial roster.
 //!
 //! The match itself is the match server's: the lobby hands it the roster
 //! through [`MatchHost`] and sends each player where the ticket says
@@ -39,6 +28,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+use session::matchmaking_policy::{self as policy, Team};
 use session::v026g::{Account, matchmaking, quests, rules, wire};
 use session::{Level, LevelRules, LockExt, QueuePool, QueueState};
 use survarium::v026g::lobby::requests::id;
@@ -67,6 +57,10 @@ pub trait MatchHost: Send + Sync {
     /// Atomically reserve an entire party; false leaves it in the lobby queue.
     fn join_running(&self, _match_id: u32, _players: Vec<MatchPlayer>) -> bool {
         false
+    }
+    /// Remaining play time, only while this match is ready to reserve a batch.
+    fn admission_remaining(&self, _match_id: u32, _now: Instant) -> Option<Duration> {
+        None
     }
     /// Whether the match is made and not over. The lobby asks about its
     /// matches every second and frees the seats of one that is over, also
@@ -125,7 +119,8 @@ pub struct MatchTicket {
 pub(super) struct Running {
     pub pool: QueuePool,
     pub fixed_teams: bool,
-    pub match_level: u16,
+    /// Admission-time level sums and counts, including departed players.
+    pub teams: [Team; 2],
     pub ticket: MatchTicket,
     pub map_id: u8,
     /// Its roster's sessions and teams, by place.
@@ -250,70 +245,115 @@ impl Core<'_> {
     }
 
     fn fill_running_matches(&mut self, now: Instant) {
-        let rules = self.level_rules();
         let unix = quests::now();
-        let groups = self
-            .store
-            .matchmaking()
-            .queued_groups(QueuePool::GrowingRoster);
-        for group in groups {
-            if self.pool_for_sessions(group.players.iter().map(|player| player.session_id))
-                != Some(group.pool)
-            {
-                continue;
-            }
-            let mut candidates: Vec<_> = self
-                .matches
-                .iter()
-                .filter(|(_, running)| {
-                    running.pool == group.pool
-                        && !running.fixed_teams
-                        && group.accepts_level(
-                            running.match_level.min(u8::MAX as u16) as u8,
-                            now,
-                            &rules,
-                        )
+        let exponent = self.store.matchmaking().population_exponent();
+        // One successful batch changes both queue and roster; recompute after each.
+        let mut attempted = std::collections::HashSet::new();
+        loop {
+            let groups: Vec<_> = self
+                .store
+                .matchmaking()
+                .queued_groups(QueuePool::GrowingRoster)
+                .into_iter()
+                .filter(|group| {
+                    self.pool_for_sessions(group.players.iter().map(|p| p.session_id))
+                        == Some(group.pool)
+                        && group
+                            .players
+                            .iter()
+                            .all(|p| self.accounts.get(p.account_id).is_some())
                 })
-                .map(|(&id, _)| id)
                 .collect();
-            candidates.sort_unstable();
-            for id in candidates {
-                let running = &self.matches[&id];
-                let counts =
-                    [0, 1].map(|team| running.seats.iter().filter(|(_, t)| *t == team).count());
-                let team = [0, 1]
-                    .into_iter()
-                    .filter(|&team| counts[team] + group.players.len() <= rules.team_size)
-                    .min_by_key(|&team| counts[team]);
-                let Some(team) = team else {
+            if groups.is_empty() {
+                break;
+            }
+            let mut candidates = Vec::new();
+            for (&id, running) in &self.matches {
+                if running.pool != QueuePool::GrowingRoster
+                    || running.fixed_teams
+                    || attempted.contains(&id)
+                {
+                    continue;
+                }
+                let Some(remaining) = self.host.admission_remaining(running.ticket.match_id, now)
+                else {
                     continue;
                 };
-                let profiles: Option<Vec<_>> = group
-                    .players
+                if remaining <= policy::JOIN_CUTOFF {
+                    continue;
+                }
+                // A historical slot cannot be reused by the same account.
+                let Some(formed) = self.store.matchmaking().formed_match(id) else {
+                    continue;
+                };
+                let available: Vec<_> = groups
                     .iter()
-                    .map(|player| {
-                        let account = self.accounts.get(player.account_id)?;
-                        let mut account = account.locked();
-                        account.settle_active_kit(unix);
-                        Some(MatchPlayer {
-                            session_id: player.session_id,
-                            account_id: player.account_id,
-                            profile: match_profile(&account, team as u8, 0, unix),
-                            bot: self.accounts.is_bot_name(&account.name),
+                    .enumerate()
+                    .filter(|(_, group)| {
+                        !group.players.iter().any(|p| {
+                            formed
+                                .seats
+                                .iter()
+                                .any(|s| s.player.account_id == p.account_id)
                         })
                     })
                     .collect();
-                let Some(mut profiles) = profiles else {
+                let populations: Vec<_> = available
+                    .iter()
+                    .map(|(_, group)| group.population())
+                    .collect();
+                let Some(mut placement) =
+                    policy::place(running.teams, &populations, self.settings.team_size)
+                else {
                     continue;
                 };
-                let first = running.seats.len();
-                let ticket = running.ticket.match_id;
-                let admitted = self.store.matchmaking().append_group(
-                    id,
-                    &group,
-                    team as u8,
-                    now,
-                    |actual, seats| {
+                for (index, _) in &mut placement.assignments {
+                    *index = available[*index].0;
+                }
+                let Some(score) = placement.score(remaining, exponent) else {
+                    continue;
+                };
+                candidates.push((id, score, placement));
+            }
+            candidates.sort_by(|a, b| {
+                b.1.total_cmp(&a.1)
+                    .then_with(|| a.2.level_gap().total_cmp(&b.2.level_gap()))
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            let Some((id, _, placement)) = candidates.into_iter().next() else {
+                break;
+            };
+            attempted.insert(id);
+            let batch: Vec<_> = placement
+                .assignments
+                .iter()
+                .map(|&(index, team)| (groups[index].clone(), team))
+                .collect();
+            let profiles: Option<Vec<_>> = batch
+                .iter()
+                .flat_map(|(group, team)| group.players.iter().map(move |player| (player, *team)))
+                .map(|(player, team)| {
+                    let account = self.accounts.get(player.account_id)?;
+                    let mut account = account.locked();
+                    account.settle_active_kit(unix);
+                    Some(MatchPlayer {
+                        session_id: player.session_id,
+                        account_id: player.account_id,
+                        profile: match_profile(&account, team, 0, unix),
+                        bot: self.accounts.is_bot_name(&account.name),
+                    })
+                })
+                .collect();
+            let Some(mut profiles) = profiles else {
+                continue;
+            };
+            let running = &self.matches[&id];
+            let first = running.seats.len();
+            let ticket = running.ticket.match_id;
+            let admitted =
+                self.store
+                    .matchmaking()
+                    .append_batch(id, &batch, now, |actual, seats| {
                         if actual != first {
                             return false;
                         }
@@ -321,29 +361,24 @@ impl Core<'_> {
                             profile.profile.squad = seat.squad;
                         }
                         self.host.join_running(ticket, profiles)
-                    },
-                );
-                if !admitted {
-                    continue;
-                }
-                let running = self
-                    .matches
-                    .get_mut(&id)
-                    .expect("running match observed above");
-                running.seats.extend(
-                    group
-                        .players
-                        .iter()
-                        .map(|player| (player.session_id, team as u8)),
-                );
-                let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
-                for player in &group.players {
+                    });
+            if !admitted {
+                continue;
+            }
+            let running = self
+                .matches
+                .get_mut(&id)
+                .expect("running match observed above");
+            running.teams = placement.teams;
+            let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
+            for (group, team) in batch {
+                for player in group.players {
+                    running.seats.push((player.session_id, team));
                     if let Some(account) = self.accounts.get(player.account_id) {
                         matchmaking::count_map_play(&mut account.locked(), map);
                         self.accounts.mark_dirty(player.account_id);
                     }
                 }
-                break;
             }
         }
     }
@@ -776,7 +811,20 @@ impl Core<'_> {
                     Running {
                         pool: formed.pool,
                         fixed_teams: formed.fixed_teams,
-                        match_level,
+                        teams: std::array::from_fn(|team| Team {
+                            players: formed
+                                .seats
+                                .iter()
+                                .filter(|seat| usize::from(seat.team) == team)
+                                .count(),
+                            level_sum: formed
+                                .seats
+                                .iter()
+                                .zip(&levels)
+                                .filter(|(seat, _)| usize::from(seat.team) == team)
+                                .map(|(_, &level)| u32::from(level))
+                                .sum(),
+                        }),
                         ticket,
                         map_id,
                         seats: formed

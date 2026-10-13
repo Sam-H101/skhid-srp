@@ -175,7 +175,7 @@ struct Inner {
     matches: HashMap<u32, std::sync::Arc<Formed>>,
     seats: HashMap<u32, Seat>,
     last_id: u32,
-    admitting: HashSet<u32>,
+    admitting: HashMap<u32, std::time::Instant>,
 }
 
 /// A new account could not be appended to a running match. Appended slots
@@ -414,7 +414,11 @@ impl MatchRegistry {
         if players.len() > MAX_PLAYERS - formed.places.len() {
             return Err(JoinError::Full);
         }
-        if !inner.admitting.contains(&match_id) {
+        if !inner
+            .admitting
+            .get(&match_id)
+            .is_some_and(|deadline| std::time::Instant::now() < *deadline)
+        {
             return Err(JoinError::Unavailable);
         }
         let mut sessions = HashSet::new();
@@ -484,19 +488,37 @@ impl MatchRegistry {
 
     /// Do not let an observation of an older roster reopen admission after
     /// the lobby has concurrently reserved the next place.
-    pub(crate) fn set_admitting(&self, match_id: u32, roster: usize, admitting: bool) {
+    pub(crate) fn set_admitting(
+        &self,
+        match_id: u32,
+        roster: usize,
+        deadline: Option<std::time::Instant>,
+    ) {
         let mut inner = self.inner();
         if inner
             .matches
             .get(&match_id)
             .is_some_and(|m| m.growing_roster && m.places.len() == roster)
         {
-            if admitting {
-                inner.admitting.insert(match_id);
+            if let Some(deadline) = deadline {
+                inner.admitting.insert(match_id, deadline);
             } else {
                 inner.admitting.remove(&match_id);
             }
         }
+    }
+
+    /// Time remaining while new reservations are allowed. The absolute deadline
+    /// also closes admission if the match thread stops publishing updates.
+    pub fn admission_remaining(
+        &self,
+        match_id: u32,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let inner = self.inner();
+        let deadline = *inner.admitting.get(&match_id)?;
+        (now < deadline)
+            .then(|| deadline.duration_since(now) + session::matchmaking_policy::JOIN_CUTOFF)
     }
 
     /// The place a session has in a match that is not over.

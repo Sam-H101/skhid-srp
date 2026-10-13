@@ -99,6 +99,10 @@ impl MatchHost for RegistryHost {
         self.0.join_running_group(match_id, players).is_ok()
     }
 
+    fn admission_remaining(&self, match_id: u32, now: std::time::Instant) -> Option<Duration> {
+        self.0.admission_remaining(match_id, now)
+    }
+
     fn is_open(&self, match_id: u32) -> bool {
         self.0.is_open(match_id)
     }

@@ -31,6 +31,8 @@ pub(super) struct TestHost {
     pub open: Mutex<HashSet<u32>>,
     pub fail: AtomicBool,
     pub admitting: Mutex<HashSet<u32>>,
+    pub remaining: Mutex<std::collections::HashMap<u32, std::time::Duration>>,
+    pub rejecting: Mutex<HashSet<u32>>,
     /// Every place given to a new session: `(match, account, session)`.
     pub reseated: Mutex<Vec<(u32, u32, u32)>>,
 }
@@ -70,7 +72,9 @@ impl MatchHost for TestHost {
     }
 
     fn join_running(&self, match_id: u32, players: Vec<super::MatchPlayer>) -> bool {
-        if !self.admitting.locked().contains(&match_id) {
+        if !self.admitting.locked().contains(&match_id)
+            || self.rejecting.locked().contains(&match_id)
+        {
             return false;
         }
         let mut made = self.made.locked();
@@ -82,6 +86,20 @@ impl MatchHost for TestHost {
         setup.players.extend(players);
         self.admitting.locked().remove(&match_id);
         true
+    }
+
+    fn admission_remaining(
+        &self,
+        match_id: u32,
+        _: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.admitting.locked().contains(&match_id).then(|| {
+            self.remaining
+                .locked()
+                .get(&match_id)
+                .copied()
+                .unwrap_or(std::time::Duration::from_secs(600))
+        })
     }
 
     fn is_open(&self, match_id: u32) -> bool {
