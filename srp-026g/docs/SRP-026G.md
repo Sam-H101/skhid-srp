@@ -75,7 +75,9 @@ servers one port.
    countdown over 2 minutes; fewer than 4, or one side only (a squad alone
    is one side), wait. Who plays whom
    is 0.26g's (`docs/notes/matchmaking.md`): two sides of at most
-   10, squads together, sides even in players and levels. A player's level
+   10, squads together, the sides at most a player apart and made to
+   count alike (a player's gear, level and balance rating; with an odd
+   count the stronger players are the side of fewer: §8 there). A player's level
    is the client's own "equipment level" (its highest kit, moved up by its
    rating); a match is formed from players whose level is in the range of
    the one who waited longest, and the range grows by a level every 4 s, so
@@ -144,6 +146,12 @@ A port that is not a number stops srp at start.
 | `SRP_MATCH_JOIN_EXTENSION_SECONDS` | 30 | Each press of Play adds this to what is left of the countdown |
 | `SRP_MATCH_MAX_COUNTDOWN_SECONDS` | 120 | No countdown runs longer than this from its start |
 | `SRP_MATCH_TEAM_SIZE` | 10 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
+| `SRP_BALANCE_PLAYER` | 12 | What a player counts for by being there when the sides are made, in gear levels: with an odd count the side with a player more has this much more, so the stronger players are the side of fewer. 0: only the strengths are made even (`matchmaking.md` §8) |
+| `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
+| `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |
+| `SRP_BALANCE_TRUST_MATCHES` | 5 | The matches after which a balance rating counts for half; one of no match counts for nothing |
+| `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
+| `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
 | `SRP_PATCH_REVISION_CHECK` | off | `warn`: a game whose exe says a patch revision under `SRP_MIN_PATCH_REVISION` is told in the general chat how to update. `refuse`: its Play and clan-team Play are also refused, with a message box (`patch_check.rs`). The late-join exe (0x80) and the test bots are never refused |
 | `SRP_MIN_PATCH_REVISION` | 4 | The least patch revision of a game that plays, when the check is on |
 | `SRP_OUTDATED_TEXT` | `st_login_menu_status_invalid_version` | What the refusal's message box shows: a text key of the game (the default is its "You're using an outdated version of the game.", in the player's language) or a sentence of up to 255 bytes, shown as it is |

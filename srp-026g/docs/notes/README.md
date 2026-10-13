@@ -115,6 +115,11 @@ Every setting has a default; none is needed on a dev PC.
   playable map, 72 of them): a match gets the map its players played least
   and a mode and weather at random, so for a first test name one, e.g.
   `SRP_MATCH_MAPS=117` (Team Deathmatch on level_01).
+- `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
+  `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a player
+  counts for when the sides of a match are made (`matchmaking.md` §8).
+  `SRP_SQUADS` (default on; `off`: no squads), `SRP_SQUADS_OFF_TEXT`
+  (`social.md` §9.4).
 - `SRP_MATCH_TEAM_SIZE` (default 10), `SRP_MATCH_SEARCH_STEP_SECONDS`
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).

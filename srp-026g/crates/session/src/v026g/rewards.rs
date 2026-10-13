@@ -137,7 +137,7 @@ use super::account::Account;
 use super::pay::{self, Pay};
 use super::persist::GameRepository;
 use super::quests::{self, Notice, REPUTATION_LEVEL_MESSAGE};
-use super::{GameAccounts, items_rules, rules, wire};
+use super::{GameAccounts, balance, items_rules, rules, wire};
 use crate::LockExt;
 
 /// The winner value of a draw (`survarium::v026g::match_msgs::rules::DRAW`).
@@ -872,6 +872,7 @@ impl Results {
             })
             .collect();
         let changes = shared.rating_changes(&held);
+        let balance_changes = shared.balance_changes(accounts);
 
         let mut players = Vec::with_capacity(result.players.len());
         for (index, player) in result.players.iter().enumerate() {
@@ -887,6 +888,9 @@ impl Results {
             let report = match accounts.get(player.account_id) {
                 Some(account) => {
                     let mut account = account.locked();
+                    if let Some(change) = balance_changes[index] {
+                        account.balance = account.balance.moved(change);
+                    }
                     let (reward, full, notices) = shared.settle_player(
                         &mut account,
                         player,
@@ -1220,6 +1224,46 @@ impl<'a> Shared<'a> {
             pay::RATING_SPREAD,
         )) {
             changes[index] = change;
+        }
+        changes
+    }
+
+    /// How the match moves each balance rating ([`balance::changes`]), by
+    /// roster place; `None` for a player it does not move. The players
+    /// are the ranking's: those who were in the match, one who left with
+    /// its team's result and nothing more. A match with a test bot, with
+    /// no known winner, or left by a whole side ([`MatchEnd::Deserted`]:
+    /// its winner is who stayed) moves none.
+    fn balance_changes(&self, accounts: &GameAccounts) -> Vec<Option<i32>> {
+        let mut changes = vec![None; self.result.players.len()];
+        let Some(winner) = self.winner else {
+            return changes;
+        };
+        if self.unrated || self.result.end == MatchEnd::Deserted {
+            return changes;
+        }
+        let rated: Vec<(usize, u8, balance::Balance)> = self
+            .result
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(_, player)| {
+                player.team < 2
+                    && matches!(self.standing(player), Standing::Finished | Standing::Left)
+            })
+            .filter_map(|(index, player)| {
+                let account = accounts.get(player.account_id)?;
+                Some((index, player.team, account.locked().balance))
+            })
+            .collect();
+        let list: Vec<(u8, balance::Balance)> =
+            rated.iter().map(|&(_, team, held)| (team, held)).collect();
+        // One side only: no match to learn from, and none counted.
+        if !(0..2).all(|team| list.iter().any(|player| player.0 == team)) {
+            return changes;
+        }
+        for (&(index, _, _), change) in rated.iter().zip(balance::changes(&list, winner)) {
+            changes[index] = Some(change);
         }
         changes
     }

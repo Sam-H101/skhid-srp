@@ -1587,6 +1587,15 @@ fn home(lang: Lang, stats: Stats) -> String {
     let fill = session::fill_from_env();
     let quiet = session::quiet_from_env().as_secs();
     let max = session::MAX_PLAYERS_PER_MATCH;
+    // 0.26g's lobby can be told to refuse squads (`SRP_SQUADS`).
+    let squads = !v026g
+        || !matches!(
+            std::env::var("SRP_SQUADS")
+                .ok()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("off" | "0" | "false" | "no")
+        );
     let rules = if v026g {
         let (min_players, extension, longest) = session::leveled_start_rules_from_env();
         let (extension, longest) = (extension.as_secs(), longest.as_secs());
@@ -1598,7 +1607,7 @@ fn home(lang: Lang, stats: Stats) -> String {
         let full = team * 2;
         let longest_min = longest / 60;
         format!(
-            "<li>{}</li><li>{}</li><li>{}</li><li>{}</li><li>{}</li>",
+            "<li>{}</li><li>{}</li><li>{}</li><li>{}</li><li>{}</li><li>{}</li>",
             lang.tr(
                 &format!("{full} players: the match starts at once."),
                 &format!("{full} гравців: матч починається одразу.")
@@ -1627,9 +1636,20 @@ fn home(lang: Lang, stats: Stats) -> String {
                 &format!("The wait never lasts longer than {longest_min} minutes from the start of the countdown."),
                 &format!("Очікування ніколи не триває довше {longest_min} хв від початку відліку.")
             ),
+            if squads {
+                lang.tr(
+                    &format!("Fewer than {min_players} players: no match starts until there are {min_players}. A squad counts as one side, so a squad alone waits too."),
+                    &format!("Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загін — це одна сторона, тож загін сам теж чекає.")
+                )
+            } else {
+                lang.tr(
+                    &format!("Fewer than {min_players} players: no match starts until there are {min_players}. Squads are switched off: everybody queues alone."),
+                    &format!("Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загони вимкнено: кожен стає в чергу сам.")
+                )
+            },
             lang.tr(
-                &format!("Fewer than {min_players} players: no match starts until there are {min_players}. A squad counts as one side, so a squad alone waits too."),
-                &format!("Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загін — це одна сторона, тож загін сам теж чекає.")
+                "The server makes the two sides as even as it can: by the players' gear, their level and their results in earlier matches. With an odd number of players, the stronger ones are the side with a player fewer.",
+                "Сервер ділить гравців на дві сторони якомога рівніше: за спорядженням, рівнем і результатами попередніх матчів. Якщо гравців непарна кількість, сильніші грають на стороні, де на одного гравця менше."
             ),
         )
     } else {
@@ -1662,10 +1682,17 @@ fn home(lang: Lang, stats: Stats) -> String {
     format!(
         "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{start}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section> <p><a class=button href=\"/exchange?lang={}\">{}</a></p>",
         lang.tr("Skhid", "Схід"),
-        lang.tr(
-            &format!("Skhid (Ukrainian for \u{201c}east\u{201d}) is a small community server that lets the Survarium {version} client sign in, trade, form squads and play matches again."),
-            &format!("Схід \u{2014} невеликий ком'юніті сервер, на якому клієнт Survarium {version} знову може входити, торгувати, збирати загони й грати матчі.")
-        ),
+        if squads {
+            lang.tr(
+                &format!("Skhid (Ukrainian for \u{201c}east\u{201d}) is a small community server that lets the Survarium {version} client sign in, trade, form squads and play matches again."),
+                &format!("Схід \u{2014} невеликий ком'юніті сервер, на якому клієнт Survarium {version} знову може входити, торгувати, збирати загони й грати матчі.")
+            )
+        } else {
+            lang.tr(
+                &format!("Skhid (Ukrainian for \u{201c}east\u{201d}) is a small community server that lets the Survarium {version} client sign in, trade and play matches again."),
+                &format!("Схід \u{2014} невеликий ком'юніті сервер, на якому клієнт Survarium {version} знову може входити, торгувати й грати матчі.")
+            )
+        },
         lang.tr(
             "Built on the open source project SRP (Survarium Restoration Project), which gave this server its start: <a href=\"https://github.com/srp-survarium/srp\">github.com/srp-survarium/srp</a>.",
             "Створено на основі open source проєкту SRP (Survarium Restoration Project), який дав початок цьому серверу: <a href=\"https://github.com/srp-survarium/srp\">github.com/srp-survarium/srp</a>."

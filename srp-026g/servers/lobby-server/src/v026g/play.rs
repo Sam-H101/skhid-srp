@@ -400,6 +400,23 @@ impl Core<'_> {
         }
     }
 
+    /// What the account counts for when the sides of a match are made, on
+    /// top of what every player does (`session::v026g::balance`): its gear
+    /// level (`level`), its own level and its balance rating as far as
+    /// that is trusted.
+    fn strength_of(&self, account_id: u32, level: Level) -> i32 {
+        let (player_level, balance) = match self.accounts.get(account_id) {
+            Some(account) => {
+                let account = account.locked();
+                (account.level(), account.balance)
+            }
+            None => (0, Default::default()),
+        };
+        self.settings
+            .balance
+            .strength(level.min, player_level, balance)
+    }
+
     /// `2F <kit id>`: Play. In a squad, Play makes the player ready, and
     /// the squad queues once all are.
     pub(super) fn play(&mut self, who: &Who, kit_id: u32, now: Instant) {
@@ -587,6 +604,15 @@ impl Core<'_> {
         if levels.is_empty() {
             return;
         }
+        // What each counts for when the sides are made: its level here,
+        // its own level and its balance rating (`balance`).
+        let strengths: Vec<(u32, i32)> = levels
+            .iter()
+            .map(|&(account_id, level)| (account_id, self.strength_of(account_id, level)))
+            .collect();
+        let matchmaking = self.store.matchmaking();
+        matchmaking.set_player_value(self.settings.balance.player_value());
+        matchmaking.set_strengths(&strengths);
         for player in self.store.matchmaking().refresh_levels(&levels, now) {
             if let Some(addr) = self.by_account.get(&player.account_id).copied()
                 && let Some(state) = self.player_mut(addr)
@@ -776,6 +802,9 @@ impl Core<'_> {
         // levels.
         let mut plays = [0_u64; 256];
         let mut levels = Vec::with_capacity(formed.seats.len());
+        // Why the sides are as they are, for the log.
+        let weights = self.settings.balance;
+        let mut sides: [(f64, Vec<String>); 2] = Default::default();
         let players: Option<Vec<MatchPlayer>> = formed
             .seats
             .iter()
@@ -783,7 +812,20 @@ impl Core<'_> {
                 let account = self.accounts.get(seat.player.account_id)?;
                 let mut account = account.locked();
                 account.settle_active_kit(unix);
-                levels.push(matchmaking::level(&account, unix).min);
+                let level = matchmaking::level(&account, unix).min;
+                levels.push(level);
+                let scale = f64::from(session::STRENGTH_SCALE);
+                let counts = weights.player
+                    + f64::from(weights.strength(level, account.level(), account.balance)) / scale;
+                let side = &mut sides[usize::from(seat.team.min(1))];
+                side.0 += counts;
+                side.1.push(format!(
+                    "{} {counts:.1} (gear {level}, level {}, rating {:+.2} of {} matches)",
+                    account.name,
+                    account.level(),
+                    f64::from(account.balance.rating) / f64::from(session::v026g::balance::UNIT),
+                    account.balance.matches
+                ));
                 for &(map, count) in &account.map_plays {
                     plays[usize::from(map)] += u64::from(count);
                 }
@@ -828,6 +870,14 @@ impl Core<'_> {
                     plays[usize::from(map)],
                     ticket.host,
                     ticket.port
+                );
+                log::info!(
+                    "Match {:#x} sides: team 0 counts {:.1}: {} | team 1 counts {:.1}: {}",
+                    ticket.match_id,
+                    sides[0].0,
+                    sides[0].1.join(", "),
+                    sides[1].0,
+                    sides[1].1.join(", ")
                 );
                 // The map is one more that each of them has played.
                 for seat in &formed.seats {
