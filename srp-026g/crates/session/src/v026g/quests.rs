@@ -142,6 +142,9 @@ pub fn refresh(account: &mut Account, now: u64, rng: &mut Rng) -> Vec<Notice> {
     if faction == 0 {
         return notices;
     }
+    // TODO: Quest equipment prerequisites should be data-driven. Hardcoding
+    // grenade and artifact requirements here is a stopgap; keep these checks
+    // for now until prerequisites are represented in the quest data.
     let grenades_available = grenades_available_in_store(account);
     let artifact_containers_available = artifact_containers_available_in_store(account);
     loop {
