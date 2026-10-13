@@ -564,6 +564,7 @@ mod tests {
 
         let won = MatchStats {
             won: true,
+            battery_mode: true,
             ..MatchStats::default()
         };
         let pay = evaluate(&mut account, &won, 1_100, &mut Rng::new(5));
@@ -600,6 +601,7 @@ mod tests {
         let (faction, points) = quest.reputation[0];
         let won = MatchStats {
             won: true,
+            battery_mode: true,
             ..MatchStats::default()
         };
         let paid = |scale: &Scale| {
@@ -681,6 +683,7 @@ mod tests {
         account.next_quest_instance = 51;
         let won = MatchStats {
             won: true,
+            battery_mode: true,
             ..MatchStats::default()
         };
         let pay = evaluate(&mut account, &won, 1_000, &mut Rng::new(5));
