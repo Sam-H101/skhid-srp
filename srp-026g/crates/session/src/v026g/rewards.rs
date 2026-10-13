@@ -43,7 +43,7 @@
 //!     help), counted with the weights the match was played with
 //!     ([`Terms::score_weights`], the ones the scoreboard used).
 //! - **The rates**: the three rows' silver times `SRP_MONEY_RATE` percent
-//!   (default 80, the owner's choice); their experience and reputation
+//!   (default 120, the owner's choice); their experience and reputation
 //!   times `SRP_EXPERIENCE_RATE` (default 1).
 //! - **Reputation** goes to the faction whose quests the account takes;
 //!   none until it chose one (PROVEN: patch note 0.25a).
@@ -64,7 +64,8 @@
 //! - **Quests**: [`quests::evaluate_scaled`] with the match's numbers:
 //!   a quest's silver and reputation times the match level's multipliers,
 //!   its reputation twice in one of the day's doubled matches.
-//! - **Wear**: every item of a kit the player used loses its
+//! - **Wear** (only with `SRP_ITEM_WEAR=on`; off by the owner's choice,
+//!   [`pay::item_wear`]): every item of a kit the player used loses its
 //!   `degrade_per_match`; a kit's firearms share `degrade_per_use` for each
 //!   bullet the kit fired [choice: which weapon fired is not in the
 //!   statistics]; `degrade_per_death` for each death (0 in every 0.26g
@@ -73,8 +74,9 @@
 //! - **A drop**: one roll of `survarium::v026g::drops` for a player who
 //!   stayed to the end: the new player's table while the account has no
 //!   experience, else the generic one. The chance has three parts, each
-//!   sent in its own place of the screen: the table's (40 %) with the play
-//!   time bonus; [`pay::DROP_CHANCE_PER_BATTERY`] for each battery the
+//!   sent in its own place of the screen: the table's (40 %), with the play
+//!   time bonus only when `SRP_DROP_PLAYTIME_BONUS=on`
+//!   ([`pay::drop_playtime_bonus`]); [`pay::DROP_CHANCE_PER_BATTERY`] for each battery the
 //!   player's own team has at the end; [`pay::DROP_CHANCE_PREMIUM`] for a
 //!   premium account. Together they are at most 1. A weapon or an armour
 //!   piece found so arrives worn, with one defect
@@ -257,18 +259,27 @@ pub struct Terms {
     pub money_rate: u32,
     /// The match's score weights.
     pub score_weights: [f32; EVENTS],
+    /// Whether the match wears the items of the kits played
+    /// ([`pay::item_wear`]).
+    pub wear: bool,
+    /// Whether the first games of a play period raise the drop chance
+    /// ([`pay::drop_playtime_bonus`]).
+    pub playtime_bonus: bool,
 }
 
 impl Terms {
     /// srp's terms at `now`: `SRP_EXPERIENCE_RATE` (default 1),
-    /// `SRP_MONEY_RATE` (default 80) and the weights srp's matches are
-    /// made with.
+    /// `SRP_MONEY_RATE` (default 120), `SRP_ITEM_WEAR` and
+    /// `SRP_DROP_PLAYTIME_BONUS` (both off unless set) and the weights
+    /// srp's matches are made with.
     pub fn at(now: u64) -> Self {
         Self {
             now,
             experience_rate: pay::experience_rate(),
             money_rate: pay::money_rate(),
             score_weights: SCORE_WEIGHTS,
+            wear: pay::item_wear(),
+            playtime_bonus: pay::drop_playtime_bonus(),
         }
     }
 }
@@ -1413,7 +1424,9 @@ impl<'a> Shared<'a> {
             .min(KITS - 1);
         full.play_seconds[main] = clamp_u16(player.time_in_match_ms / 1000);
 
-        reward.worn = self.wear(account, player, main);
+        if self.terms.wear {
+            reward.worn = self.wear(account, player, main);
+        }
         // A worn item may get a defect (`items_rules`): the inventory sent
         // with the results shows it.
         reward.defects = items_rules::after_wear(account, &reward.worn, rng);
@@ -1571,11 +1584,13 @@ impl<'a> Shared<'a> {
             let tables = Drops::shared();
             let (table, percent) = if new_player {
                 (&tables.new_player, 0)
-            } else {
+            } else if self.terms.playtime_bonus {
                 (&tables.generic, tables.playtime.bonus_percent(game))
+            } else {
+                (&tables.generic, 0)
             };
             // The chance's parts, as the screen shows them: the table's
-            // with the play time bonus; the match's result (the batteries
+            // (with the play time bonus when that is on); the match's result (the batteries
             // of the player's own team at the end); the premium account.
             // Together at most 1, the later parts cut.
             let base = (table.item_chance() * (1.0 + percent as f32 / 100.0)).min(1.0);

@@ -10,13 +10,16 @@ const NOW: u64 = 1_000_000;
 const MATCH: u32 = 0x77;
 
 /// The original's pay: the rates of a match's experience and silver at 1
-/// and 100 %.
+/// and 100 %, with the game's wear and the play time bonus to the drop
+/// chance (both off in srp's own terms).
 fn terms() -> Terms {
     Terms {
         now: NOW,
         experience_rate: 1,
         money_rate: 100,
         score_weights: SCORE_WEIGHTS,
+        wear: true,
+        playtime_bonus: true,
     }
 }
 
@@ -465,9 +468,11 @@ fn the_money_rate_scales_the_rows_silver_and_premiums_half_of_it() {
     assert_eq!(columns(&alice.full, 2), (2.0, 66, 245, 4));
     assert_eq!(alice.reward.premium_bonus, (67, 132, 6));
     assert_eq!(alice.reward.money, 134);
-    // srp's own terms: the owner's 80 % and the original's experience.
+    // srp's own terms: the owner's 120 %, the original's experience, no
+    // wear and no play time bonus.
     let own = Terms::at(NOW);
-    assert_eq!((own.money_rate, own.experience_rate), (80, 1));
+    assert_eq!((own.money_rate, own.experience_rate), (120, 1));
+    assert_eq!((own.wear, own.playtime_bonus), (false, false));
     assert_eq!(own.score_weights, SCORE_WEIGHTS);
 }
 
@@ -917,6 +922,25 @@ fn drops_follow_the_seed_and_the_play_time() {
         chances.push((report.players[0].full.drop_chances[0] * 100.0).round() as u32);
     }
     assert_eq!(chances, [80, 70, 60, 50, 40, 80, 70]);
+
+    // With the bonus off (srp's own terms) every game has the table's
+    // plain chance.
+    let store = accounts(&players);
+    let results = Results::new();
+    let mut rng = Rng::new(3);
+    let mut chances = Vec::new();
+    for game in 0..3 {
+        let mut result = result(players.clone());
+        result.match_id = MATCH + game;
+        let terms = Terms {
+            now: NOW + 900 * u64::from(game),
+            playtime_bonus: false,
+            ..terms()
+        };
+        let report = results.settle(&result, &store, &terms, &mut rng).unwrap();
+        chances.push((report.players[0].full.drop_chances[0] * 100.0).round() as u32);
+    }
+    assert_eq!(chances, [40, 40, 40]);
 }
 
 #[test]
@@ -1143,6 +1167,40 @@ fn a_stack_dropped_goes_onto_the_stack_owned() {
     // The message carries what dropped, the inventory the sum.
     assert_eq!(shown.condition_or_stack, 2);
     assert_eq!(account.item(first.item_id).unwrap().condition_or_stack, 4);
+}
+
+/// With wear off (srp's own terms) a match leaves every item as it was:
+/// nothing worn, no defect, nothing for auto-repair to pay; the ammo is
+/// still used.
+#[test]
+fn with_wear_off_a_match_leaves_the_items_whole() {
+    let mut players = alice_and_bob();
+    players[0].statistics.as_mut().unwrap().events[event::BULLET_FIRE][0] = 100;
+    let store = accounts(&players);
+    let pistol = {
+        let alice = store.get(10).unwrap();
+        let mut alice = alice.locked();
+        alice.extras.auto_repair = true;
+        alice.kits[0].slots[7].unwrap().item_id
+    };
+    let terms = Terms {
+        wear: false,
+        ..terms()
+    };
+    let report = Results::new()
+        .settle(&result(players), &store, &terms, &mut Rng::new(1))
+        .unwrap();
+    for player in &report.players {
+        assert!(player.reward.worn.is_empty());
+        assert!(player.reward.defects.is_empty());
+        assert!(player.reward.spent.repair.is_empty());
+    }
+    let alice = account(&store, 10);
+    assert_eq!(
+        alice.item(pistol).unwrap().condition_or_stack,
+        FULL_CONDITION
+    );
+    assert_eq!(report.players[0].reward.supplies_used, [(50, 50)]);
 }
 
 #[test]

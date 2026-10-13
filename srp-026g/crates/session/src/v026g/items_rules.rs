@@ -801,6 +801,37 @@ pub fn repaired_notice(item_id: u32) -> (u8, String) {
     (REPAIRED_MESSAGE, format!("#ir[{item_id}]"))
 }
 
+/// Makes every weapon and armour piece of the account whole: full
+/// condition, no defect, no repair running. Returns how many needed it.
+/// For the day wear was switched off (`pay::item_wear`): what matches had
+/// worn until then would stay worn for ever.
+pub fn mend_all(account: &mut Account) -> usize {
+    let dictionary = Dictionary::shared();
+    let mut mended = Vec::new();
+    for item in &mut account.inventory {
+        let gear = !dictionary.is_stack(item.dict_id)
+            && item_params(item.dict_id).is_some_and(|params| {
+                params.kind.starts_with("wpn_") || params.kind.starts_with("arm_")
+            });
+        let broken = item.modifications.iter().any(|&(_, state)| state);
+        if !gear || (item.condition_or_stack >= FULL_CONDITION && !broken && item.repair_time == 0)
+        {
+            continue;
+        }
+        item.condition_or_stack = FULL_CONDITION;
+        item.modifications.retain(|&(_, state)| !state);
+        item.repair_time = 0;
+        mended.push(item.item_id);
+    }
+    for &item_id in &mended {
+        bump_kits_wearing(account, item_id);
+    }
+    if !mended.is_empty() {
+        account.sync_kits();
+    }
+    mended.len()
+}
+
 // ------------------------------------------------- matches and drops
 
 /// Gives a new item its modifications by the rarity a drop rolled; returns

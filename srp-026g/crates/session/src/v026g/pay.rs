@@ -120,9 +120,9 @@ pub fn cell(plain: f64, k: f64) -> f64 {
     (plain * k + 1e-6).floor().max(0.0)
 }
 
-/// The owner's choice (2026-10-12): match silver is paid at 80 % of the
-/// original.
-pub const DEFAULT_MONEY_RATE: u32 = 80;
+/// The owner's choice (2026-10-13): match silver is paid at 120 % of the
+/// original (from the start, 2026-10-12, until then it was 80 %).
+pub const DEFAULT_MONEY_RATE: u32 = 120;
 /// The experience and reputation stay at the original's pace.
 pub const DEFAULT_EXPERIENCE_RATE: u32 = 1;
 
@@ -140,7 +140,7 @@ fn setting(name: &str, default: u32, most: u32) -> u32 {
 }
 
 /// `SRP_MONEY_RATE`: the percent of the original's silver the three rows
-/// of a match pay, 1 to 1000 (default 80). Premium's half is counted from
+/// of a match pay, 1 to 1000 (default 120). Premium's half is counted from
 /// the rows, so it follows. Read once.
 pub fn money_rate() -> u32 {
     static RATE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -223,6 +223,38 @@ pub fn drop_defect() -> bool {
             "off" | "0" | "no" | "false"
         )
     })
+}
+
+/// A switch that is off unless the operator turns it on (`on`, `1`, `yes`
+/// or `true`).
+fn off_unless_on(name: &str) -> bool {
+    let value = std::env::var(name).unwrap_or_default();
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "on" | "1" | "yes" | "true"
+    )
+}
+
+/// `SRP_ITEM_WEAR`: whether a match wears the weapons and armour of the
+/// kits played (the items' `degrade_per_match` and `degrade_per_use`), and
+/// with it whether a worn item may get a defect. Off unless `on`: the
+/// owner's choice (2026-10-13), an item a player has stays as it is. The
+/// game's own rule is `on`. Read once.
+pub fn item_wear() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| off_unless_on("SRP_ITEM_WEAR"))
+}
+
+/// `SRP_DROP_PLAYTIME_BONUS`: whether the first games of a play period
+/// raise the chance of a drop (`drops.options`, `playtime_dependence`: 100,
+/// 75, 50 and 25 for games 1 to 4). Off unless `on`: the owner's choice
+/// (2026-10-13). How the original applied those numbers is not known
+/// (GUESS: srp multiplied the table's chance by `1 + bonus / 100`); with
+/// it, 73 % of the players who finished a match on the live server found
+/// something, against the table's 40 %. Read once.
+pub fn drop_playtime_bonus() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| off_unless_on("SRP_DROP_PLAYTIME_BONUS"))
 }
 
 #[cfg(test)]

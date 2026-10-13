@@ -114,8 +114,10 @@ Every setting has a default; none is needed on a dev PC.
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 1), `SRP_MONEY_RATE` (percent, default
-  80): the rewards (`results.md` §10). `SRP_DROP_CONDITION` (40),
+  120): the rewards (`results.md` §10). `SRP_ITEM_WEAR` (off): whether a
+  match wears the items played with. `SRP_DROP_CONDITION` (40),
   `SRP_DROP_DEFECT` (on): what a found weapon or armour arrives as.
+  `SRP_DROP_PLAYTIME_BONUS` (off): the play time bonus to the drop chance.
   `SRP_DAILY_BONUS` (on), `SRP_DAILY_BONUS_RESET_HOUR` (0): the daily bonus.
 - `SRP_SNAPSHOT_DIR` (default `logs/snapshots`; `off`): uploaded worlds.
 - `SRP_PACKET_LOG=<dir>`: every datagram of the lobby and the match

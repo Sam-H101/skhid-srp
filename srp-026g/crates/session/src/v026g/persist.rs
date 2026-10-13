@@ -307,7 +307,22 @@ impl SqliteGameRepository {
     pub fn version(&self) -> Result<i64, PersistError> {
         schema_version(&self.connection)
     }
+
+    /// Whether this is the first call with `key` in the database's life:
+    /// the key is written to `g26_meta`, so every later call says no. For
+    /// what is done to the accounts once ([`GEAR_MENDED`]).
+    pub fn first_time(&mut self, key: &str) -> Result<bool, PersistError> {
+        let written = self.connection.execute(
+            "INSERT OR IGNORE INTO g26_meta (key, value) VALUES (?1, 1)",
+            [key],
+        )?;
+        Ok(written == 1)
+    }
 }
+
+/// The `g26_meta` key that says the accounts' weapons and armour were made
+/// whole when wear was switched off (`GameAccounts::from_env`).
+pub const GEAR_MENDED: &str = "gear_mended";
 
 fn schema_version(connection: &Connection) -> Result<i64, PersistError> {
     connection.execute_batch(
@@ -858,6 +873,21 @@ mod tests {
             SqliteGameRepository::open(&temp.path()),
             Err(PersistError::NewerSchema { found: 99, .. })
         ));
+    }
+
+    #[test]
+    fn a_first_time_is_once_in_the_databases_life() {
+        let temp = TempDb::new("first-time");
+        let mut repository = SqliteGameRepository::open(&temp.path()).unwrap();
+        assert!(repository.first_time(GEAR_MENDED).unwrap());
+        assert!(!repository.first_time(GEAR_MENDED).unwrap());
+        assert!(repository.first_time("another").unwrap());
+        // It outlives the repository, and the schema's own row is as it was.
+        let version = repository.version().unwrap();
+        drop(repository);
+        let mut repository = SqliteGameRepository::open(&temp.path()).unwrap();
+        assert!(!repository.first_time(GEAR_MENDED).unwrap());
+        assert_eq!(repository.version().unwrap(), version);
     }
 
     #[test]
