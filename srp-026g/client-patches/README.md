@@ -309,8 +309,9 @@ original bytes first, so another build or an already patched file is refused.
 - **What the patch does:** a mount without a root is not announced, and
   the journal is not recorded unless the game is started with
   `-record_journal=1` (the exe's own option; "1" was its default). Such a
-  game starts and can be played. Its settings are not saved, and nothing
-  tells the player so.
+  game starts and can be played. Its settings are not saved. The crash
+  reporter of the download (`client/bugtrap`) tells the player so at the
+  game's start, with what to do (its README, "Start-up notice").
 - **What is lost:** the journal, a recording of a session's input and
   packets that only the same build's `-replay_journal` reads. It was
   overwritten at every start and nothing here uses it.

@@ -229,11 +229,15 @@ pass. None of it was seen by a client.
   revision 4, eight bytes (client_patch.md §3.10): both crashes made again
   on a test PC, the built exe started in both situations. Not run: a
   sign-in, a match, saving the options into such a folder.
-- **Open:** such a game is played with settings that are not saved, and
-  nothing tells the player why. A check that tells them has to run in the
-  game's own process: Windows' "Controlled folder access" judges each
-  program by itself, so a check by the launcher or the updater says nothing
-  of the game.
+- **Built with it, not in the players' download:** such a game is played
+  with settings that are not saved, and a message box at its start says so
+  and what to do, in the game's language (`client/bugtrap`, its README's
+  "Start-up notice"). The check runs in the game's own process: Windows'
+  "Controlled folder access" judges each program by itself, so a check by
+  the launcher or the updater would say nothing of the game.
+- **Open:** the box was tried with a folder that refuses writes by its
+  access list, not with Controlled folder access itself; the Windows labels
+  in its Russian, Ukrainian, German and Polish texts want a native check.
 - **Not known:** what refuses the folder on the PC of the reports.
 
 ## 0.26g, added 2026-10-13: the launcher

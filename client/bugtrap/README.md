@@ -27,8 +27,61 @@ saved dump manually. A browser-launch failure displays the invite address.
 Nothing is uploaded automatically. Email/upload entry points fail with
 `ERROR_NOT_SUPPORTED`, and legacy support destinations are discarded. The DLL
 imports `kernel32.dll`, `user32.dll`, `gdi32.dll` and `shell32.dll` (for the browser
-link); it loads `dbghelp.dll` by absolute path from beside the EXE or the Windows
+link and the Documents folder of the start-up notice); it loads `dbghelp.dll` by absolute path from beside the EXE or the Windows
 system directory when capturing a dump.
+
+## Start-up notice: the game cannot save its files
+
+The game keeps its settings and its log in the folder `Survarium` of the
+player's Documents folder, and has no word for a folder Windows does not let
+it write to: before client patch revision 4 it stopped two seconds after its
+start, and since then it runs on with settings that are not saved
+(`srp-026g/docs/notes/client_patch.md` section 3.10).
+
+When the game names itself (`BT_SetAppName`, once, early in its start, on its
+main thread), the DLL makes that folder if it is missing, as the game does,
+and makes a file `skhid-write-test-<process id>.tmp` in it that is gone when
+its handle closes. If either is refused, one message box says so before the
+game goes on, in the language the game was started in (`-localization=`;
+English, Russian, Ukrainian, German, Polish; English without the option):
+
+> **Survarium cannot save its files**
+>
+> Windows is blocking the game from saving files to this folder:
+> *(the folder)*
+>
+> You can still play, but your settings (graphics, sound, controls) will not
+> be kept for next time.
+>
+> To fix it:
+> 1. Open the Start menu, type "Ransomware protection" and open it.
+> 2. Click "Allow an app through Controlled folder access", then "Add an
+>    allowed app", and choose: *(the game exe, with its folder)*
+> 3. Start the game again.
+>
+> If this does not help, ask us in Discord: discord.gg/Pxa4prXfwu
+>
+> (Windows error *N*)
+
+- The folder and the exe are the ones of that PC, asked of Windows at that
+  moment; they are shown on the player's screen and go nowhere else.
+- It is asked from inside the game because Windows' Controlled folder access
+  judges each program by itself: only the game's own try says whether the
+  game is let through. For the same reason the launcher, the updater and the
+  service, which load this DLL from the same folder, are not asked (an exe
+  whose file name holds `launcher`, `updater` or `service`): the box would
+  name the wrong program and stay after the game was allowed.
+- The box comes at every start for as long as the folder refuses the file,
+  and never otherwise. Nothing is remembered: there is nowhere to write it.
+- The names in quotation marks are Windows 11's in English. In the other four
+  languages they are that window's labels as far as known when written; a
+  reader with a Windows in that language should correct one that differs
+  (`src/notice_text.rs`).
+- Tried on Windows 11 with the 0.26g game (2026-10-13): a Documents folder
+  that refuses new folders, and a folder `Survarium` that refuses new files
+  (a deny entry in its access list): the box in each of the five languages,
+  the game goes on after OK; an ordinary folder: no box. Not tried: Windows'
+  Controlled folder access itself, Wine, the launcher's own start.
 
 ## Install
 
@@ -118,6 +171,8 @@ python3 tests/check_abi.py target/i686-pc-windows-msvc/release/BugTrap.dll
 WINEPREFIX=/path/to/test-prefix python3 tests/check_dumps.py target/i686-pc-windows-msvc/release
 rustc --edition 2024 --test src/arithmetic.rs -o target/arithmetic-test
 ./target/arithmetic-test
+rustc --edition 2024 --test src/notice_text.rs -o target/notice-text-test
+./target/notice-text-test
 ```
 
 The nineteen crash cases verify exception codes and thread IDs, module presence, the
