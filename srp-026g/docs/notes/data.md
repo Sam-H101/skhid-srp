@@ -510,7 +510,10 @@ Evidence: the 0.26g exe (VAs) and `flash_movies/lobby_menu.swf` decompiled with 
   and the Amber respirator at Scavengers 2; Fort 17 at Renaissance 2, APS at Edge 2; the
   "Marodeur" container at Black Market 4 (config: Scavengers); ammo, drugs, the trap and
   grenades by the factions at ranks, an item two factions sold having two records; the
-  boosters and the 9x19 7N21 (on no list) stay with seller 0. A buy goes through any seller
+  boosters and the 9x19 7N21 (on no list) stay with seller 0. **Since 2026-10-13 ammo
+  needs no rank** (the owner's choice, as the game from 0.27a on; `AMMO_NEEDS_RANK`): its
+  records keep their sellers and carry level 0, which the lobby shows as buyable at any
+  reputation (`canBuy = _unlockedLevel[seller] >= level`). A buy goes through any seller
   of the item whose rank the account has [srp's choice].
 - **What a new account owns (2026-10-12, `loadouts.rs`):** the TT-33, the Mosin carbine and
   the PPSh-41 with a clip of each free ammo (7.62x25, 7.62x54R): the wiki of February 2015
