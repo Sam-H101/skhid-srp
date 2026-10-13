@@ -32,7 +32,8 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/game/binaries/x86/survarium_skhid.exe
         the patched client (patch_026g.py: the certificate check, and in
         the full builds the single-instance check, minimum VRAM bypass,
-        50 ms hash interval, snapshot upload and default login server).
+        50 ms hash interval, snapshot upload, default login server and
+        the battery rule).
         The original survarium.exe is not in the
         overlay and stays as it is.
     <output>/game/binaries/x86/play_skhid.bat

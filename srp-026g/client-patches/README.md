@@ -8,7 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `448f691608b56ed14e985c4e5c84d17c6862cab7fce415d940c2b88821701b72` (patch revision 2); embedding a server changes the hash and may increase the size |
+| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `eedc5b5c9aa6111c999267eef8c6c27688d012aa203a7c6f6ccdbbc93262cf0d` (patch revision 3); embedding a server changes the hash and may increase the size. With `--server=skhid.link:1234`, as the players' download is made: sha256 `ac947abd212d05f3172035967076517f057019b9e1499be06c28b622baf36d7b` |
+| Revision 3 and the players' download | Revision 3 is revision 2 with patch 9 (the battery rule). **The players' download holds revision 2 until it is made again** (the rows below are the downloads so far): the two exes differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Revision 3 was not run in a match yet; its rule was run outside the game (`run_battery_rule.ps1`). A game of revision 3 and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 09:50 UTC: 6 293 491 bytes, sha256 `adb90bccf0254bc2c9fbc8710ffaa9152f95948fd46dcb96a390e04124cc0c4f`, 22 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` 4a68dc7 with `--bugtrap=` naming the `bugtrap.dll` of the download before. It is that download with the launcher (`launcher/README.md`) added: `launcher_skhid.exe` (4 735 488 bytes, sha256 `9110bf7526794d73c2d3713f61b509c526dd8d442e442ca5e08db77427b97d38`), `updater_skhid.exe` (79 360 bytes, sha256 `0ae3c3463b95073fe29797d87dd2ffda3be911832fb489ffb1b9daec299949fd`), `updater_skhid.url` (`https://skhid.link`), the ten pages of `launcher_skhid/`, and `Skhid.bat` and `Skhid.sh` beside `game/`. The game exe (sha256 `30e928dd…4883`, patch revision 2), `bugtrap.dll` (`3d8190b3…1d57`) and the login certificate are byte for byte those of the download before; `play_skhid.bat` is too, and `play_skhid.sh`, `README.txt` and `LINUX.txt` have the launcher in their texts. From this download on the launcher keeps a player's Skhid files the same as the ZIP the site offers, so a release is: build the ZIP, replace the file |
 | Checked, the launcher | 2026-10-13. The same build made for the test server (it differs in the two addresses only), over HTTPS with a real game folder on Windows 11: unpacked over a fresh copy of the game it added 20 files and replaced two (`bugtrap.dll`, the certificate); the first start took the ZIP once and changed nothing; a second ZIP put on the server, differing in the launcher, its pages, `updater_skhid.url` and `README.txt`, was installed at the next start (13 files, the launcher replaced itself and came up again, 2 seconds in all; of 58 files in the folder 43 were untouched and the other two were the updater's own state and log); PLAY started the game, which signed in and reached the lobby. This download itself: taken from the site, unpacked, and `updater_skhid.exe check` run in it (the ZIP fetched, 22 files right, nothing written but its state). Not run: Wine; a Windows other than 11 |
 | The third download | 2026-10-12 21:20 UTC to 2026-10-13 09:50 UTC: 4 918 126 bytes, sha256 `fa73afa4c897dd099acd88021576b3fc173ae7c0b6b917e2795b318a6a05ff48`, seven files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` 955e37d (English is the language the launchers start the game in; a player changes it in `play_skhid.bat` or `play_skhid.sh`). From 21:10 to 21:20 UTC the site had the same zip with `ukrainian` in the two launchers (sha256 `4ac6ecf61c2869fb3c8587a89e7f020c55de79f8641cf5ef854b1a1b87b2e8fc`); every other file is the same in both. Its exe is the full section patch with that address inside it (patch revision 2, 12 895 352 bytes, sha256 `30e928dd3c19a25452293c11be5e0bc85fdcacbbe0b957941a1e34c7be944883`); `bugtrap.dll` is the Rust crash reporter built that day from the same commit (32 256 bytes, sha256 `3d8190b377a7534b76f7c21f99d95106abafdf91dc342a7ad034db0cd52f1d57`); beside them `play_skhid.bat`, `play_skhid.sh`, the login certificate, `README.txt` and `LINUX.txt` |
@@ -27,6 +28,7 @@ published.
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
+| `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
 | `launcher/` | The game's launcher made to work again, and to keep these files current: its patch tool, the one piece of new code, the self-test and its own README. Its updater is `../../client/updater` |
 
@@ -231,10 +233,57 @@ original bytes first, so another build or an already patched file is refused.
   existing relocation and checksum handling covers the new hook. Build
   hashes depend on the embedded address.
 
+### 9. The battery rule of modes 2 and 3 (the last battery)
+
+- **Where:** two instructions of the rule's container event handler
+  (0x313A50) become `nop`s: `jnz 313B3Bh` at 0x313A62 (6 bytes) and
+  `mov byte [ecx+160h],0` at 0x313B34 (7 bytes).
+- **Why:** when a team's count reaches the number of batteries, the rule
+  stores its completion time and clears a byte that every container asks
+  before it lets anybody use it; from then on it counts no event. Neither
+  of the two is part of the world a client saves and loads. A client plays
+  a tick, and plays it again when an older input of another player arrives
+  (a rollback): the battery is in the player's hands again and the count is
+  one less again, but the byte stays cleared. So the last battery cannot be
+  put in on the replay, and nobody can put a battery in or take one out
+  for the rest of the match. Seen on the server: the kept logs to
+  2026-10-13 11:00 UTC have 19 matches in which a team had all batteries
+  but one: 14 ended on time with that count, 5 by the rule with all of
+  them. Two of the five were finished by a player alone (the other had
+  left); in three, two or three players were still in, so the last
+  battery does go in when no rollback crosses that tick.
+- **What stays:** the rule counts every battery put in and taken out, sets
+  the completion time when a team has all of them and takes it back when
+  not, which is what the 0.21d client's rule does. The containers are never
+  closed. The match is ended by the server, 3 s after it reads the full
+  count, as before.
+- **Run outside the game:** `run_battery_rule.ps1 <exe> [<exe> ...]` (the
+  32-bit Windows PowerShell) copies the handler's 238 bytes out of an exe
+  and calls them on a made-up rule object: nine puts, the tenth, a
+  rollback of the count, the same put again, a take, a put. With the exe
+  of the players' download (revision 2) the replayed put is not counted
+  and the byte stays cleared; with revision 3 it is counted, the byte
+  stays set, and a take sets the completion time back to none (run on
+  2026-10-13, Windows 11).
+- **State:** written on 2026-10-12; patch revision 3. Built and
+  self-tested, the handler run outside the game; **not run in a match
+  yet, and not in the players' download yet**. A client without it and a
+  client with it stay in step until a team's last battery goes in, and part
+  there (the server then starts the fewer of them from the others' world).
+  The login server writes each sign-in's revision into its log, so the
+  two can be told apart there; it does nothing else with it.
+- **Who gets it:** a game started through the launcher takes the new ZIP
+  by itself at its next start. A game with a download from before the
+  launcher (2026-10-13 09:50 UTC) keeps the old rule until its player
+  takes the ZIP once more; on 2026-10-13 most accounts still signed in
+  with revision 0, the first download.
+- Evidence: `../docs/notes/match.md` section 26,
+  `../docs/notes/client_patch.md` section 3.9.
+
 ## Not ported, not done
 
 - The 0.21d mode 3 battery patch is not needed: 0.26g serializes the
-  next-battery time.
+  next-battery time. (Patch 9 above is another defect, 0.26g's own.)
 - A defect of the client itself is known and not patched: an input with the
   "previous weapon" bit from a player who holds something other than its two
   weapons can crash every client of a match

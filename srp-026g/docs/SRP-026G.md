@@ -430,9 +430,11 @@ builds the patched client from the original exe (its sha256 is checked; each
 site is checked against the original bytes). It patches the code-signing
 certificate check (without it every stock 0.26g client stops with "Resources
 archive is corrupted": the certificate ran out in 2015), the single-instance
-check, the default hash interval (100 → 50 ms), and adds the snapshot upload
-in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the other
-builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
+check, the default hash interval (100 → 50 ms), two instructions of the
+battery rule of modes 2 and 3 (so that a team's last battery can be put in;
+patch revision 3, not in the players' download yet), and adds the snapshot
+upload in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the
+other builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
 
 `client-patches/make_client_026g.py <game folder> <output>
 --server=<host>:<port>` makes the players' overlay without touching the game
