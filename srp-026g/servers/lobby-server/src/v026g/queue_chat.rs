@@ -148,17 +148,17 @@ impl Core<'_> {
     }
 }
 
-fn subscribed(id: u32) -> bool {
+pub(super) fn subscribed(id: u32) -> bool {
     id != 0 && id != u32::MAX
 }
 
-fn line_of(name: &str, body: &str) -> ServerMessage {
+pub(super) fn line_of(name: &str, body: &str) -> ServerMessage {
     lobby::chat_text(sender::ACCOUNT, 0, name, "", channel::GENERAL, body)
 }
 
 /// `text` as lines of at most [`LINE`] bytes (one, cut with "..." at a
 /// character boundary, if it is longer).
-fn fit(text: &str) -> Vec<String> {
+pub(super) fn fit(text: &str) -> Vec<String> {
     if text.len() <= LINE {
         return vec![text.to_owned()];
     }

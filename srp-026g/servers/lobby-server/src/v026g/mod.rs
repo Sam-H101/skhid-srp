@@ -55,6 +55,11 @@
 //!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
 //! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
 //!   side; a match has two sides;
+//! - `SRP_PATCH_REVISION_CHECK` (default off; `warn`, `refuse`),
+//!   `SRP_MIN_PATCH_REVISION` (default 4), `SRP_OUTDATED_TEXT`,
+//!   `SRP_UPDATE_HINT`: a game older than that patch revision is told in
+//!   the general chat how to update and, with `refuse`, does not play
+//!   (`patch_check`);
 //! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
 //!   lines in the general chat when somebody joins or leaves the search and
 //!   when a match starts, with whom (`queue_chat.rs`);
@@ -84,6 +89,7 @@ mod clans;
 mod core;
 mod dispatch;
 mod items;
+mod patch_check;
 mod play;
 mod queue_chat;
 mod shop;
@@ -113,6 +119,7 @@ use survarium::v026g::lobby::ServerMessage;
 use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
+pub use patch_check::PatchCheck;
 pub use play::{MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
 
 /// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
@@ -179,6 +186,19 @@ pub struct Settings {
     /// The sender name of those lines (`SRP_QUEUE_CHAT_NAME`, default
     /// none: the client then shows the line with no name).
     pub queue_chat_name: String,
+    /// Whether a game older than `min_patch_revision` is told to update,
+    /// and whether its Play is refused (`SRP_PATCH_REVISION_CHECK`,
+    /// default off; `patch_check`).
+    pub patch_check: PatchCheck,
+    /// The least patch revision of a game that plays
+    /// (`SRP_MIN_PATCH_REVISION`).
+    pub min_patch_revision: u8,
+    /// What the refused Play shows in its message box: a text key of the
+    /// game, or a sentence (`SRP_OUTDATED_TEXT`).
+    pub outdated_text: String,
+    /// The line in the general chat that says how to update
+    /// (`SRP_UPDATE_HINT`; empty: no line).
+    pub update_hint: String,
 }
 
 impl Settings {
@@ -275,9 +295,48 @@ impl Settings {
         let queue_chat_name = var("SRP_QUEUE_CHAT_NAME")
             .map(|name| name.trim().chars().take(20).collect())
             .unwrap_or_default();
+        let patch_check = match var("SRP_PATCH_REVISION_CHECK") {
+            Some(value) => PatchCheck::parse(&value).unwrap_or_else(|| {
+                log::error!(
+                    "SRP_PATCH_REVISION_CHECK is `{value}`; it must be off, warn or refuse. \
+                     Using off"
+                );
+                PatchCheck::Off
+            }),
+            None => PatchCheck::Off,
+        };
+        let min_patch_revision = match var("SRP_MIN_PATCH_REVISION") {
+            Some(value) => value.trim().parse().unwrap_or_else(|_| {
+                log::error!(
+                    "SRP_MIN_PATCH_REVISION is `{value}`; it must be a number from 0 to 255. \
+                     Using {}",
+                    patch_check::DEFAULT_MIN_PATCH_REVISION
+                );
+                patch_check::DEFAULT_MIN_PATCH_REVISION
+            }),
+            None => patch_check::DEFAULT_MIN_PATCH_REVISION,
+        };
+        // A text the client reads into 256 bytes (`lobby::limits::TEXT`).
+        let outdated_text = var("SRP_OUTDATED_TEXT")
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty() && text.len() <= 255)
+            .unwrap_or_else(|| patch_check::DEFAULT_OUTDATED_TEXT.to_owned());
+        let update_hint = var("SRP_UPDATE_HINT")
+            .map(|hint| hint.trim().to_owned())
+            .unwrap_or_else(|| patch_check::DEFAULT_UPDATE_HINT.to_owned());
+        if patch_check != PatchCheck::Off {
+            log::info!(
+                "Patch revision check: {patch_check:?}, a game plays from revision \
+                 {min_patch_revision}"
+            );
+        }
         Self {
             queue_chat,
             queue_chat_name,
+            patch_check,
+            min_patch_revision,
+            outdated_text,
+            update_hint,
             bind: config.bind_addr(),
             public_host: config.public_host.clone(),
             local_peers: config.local_peers,
@@ -307,6 +366,10 @@ impl Settings {
             team_size: DEFAULT_TEAM_SIZE,
             queue_chat: true,
             queue_chat_name: String::new(),
+            patch_check: PatchCheck::Off,
+            min_patch_revision: patch_check::DEFAULT_MIN_PATCH_REVISION,
+            outdated_text: patch_check::DEFAULT_OUTDATED_TEXT.to_owned(),
+            update_hint: patch_check::DEFAULT_UPDATE_HINT.to_owned(),
         }
     }
 }

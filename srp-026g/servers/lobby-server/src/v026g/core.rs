@@ -72,6 +72,9 @@ pub(super) struct Player<'a> {
     /// join is still to be answered by a leave line (`queue_chat`).
     pub queue_line: Option<Instant>,
     pub queue_announced: bool,
+    /// When it was last told in the general chat to update its game
+    /// (`patch_check`).
+    pub update_hint_at: Option<Instant>,
     /// The order id of its Play (0x85), which `31` gives back.
     pub order_id: u32,
     /// The match (the queue's id) it was sent to, while it lasts.
@@ -588,6 +591,7 @@ impl<'a> Core<'a> {
             queued_since: None,
             queue_line: None,
             queue_announced: false,
+            update_hint_at: None,
             order_id: 0,
             in_match,
             connect: None,

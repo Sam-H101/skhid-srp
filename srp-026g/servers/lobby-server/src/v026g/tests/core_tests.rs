@@ -2276,6 +2276,7 @@ mod reconnect_tests;
 mod items_tests;
 mod clan_tests;
 mod feedback_tests;
+mod patch_check_tests;
 mod queue_chat_tests;
 
 // ---- the premium shop, items for gold, the daily bonus, the tutorial, a
