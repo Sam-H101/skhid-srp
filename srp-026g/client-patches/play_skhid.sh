@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Put beside survarium_skhid.exe, then run: bash play_skhid.sh
+# With the Skhid launcher beside it too: bash play_skhid.sh launcher
+# (it looks for newer Skhid files, and its PLAY button starts the game).
 set -euo pipefail
 
 # Game language; server is empty when the executable has an embedded default.
@@ -47,7 +49,13 @@ done
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 exe=survarium_skhid.exe
 [[ -f "$exe" && ! -L "$exe" ]] || die "Put this script beside $exe."
-[[ $# == 0 ]] || die 'No arguments needed.'
+mode=${1-}
+[[ $# -le 1 && ( -z $mode || $mode == launcher ) ]] || die 'Usage: bash play_skhid.sh [launcher]'
+if [[ $mode == launcher ]]; then
+    for file in launcher_skhid.exe updater_skhid.exe; do
+        [[ -f "$file" && ! -L "$file" ]] || die "Put $file beside this script to use the launcher."
+    done
+fi
 exec 9>.skhid-launcher.lock
 flock -n 9 || die 'This launcher is already running.'
 
@@ -111,6 +119,14 @@ if [[ ! -f "$WINEPREFIX/.skhid-dxvk" ]]; then
 fi
 
 export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;d3d11,dxgi=n,b"
+if [[ $mode == launcher ]]; then
+    # The game it starts inherits this Wine environment; the language is the
+    # one chosen in the launcher, not the one above.
+    echo "Starting the Skhid launcher. Log: $log"
+    "$WINE" launcher_skhid.exe >>"$log" 2>&1 \
+        || die "Launcher exited with an error. See $log"
+    exit 0
+fi
 echo "Starting Survarium. Log: $log"
 args=("-localization=$localization" -mt_allocator=768 -minimum_resources_memory_size=768)
 [[ -z "$server" ]] || args+=("-server=$server")

@@ -11,6 +11,10 @@ USAGE
         [--check]                    every check, nothing written
         [--pack-zip]                 write the output as a ZIP instead of a folder
         [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
+        [--updater=<updater_skhid.exe>]  defaults to the release build in this repo
+        [--site=https://<host>]      the server's web page; https://<host of --server>
+                                     when not given
+        [--no-launcher]              without the launcher and its updater
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
@@ -52,15 +56,31 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/game/resources/ssl/survarium_login_server.crt
         srp's login certificate (beside this script; the same file as in ../certs): the client accepts the
         login server only with this very file.
+    <output>/game/binaries/x86/launcher_skhid.exe
+        the game's own launcher, patched (launcher/patch_launcher_026g.py):
+        it runs from the game folder with no installer, shows the server's
+        page, starts updater_skhid.exe and then survarium_skhid.exe in the
+        language chosen in it. The game folder must hold the ORIGINAL
+        survarium_launcher.exe (its sha256 is checked).
+    <output>/game/binaries/x86/updater_skhid.exe
+        the updater (../../client/updater): asks the server which archive
+        it offers and installs it when it is another one than the last.
+    <output>/game/binaries/x86/updater_skhid.url
+        the server it asks: --site.
+    <output>/game/binaries/x86/launcher_skhid/index-*.html
+        what the launcher shows while and when the server's page does not
+        load (launcher/launcher_pages.py).
     <output>/README.txt
         what to do with it, and where the original game is had.
 
 A player copies the overlay's `game` folder over the game's own `game`
-folder and starts play_skhid.bat, or bash play_skhid.sh on Linux. --pack-zip directly makes
-the download the web page offers (SRP_DOWNLOAD_FILE). Only the seven player
-files are included: no source, PDBs, tests or development tools. Build the
-Rust DLL first with ../../client/bugtrap/build.sh. The game itself is had
-from SRP_GAME_URL.
+folder and starts launcher_skhid.exe (or play_skhid.bat: the game alone, no
+updates), or bash play_skhid.sh on Linux. --pack-zip directly makes the
+download the web page offers (SRP_DOWNLOAD_FILE), which is also what the
+updater installs from then on. Only the player files are included: no
+source, PDBs, tests or development tools. Build the Rust programs first
+with ../../client/bugtrap/build.sh and ../../client/updater/build.sh. The
+game itself is had from SRP_GAME_URL.
 """
 
 import hashlib
@@ -72,6 +92,12 @@ import zipfile
 import patch_026g as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "launcher"))
+import launcher_pages  # noqa: E402
+import patch_launcher_026g as L  # noqa: E402
+
+UPDATER_EXE = os.path.abspath(os.path.join(
+    HERE, "..", "..", "client", "updater", "exe", "target", "i686-pc-windows-msvc", "release", L.UPDATER_NAME))
 BUGTRAP_DLL = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "bugtrap", "target", "i686-pc-windows-msvc", "release", "BugTrap.dll"))
 # Where the original game is had: the web archive's copy of build 2777.
@@ -109,6 +135,27 @@ def read_bugtrap(path):
     return data
 
 
+def read_updater(path):
+    try:
+        with open(path, "rb") as exe:
+            data = exe.read()
+    except OSError as e:
+        sys.exit(f"{path}: cannot read the updater ({e}). Build client/updater/build.sh first, "
+                 "pass --updater=<path>, or leave the launcher out with --no-launcher.")
+    pe = int.from_bytes(data[0x3c:0x40], "little")
+    if (len(data) < 64 or data[:2] != b"MZ" or pe + 26 > len(data)
+            or data[pe:pe + 4] != b"PE\0\0"
+            or int.from_bytes(data[pe + 4:pe + 6], "little") != 0x14c
+            or int.from_bytes(data[pe + 24:pe + 26], "little") != 0x10b
+            or int.from_bytes(data[pe + 22:pe + 24], "little") & 0x2000):
+        sys.exit(f"{path}: expected a 32-bit x86 Windows program")
+    # Without this in its manifest Windows takes a program named "updater"
+    # for an installer and asks for administrator rights at every start.
+    if not any(b"requestedExecutionLevel level=" + quote + b"asInvoker" + quote in data for quote in (b"'", b'"')):
+        sys.exit(f"{path}: the updater has no asInvoker manifest")
+    return data
+
+
 def game_root(folder):
     """The folder that holds binaries/x86/survarium.exe: `folder` or its `game`."""
     for root in (folder, os.path.join(folder, "game")):
@@ -126,10 +173,14 @@ def parse_server(text):
     return P.parse_server(text)
 
 
-def launch_line(server, localization, embedded=False):
-    return (f"survarium_skhid.exe -localization={localization} "
-            + ("" if embedded else f"-server={server} ")
+def game_arguments(server, embedded=False):
+    """What the game is started with after its language."""
+    return (("" if embedded else f"-server={server} ")
             + "-mt_allocator=768 -minimum_resources_memory_size=768")
+
+
+def launch_line(server, localization, embedded=False):
+    return f"survarium_skhid.exe -localization={localization} " + game_arguments(server, embedded)
 
 
 def bat(server, localization, embedded=False):
@@ -162,7 +213,8 @@ def sh(server, localization, embedded=False):
         b"server=\n", f"server={'' if embedded else server}\n".encode("ascii"), 1)
 
 
-def readme(server, localization, description, files, embedded=False):
+def readme(server, localization, description, files, embedded=False, site=None):
+    """`site`: the bundle has the launcher and its updater, which ask it."""
     lines = [
         "SURVARIUM 0.26g - SKHID COMMUNITY SERVER FILES (UNOFFICIAL)",
         "",
@@ -187,16 +239,50 @@ def readme(server, localization, description, files, embedded=False):
         "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
         "   game\\resources\\ssl\\survarium_login_server.crt. Back up those two",
         "   original files first. The game's own survarium.exe is not changed.",
-        "3. Windows: double-click game\\binaries\\x86\\play_skhid.bat.",
-        "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
-        "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
-        "   These launchers supply the options the game needs.",
-        "4. Sign in with any user name and password. A new name is registered on its",
-        "   first sign-in; remember the password.",
-        "",
-        "To change the language, open play_skhid.bat in a text editor and set",
-        "LANGUAGE. On Linux, edit localization near the top of play_skhid.sh;",
-        "set server=host:port there to override the embedded login address.",
+    ]
+    if site:
+        lines += [
+            "   It also adds launcher_skhid.exe and updater_skhid.exe there, and the",
+            "   folder launcher_skhid with the launcher's own pages.",
+            "3. Windows: double-click game\\binaries\\x86\\launcher_skhid.exe. It looks",
+            "   for newer Skhid files, installs them, and its PLAY button starts the",
+            "   game in the language chosen at its top. (play_skhid.bat starts the",
+            "   game alone, without looking for updates.)",
+            "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
+            "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
+            "4. Sign in with any user name and password. A new name is registered on its",
+            "   first sign-in; remember the password.",
+            "",
+            "THE LAUNCHER AND ITS UPDATES",
+            "launcher_skhid.exe is the game's own launcher, changed to work without an",
+            "installer and to ask this server only. Each time it starts, updater_skhid.exe",
+            f"asks {site} whether the files of this archive are still the",
+            "current ones. If not, it downloads the current archive, checks it and",
+            "replaces the files, the launcher and itself included; nothing else of the",
+            "game is touched. It needs no administrator rights. What it did is in",
+            "game\\binaries\\x86\\updater_skhid.log. If it cannot reach the server but the",
+            "files are complete, PLAY still works.",
+            "The language is chosen in the launcher. A changed play_skhid.bat or",
+            "play_skhid.sh is kept until the server offers a newer archive.",
+            "",
+        ]
+    else:
+        lines += [
+            "3. Windows: double-click game\\binaries\\x86\\play_skhid.bat.",
+            "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
+            "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
+            "   These launchers supply the options the game needs.",
+            "4. Sign in with any user name and password. A new name is registered on its",
+            "   first sign-in; remember the password.",
+            "",
+        ]
+    lines += [
+        "To change the language without the launcher, open play_skhid.bat in a text" if site
+        else "To change the language, open play_skhid.bat in a text editor and set",
+        "editor and set LANGUAGE. On Linux, edit localization near the top of" if site
+        else "LANGUAGE. On Linux, edit localization near the top of play_skhid.sh;",
+        "play_skhid.sh; set server=host:port there to override the login address." if site
+        else "set server=host:port there to override the embedded login address.",
         "",
         "OPTIONS (in play_skhid.bat)",
         (f"  Default server: {server} (embedded in survarium_skhid.exe)" if embedded
@@ -210,7 +296,8 @@ def readme(server, localization, description, files, embedded=False):
         f"https://{server.split(':')[0]}",
         "",
         "survarium_skhid.exe is the game's survarium.exe patched to work with this",
-        "server. The launcher and the updater of the original game are not needed.",
+        "server. " + ("The updater of the original game is not used." if site
+                      else "The launcher and the updater of the original game are not needed."),
         "",
         "CRASH REPORTS",
         "Crash dumps are saved beside survarium_skhid.exe, or in the Windows",
@@ -227,6 +314,7 @@ def main():
     mode, check, server, localization = "section", False, None, "ukrainian"
     bugtrap_path = BUGTRAP_DLL
     archive = False
+    launcher, updater_path, site = True, UPDATER_EXE, None
     for option in options:
         if option == "--check":
             check = True
@@ -242,6 +330,12 @@ def main():
             localization = option[15:]
         elif option.startswith("--bugtrap="):
             bugtrap_path = option[len("--bugtrap="):]
+        elif option.startswith("--updater="):
+            updater_path = option[len("--updater="):]
+        elif option.startswith("--site="):
+            site = L.parse_site(option[len("--site="):])
+        elif option == "--no-launcher":
+            launcher = False
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) != 2 or server is None:
@@ -281,8 +375,27 @@ def main():
         (os.path.join("game", CERT_REL), srp_cert),
         ("LINUX.txt", Path(HERE, "LINUX.txt").read_bytes()),
     ]
+    launcher_description = None
+    if launcher:
+        # The launcher: patch_launcher_026g.py refuses anything but the
+        # original. It starts the exe and asks the site named here.
+        site = site or L.parse_site("https://" + server.split(":")[0])
+        launcher_path = Path(source, EXE_DIR, "survarium_launcher.exe")
+        if not launcher_path.is_file():
+            sys.exit(f"{launcher_path}: the game folder has no launcher (--no-launcher leaves it out)")
+        launcher_exe, launcher_description = L.build(
+            launcher_path.read_bytes(), Path(L.default_bin()).read_bytes(), site=site,
+            game_exe="survarium_skhid.exe", arguments=game_arguments(server, embedded))
+        files += [
+            (os.path.join("game", EXE_DIR, L.LAUNCHER_NAME), bytes(launcher_exe)),
+            (os.path.join("game", EXE_DIR, L.UPDATER_NAME), read_updater(updater_path)),
+            (os.path.join("game", EXE_DIR, "updater_skhid.url"), (site + "\r\n").encode("ascii")),
+        ]
+        files += [(os.path.join("game", EXE_DIR, L.PAGES_DIR, name), data)
+                  for name, data in sorted(launcher_pages.pages(site).items())]
     listed = [(name.replace(os.sep, "/"), sha256(data)) for name, data in files]
-    files.append(("README.txt", readme(server, localization, description, listed, embedded)))
+    files.append(("README.txt", readme(server, localization, description, listed, embedded,
+                                       site if launcher else None)))
 
     if not check and archive:
         os.makedirs(os.path.dirname(output), exist_ok=True)
@@ -303,6 +416,8 @@ def main():
                 os.chmod(target, 0o755)
         print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {sha256(data)})")
     print(f"exe: {description}")
+    if launcher_description:
+        print(f"launcher: {launcher_description}")
     print(f"launch line: {launch_line(server, localization, embedded)}")
     if check:
         print("--check: nothing was written")

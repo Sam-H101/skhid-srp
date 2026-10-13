@@ -33,24 +33,39 @@ class ReleaseTests(unittest.TestCase):
         dll[86:88] = (0x2000).to_bytes(2, 'little')
         dll[88:90] = (0x10b).to_bytes(2, 'little')
         self.dll.write_bytes(dll)
-        self.names = {'README.txt', 'LINUX.txt',
+        # The launcher's fixtures: an "original" launcher in the game folder
+        # and an updater with the manifest the builder insists on.
+        (self.exe.parent / 'survarium_launcher.exe').write_bytes(b'original launcher fixture')
+        self.updater = self.root / 'updater_skhid.exe'
+        updater = bytearray(dll)
+        updater[86:88] = (0x0102).to_bytes(2, 'little')
+        self.updater.write_bytes(updater + b"<requestedExecutionLevel level='asInvoker' uiAccess='false'/>")
+        self.without_launcher = {'README.txt', 'LINUX.txt',
             'game/binaries/x86/survarium_skhid.exe', 'game/binaries/x86/bugtrap.dll',
             'game/binaries/x86/play_skhid.bat', 'game/binaries/x86/play_skhid.sh',
             'game/resources/ssl/survarium_login_server.crt'}
+        self.names = self.without_launcher | {
+            'game/binaries/x86/launcher_skhid.exe', 'game/binaries/x86/updater_skhid.exe',
+            'game/binaries/x86/updater_skhid.url',
+        } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
+             for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
 
     def build(self, output, *options):
         args = ['make_client_026g.py', str(self.game), str(output),
                 '--server=release.example:2234', '--localization=polish',
-                '--bugtrap=' + str(self.dll), *options]
+                '--bugtrap=' + str(self.dll), '--updater=' + str(self.updater), *options]
         # Binary patching has its own disassembly suite. Exercise every other
         # part of the real release builder, including source reads and ZIP I/O.
+        launcher = mock.patch.object(
+            overlay.L, 'build', return_value=(b'patched launcher fixture', 'test launcher'))
         with mock.patch.object(overlay.P, 'build', return_value=(b'patched fixture', 'test patch')) as patcher:
-            with mock.patch('sys.argv', args), contextlib.redirect_stdout(io.StringIO()) as messages:
+            with launcher as self.launcher, mock.patch('sys.argv', args), \
+                    contextlib.redirect_stdout(io.StringIO()) as messages:
                 overlay.main()
         self.assertEqual(self.exe.read_bytes(), b'original fixture')
         return patcher.call_args, messages.getvalue()
 
-    def test_folder_and_zip_ship_identical_seven_player_files(self):
+    def test_folder_and_zip_ship_identical_player_files(self):
         folder, archive = self.root / 'overlay', self.root / 'release.zip'
         self.build(folder)
         self.build(archive, '--pack-zip')
@@ -71,11 +86,61 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn(b'\r', script.read_bytes())
         self.assertIn(b'localization=polish\nserver=\n', script.read_bytes())
         self.assertIn(b'LINUX.txt', paths['README.txt'].read_bytes())
+        # The launcher is built from the game folder's own, for the server's
+        # page, and starts the game with what play_skhid.bat starts it with.
+        self.assertEqual(self.launcher.call_args.args[0], b'original launcher fixture')
+        self.assertEqual(self.launcher.call_args.kwargs, dict(
+            site='https://release.example', game_exe='survarium_skhid.exe',
+            arguments='-mt_allocator=768 -minimum_resources_memory_size=768'))
+        self.assertEqual(paths['game/binaries/x86/launcher_skhid.exe'].read_bytes(), b'patched launcher fixture')
+        self.assertEqual(paths['game/binaries/x86/updater_skhid.exe'].read_bytes(), self.updater.read_bytes())
+        self.assertEqual(paths['game/binaries/x86/updater_skhid.url'].read_bytes(), b'https://release.example\r\n')
+        offline = paths['game/binaries/x86/launcher_skhid/index-ua.html'].read_text(encoding='utf-8')
+        self.assertIn('href="https://release.example/"', offline)
+        self.assertNotIn('survarium.com', offline)
+        readme = paths['README.txt'].read_text(encoding='utf-8')
+        self.assertIn('double-click game\\binaries\\x86\\launcher_skhid.exe', readme)
+        self.assertIn('asks https://release.example whether', readme)
+
+    def test_the_same_input_gives_the_same_archive(self):
+        # The updater installs whenever the archive's checksum changes, so a
+        # build must not differ from the one before by its own doing.
+        first, second = self.root / 'first.zip', self.root / 'second.zip'
+        self.build(first, '--pack-zip')
+        self.build(second, '--pack-zip')
+        self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_without_the_launcher_it_is_the_seven_files_of_before(self):
+        archive = self.root / 'plain.zip'
+        self.build(archive, '--pack-zip', '--no-launcher')
+        self.launcher.assert_not_called()
+        with zipfile.ZipFile(archive) as z:
+            self.assertEqual(set(z.namelist()), self.without_launcher)
+            readme = z.read('README.txt').decode('utf-8')
+        self.assertIn('double-click game\\binaries\\x86\\play_skhid.bat', readme)
+        self.assertNotIn('launcher_skhid', readme)
+
+    def test_the_site_can_be_another_host_than_the_login_server(self):
+        folder = self.root / 'other-site'
+        self.build(folder, '--site=https://pages.example/srp/')
+        self.assertEqual(self.launcher.call_args.kwargs['site'], 'https://pages.example/srp')
+        self.assertEqual((folder / 'game/binaries/x86/updater_skhid.url').read_bytes(),
+                         b'https://pages.example/srp\r\n')
+
+    def test_an_updater_that_would_ask_for_administrator_rights_is_refused(self):
+        self.updater.write_bytes(self.updater.read_bytes().replace(b'asInvoker', b'asWhoever'))
+        with self.assertRaises(SystemExit) as refused:
+            self.build(self.root / 'refused')
+        self.assertIn('asInvoker', str(refused.exception))
+        self.assertFalse((self.root / 'refused').exists())
 
     def test_certificate_only_launcher_has_an_explicit_server(self):
         archive = self.root / 'certificate.zip'
         call, _ = self.build(archive, '--pack-zip', '--cert-only')
         self.assertEqual(call.args[1:], ('cert-only', None, None))
+        # The game's launcher passes the address too: this exe has none inside.
+        self.assertEqual(self.launcher.call_args.kwargs['arguments'],
+                         '-server=release.example:2234 -mt_allocator=768 -minimum_resources_memory_size=768')
         with zipfile.ZipFile(archive) as z:
             self.assertIn(b'server=release.example:2234\n', z.read('game/binaries/x86/play_skhid.sh'))
 

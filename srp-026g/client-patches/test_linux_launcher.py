@@ -82,9 +82,44 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.exe = self.bin / 'survarium_skhid.exe'
         self.exe.write_bytes(FIXTURE)
 
-    def run_script(self):
-        return subprocess.run([str(self.tools / 'bash'), str(self.script)],
+    def run_script(self, *arguments):
+        return subprocess.run([str(self.tools / 'bash'), str(self.script), *arguments],
             cwd=self.root, env=self.env, text=True, capture_output=True)
+
+    def test_launcher_mode_starts_the_skhid_launcher_in_the_same_wine(self):
+        self.copy_exe()
+        self.exe.write_bytes(PATCHED_FIXTURE)
+        for name in ('launcher_skhid.exe', 'updater_skhid.exe'):
+            (self.bin / name).write_bytes(b'MZ fixture')
+        result = self.run_script('launcher')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        # No game arguments: the launcher passes the language and the rest.
+        self.assertEqual(calls[-1]['args'], ['launcher_skhid.exe'])
+        self.assertEqual(calls[-1]['cwd'], str(self.bin))
+        self.assertIn('d3d11,dxgi=n,b', calls[-1]['dll'])
+        self.assertNotIn(['survarium_skhid.exe'], [c['args'][:1] for c in calls])
+        self.env['TEST_FAIL'] = 'wine:launcher_skhid.exe'
+        result = self.run_script('launcher')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Launcher exited with an error', result.stderr)
+
+    def test_launcher_mode_needs_the_launcher_and_its_updater(self):
+        self.copy_exe()
+        (self.bin / 'launcher_skhid.exe').write_bytes(b'MZ fixture')
+        result = self.run_script('launcher')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('updater_skhid.exe', result.stderr)
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.exe.read_bytes(), FIXTURE)
+
+    def test_other_arguments_are_refused(self):
+        self.copy_exe()
+        for arguments in (('game',), ('launcher', 'more'), ('',  'x')):
+            result = self.run_script(*arguments)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Usage', result.stderr)
+        self.assertFalse(self.calls.exists())
 
     def test_missing_dependencies_fail_before_changes(self):
         for name in ('wine', 'winetricks', 'wineserver'):
