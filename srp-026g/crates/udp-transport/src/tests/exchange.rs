@@ -594,7 +594,10 @@ fn a_unique_split_message_is_joined_whatever_the_order() {
     transport.send(0xE5, &[1; 7]).unwrap();
     transport.send(0xE4, &info).unwrap();
     transport.send(0xE6, &[2; 4]).unwrap();
-    let datagrams = transport.poll(now);
+    // Seven parts: they leave a few at a time.
+    let datagrams: Vec<Vec<u8>> = (0..4)
+        .flat_map(|step| transport.poll(now + Duration::from_millis(3) * step))
+        .collect();
     for order in [
         (0..datagrams.len()).collect::<Vec<_>>(),
         (0..datagrams.len()).rev().collect(),

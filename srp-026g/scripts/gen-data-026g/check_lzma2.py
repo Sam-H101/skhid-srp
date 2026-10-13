@@ -1,11 +1,12 @@
-"""Checks srp's stored-chunk LZMA2 streams (crates/survarium/src/v026g/lzma2.rs)
-against a real decoder: liblzma's raw LZMA2 filter with the 0.26g client's
+"""Checks srp's LZMA2 streams, stored and compressed
+(crates/survarium/src/v026g/lzma2.rs), against a real decoder: liblzma's raw LZMA2 filter with the 0.26g client's
 dictionary size (32 KiB, property byte 6).
 
     python -I check_lzma2.py <dir>
 
 <dir> holds pairs `<name>.bin` (the data) and `<name>.lzma2` (the stream);
-the test `a_real_decoder_reads_the_streams` writes them and runs this.
+the tests `a_real_decoder_reads_the_streams` and
+`a_real_decoder_reads_the_packed_streams` write them and run this.
 """
 import glob
 import lzma

@@ -501,3 +501,40 @@ Modes 2 and 3. PROVEN unless tagged. Tools: `cargo run -p survarium --example ba
 - **0.21d** has neither: its handler 0x1FB8A9 counts every event, the completion time is t, and `can_use` 0x1F7A52 tests no byte.
 - **The fix is a client patch** (client_patch.md §3.9, patch revision 3), built, and in the players' download since 2026-10-13 12:22 UTC. A server cannot set the two fields.
 - **The handler run outside the game** (2026-10-13, client_patch.md §3.9): with the original bytes a put after the count was set back is not counted and the byte stays 0; with the patched bytes it is counted and the byte stays 1. PROVEN for the handler alone.
+
+## 27. A game that never got its first world, and how a world is sent since (added 2026-10-13)
+
+`game.rs`: `send_sync`, `send_world`, `relay_to_others`, `flush_held`; `udp-transport`: `Config::bulk_burst`, `send_lasting`, `send_kept_every`; `survarium::v026g::lzma2::packed`. Tests: `a_first_world_gets_through_a_line_that_carries_a_little_at_a_time`, `a_game_waiting_for_its_first_world_gets_the_others_inputs_many_in_a_datagram`, `the_world_goes_out_compressed_unless_the_setting_says_no` (`tests/game.rs`), `the_parts_of_a_split_message_leave_a_few_at_a_time` (`udp-transport`).
+
+**Seen live on 2026-10-13:** one player of fourteen, in two matches in a row, loaded the level and never entered: a free camera and the scoreboard for the whole match. The server's log had "the snapshot did not arrive" for that place every 1.85 s, about 300 times a match, and no other player of 108 matches had more than 8.
+
+**Measured** (packets captured on the server for that client's address, while it happened):
+- The world went as 28 or 29 datagrams of 506 bytes within one millisecond, and all of them again every 500 ms. The game's own ack bits, where a window reached into such a burst, named 314 of 325 of those datagrams as not received, and all 207 small datagrams around them as received. So its line dropped the burst. Why that line does is not known.
+- The game took no 0xE8 at all: it refused every 0xE5 of the generations 128 to 255, twice, to the second, which is what a stored generation of 0xFF does (§2.2 step 5).
+- The server sent it about 265 datagrams a second (the others got 105 to 140): every relayed input alone in a datagram, kept until acked and sent again every 50 ms, to a game that acked 53 % of what it got (transport.md §2.2, the depth).
+- Two patched clients uploaded their world about every 2 s all match long, for the syncs that never ended.
+
+**What the client does with a world on its way** (read in the exe; PROVEN unless tagged):
+- A split message's parts are taken in any order and with no time limit; an unfinished one goes only when 128 newer unique ids have come, or with the connection (transport.md §5). The 1.75 s of 0xE8 is the sender's.
+- Each part taken holds a packet of the pool, and an empty pool is a null write: a crash (transport.md §5). Every world given up leaves the parts that did arrive there until 128 newer unique ids have passed (a sync uses about three). Few arrive of a burst a line drops; a sender that gets most parts through and still gives the world up fills the pool.
+- A game with no world yet is frozen (`move` returns at once until the first load, §2.1): it makes no input and has nothing to hash. Seen live: it sent only `FC` every 100 ms and its 0xDB.
+- An input relayed between 0xE5 and 0xE8 is put on its list whatever its tick (§18), any number of them, and the lists outlive the load. After the load an input older than the horizon is moved to another tick (§5.1): relays must never be held back until the world is loaded.
+- 0xE8 with its `compressed` byte set is unpacked by the SDK's `Lzma2Decode` into 0x8000 bytes on the stack, and the result is not checked (§3, 0x27C059). That it reads compressed chunks, not only stored ones, is LIKELY (the stock SDK's code; srp sent none before this).
+- Not read: how long a catch-up the game stands after a late load (20 ticks for each second between the 0xE5 and the load).
+
+**What the server does since:**
+
+| what | how | why |
+|---|---|---|
+| The parts of a split message leave a few at a time | 4 at once, one more every 3 ms (1.35 Mbit/s), first sends and resends alike; whole messages do not wait behind them. The match link only | the burst is what the line dropped |
+| A game's first world is kept on its way for 4 s | `Timing::entry_state`, `SRP_ENTRY_STATE_SECONDS` (2 to 10); the same message, the same unique id, its missing parts sent again every 500 ms | what a thin line lets through adds up, instead of a new world every 1.85 s; no pile of parts in the client's pool; 128 generations take 8 minutes, not 4 |
+| The world of a game that plays (a resync, a second start) keeps its 1.75 s | unchanged | that game simulates on, without history, until its world comes (§17) |
+| The others' inputs for a game that waits for its first world go every 50 ms, as many as came in one datagram, and again every 150 ms while not acked | `WAITING_RELAY_FLUSH`, `WAITING_RELAY_RESEND`; still kept until acked | 120 inputs in 40 datagrams in the test, where it was one each; the waiting game acks ten times a second |
+| The world is compressed | LZMA2, preset 3, dictionary 0x8000; as it is when over 0x8000 bytes with its time, or when it would not shrink. `SRP_COMPRESS_STATE=off` turns it off | 120 saved live worlds shrink 2.6 times with this encoder (a median one from 20 parts to 7), each read back by liblzma with the dictionary of the client; 0.6 ms a world |
+
+**Not done, and not known:**
+- Whether that player's line carries the paced parts: nothing is known of it but that it dropped the burst. The test's line carries one full datagram in 5 ms; on it the old server never got the world through, and this one does in about a second.
+- No real client has loaded a compressed world from srp yet. A fault there fails every player's sync: try it on the test server first, and `SRP_COMPRESS_STATE=off` is the way back.
+- A sync is still tried for ever. A game whose line carries no world at all waits all match long, and the two uploaders with it (less often now: one world in 4 s).
+- A game's own word that it has loaded (its first hash report) is not used: the sync is done when every part is acked. A waiting game acks about half of what arrives, so a part that arrived can go once or twice more.
+- The lobby link is not paced: its messages are kept until acked, so a thin line makes the sign-in slow, not impossible.

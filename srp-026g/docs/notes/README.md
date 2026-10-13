@@ -146,6 +146,10 @@ Every setting has a default; none is needed on a dev PC.
     (match.md §18);
   - `SRP_RESTORE_LIMIT=<n>`: disconnect a client after n restores in a row
     that did not help (default 0: never);
+  - `SRP_COMPRESS_STATE=off`: send the world as it is, not as LZMA2
+    (match.md §27);
+  - `SRP_ENTRY_STATE_SECONDS` (default 4, 2 to 10): how long a game's first
+    world is kept on its way;
   - `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10): raise it (60–120)
     when two clients run on one PC, a window out of focus can stall.
 

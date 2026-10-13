@@ -1,7 +1,7 @@
 //! The match's state machine, in memory on a clock the test moves.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use std::collections::BTreeSet;
 
@@ -516,7 +516,9 @@ fn a_snapshot_that_does_not_arrive_goes_again_as_the_next_generation() {
             })
     }));
     bench.clients[0].ready();
-    bench.run(1_500);
+    // A game's first world is kept on its way for four seconds, not the
+    // client table's 1.75: its world stands still until it has one.
+    bench.run(3_700);
     // Its time came and was answered (and came once more ahead of the
     // world, in a datagram of its own when the world's first part fills
     // one); the world did not.
@@ -524,8 +526,8 @@ fn a_snapshot_that_does_not_arrive_goes_again_as_the_next_generation() {
     let times = set_times(&bench.clients[0]);
     assert!(!times.is_empty() && times.iter().all(|generation| *generation == 0));
     assert!(!bench.clients[0].model.is_synced());
-    // After its 1.75 s the transport gives the snapshot up; the sync goes
-    // again from its 0xE5, one generation on.
+    // Then the transport gives the snapshot up; the sync goes again from
+    // its 0xE5, one generation on.
     assert!(bench.until(1_000, |bench| bench.game().generation(0) == Some(1)));
     losing.store(false, Ordering::Relaxed);
     assert!(bench.until(3_000, |bench| bench.stages() == "L"));
@@ -535,6 +537,173 @@ fn a_snapshot_that_does_not_arrive_goes_again_as_the_next_generation() {
     assert_eq!(bench.clients[0].snapshots()[0].0, 1);
     assert_eq!(bench.clients[0].model.syncs, 1);
     assert_eq!(bench.clients[0].entered(), [0]);
+    bench.assert_no_faults();
+}
+
+/// The snapshots a client took: whether each came compressed.
+fn packed(client: &Client) -> Vec<bool> {
+    client.got(|message| match message {
+        ServerMessage::Snapshot { packed, .. } => Some(*packed),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_world_goes_out_compressed_unless_the_setting_says_no() {
+    for compress in [true, false] {
+        let settings = Settings {
+            compress_state: compress,
+            ..Settings::default()
+        };
+        let mut bench = Bench::new(2, MAP_BATTERIES, settings);
+        // A world of the size live ones have: 14 KiB.
+        for client in &mut bench.clients {
+            client.sim.ballast = 13_000;
+        }
+        bench.join_all();
+        settle(&mut bench);
+        for client in &bench.clients {
+            assert_eq!(packed(client), [compress]);
+            assert_eq!(client.model.syncs, 1);
+        }
+        // The worlds the two loaded are the same bytes: their hashes agree.
+        bench.run_long(10_000);
+        assert_eq!(bench.game().resyncs(0) + bench.game().resyncs(1), 0);
+        bench.assert_no_faults();
+    }
+}
+
+/// A line that carries one full datagram in each of the bench's 5 ms
+/// steps and drops the others; the small ones all pass. Live, 2026-10-13:
+/// of a world's 28 datagrams sent in one millisecond, one or two reached
+/// such a player. [`thin_step`] is a step on it.
+fn thin_line(bench: &mut Bench, place: usize) -> Arc<AtomicUsize> {
+    let left = Arc::new(AtomicUsize::new(1));
+    let line = left.clone();
+    bench.clients[place].lose = Some(Box::new(move |datagram| {
+        // The allowance is taken by the first full datagram of the step.
+        datagram.len() >= 400 && line.swap(0, Ordering::Relaxed) == 0
+    }));
+    left
+}
+
+fn thin_step(bench: &mut Bench, line: &AtomicUsize) {
+    line.store(1, Ordering::Relaxed);
+    bench.step(5);
+}
+
+#[test]
+fn a_first_world_gets_through_a_line_that_carries_a_little_at_a_time() {
+    // Uncompressed, so that the world is the 29 datagrams it was live.
+    let settings = Settings {
+        compress_state: false,
+        ..Settings::default()
+    };
+    let mut bench = Bench::new(2, MAP_BATTERIES, settings);
+    for client in &mut bench.clients {
+        client.sim.ballast = 13_000;
+    }
+    bench.join(0);
+    settle(&mut bench);
+
+    bench.clients[1].slow_acks = true;
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |bench| bench.clients[1].model.options.is_some()));
+    let line = thin_line(&mut bench, 1);
+    bench.clients[1].ready();
+    let started = bench.ms;
+    while bench.stages() != "LL" && bench.ms < started + 4_000 {
+        thin_step(&mut bench, &line);
+    }
+    // In, from the one world it was sent: the parts came a few at a time,
+    // and the ones the line dropped came again while the rest was kept.
+    assert_eq!(bench.stages(), "LL", "after {} ms", bench.ms - started);
+    assert_eq!(bench.game().generation(1), Some(0));
+    assert_eq!(bench.clients[1].snapshots().len(), 1);
+    assert_eq!(bench.clients[1].entered(), [1]);
+    for _ in 0..2_000 {
+        thin_step(&mut bench, &line);
+    }
+    assert_eq!(bench.game().resyncs(1), 0);
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_game_waiting_for_its_first_world_gets_the_others_inputs_many_in_a_datagram() {
+    let mut bench = Bench::new(4, MAP_BATTERIES, Settings::default());
+    for place in 0..3 {
+        bench.join(place);
+    }
+    settle(&mut bench);
+
+    // The fourth player's world does not reach it for two seconds: its
+    // game waits, acking as a waiting game does.
+    bench.clients[3].slow_acks = true;
+    bench.clients[3].connect();
+    assert!(bench.until(1_000, |bench| bench.clients[3].model.options.is_some()));
+    let losing = Arc::new(AtomicBool::new(true));
+    let (datagrams, relays) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (lost, with_relays, relayed) = (losing.clone(), datagrams.clone(), relays.clone());
+    bench.clients[3].lose = Some(Box::new(move |datagram| {
+        let Ok(parsed) = wire::parse(Table::Match, Direction::ToClient, datagram, 1) else {
+            return false;
+        };
+        let has = |id: u8| {
+            parsed
+                .messages
+                .iter()
+                .filter(|message| message.id == id)
+                .count()
+        };
+        if has(id::INPUT_RELAY) > 0 {
+            with_relays.fetch_add(1, Ordering::Relaxed);
+            relayed.fetch_add(has(id::INPUT_RELAY), Ordering::Relaxed);
+        }
+        lost.load(Ordering::Relaxed) && has(id::SNAPSHOT) > 0
+    }));
+    bench.clients[3].ready();
+    assert!(bench.until(1_000, |bench| bench.stages() == "LLLs"));
+
+    // The three who play make an input each tick.
+    let mut made = BTreeSet::new();
+    for tick in 0..40u32 {
+        for (place, client) in bench.clients.iter_mut().take(3).enumerate() {
+            let input = client.input(50, 0x21 + (tick & 1));
+            made.insert((place as u8, input.time.tick));
+        }
+        bench.run(50);
+    }
+    assert_eq!(bench.stages(), "LLLs");
+    // Every one of them reached the waiting game, in far fewer datagrams
+    // than there were inputs: three came in each 50 ms, and so three went
+    // in one datagram (and again together while not acked).
+    let got: BTreeSet<_> = (0..3u8)
+        .flat_map(|place| {
+            bench.clients[3]
+                .relays_of(place)
+                .into_iter()
+                .map(move |input| (place, input.time.tick))
+        })
+        .collect();
+    assert_eq!(got, made);
+    let (datagrams, relays) = (
+        datagrams.load(Ordering::Relaxed),
+        relays.load(Ordering::Relaxed),
+    );
+    assert!(relays >= 120, "{relays} relays");
+    assert!(
+        datagrams <= 90 && relays >= 2 * datagrams,
+        "{relays} relays in {datagrams} datagrams"
+    );
+
+    // Its world comes after all, the same one: it is in, and in step.
+    losing.store(false, Ordering::Relaxed);
+    assert!(bench.until(1_500, |bench| bench.stages() == "LLLL"));
+    assert_eq!(bench.game().generation(3), Some(0));
+    assert_eq!(bench.clients[3].snapshots().len(), 1);
+    settle(&mut bench);
+    bench.run_long(10_000);
+    assert_eq!(bench.game().resyncs(3), 0);
     bench.assert_no_faults();
 }
 

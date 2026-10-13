@@ -29,6 +29,13 @@
 //! - Reliable messages are resent under new seqs until a seq they went out
 //!   under is acked, or until their lifetime ends (§4). One skipped over by
 //!   the client's acks goes again at once.
+//! - The parts of a split message leave a few at a time (`Config::bulk_burst`,
+//!   `bulk_pace`), first sends and resends alike: thirty full datagrams in
+//!   one millisecond are more than some lines carry (live, 2026-10-13: a
+//!   client that reported 314 of 325 such datagrams missing and every small
+//!   one around them received). The client takes parts in any order and
+//!   with no time limit (0x3F4DA0), and whole messages do not wait behind
+//!   them.
 //! - From the client: plain messages are not deduplicated by the transport
 //!   (the client's own has none either), so a resent D8, D9, DA, DE or E0
 //!   reaches the caller again and the caller must dedup them. Unique ones
@@ -105,6 +112,11 @@ pub struct Config {
     /// before the ack came, or duplicated by the network, may arrive that
     /// much later, and must then still be inside the client's window.
     pub guard: Duration,
+    /// The most parts of split messages sent at once, and
+    pub bulk_burst: u32,
+    /// the time that earns one more: a part fills a datagram, so this is
+    /// the rate of the large ones. `u32::MAX` parts at once is no limit.
+    pub bulk_pace: Duration,
 }
 
 impl Config {
@@ -123,6 +135,16 @@ impl Config {
             burst: 48,
             pace: Duration::from_millis(1),
             guard: Duration::from_millis(500),
+            // A match's large messages are the static info and the world:
+            // 4 parts at once and one more every 3 ms is 1.35 Mbit/s, so a
+            // world of 11 parts is out in 21 ms and one of 31 in 81 ms.
+            // The lobby's sign-in is left as it was: its messages live
+            // until they are acked, so a thin line only makes it slow.
+            bulk_burst: match table {
+                Table::Match => 4,
+                Table::Lobby => u32::MAX,
+            },
+            bulk_pace: Duration::from_millis(3),
         }
     }
 }
@@ -195,6 +217,11 @@ struct Outgoing {
 }
 
 impl Outgoing {
+    /// A part of a split message: it fills a datagram.
+    fn is_part(&self) -> bool {
+        self.head.first() == Some(&MULTIPART)
+    }
+
     fn single_len(&self) -> usize {
         self.head.len() + self.payload.len()
     }
@@ -299,6 +326,9 @@ pub struct Transport {
     /// Datagrams with messages that may go now, and when that was counted.
     budget: u32,
     budget_at: Instant,
+    /// The same for the parts of split messages.
+    bulk_budget: u32,
+    bulk_at: Instant,
     /// Unique and order ids done with (acked, sent once, expired), and
     /// when: they hold the channel windows back for `guard`.
     retired: VecDeque<(Channel, Instant)>,
@@ -345,6 +375,8 @@ impl Transport {
             rtt_last: None,
             budget: config.burst,
             budget_at: now,
+            bulk_budget: config.bulk_burst,
+            bulk_at: now,
             retired: VecDeque::new(),
             log: None,
         }
@@ -620,7 +652,7 @@ impl Transport {
     /// not accept (it drops the whole datagram, or loses its place in a
     /// multi datagram).
     pub fn send(&mut self, id: u8, payload: &[u8]) -> Result<u64, SendError> {
-        self.send_for(id, payload, None)
+        self.send_for(id, payload, None, None)
     }
 
     /// As [`Self::send`], but a message the table would give up after its
@@ -629,7 +661,33 @@ impl Transport {
     /// own matter; the client takes a late copy as any other. A send-once
     /// id is still sent once.
     pub fn send_kept(&mut self, id: u8, payload: &[u8]) -> Result<u64, SendError> {
-        self.send_for(id, payload, Some(Lifetime::Forever))
+        self.send_for(id, payload, Some(Lifetime::Forever), None)
+    }
+
+    /// As [`Self::send_kept`], sent again every `resend` while it is not
+    /// acked, not at the table's pace: for a client that is in no hurry
+    /// for it and acks slowly (one that waits for its world sends a pure
+    /// ack every 100 ms and nothing else).
+    pub fn send_kept_every(
+        &mut self,
+        id: u8,
+        payload: &[u8],
+        resend: Duration,
+    ) -> Result<u64, SendError> {
+        self.send_for(id, payload, Some(Lifetime::Forever), Some(resend))
+    }
+
+    /// As [`Self::send`], but a message the table would give up after its
+    /// lifetime is given up after `lifetime` instead. A message with no
+    /// lifetime of that kind (sent once, or kept until acked) goes as the
+    /// table has it.
+    pub fn send_lasting(
+        &mut self,
+        id: u8,
+        payload: &[u8],
+        lifetime: Duration,
+    ) -> Result<u64, SendError> {
+        self.send_for(id, payload, Some(Lifetime::For(lifetime)), None)
     }
 
     fn send_for(
@@ -637,6 +695,7 @@ impl Transport {
         id: u8,
         payload: &[u8],
         kept: Option<Lifetime>,
+        resend: Option<Duration>,
     ) -> Result<u64, SendError> {
         if self.table.is_forbidden(id) {
             return Err(SendError::Forbidden(id));
@@ -715,7 +774,7 @@ impl Transport {
                 (Lifetime::For(_), Some(kept)) => kept,
                 (lifetime, _) => lifetime,
             },
-            resend: info.resend,
+            resend: resend.unwrap_or(info.resend),
             expires: None,
             sent_in: VecDeque::new(),
         };
@@ -884,6 +943,13 @@ impl Transport {
                 (u128::from(self.budget) + earned).min(u128::from(self.config.burst)) as u32;
             self.budget_at = now;
         }
+        let pace = self.config.bulk_pace.as_micros().max(1);
+        let earned = now.saturating_duration_since(self.bulk_at).as_micros() / pace;
+        if earned > 0 {
+            self.bulk_budget = (u128::from(self.bulk_budget) + earned)
+                .min(u128::from(self.config.bulk_burst)) as u32;
+            self.bulk_at = now;
+        }
     }
 
     /// Drop the messages whose lifetime ended (the client's 0x3FE470:
@@ -945,7 +1011,8 @@ impl Transport {
 
     /// Take the messages of the next datagram off the queue, in order: the
     /// first that may go, then as many more as fit with it. `None` when
-    /// nothing may go.
+    /// nothing may go. A part of a split message waits for its turn
+    /// (`bulk_burst`), and what is behind it goes ahead.
     fn take_messages(&mut self, bases: (Option<u64>, Option<u64>)) -> Option<Vec<Outgoing>> {
         let may_go = |channel: Channel| {
             let (base, count) = match channel {
@@ -958,8 +1025,9 @@ impl Transport {
         let room = MAX_DATAGRAM - HEADER - self.tail_wanted().0;
         let mut taken = Vec::new();
         let mut used = 0;
+        let mut bulk = self.bulk_budget;
         for (index, message) in self.pending.iter().enumerate() {
-            if !may_go(message.channel) {
+            if !may_go(message.channel) || (message.is_part() && bulk == 0) {
                 continue;
             }
             let cost = message.multi_len();
@@ -968,10 +1036,14 @@ impl Transport {
             }
             used += cost;
             taken.push(index);
+            if message.is_part() {
+                bulk -= 1;
+            }
         }
         if taken.is_empty() {
             return None;
         }
+        self.bulk_budget = bulk;
         let mut messages: Vec<Outgoing> = taken
             .iter()
             .rev()

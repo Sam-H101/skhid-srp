@@ -104,7 +104,12 @@ The danger: 0xE5 is sent once. A lost 0xE5(g) followed by a delivered
    without its time.
 3. After 5 unanswered 0xE5 (`MAX_SET_TIMES`) the snapshot goes anyway.
 4. A 0xE8 not acked within its 1.75 s counts as lost: the sync starts again
-   as generation g+1.
+   as generation g+1. The first world of a game that has none yet has 4 s
+   (`entry_state`): that game stands still, and what a thin line lets
+   through of the world adds up in it (match.md §27).
+5. The world goes compressed (LZMA2) where that is smaller, its parts a few
+   at a time; and to a game that waits for its first world the others'
+   inputs go every 50 ms, many in a datagram (match.md §27).
 
 Between the first 0xE5 and the 0xE8, a client being resynced runs its old
 world on the new clock for about a round trip (LIKELY harmless).
@@ -340,6 +345,9 @@ a GUESS at the original server and was never tried on a client.
 | `HASH_STARVED_AFTER` / `HASH_STARVED_LOG` | 5 s / 30 s | The "opposite hash phases" warning |
 | `PING_EVERY` | 1 s | 0xE6 to each live client |
 | `client_timeout` / `loading_timeout` | 10 s / 60 s | A silent client is gone |
+| `entry_state` | 4 s | A game's first world is kept on its way this long; a later one 1.75 s (the client's table) |
+| `WAITING_RELAY_FLUSH` / `WAITING_RELAY_RESEND` | 50 ms / 150 ms | The others' inputs for a game that waits for its first world: how often they go, and go again unacked |
+| `bulk_burst` / `bulk_pace` (`udp-transport`) | 4 / 3 ms | Parts of a split message sent at once, and the time for one more |
 | `END_DELAY_MS` | 3000 | The mode rule reports its end this long after |
 
 ## Start and end of a match (`modes_maps.md` §10, §11)
@@ -413,6 +421,8 @@ From `servers/match-server/src/v026g/mod.rs`, read once at start:
 | `SRP_CLOCK_CORRECTION` | `on` | `off`: no 0xE7 |
 | `SRP_CHECK_INITIAL_WORLD` | `on` | `off`: take a first world that already has statistics in it (for when the reader, not the world, is wrong) |
 | `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where uploaded worlds are saved; `off` or empty for none |
+| `SRP_COMPRESS_STATE` | `on` | `off`: 0xE8 goes as it is, not as LZMA2 (match.md §27) |
+| `SRP_ENTRY_STATE_SECONDS` | 4 | A game's first world is kept on its way this long (2 to 10) before its sync starts over |
 | `SRP_BOT_ACCOUNTS` | not set | **Testing only.** The accounts that are test bots (read by `srp`, marked by the lobby on a match's places): above, "Test bots" |
 | `SRP_PACKET_LOG=<dir>` | off | Every datagram in and out, one file a connection (`crates/udp-transport`). **Set it for every live test** |
 | `SRP_BIND_HOST`, `SRP_PUBLIC_HOST`, `SRP_MATCH_PORT` (1236), `SRP_MATCH_BIND`, `SRP_MATCH_PUBLIC_HOST` | 127.0.0.1 | The address (`crates/vostok/src/config.rs`) |

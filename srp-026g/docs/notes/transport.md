@@ -134,6 +134,9 @@ Let `R` = remote_seq, and `b(k)` = 1 if the sender has received peer seq `R−k`
   - +0x30 u8 needed depth, capped at 120 (0x3FF521)
   - +0x34/+0x38, ring of 129 × 32-byte entries at +0x3C: the ack state sent with each datagram
 - When the peer acks one of the client's datagrams, the depth shrinks (0x3FF2D0, called from `acknowledge_packets` 0x3FD721).
+  - **How the depth moves** (read 2026-10-13). PROVEN. A newly received seq adds its distance from the newest one to the depth (0x3FF4FA..0x3FF513: one for each datagram in order); one older than the newest raises it to that distance at least (0x3FF4CD..0x3FF4F8); the cap is 120.
+  - When the peer acks the client's **newest** sent datagram the ring is empty and the depth is set to **0** (0x3FF2DE). Else it is worked out from the ack states of the oldest datagram still unacked and the newest sent (0x3FF385..0x3FF47E).
+  - So what arrives between a client datagram and the server's ack of it is never named by the depth, only by the 6 bits that always go. A client that sends often is not touched by it; one that sends a pure ack every 100 ms and has a round trip of `r` ms leaves about `r / 100` of what it receives unacked. LIVE 2026-10-13: a waiting game with a round trip of 45 ms acked 53 % of the server's datagrams, 6, 13 or 20 bits a datagram.
 - If the full n does not fit in a datagram, the client sends fewer tail bytes. If no datagram of the flush carried the full set, it adds one extra continuous-flow datagram (0x3FCA27–0x3FCA53, 0x3FCBCD–0x3FCBF4).
 - **The server may use any n from 0 to 17** (LIKELY from the reader).
 - Recommended: send enough tail bytes to cover every client seq received since the newest server datagram the client has acked. Simpler: a fixed n = 2 (20 back-bits) at a ≤100 ms cadence.
@@ -551,6 +554,8 @@ conn+0x140 (timeout) and argument 4 at conn+0x148 (idle)
 - When `parts ≥ count` it marks the unique id received and delivers the concatenation (0x3F5100–0x3F513D).
 - Limits: u8 count, so ≤255 parts. Max message ≈ 255 × 500 ≈ 125 KB.
 - Parts of any size are accepted (LIKELY: no size check in either receiver).
+- **No time limit** (read 2026-10-13). An unfinished unique message is removed in two places only: here, when a unique id 128 or more newer comes (0x3F500C), and when the connection is reset (0x3FE15F..0x3FE220). The third caller of the remover (0x3F52F2) is the ordered channel's delivery. PROVEN for the direct calls. So the lifetime of a split message is its sender's alone, and parts may come spread over any time.
+- **Each part taken holds a pool packet**: 0x279D80 takes one (in use `[pool+0x30]` against the size `[pool+0x34]`), and when the free list is empty it returns null, which this function tests only to skip the constructor (0x3F506B) and then writes through (`mov [edi+0x1c],dl` at 0x3F5075): a crash. PROVEN. That it is the 256-packet pool the client's own sends come from (client_patch.md §3.4) is LIKELY (the pool pointer is conn+0x134; its allocation was not traced). So a sender must not leave many unfinished messages in the client: each one keeps its parts until 128 newer unique ids have come.
 - Split messages of an **ordered** id go to 0x3F4A50 instead, keyed by the order id: §4.1. In a multi datagram a part of a variable id carries a length prefix (`get_message_length` returns 0xFFFF for E4/E8/F6 when the part is not first or the message is variable).
 
 ## 6. Timers, resend, keepalive — PROVEN unless marked
@@ -687,4 +692,6 @@ it adds on its own judgement, to stay inside the client's 128-wide windows:
 | tail ack bytes | enough for every client seq past the last one the client is known to have had acked, plus 14; cut to fit a full datagram (4 always fit) | §2.2, §2.4 (`r == A` quirk) |
 | keep-alive `FC` | 20 ms after a client datagram if nothing else carried the ack; else every 100 ms (match) / 250 ms (lobby); 1 s towards a client that acks nothing | §2.5, §6 |
 | part sizes | 496 (part 0) and 497 | 500/501 less 4 tail bytes |
+| parts of split messages at once, then one per (match link; the lobby has no limit) | 4, 3 ms | 28 full datagrams in one millisecond are more than some lines carry (live 2026-10-13, match.md §27); the client takes parts at any pace (§5) |
+| a message's lifetime or resend time, where its sender says so | `send_lasting`, `send_kept_every` | the client's table values are the sender's own matter (§4) |
 

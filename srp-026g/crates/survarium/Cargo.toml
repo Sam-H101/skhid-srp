@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 binary-config-parser = { workspace = true }
 log = { workspace = true }
+lzma-rust2 = { workspace = true }
 # The lobby's results types are kept in srp's database as JSON
 # (`session::v026g::rewards`).
 serde = { workspace = true }

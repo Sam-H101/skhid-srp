@@ -102,6 +102,8 @@ services:
       - SRP_LATE_INPUTS
       - SRP_CLOCK_CORRECTION
       - SRP_CHECK_INITIAL_WORLD
+      - SRP_COMPRESS_STATE
+      - SRP_ENTRY_STATE_SECONDS
       - SRP_PACKET_LOG
     ports:
       # Login: TLS over TCP.

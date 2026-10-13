@@ -30,7 +30,10 @@ pub mod snapshot;
 pub mod static_info;
 pub mod upload;
 
+use client_model::COMPRESSED_SNAPSHOT_BUFFER;
 use upload::{Chunk, ChunkError};
+
+use super::lzma2;
 
 /// The simulation's tick: every time on the wire but 0xE5's is a tick.
 pub const TICK_MS: u32 = 50;
@@ -436,12 +439,15 @@ pub enum ServerMessage {
     Ping { a: u16, b: u16 },
     /// 0xE7: shifts the client's clock by so many ms.
     ClockOffset(i16),
-    /// 0xE8, never compressed here: the world at `time`. `body` is what
-    /// `game_state_history_item::serialize` wrote ([`snapshot`]).
+    /// 0xE8: the world at `time`. `body` is what
+    /// `game_state_history_item::serialize` wrote ([`snapshot`]). `packed`:
+    /// it goes as LZMA2 (the message's `compressed` byte set) where that
+    /// is smaller and the client's buffer holds the state; else as it is.
     Snapshot {
         generation: u8,
         time: u32,
         body: Vec<u8>,
+        packed: bool,
     },
     /// 0xE9: a roster place becomes active at a tick.
     PlayerEntered { tick: u8, player: u8 },
@@ -493,12 +499,24 @@ impl ServerMessage {
             })
     }
 
-    /// A snapshot for the client's sync `generation`.
+    /// A snapshot for the client's sync `generation`, sent as it is.
     pub fn snapshot(generation: u8, time: u32, body: &[u8]) -> Self {
         Self::Snapshot {
             generation,
             time,
             body: body.to_vec(),
+            packed: false,
+        }
+    }
+
+    /// The same, sent compressed where that serves (see
+    /// [`ServerMessage::Snapshot`]).
+    pub fn packed_snapshot(generation: u8, time: u32, body: &[u8]) -> Self {
+        Self::Snapshot {
+            generation,
+            time,
+            body: body.to_vec(),
+            packed: true,
         }
     }
 
@@ -567,13 +585,31 @@ impl ServerMessage {
                 generation,
                 time,
                 body,
+                packed,
             } => {
                 out.reserve(6 + body.len());
                 out.push(*generation);
-                // Not compressed: the state follows as it is.
-                out.push(0);
-                out.extend(time.to_le_bytes());
-                out.extend_from_slice(body);
+                // The client unpacks into 0x8000 bytes on its stack and
+                // does not check the result (0x27C059): a state over that
+                // goes as it is, and so does one that would not shrink.
+                let stream = (*packed && 4 + body.len() <= COMPRESSED_SNAPSHOT_BUFFER)
+                    .then(|| {
+                        let mut state = time.to_le_bytes().to_vec();
+                        state.extend_from_slice(body);
+                        lzma2::packed(&state)
+                    })
+                    .filter(|stream| stream.len() < 4 + body.len());
+                match stream {
+                    Some(stream) => {
+                        out.push(1);
+                        out.extend(stream);
+                    }
+                    None => {
+                        out.push(0);
+                        out.extend(time.to_le_bytes());
+                        out.extend_from_slice(body);
+                    }
+                }
             }
             Self::PlayerEntered { tick, player } | Self::PlayerLeft { tick, player } => {
                 out.extend([*tick, *player]);
@@ -1322,6 +1358,29 @@ mod tests {
             snapshot.payload(),
             [0x02, 0x00, 0x02, 0x3C, 0x08, 0x00, 0xAA, 0xBB]
         );
+        // Asked for packed, a state that would not shrink goes the same.
+        let packed = ServerMessage::packed_snapshot(2, 539_650, &[0xAA, 0xBB]);
+        assert_eq!(packed.payload(), snapshot.payload());
+    }
+
+    #[test]
+    fn a_packed_snapshot_is_lzma2_of_its_time_and_state() {
+        // E8: `u8 generation, u8 1, LZMA2(u32 time, body)`.
+        let body: Vec<u8> = (0..9_000u32).map(|i| (i % 41) as u8).collect();
+        let payload = ServerMessage::packed_snapshot(7, 539_650, &body).payload();
+        assert_eq!(payload[..2], [0x07, 0x01]);
+        assert!(payload.len() < body.len() / 2, "{} bytes", payload.len());
+        let mut state = 539_650u32.to_le_bytes().to_vec();
+        state.extend(&body);
+        assert_eq!(lzma2::unpack(&payload[2..], 0x8000), Some(state));
+        // The client unpacks into 0x8000 bytes: the largest state that
+        // fits is packed, one byte more goes as it is.
+        let fits = vec![0; COMPRESSED_SNAPSHOT_BUFFER - 4];
+        assert_eq!(ServerMessage::packed_snapshot(7, 50, &fits).payload()[1], 1);
+        let over = vec![0; COMPRESSED_SNAPSHOT_BUFFER - 3];
+        let payload = ServerMessage::packed_snapshot(7, 50, &over).payload();
+        assert_eq!(payload[1], 0);
+        assert_eq!(payload.len(), 2 + 4 + over.len());
     }
 
     #[test]
