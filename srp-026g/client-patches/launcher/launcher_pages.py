@@ -8,42 +8,32 @@
 for the launcher's five languages (en, ru, ua, de, pl). The text is
 Ukrainian for `ua` and English for the others, as on the server's page.
 They are made for the launcher's embedded browser (Internet Explorer's
-engine, 899 by 335 pixels): fixed sizes, old CSS, no script, no picture.
-Their one link is the server's own page, which the launcher opens in the
+engine, 899 by 335 pixels): fixed sizes, old CSS, no script, and embedded
+original background artwork. The server and SRP Discord links open in the
 player's browser.
 
     python launcher_pages.py <folder> [--site=https://skhid.link]
         writes the ten files into <folder> (to look at them)
 """
 
+import base64
 import html
+from pathlib import Path
 import os
 import sys
 
 CODES = ("en", "ru", "ua", "de", "pl")
 
-# The measures and colours of the game's own page (public/style.css) and of
-# the server's (`servers/web-server/src/launcher.rs`).
-STYLE = (
-    "*{padding:0;margin:0;outline:0;border:0}"
-    "html,body{background:#000;font-size:13px;color:#b3b3b3;font-family:Arial,Tahoma,sans-serif;overflow:hidden}"
-    "#container{position:relative;width:899px;height:335px;overflow:hidden;background:#161514}"
-    "#left{float:left;position:relative;width:454px;height:312px;margin:10px 0 0 15px;background:#000;"
-    "border:1px solid #3b3832;overflow:hidden}"
-    "#right{float:right;width:404px;padding:4px 16px 0 0}"
-    ".tile{position:relative;width:402px;height:96px;margin:7px 0 10px 0;background:#000;"
-    "border:1px solid #3b3832;overflow:hidden}"
-    "h1{height:30px;line-height:30px;padding:0 13px;font-size:13px;font-weight:bold;color:#e7a300;"
-    "text-transform:uppercase;background:#1b1a18;border-bottom:1px solid #3b3832}"
-    "h1 i{font-style:normal;text-transform:none}"
-    "p{padding:14px 13px 0 13px;line-height:18px}"
-    "p.big{padding-top:90px;text-align:center;color:#939392}"
-    "p.small{padding-top:9px;font-size:11px;line-height:13px;color:#939392}"
-    "a,a:link,a:visited,a:hover{color:#e7a300;text-decoration:none;font-weight:bold}"
-    ".cap{position:absolute;left:0;bottom:0;width:100%;height:23px;line-height:23px;text-indent:13px;"
-    "background:#1b1a18;border-top:1px solid #3b3832;font-weight:bold;color:#fff;text-transform:uppercase;"
-    "white-space:nowrap;overflow:hidden}"
-)
+# One skin for the web server and both local states. Each image is below
+# IE8's 32 KiB data-URI limit; no network or relative path is needed.
+HERE = Path(__file__).resolve().parent
+SKIN = HERE.parents[1] / "servers" / "web-server" / "launcher-skin"
+DISCORD_LINK = (SKIN / "discord-link.html").read_text(encoding="utf-8").strip()
+STYLE = (SKIN / "style.css").read_text(encoding="utf-8")
+for slot, name, mime in (("BACKGROUND", "back.jpg", "image/jpeg"),
+                         ("SHADOW", "shadow.png", "image/png")):
+    image = base64.b64encode((SKIN / name).read_bytes()).decode("ascii")
+    STYLE = STYLE.replace(f"@{slot}@", f"data:{mime};base64,{image}")
 
 TEXT = {
     "en": {
@@ -94,11 +84,11 @@ def page(code, site, blank):
         "<div id=container>"
         "<div id=left><h1>{title}</h1>{left}</div>"
         "<div id=right>"
-        "<div class=tile><p>{link}</p><div class=cap>{page}</div></div>"
-        "<div class=tile><p class=small>{about}</p><div class=cap>{launcher}</div></div>"
-        "<div class=tile><p class=small>{legal}</p><div class=cap>{legal_title}</div></div>"
+        "<div class=\"tile first\"><p>{link}</p><div class=cap>{page}</div></div>"
+        "<div class=\"tile second\"><p class=small>{about}</p><div class=cap>{launcher}</div></div>"
+        "<div class=\"tile third\"><p class=small>{legal}</p><div class=cap>{discord}{legal_title}</div></div>"
         "</div></div></body></html>\r\n"
-    ).format(style=STYLE, left=left, link=link, **{k: v for k, v in text.items()
+    ).format(style=STYLE, left=left, link=link, discord=DISCORD_LINK, **{k: v for k, v in text.items()
                                                    if k not in ("loading", "offline", "hint")}).encode("utf-8")
 
 
