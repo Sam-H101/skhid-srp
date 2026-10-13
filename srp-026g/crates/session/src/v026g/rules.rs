@@ -804,8 +804,8 @@ mod tests {
         account
     }
 
-    /// [`rich`], and known to every seller: ammo, drugs and gear are the
-    /// factions' to sell, each from a reputation level on.
+    /// [`rich`], and known to every seller: drugs and gear are the
+    /// factions' to sell, each from a reputation level on (ammo from none).
     fn rich_and_known(money: u32) -> Account {
         let mut account = rich(money);
         for faction in 1..=4 {
@@ -1132,7 +1132,8 @@ mod tests {
         let record = prices::price(rounds).unwrap();
         let unit = shop_unit(rounds);
         assert!(unit > 1);
-        let mut account = rich_and_known(10_000);
+        // Known to no seller: ammo needs no reputation level.
+        let mut account = rich(10_000);
         // Not owned at all: the dialog names it with item id 0, in the
         // first ammo slot of the second weapon... which holds only ammo
         // that fits: use a slot the dictionary lets it into.
@@ -1165,7 +1166,7 @@ mod tests {
             })
         );
         // With no money for it nothing changes.
-        let mut poor = rich_and_known(record.cost - 1);
+        let mut poor = rich(record.cost - 1);
         let before = poor.clone();
         assert_eq!(
             move_items(&mut poor, 1, &moves, NOW),
@@ -1274,14 +1275,14 @@ mod tests {
 
     #[test]
     fn supplies_need_a_sellers_level_and_either_seller_of_two_sells() {
-        // 12x70 slugs: the Scavengers and the Black Market, level 3 each.
-        let slug = dict("ammo_12mm_slug");
-        let sellers: Vec<(u8, u8)> = prices::sellers(slug)
+        // The RGD-5: the Scavengers and the Black Market, level 3 each.
+        let grenade = dict("rgd-5");
+        let sellers: Vec<(u8, u8)> = prices::sellers(grenade)
             .iter()
             .map(|record| (record.faction_id, record.level))
             .collect();
         assert_eq!(sellers, [(1, 3), (2, 3)]);
-        let cost = prices::price(slug).unwrap().cost;
+        let cost = prices::price(grenade).unwrap().cost;
         let mut account = rich(10 * cost);
         // Known to neither: refused with the level of the seller named (the
         // first when none is).
@@ -1289,7 +1290,7 @@ mod tests {
             assert_eq!(
                 buy(
                     &mut account.clone(),
-                    slug,
+                    grenade,
                     1,
                     faction,
                     INVENTORY_SLOT,
@@ -1301,7 +1302,7 @@ mod tests {
         }
         // A faction that does not sell it.
         assert_eq!(
-            buy(&mut account.clone(), slug, 1, 3, INVENTORY_SLOT, 1, NOW),
+            buy(&mut account.clone(), grenade, 1, 3, INVENTORY_SLOT, 1, NOW),
             Err(ActionError::NotSold)
         );
         // Known to the Black Market only: it sells, whichever of the two
@@ -1314,17 +1315,37 @@ mod tests {
         );
         for faction in [0, 1, 2] {
             let mut buyer = account.clone();
-            let bought = buy(&mut buyer, slug, 2, faction, INVENTORY_SLOT, 1, NOW).unwrap();
+            let bought = buy(&mut buyer, grenade, 2, faction, INVENTORY_SLOT, 1, NOW).unwrap();
             assert_eq!(bought.len(), 1);
-            assert_eq!(bought[0].value, 2 * shop_unit(slug));
+            assert_eq!(bought[0].value, 2 * shop_unit(grenade));
             assert_eq!(buyer.generic_money, 8 * cost);
         }
         // One level short is short.
         let mut short = rich(10 * cost);
         short.add_reputation(1, reputation_for(1, 3) - 1);
         assert_eq!(
-            buy(&mut short, slug, 1, 1, INVENTORY_SLOT, 1, NOW),
+            buy(&mut short, grenade, 1, 1, INVENTORY_SLOT, 1, NOW),
             Err(ActionError::SellerLevel { needs: 3, has: 2 })
+        );
+        // Ammo needs no level: 12x70 slugs, the same two sellers, bought by
+        // an account known to neither, whichever seller the client names.
+        let slug = dict("ammo_12mm_slug");
+        let sellers: Vec<(u8, u8)> = prices::sellers(slug)
+            .iter()
+            .map(|record| (record.faction_id, record.level))
+            .collect();
+        assert_eq!(sellers, [(1, 0), (2, 0)]);
+        let cost = prices::price(slug).unwrap().cost;
+        for faction in [0, 1, 2] {
+            let mut buyer = rich(10 * cost);
+            let bought = buy(&mut buyer, slug, 2, faction, INVENTORY_SLOT, 1, NOW).unwrap();
+            assert_eq!(bought[0].value, 2 * shop_unit(slug));
+            assert_eq!(buyer.generic_money, 8 * cost);
+        }
+        // A faction that does not sell it still does not.
+        assert_eq!(
+            buy(&mut rich(10 * cost), slug, 1, 3, INVENTORY_SLOT, 1, NOW),
+            Err(ActionError::NotSold)
         );
         // A medkit: the Scavengers at level 3, no longer everyone's.
         let medkit = dict("medkit");

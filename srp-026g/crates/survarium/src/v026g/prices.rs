@@ -59,9 +59,12 @@
 //! What is listed [srp's choice where marked]:
 //! - weapons and armour whose config names a faction, sold by it at the
 //!   rule's level, or as [`EXCEPTIONS`] says;
-//! - ammo, drugs, the trap and grenades: by the factions at the ranks of
-//!   [`EXCEPTIONS`] (0.26 sold ammo at a rank: patch note 0.26c, taken back
-//!   in 0.27a), one record for each faction that sold it;
+//! - drugs, the trap and grenades: by the factions at the ranks of
+//!   [`EXCEPTIONS`], one record for each faction that sold it;
+//! - ammo: by the factions of [`EXCEPTIONS`], **at no rank** by the owner's
+//!   choice ([`AMMO_NEEDS_RANK`]). 0.26 sold ammo at a rank (patch note
+//!   0.26c) and 0.27a took that back ("Purchase of ammunition no longer
+//!   requires reputation"); the ranks of the time stay in the table;
 //! - the boosters (the wiki's "Independent Traders") and the one ammo on no
 //!   list of the time (9x19 7N21): seller 0 and level 0 [choice for the
 //!   7N21: unknown, so sold to everyone as before];
@@ -112,10 +115,12 @@ impl PriceItem {
 }
 
 /// Where an item is sold when the module's rule does not say it:
-/// `(item name, [(seller, reputation level)])`. Sources are wiki revisions
-/// written while 0.26g to 0.26i was live (`progression_sources.md`; `W:<id>`
-/// is a revision id of survarium.fandom.com) and the official patch notes
-/// (`PN`). PROVEN = stated there and not contradicted by the client's data.
+/// `(item name, [(seller, reputation level)])`. An ammo's levels are the
+/// game's of the time and are not asked for ([`AMMO_NEEDS_RANK`]). Sources
+/// are wiki revisions written while 0.26g to 0.26i was live
+/// (`progression_sources.md`; `W:<id>` is a revision id of
+/// survarium.fandom.com) and the official patch notes (`PN`). PROVEN =
+/// stated there and not contradicted by the client's data.
 pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
     use faction::{BLACK_MARKET as BM, EDGE, RENAISSANCE as REN, SCAVENGERS as SCAV};
     &[
@@ -242,6 +247,19 @@ pub const AMMO_PRICES: &[(&str, u32, u32)] = &[
     ("ammo_12.7x54_vps", 300, 150),
 ];
 
+/// Whether buying ammo needs the seller's rank of [`EXCEPTIONS`]. The
+/// owner's choice (2026-10-13): no, every ammo is sold to everyone, as the
+/// game itself did from 0.27a on. The sellers stay, so the ammo stays in
+/// its factions' shop tabs.
+///
+/// What the client does with a record at level 0 (`lobby_menu.swf`): it is
+/// buyable whatever the player's level with the seller
+/// (`GangShop.setupShopItems`: `canBuy = _unlockedLevel[seller] >=
+/// sellerLevel`, levels start at 0), so the shop shows no lock and the
+/// kit's ammo window, which copies `canBuy` from the shop's item, lets the
+/// stack grow. PROVEN in the ActionScript.
+pub const AMMO_NEEDS_RANK: bool = false;
+
 /// What the shop takes for a step of `item`: [`AMMO_PRICES`] for ammo, else
 /// the game's `base_cost`.
 pub fn shop_cost(item: &Item) -> u32 {
@@ -272,7 +290,8 @@ fn top_level(dictionary: &Dictionary, faction_id: u8) -> u8 {
 }
 
 /// Who sells `item` and at which reputation level: `(seller, level)`, by
-/// seller. [`EXCEPTIONS`] first, else the module's rule.
+/// seller. [`EXCEPTIONS`] first, else the module's rule; ammo at level 0
+/// ([`AMMO_NEEDS_RANK`]).
 pub fn sellers_of(dictionary: &Dictionary, item: &Item, params: &ItemParams) -> Vec<(u8, u8)> {
     if item.is_premium {
         return Vec::new();
@@ -292,9 +311,13 @@ pub fn sellers_of(dictionary: &Dictionary, item: &Item, params: &ItemParams) -> 
     let exception = EXCEPTIONS.iter().find(|(name, _)| *name == item.name);
     match exception {
         Some(&(_, sellers)) if gear || supply => {
+            let ranked = AMMO_NEEDS_RANK || params.kind != "ammo";
             let mut sellers: Vec<(u8, u8)> = sellers
                 .iter()
-                .map(|&(seller, level)| (seller, level.min(top_level(dictionary, seller))))
+                .map(|&(seller, level)| {
+                    let level = if ranked { level } else { 0 };
+                    (seller, level.min(top_level(dictionary, seller)))
+                })
                 .collect();
             sellers.sort_unstable();
             sellers
@@ -596,8 +619,12 @@ mod tests {
             assert!(
                 expected
                     .iter()
-                    .all(|&(seller, _)| (1..=4).contains(&seller))
+                    .all(|&(seller, level)| (1..=4).contains(&seller) && level > 0)
             );
+            // Ammo: the listed sellers, at no rank.
+            if !AMMO_NEEDS_RANK && item_params(item.dict_id).unwrap().kind == "ammo" {
+                expected.iter_mut().for_each(|(_, level)| *level = 0);
+            }
             assert_eq!(sold_by(name), expected, "{name}");
         }
         // The names the sources use: the 9A-91 and VSK-94 are dict ids 303
@@ -630,19 +657,19 @@ mod tests {
 
     #[test]
     fn supplies_are_sold_by_the_factions_at_ranks() {
-        // Two sellers: two records, by seller.
-        assert_eq!(sold_by("ammo_12mm_buck"), [(1, 1), (2, 1)]);
-        assert_eq!(sold_by("ammo_12mm_slug"), [(1, 3), (2, 3)]);
-        assert_eq!(sold_by("ammo_7.62x39"), [(3, 1), (4, 1)]);
-        assert_eq!(sold_by("ammo_7.62x54_7n1"), [(3, 7), (4, 4)]);
-        assert_eq!(sold_by("ammo_sp6"), [(3, 9), (4, 9)]);
+        // Two sellers: two records, by seller. Ammo needs no rank.
+        assert_eq!(sold_by("ammo_12mm_buck"), [(1, 0), (2, 0)]);
+        assert_eq!(sold_by("ammo_12mm_slug"), [(1, 0), (2, 0)]);
+        assert_eq!(sold_by("ammo_7.62x39"), [(3, 0), (4, 0)]);
+        assert_eq!(sold_by("ammo_7.62x54_7n1"), [(3, 0), (4, 0)]);
+        assert_eq!(sold_by("ammo_sp6"), [(3, 0), (4, 0)]);
         assert_eq!(sold_by("rgd-5"), [(1, 3), (2, 3)]);
         assert_eq!(sold_by("rdg-m"), [(3, 1), (4, 1)]);
         // One seller.
-        assert_eq!(sold_by("ammo_5.45x39_7n6m"), [(2, 5)]);
-        assert_eq!(sold_by("ammo_5.45x39_7n22"), [(3, 9)]);
-        assert_eq!(sold_by("ammo_6.5x39"), [(3, 10)]);
-        assert_eq!(sold_by("ammo_12.7x55"), [(4, 10)]);
+        assert_eq!(sold_by("ammo_5.45x39_7n6m"), [(2, 0)]);
+        assert_eq!(sold_by("ammo_5.45x39_7n22"), [(3, 0)]);
+        assert_eq!(sold_by("ammo_6.5x39"), [(3, 0)]);
+        assert_eq!(sold_by("ammo_12.7x55"), [(4, 0)]);
         assert_eq!(sold_by("bandages"), [(1, 1)]);
         assert_eq!(sold_by("medkit"), [(1, 3)]);
         assert_eq!(sold_by("antitoxin"), [(1, 3)]);
@@ -671,25 +698,58 @@ mod tests {
     }
 
     #[test]
+    fn every_ammo_is_sold_to_everyone() {
+        let dictionary = Dictionary::shared();
+        let ammo: Vec<&Item> = dictionary
+            .items
+            .iter()
+            .filter(|item| item_params(item.dict_id).is_some_and(|params| params.kind == "ammo"))
+            .collect();
+        assert_eq!(ammo.len(), 29);
+        // Known to nobody.
+        let nobody = |_: u8| 0;
+        for item in ammo {
+            let records = sellers(item.dict_id);
+            assert!(!records.is_empty(), "{}", item.name);
+            assert!(records.iter().all(|r| r.level == 0), "{}", item.name);
+            // Whichever seller the client names.
+            for seller in 0..=4 {
+                assert!(
+                    matches!(record_for(item.dict_id, seller, nobody), Ok(Some(_))),
+                    "{} from {seller}",
+                    item.name
+                );
+            }
+        }
+        // Nothing else lost its rank: of the records with a faction, only
+        // ammo is at level 0.
+        for record in price_list().iter().filter(|r| r.faction_id != 0) {
+            let ammo = item_params(record.dict_id).unwrap().kind == "ammo";
+            assert_eq!(record.level == 0, ammo, "{}", record.dict_id);
+        }
+    }
+
+    #[test]
     fn a_buyer_gets_the_record_of_a_seller_that_sells_to_it() {
         let id = |name: &str| Dictionary::shared().item_named(name).unwrap().dict_id;
         let seller = |result: Result<Option<&'static PriceItem>, &'static PriceItem>| {
             result.map(|record| record.map(|record| record.faction_id))
         };
-        let slug = id("ammo_12mm_slug");
+        // The RGD-5: the Scavengers and the Black Market, level 3 each.
+        let grenade = id("rgd-5");
         // Known to nobody: the first record refuses, or the one named.
         let nobody = |_: u8| 0;
-        assert_eq!(record_for(slug, 0, nobody).unwrap_err().faction_id, 1);
-        assert_eq!(record_for(slug, 2, nobody).unwrap_err().faction_id, 2);
+        assert_eq!(record_for(grenade, 0, nobody).unwrap_err().faction_id, 1);
+        assert_eq!(record_for(grenade, 2, nobody).unwrap_err().faction_id, 2);
         // Known to the Black Market only: it sells, whoever was named.
         let black_market = |faction: u8| if faction == 2 { 3 } else { 0 };
-        assert_eq!(seller(record_for(slug, 0, black_market)), Ok(Some(2)));
-        assert_eq!(seller(record_for(slug, 1, black_market)), Ok(Some(2)));
-        assert_eq!(seller(record_for(slug, 2, black_market)), Ok(Some(2)));
+        assert_eq!(seller(record_for(grenade, 0, black_market)), Ok(Some(2)));
+        assert_eq!(seller(record_for(grenade, 1, black_market)), Ok(Some(2)));
+        assert_eq!(seller(record_for(grenade, 2, black_market)), Ok(Some(2)));
         // Known to both: the one named, else the first.
         let both = |_: u8| 5;
-        assert_eq!(seller(record_for(slug, 2, both)), Ok(Some(2)));
-        assert_eq!(seller(record_for(slug, 0, both)), Ok(Some(1)));
+        assert_eq!(seller(record_for(grenade, 2, both)), Ok(Some(2)));
+        assert_eq!(seller(record_for(grenade, 0, both)), Ok(Some(1)));
         // Seller 0 sells to everyone; what is not sold has no record.
         assert_eq!(
             seller(record_for(id("speed_booster"), 0, nobody)),
@@ -702,7 +762,7 @@ mod tests {
     fn ammo_is_priced_a_clip() {
         // 5.45x39 7N6M: 30 for a clip of 30 (the game's 60, `AMMO_PRICES`).
         let ammo = price(7).unwrap();
-        assert_eq!((ammo.cost, ammo.faction_id, ammo.level), (30, 2, 5));
+        assert_eq!((ammo.cost, ammo.faction_id, ammo.level), (30, 2, 0));
         assert_eq!(buy_cost(7, 1), Some(30));
         assert_eq!(buy_cost(7, 3), Some(90));
         // A medkit is 20, one at a time.

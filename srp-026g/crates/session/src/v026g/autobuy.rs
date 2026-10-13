@@ -280,7 +280,8 @@ mod tests {
     /// ammo moved to kit 2.
     fn rifleman(rounds: u32) -> (Account, u32, u32) {
         let mut account = Account::new("Alice");
-        // Ammo and drugs are the factions' to sell, each from a level on.
+        // Drugs are the factions' to sell, each from a level on (ammo from
+        // none).
         for faction in 1..=4 {
             account.add_reputation(faction, 40_000);
         }
@@ -461,6 +462,26 @@ mod tests {
         let settled = settle(&mut account, &[(rounds, 30)], &[], 0);
         assert_eq!(settled, Settled::default());
         assert_eq!(account.item(ammo).unwrap().condition_or_stack, 225);
+    }
+
+    #[test]
+    fn ammo_is_bought_back_at_no_reputation_and_a_drug_is_not() {
+        let (mut account, _, ammo) = rifleman(300);
+        account.autobuy = true;
+        account.generic_money = 1_000;
+        // Known to no seller.
+        for (_, points) in &mut account.reputations {
+            *points = 0;
+        }
+        let rounds = dict("ammo_5.45x39_7n6m");
+        let medkit = dict("medkit");
+        let kits = account.add_item(medkit, 5);
+        let settled = settle(&mut account, &[(rounds, 30), (medkit, 2)], &[], 0);
+        // The clip came back; the medkits (Scavengers, level 3) did not.
+        assert_eq!(settled.bought, [(rounds, 30)]);
+        assert_eq!(account.item(ammo).unwrap().condition_or_stack, 300);
+        assert_eq!(account.item(kits).unwrap().condition_or_stack, 3);
+        assert_eq!(account.generic_money, 970);
     }
 
     #[test]

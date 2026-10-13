@@ -240,7 +240,7 @@ Other match-reward facts:
 | Fort 17, APS | rank 2 (Lance Corporal, Huntsman); the editor's note: "Moved Fort 17 and 9x18 PBM to correct rank" | W-2015-01-24/25 | wiki | wiki of the time | 1 (item level 6) | **2** |
 | "Marodeur" container (`bm_back_1`) | Black Market rank 4; the data gives it faction 1 and item level 3 | W-2015-01-25 | wiki | wiki of the time | Scavengers, 3 | **Black Market, 4** |
 | 9A-91 and VSK-94 | sold by the Fringe Settlers at ranks 8 and 9 ("Fringe Settlers ... Added new weapons: H&K UMP45, 9A-91, VSK-94"); both configs say faction 3 | PN 0.25a; W-2015-01-25; W-2015-02-18 | official + wiki | official | Renaissance (the config's faction) | **seller Edge** for dict ids 303 and 305 |
-| Ammo needs a rank | "7.62x54 7N1 is on sale at the Renaissance Army store on the 7th level of reputation (Captain)"; 0.27a: "Purchase of ammunition no longer requires reputation" | PN 0.26c; PN 0.27a | official | official | every ammo under seller 0, rank 0 (`prices.rs`) | **sell ammo by the factions at a rank**, table below |
+| Ammo needs a rank | "7.62x54 7N1 is on sale at the Renaissance Army store on the 7th level of reputation (Captain)"; 0.27a: "Purchase of ammunition no longer requires reputation" | PN 0.26c; PN 0.27a | official | official | every ammo under seller 0, rank 0 (`prices.rs`) | **sell ammo by the factions at a rank**, table below; since 2026-10-13 by the same factions **at no rank** (the owner's choice, as 0.27a: `prices.rs` `AMMO_NEEDS_RANK`) |
 | Consumables and grenades by faction | bandages Scavengers 1; medkit, antitoxin, RGD-5 Scavengers 3; trap Black Market 1; anesthetic, RGD-5 Black Market 3; RDG-M smoke Renaissance 1 and Edge 1; boosters at the "Independent Traders" | W-2015-01-25; W-2015-02-22 `Items` | wiki | wiki of the time | all under seller 0 | as listed; boosters stay under seller 0 |
 | Cosmetics at ranks | camouflages and decals in the lists ("Quilted fabric", "Scavengers rookie" at rank 1, "Seeker" 3, "Ghost" and "Scavengers veteran" 5 ...) | W-2015-01-25 | wiki | wiki of the time | not sold | optional; the names need matching to dict ids |
 | Notice at a new rank | "In the notification window when reaching a faction level we have added a list of unlocked items" | PN 0.26g | official | official | `#ru` notice | nothing to do (the client builds it) |
@@ -398,7 +398,9 @@ list):
 15. Matchmaking: 8 a side; level from the highest-level kit; the least-played map.
 
 **Applied 2026-10-12 (shop side):** 2, 3, 6, 7, 8, 9 and 14 (14 in
-`deploy/env-026g.example`; the code's default stays 1). For 3, the 9x19 7N21 is on no list
+`deploy/env-026g.example`; the code's default stays 1). For 3, ammo keeps its sellers but
+needs no rank since 2026-10-13 (the owner's choice; drugs, the trap and grenades keep
+theirs); the 9x19 7N21 is on no list
 and stays with seller 0; "7.62x39 RPD" is taken to be `ammo_7.62x39_m` (LIKELY: the one
 7.62x39 with a clip of 100) and "12.7x54" both `ammo_12.7x54_pt` and `ammo_12.7x54_vps`.
 For 8, the first kit still wears only the TT-33 and its clip; the Mosin, its clip and the
