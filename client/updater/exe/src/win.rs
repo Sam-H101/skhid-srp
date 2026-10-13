@@ -389,3 +389,147 @@ pub fn start(application: &str, command: &str, folder: &str) -> Result<(), Code>
     }
     Ok(())
 }
+
+/// Keeps a download closed to writers/deletion from verification through extraction.
+pub struct LockedFile(Handle);
+
+impl LockedFile {
+    pub fn open(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).map(Self)
+    }
+
+    pub fn verify(&self, progress: &mut dyn FnMut(u64) -> bool) -> Result<(u64, [u8; 32]), Code> {
+        let mut hash = Sha256::new();
+        let mut buffer = alloc::vec![0; 64 * 1024];
+        let mut size = 0;
+        loop {
+            if !progress(size) {
+                return Err(windows_sys::Win32::Foundation::ERROR_CANCELLED);
+            }
+            let read = read_some(&self.0, &mut buffer)?;
+            if read == 0 {
+                return Ok((size, hash.finish()));
+            }
+            hash.update(&buffer[..read]);
+            size += read as u64;
+        }
+    }
+}
+
+pub struct DownloadFile(Handle);
+impl DownloadFile {
+    pub fn create(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_WRITE, 0, CREATE_ALWAYS).map(Self)
+    }
+    pub fn write(&self, bytes: &[u8]) -> Result<(), Code> {
+        write_all(&self.0, bytes)
+    }
+    pub fn flush(&self) -> Result<(), Code> {
+        if unsafe { FlushFileBuffers(self.0.0) } == 0 {
+            Err(last_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Serializes installers in the same game folder, including while downloading.
+pub struct InstallLock(#[allow(dead_code)] Handle);
+pub fn install_lock(folder: &str) -> Result<InstallLock, Code> {
+    open(
+        &alloc::format!("{folder}\\updater_skhid.lock"),
+        GENERIC_WRITE,
+        0,
+        OPEN_ALWAYS,
+    )
+    .map(InstallLock)
+}
+
+pub fn file_size(path: &str) -> Result<u64, Code> {
+    let file = open_read(path)?;
+    let mut size = 0_i64;
+    if unsafe { GetFileSizeEx(file.0, &mut size) } == 0 {
+        return Err(last_error());
+    }
+    Ok(size as u64)
+}
+
+/// Makes a fresh extraction directory. It never reuses a directory from a previous run.
+pub fn staging_dir(parent: &str) -> Result<String, Code> {
+    for n in 0..100 {
+        let path = alloc::format!("{parent}\\.skhid-extract-{}-{n}", ticks());
+        if unsafe { CreateDirectoryW(wide(&path).as_ptr(), null()) } != 0 {
+            return Ok(path);
+        }
+        let code = last_error();
+        if code != ERROR_ALREADY_EXISTS {
+            return Err(code);
+        }
+    }
+    Err(ERROR_ALREADY_EXISTS)
+}
+
+pub fn remove_dir(path: &str) {
+    unsafe {
+        windows_sys::Win32::Storage::FileSystem::RemoveDirectoryW(wide(path).as_ptr());
+    }
+}
+
+/// Runs the pinned extractor, pumping cancellation while it works. A cancelled
+/// process is terminated and reaped before the caller removes staging files.
+pub fn run_wait(
+    application: &str,
+    command: &str,
+    folder: &str,
+    pump: &mut dyn FnMut() -> bool,
+) -> Result<u32, Code> {
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+    };
+    let mut startup: STARTUPINFOW = unsafe { core::mem::zeroed() };
+    startup.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
+    let mut process: PROCESS_INFORMATION = unsafe { core::mem::zeroed() };
+    let mut command = wide(command);
+    if unsafe {
+        CreateProcessW(
+            wide(application).as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            CREATE_NO_WINDOW,
+            null(),
+            wide(folder).as_ptr(),
+            &startup,
+            &mut process,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    let process_handle = Handle(process.hProcess);
+    unsafe {
+        CloseHandle(process.hThread);
+    }
+    loop {
+        let result = unsafe { WaitForSingleObject(process_handle.0, 100) };
+        if result == 0 {
+            break;
+        }
+        if result != windows_sys::Win32::Foundation::WAIT_TIMEOUT {
+            return Err(last_error());
+        }
+        if !pump() {
+            unsafe {
+                TerminateProcess(process_handle.0, 1);
+                WaitForSingleObject(process_handle.0, u32::MAX);
+            }
+            return Err(windows_sys::Win32::Foundation::ERROR_CANCELLED);
+        }
+    }
+    let mut code = 0;
+    if unsafe { GetExitCodeProcess(process_handle.0, &mut code) } == 0 {
+        return Err(last_error());
+    }
+    Ok(code)
+}

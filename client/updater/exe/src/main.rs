@@ -11,14 +11,15 @@
 //! pipe, in the messages of the original updater, so the launcher's window
 //! shows it as it always did.
 //!
-//! It contacts one host only, the one it was built for (or the one named in
-//! `updater_skhid.url` beside it), over HTTPS. No torrent, no listening
+//! It asks its configured server for Skhid updates. Missing original game
+//! files come from a separate HTTPS mirror with compiled-in SHA-256 pins. No torrent, no listening
 //! port, no registry, no crash upload, no administrator rights.
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod game;
 mod http;
 mod install;
 mod log;
@@ -395,6 +396,15 @@ enum Done {
 }
 
 fn update(session: &mut Session, layout: &Layout) -> Done {
+    let _lock = match win::install_lock(&layout.exe_dir) {
+        Ok(lock) => lock,
+        Err(code) => {
+            return Done::Failed(format!(
+                "Cannot lock the installation folder (another updater may be running): {}.",
+                win::error_text(code)
+            ));
+        }
+    };
     let server = match server(layout) {
         Ok(server) => server,
         Err(message) => return Done::Failed(message),
@@ -410,6 +420,11 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Ok(manifest) => manifest,
         Err(None) => return Done::Stopped,
         Err(Some(message)) => {
+            if !game::present(layout) {
+                return Done::Failed(format!(
+                    "The original game is not installed and the update server cannot be reached. {message}"
+                ));
+            }
             // No answer. What is installed and whole may still be played,
             // and so may files this updater never installed (copied by
             // hand, the first start): it knows nothing against them. Files
@@ -426,7 +441,17 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
             };
         }
     };
-    let Some(reason) = why_install(installed.as_ref(), &manifest, |file| look(layout, file)) else {
+    let game_added = match game::ensure(session, layout) {
+        Ok(added) => added,
+        Err(None) => return Done::Stopped,
+        Err(Some(message)) => return Done::Failed(message),
+    };
+    let reason = if game_added {
+        Some(Reason::NothingInstalled)
+    } else {
+        why_install(installed.as_ref(), &manifest, |file| look(layout, file))
+    };
+    let Some(reason) = reason else {
         log!("up to date");
         return Done::UpToDate;
     };

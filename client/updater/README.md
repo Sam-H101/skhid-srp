@@ -12,7 +12,7 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 
 ## What it does, and does not
 
-- Asks one host: the one in `updater_skhid.url` beside it, else the one it
+- Asks for Skhid updates at the host in `updater_skhid.url` beside it, else the one it
   was built with (`SKHID_UPDATE_URL`, default `https://skhid.link`). HTTPS
   through Windows' own WinHTTP (its TLS, its certificate store, the system's
   proxy settings); plain HTTP only for `127.0.0.1` and `localhost`. No
@@ -24,9 +24,16 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   the running launcher and itself. The steps, and what a player sees when
   one fails: `srp-026g/client-patches/launcher/README.md` ("How an update
   works", "When something goes wrong").
-- Writes two files beside itself: `updater_skhid.state` (what is installed)
+- If the original `survarium.exe` or `resources.db` is missing, downloads
+  the original game from the Google Drive mirror, checks a compiled-in
+  SHA-256 and installs the missing original files before the Skhid overlay.
+  A new player can unpack the overlay into an empty folder and start
+  `Skhid.bat`. No Google login, browser confirmation or administrator
+  prompt is needed. Allow about 10 GB of free disk space.
+- Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
-  does hold the game folder's path).
+  does hold the game folder's path) beside itself. `updater_skhid.lock`
+  prevents simultaneous installs in the same folder.
 - No BitTorrent, no listening port, no UPnP, no registry, no service, no
   crash upload, no administrator rights (its manifest says `asInvoker`;
   without one Windows takes a program named "updater" for an installer and
@@ -55,6 +62,50 @@ says so and does nothing.
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
 | `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started |
 
+## Original game download and verification
+
+`logic/src/game.rs` pins the original build-2777 archive at 2,906,544,103
+bytes and SHA-256
+`7435558eeb17098fc9337c4ba9470402cae4c9be974ef5d9bc544f19b122a028`.
+The complete Drive download was checked against archive.org's independently
+published SHA-1 `bb30b71fab155b3435917690fd2be87984546163` before pinning it.
+
+Downloads use a 64 KiB buffer, including in the 32-bit updater. The complete
+file is flushed, read back and hashed before extraction. The official
+standalone [7-Zip extractor](https://www.7-zip.org/download.html) is also
+downloaded and checked against its own compiled-in size and SHA-256 before
+it is run. Both files stay locked against writes and deletion until the
+extractor exits. Its download URL may change bytes when 7-Zip releases a
+new version; a mismatch stops installation and requires a reviewed pin
+update or a mirror of the pinned version. There is no verification bypass.
+
+Only five game files are extracted into a fresh staging folder: the original
+exe, resources database, crash DLL, certificate and splash image. The
+extracted exe must also match its known SHA-256. Only after successful
+extraction and checking are missing files moved into place; existing files
+are preserved, and a failed move rolls back files added by that attempt.
+The normal verified Skhid overlay then replaces the original certificate
+and crash DLL when needed. Existing complete games skip this bootstrap.
+
+The direct Drive endpoint was tested without cookies or sign-in. HTML
+confirmation pages, quota errors, redirects, interrupted transfers and hash
+mismatches fail closed. A failed transfer is removed; a completed verified
+archive is kept if extraction fails and is rehashed before retrying. The
+cache is deleted after successful installation. Interrupted transfers are
+not resumed.
+
+To move hosting, put a direct HTTPS URL in `updater_skhid.game-url` beside
+the updater (and `updater_skhid.extractor-url` for the pinned extractor).
+These files change only the source, never the trusted hash. Plain HTTP is
+accepted only on localhost for tests; FTP is not supported. No server
+deployment or binary rebuild is needed to change the mirror this way.
+
+`tests/test_game_download.py` runs the actual exe on Windows or Wine against
+a local HTTP server, covering failed downloads and preservation of existing
+files. With `SKHID_TEST_GAME_ARCHIVE` and `SKHID_TEST_EXTRACTOR` pointing to
+the pinned files, it also downloads, verifies and extracts the full game,
+then installs the Skhid overlay. It does not contact Drive or archive.org.
+
 ## Build and test
 
 Use the same nightly Rust as the game workspaces (`srp-026g/flake.nix`
@@ -66,6 +117,7 @@ dependencies of `exe/` are Microsoft's `windows-sys` and `windows-link`.
 SKHID_UPDATE_URL=https://test.example ./build.sh   # another default server
 (cd logic && cargo test)
 python tests/test_updater.py                 # Windows
+python tests/test_game_download.py           # Windows or Wine
 SKHID_TEST_BUNDLE=<a players' zip> python tests/test_updater.py
 ```
 

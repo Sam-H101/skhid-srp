@@ -79,14 +79,14 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/README.txt
         what to do with it, and where the original game is had.
 
-A player unpacks the overlay into the game's folder (the one that holds
-`game`) and starts Skhid.bat (or play_skhid.bat: the game alone, no
+A player unpacks the overlay into an empty folder, or into the game's folder
+(the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
 download the web page offers (SRP_DOWNLOAD_FILE), which is also what the
 updater installs from then on. Only the player files are included: no
 source, PDBs, tests or development tools. Build the Rust programs first
 with ../../client/bugtrap/build.sh and ../../client/updater/build.sh. The
-game itself is had from SRP_GAME_URL.
+updater downloads the original game from its pinned mirror when it is missing.
 """
 
 import hashlib
@@ -106,11 +106,10 @@ UPDATER_EXE = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "updater", "exe", "target", "i686-pc-windows-msvc", "release", L.UPDATER_NAME))
 BUGTRAP_DLL = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "bugtrap", "target", "i686-pc-windows-msvc", "release", "BugTrap.dll"))
-# Where the original game is had: the web archive's copy of build 2777.
+# The same build-2777 mirror pinned in client/updater/logic/src/game.rs.
 GAME_URL = (
-    "https://archive.org/download/"
-    "vostok_engine_v0.26g0_build_2777_internal_id_1104_jan_14_2015/"
-    "survarium_full_026g0.7z"
+    "https://drive.usercontent.google.com/download?"
+    "id=1LTK2rzJPELLXxtTavZwdzr247NFwT_GK&export=download&confirm=t"
 )
 SRP_CERT = os.path.join(HERE, "survarium_login_server.crt")
 EXE_DIR = os.path.join("binaries", "x86")
@@ -270,27 +269,28 @@ def readme(server, localization, description, files, embedded=False, site=None):
         "server may be stopped at any time. By playing you accept this.",
         "",
         "HOW TO PLAY",
-        "1. Get the original Survarium 0.26g (build 2777), a .7z archive of about",
-        "   2.9 GB (7-Zip opens it), and unpack it:",
-        f"   {GAME_URL}",
-        "   The game is in its Survarium\\game folder.",
     ]
     if site:
         lines += [
-            "2. Unpack this archive into that Survarium folder, the one that holds",
-            "   the `game` folder, and say yes when asked to replace files. Two of the",
-            "   game's files are replaced: game\\binaries\\x86\\bugtrap.dll and",
+            "1. Unpack this archive into a new folder (or into an existing Survarium",
+            "   folder, beside its `game` folder). Allow about 10 GB of free space",
+            "   for a new installation. In an existing game, two files are replaced:",
+            "   game\\binaries\\x86\\bugtrap.dll and",
             "   game\\resources\\ssl\\survarium_login_server.crt. Back them up first if",
             "   you want the originals. The game's own survarium.exe is not changed.",
-            f"3. Windows: double-click {STARTER} in that folder (Windows may show it as",
+            f"2. Windows: double-click {STARTER} in that folder (Windows may show it as",
             f"   \"{STARTER.rsplit('.', 1)[0]}\"). The launcher opens: choose your language at its top and",
-            "   press PLAY. If Windows warns about an unknown publisher, let it run:",
+            "   press PLAY. Missing original game files are downloaded automatically",
+            "   from Google Drive (2.9 GB), verified with a pinned SHA-256, and installed.",
+            "   The extractor is downloaded and verified too. No Google sign-in is needed.",
+            "   If Windows warns about an unknown publisher, let it run:",
             "   these files are not signed.",
             "   Linux: install Wine and Winetricks, open a terminal in that folder and",
             f"   run bash {LINUX_STARTER} (the game) or bash {LINUX_STARTER} launcher (the launcher,",
-            "   which looks for updates first). See LINUX.txt for setup and",
+            "   which downloads a missing game and looks for updates first). For a new",
+            "   installation, use the launcher first. See LINUX.txt for setup and",
             "   troubleshooting.",
-            "4. Sign in with any user name and password. A new name is registered on its",
+            "3. Sign in with any user name and password. A new name is registered on its",
             "   first sign-in; remember the password.",
             "",
             "You download this archive once: each time the launcher starts, it looks",
@@ -310,7 +310,8 @@ def readme(server, localization, description, files, embedded=False, site=None):
             f"asks {site} whether the files of this archive are still the",
             "current ones. If not, it downloads the current archive, checks it and",
             "replaces the files, the launcher and itself included; nothing else of the",
-            "game is touched. It needs no administrator rights. What it did is in",
+            "existing game is touched. A missing game is installed from the verified",
+            "original archive first. It needs no administrator rights. What it did is in",
             "game\\binaries\\x86\\updater_skhid.log. If it cannot reach the server but the",
             "files are complete, PLAY still works.",
             "The language is chosen in the launcher. A changed play_skhid.bat or",
@@ -319,6 +320,10 @@ def readme(server, localization, description, files, embedded=False, site=None):
         ]
     else:
         lines += [
+            "1. Get the original Survarium 0.26g (build 2777), a .7z archive of about",
+            "   2.9 GB (7-Zip opens it), and unpack it:",
+            f"   {GAME_URL}",
+            "   The game is in its Survarium\\game folder.",
             "2. Copy the `game` folder of this archive over the game's own `game`",
             "   folder. It adds survarium_skhid.exe, play_skhid.bat and play_skhid.sh to",
             "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
