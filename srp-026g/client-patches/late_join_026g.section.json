@@ -1,0 +1,18 @@
+{
+  "size": 7609,
+  "sha256": "3dfec671f2cac9a03023ecce63a795294dd70ebd1ae3e55d885d46f10b03bbb8",
+  "symbols": {
+    "lj_complete": 2430,
+    "lj_prepare": 1771,
+    "lj_activate": 1717,
+    "lj_deactivate": 1650,
+    "lj_player_destroyed": 2655,
+    "lj_native_install": 3037,
+    "lj_native_animations": 2754
+  },
+  "built_with": {
+    "cc": "cc (Debian 13.2.0-7) 13.2.0",
+    "ld": "GNU ld (GNU Binutils for Debian) 2.41.90.20240115",
+    "nasm": "NASM version 2.16.01"
+  }
+}

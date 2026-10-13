@@ -4,7 +4,8 @@ game folder) and checks them. Nothing is run and nothing is installed.
 
     python selftest_026g.py [<survarium.exe>]
 
-Checks, per variant (cert-only, section, hash-mismatch):
+Checks, per variant (cert-only, section, hash-mismatch; the last two here
+without the late join, as patch revision 4 was, which check 15 builds on):
  1. the checked-in .bin files are what nasm makes from the .asm today;
  2. the PE parses: section table, alignments, SizeOfImage, data
     directories inside the file, the certificate table last and intact;
@@ -37,10 +38,23 @@ Checks, per variant (cert-only, section, hash-mismatch):
     with a root is the original's), and the default of -record_journal is
     the exe's "0" (0x851CC7; the relocation of the address stays active,
     the option is read only at the game's start); cert-only keeps both.
+15. the late join (patch revision 5, the default build): the checked-in
+    late_join_026g.section.bin is its .json's, and its first 4096 bytes
+    are what nasm makes of late_join_026g.asm with the .json's addresses
+    (the C code after them is not built here: late_join_026g.py
+    --check-bin does that where a C compiler is). The build with it
+    differs from the build without it, of the same server, in the sites
+    patch_026g.py names and in nothing else of the original's bytes; each
+    rewritten site disassembles to what it is meant to be, each hook to a
+    call or jump to its entry and nops; no relocation is under a site;
+    `.srp` has the first page unchanged, then the code; `.srpd` is one
+    zeroed writable page after it with no bytes in the file; the checks
+    of 2 and 7 to 14 hold for it too, and the revision is REVISION.
 """
 
 import ctypes
 import hashlib
+import json
 import os
 import re
 import struct
@@ -667,9 +681,9 @@ def version_field(image):
     return out
 
 
-def test_revision(original, image, mode):
+def test_revision(original, image, mode, revision):
     """The patch revision in the sign-in (client_patch.md section 6)."""
-    va, old, new = P.REVISION_SITE
+    va, old, new = P.revision_site(revision)
     stock = list(b"0.26g0" + bytes(6)) + ["eula"]
     check(version_field(Image(original)) == stock,
           'the original fills the version field with "0.26g0" and six zero bytes, then the EULA flag')
@@ -677,16 +691,16 @@ def test_revision(original, image, mode):
     if mode == "cert-only":
         check(image.read(va, len(old)) == old and field == stock, "cert-only: the version field's code is the original's")
         return
-    check(1 <= P.REVISION <= 255 and new == bytes([0xC6, 0x44, 0x24, 0x27, P.REVISION, 0x90]),
-          f"the revision is {P.REVISION}: a byte, not 0")
+    check(1 <= revision <= 255 and new == bytes([0xC6, 0x44, 0x24, 0x27, revision, 0x90]),
+          f"the revision is {revision}: a byte, not 0")
     rows = {address: text for address, _, text in ndisasm(image.read(*[VERSION_FIELD[0], VERSION_FIELD[1] - VERSION_FIELD[0]]),
                                                          VERSION_FIELD[0])}
-    check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{P.REVISION:#x}"
+    check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{revision:#x}"
           and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
-          f"{va:#x}: `mov byte [esp+0x27],{P.REVISION:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
-    expected = list(b"0.26g0" + bytes([0, P.REVISION]) + bytes(4)) + ["eula"]
+          f"{va:#x}: `mov byte [esp+0x27],{revision:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
+    expected = list(b"0.26g0" + bytes([0, revision]) + bytes(4)) + ["eula"]
     check(field == expected,
-          f'the version field is "0.26g0", a zero, the revision {P.REVISION} in byte 7 and four zero bytes; '
+          f'the version field is "0.26g0", a zero, the revision {revision} in byte 7 and four zero bytes; '
           "the EULA flag follows as before")
     inside = lambda relocations: sorted((address, kind) for kind, address in relocations.values()
                                         if VERSION_FIELD[0] <= address < VERSION_FIELD[1])
@@ -759,6 +773,151 @@ def test_no_branch_into_hooks(original):
           + "".join(f"\n          {a:#x} {kind}" for a, kind in found))
 
 
+# What the late join's rewritten sites are meant to disassemble to.
+LATE_JOIN_TEXT = {
+    0x279610: "mov eax,0x3", 0x27A2E0: "mov eax,0x3", 0x3237B4: "mov dl,0x14",
+    0x2F5ACF: "cmp bl,0x14", 0x2F5AF4: "cmp bl,0x14", 0x2F5BE6: "cmp bl,0x14", 0x2F5C03: "cmp bl,0x14",
+}
+
+
+def late_join_sites():
+    """[(address, length)] of every site the late join changes beside the
+    revision and the ready hook, which the build without it changes too."""
+    return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
+        [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS]
+
+
+def test_late_join_bin():
+    print("late-join code (late_join_026g.section.bin)")
+    code = open(P.late_join_bin(), "rb").read()
+    kept = json.load(open(os.path.splitext(P.late_join_bin())[0] + ".json", encoding="utf-8"))
+    check(kept["size"] == len(code) and kept["sha256"] == hashlib.sha256(code).hexdigest(),
+          f"the .bin is the one its .json describes ({len(code)} bytes, built with {kept['built_with']['cc']})")
+    names = {"LJ_COMPLETE": "lj_complete", "LJ_PREPARE": "lj_prepare", "LJ_ACTIVATE": "lj_activate",
+             "LJ_DEACTIVATE": "lj_deactivate", "LJ_DESTROYED": "lj_player_destroyed",
+             "LJ_INSTALL": "lj_native_install", "LJ_ANIMATIONS": "lj_native_animations"}
+    c_code = P.LATE_JOIN_VA + P.LATE_JOIN_ASM_SIZE
+    defines = [f"-DCAVE={P.LATE_JOIN_VA}", f"-DC_CODE={c_code}"]
+    defines += [f"-D{define}={c_code + kept['symbols'][name]}" for define, name in names.items()]
+    defines += [f"-DSTATE_VA={P.late_join_state_va(code)}", f"-DUPLOAD_READY={P.SECTION_VA}"]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", *defines, os.path.join(HERE, "late_join_026g.asm"), "-o", out],
+                       check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(len(fresh) == P.LATE_JOIN_ASM_SIZE and fresh == code[:P.LATE_JOIN_ASM_SIZE],
+          f"its first {P.LATE_JOIN_ASM_SIZE} bytes are what nasm makes of late_join_026g.asm today")
+    check(all(0 < offset < len(code) - P.LATE_JOIN_ASM_SIZE for offset in kept["symbols"].values()),
+          "the C functions the assembly calls are inside the C code")
+    entries = sorted({offset for _, _, offset, _ in P.LATE_JOIN_HOOKS} | {P.LATE_JOIN_READY_OFFSET})
+    check(all(code[offset] != 0xCC and (offset == 0 or code[offset - 1] == 0xCC) for offset in entries),
+          f"the {len(entries)} entries the hooks go to start code after int3 padding")
+    return code
+
+
+def test_late_join(original, without, server, source):
+    """The default build with the late join against `without`, the build
+    of the same server without it (checked by everything above)."""
+    print(f"  the late join on top (patch revision {P.REVISION})")
+    code = open(P.late_join_bin(), "rb").read()
+    upload = open(P.default_bin("section"), "rb").read()
+    data, description = P.build(original, "section", upload, server, code)
+    print("  " + description)
+    image, before = Image(data), Image(without)
+    headers = image.headers
+    sections, old_sections = image.sections, before.sections
+    name, rva, vsize, raw, rsize, flags = sections[-2]
+    align = lambda value, to: (value + to - 1) // to * to
+    first_page = bytes(without[old_sections[-1][3]:old_sections[-1][3] + old_sections[-1][2]])
+    check(len(sections) == 9 and sections[:7] == old_sections[:7], "9 sections; the original's seven are untouched")
+    check(name == P.SECTION_NAME and rva == P.SECTION_RVA and flags == P.SECTION_CHARACTERISTICS
+          and vsize == P.LATE_JOIN_OFFSET + len(code) and rsize == align(vsize, headers.file_alignment)
+          and raw == old_sections[-1][3],
+          f".srp: virtual {vsize:#x} = one page and the {len(code)} bytes of late-join code, file {raw:#x}+{rsize:#x}")
+    body = bytes(data[raw:raw + rsize])
+    check(body[:len(first_page)] == first_page
+          and set(body[len(first_page):P.LATE_JOIN_OFFSET]) <= {0xCC}
+          and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
+          and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
+          f"its first page is the build's without the late join ({len(first_page)} bytes, then int3), "
+          "the code follows, then int3 padding")
+    name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
+    check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
+          and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
+          and state_rva == align(rva + vsize, headers.section_alignment)
+          and P.IMAGE_BASE + state_rva == P.late_join_state_va(code),
+          f".srpd at VA {P.IMAGE_BASE + state_rva:#x}: one page, uninitialized | read | write, no bytes in the "
+          "file, on the page after the code (where the code looks for it)")
+    get = lambda blob, at: struct.unpack_from("<I", blob, at)[0]
+    check(get(data, headers.size_of_image_at) == state_rva + state_size
+          and get(data, headers.optional + 12) == get(without, headers.optional + 12) + state_size
+          and get(data, headers.size_of_code_at) == get(original, headers.size_of_code_at) + rsize
+          and headers.table + 40 * 9 <= headers.size_of_headers,
+          "SizeOfImage ends at .srpd, SizeOfUninitializedData grew by its page, SizeOfCode by .srp's file size; "
+          "the section table fits in the headers")
+    security_offset, security_size = image.directory(4)
+    old_offset, old_size = struct.unpack_from("<II", original, headers.security_at)
+    check(security_offset == raw + rsize and security_offset + security_size == len(data) and security_offset % 8 == 0
+          and bytes(data[security_offset:]) == bytes(original[old_offset:old_offset + old_size]),
+          f"certificate table at {security_offset:#x}: right after .srp's bytes, 8-byte aligned, last in the file, "
+          "identical to the original's")
+    same = all(image.directory(index) == before.directory(index) for index in range(16) if index != 4)
+    check(same, "the other 15 data directories are those of the build without it")
+
+    # Every byte before .srp's file data, against the build without.
+    ranges = [(P.file_offset(va), size) for va, size in late_join_sites()]
+    ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
+               (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
+               (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
+               (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
+    allowed = bytearray(raw)
+    for at, size in ranges:
+        allowed[at:at + size] = b"\1" * size
+    a, b = bytes(without[:raw]), bytes(data[:raw])
+    changed = [i for i in range(raw) if a[i] != b[i]] if a != b else []
+    stray = [i for i in changed if not allowed[i]]
+    check(not stray, f"{len(changed)} bytes before .srp differ from the build without the late join, all inside the "
+          f"{len(ranges)} intended ranges" + "".join(f"\n          file {i:#x}" for i in stray[:8]))
+
+    rows_at = lambda va, size: ndisasm(image.read(va, size), va)
+    for va, old, new in P.LATE_JOIN_PATCHES:
+        rows = rows_at(va, len(old))
+        check(image.read(va, len(old)) == new and Image(original).read(va, len(old)) == old
+              and rows[0][2] == LATE_JOIN_TEXT[va] and all(text == "nop" for _, _, text in rows[1:])
+              and sum(len(code_hex) // 2 for _, code_hex, _ in rows) == len(old),
+              f"{va:#x}: `{rows[0][2]}` + {len(rows) - 1} nop")
+    for va, old, offset, opcode in P.LATE_JOIN_HOOKS + ((P.LATE_JOIN_READY_VA, P.HOOKS[0][1], P.LATE_JOIN_READY_OFFSET, 0xE9),):
+        rows = rows_at(va, len(old))
+        word = "call" if opcode == 0xE8 else "jmp"
+        check(Image(original).read(va, len(old)) == old and rows[0][2].startswith(word)
+              and branch_target(rows[0][2]) == P.LATE_JOIN_VA + offset
+              and all(text == "nop" for _, _, text in rows[1:]) and len(rows) == len(old) - 4,
+              f"hook {va:#x}: {rows[0][2]} + {len(rows) - 1} nop (entry {offset})")
+    ready = ndisasm(image.read(P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET, 128), P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET)
+    onward = [branch_target(text) for _, _, text in ready if text.startswith("jmp")]
+    check(ready[0][2] == "pusha" and onward[:1] == [P.SECTION_VA],
+          f"the ready hook's code starts with pushad and jumps on to the upload code at {P.SECTION_VA:#x}")
+
+    sites = [(va, va + size) for va, size in late_join_sites()]
+    under = lambda relocations: [va for kind, va in relocations.values()
+                                 if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
+    check(not under(Image(original).relocations()) and image.relocations() == before.relocations(),
+          "no base relocation is under a late-join site; the relocation table is the build's without it")
+
+    test_revision(original, image, "section", P.REVISION)
+    test_hash_interval(original, image, "section")
+    test_memory_check(original, image, "section")
+    test_default_server(original, image, "section", server)
+    test_gather(original, image, "section")
+    test_start_up_folder(original, image, "section")
+    suffix = "" if server is None else (".embedded-max" if len(server) > 63 else ".embedded")
+    path = os.path.join(SCRATCH, f"survarium_srp.section{suffix}.late-join.exe")
+    with open(path, "wb") as out:
+        out.write(data)
+    print(f"  written: {path} (sha256 {hashlib.sha256(data).hexdigest()})")
+    test_windows(path, source, "section")
+
+
 def test_windows(path, original_path, mode):
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     imagehlp = ctypes.WinDLL("imagehlp", use_last_error=True)
@@ -812,6 +971,7 @@ def main():
     if inside:
         sys.exit("the scratch directory must not be inside the game folder")
     test_bins()
+    test_late_join_bin()
     test_no_branch_into_hooks(original)
     test_server_options(original)
     variants = [(mode, None) for mode in ("cert-only", "section", "hash-mismatch")]
@@ -831,9 +991,11 @@ def main():
         test_hash_interval(original, image, mode)
         test_memory_check(original, image, mode)
         test_default_server(original, image, mode, server)
-        test_revision(original, image, mode)
+        test_revision(original, image, mode, P.REVISION_WITHOUT_LATE_JOIN)
         test_gather(original, image, mode)
         test_start_up_folder(original, image, mode)
+        if mode == "section":
+            test_late_join(original, data, server, source)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
                 check(open(INSTALLED_CERT_ONLY, "rb").read() == bytes(data),
