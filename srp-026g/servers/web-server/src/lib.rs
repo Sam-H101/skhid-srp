@@ -93,6 +93,9 @@ const MAX_MAINTENANCE_MINUTES: u64 = 7 * 24 * 60;
 /// Wrong admin tokens in a row before the admin page waits.
 const MAX_TOKEN_FAILURES: u32 = 5;
 const TOKEN_LOCKOUT: Duration = Duration::from_secs(60);
+/// The `Content-Security-Policy` of every page but the launcher's
+/// ([`launcher::policy`]).
+const POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'";
 
 /// The page's languages: Ukrainian and English only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -490,13 +493,17 @@ impl Web {
             }
         }
         let response = self.route(&request, &peer);
+        let policy = if self.game.is_some() && launcher::serves(&request.path) {
+            launcher::policy()
+        } else {
+            POLICY
+        };
         let head = format!(
             "HTTP/1.0 {}\r\nContent-Type: {}\r\n\
              Content-Length: {}\r\nCache-Control: no-store\r\n\
              X-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\n\
              Referrer-Policy: no-referrer\r\n\
-             Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
-             form-action 'self'\r\nConnection: close\r\n\r\n",
+             Content-Security-Policy: {policy}\r\nConnection: close\r\n\r\n",
             response.status,
             response.content_type.as_str(),
             response.body.len()
@@ -606,7 +613,14 @@ impl Web {
                 match request.path.as_str() {
                     "/api/stats" => return stats::response(&self.store, game),
                     "/api/client-files" => return launcher::client_files(),
-                    path if path == "/launcher" || path.starts_with("/launcher/") => {
+                    path if path.starts_with(launcher::FRESH) => {
+                        return launcher::fresh(
+                            launcher::language(path, request.lang),
+                            &self.store,
+                            game,
+                        );
+                    }
+                    path if launcher::serves(path) => {
                         return launcher::page(
                             launcher::language(path, request.lang),
                             &self.store,
