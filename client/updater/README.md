@@ -119,6 +119,15 @@ that is killed takes it along and it does not write on by itself. The
 room asked for is the room still needed: an archive that is already
 downloaded is not counted again.
 
+What the extractor prints (its messages and its errors, as UTF-8) goes to
+`updater_skhid.7zr.txt` beside the updater while it runs. When it has ended,
+whatever its exit number, the updater copies those lines into
+`updater_skhid.log`, each after `7zr:`, and deletes the file: a failed
+extraction then says in the log which file could not be written and why,
+not "exit 2" alone. A file left by a killed updater is copied and deleted
+at the next start. When the file cannot be made, the extractor runs all the
+same.
+
 To move hosting, put a direct HTTPS URL in `updater_skhid.game-url` beside
 the updater. That file changes only the source, never the trusted hash. Plain HTTP is
 accepted only on localhost for tests; FTP is not supported. No server

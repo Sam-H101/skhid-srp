@@ -54,6 +54,39 @@ pub fn sweep(layout: &Layout) {
     if present(layout) && win::exists(&archive) && win::delete(&archive).is_ok() {
         log!("removed the left-over game download: {archive}");
     }
+    let output = output_path(layout);
+    if win::exists(&output) {
+        log!("what the extractor printed in an attempt that was cut short:");
+        log_output(&output);
+    }
+}
+
+/// Where the extractor's messages go while it runs, beside the log.
+fn output_path(layout: &Layout) -> String {
+    format!("{}\\updater_skhid.7zr.txt", layout.exe_dir)
+}
+
+/// The extractor prints some twenty lines for the five files; the end of
+/// more than this is kept, where the errors are.
+const OUTPUT_LIMIT: usize = 16 * 1024;
+
+/// Copies what the extractor printed into the log, line by line, and removes
+/// its file. Without this the log has the extractor's exit number only, and
+/// not which file it could not write or why.
+fn log_output(path: &str) {
+    match win::read_tail(path, OUTPUT_LIMIT) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                log!("7zr: {line}");
+            }
+        }
+        Err(code) => log!(
+            "what the extractor printed cannot be read: {}",
+            win::error_text(code)
+        ),
+    }
+    let _ = win::delete(path);
 }
 
 /// `win::staging_dir` makes `.skhid-extract-<ticks>-<n>`.
@@ -213,18 +246,29 @@ pub fn ensure(session: &mut Session, layout: &Layout) -> Result<bool, Option<Str
             step: step::EXTRACT,
             text: "Survarium 0.26g",
         });
-        let mut command =
-            format!("\"{extractor_path}\" x \"{archive_path}\" -o\"{stage}\" -y -bd -bb0");
+        // -sccUTF-8: what it prints is UTF-8, so a folder name in any
+        // alphabet reads right in the log.
+        let mut command = format!(
+            "\"{extractor_path}\" x \"{archive_path}\" -o\"{stage}\" -y -bd -bb0 -sccUTF-8"
+        );
         for (name, _) in game::FILES {
             command.push_str(&format!(" \"Survarium/game/{name}\""));
         }
-        let code = win::run_wait(&extractor_path, &command, &layout.game_dir, &mut || {
-            session.pump()
-        })
-        .map_err(|code| io_error("extract the original game", code))?;
+        let output_path = output_path(layout);
+        let code = win::run_wait(
+            &extractor_path,
+            &command,
+            &layout.game_dir,
+            &output_path,
+            &mut || session.pump(),
+        );
+        log_output(&output_path);
+        let code = code.map_err(|code| io_error("extract the original game", code))?;
+        log!("the extractor ended with exit {code}");
         if code != 0 {
             return Err(Some(format!(
-                "The game extractor failed (exit {code}). Nothing was installed."
+                "The game extractor failed (exit {code}). Nothing was installed. What it \
+                 printed is in updater_skhid.log beside the updater."
             )));
         }
         for (name, expected) in game::FILES {
