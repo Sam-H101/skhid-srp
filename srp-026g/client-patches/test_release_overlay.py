@@ -123,6 +123,25 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(b'game/binaries/x86/play_skhid.sh', linux)
         self.assertIn('run bash Skhid.sh (the game) or bash Skhid.sh launcher', readme)
 
+    def test_optional_native_launcher_is_shipped_executable(self):
+        native = self.root / 'skhid-launcher'
+        data = bytearray(64)
+        data[:6] = b'\x7fELF\x02\x01'
+        data[16:18] = (3).to_bytes(2, 'little')
+        data[18:20] = (62).to_bytes(2, 'little')
+        native.write_bytes(data)
+        archive = self.root / 'native.zip'
+        self.build(archive, '--pack-zip', '--native-launcher=' + str(native))
+        with zipfile.ZipFile(archive) as z:
+            entry = z.getinfo('game/binaries/x86/skhid-launcher')
+            self.assertEqual(stat.S_IMODE(entry.external_attr >> 16), 0o755)
+            self.assertEqual(z.read(entry), data)
+            self.assertIn(b'run bash Skhid.sh to open the native launcher', z.read('README.txt'))
+            self.assertNotIn(b'Skhid.sh (the game)', z.read('README.txt'))
+        native.write_bytes(b'not an ELF executable')
+        with self.assertRaises(SystemExit):
+            self.build(self.root / 'invalid', '--native-launcher=' + str(native))
+
     @unittest.skipUnless(os.name == 'nt' and STAND_IN.is_file(),
                          'Windows, and the stand-in exe of client/updater/tests (build.sh there)')
     def test_the_starter_starts_the_launcher_from_its_folder(self):

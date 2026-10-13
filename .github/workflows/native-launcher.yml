@@ -1,0 +1,37 @@
+name: Native launcher
+on:
+  pull_request:
+    paths:
+      - 'client/launcher/**'
+      - 'client/updater/logic/**'
+      - 'srp-026g/client-patches/**'
+      - '.github/workflows/native-launcher.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'client/launcher/**'
+      - 'client/updater/logic/**'
+      - 'srp-026g/client-patches/**'
+      - '.github/workflows/native-launcher.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: cargo test --locked --manifest-path client/updater/logic/Cargo.toml
+      - run: cargo test --locked --manifest-path client/launcher/Cargo.toml
+      - run: cargo build --locked --manifest-path client/launcher/Cargo.toml
+      - run: python -m unittest discover -s client/launcher/tests -v
+      - run: python -m unittest discover -s srp-026g/client-patches -p 'test_release_overlay.py'
+      - if: runner.os == 'Linux'
+        run: python -m unittest discover -s srp-026g/client-patches -p 'test_*launcher.py'

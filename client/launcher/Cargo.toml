@@ -1,0 +1,25 @@
+[package]
+name = "skhid-launcher"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[[bin]]
+name = "skhid-launcher"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe"]
+
+[dependencies]
+updater_logic = { package = "skhid-updater-logic", path = "../updater/logic" }
+ureq = { version = "=3.1.4", default-features = false, features = ["rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,5 +1,19 @@
 SURVARIUM 0.26g - LINUX
 
+NATIVE LAUNCHER
+
+Bundles built with --native-launcher include game/binaries/x86/skhid-launcher.
+In those bundles, bash Skhid.sh opens a native Linux window for updates, language
+selection and PLAY. Wine is used internally for game setup and the game itself.
+Set up Wine / DXVK prepares the prefix without starting the game; PLAY also
+does this on first use. Install Wine, Winetricks and graphics drivers as below.
+Without that optional binary, Skhid.sh retains its script-based behavior.
+
+The native launcher needs Linux x86-64, OpenGL, and Wayland or X11 runtime
+libraries. It uses the existing game folder; it does not download the full game.
+An unavailable update server does not prevent PLAY with the installed files.
+Native launcher details and build instructions: client/launcher/README.txt.
+
 Install Bash, Wine with 32-bit Windows application support, and Winetricks.
 The launcher also uses standard Linux tools, including flock, timeout and GNU
 coreutils. Apply this archive's game folder over the original extracted game,

@@ -8,6 +8,10 @@ set -euo pipefail
 localization=english
 server=
 
+# The native launcher supplies the selected language without editing this file.
+localization=${SKHID_LOCALIZATION:-$localization}
+server=${SKHID_SERVER:-$server}
+
 die() { echo "Error: $*" >&2; exit 1; }
 
 detect_resolution() {
@@ -46,11 +50,11 @@ detect_resolution() {
 for command in wine winetricks wineserver; do
     command -v "$command" >/dev/null || die "Install $command first."
 done
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+cd -- "${SKHID_GAME_BIN:-$(dirname -- "${BASH_SOURCE[0]}")}"
 exe=survarium_skhid.exe
 [[ -f "$exe" && ! -L "$exe" ]] || die "Put this script beside $exe."
 mode=${1-}
-[[ $# -le 1 && ( -z $mode || $mode == launcher ) ]] || die 'Usage: bash play_skhid.sh [launcher]'
+[[ $# -le 1 && ( -z $mode || $mode == launcher || $mode == setup ) ]] || die 'Usage: bash play_skhid.sh [launcher|setup]'
 if [[ $mode == launcher ]]; then
     for file in launcher_skhid.exe updater_skhid.exe; do
         [[ -f "$file" && ! -L "$file" ]] || die "Put $file beside this script to use the launcher."
@@ -119,6 +123,10 @@ if [[ ! -f "$WINEPREFIX/.skhid-dxvk" ]]; then
 fi
 
 export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;d3d11,dxgi=n,b"
+if [[ $mode == setup ]]; then
+    echo "Wine and DXVK are ready. Log: $log"
+    exit 0
+fi
 if [[ $mode == launcher ]]; then
     # The game it starts inherits this Wine environment; the language is the
     # one chosen in the launcher, not the one above.

@@ -43,6 +43,7 @@ At the root:
 | [`docs/PUBLISHING.md`](docs/PUBLISHING.md) | What must never be written into this repository (players' names, addresses, secrets) |
 | `tools/re-kit/` | The reverse-engineering and log-analysis scripts |
 | [`client/bugtrap/`](client/bugtrap/) | Rust crash DLL for the native Win32 client: saves dumps beside the EXE, with report submission removed |
+| [`client/launcher/`](client/launcher/README.txt) | Native Linux/Windows launcher and updater; Linux manages Wine/DXVK internally for the game |
 | `LICENSE` | GPL-3.0, as the SRP project |
 
 ## Start here

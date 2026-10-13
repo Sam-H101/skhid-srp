@@ -105,6 +105,37 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Launcher exited with an error', result.stderr)
 
+    def test_native_setup_prepares_prefix_without_starting_game(self):
+        self.copy_exe()
+        result = self.run_script('setup')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        self.assertTrue(any(c['name'] == 'winetricks' for c in calls))
+        self.assertFalse(any('survarium_skhid.exe' in c['args'] for c in calls))
+        self.assertTrue((self.bin / 'wineprefix/.skhid-dxvk').exists())
+
+    def test_native_language_overrides_script_default(self):
+        self.copy_exe()
+        self.env['SKHID_LOCALIZATION'] = 'polish'
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        self.assertIn('-localization=polish', calls[-1]['args'])
+
+    def test_starter_prefers_native_launcher_when_present(self):
+        install = self.root / 'native install'
+        folder = install / 'game/binaries/x86'
+        folder.mkdir(parents=True)
+        native = folder / 'skhid-launcher'
+        native.write_text('#!' + sys.executable + '\nimport sys\nprint(repr(sys.argv[1:]))\n')
+        native.chmod(0o755)
+        starter = install / 'Skhid.sh'
+        starter.write_bytes(STARTER.read_bytes())
+        result = subprocess.run([str(self.tools / 'bash'), str(starter)], cwd=self.root,
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(repr(['--game-dir', str(install / 'game')]), result.stdout)
+
     def test_the_starter_beside_game_runs_the_script_with_its_arguments(self):
         # Skhid.sh in the game's folder, the script where the archive puts it.
         install = self.root / "install with spaces & apostrophe's"

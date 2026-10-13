@@ -2,12 +2,17 @@
 # Survarium 0.26g on the Skhid server, for Linux. This file belongs in the
 # game's folder, beside the folder named game. In a terminal there:
 #
-#     bash Skhid.sh             starts the game
+#     bash Skhid.sh             opens the native launcher when bundled,
+#                               otherwise starts the game
 #     bash Skhid.sh launcher    starts the Skhid launcher, which looks for
 #                               newer Skhid files first (see LINUX.txt)
 #
-# It only runs game/binaries/x86/play_skhid.sh, which does the work.
+# Explicit arguments keep using play_skhid.sh (including its Wine launcher mode).
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+native=$here/game/binaries/x86/skhid-launcher
+if [[ $# == 0 && -x $native && ! -L $native ]]; then
+    exec "$native" --game-dir "$here/game"
+fi
 script=$here/game/binaries/x86/play_skhid.sh
 if [[ ! -f $script ]]; then
     echo "play_skhid.sh was not found in $here/game/binaries/x86" >&2

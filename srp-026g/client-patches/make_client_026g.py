@@ -15,6 +15,7 @@ USAGE
         [--site=https://<host>]      the server's web page; https://<host of --server>
                                      when not given
         [--no-launcher]              without the launcher and its updater
+        [--native-launcher=<ELF>]    also include the native Linux launcher
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
@@ -121,14 +122,25 @@ CERT_REL = os.path.join("resources", "ssl", "survarium_login_server.crt")
 LINUX_LAUNCHER = os.path.join("game", EXE_DIR, "play_skhid.sh")
 # The same for Linux, run as `bash Skhid.sh` beside the `game` folder.
 LINUX_STARTER = "Skhid.sh"
+NATIVE_LAUNCHER = os.path.join("game", EXE_DIR, "skhid-launcher")
 # What a Linux unpacker makes executable.
-SCRIPTS = (LINUX_LAUNCHER, LINUX_STARTER)
+SCRIPTS = (LINUX_LAUNCHER, LINUX_STARTER, NATIVE_LAUNCHER)
 # The localizations the client knows (login_chat.md: the language byte).
 LOCALIZATIONS = ("english", "russian", "ukrainian", "german", "polish")
 
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def read_native_launcher(path):
+    data = Path(path).read_bytes()
+    # The Linux bundle is for x86-64 hosts; the game itself remains x86 Wine.
+    if (len(data) < 64 or data[:6] != b'\x7fELF\x02\x01'
+            or int.from_bytes(data[18:20], 'little') != 62
+            or int.from_bytes(data[16:18], 'little') not in (2, 3)):
+        sys.exit(f"{path}: expected an x86-64 Linux ELF executable")
+    return data
 
 
 def read_bugtrap(path):
@@ -371,6 +383,7 @@ def main():
     bugtrap_path = BUGTRAP_DLL
     archive = False
     launcher, updater_path, site = True, UPDATER_EXE, None
+    native_launcher = None
     for option in options:
         if option == "--check":
             check = True
@@ -388,6 +401,8 @@ def main():
             bugtrap_path = option[len("--bugtrap="):]
         elif option.startswith("--updater="):
             updater_path = option[len("--updater="):]
+        elif option.startswith("--native-launcher="):
+            native_launcher = option[len("--native-launcher="):]
         elif option.startswith("--site="):
             site = L.parse_site(option[len("--site="):])
         elif option == "--no-launcher":
@@ -396,6 +411,8 @@ def main():
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) != 2 or server is None:
         sys.exit(__doc__)
+    if native_launcher and not launcher:
+        sys.exit("--native-launcher requires the launcher bundle (omit --no-launcher)")
     source, output = game_root(args[0]), os.path.abspath(args[1])
     # Never into the game: not its folder, nor the install that holds it.
     if inside(output, source) or inside(output, os.path.dirname(source)):
@@ -452,9 +469,19 @@ def main():
         ]
         files += [(os.path.join("game", EXE_DIR, L.PAGES_DIR, name), data)
                   for name, data in sorted(launcher_pages.pages(site).items())]
+    if native_launcher:
+        files.append((NATIVE_LAUNCHER, read_native_launcher(native_launcher)))
     listed = [(name.replace(os.sep, "/"), sha256(data)) for name, data in files]
-    files.append(("README.txt", readme(server, localization, description, listed, embedded,
-                                       site if launcher else None)))
+    instructions = readme(server, localization, description, listed, embedded,
+                          site if launcher else None)
+    if native_launcher:
+        instructions = instructions.replace(
+            b"run bash Skhid.sh (the game) or bash Skhid.sh launcher (the launcher,\r\n   which looks for updates first).",
+            b"run bash Skhid.sh to open the native launcher and press PLAY.")
+        instructions = instructions.replace(
+            b"Skhid.sh beside it, for Linux: it runs play_skhid.sh, nothing else.",
+            b"Skhid.sh beside it, for Linux: it opens the native skhid-launcher.\r\nThe native launcher uses Wine internally for game setup and play.")
+    files.append(("README.txt", instructions))
 
     if not check and archive:
         os.makedirs(os.path.dirname(output), exist_ok=True)
