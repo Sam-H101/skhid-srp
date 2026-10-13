@@ -56,6 +56,9 @@ In the ZIP they are, all in `game/binaries/x86/`: `launcher_skhid.exe`,
 `Skhid.bat`: the one file a player starts. It starts `launcher_skhid.exe`
 in its folder and does nothing else; if the launcher is not where it looks
 (the ZIP was unpacked somewhere else), it says where the files belong.
+Beside it is `Skhid.sh`, the same for Linux: `bash Skhid.sh` runs
+`play_skhid.sh` (the game), `bash Skhid.sh launcher` the launcher under
+Wine.
 
 The same input gives the same ZIP byte for byte. That matters: the updater
 installs whenever the ZIP's checksum changes.
@@ -342,8 +345,10 @@ whole protocol: `../../docs/notes/launcher.md`.
   tests; one runs the real `Skhid.bat` in a folder with a space and a
   bracket in its name, with a stand-in for the launcher (it was started by
   its full path, in its own folder), and without the launcher (the text
-  that says where the files belong). `test_linux_launcher.py`: 24 tests
-  (in WSL).
+  that says where the files belong). `test_linux_launcher.py`: 25 tests
+  (in WSL, with a stand-in for Wine); one runs `Skhid.sh` from another
+  folder, with and without `launcher`, and without the script it looks
+  for.
 
 **Not run:** Wine (`bash play_skhid.sh launcher`); another Windows than 11;
 the real game started from the launcher (the stand-in was); the page and

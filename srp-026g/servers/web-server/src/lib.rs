@@ -1523,8 +1523,8 @@ fn home(lang: Lang, stats: Stats) -> String {
                 "Відтоді це все, що потрібно робити: під час кожного запуску лаунчер перевіряє, чи є нові наші файли, і сам їх встановлює.",
             ),
             lang.tr(
-                "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, see <code>LINUX.txt</code> in the download.",
-                "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. Для Linux дивіться <code>LINUX.txt</code> у завантаженні.",
+                "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh</code> in that folder; <code>LINUX.txt</code> in the download says what it needs.",
+                "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux виконайте <code>bash Skhid.sh</code> у цій теці; що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
             ),
             lang.tr("Without the launcher", "Без лаунчера"),
             lang.tr(

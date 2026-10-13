@@ -53,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
             'game/resources/ssl/survarium_login_server.crt'}
         self.names = self.without_launcher | {
             'game/binaries/x86/launcher_skhid.exe', 'game/binaries/x86/updater_skhid.exe',
-            'game/binaries/x86/updater_skhid.url', 'Skhid.bat',
+            'game/binaries/x86/updater_skhid.url', 'Skhid.bat', 'Skhid.sh',
         } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
              for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
 
@@ -116,6 +116,12 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn(b'start "" /d "%~dp0game\\binaries\\x86" "%~dp0game\\binaries\\x86\\launcher_skhid.exe"\r\n',
                       starter)
         self.assertEqual(starter.count(b'\n'), starter.count(b'\r\n'))
+        # The same for Linux: a Bash script with Unix line ends.
+        linux = paths['Skhid.sh'].read_bytes()
+        self.assertTrue(linux.startswith(b'#!/usr/bin/env bash\n'))
+        self.assertNotIn(b'\r', linux)
+        self.assertIn(b'game/binaries/x86/play_skhid.sh', linux)
+        self.assertIn('run bash Skhid.sh (the game) or bash Skhid.sh launcher', readme)
 
     @unittest.skipUnless(os.name == 'nt' and STAND_IN.is_file(),
                          'Windows, and the stand-in exe of client/updater/tests (build.sh there)')

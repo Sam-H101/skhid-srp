@@ -64,7 +64,9 @@ Without that option it adds the launcher (`launcher/README.md`), made from the
 game folder's own `survarium_launcher.exe`: `game/binaries/x86/launcher_skhid.exe`,
 `updater_skhid.exe` (build it first with `../../client/updater/build.sh`, or pass
 `--updater=<path>`), `updater_skhid.url`, the ten pages of
-`game/binaries/x86/launcher_skhid/`, and `Skhid.bat` at the top, beside `game/`.
+`game/binaries/x86/launcher_skhid/`, and `Skhid.bat` and `Skhid.sh` at the top, beside `game/`
+(`Skhid.sh` is the file of that name here: on Linux, `bash Skhid.sh` in the game's folder runs
+`play_skhid.sh` from there).
 `--site=https://<host>` names the server's web
 page when it is not `https://<host of --server>`. A player then unpacks the ZIP into
 the game's folder (the one that holds `game`) once and double-clicks `Skhid.bat`,

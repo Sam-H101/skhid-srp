@@ -7,6 +7,15 @@ then open a terminal in game/binaries/x86 and run:
 
     bash play_skhid.sh
 
+An archive with the Skhid launcher also has Skhid.sh at its top. Unpacked into
+the game's folder (the one that holds the game folder), it saves the walk:
+open a terminal in that folder and run
+
+    bash Skhid.sh
+
+It runs play_skhid.sh and nothing else; bash Skhid.sh launcher is
+bash play_skhid.sh launcher (below).
+
 Select an English keyboard layout before launching. In our Wine tests, starting
 with Russian selected could leave text input broken after switching to English.
 The game language is a separate setting: edit localization near the top of the

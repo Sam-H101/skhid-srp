@@ -73,12 +73,15 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/Skhid.bat
         the one file a player starts: it starts launcher_skhid.exe, and
         says where the files belong when it is not found.
+    <output>/Skhid.sh
+        the same for Linux (Skhid.sh beside this script): `bash Skhid.sh`
+        runs play_skhid.sh from wherever it is called, with its arguments.
     <output>/README.txt
         what to do with it, and where the original game is had.
 
 A player unpacks the overlay into the game's folder (the one that holds
 `game`) and starts Skhid.bat (or play_skhid.bat: the game alone, no
-updates), or bash play_skhid.sh on Linux. --pack-zip directly makes the
+updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
 download the web page offers (SRP_DOWNLOAD_FILE), which is also what the
 updater installs from then on. Only the player files are included: no
 source, PDBs, tests or development tools. Build the Rust programs first
@@ -116,6 +119,10 @@ EXE_DIR_WINDOWS = "binaries\\x86"
 STARTER = "Skhid.bat"
 CERT_REL = os.path.join("resources", "ssl", "survarium_login_server.crt")
 LINUX_LAUNCHER = os.path.join("game", EXE_DIR, "play_skhid.sh")
+# The same for Linux, run as `bash Skhid.sh` beside the `game` folder.
+LINUX_STARTER = "Skhid.sh"
+# What a Linux unpacker makes executable.
+SCRIPTS = (LINUX_LAUNCHER, LINUX_STARTER)
 # The localizations the client knows (login_chat.md: the language byte).
 LOCALIZATIONS = ("english", "russian", "ukrainian", "german", "polish")
 
@@ -279,8 +286,10 @@ def readme(server, localization, description, files, embedded=False, site=None):
             f"   \"{STARTER.rsplit('.', 1)[0]}\"). The launcher opens: choose your language at its top and",
             "   press PLAY. If Windows warns about an unknown publisher, let it run:",
             "   these files are not signed.",
-            "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
-            "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
+            "   Linux: install Wine and Winetricks, open a terminal in that folder and",
+            f"   run bash {LINUX_STARTER} (the game) or bash {LINUX_STARTER} launcher (the launcher,",
+            "   which looks for updates first). See LINUX.txt for setup and",
+            "   troubleshooting.",
             "4. Sign in with any user name and password. A new name is registered on its",
             "   first sign-in; remember the password.",
             "",
@@ -289,6 +298,7 @@ def readme(server, localization, description, files, embedded=False, site=None):
             "",
             "WHAT THE ARCHIVE ADDS",
             f"{STARTER} beside the `game` folder: it starts the launcher, nothing else.",
+            f"{LINUX_STARTER} beside it, for Linux: it runs play_skhid.sh, nothing else.",
             "In game\\binaries\\x86: survarium_skhid.exe (the game for this server),",
             "launcher_skhid.exe, updater_skhid.exe with updater_skhid.url, the folder",
             "launcher_skhid (the launcher's own pages), and play_skhid.bat and",
@@ -437,6 +447,8 @@ def main():
             (os.path.join("game", EXE_DIR, L.UPDATER_NAME), read_updater(updater_path)),
             (os.path.join("game", EXE_DIR, "updater_skhid.url"), (site + "\r\n").encode("ascii")),
             (STARTER, starter()),
+            # Windows checkouts may use CRLF; Bash needs LF.
+            (LINUX_STARTER, Path(HERE, LINUX_STARTER).read_bytes().replace(b"\r\n", b"\n")),
         ]
         files += [(os.path.join("game", EXE_DIR, L.PAGES_DIR, name), data)
                   for name, data in sorted(launcher_pages.pages(site).items())]
@@ -450,7 +462,7 @@ def main():
             for name, data in files:
                 entry = zipfile.ZipInfo(name.replace(os.sep, "/"))
                 entry.create_system = 3
-                entry.external_attr = (0o100755 if name == LINUX_LAUNCHER else 0o100644) << 16
+                entry.external_attr = (0o100755 if name in SCRIPTS else 0o100644) << 16
                 entry.compress_type = zipfile.ZIP_DEFLATED
                 out.writestr(entry, data)
     for name, data in files:
@@ -459,7 +471,7 @@ def main():
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "xb") as out:   # never over a file that is there
                 out.write(data)
-            if name == LINUX_LAUNCHER:
+            if name in SCRIPTS:
                 os.chmod(target, 0o755)
         print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {sha256(data)})")
     print(f"exe: {description}")
