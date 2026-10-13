@@ -29,7 +29,9 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   SHA-256 and installs the missing original files before the Skhid overlay.
   A new player can unpack the overlay into an empty folder and start
   `Skhid.bat`. No Google login, browser confirmation or administrator
-  prompt is needed. Allow about 10 GB of free disk space.
+  prompt is needed. Allow about 10 GB of free disk space. The game is
+  unpacked with `7zr.exe`, a file of the Skhid archive beside the updater
+  (`extractor/`): nothing that is run is downloaded on its own.
 - Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
   does hold the game folder's path) beside itself. `updater_skhid.lock`
@@ -71,13 +73,25 @@ The complete Drive download was checked against archive.org's independently
 published SHA-1 `bb30b71fab155b3435917690fd2be87984546163` before pinning it.
 
 Downloads use a 64 KiB buffer, including in the 32-bit updater. The complete
-file is flushed, read back and hashed before extraction. The official
-standalone [7-Zip extractor](https://www.7-zip.org/download.html) is also
-downloaded and checked against its own compiled-in size and SHA-256 before
-it is run. Both files stay locked against writes and deletion until the
-extractor exits. Its download URL may change bytes when 7-Zip releases a
-new version; a mismatch stops installation and requires a reviewed pin
-update or a mirror of the pinned version. There is no verification bypass.
+file is flushed, read back and hashed before extraction.
+
+The extractor is the official standalone `7zr.exe` of 7-Zip 26.04, unchanged
+(`extractor/`, with where it is from and its licence). It is not downloaded:
+`make_client_026g.py` puts it into the Skhid archive as
+`game/binaries/x86/7zr.exe`, beside the updater, and refuses another file
+than the pinned one. The updater checks it against its compiled-in size and
+SHA-256 before anything is downloaded, and runs no other file. The archive
+and the extractor stay locked against writes and deletion until the
+extractor exits. There is no verification bypass. (7-Zip's own address for
+the file has no version in it: its bytes change with every 7-Zip release,
+which is why it is not fetched from there.)
+
+When the game is missing and `7zr.exe` is missing too, or is not that file
+(deleted, damaged, an archive only half unpacked), the Skhid files are
+installed first: the server's archive brings the extractor, and the game
+follows in the same run (after the restart, when the launcher or the updater
+was replaced). If the extractor is still not right after that, the updater
+says so and downloads nothing.
 
 Only five game files are extracted into a fresh staging folder: the original
 exe, resources database, crash DLL, certificate and splash image. The
@@ -94,17 +108,29 @@ archive is kept if extraction fails and is rehashed before retrying. The
 cache is deleted after successful installation. Interrupted transfers are
 not resumed.
 
+What an attempt that was cut short leaves behind (the PC switched off, the
+updater killed while the extractor ran) is removed at the next start, under
+the installation lock: every `.skhid-extract-*` folder in the game folder
+(up to 6.3 GB each; only the five game files and their folders are deleted,
+so a folder with anything else in it is left and named in the log), and,
+once the game is there, a `.skhid-game.7z` that is still beside it. The
+extractor runs in a Windows job that ends with the updater, so an updater
+that is killed takes it along and it does not write on by itself. The
+room asked for is the room still needed: an archive that is already
+downloaded is not counted again.
+
 To move hosting, put a direct HTTPS URL in `updater_skhid.game-url` beside
-the updater (and `updater_skhid.extractor-url` for the pinned extractor).
-These files change only the source, never the trusted hash. Plain HTTP is
+the updater. That file changes only the source, never the trusted hash. Plain HTTP is
 accepted only on localhost for tests; FTP is not supported. No server
 deployment or binary rebuild is needed to change the mirror this way.
 
 `tests/test_game_download.py` runs the actual exe on Windows or Wine against
-a local HTTP server, covering failed downloads and preservation of existing
-files. With `SKHID_TEST_GAME_ARCHIVE` and `SKHID_TEST_EXTRACTOR` pointing to
-the pinned files, it also downloads, verifies and extracts the full game,
-then installs the Skhid overlay. It does not contact Drive or archive.org.
+a local HTTP server, covering failed downloads, preservation of existing
+files, an extractor that is missing or changed, and what a cut-short attempt
+left. With `SKHID_TEST_GAME_ARCHIVE` pointing to the pinned archive, it also
+downloads, verifies and extracts the full game with the extractor of
+`extractor/`, then installs the Skhid overlay. It does not contact Drive or
+archive.org.
 
 ## Build and test
 

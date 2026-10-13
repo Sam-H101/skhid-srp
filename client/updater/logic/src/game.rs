@@ -2,7 +2,9 @@
 use crate::sha256::from_hex;
 
 pub const GAME_URL: &str = "https://drive.usercontent.google.com/download?id=1LTK2rzJPELLXxtTavZwdzr247NFwT_GK&export=download&confirm=t";
-pub const EXTRACTOR_URL: &str = "https://www.7-zip.org/a/7zr.exe";
+/// The extractor is a file of the Skhid archive, beside the updater. It is
+/// run only when it is the pinned file, as the downloaded one would be.
+pub const EXTRACTOR_NAME: &str = "7zr.exe";
 
 #[derive(Clone, Copy)]
 pub struct Pin {
@@ -22,7 +24,8 @@ pub const ARCHIVE: Pin = Pin {
     size: 2_906_544_103,
     sha256: "7435558eeb17098fc9337c4ba9470402cae4c9be974ef5d9bc544f19b122a028",
 };
-// Official standalone 7zr.exe, fetched over HTTPS on 2026-10-13.
+// The official standalone 7zr.exe of 7-Zip 26.04 (www.7-zip.org/a/7zr.exe,
+// fetched over HTTPS on 2026-10-13); the copy in ../../extractor.
 pub const EXTRACTOR: Pin = Pin {
     size: 602_624,
     sha256: "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282",
@@ -80,8 +83,7 @@ mod tests {
             assert!(crate::zip::safe_name(path));
             assert!(*size > 0);
         }
-        for address in [GAME_URL, EXTRACTOR_URL] {
-            assert!(crate::url::download(address).unwrap().secure);
-        }
+        assert!(crate::url::download(GAME_URL).unwrap().secure);
+        assert!(crate::zip::safe_name(EXTRACTOR_NAME));
     }
 }

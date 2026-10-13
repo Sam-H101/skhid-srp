@@ -21,6 +21,48 @@ pub fn present(layout: &Layout) -> bool {
         })
 }
 
+fn extractor_path(layout: &Layout) -> String {
+    format!("{}\\{}", layout.exe_dir, game::EXTRACTOR_NAME)
+}
+
+/// The extractor beside the updater is the pinned file. It comes with the
+/// Skhid archive; when it is not there or not that file, the Skhid files
+/// are installed first, which brings it.
+pub fn extractor_ready(layout: &Layout) -> bool {
+    win::hash_file(&extractor_path(layout))
+        .is_ok_and(|(size, hash)| game::EXTRACTOR.matches(size, hash))
+}
+
+/// Removes what an attempt that was cut short left in the game folder (the
+/// PC switched off, the updater killed while the extractor ran): extraction
+/// folders, each with up to 6.3 GB in it, and, once the game is there, the
+/// 2.9 GB download. The caller holds the installation lock, so no other
+/// updater is extracting here.
+pub fn sweep(layout: &Layout) {
+    for name in win::list_folders(&layout.game_dir, STAGE_PATTERN) {
+        let stage = format!("{}\\{name}", layout.game_dir);
+        clean_stage(&stage);
+        if win::exists(&stage) {
+            log!(
+                "left over and not removed (in use, or it holds files that are not the game's): {stage}"
+            );
+        } else {
+            log!("removed a left-over extraction folder: {stage}");
+        }
+    }
+    let archive = archive_path(layout);
+    if present(layout) && win::exists(&archive) && win::delete(&archive).is_ok() {
+        log!("removed the left-over game download: {archive}");
+    }
+}
+
+/// `win::staging_dir` makes `.skhid-extract-<ticks>-<n>`.
+const STAGE_PATTERN: &str = ".skhid-extract-*";
+
+fn archive_path(layout: &Layout) -> String {
+    format!("{}\\.skhid-game.7z", layout.game_dir)
+}
+
 fn io_error(action: &str, code: win::Code) -> Option<String> {
     if code == windows_sys::Win32::Foundation::ERROR_CANCELLED {
         return None;
@@ -133,10 +175,27 @@ pub fn ensure(session: &mut Session, layout: &Layout) -> Result<bool, Option<Str
         return Ok(false);
     }
     log!("original game files missing; downloading the pinned 0.26g archive");
-    // Archive + unpacked files + room for the Skhid overlay. This works on a
-    // 32-bit updater too: file sizes and progress are u64 throughout.
-    let needed =
-        game::ARCHIVE.size + game::FILES.iter().map(|(_, size)| size).sum::<u64>() + (256 << 20);
+    // The extractor first: without it 2.9 GB would be downloaded for nothing.
+    // It is a file of the Skhid archive and is never downloaded on its own;
+    // it stays locked from this check until it has run.
+    let extractor_path = extractor_path(layout);
+    let Some(extractor) = check(&extractor_path, game::EXTRACTOR, session)? else {
+        return Err(Some(format!(
+            "The original game cannot be unpacked: {} beside the updater is missing or is not the file this updater runs (7-Zip's 7zr.exe, {} bytes, SHA-256 {}). It comes with the Skhid archive: unpack that archive again. Nothing was downloaded or run.",
+            game::EXTRACTOR_NAME,
+            game::EXTRACTOR.size,
+            game::EXTRACTOR.sha256
+        )));
+    };
+    let archive_path = archive_path(layout);
+    // Archive + unpacked files + room for the Skhid overlay; an archive that
+    // is here already (kept after an extraction that failed) needs no room
+    // again. This works on a 32-bit updater too: file sizes and progress are
+    // u64 throughout.
+    let downloaded = win::file_size(&archive_path).is_ok_and(|size| size == game::ARCHIVE.size);
+    let needed = if downloaded { 0 } else { game::ARCHIVE.size }
+        + game::FILES.iter().map(|(_, size)| size).sum::<u64>()
+        + (256 << 20);
     let free = win::free_space(&layout.game_dir)
         .ok_or_else(|| Some("Cannot check free disk space for the game installation.".into()))?;
     if free < needed {
@@ -144,12 +203,8 @@ pub fn ensure(session: &mut Session, layout: &Layout) -> Result<bool, Option<Str
             "The game installation needs {needed} bytes of free space; this disk has {free}."
         )));
     }
-    let archive_path = format!("{}\\.skhid-game.7z", layout.game_dir);
-    let extractor_path = format!("{}\\.skhid-7zr.exe", layout.game_dir);
     let game_url = address(layout, "updater_skhid.game-url", game::GAME_URL)?;
-    let extractor_url = address(layout, "updater_skhid.extractor-url", game::EXTRACTOR_URL)?;
     let archive = fetch(session, &game_url, &archive_path, game::ARCHIVE)?;
-    let extractor = fetch(session, &extractor_url, &extractor_path, game::EXTRACTOR)?;
     let stage = win::staging_dir(&layout.game_dir)
         .map_err(|code| io_error("create an extraction folder", code))?;
     let result = (|| {
@@ -224,11 +279,11 @@ pub fn ensure(session: &mut Session, layout: &Layout) -> Result<bool, Option<Str
     clean_stage(&stage);
     drop(extractor);
     drop(archive);
-    // Retain verified downloads on extraction failure for a retry; they are
+    // Retain the verified download on extraction failure for a retry; it is
     // always rehashed next time. Successful installs need no archive cache.
+    // The extractor is a file of the Skhid archive and stays.
     if result.is_ok() {
         let _ = win::delete(&archive_path);
-        let _ = win::delete(&extractor_path);
     }
     result
 }

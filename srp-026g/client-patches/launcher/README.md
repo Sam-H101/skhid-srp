@@ -192,7 +192,9 @@ The updater (`client/updater`):
 On a new installation, unpack the Skhid ZIP into an empty folder and start
 `Skhid.bat`. After contacting the update server, the updater downloads the
 original 0.26g game from the Google Drive mirror if `survarium.exe` or
-`resources.db` is missing. The archive and standalone extractor both have
+`resources.db` is missing. It unpacks it with `7zr.exe`, 7-Zip's standalone
+extractor, which is a file of the Skhid ZIP beside the updater and is not
+downloaded. The archive and the extractor both have
 compiled-in SHA-256 pins; neither is used until verified. Extraction happens
 in a fresh staging folder, and the extracted original exe is checked against
 its known SHA-256 too. The updater adds missing original files and then runs

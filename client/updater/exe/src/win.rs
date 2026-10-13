@@ -302,6 +302,15 @@ pub fn free_space(folder: &str) -> Option<u64> {
 
 /// The names in `folder` that match `pattern` (`*.skhid-old*`), files only.
 pub fn list(folder: &str, pattern: &str) -> Vec<String> {
+    find(folder, pattern, false)
+}
+
+/// The folders in `folder` whose names match `pattern`.
+pub fn list_folders(folder: &str, pattern: &str) -> Vec<String> {
+    find(folder, pattern, true)
+}
+
+fn find(folder: &str, pattern: &str, folders: bool) -> Vec<String> {
     let mut names = Vec::new();
     let mut found: WIN32_FIND_DATAW = unsafe { core::mem::zeroed() };
     let query = alloc::format!("{folder}\\{pattern}");
@@ -310,7 +319,7 @@ pub fn list(folder: &str, pattern: &str) -> Vec<String> {
         return names;
     }
     loop {
-        if found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) == folders {
             names.push(from_wide(&found.cFileName));
         }
         if unsafe { FindNextFileW(handle, &mut found) } == 0 {
@@ -475,6 +484,36 @@ pub fn remove_dir(path: &str) {
     }
 }
 
+/// Puts `process` into a job that Windows ends when its last handle closes,
+/// and returns that handle. This program holds the only one: if it is killed
+/// while the extractor runs, the extractor goes with it, and does not write
+/// gigabytes on into a folder nobody waits for (the next start removes what
+/// it left). `None` when Windows refuses (a process already in a job that
+/// allows no other, before Windows 8): the extractor then runs as it did.
+fn ends_with_us(process: &Handle) -> Option<Handle> {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+    let job = unsafe { CreateJobObjectW(null(), null()) };
+    if job.is_null() {
+        return None;
+    }
+    let job = Handle(job);
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { core::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let set = unsafe {
+        SetInformationJobObject(
+            job.0,
+            JobObjectExtendedLimitInformation,
+            (&raw const limits).cast(),
+            core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    (set != 0 && unsafe { AssignProcessToJobObject(job.0, process.0) } != 0).then_some(job)
+}
+
 /// Runs the pinned extractor, pumping cancellation while it works. A cancelled
 /// process is terminated and reaped before the caller removes staging files.
 pub fn run_wait(
@@ -511,6 +550,8 @@ pub fn run_wait(
     unsafe {
         CloseHandle(process.hThread);
     }
+    // Held to the end of this function: see `ends_with_us`.
+    let _job = ends_with_us(&process_handle);
     loop {
         let result = unsafe { WaitForSingleObject(process_handle.0, 100) };
         if result == 0 {

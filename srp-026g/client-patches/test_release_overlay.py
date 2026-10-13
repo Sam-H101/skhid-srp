@@ -53,6 +53,7 @@ class ReleaseTests(unittest.TestCase):
             'game/resources/ssl/survarium_login_server.crt'}
         self.names = self.without_launcher | {
             'game/binaries/x86/launcher_skhid.exe', 'game/binaries/x86/updater_skhid.exe',
+            'game/binaries/x86/7zr.exe',
             'game/binaries/x86/updater_skhid.url', 'Skhid.bat', 'Skhid.sh',
         } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
              for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
@@ -183,6 +184,34 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as refused:
             self.build(self.root / 'refused')
         self.assertIn('asInvoker', str(refused.exception))
+        self.assertFalse((self.root / 'refused').exists())
+
+    def test_the_extractor_shipped_is_the_one_the_updater_runs(self):
+        # The updater runs 7zr.exe only when its size and sha256 are the two
+        # compiled into it: the builder's numbers must be the updater's, and
+        # the file in the archive the one with those numbers.
+        import hashlib
+        import re
+        pins = Path(overlay.HERE, '..', '..', 'client', 'updater', 'logic', 'src', 'game.rs').read_text(encoding='utf-8')
+        size, digest = re.search(
+            r'pub const EXTRACTOR: Pin = Pin \{\s*size: ([0-9_]+),\s*sha256: "([0-9a-f]{64})",', pins).groups()
+        self.assertEqual((int(size.replace('_', '')), digest), (overlay.EXTRACTOR_SIZE, overlay.EXTRACTOR_SHA256))
+        self.assertIn(f'pub const EXTRACTOR_NAME: &str = "{overlay.EXTRACTOR_NAME}";', pins)
+        archive = self.root / 'extractor.zip'
+        self.build(archive, '--pack-zip')
+        with zipfile.ZipFile(archive) as z:
+            shipped = z.read('game/binaries/x86/7zr.exe')
+            readme = z.read('README.txt').decode('utf-8')
+        self.assertEqual((len(shipped), hashlib.sha256(shipped).hexdigest()),
+                         (overlay.EXTRACTOR_SIZE, overlay.EXTRACTOR_SHA256))
+        self.assertIn('7zr.exe is the standalone extractor of 7-Zip', readme)
+
+    def test_another_extractor_than_the_pinned_one_is_refused(self):
+        other = self.root / '7zr.exe'
+        other.write_bytes(bytes(overlay.EXTRACTOR_SIZE))
+        with self.assertRaises(SystemExit) as refused:
+            self.build(self.root / 'refused', '--extractor=' + str(other))
+        self.assertIn('not the extractor the updater is built to run', str(refused.exception))
         self.assertFalse((self.root / 'refused').exists())
 
     def test_certificate_only_launcher_has_an_explicit_server(self):

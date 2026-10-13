@@ -409,6 +409,7 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Ok(server) => server,
         Err(message) => return Done::Failed(message),
     };
+    game::sweep(layout);
     let installed = read_installed(layout);
     install::clean_up(
         layout,
@@ -441,10 +442,21 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
             };
         }
     };
-    let game_added = match game::ensure(session, layout) {
-        Ok(added) => added,
-        Err(None) => return Done::Stopped,
-        Err(Some(message)) => return Done::Failed(message),
+    // The original game is unpacked with 7zr.exe, a file of the Skhid
+    // archive. With that file in place the game comes first, as a player's
+    // own copy of it would be there first. Without it (deleted, damaged, the
+    // archive only half unpacked) the Skhid files come first, which brings
+    // it, and the game after them.
+    let game_after = !game::present(layout) && !game::extractor_ready(layout);
+    let game_added = if game_after {
+        log!("the original game is missing and so is its extractor: the Skhid files first");
+        false
+    } else {
+        match game::ensure(session, layout) {
+            Ok(added) => added,
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
     };
     let reason = if game_added {
         Some(Reason::NothingInstalled)
@@ -452,6 +464,15 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         why_install(installed.as_ref(), &manifest, |file| look(layout, file))
     };
     let Some(reason) = reason else {
+        if game_after {
+            // The Skhid files are the server's and the extractor is not
+            // among them: this says so.
+            return match game::ensure(session, layout) {
+                Ok(_) => Done::Installed { restart: false },
+                Err(None) => Done::Stopped,
+                Err(Some(message)) => Done::Failed(message),
+            };
+        }
         log!("up to date");
         return Done::UpToDate;
     };
@@ -554,6 +575,15 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         outcome.written.len(),
         files.len()
     );
+    // The game that waited for its extractor. When the launcher or this
+    // program was replaced, the start that follows goes on with it.
+    if game_after && !outcome.restart {
+        match game::ensure(session, layout) {
+            Ok(_) => {}
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
+    }
     Done::Installed {
         restart: outcome.restart,
     }

@@ -1,8 +1,10 @@
 """Real updater download tests on Windows or Wine, with a loopback mirror.
 
 Build ../build.sh first. On Linux set WINEPREFIX to a disposable prefix.
-SKHID_TEST_GAME_ARCHIVE and SKHID_TEST_EXTRACTOR enable the full 2.9 GB
-installation test using the pinned release files; no internet is needed.
+The extractor is the pinned 7zr.exe of ../extractor, put beside the updater
+as the Skhid archive puts it. SKHID_TEST_GAME_ARCHIVE enables the tests that
+need the pinned 2.9 GB game archive, the full installation among them; no
+internet is needed.
 """
 import hashlib
 import http.server
@@ -13,10 +15,13 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 
 UPDATER = Path(__file__).resolve().parents[1] / "exe/target/i686-pc-windows-msvc/release/updater_skhid.exe"
+EXTRACTOR = Path(__file__).resolve().parents[1] / "extractor/7zr.exe"
+EXTRACTOR_SIZE = 602624
 GAME_SIZE = 2906544103
 EXE_HASH = "ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153"
 
@@ -30,6 +35,8 @@ class GameDownloadTest(unittest.TestCase):
         self.x86.mkdir(parents=True)
         self.exe = self.x86 / "updater_skhid.exe"
         shutil.copyfile(UPDATER, self.exe)
+        self.extractor = self.x86 / "7zr.exe"
+        shutil.copyfile(EXTRACTOR, self.extractor)
         self.old = b"existing patched game; must survive a failed download"
         (self.x86 / "survarium_skhid.exe").write_bytes(self.old)
         self.overlay = b"verified Skhid overlay"
@@ -37,10 +44,7 @@ class GameDownloadTest(unittest.TestCase):
         with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("game/binaries/x86/survarium_skhid.exe", self.overlay)
         self.bundle = bundle.getvalue()
-        self.routes = {
-            "/game": (200, b"<html>Sign in to Google</html>", {}),
-            "/extractor": (200, b"not an extractor", {}),
-        }
+        self.routes = {"/game": (200, b"<html>Sign in to Google</html>", {})}
         self.requests = []
         test = self
 
@@ -80,7 +84,6 @@ class GameDownloadTest(unittest.TestCase):
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         (self.x86 / "updater_skhid.url").write_text(self.url)
         (self.x86 / "updater_skhid.game-url").write_text(self.url + "/game")
-        (self.x86 / "updater_skhid.extractor-url").write_text(self.url + "/extractor")
 
     def run_updater(self, timeout=60):
         command = [str(self.exe), "check", "quiet"]
@@ -100,7 +103,7 @@ class GameDownloadTest(unittest.TestCase):
         self.assertFalse((self.game / "resources.db").exists())
         self.assertFalse((self.game / ".skhid-game.7z").exists())
         self.assertNotIn("/download", self.requests)
-        self.assertNotIn("/extractor", self.requests)
+        self.assertEqual(self.extractor.read_bytes(), EXTRACTOR.read_bytes())
 
     def test_html_response_is_not_extracted_or_installed(self):
         self.assert_rejected("SHA-256 mismatch")
@@ -142,22 +145,65 @@ class GameDownloadTest(unittest.TestCase):
         self.assertEqual(self.run_updater(), 0, self.log)
         self.assertEqual(self.requests, ["/api/client-files"])
 
-    @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE"), "needs the pinned archive fixture")
-    def test_same_size_corrupt_extractor_is_never_run(self):
-        archive = Path(os.environ["SKHID_TEST_GAME_ARCHIVE"])
-        cached = self.game / ".skhid-game.7z"
-        try:
-            os.link(archive, cached)
-        except OSError:
-            shutil.copyfile(archive, cached)
-        self.routes["/extractor"] = (200, b"\0" * 602624, {})
-        self.assertEqual(self.run_updater(timeout=180), 1, self.log)
-        self.assertIn("SHA-256 mismatch", self.log)
+    def test_a_changed_extractor_is_never_run_and_nothing_is_downloaded_for_it(self):
+        # The same size, other bytes. The Skhid files are installed first, to
+        # repair it; this server's archive has no extractor, so it stays as
+        # it is, the updater says so, and the 2.9 GB are not asked for.
+        self.extractor.write_bytes(bytes(EXTRACTOR_SIZE))
+        self.assertEqual(self.run_updater(), 1, self.log)
+        self.assertIn("7zr.exe beside the updater is missing or is not the file", self.log)
         self.assertNotIn("/game", self.requests)
-        self.assertIn("/extractor", self.requests)
-        self.assertFalse((self.game / ".skhid-7zr.exe").exists())
+        self.assertFalse((self.game / ".skhid-game.7z").exists())
         self.assertFalse(list(self.game.glob(".skhid-extract-*")))
-        self.assertEqual((self.x86 / "survarium_skhid.exe").read_bytes(), self.old)
+        self.assertFalse((self.x86 / "survarium.exe").exists())
+        self.assertEqual(self.extractor.read_bytes(), bytes(EXTRACTOR_SIZE))
+
+    def test_a_missing_extractor_comes_with_the_skhid_files_before_the_game(self):
+        # Deleted by hand or by an antivirus: the archive of the server
+        # brings it back, and only then is the game asked for.
+        self.extractor.unlink()
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("game/binaries/x86/survarium_skhid.exe", self.overlay)
+            z.writestr("game/binaries/x86/7zr.exe", EXTRACTOR.read_bytes())
+        self.bundle = bundle.getvalue()
+        self.assertEqual(self.run_updater(), 1, self.log)
+        self.assertEqual(self.extractor.read_bytes(), EXTRACTOR.read_bytes())
+        self.assertEqual((self.x86 / "survarium_skhid.exe").read_bytes(), self.overlay)
+        self.assertLess(self.requests.index("/download"), self.requests.index("/game"))
+        # The game's mirror answered with a sign-in page: refused as ever.
+        self.assertIn("SHA-256 mismatch", self.log)
+        self.assertFalse((self.x86 / "survarium.exe").exists())
+
+    def test_what_a_cut_short_attempt_left_is_removed(self):
+        # The PC was switched off while the extractor ran: its folder with
+        # the half-written game, and the download, are still there.
+        left = self.game / ".skhid-extract-123456-0"
+        (left / "Survarium/game/binaries/x86").mkdir(parents=True)
+        (left / "Survarium/game/binaries/x86/survarium.exe").write_bytes(b"half an exe")
+        (left / "Survarium/game/resources.db").write_bytes(b"half the resources")
+        (self.game / ".skhid-game.7z").write_bytes(b"a download")
+        # Not ours: a folder of that name with a file the game does not have.
+        other = self.game / ".skhid-extract-mine"
+        other.mkdir()
+        (other / "notes.txt").write_text("keep")
+        self.assertEqual(self.run_updater(), 1, self.log)  # the mirror: a sign-in page
+        self.assertFalse(left.exists())
+        self.assertEqual((other / "notes.txt").read_text(), "keep")
+        self.assertFalse((self.game / ".skhid-game.7z").exists())
+
+    def test_a_download_left_beside_a_complete_game_is_removed(self):
+        (self.game / "resources.db").write_bytes(b"existing resources")
+        (self.x86 / "survarium.exe").write_bytes(b"existing original")
+        (self.game / ".skhid-game.7z").write_bytes(b"a download nobody needs any more")
+        left = self.game / ".skhid-extract-123456-0"
+        (left / "Survarium/game").mkdir(parents=True)
+        (left / "Survarium/game/resources.db").write_bytes(b"half the resources")
+        self.assertEqual(self.run_updater(), 0, self.log)
+        self.assertFalse((self.game / ".skhid-game.7z").exists())
+        self.assertFalse(left.exists())
+        self.assertEqual((self.game / "resources.db").read_bytes(), b"existing resources")
+        self.assertNotIn("/game", self.requests)
 
     @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE"), "needs the full-download test environment")
     def test_same_size_corrupt_cached_archive_is_rehashed(self):
@@ -167,20 +213,67 @@ class GameDownloadTest(unittest.TestCase):
         self.assert_rejected("SHA-256 mismatch")
         self.assertIn("/game", self.requests)
 
-    @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE") and os.environ.get("SKHID_TEST_EXTRACTOR"),
-                         "set SKHID_TEST_GAME_ARCHIVE and SKHID_TEST_EXTRACTOR for the full install")
+    @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE"), "set SKHID_TEST_GAME_ARCHIVE for the full install")
     def test_full_verified_download_extract_and_overlay(self):
         self.routes["/game"] = (200, Path(os.environ["SKHID_TEST_GAME_ARCHIVE"]), {})
-        self.routes["/extractor"] = (200, Path(os.environ["SKHID_TEST_EXTRACTOR"]), {})
         self.assertEqual(self.run_updater(timeout=900), 0, self.log)
         self.assertEqual(hashlib.sha256((self.x86 / "survarium.exe").read_bytes()).hexdigest(), EXE_HASH)
         self.assertEqual((self.game / "resources.db").stat().st_size, 6285533906)
         self.assertEqual((self.x86 / "survarium_skhid.exe").read_bytes(), self.overlay)
         self.assertIn("/game", self.requests)
-        self.assertIn("/extractor", self.requests)
         self.assertFalse((self.game / ".skhid-game.7z").exists())
-        self.assertFalse((self.game / ".skhid-7zr.exe").exists())
+        # The extractor is a file of the Skhid archive: it stays.
+        self.assertEqual(self.extractor.read_bytes(), EXTRACTOR.read_bytes())
         self.assertFalse(list(self.game.glob(".skhid-extract-*")))
+
+    @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE") and os.name == "nt",
+                         "needs the pinned archive; kills the updater as Windows' task manager would")
+    def test_an_updater_killed_while_extracting_leaves_nothing_for_good(self):
+        archive = Path(os.environ["SKHID_TEST_GAME_ARCHIVE"])
+        cached = self.game / ".skhid-game.7z"
+        try:
+            os.link(archive, cached)
+        except OSError:
+            shutil.copyfile(archive, cached)
+        updater = subprocess.Popen([str(self.exe), "check", "quiet"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(updater.kill)
+
+        def extractors():
+            # The processes that run this folder's 7zr.exe.
+            listed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Process -Filter \"Name='7zr.exe'\").ExecutablePath"],
+                capture_output=True, text=True, timeout=60).stdout.splitlines()
+            return [path for path in listed if path.strip().lower() == str(self.extractor).lower()]
+
+        # The extractor is at work (7-Zip gives the 6.3 GB file its full
+        # size at once, so its size says nothing).
+        deadline = time.monotonic() + 180
+        while not extractors() and time.monotonic() < deadline:
+            if updater.poll() is not None:
+                self.fail("the updater ended early: " + (self.x86 / "updater_skhid.log").read_text())
+            time.sleep(0.5)
+        self.assertTrue(extractors(), "the extractor never started")
+        self.assertTrue(list(self.game.glob(".skhid-extract-*/Survarium/game/resources.db")))
+        updater.kill()
+        updater.wait(30)
+        # The extractor goes with it.
+        deadline = time.monotonic() + 15
+        while extractors() and time.monotonic() < deadline:
+            time.sleep(0.5)
+        self.assertFalse(extractors(), "the extractor outlived the updater")
+        self.assertFalse((self.x86 / "survarium.exe").exists())
+        # The next start removes what was left, takes the archive that is
+        # there (hashed again) and installs.
+        self.assertEqual(self.run_updater(timeout=900), 0, self.log)
+        self.assertIn("removed a left-over extraction folder", self.log)
+        self.assertIn("reusing verified download", self.log)
+        self.assertNotIn("/game", self.requests)
+        self.assertEqual(hashlib.sha256((self.x86 / "survarium.exe").read_bytes()).hexdigest(), EXE_HASH)
+        self.assertEqual((self.game / "resources.db").stat().st_size, 6285533906)
+        self.assertFalse(list(self.game.glob(".skhid-extract-*")))
+        self.assertFalse(cached.exists())
 
 
 if __name__ == "__main__":
