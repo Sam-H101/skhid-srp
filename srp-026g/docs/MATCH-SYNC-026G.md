@@ -372,7 +372,7 @@ What it writes:
 | Certificate chain check | 0x12A10 `83 EC 2C` → `31 C0 C3` | Every stock client stops at start: its code-signing certificate ran out on 2015-06-06. In every build |
 | Single-instance mutex | 0x124F9 `74 09` → `90 90` | Several clients on one PC |
 | Hash interval 100 → 50 ms | 0x27CC53 `64` → `32` | No hash phases (above) |
-| Battery rule (modes 2, 3) | 0x313A62 `0F 85 D3 00 00 00` and 0x313B34 `C6 81 60 01 00 00 00` → `90`s | The rule's completion is not in the world a rollback loads, so the replay of the tick with a team's last battery could not put it in, and no container could be used after it (`match.md` §26). Patch revision 3; built and self-tested, its handler run outside the game, not run in a match, and **not in the players' download yet** |
+| Battery rule (modes 2, 3) | 0x313A62 `0F 85 D3 00 00 00` and 0x313B34 `C6 81 60 01 00 00 00` → `90`s | The rule's completion is not in the world a rollback loads, so the replay of the tick with a team's last battery could not put it in, and no container could be used after it (`match.md` §26). Patch revision 3; built and self-tested, its handler run outside the game, and in the players' download since 2026-10-13 12:22 UTC; not watched in a match to a team's last battery yet |
 | First-sync hook | 0x27AEA1, 5-byte jump in `on_match_ready` | Upload the initial world before 0xDA |
 | Request hook | 0x27A505, 5-byte jump in the 0xF6 case | Upload the event-horizon world when the server asks. It replaces the debug test, so the debug branch can no longer be reached |
 | The upload code | 420 bytes, from `snapshot_upload_026g.asm` | Serializes the item as `hash()` does and sends it as 0xE0 chunks; clears "may be joined" on each chunk packet; the pool guard |

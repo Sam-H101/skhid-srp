@@ -20,7 +20,7 @@ your own copy, and the patched exe is made from it.
 |---|---|
 | Original | `game/binaries/x86/survarium_launcher.exe`, 4 740 728 bytes, sha256 `710956d2347864effb353064dd7beaee1dd2773c74756d3f6677df71431c5266` (the tools check it and refuse anything else) |
 | Result for `https://skhid.link` | `launcher_skhid.exe`, 4 735 488 bytes; the hash depends on the site, the game exe's name and its arguments |
-| Status, 2026-10-13 | Built and run on Windows 11 against a local srp server, in a test game folder (see "What was run"). **Not yet** run under Wine, on another Windows version, or against the public server. Not in the players' download |
+| Status, 2026-10-13 | Built and run on Windows 11 against a local srp server, in a test game folder (see "What was run"). **Not yet** run under Wine or on another Windows version. In the players' download since 2026-10-13 09:50 UTC, and run against the test server and the public one that day (`../README.md`, the rows of the downloads) |
 
 ## The files
 
