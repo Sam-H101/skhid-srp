@@ -205,7 +205,9 @@ name belongs to whoever registers it first, as any name does.
 | Variable | Default | What |
 |---|---|---|
 | `SRP_EXPERIENCE_RATE` | 1 | What a match's experience and reputation are multiplied by (1 to 100). 1 is the original's pace (it was 3 until 2026-10-12) |
-| `SRP_MONEY_RATE` | 80 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 80 is the owner's choice |
+| `SRP_MONEY_RATE` | 120 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 120 is the owner's choice (80 until 2026-10-13) |
+| `SRP_ITEM_WEAR` | off | `on`: a match wears the weapons and armour of the kits played, as the game's data says, and a worn item may get a defect. Off is the owner's choice (2026-10-13): an item stays as it is. The first start of a database with it off makes every worn weapon and armour piece whole, once |
+| `SRP_DROP_PLAYTIME_BONUS` | off | `on`: the first four games of an hour of play raise the chance of a drop by 100, 75, 50 and 25 % (the numbers are the game's data; how they were applied is a guess). Off is the owner's choice (2026-10-13): with it on, 73 % of the players who finished a match found something |
 | `SRP_DROP_CONDITION` | 40 | The condition, in percent, a weapon or armour piece found after a match arrives in (1 to 100; the owner's choice) |
 | `SRP_DROP_DEFECT` | on | `off`: such an item arrives without a defect |
 | `SRP_DAILY_BONUS` | on | `off`: no doubled victories, no seven-day reward, and no daily bonus message to the client |

@@ -442,20 +442,20 @@ mod tests {
         account.autobuy = true;
         account.generic_money = 1_000;
         let rounds = dict("ammo_5.45x39_7n6m");
-        // 45 used: two clips of 30 at 60 silver.
+        // 45 used: two clips of 30 at 30 silver (`prices::AMMO_PRICES`).
         let settled = settle(&mut account, &[(rounds, 45)], &[], 0);
         assert_eq!(settled.bought, [(rounds, 60)]);
-        assert_eq!(settled.spent.autobuy_ammo, [(120, rounds)]);
+        assert_eq!(settled.spent.autobuy_ammo, [(60, rounds)]);
         assert!(settled.spent.autobuy_consumables.is_empty());
         assert_eq!(account.item(ammo).unwrap().condition_or_stack, 315);
-        assert_eq!(account.generic_money, 880);
+        assert_eq!(account.generic_money, 940);
         // Silver for one clip only.
-        account.generic_money = 100;
+        account.generic_money = 50;
         let settled = settle(&mut account, &[(rounds, 90)], &[], 0);
         assert_eq!(settled.bought, [(rounds, 30)]);
-        assert_eq!(settled.spent.autobuy_ammo, [(60, rounds)]);
+        assert_eq!(settled.spent.autobuy_ammo, [(30, rounds)]);
         assert_eq!(account.item(ammo).unwrap().condition_or_stack, 255);
-        assert_eq!(account.generic_money, 40);
+        assert_eq!(account.generic_money, 20);
         // No silver: nothing bought, nothing listed.
         account.generic_money = 0;
         let settled = settle(&mut account, &[(rounds, 30)], &[], 0);
@@ -543,7 +543,7 @@ mod tests {
         let body = message.body();
         let tail = &body[body.len() - 15..];
         assert_eq!(tail[0], 1);
-        assert_eq!(tail[1..5], 120_u32.to_le_bytes());
+        assert_eq!(tail[1..5], 60_u32.to_le_bytes());
         assert_eq!(tail[5..7], rounds.to_le_bytes());
         assert_eq!(tail[7], 0);
         assert_eq!(tail[8], 1);
