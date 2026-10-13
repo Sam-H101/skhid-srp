@@ -17,6 +17,8 @@
 //!   ([`Quests::band`]) that are not resting ([`Quest::cooldown_minutes`]);
 //! - grenade-kill quests are offered only once a store sells RGD-5
 //!   grenades to the account, using the shop's reputation requirements;
+//! - artifact quests likewise require store access to gear whose default
+//!   modifications add artifact containers;
 //! - a quest that runs out (`ttl_minutes`) fails, and another is drawn;
 //! - choosing another faction drops the old faction's quests unpaid.
 //!
@@ -28,7 +30,7 @@
 
 use survarium::v026g::drops::Rng;
 use survarium::v026g::quests::{MatchStats, Quests, kind};
-use survarium::v026g::{dictionary::Dictionary, prices};
+use survarium::v026g::{dictionary::Dictionary, item_params, modifications::Modifications, prices};
 
 use super::account::{Account, QuestInstance};
 use super::rules::{ActionError, faction_unlocked};
@@ -91,6 +93,30 @@ fn grenades_available_in_store(account: &Account) -> bool {
         })
 }
 
+/// Container capacity in 0.26g comes from gear's default modifications.
+/// Check actual shop records: backpacks that only add pockets do not
+/// qualify, and any seller may unlock the quest regardless of its faction.
+fn artifact_containers_available_in_store(account: &Account) -> bool {
+    let modifications = Modifications::shared();
+    item_params::ITEM_PARAMS.iter().any(|item| {
+        let has_container = item
+            .default_modifications
+            .iter()
+            .filter_map(|&id| modifications.modification(id))
+            .flat_map(|modification| &modification.modifiers)
+            .any(|modifier| {
+                modifier.path == "parameters/artefact_slots_modifier"
+                    && modifier.kind == 1
+                    && modifier.value > 0.0
+            });
+        has_container
+            && matches!(
+                prices::record_for(item.dict_id, 0, |seller| account.reputation_level(seller)),
+                Ok(Some(_))
+            )
+    })
+}
+
 /// Bring the account's quests up to date at `now`: a quest that ran out
 /// fails, quests of a faction it no longer takes them from go, and the
 /// chosen faction's quests are filled up to [`QUESTS_AT_ONCE`].
@@ -117,6 +143,7 @@ pub fn refresh(account: &mut Account, now: u64, rng: &mut Rng) -> Vec<Notice> {
         return notices;
     }
     let grenades_available = grenades_available_in_store(account);
+    let artifact_containers_available = artifact_containers_available_in_store(account);
     loop {
         if account.quests.len() >= QUESTS_AT_ONCE {
             break;
@@ -124,6 +151,7 @@ pub fn refresh(account: &mut Account, now: u64, rng: &mut Rng) -> Vec<Notice> {
         let available: Vec<(u32, u32)> = quests
             .band(faction, |with| account.reputation_level(with))
             .filter(|quest| quest.kind != kind::GRENADE_ENEMIES || grenades_available)
+            .filter(|quest| quest.kind != kind::FIND_ARTEFACTS || artifact_containers_available)
             .filter(|quest| {
                 !account
                     .quest_cooldowns
@@ -294,24 +322,68 @@ mod tests {
             .value
     }
 
-    /// Leave only grenade quests in the pool, making the result independent
+    /// Leave only the requested kind in the pool, making the result independent
     /// of random selection. Ordinary quest filling is covered below.
-    fn grenade_quest_account(faction: u8, level: usize) -> Account {
+    fn quest_account(faction: u8, level: usize, kind: u32) -> Account {
         let mut account = account();
         account.add_reputation(faction, reputation_for(faction, level));
         choose_faction(&mut account, faction).unwrap();
         account.quest_cooldowns = Quests::shared()
             .quests
             .iter()
-            .filter(|quest| quest.kind != kind::GRENADE_ENEMIES)
+            .filter(|quest| quest.kind != kind)
             .map(|quest| (quest.id, 100_000))
             .collect();
         assert!(
             Quests::shared()
                 .band(faction, |with| account.reputation_level(with))
-                .any(|quest| quest.kind == kind::GRENADE_ENEMIES)
+                .any(|quest| quest.kind == kind)
         );
         account
+    }
+
+    fn grenade_quest_account(faction: u8, level: usize) -> Account {
+        quest_account(faction, level, kind::GRENADE_ENEMIES)
+    }
+
+    #[test]
+    fn artifact_quests_wait_until_container_gear_is_available_from_either_seller() {
+        for seller in [1, 4] {
+            let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+            // Edge offers artifact quests at rank 0. The first container
+            // gear unlocks at rank 1 with either Scavengers or Edge.
+            account.add_reputation(seller, reputation_for(seller, 1) - 1);
+            assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+            assert!(account.quests.is_empty());
+            account.add_reputation(seller, 1);
+            account.generic_money = 0;
+            // The store unlock is enough, regardless of money or loadout.
+            assert!(!refresh(&mut account, 1_001, &mut Rng::new(1)).is_empty());
+            assert!(!account.quests.is_empty());
+            assert!(account.quests.iter().all(|instance| {
+                let quest = Quests::shared().quest(instance.quest_id).unwrap();
+                quest.kind == kind::FIND_ARTEFACTS && quest.faction == 4
+            }));
+        }
+    }
+
+    #[test]
+    fn stores_without_artifact_containers_do_not_unlock_artifact_quests() {
+        let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+        account.add_reputation(2, reputation_for(2, 5));
+        account.add_reputation(3, reputation_for(3, 10));
+        // These stores offer backpacks and pockets, but no artifact slots.
+        assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+        assert!(account.quests.is_empty());
+    }
+
+    #[test]
+    fn owned_container_gear_does_not_bypass_the_store_unlock_requirement() {
+        let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+        let container = Dictionary::shared().item_named("scav_back_1").unwrap();
+        account.add_item(container.dict_id, 1);
+        assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+        assert!(account.quests.is_empty());
     }
 
     #[test]
