@@ -148,8 +148,8 @@ the certificate patch (`--cert-only`), is beside it as
 `survarium_srp.cert-only.bak.exe`. The upload code runs in live matches
 since 2026-10-12 (`WORK.md`; `client_patch.md` was written before that).
 Since the evening of that day `patch_026g.py` also patches the battery rule
-(`client_patch.md` §3.9; patch revision 3), lets a game start whose Documents folder it may not write to (§3.10, written 2026-10-13; patch revision 4) and skips the minimum video-memory check (§3.7): the installed exe has neither, and the players' download
-has the second and not the first.
+(`client_patch.md` §3.9; patch revision 3), lets a game start whose Documents folder it may not write to (§3.10, written 2026-10-13; patch revision 4) and skips the minimum video-memory check (§3.7): the exe installed that day has none of them; the players' download
+has all three since 2026-10-13 15:36 UTC (the battery rule since 12:22 UTC).
 
 ### A match alone: the test bot (added 2026-10-12)
 

@@ -218,18 +218,20 @@ pass. None of it was seen by a client.
 
 ## 0.26g, added 2026-10-12 (evening)
 
-- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team often cannot put its last battery in, and after the try nobody can use a container (match.md §26; 14 of the 19 live matches in which a team had all but one). The fix is two instructions of the client (client_patch.md §3.9, patch revision 3): built, self-tested, its handler run outside the game, not run in a match, not published. Publishing is a new ZIP on the site. A game started through the launcher takes it by itself; a game with a download from before the launcher keeps the old rule until its player takes the ZIP once more (on 2026-10-13 most accounts still signed in with revision 0), and old and new games part at a team's last battery. The login server logs the revision and does nothing else with it.
+- **Published 2026-10-13: the client patch for the tenth battery.** In modes 2 and 3 a team often cannot put its last battery in, and after the try nobody can use a container (match.md §26; 14 of the 19 live matches in which a team had all but one). The fix is two instructions of the client (client_patch.md §3.9, patch revision 3): built, self-tested, its handler run outside the game, and in the players' download since 2026-10-13 12:22 UTC. Not watched yet: a match played to a team's last battery with it. A game started through the launcher takes a new ZIP by itself; a game with a download from before the launcher keeps the old rule until its player takes the ZIP once more (on 2026-10-13 most accounts still signed in with revision 0), and old and new games part at a team's last battery. The login server logs the revision and does nothing else with it.
 
 ## 0.26g, added 2026-10-13: a Documents folder the game may not write to
 
-- **Built, not in the players' download:** a game whose folder `Survarium`
+- **In the players' download since 2026-10-13 15:36 UTC:** a game whose folder `Survarium`
   in Documents cannot be made, or cannot take a new file, stopped two
   seconds after its start in one of two ways (an access violation at
   0xF9A8F, an assertion about the `.journal` file at 0x40141). Client patch
   revision 4, eight bytes (client_patch.md §3.10): both crashes made again
-  on a test PC, the built exe started in both situations. Not run: a
-  sign-in, a match, saving the options into such a folder.
-- **Built with it, not in the players' download:** such a game is played
+  on a test PC, the built exe started in both situations. Not run by us: a
+  sign-in, a match, saving the options into such a folder (the first
+  sign-in with revision 4 on the players' server was logged three minutes
+  after the release).
+- **In the same download:** such a game is played
   with settings that are not saved, and a message box at its start says so
   and what to do, in the game's language (`client/bugtrap`, its README's
   "Start-up notice"). The check runs in the game's own process: Windows'
@@ -242,17 +244,19 @@ pass. None of it was seen by a client.
 
 ## 0.26g, added 2026-10-13: the launcher
 
-- **Built, not deployed, not in the players' download:** the game's launcher
+- **Deployed, and in the players' download since 2026-10-13 09:50 UTC:** the game's launcher
   patched to run from an unpacked game and to ask this server only, with an
   updater of ours that installs the ZIP the page offers whenever it changes
-  (`../client-patches/launcher/README.md`). Run on Windows 11 with a local server.
-- **The owner's to decide:** deploying the server part (`/api/client-files`,
-  `/launcher/`; a restart), then offering the ZIP with the launcher. The order
+  (`../client-patches/launcher/README.md`). Run on Windows 11 with a local
+  server, the test server and the players' one; three later releases reached
+  installed launchers that day (`../client-patches/README.md`, the rows of
+  the downloads).
+- **Done 2026-10-13:** the server part (`/api/client-files`, `/launcher/`)
+  was deployed first, then the ZIP with the launcher was offered. The order
   matters: a launcher asking a server without the routes says "offers no
   client files now" at every start (PLAY still works).
-- **Not run:** `bash play_skhid.sh launcher` under Wine; the real game started
-  from the launcher's PLAY (a stand-in exe was); Windows 7, 8 and 10; a PC
-  that still has the real game's installation and its update service.
+- **Not run:** `bash play_skhid.sh launcher` under Wine; Windows 7, 8 and 10;
+  a PC that still has the real game's installation and its update service.
 - **Not done:** a signature on the ZIP with a key kept off the server (today
   the ZIP is trusted because HTTPS is); a line in the launcher for "the
   server could not be asked" (it says "The latest version of the game is
