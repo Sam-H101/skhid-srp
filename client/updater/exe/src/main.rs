@@ -1,0 +1,773 @@
+//! The Skhid updater: the program the patched 0.26g launcher starts in the
+//! place of the game's own `survarium_updater.exe`
+//! (`srp-026g/client-patches/launcher/README.md`).
+//!
+//! It asks the server which archive of client files it offers now
+//! (`GET /api/client-files`: a SHA-256 and a size), compares that with what
+//! it installed last (`updater_skhid.state` beside it) and with the files
+//! themselves, and when they differ downloads the archive (`GET /download`),
+//! checks it and puts its files in their places, itself and the launcher
+//! included. It tells the launcher what it is doing over the launcher's own
+//! pipe, in the messages of the original updater, so the launcher's window
+//! shows it as it always did.
+//!
+//! It asks its configured server for Skhid updates. Missing original game
+//! files come from a separate HTTPS mirror with compiled-in SHA-256 pins. No torrent, no listening
+//! port, no registry, no crash upload, no administrator rights.
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+
+mod game;
+mod http;
+mod install;
+mod log;
+mod pipe;
+mod rt;
+mod text;
+mod win;
+
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use updater_logic::manifest::{
+    Found, Installed, InstalledFile, MAX_ARCHIVE_SIZE, Manifest, ManifestError, Reason, damage,
+    parse_installed, parse_manifest, why_install, write_installed,
+};
+use updater_logic::pipe::{FromLauncher, ToLauncher, state, step};
+use updater_logic::sha256::{digest, to_hex};
+use updater_logic::url::{self, Url};
+use updater_logic::zip;
+use windows_sys::Win32::System::Environment::GetCommandLineW;
+use windows_sys::Win32::System::Threading::ExitProcess;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW,
+};
+
+use crate::http::HttpError;
+use crate::install::{InstallError, Layout, NewFile, Step};
+use crate::log::log;
+use crate::pipe::Pipe;
+
+/// The server asked when no `updater_skhid.url` is beside the program:
+/// `SKHID_UPDATE_URL` of the build, else the Skhid server.
+const DEFAULT_URL: &str = match option_env!("SKHID_UPDATE_URL") {
+    Some(url) => url,
+    None => "https://skhid.link",
+};
+const URL_FILE: &str = "updater_skhid.url";
+const STATE_FILE: &str = "updater_skhid.state";
+const LOG_FILE: &str = "updater_skhid.log";
+/// What the launcher's pipe is named before the product's name
+/// (`\\.\pipe\vostok_updater_pipe-Survarium`).
+const PIPE_PREFIX: &str = "\\\\.\\pipe\\vostok_updater_pipe-";
+
+/// How often the server is asked before the updater gives up, and the pause
+/// between two tries.
+const CHECK_TRIES: u32 = 3;
+const DOWNLOAD_TRIES: u32 = 4;
+const RETRY_PAUSE_MS: u32 = 3000;
+/// The pause when the server says it is busy (its download slots are taken).
+const BUSY_PAUSE_MS: u32 = 15_000;
+
+/// The process exit codes.
+mod exit {
+    pub const OK: u32 = 0;
+    /// The update could not be done; the reason was shown and logged.
+    pub const FAILED: u32 = 1;
+    /// The launcher's pipe could not be opened.
+    pub const NO_PIPE: u32 = 2;
+    /// The program stopped itself on an internal error.
+    pub const PANIC: u32 = 3;
+}
+
+pub fn fatal_panic(info: &core::panic::PanicInfo) -> ! {
+    log!("internal error: {}", info.message());
+    unsafe { ExitProcess(exit::PANIC) }
+}
+
+/// Who is told what happens: the launcher over its pipe, or (started by
+/// hand with `check`) a message box for an error.
+struct Session {
+    pipe: Option<Pipe>,
+    /// `check quiet`: no message box either; the log and the exit code say
+    /// it all.
+    quiet: bool,
+    /// The launcher asked to stop, or is gone.
+    stopped: bool,
+    last_progress: u64,
+    started: u64,
+}
+
+impl Session {
+    fn send(&mut self, message: ToLauncher) {
+        if let Some(pipe) = &mut self.pipe {
+            pipe.send(message);
+        }
+    }
+
+    fn state(&mut self, state: u8) {
+        log!("state {state:#04x}");
+        self.send(ToLauncher::State(state));
+    }
+
+    /// Reads what the launcher wrote. `false` once it asked to stop or
+    /// closed the pipe.
+    fn pump(&mut self) -> bool {
+        if let Some(pipe) = &mut self.pipe {
+            for message in pipe.receive() {
+                match message {
+                    FromLauncher::Abort => {
+                        log!("the launcher asks to stop");
+                        self.stopped = true;
+                    }
+                    other => log!("launcher message ignored: {other:?}"),
+                }
+            }
+            if !pipe.is_open() && !self.stopped {
+                log!("the launcher closed the pipe");
+                self.stopped = true;
+            }
+        }
+        !self.stopped
+    }
+
+    /// Sleeps, looking at the pipe meanwhile. `false` when told to stop.
+    fn pause(&mut self, milliseconds: u32) -> bool {
+        let until = win::ticks() + u64::from(milliseconds);
+        while win::ticks() < until {
+            if !self.pump() {
+                return false;
+            }
+            win::sleep(100);
+        }
+        self.pump()
+    }
+
+    fn begin_progress(&mut self) {
+        self.started = win::ticks();
+        self.last_progress = 0;
+        self.send(ToLauncher::Progress {
+            done: 0,
+            total: 0,
+            speed: 0,
+            eta: 0,
+        });
+    }
+
+    /// Reports bytes done of a total, four times a second at most (always
+    /// at the end). `false` when told to stop.
+    fn progress(&mut self, done: u64, total: u64) -> bool {
+        let now = win::ticks();
+        if done < total && now < self.last_progress + 250 {
+            return !self.stopped;
+        }
+        self.last_progress = now;
+        let elapsed = now.saturating_sub(self.started).max(1);
+        let speed = done.saturating_mul(1000) / elapsed;
+        let eta = if speed == 0 || total < done {
+            u64::MAX
+        } else {
+            (total - done) / speed
+        };
+        self.send(ToLauncher::Progress {
+            done,
+            total,
+            speed,
+            eta,
+        });
+        self.pump()
+    }
+
+    /// Says something the player must read: the launcher shows it in a box
+    /// of its own; started by hand, the updater shows the box.
+    fn tell(&mut self, message: &str) {
+        if self.pipe.is_some() {
+            self.send(ToLauncher::ErrorText(message));
+        } else if !self.quiet {
+            message_box(message);
+        }
+    }
+
+    /// The update cannot go on: says why, to the player and to the log.
+    /// (The state first: the launcher's line says "Error" while its box
+    /// with the reason is open.)
+    fn fail(&mut self, message: &str) {
+        log!("FAILED: {message}");
+        self.state(state::ERROR);
+        self.tell(message);
+    }
+
+    /// After the last message: stays until the launcher says stop or goes
+    /// (as the original updater does; the launcher takes a closed pipe for
+    /// a failure), then closes the pipe.
+    fn linger(&mut self) {
+        while self.pipe.is_some() && self.pump() {
+            win::sleep(100);
+        }
+        self.leave();
+    }
+
+    /// Tells the launcher this updater is done for good, and closes the
+    /// pipe. A launcher that did not ask for it closes itself on that.
+    fn leave(&mut self) {
+        if let Some(mut pipe) = self.pipe.take() {
+            pipe.send(ToLauncher::State(state::ABORTED));
+            pipe.close();
+        }
+    }
+}
+
+fn message_box(message: &str) {
+    let title = win::wide(text::TITLE);
+    let body = win::wide(message);
+    unsafe {
+        MessageBoxW(
+            core::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
+}
+
+/// The server to ask: the one named in `updater_skhid.url`, else the one of
+/// the build.
+fn server(layout: &Layout) -> Result<Url, String> {
+    let path = format!("{}\\{URL_FILE}", layout.exe_dir);
+    let (address, source) = match win::read_file(&path, 4096) {
+        Ok(bytes) => (String::from_utf8_lossy(&bytes).trim().into(), URL_FILE),
+        Err(_) => (String::from(DEFAULT_URL), "built in"),
+    };
+    log!("server: {address} ({source})");
+    url::parse(&address).ok_or_else(|| text::bad_address(&address, source))
+}
+
+/// What a look at an installed file finds.
+fn look(layout: &Layout, file: &InstalledFile) -> Found {
+    match win::hash_file(&layout.place(&file.name)) {
+        Ok((size, hash)) if size == file.size && hash == file.sha256 => Found::Same,
+        Ok(_) => Found::Changed,
+        Err(code) if win::is_missing(code) => Found::Missing,
+        // There but unreadable now (held by another program): not a reason
+        // to download everything again.
+        Err(code) => {
+            log!("{}: cannot be read ({})", file.name, win::error_text(code));
+            Found::Same
+        }
+    }
+}
+
+fn read_installed(layout: &Layout) -> Option<Installed> {
+    let bytes = win::read_file(&format!("{}\\{STATE_FILE}", layout.exe_dir), 1 << 20).ok()?;
+    parse_installed(&bytes)
+}
+
+/// Asks the server which archive it offers, several times if need be.
+/// `Err(None)`: told to stop.
+fn ask(session: &mut Session, server: &Url) -> Result<Manifest, Option<String>> {
+    let mut last = String::new();
+    for attempt in 1..=CHECK_TRIES {
+        session.state(state::CHECKING);
+        match http::get(server, "/api/client-files", 4096, &mut |_, _| true) {
+            Ok(body) => match parse_manifest(&body) {
+                Ok(manifest) => {
+                    log!(
+                        "server offers archive {} ({} bytes)",
+                        core::str::from_utf8(&to_hex(&manifest.sha256)).unwrap_or(""),
+                        manifest.size
+                    );
+                    return Ok(manifest);
+                }
+                Err(ManifestError::NewerFormat) => return Err(Some(text::newer_format(server))),
+                Err(ManifestError::TooLarge) => return Err(Some(text::archive_too_large(server))),
+                Err(error) => last = text::not_the_server(server, &format!("{error:?}")),
+            },
+            // The server runs but has no client files to offer: nothing to
+            // wait for.
+            Err(HttpError::Status(404)) => return Err(Some(text::nothing_offered(server))),
+            Err(error) => last = text::http(server, "/api/client-files", &error),
+        }
+        log!("check {attempt} of {CHECK_TRIES} failed: {last}");
+        if !session.pump() {
+            return Err(None);
+        }
+        if attempt < CHECK_TRIES {
+            session.state(state::CHECK_FAILED);
+            if !session.pause(RETRY_PAUSE_MS) {
+                return Err(None);
+            }
+        }
+    }
+    Err(Some(last))
+}
+
+/// Downloads the archive the server offers and checks it against
+/// `manifest`. `Err(None)`: told to stop.
+fn download(
+    session: &mut Session,
+    server: &Url,
+    manifest: &mut Manifest,
+) -> Result<Vec<u8>, Option<String>> {
+    let mut last = String::new();
+    for attempt in 1..=DOWNLOAD_TRIES {
+        session.begin_progress();
+        session.state(state::DOWNLOADING);
+        let size = manifest.size;
+        let result = http::get(
+            server,
+            "/download",
+            MAX_ARCHIVE_SIZE as usize,
+            &mut |done, total| session.progress(done, total.unwrap_or(size)),
+        );
+        let mut pause = RETRY_PAUSE_MS;
+        match result {
+            Ok(body) => {
+                if body.len() as u64 == manifest.size && digest(&body) == manifest.sha256 {
+                    log!("downloaded {} bytes, checksum right", body.len());
+                    return Ok(body);
+                }
+                // Not the archive that was announced: the server may have
+                // been given another one between the two requests.
+                last = text::checksum_mismatch(server);
+                if let Ok(body) = http::get(server, "/api/client-files", 4096, &mut |_, _| true)
+                    && let Ok(now) = parse_manifest(&body)
+                {
+                    *manifest = now;
+                }
+            }
+            Err(HttpError::Stopped) => return Err(None),
+            Err(HttpError::Status(503)) => {
+                last = text::busy(server);
+                pause = BUSY_PAUSE_MS;
+            }
+            Err(error) => last = text::http(server, "/download", &error),
+        }
+        log!("download {attempt} of {DOWNLOAD_TRIES} failed: {last}");
+        if !session.pump() {
+            return Err(None);
+        }
+        if attempt < DOWNLOAD_TRIES {
+            session.state(state::DOWNLOAD_FAILED);
+            if !session.pause(pause) {
+                return Err(None);
+            }
+        }
+    }
+    Err(Some(last))
+}
+
+/// Unpacks every file of the archive and checks it, before anything is
+/// written.
+fn unpack(archive: &[u8]) -> Result<Vec<NewFile>, String> {
+    let entries =
+        zip::entries(archive).map_err(|error| text::bad_archive(&format!("{error:?}")))?;
+    if entries.is_empty() {
+        return Err(text::bad_archive("it holds no file"));
+    }
+    let mut files = Vec::new();
+    for entry in entries {
+        let data = entry
+            .read()
+            .map_err(|error| text::bad_archive(&format!("{}: {error:?}", entry.name)))?;
+        files.push(NewFile {
+            name: entry.name.into(),
+            sha256: digest(&data),
+            data,
+        });
+    }
+    Ok(files)
+}
+
+enum Done {
+    /// The files are the server's; nothing was changed.
+    UpToDate,
+    /// The files were changed; `restart`: the launcher too.
+    Installed {
+        restart: bool,
+    },
+    /// The server could not be asked, and what is installed is whole: the
+    /// game can be started with it.
+    Offline(String),
+    Stopped,
+    Failed(String),
+}
+
+fn update(session: &mut Session, layout: &Layout) -> Done {
+    let _lock = match win::install_lock(&layout.exe_dir) {
+        Ok(lock) => lock,
+        Err(code) => {
+            return Done::Failed(format!(
+                "Cannot lock the installation folder (another updater may be running): {}.",
+                win::error_text(code)
+            ));
+        }
+    };
+    let server = match server(layout) {
+        Ok(server) => server,
+        Err(message) => return Done::Failed(message),
+    };
+    game::sweep(layout);
+    let installed = read_installed(layout);
+    install::clean_up(
+        layout,
+        installed
+            .iter()
+            .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str())),
+    );
+    let mut manifest = match ask(session, &server) {
+        Ok(manifest) => manifest,
+        Err(None) => return Done::Stopped,
+        Err(Some(message)) => {
+            if !game::present(layout) {
+                return Done::Failed(format!(
+                    "The original game is not installed and the update server cannot be reached. {message}"
+                ));
+            }
+            // No answer. What is installed and whole may still be played,
+            // and so may files this updater never installed (copied by
+            // hand, the first start): it knows nothing against them. Files
+            // it installed and now finds damaged may not.
+            return match &installed {
+                None => Done::Offline(text::offline_unchecked(&message)),
+                Some(installed) => match damage(installed, |file| look(layout, file)) {
+                    None => Done::Offline(text::offline(&message)),
+                    Some(Reason::Missing(name) | Reason::Changed(name)) => {
+                        Done::Failed(text::offline_damaged(&message, &name))
+                    }
+                    Some(_) => Done::Failed(message),
+                },
+            };
+        }
+    };
+    // The original game is unpacked with 7zr.exe, a file of the Skhid
+    // archive. With that file in place the game comes first, as a player's
+    // own copy of it would be there first. Without it (deleted, damaged, the
+    // archive only half unpacked) the Skhid files come first, which brings
+    // it, and the game after them.
+    let game_after = !game::present(layout) && !game::extractor_ready(layout);
+    let game_added = if game_after {
+        log!("the original game is missing and so is its extractor: the Skhid files first");
+        false
+    } else {
+        match game::ensure(session, layout) {
+            Ok(added) => added,
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
+    };
+    let reason = if game_added {
+        Some(Reason::NothingInstalled)
+    } else {
+        why_install(installed.as_ref(), &manifest, |file| look(layout, file))
+    };
+    let Some(reason) = reason else {
+        if game_after {
+            // The Skhid files are the server's and the extractor is not
+            // among them: this says so.
+            return match game::ensure(session, layout) {
+                Ok(_) => Done::Installed { restart: false },
+                Err(None) => Done::Stopped,
+                Err(Some(message)) => Done::Failed(message),
+            };
+        }
+        log!("up to date");
+        return Done::UpToDate;
+    };
+    log!("install needed: {reason:?}");
+    if let Reason::Changed(name) | Reason::Missing(name) = &reason {
+        log!("{}", text::repairing(name));
+    }
+
+    let archive = match download(session, &server, &mut manifest) {
+        Ok(archive) => archive,
+        Err(None) => return Done::Stopped,
+        Err(Some(message)) => return Done::Failed(message),
+    };
+    session.state(state::DOWNLOADED);
+    let files = match unpack(&archive) {
+        Ok(files) => files,
+        Err(message) => return Done::Failed(message),
+    };
+    drop(archive);
+
+    // The launcher's "installing" line: "Updating", then "Extracting file
+    // <name>" for each file. It is entered with no file name set (this
+    // updater sent none so far) and left by the next state message.
+    session.begin_progress();
+    session.state(state::INSTALLING);
+    install::clean_up(layout, files.iter().map(|file| file.name.as_str()));
+    // The archive that is installed already: a repair.
+    let repair = installed
+        .as_ref()
+        .is_some_and(|installed| installed.archive == manifest.sha256);
+    let outcome = match install::install(layout, &files, repair, &mut |step| match step {
+        Step::File(name) => {
+            let file_name = name.rsplit('/').next().unwrap_or(name);
+            session.send(ToLauncher::InstallInfo {
+                step: step::EXTRACT,
+                text: file_name,
+            });
+            true
+        }
+        Step::Bytes(done, total) => session.progress(done, total),
+    }) {
+        Ok(outcome) => outcome,
+        Err(InstallError::Stopped) => return Done::Stopped,
+        Err(error) => return Done::Failed(text::install(&error)),
+    };
+    for name in &outcome.written {
+        log!("installed {name}");
+    }
+
+    // What the archive before had and this one has not goes, if it is still
+    // the file that was installed (a file the player changed is the
+    // player's).
+    for old in installed
+        .iter()
+        .flat_map(|installed| installed.files.iter())
+    {
+        if !files
+            .iter()
+            .any(|file| file.name.eq_ignore_ascii_case(&old.name))
+            && look(layout, old) == Found::Same
+        {
+            match win::delete(&layout.place(&old.name)) {
+                Ok(()) => log!("removed {} (no longer in the archive)", old.name),
+                Err(code) => log!(
+                    "{} could not be removed ({})",
+                    old.name,
+                    win::error_text(code)
+                ),
+            }
+        }
+    }
+
+    // What is installed now, for the next start.
+    let installed = Installed {
+        archive: manifest.sha256,
+        files: files
+            .iter()
+            .map(|file| InstalledFile {
+                name: file.name.clone(),
+                sha256: file.sha256,
+                size: file.data.len() as u64,
+            })
+            .collect(),
+    };
+    let state_path = format!("{}\\{STATE_FILE}", layout.exe_dir);
+    let staged = format!("{state_path}.skhid-new");
+    let saved = win::write_file(&staged, &write_installed(&installed))
+        .and_then(|()| win::rename(&staged, &state_path, true));
+    if let Err(code) = saved {
+        // The files are in place; only the note of it is not. The next
+        // start compares the files and writes it again.
+        log!(
+            "{STATE_FILE} could not be written ({})",
+            win::error_text(code)
+        );
+        let _ = win::delete(&staged);
+    }
+    log!(
+        "installed {} file(s) of {}",
+        outcome.written.len(),
+        files.len()
+    );
+    // The game that waited for its extractor. When the launcher or this
+    // program was replaced, the start that follows goes on with it.
+    if game_after && !outcome.restart {
+        match game::ensure(session, layout) {
+            Ok(_) => {}
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
+    }
+    Done::Installed {
+        restart: outcome.restart,
+    }
+}
+
+struct Options {
+    /// The launcher's pipe; `None` when started by hand.
+    pipe_name: Option<String>,
+    /// The original's `copy` action: nothing to do here.
+    copy: bool,
+    quiet: bool,
+}
+
+/// The command line: the launcher's (`"<exe>" "update" "<pipe>" ...`, the
+/// original updater's arguments; all but the first two are of no use here),
+/// or `check [quiet]` by hand.
+fn options() -> Result<Options, String> {
+    let line = win::from_wide(unsafe {
+        let pointer = GetCommandLineW();
+        let mut length = 0;
+        while *pointer.add(length) != 0 {
+            length += 1;
+        }
+        core::slice::from_raw_parts(pointer, length)
+    });
+    let arguments = updater_logic::args::split(&line);
+    let action = arguments.get(1).map_or("", String::as_str);
+    let rest = arguments.get(2..).unwrap_or(&[]);
+    let no_pipe = rest
+        .iter()
+        .any(|argument| argument.eq_ignore_ascii_case("disable_pipe"));
+    let pipe_name = || {
+        rest.first()
+            .filter(|name| name.starts_with("\\\\.\\pipe\\") && !no_pipe)
+            .cloned()
+    };
+    match action.to_ascii_lowercase().as_str() {
+        "check" => Ok(Options {
+            pipe_name: None,
+            copy: false,
+            quiet: rest
+                .iter()
+                .any(|argument| argument.eq_ignore_ascii_case("quiet")),
+        }),
+        "update" | "full_update" => Ok(Options {
+            pipe_name: pipe_name(),
+            copy: false,
+            quiet: false,
+        }),
+        "copy" => Ok(Options {
+            pipe_name: pipe_name(),
+            copy: true,
+            quiet: false,
+        }),
+        _ => Err(text::usage()),
+    }
+}
+
+fn run() -> u32 {
+    let options = options();
+    let layout = match Layout::find() {
+        Ok(layout) => layout,
+        Err(path) => {
+            if !options.as_ref().is_ok_and(|options| options.quiet) {
+                message_box(&text::wrong_folder(&path));
+            }
+            return exit::FAILED;
+        }
+    };
+    log::start(format!("{}\\{LOG_FILE}", layout.exe_dir));
+    log!(
+        "---- updater {} started in {}",
+        env!("CARGO_PKG_VERSION"),
+        layout.exe_dir
+    );
+    let options = match options {
+        Ok(options) => options,
+        Err(message) => {
+            log!("{message}");
+            message_box(&message);
+            return exit::FAILED;
+        }
+    };
+    let pipe = match &options.pipe_name {
+        Some(name) => match Pipe::connect(name) {
+            Ok(pipe) => Some(pipe),
+            Err(code) => {
+                log!("pipe {name}: {}", win::error_text(code));
+                return exit::NO_PIPE;
+            }
+        },
+        None => None,
+    };
+    let mut session = Session {
+        pipe,
+        quiet: options.quiet,
+        stopped: false,
+        last_progress: 0,
+        started: 0,
+    };
+
+    if options.copy {
+        // The original copied the launcher and itself to a temp folder to
+        // run them from there. This updater replaces running files where
+        // they are, so the copy is "done" at once.
+        session.state(state::COPIED);
+        session.linger();
+        return exit::OK;
+    }
+
+    let code = match update(&mut session, &layout) {
+        Done::UpToDate => {
+            session.state(state::LATEST);
+            exit::OK
+        }
+        Done::Installed { restart } => {
+            let product = options
+                .pipe_name
+                .as_deref()
+                .and_then(|name| name.strip_prefix(PIPE_PREFIX));
+            match product {
+                // The launcher itself was replaced: it closes, and its new
+                // file is started.
+                Some(product) if restart && session.pipe.is_some() => {
+                    restart_launcher(&mut session, &layout, product);
+                    log!("exit 0");
+                    return exit::OK;
+                }
+                // "Checking" clears the launcher's file name line.
+                _ => {
+                    session.state(state::CHECKING);
+                    session.state(state::LATEST);
+                }
+            }
+            exit::OK
+        }
+        Done::Offline(message) => {
+            log!("the server could not be asked: {message}");
+            session.tell(&message);
+            session.state(state::LATEST);
+            exit::OK
+        }
+        Done::Stopped => {
+            log!("stopped");
+            exit::OK
+        }
+        Done::Failed(message) => {
+            session.fail(&message);
+            exit::FAILED
+        }
+    };
+    session.linger();
+    log!("exit {code}");
+    code
+}
+
+/// The launcher was replaced while it runs. It is told that this updater is
+/// done, on which it closes; once it is gone, its new file is started. (The
+/// launcher allows one of itself at a time, by a named mutex: the new one
+/// must not start before the old one has let go of it.)
+fn restart_launcher(session: &mut Session, layout: &Layout, product: &str) {
+    let launcher = format!("{}\\{}", layout.exe_dir, install::LAUNCHER_NAME);
+    log!("the launcher was replaced: it closes and {launcher} starts");
+    session.leave();
+    let mutex = format!("{product}_or_its_installer_is_already_running");
+    let until = win::ticks() + 15_000;
+    while win::mutex_exists(&mutex) && win::ticks() < until {
+        win::sleep(100);
+    }
+    let command = format!("\"{launcher}\" -product_name={product}");
+    if let Err(code) = win::start(&launcher, &command, &layout.exe_dir) {
+        let message = text::restart_failed(&win::error_text(code));
+        log!("FAILED: {message}");
+        message_box(&message);
+    }
+}
+
+/// Where Windows starts the program (the linker's `/ENTRY:entry`).
+///
+/// # Safety
+///
+/// Called by the loader only, once, as the process's first code.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn entry() -> ! {
+    let code = run();
+    unsafe { ExitProcess(code) }
+}

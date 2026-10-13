@@ -1,0 +1,133 @@
+# VA name   (0.26g launcher; matched by hand against the 0.21d PDB names via strings and structure)
+11000 get_user_data_folder            # Documents\<product> (SHGetFolderPathA CSIDL_PERSONAL)
+11068 application::initialize
+11166 application::execute
+11F1D image::image(id,type,kind)
+12140 image_window::image_window
+12548 transparent_control::transparent_control   # image button: rect, parent, cursor, 3 bitmaps, callback, ctx
+12785 registry_key::open_or_create(hive,path,sam,create)
+127C8 registry_key::get_dword
+12B88 is_vista_or_greater
+12CB7 check_ram
+12D3C check_cpu
+13672 check_vram
+136C0 SHGetKnownFolderPath_thunk
+136F4 get_common_start_menu_folder
+13730 get_common_desktop_folder
+1376C get_user_documents_folder
+137A8 load_string(id,buf,size)
+13885 window::window
+13940 window::~window
+13A7B packet_reader::read_string8      # u8 length + bytes
+13AB3 packet_reader::read_string16     # u16 count + UTF-16LE
+13AF2 packet_writer::write(bytes,n)
+13B4D pipe::accept
+13C98 pipe::disconnect
+13CCA pipe::send
+13D32 pipe::async_receive
+13DC2 pipe::on_connected
+13E62 pipe::on_disconnected
+13E9D pipe::on_received
+13F19 read_progress(4 x u64)
+13F97 read_disk_space_info(wstring,u64,u8)
+13FF1 registry_key::open_hklm
+14027 registry_key::get_string
+14080 get_product_registry_path        # Software\Vostok Games\<product>
+140AE get_product_guid
+14131 get_uninstall_registry_path
+1415F is_running_from_temp
+141BE launcher::launcher
+14539 launcher::~launcher
+145A5 launcher::set_state
+145C5 launcher::check_hardware
+146C6 launcher::check_os_version
+1472A launcher::run_as_copy
+14DB1 launcher::execute
+14F58 launcher::on_message_processed
+15097 launcher::language_changed
+150AC launcher::on_language_changed    # SetThreadUILanguage
+150FA launcher::show_launcher_window
+15177 get_first_install_version
+15213 get_local_version                # survarium_version_header_mark!! in "file to execute"
+15434 get_uninstall_string
+15511 launcher::run_survarium_executable_as_administrator
+15693 launcher::start_updater
+15A5D launcher::on_updater_connected
+15B02 launcher::on_updater_message
+16102 launcher::ask_retry_cancel       # MessageBox Retry/Cancel -> send 0x1C / 0x1D
+1612B launcher::on_updater_state_changed
+1619B launcher::on_updater_disconnect
+1625B files_equal
+162D8 launcher::restart_launcher
+166F1 launcher::run_delegated_command_line
+1679F launcher::on_launcher_window_closing
+167BF launcher::on_new_form_ready
+16811 launcher::refresh_status
+16FE3 launcher::on_form_input
+17027 launcher::create_instance_mutex
+1707C launcher::close_instance_mutex
+17092 get_game_launch_parameters
+17160 launcher::on_play_button_clicked
+172FA launcher::on_download_type_changed
+17309 launcher::on_port_changed
+17319 launcher::send_switch_download_type_message   # 0x1A
+173B1 launcher::send_port_message                   # 0x21
+1749F launcher::send_simple_message(type)           # 0x1B abort, 0x1C retry, 0x1D cancel
+17522 function0::operator()
+175DC function1::operator()
+18DE1 io_service::poll
+1942F language_menu::language_menu
+1998D language_menu::set_state
+19A08 language_menu::expand_button_click
+19A20 language_menu::language_selected
+19B4E browser_events::Invoke           # DocumentComplete 259, NavigateError 271, NewWindow3 273
+19CCD browser::browser
+19F22 browser::create                  # OleCreate(CLSID_WebBrowser)
+1A84B get_language_code                # en ru ua de pl
+1A87C launcher_form::launcher_form
+1B1BB launcher_form::~launcher_form
+1B408 launcher_form::on_browser_loaded
+1B44F launcher_form::on_browser_error
+1B48D launcher_form::set_status_texts
+1B5E9 launcher_form::set_play_button_active
+1B6FD launcher_form::handle_window_message
+1B7FF launcher_form::close_window
+1B810 launcher_form::show_settings_callback
+1B81E launcher_form::show_settings
+1B888 launcher_form::minimize_window
+1B893 launcher_form::launch_survarium
+1B8B0 launcher_form::draw_button_texts
+1BB95 open_url                         # cmd.exe /c start %s
+1BBEF launcher_form::shop_click
+1BC45 launcher_form::create_account_click
+1BCAD launcher_form::project_website_click
+1BD03 launcher_form::youtube_click
+1BD16 launcher_form::facebook_click
+1BD29 launcher_form::twitter_click
+1BD3C launcher_form::vk_click
+1BF61 status_bar::status_bar
+1C49E settings_window::settings_window
+1CBB1 settings_window::close_window
+1CC0C settings_window::save_settings
+1CDD5 settings_window::torrent_checkbox_click
+1D3EF get_product_name                 # -product_name= or "Survarium"
+1D496 get_settings_registry_path
+1D4C4 settings::reload
+1D567 get_command_line_language        # -language=
+1D71A settings::save
+1D852 settings::reload_language
+1D8DA settings::save_language
+1D926 settings::set_language
+1D942 construct_download_speed_string
+1DA4B construct_size_string
+1DBE3 construct_time_string
+1DFFB logging::initialize
+1E2C1 remove_file_name
+1E30D get_install_location
+1FB30 bugtrap::load
+20360 debug::set_support_server
+203E0 bugtrap::setup
+20610 bugtrap::initialize
+20F40 debug::on_unhandled_exception_dump
+210A0 unhandled_exception_handler_on_top_of_bugtrap
+210D0 debug::unhandled_exception_filter

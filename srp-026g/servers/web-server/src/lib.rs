@@ -3,6 +3,9 @@
 //! - `/` is a home page: what the project is and where it came from.
 //! - `/exchange` lets a player exchange silver for gold: user name and password,
 //!   then how much gold ([`SILVER_PER_GOLD`] silver each).
+//! - `/launcher/…` and `/api/client-files` (the 0.26g page only) are for the
+//!   patched game launcher and its updater ([`launcher`]): the page it shows
+//!   in its window, and which archive `/download` hands out now.
 //! - The admin page changes the silver and gold of any account, for testing.
 //!   It exists only when `SRP_ADMIN_TOKEN` and `SRP_ADMIN_PATH` (a hard to
 //!   guess name, served at `/<name>`) are set, and only for the addresses in
@@ -20,6 +23,7 @@
 //! [`run_026g`] the 0.26g one ([`v026g`]: the 0.26g accounts, the lobby told
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
+mod launcher;
 mod stats;
 mod v026g;
 
@@ -99,10 +103,11 @@ enum Lang {
 
 impl Lang {
     /// `?lang=` or the form's `lang`, else the browser's `Accept-Language`
-    /// (Ukrainian when it comes first), else English.
+    /// (Ukrainian when it comes first), else English. (`ua` is what the
+    /// game's launcher calls Ukrainian in the addresses it opens.)
     fn pick(chosen: &str, accept: &str) -> Self {
         match chosen {
-            "uk" => return Self::Uk,
+            "uk" | "ua" => return Self::Uk,
             "en" => return Self::En,
             _ => {}
         }
@@ -139,6 +144,14 @@ struct Stats {
     registrations_open: bool,
     /// The 0.26g page.
     v026g: bool,
+    /// The download holds the launcher (0.26g): the page tells players to
+    /// start that, and keeps the start script and the command line for
+    /// those who want them.
+    launcher: bool,
+    /// The download's launcher brings the original game itself (0.26g):
+    /// the page tells players to unpack into an empty folder, and names
+    /// the game's own archive only as the way out when that fails.
+    installs_game: bool,
 }
 
 enum Form {
@@ -424,6 +437,7 @@ impl Request {
 enum ContentType {
     Html,
     Json,
+    Text,
 }
 
 impl ContentType {
@@ -431,6 +445,7 @@ impl ContentType {
         match self {
             Self::Html => "text/html; charset=utf-8",
             Self::Json => "application/json",
+            Self::Text => "text/plain; charset=utf-8",
         }
     }
 }
@@ -587,8 +602,19 @@ impl Web {
 
     fn route(&self, request: &Request, peer: &str) -> Response {
         if let Some(game) = &self.game {
-            if request.method == "GET" && request.path == "/api/stats" {
-                return stats::response(&self.store, game);
+            if request.method == "GET" {
+                match request.path.as_str() {
+                    "/api/stats" => return stats::response(&self.store, game),
+                    "/api/client-files" => return launcher::client_files(),
+                    path if path == "/launcher" || path.starts_with("/launcher/") => {
+                        return launcher::page(
+                            launcher::language(path, request.lang),
+                            &self.store,
+                            game,
+                        );
+                    }
+                    _ => {}
+                }
             }
             return self.route_026g(request, peer);
         }
@@ -601,6 +627,8 @@ impl Web {
                     maintenance: self.store.minutes_to_maintenance(),
                     registrations_open: self.store.registrations_open(),
                     v026g: false,
+                    launcher: false,
+                    installs_game: false,
                 }),
                 "",
             ),
@@ -1334,7 +1362,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     }
 }
 
-const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
+const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
 
 /// A file's size as the download button shows it.
 fn file_size(bytes: u64) -> String {
@@ -1347,6 +1375,8 @@ fn file_size(bytes: u64) -> String {
 
 fn home(lang: Lang, stats: Stats) -> String {
     let v026g = stats.v026g;
+    let with_launcher = stats.launcher;
+    let installs_game = with_launcher && stats.installs_game;
     let connect = CONNECT.get();
     let address = connect.map_or("127.0.0.1:1234", |connect| connect.address.as_str());
     let local = available_download().and_then(|file| std::fs::metadata(file).ok());
@@ -1382,7 +1412,19 @@ fn home(lang: Lang, stats: Stats) -> String {
     };
     // 0.26g: the game itself comes from elsewhere (step one); this server
     // hands out only the files that go over it.
-    let original = if v026g {
+    // With a download whose launcher brings the game there is no such
+    // step: the link is the way out, in the small print of the download.
+    let game_link = connect
+        .and_then(|connect| connect.game_url.as_deref())
+        .map(|url| {
+            format!(
+                "<a href=\"{}\" rel=noopener>{}</a>",
+                escape(url),
+                lang.tr("the original game", "оригінальну гру")
+            )
+        })
+        .unwrap_or_else(|| lang.tr("the original game", "оригінальну гру").to_string());
+    let original = if v026g && !installs_game {
         let link = match connect.and_then(|connect| connect.game_url.as_deref()) {
             Some(url) => format!(
                 "<div class=dl><a class=button href=\"{}\" rel=noopener>{}</a></div>",
@@ -1478,6 +1520,53 @@ fn home(lang: Lang, stats: Stats) -> String {
             escape(address),
         )
     };
+    let command_line = format!(
+        "{}{launch}{options}",
+        lang.tr(
+            "Start it with this command line:",
+            "Запустіть гру з такою командою:"
+        ),
+    );
+    // With the launcher in the download a player starts that and types
+    // nothing; the start script and the command line stay, folded away.
+    let start = if with_launcher {
+        format!(
+            "{}<p>{}</p><p><small>{}</small></p><details><summary>{}</summary><p>{}</p>{command_line}</details>",
+            if installs_game {
+                lang.tr(
+                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens. <b>The first time it gets the game itself</b>: it downloads Survarium 0.26g (2.9 GB, from Google Drive), checks it and installs it, which takes a while; no sign-in is asked for. Then choose your language at the launcher's top and press <b>PLAY</b>.",
+                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер. <b>Першого разу він сам отримує гру</b>: завантажує Survarium 0.26g (2,9 ГБ, з Google Drive), перевіряє та встановлює її, на що потрібен час; входити нікуди не треба. Потім оберіть мову вгорі вікна лаунчера й натисніть <b>PLAY</b>.",
+                )
+            } else {
+                lang.tr(
+                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens: choose your language at its top and press <b>PLAY</b>.",
+                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер: оберіть мову вгорі його вікна й натисніть <b>PLAY</b>.",
+                )
+            },
+            lang.tr(
+                "From then on this is all you do: each time it starts, the launcher looks for new files of ours and installs them by itself.",
+                "Відтоді це все, що потрібно робити: під час кожного запуску лаунчер перевіряє, чи є нові наші файли, і сам їх встановлює.",
+            ),
+            if installs_game {
+                lang.tr(
+                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh launcher</code> in that folder the first time, so that the game is brought; <code>bash Skhid.sh</code> starts the game alone. <code>LINUX.txt</code> in the download says what it needs.",
+                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux першого разу виконайте в цій теці <code>bash Skhid.sh launcher</code>, щоб було отримано гру; <code>bash Skhid.sh</code> запускає лише гру. Що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                )
+            } else {
+                lang.tr(
+                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh</code> in that folder; <code>LINUX.txt</code> in the download says what it needs.",
+                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux виконайте <code>bash Skhid.sh</code> у цій теці; що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                )
+            },
+            lang.tr("Without the launcher", "Без лаунчера"),
+            lang.tr(
+                "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game alone, without looking for new files.",
+                "<code>play_skhid.bat</code> у теці <code>game\\binaries\\x86</code> запускає лише гру, без перевірки нових файлів.",
+            ),
+        )
+    } else {
+        command_line
+    };
     let window = session::gather_window_from_env()
         .unwrap_or(session::DEFAULT_GATHER_WINDOW)
         .as_secs();
@@ -1557,7 +1646,7 @@ fn home(lang: Lang, stats: Stats) -> String {
         )
     };
     format!(
-        "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{}{launch}{}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section> <p><a class=button href=\"/exchange?lang={}\">{}</a></p>",
+        "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{start}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section> <p><a class=button href=\"/exchange?lang={}\">{}</a></p>",
         lang.tr("Skhid", "Схід"),
         lang.tr(
             &format!("Skhid (Ukrainian for \u{201c}east\u{201d}) is a small community server that lets the Survarium {version} client sign in, trade, form squads and play matches again."),
@@ -1573,7 +1662,28 @@ fn home(lang: Lang, stats: Stats) -> String {
             "Можливі помилки та збої. Ваш прогрес, предмети й акаунти можуть зникнути або бути скинуті будь-коли, а сервер можуть зупинити будь-коли. Граючи, ви з цим погоджуєтесь."
         ),
         lang.tr("How to play", "Як зіграти"),
-        if v026g {
+        if installs_game {
+            format!(
+                "{}<p><small>{}</small></p><p><small>{}</small></p>",
+                lang.tr(
+                    "Download our files and unpack them into a new, empty folder on a disk with about 10 GB free. <b>You do this only once:</b> the launcher in them gets the game, and later picks up updates on its own.",
+                    "Завантажте наші файли й розпакуйте їх у нову порожню теку на диску, де вільно близько 10 ГБ. <b>Це робиться лише один раз:</b> лаунчер із цих файлів сам отримує гру, а далі сам отримує оновлення."
+                ),
+                lang.tr(
+                    "Already have Survarium 0.26g (build 2777)? Unpack our files into its folder instead, the one that holds the <code>game</code> folder, and say yes when asked to replace files: nothing is downloaded again. Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.",
+                    "Уже маєте Survarium 0.26g (збірка 2777)? Тоді розпакуйте наші файли в її теку, ту, в якій лежить тека <code>game</code>, і погодьтеся замінити файли: нічого не завантажується вдруге. Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється."
+                ),
+                lang.tr(
+                    &format!("If the launcher cannot get the game (it says why), get {game_link} yourself, a .7z archive that 7-Zip opens, unpack it, and unpack our files into its folder as above."),
+                    &format!("Якщо лаунчер не може отримати гру (він скаже чому), отримайте {game_link} самі (архів .7z, відкривається 7-Zip), розпакуйте її та розпакуйте наші файли в її теку, як сказано вище.")
+                ),
+            )
+        } else if with_launcher {
+            lang.tr(
+                "Download our files and unpack them into the game's folder: the one that holds the <code>game</code> folder. Say yes when asked to replace files. <b>You do this only once:</b> later the launcher picks up updates on its own.<p><small>Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.</small></p>",
+                "Завантажте наші файли й розпакуйте їх у теку гри: ту, в якій лежить тека <code>game</code>. Погодьтеся замінити файли. <b>Це робиться лише один раз:</b> далі лаунчер сам отримує оновлення.<p><small>Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється.</small></p>"
+            )
+        } else if v026g {
             lang.tr(
                 "Download our files and unpack them over the game's <code>game</code> folder. They add <code>survarium_skhid.exe</code>, <code>play_skhid.bat</code> and, for Linux, <code>play_skhid.sh</code> beside the game's own exe, and replace two of the game's files: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of those two if you want the originals back; nothing else changes.",
                 "Завантажте наші файли й розпакуйте їх поверх теки <code>game</code> гри. Вони додають <code>survarium_skhid.exe</code>, <code>play_skhid.bat</code> і, для Linux, <code>play_skhid.sh</code> поруч із exe гри та замінюють два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть копії цих двох файлів, якщо хочете повернути оригінали; більше нічого не змінюється."
@@ -1581,8 +1691,6 @@ fn home(lang: Lang, stats: Stats) -> String {
         } else {
             lang.tr("Download the patched game and unpack it.", "Завантажте пропатчену гру та розпакуйте її.")
         },
-        lang.tr("Start it with this command line:", "Запустіть гру з такою командою:"),
-        options,
         lang.tr(
             "Sign in with any user name and password. A new name is registered on its first sign-in; remember the password.",
             "Увійдіть з будь-яким іменем і паролем. Нове ім'я реєструється під час першого входу; запам'ятайте пароль."
@@ -2379,6 +2487,121 @@ mod tests {
         assert!(web.store.hold(session).is_some());
         let shown = count(&web);
         assert!(shown.contains("| 2 registered"), "{shown}");
+    }
+
+    #[test]
+    fn the_home_page_says_how_to_start_what_the_download_holds() {
+        let stats = |launcher| Stats {
+            registered: 0,
+            online: 0,
+            maintenance: None,
+            registrations_open: true,
+            v026g: true,
+            launcher,
+            installs_game: false,
+        };
+        // With the launcher: one file to start, nothing to type, and the
+        // download is needed once. The script and the command line are
+        // folded away below.
+        for (lang, press, once, folded) in [
+            (
+                Lang::En,
+                "press <b>PLAY</b>",
+                "You do this only once",
+                "Without the launcher",
+            ),
+            (
+                Lang::Uk,
+                "натисніть <b>PLAY</b>",
+                "лише один раз",
+                "Без лаунчера",
+            ),
+        ] {
+            let page = home(lang, stats(true));
+            let steps = page.split("<ol>").nth(1).unwrap();
+            let (shown, hidden) = steps.split_once("<details>").unwrap();
+            assert!(shown.contains("<code>Skhid.bat</code>"), "{shown}");
+            assert!(shown.contains(press), "{shown}");
+            assert!(shown.contains(once), "{shown}");
+            assert!(!shown.contains("binaries"), "{shown}");
+            // Where to unpack is said by what the folder holds, not by a
+            // name a player may read as "inside game".
+            assert!(!shown.contains("over the game's"), "{shown}");
+            assert!(!shown.contains("поверх теки"), "{shown}");
+            assert!(!shown.contains("<pre>"), "{shown}");
+            assert!(!shown.contains("play_skhid.bat"), "{shown}");
+            assert!(hidden.contains(&format!("<summary>{folded}</summary>")));
+            assert!(hidden.contains("play_skhid.bat"));
+            assert!(hidden.contains("<pre>survarium_skhid.exe -localization="));
+            assert_eq!(steps.matches("<details>").count(), 1);
+            assert_eq!(steps.matches("</details>").count(), 1);
+        }
+        // A download whose launcher brings the game: no step that sends a
+        // player for the game first; an empty folder, the room it needs, and
+        // that the first start downloads. The game's own archive is named
+        // only as the way out, and the folder of a game a player has already.
+        for (lang, empty, first, have, way_out) in [
+            (
+                Lang::En,
+                "into a new, empty folder on a disk with about 10 GB free",
+                "The first time it gets the game itself",
+                "Already have Survarium 0.26g",
+                "If the launcher cannot get the game",
+            ),
+            (
+                Lang::Uk,
+                "у нову порожню теку на диску, де вільно близько 10 ГБ",
+                "Першого разу він сам отримує гру",
+                "Уже маєте Survarium 0.26g",
+                "Якщо лаунчер не може отримати гру",
+            ),
+        ] {
+            let page = home(
+                lang,
+                Stats {
+                    installs_game: true,
+                    ..stats(true)
+                },
+            );
+            let steps = page.split("<ol>").nth(1).unwrap();
+            let steps = steps.split("</ol>").next().unwrap();
+            // The first step is the download, not the game.
+            let first_step = steps.split("</li>").next().unwrap();
+            assert!(first_step.contains(empty), "{first_step}");
+            assert!(first_step.contains("class=dl"), "{first_step}");
+            assert!(!steps.contains("Get the original Survarium"), "{steps}");
+            assert!(!steps.contains("Отримайте оригінальну"), "{steps}");
+            for said in [empty, first, have, way_out, "2.9", "Google Drive"] {
+                let said = if lang == Lang::Uk && said == "2.9" {
+                    "2,9"
+                } else {
+                    said
+                };
+                assert!(steps.contains(said), "{said}: {steps}");
+            }
+            assert!(steps.contains("<code>Skhid.bat</code>"), "{steps}");
+            assert!(
+                steps.contains("<code>bash Skhid.sh launcher</code>"),
+                "{steps}"
+            );
+            assert_eq!(steps.matches("<details>").count(), 1);
+        }
+        // An archive with the extractor and no launcher is not such a one.
+        let page = home(
+            Lang::En,
+            Stats {
+                installs_game: true,
+                ..stats(false)
+            },
+        );
+        assert!(page.contains("Get the original Survarium"));
+        assert!(!page.contains("empty folder"));
+        // Without it: the page as it was.
+        let page = home(Lang::En, stats(false));
+        assert!(!page.contains("launcher_skhid.exe"));
+        assert!(!page.contains("<details>"));
+        assert!(page.contains("Start it with this command line:<pre>survarium_skhid.exe"));
+        assert!(page.contains("<code>play_skhid.bat</code>"));
     }
 
     #[test]

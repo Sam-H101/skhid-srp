@@ -36,7 +36,18 @@ macro_rules! text {
         }
     };
 }
-text!(APP_NAME, BT_GetAppName, BT_SetAppName);
+pub static APP_NAME: Text = Text::new();
+#[unsafe(no_mangle)]
+pub extern "system" fn BT_GetAppName() -> *const u8 {
+    APP_NAME.get()
+}
+// The game names itself once, early in its start and on its main thread,
+// before it uses its folder in Documents: the place for the start-up notice.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn BT_SetAppName(value: *const u8) {
+    APP_NAME.set(value);
+    crate::notice::check_once();
+}
 text!(APP_VERSION, BT_GetAppVersion, BT_SetAppVersion);
 text!(USER_MESSAGE, BT_GetUserMessage, BT_SetUserMessage);
 text!(REPORT_PATH, BT_GetReportFilePath, BT_SetReportFilePath);

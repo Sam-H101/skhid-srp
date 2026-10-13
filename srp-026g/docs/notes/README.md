@@ -33,6 +33,8 @@ given), LIKELY or GUESS.
 | [modes_maps.md](modes_maps.md) | Maps, game modes, map ids, rule classes, match settings now in data |
 | [data.md](data.md) | `resources.db`: items, skills, drops, quests, item configs |
 | [client_patch.md](client_patch.md) | Porting the srp client patch, the function map |
+| [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
+| [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
 
 The draft patcher is in `srp-026g/client-patches/`. The data dumps
@@ -112,8 +114,10 @@ Every setting has a default; none is needed on a dev PC.
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 1), `SRP_MONEY_RATE` (percent, default
-  80): the rewards (`results.md` §10). `SRP_DROP_CONDITION` (40),
+  120): the rewards (`results.md` §10). `SRP_ITEM_WEAR` (off): whether a
+  match wears the items played with. `SRP_DROP_CONDITION` (40),
   `SRP_DROP_DEFECT` (on): what a found weapon or armour arrives as.
+  `SRP_DROP_PLAYTIME_BONUS` (off): the play time bonus to the drop chance.
   `SRP_DAILY_BONUS` (on), `SRP_DAILY_BONUS_RESET_HOUR` (0): the daily bonus.
 - `SRP_SNAPSHOT_DIR` (default `logs/snapshots`; `off`): uploaded worlds.
 - `SRP_PACKET_LOG=<dir>`: every datagram of the lobby and the match
@@ -145,6 +149,9 @@ section build of `patch_026g.py` (certificate check, single-instance check,
 the certificate patch (`--cert-only`), is beside it as
 `survarium_srp.cert-only.bak.exe`. The upload code runs in live matches
 since 2026-10-12 (`WORK.md`; `client_patch.md` was written before that).
+Since the evening of that day `patch_026g.py` also patches the battery rule
+(`client_patch.md` §3.9; patch revision 3), lets a game start whose Documents folder it may not write to (§3.10, written 2026-10-13; patch revision 4) and skips the minimum video-memory check (§3.7): the exe installed that day has none of them; the players' download
+has all three since 2026-10-13 15:36 UTC (the battery rule since 12:22 UTC).
 
 ### A match alone: the test bot (added 2026-10-12)
 

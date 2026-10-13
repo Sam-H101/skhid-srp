@@ -205,7 +205,9 @@ name belongs to whoever registers it first, as any name does.
 | Variable | Default | What |
 |---|---|---|
 | `SRP_EXPERIENCE_RATE` | 1 | What a match's experience and reputation are multiplied by (1 to 100). 1 is the original's pace (it was 3 until 2026-10-12) |
-| `SRP_MONEY_RATE` | 80 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 80 is the owner's choice |
+| `SRP_MONEY_RATE` | 120 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 120 is the owner's choice (80 until 2026-10-13) |
+| `SRP_ITEM_WEAR` | off | `on`: a match wears the weapons and armour of the kits played, as the game's data says, and a worn item may get a defect. Off is the owner's choice (2026-10-13): an item stays as it is. The first start of a database with it off makes every worn weapon and armour piece whole, once |
+| `SRP_DROP_PLAYTIME_BONUS` | off | `on`: the first four games of an hour of play raise the chance of a drop by 100, 75, 50 and 25 % (the numbers are the game's data; how they were applied is a guess). Off is the owner's choice (2026-10-13): with it on, 73 % of the players who finished a match found something |
 | `SRP_DROP_CONDITION` | 40 | The condition, in percent, a weapon or armour piece found after a match arrives in (1 to 100; the owner's choice) |
 | `SRP_DROP_DEFECT` | on | `off`: such an item arrives without a defect |
 | `SRP_DAILY_BONUS` | on | `off`: no doubled victories, no seven-day reward, and no daily bonus message to the client |
@@ -260,6 +262,19 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   lower-case hex SHA-1 of what was typed), with the same lockout; an unknown
   name is never registered; nothing of it is logged. An account that never
   signed in to the 0.26g lobby has nothing to exchange.
+- `/api/client-files` and `/launcher/…` (since 2026-10-13, for the patched game
+  launcher and its updater: `../client-patches/launcher/README.md`). The first answers with the
+  SHA-256 and size of the file `/download` hands out (`SRP_DOWNLOAD_FILE`), as
+  three lines of text; the file is read again when its size or time changes,
+  so a new ZIP put in its place is seen without a restart. The second is the
+  page the launcher shows in its window (899 by 335, made for Internet
+  Explorer's engine, no script, nothing from another host): the ten best
+  players by rating among those who were in a match (name, clan tag, level,
+  rating; test bots left out), players online, searching, matches running,
+  accounts, battles fought (how often an account was put in a match, all
+  accounts together), clans, a planned maintenance, the legal notice.
+  Ukrainian for `?lang=ua`, else as every page. Its numbers are counted again
+  at most every 15 seconds. Not on the players' server yet.
 - The admin page (token, path and address as in the table). Tabs:
   money (silver and gold, `+500` / `-100`); account (premium hours, set the
   level, experience, reputation with a faction 1 to 4); item (an item of the
@@ -417,19 +432,32 @@ builds the patched client from the original exe (its sha256 is checked; each
 site is checked against the original bytes). It patches the code-signing
 certificate check (without it every stock 0.26g client stops with "Resources
 archive is corrupted": the certificate ran out in 2015), the single-instance
-check, the default hash interval (100 → 50 ms), and adds the snapshot upload
-in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the other
-builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
+check, the default hash interval (100 → 50 ms), two instructions of the
+battery rule of modes 2 and 3 (so that a team's last battery can be put in;
+patch revision 3, in the players' download since 2026-10-13 12:22 UTC), two
+sites that let a game start whose Documents folder it may not write to
+(patch revision 4, in the players' download since 15:36 UTC of that day),
+and adds the snapshot
+upload in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the
+other builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
 
 `client-patches/make_client_026g.py <game folder> <output>
 --server=<host>:<port>` makes the players' overlay without touching the game
 folder: `game/binaries/x86/survarium_skhid.exe` (the patched exe),
 `bugtrap.dll` (the Rust local crash reporter), `play_skhid.bat` and the Linux
 launcher `play_skhid.sh` beside them, srp's login certificate, a player
-`README.txt` and `LINUX.txt`. Build the Rust DLL first
-with `../client/bugtrap/build.sh`; the overlay builder includes it by default.
+`README.txt` and `LINUX.txt`; and, unless `--no-launcher` is given, the game's
+launcher made to work again (`client-patches/launcher/README.md`):
+`launcher_skhid.exe`, `updater_skhid.exe` with `updater_skhid.url`, `7zr.exe`
+(the extractor the updater unpacks the original game with for a player who
+has none), the launcher's ten local pages, and `Skhid.bat` and `Skhid.sh`
+beside `game`, the one file a player starts. Build the Rust programs first with
+`../client/bugtrap/build.sh` and `../client/updater/build.sh`; the overlay
+builder includes them by default.
 `--pack-zip` creates the player archive directly instead of a folder, with exactly
-those seven files and no source, symbols or tests. `--check` writes nothing.
+those files (23; seven with `--no-launcher`) and no source, symbols or tests.
+`--check` writes nothing. The same input gives the same archive byte for byte:
+the updater installs whenever the archive the site offers has another checksum.
 The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the
 whole game.
 

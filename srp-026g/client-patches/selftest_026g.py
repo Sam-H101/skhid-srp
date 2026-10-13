@@ -29,6 +29,14 @@ Checks, per variant (cert-only, section, hash-mismatch):
     branch of the function lands inside it.
 12. optional embedded login server: the missing-server hook, relative stub,
     address bytes and unchanged explicit-server/replay paths in both caves.
+13. full builds only: the battery rule's two instructions (0x313A62,
+    0x313B34) are nops between the instructions they stood between, under
+    no relocation, and no branch lands inside them; cert-only keeps them.
+14. full builds only: mounter::finish leaves at once for a mount without a
+    root (0x46B0B, `jmp short 0x46b36` and two nops; the path of a mount
+    with a root is the original's), and the default of -record_journal is
+    the exe's "0" (0x851CC7; the relocation of the address stays active,
+    the option is read only at the game's start); cert-only keeps both.
 """
 
 import ctypes
@@ -223,8 +231,16 @@ def allowed_ranges(original, mode, cave_size, server=None):
     rewritten = [(P.CERT[0], P.CERT[0] + 3), (P.MUTEX[0], P.MUTEX[0] + 2)]
     ranges.append((P.file_offset(P.HASH_INTERVAL_BYTE_VA), 1))
     rewritten.append((P.HASH_INTERVAL_BYTE_VA, P.HASH_INTERVAL_BYTE_VA + 1))
+    for va, old, _ in P.GATHER:
+        ranges.append((P.file_offset(va), len(old)))
+        rewritten.append((va, va + len(old)))
     ranges.append((P.file_offset(P.MEMORY_CHECK[0]), 1))
     rewritten.append((P.MEMORY_CHECK[0], P.MEMORY_CHECK[0] + 1))
+    ranges.append((P.file_offset(P.MOUNT_NO_ROOT[0]), len(P.MOUNT_NO_ROOT[1])))
+    rewritten.append((P.MOUNT_NO_ROOT[0], P.MOUNT_NO_ROOT[0] + len(P.MOUNT_NO_ROOT[1])))
+    # The journal default's imm32 changes and keeps its relocation: it is
+    # an allowed range, and not a rewritten one (test_start_up_folder).
+    ranges.append((P.file_offset(P.JOURNAL_DEFAULT_VA + 1), 4))
     if server is not None:
         va, old = P.DEFAULT_SERVER_HOOK
         ranges.append((P.file_offset(va), len(old)))
@@ -364,6 +380,122 @@ def test_hash_interval(original, image, mode):
     hits = [f"{address:#x}: {text}" for address, _, text in ndisasm(Image(original).read(0x27CC45, 0x30B), 0x27CC45)
             if branch_target(text) in inside]
     check(not hits, "no branch of try_send_all lands inside that instruction")
+
+
+def test_gather(original, image, mode):
+    """The battery rule's container event handler (match.md section 26)."""
+    # The handler: 0x313A50 to its last `ret 0Ch` at 0x313B3B.
+    start, end = 0x313A50, 0x313B3E
+    before = {text for _, _, text in ndisasm(Image(original).read(start, end - start), start)}
+    check({"cmp dword [ecx+0x15c],byte -0x1", "jnz near 0x313b3b", "mov [ecx+0x15c],edx",
+           "mov byte [ecx+0x160],0x0", "ret 0xc"} <= before,
+          "the original handler has `cmp [ecx+0x15c],-1` / `jnz 0x313b3b` and `mov [ecx+0x15c],edx` / "
+          "`mov byte [ecx+0x160],0` / `ret 0xc`")
+    rows = ndisasm(image.read(start, end - start), start)
+    at = {address: text for address, _, text in rows}
+    if mode == "cert-only":
+        check(all(image.read(va, len(old)) == old for va, old, _ in P.GATHER),
+              "cert-only: the handler is the original's")
+        return
+    (events_va, events_old, _), (lock_va, lock_old, _) = P.GATHER
+    nops = lambda va, size: all(at.get(va + i) == "nop" for i in range(size))
+    check(at.get(0x313A5B) == "cmp dword [ecx+0x15c],byte -0x1" and nops(events_va, len(events_old))
+          and at.get(0x313A68) == "mov eax,[esp+0x8]",
+          f"{events_va:#x}: six nops between `cmp dword [ecx+0x15c],-1` and `mov eax,[esp+0x8]`: "
+          "an event after the completion is counted")
+    check(at.get(0x313B2E) == "mov [ecx+0x15c],edx" and nops(lock_va, len(lock_old))
+          and at.get(0x313B3B) == "ret 0xc",
+          f"{lock_va:#x}: seven nops between `mov [ecx+0x15c],edx` and `ret 0xc`: "
+          "the containers stay usable")
+    relocated = sorted(rva for kind, rva in Image(original).relocations().values()
+                       if kind == 3 and any(rva + 4 > va and rva < va + len(old) for va, old, _ in P.GATHER))
+    check(not relocated, "no base relocation of the original covers either instruction")
+    interiors = [(va + 1, va + len(old)) for va, old, _ in P.GATHER]
+    hits = [f"{address:#x}: {text}" for address, _, text in ndisasm(Image(original).read(start, end - start), start)
+            if branch_target(text) is not None
+            and any(lo <= branch_target(text) < hi for lo, hi in interiors)]
+    check(not hits, "no branch of the handler lands inside either instruction")
+    # The byte the second one cleared: set by the rule's constructor,
+    # tested by the container's can_use, and written nowhere else as a
+    # `mov byte [reg+160h],imm` of this class.
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    clears = sorted(P.TEXT_VA + m.start() for m in re.finditer(rb"\xC6[\x80-\x87]\x60\x01\x00\x00\x00", text))
+    sets = sorted(P.TEXT_VA + m.start() for m in re.finditer(rb"\xC6[\x80-\x87]\x60\x01\x00\x00\x01", text))
+    check(lock_va in clears and 0x313A1F in sets
+          and not any(0x313000 <= va < 0x315000 for va in clears if va != lock_va),
+          f"`mov byte [reg+0x160],0` is at {lock_va:#x} and nowhere else in the rule's code "
+          "(the constructor sets it at 0x313A1F)")
+
+
+def test_start_up_folder(original, image, mode):
+    """A Documents folder the game may not write to (client_patch.md
+    section 3.10): the mount without a root, and no journal by default."""
+    stock = Image(original)
+    va, old, new = P.MOUNT_NO_ROOT
+    journal_va, journal_old, journal_new = P.JOURNAL_DEFAULT
+    if mode == "cert-only":
+        check(image.read(va, len(old)) == old and image.read(journal_va, 5) == journal_old,
+              "cert-only: mounter::finish and the journal's default are the original's")
+        return
+    # mounter::finish from the read of the mount's root to its `ret 0Ch`.
+    start, end = 0x46B04, 0x46B3D
+    tail = ["mov eax,[eax+0x34]", "test eax,eax", "jnz 0x46b0f", "xor ecx,ecx", "jmp short 0x46b12",
+            "mov ecx,[eax+0x40]", "mov ebp,[ebp+0x524]", "mov edx,[ebp+0x201c8]", "lea eax,[ebp+0x201c8]",
+            "neg edx", "sbb edx,edx", "test edx,0x1af330", "jz 0x46b36", "push ecx", "call 0x10e2a0",
+            "pop edi", "pop esi", "pop ebp", "pop ecx", "ret 0xc"]
+    before = [text for _, _, text in ndisasm(stock.read(start, end - start), start)]
+    check(before == tail,
+          "the original mounter::finish ends: root = [mount+0x34]; ecx = root ? [root+0x40] : 0; "
+          "the on_mounted callback, when there is one, is called with ecx")
+    after = [text for _, _, text in ndisasm(image.read(start, end - start), start)]
+    check(after == tail[:3] + [f"jmp short {P.MOUNT_NO_ROOT_END:#x}", "nop", "nop"] + tail[5:],
+          f"{va:#x}: `jmp short {P.MOUNT_NO_ROOT_END:#x}` and two nops: a mount without a root goes to the "
+          "function's end (the four pops and `ret 0xc`), the path of a mount with a root is the original's")
+    relocated = [rva for kind, rva in stock.relocations().values()
+                 if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not relocated, "no base relocation of the original covers the four bytes")
+    whole = ndisasm(stock.read(0x469F0, 0x14D), 0x469F0)
+    hits = [f"{address:#x}: {text}" for address, _, text in whole
+            if branch_target(text) is not None and va < branch_target(text) < va + len(old)]
+    targets = sorted({address for address, _, text in whole if branch_target(text) == P.MOUNT_NO_ROOT_END})
+    check(not hits and len(targets) >= 3,
+          f"no branch of mounter::finish lands inside them; {P.MOUNT_NO_ROOT_END:#x} is where its own "
+          f"{len(targets)} early exits go")
+    # The callback this protects: it reads the node's flags without looking.
+    check(stock.read(0xF9A8B, 8) == bytes.fromhex("8b74240c0fb74630"),
+          "resources_manager::on_mounted 0xF9A80 does `mov esi,[esp+0xc]` / `movzx eax,word [esi+0x30]`: "
+          "a null node is an access violation at 0xF9A8F")
+
+    # The journal: the option's initializer.
+    literal = lambda value: stock.read(value - 1, 3)
+    check(literal(P.JOURNAL_DEFAULT_ON) == b"\x001\x00" and literal(P.JOURNAL_DEFAULT_OFF) == b"\x000\x00",
+          f'{P.JOURNAL_DEFAULT_ON:#x} is the text "1" and {P.JOURNAL_DEFAULT_OFF:#x} the text "0", '
+          "both in the original's read-only data")
+    initializer = lambda source, value: [text for _, _, text in ndisasm(source.read(journal_va - 5, 16), journal_va - 5)] \
+        == [f"push dword {P.JOURNAL_OPTION:#x}", f"mov eax,{value:#x}", "call 0xddff0", "ret"]
+    check(initializer(stock, P.JOURNAL_DEFAULT_ON) and initializer(image, P.JOURNAL_DEFAULT_OFF),
+          f"{journal_va:#x}: the initializer of -record_journal ({P.JOURNAL_OPTION:#x}) gives \"0\" "
+          "in the place of \"1\"; the push before it and the call after it are the original's")
+    others = [at for at in (0x84CF92, 0x84E4F2, 0x853B02)
+              if [text for _, _, text in ndisasm(stock.read(at, 16), at)][1:]
+              == [f"mov eax,{P.JOURNAL_DEFAULT_OFF:#x}", "call 0xddff0", "ret"]]
+    check(len(others) == 3, "three other options of the original are given that \"0\" by the same three instructions")
+    name, description = stock.read(0x9FB560, 15), stock.read(0x9FB544, 26)
+    check(name == b"record_journal\0" and description == b"disable journal recording\0"
+          and stock.read(P.JOURNAL_OPTION + 0x210, 4) == struct.pack("<I", 0x9FB560),
+          "the option object's name is `record_journal` (its description: \"disable journal recording\")")
+    kinds = lambda source: sorted(kind for kind, rva in source.relocations().values() if rva == journal_va + 1)
+    check(kinds(stock) == [3] and kinds(image) == [3],
+          f"the base relocation of the address ({journal_va + 1:#x}) is active in the original and stays so")
+    # One reader: the game's start decides between replay, record and none.
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    readers = sorted(P.TEXT_VA + m.start() for m in re.finditer(re.escape(struct.pack("<I", P.JOURNAL_OPTION)), text))
+    check(readers == [0x1F69B3, 0x851CB1, 0x851CC3] and stock.read(0x1F69B2, 19) == bytes.fromhex(
+        "be28d6a900e804dce1ff33d284c00f95c28bf2"),
+          "the option is named where it is registered and at 0x1F69B2 only: `mov esi,0xa9d628` / "
+          "`call 0x145c0` / `setnz dl` / `mov esi,edx`, the journal's use (0: none, 1: record)")
+    check(stock.read(0xEB317, 4) == bytes.fromhex("85f67463"),
+          "journaling's start 0xEB310 makes no journal for use 0 (`test esi,esi` / `jz 0xeb37e`)")
 
 
 def test_memory_check(original, image, mode):
@@ -700,6 +832,8 @@ def main():
         test_memory_check(original, image, mode)
         test_default_server(original, image, mode, server)
         test_revision(original, image, mode)
+        test_gather(original, image, mode)
+        test_start_up_folder(original, image, mode)
         if mode == "cert-only":
             if os.path.exists(INSTALLED_CERT_ONLY):
                 check(open(INSTALLED_CERT_ONLY, "rb").read() == bytes(data),

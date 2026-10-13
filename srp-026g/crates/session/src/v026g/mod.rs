@@ -58,6 +58,25 @@ struct Writer {
 /// ([`GameAccounts::on_flush`]).
 pub type FlushHook = Box<dyn Fn(&mut dyn GameRepository) + Send + Sync>;
 
+/// One line of [`GameAccounts::board`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardRow {
+    pub name: String,
+    /// Empty for a player of no clan.
+    pub clan_tag: String,
+    pub rating: u16,
+    pub level: u8,
+}
+
+/// [`GameAccounts::board`]: the best players and the battles fought.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Board {
+    pub top: Vec<BoardRow>,
+    /// How many times an account was put in a match, all accounts together
+    /// (a match of eight players counts eight).
+    pub battles: u64,
+}
+
 /// The 0.26g accounts of a running srp, by account id. Shared as an
 /// `Arc<GameAccounts>`; each account is handed out as `Arc<Mutex<Account>>`
 /// so a change in the lobby is seen wherever the account is held. Whoever
@@ -155,11 +174,52 @@ impl GameAccounts {
 
     /// The store srp's environment asks for: in `srp.db` under
     /// `SRP_DATA_DIR`, or in memory with `SRP_DB=off`.
+    ///
+    /// The first time a database is opened with wear off
+    /// ([`pay::item_wear`], the default) every weapon and armour piece in
+    /// it is made whole ([`Self::mend_gear`]): what matches wore before the
+    /// switch would stay worn for ever. Once in the database's life
+    /// (`persist::GEAR_MENDED`), so an item found later, which arrives worn
+    /// ([`pay::drop_condition`]), stays as found until its owner repairs it.
     pub fn from_env() -> Result<Self, PersistError> {
         match SqliteGameRepository::from_env()? {
-            Some(repository) => Self::with_repository(Box::new(repository)),
+            Some(mut repository) => {
+                let mend = !pay::item_wear() && repository.first_time(persist::GEAR_MENDED)?;
+                let store = Self::with_repository(Box::new(repository))?;
+                if mend {
+                    let (items, accounts) = store.mend_gear();
+                    store.flush();
+                    log::info!(
+                        "Wear is off: {items} worn weapons and armour pieces of {accounts} \
+                         accounts made whole, once"
+                    );
+                }
+                Ok(store)
+            }
             None => Ok(Self::new()),
         }
+    }
+
+    /// Makes every account's weapons and armour whole
+    /// ([`items_rules::mend_all`]) and marks the accounts it changed.
+    /// Returns `(items, accounts)` mended.
+    pub fn mend_gear(&self) -> (usize, usize) {
+        let accounts: Vec<(u32, Arc<Mutex<Account>>)> = self
+            .accounts
+            .locked()
+            .iter()
+            .map(|(&id, account)| (id, Arc::clone(account)))
+            .collect();
+        let (mut items, mut changed) = (0, 0);
+        for (account_id, account) in accounts {
+            let mended = items_rules::mend_all(&mut account.locked());
+            if mended > 0 {
+                items += mended;
+                changed += 1;
+                self.mark_dirty(account_id);
+            }
+        }
+        (items, changed)
     }
 
     /// The clans and clan teams.
@@ -262,6 +322,53 @@ impl GameAccounts {
         }
         rows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
         rows
+    }
+
+    /// What the launcher's page shows of the accounts: the `count` best by
+    /// rating among those that were put in a match at least once (ties by
+    /// id, as in [`Self::ranking`]), and how many times an account was put
+    /// in a match, all accounts together. Test bots ([`bots`]) are not
+    /// counted.
+    pub fn board(&self, count: usize) -> Board {
+        let accounts: Vec<(u32, Arc<Mutex<Account>>)> = self
+            .accounts
+            .locked()
+            .iter()
+            .map(|(&id, account)| (id, account.clone()))
+            .collect();
+        let bots = self.bots.locked().clone();
+        let mut battles = 0_u64;
+        let mut rows: Vec<(u32, BoardRow)> = Vec::new();
+        for (id, account) in accounts {
+            let account = account.locked();
+            if bots.contains(&account.name.to_ascii_lowercase()) {
+                continue;
+            }
+            let played: u64 = account
+                .map_plays
+                .iter()
+                .map(|&(_, plays)| u64::from(plays))
+                .sum();
+            if played == 0 {
+                continue;
+            }
+            battles += played;
+            rows.push((
+                id,
+                BoardRow {
+                    name: account.name.clone(),
+                    clan_tag: account.clan_tag.clone(),
+                    rating: account.rating,
+                    level: account.level(),
+                },
+            ));
+        }
+        rows.sort_by(|a, b| b.1.rating.cmp(&a.1.rating).then(a.0.cmp(&b.0)));
+        rows.truncate(count);
+        Board {
+            top: rows.into_iter().map(|(_, row)| row).collect(),
+            battles,
+        }
     }
 
     /// The account changed: it is written on the next pass. Never waits on
@@ -382,6 +489,47 @@ mod tests {
     }
 
     #[test]
+    fn mending_makes_weapons_and_armour_whole_and_leaves_the_stacks() {
+        use survarium::v026g::dictionary::Dictionary;
+        use survarium::v026g::lobby::FULL_CONDITION;
+        let dict = |name: &str| Dictionary::shared().item_named(name).unwrap().dict_id;
+        let repository = MemoryGameRepository::default();
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        let (rifle, vest, whole, rounds) = {
+            let account = store.get_or_create(5, "Alice");
+            let mut account = account.locked();
+            // A rifle found in a match: 40 % and a defect beside its own
+            // modification; a vest a match wore, in repair.
+            let rifle = account.add_item(dict("ak_74m"), FULL_CONDITION * 2 / 5);
+            account.item_mut(rifle).unwrap().modifications = vec![(2110, false), (3060, true)];
+            let vest = account.add_item(dict("scav_torso_1"), FULL_CONDITION - 10_000);
+            account.item_mut(vest).unwrap().repair_time = 2_000_000_000;
+            let whole = account.add_item(dict("toz_34"), FULL_CONDITION);
+            let rounds = account.add_item(dict("ammo_5.45x39_7n6m"), 90);
+            (rifle, vest, whole, rounds)
+        };
+        store.get_or_create(6, "Bob");
+        store.flush();
+        // Two items of one account; Bob's starting kit needs nothing.
+        assert_eq!(store.mend_gear(), (2, 1));
+        assert!(store.is_dirty(5) && !store.is_dirty(6));
+        {
+            let account = store.get(5).unwrap();
+            let account = account.locked();
+            let rifle = account.item(rifle).unwrap();
+            assert_eq!(rifle.condition_or_stack, FULL_CONDITION);
+            assert_eq!(rifle.modifications, [(2110, false)]);
+            let vest = account.item(vest).unwrap();
+            assert_eq!((vest.condition_or_stack, vest.repair_time), (FULL_CONDITION, 0));
+            assert_eq!(account.item(whole).unwrap().condition_or_stack, FULL_CONDITION);
+            assert_eq!(account.item(rounds).unwrap().condition_or_stack, 90);
+        }
+        // Nothing left to mend.
+        store.flush();
+        assert_eq!(store.mend_gear(), (0, 0));
+    }
+
+    #[test]
     fn changes_are_written_and_come_back() {
         let repository = MemoryGameRepository::default();
         let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
@@ -437,5 +585,44 @@ mod tests {
         store.get_or_create(3, "Eve");
         let names: Vec<String> = store.ranking().into_iter().map(|row| row.1).collect();
         assert_eq!(names, ["Bob", "Alice", "Eve"]);
+    }
+
+    #[test]
+    fn the_board_is_of_those_who_played_and_counts_their_battles() {
+        let store = GameAccounts::new();
+        // Never in a match: not on the board, whatever the rating.
+        store.get_or_create(1, "Alice").locked().rating = 2000;
+        for (id, name, rating, plays) in [
+            (2, "Bob", 1200, 3),
+            (3, "Eve", 1300, 1),
+            (4, "Dan", 1200, 2),
+        ] {
+            let account = store.get_or_create(id, name);
+            let mut account = account.locked();
+            account.rating = rating;
+            account.clan_tag = if id == 3 { "TAG".into() } else { String::new() };
+            for _ in 0..plays {
+                matchmaking::count_map_play(&mut account, 1 + id as u8 % 2);
+            }
+        }
+        let board = store.board(10);
+        let rows: Vec<(&str, &str, u16)> = board
+            .top
+            .iter()
+            .map(|row| (row.name.as_str(), row.clan_tag.as_str(), row.rating))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Eve", "TAG", 1300), ("Bob", "", 1200), ("Dan", "", 1200)]
+        );
+        assert_eq!(board.battles, 6);
+        assert_eq!(store.board(2).top.len(), 2);
+        assert_eq!(store.board(2).battles, 6);
+        // A test bot is neither listed nor counted.
+        store.set_bots(&["bob".to_owned()]);
+        let board = store.board(10);
+        assert_eq!(board.top.len(), 2);
+        assert_eq!(board.battles, 3);
+        assert_eq!(GameAccounts::new().board(10), Board::default());
     }
 }

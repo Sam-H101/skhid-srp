@@ -2020,6 +2020,42 @@ fn a_finished_match_pays_its_players_and_shows_them_the_results() {
 }
 
 #[test]
+fn a_game_started_anew_is_shown_no_results_screen_when_its_old_match_ends() {
+    let mut world = World::new(Duration::ZERO);
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    let (match_id, alice_team) = world.match_of(alice, bob);
+    let alice_account = world.ids[alice].0;
+
+    // Alice's game is gone in the match; she starts it again and signs in
+    // while the match still runs. This game has loaded no match.
+    world.client(alice).leave();
+    world.settle();
+    let session = world.store.create_session(alice_account);
+    let again = world.connect_session((alice_account, session));
+    assert!(screens(&world.take(again)).is_empty());
+    assert!(!world.core.sent_to_match.contains(&session));
+
+    // The match ends while she is in the lobby: Bob, who sat through it,
+    // gets the screen; her new game gets none, and nothing waits for a
+    // later moment.
+    world.end_match(match_id, alice_team);
+    world.advance(Duration::from_secs(3));
+    assert_eq!(screens(&world.take(bob)).len(), 1);
+    assert!(screens(&world.take(again)).is_empty());
+    assert!(!world.results.has_unseen(alice_account));
+    world.advance(Duration::from_secs(3));
+    assert!(screens(&world.take(again)).is_empty());
+
+    // Her next match is one her game has loaded: its screen comes.
+    let (next, team) = world.match_of(again, bob);
+    assert!(world.core.sent_to_match.contains(&session));
+    world.end_match(next, team);
+    world.settle();
+    assert_eq!(screens(&world.take(again)).len(), 1);
+}
+
+#[test]
 fn the_results_wait_for_a_player_who_left_the_match_or_the_game() {
     let mut world = World::new(Duration::ZERO);
     let alice = world.connect("Alice");
@@ -2051,18 +2087,23 @@ fn the_results_wait_for_a_player_who_left_the_match_or_the_game() {
     );
 
     // Alice signs in again: the account as the match left it comes with
-    // the sign-in, then the screen, once.
+    // the sign-in, and no screen. Her game may have been started anew, and
+    // a game that has loaded no match dies of a results screen (it
+    // translates the map's name of its last match: a null pointer).
     let paid = world.account(alice).generic_money;
+    assert!(world.results.has_unseen(alice_account));
     let session = world.store.create_session(alice_account);
     let again = world.connect_session((alice_account, session));
     let decoded = world.take(again);
-    assert_eq!(screens(&decoded), [(match_id, 1, 2)]);
-    let screen = position(&decoded, |message| {
-        matches!(message, Decoded::MatchStats { .. })
-    })
-    .unwrap();
-    let account = position(&decoded, |message| matches!(message, Decoded::Account(_))).unwrap();
-    assert!(account < screen);
+    assert!(screens(&decoded).is_empty());
+    assert!(
+        decoded
+            .iter()
+            .any(|message| matches!(message, Decoded::Account(_)))
+    );
+    // The results are not kept for a later moment either: they were hers
+    // to see once.
+    assert!(!world.results.has_unseen(alice_account));
     assert!(
         decoded
             .iter()

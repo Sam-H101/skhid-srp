@@ -244,6 +244,7 @@ Flash `victory_screen_request_player_data` (handler 0x29ED70, slot +0x6A0; slot 
 7. **Descriptors** (0x97, 0x98, 0x99): mods > 8 or upgrades > 3 -> fatal assert "buffer overflow".
 8. **0x99** day count n > 7 overwrites the reward descriptor and beyond.
 9. Score components: forgetting that the 8 bytes per column are omitted for amount == 0.0 desyncs the rest of 0x97/0x93.
+10. **0x97 to a game that has loaded no match** (PROVEN, crash dump of 2026-10-13): the screen's builder reads the map's name from lobby_menu+0x313C (0x29ABE1) and gives it to `translate_text` (0x29AC04 -> 0x1FF0F0), which reads the string at once (0xF6C47). The field has one writer in the whole exe, the match loading screen (0x22052A), so it is NULL until the game has loaded its first match: access violation reading address 0. A game started anew after its player's match (the game was closed or died in it) is such a game. srp sends 0x97 only to a session the lobby has sent into a match (`Core::sent_to_match`, `show_results`); the others get the match's notices and no screen.
 
 ---
 
@@ -322,13 +323,13 @@ Code: `crates/session/src/v026g/pay.rs` (every number, each with its tag) and `r
 
 - **Other score** = the score of the events of the row itself (every event that is no kill and no help; `event_categories` value 2), with the weights the match was played with. For a player whose helps are all assists that is "score − 10 a kill − 5 an assist", which is how both screens were read.
 - **A match not won** (lost, drawn, or with no known result) and played to the end pays half of the fixed part and the same for each point; **a player who left early** gets nothing of the fixed part. The owner's choice (2026-10-12), until a lost match's screen is seen.
-- **Rates** (srp's): the rows' silver × `SRP_MONEY_RATE` percent (default 80, the owner's choice); their experience and reputation × `SRP_EXPERIENCE_RATE` (default 1).
+- **Rates** (srp's): the rows' silver × `SRP_MONEY_RATE` percent (default 120, the owner's choice of 2026-10-13; 80 before); their experience and reputation × `SRP_EXPERIENCE_RATE` (default 1).
 - **Daily bonus** = the rows' experience and reputation once more, no silver; **premium** = half of the rows, of all three, not of the daily bonus; total = rows + daily + premium (PROVEN: SHOT1's 188 + 188 + 94 = 470, 26 + 26 + 13 = 65; SHOT2's 379 + 189 = 568).
 - **The money total is net of expenses in the client** (PROVEN, `VictoryScreen.updateMoney`): it adds the autobuy and repair lists of the inventory push (0x89) to the sum of the rows, quests and bonus blocks. 0x97 carries the gross rows; SHOT2's 9784 = 10707 + 5353 − 6276.
 - **The "x18" of SHOT1** against 17 kills on its scoreboard: the row's events are 0 (kill) and 4 (team kill), so the 18th is LIKELY a team kill, which paid nothing. It does not explain the lesser kind of kill (ten of them). srp's amount counts kills only [choice].
 - **Score weights** (`static_info.rs` `SCORE_WEIGHTS`): kill 10, assist 5, stolen battery 35 (the wiki of February 2015; the stolen battery is event 17, LIKELY); the others are srp's 0.21d choices divided by ten.
 - **Quests**: a quest's silver × `money_k` and its reputation × `reputation_k` of the match it was completed in (that the level matters is PROVEN, patch note 0.23h; these multipliers LIKELY), each rounded down; its reputation twice in one of the day's doubled victories (LIKELY, patch note 0.25a). A 0.26g quest awards no experience. `SRP_MONEY_RATE` does not touch a quest's silver.
-- **Drop chance**, the four f32 of §1.3: base = the table's 40 % with srp's play time bonus; match result = 2.5 % for each battery the player's own team has at the end (modes 2 and 3; LIKELY); premium = 25 % for a premium account (LIKELY); penalty 0. The parts are cut so that their sum is at most 1, and the roll uses the sum.
+- **Drop chance**, the four f32 of §1.3: base = the table's 40 % (with the play time bonus only when `SRP_DROP_PLAYTIME_BONUS=on`; off by the owner's choice of 2026-10-13, see §12); match result = 2.5 % for each battery the player's own team has at the end (modes 2 and 3; LIKELY); premium = 25 % for a premium account (LIKELY); penalty 0. The parts are cut so that their sum is at most 1, and the roll uses the sum.
 - **A weapon or armour found after a match** arrives at 40 % condition (`SRP_DROP_CONDITION`; the value is the owner's choice) with one defect (`SRP_DROP_DEFECT`), drawn by drop weight from the defects the item may have (`Modifications::defect_candidates`). Source: patch note 0.24a, "all the items found after a match will be in poor condition with critical malfunctions". Stacks, vouchers and cosmetics are as before, and so is an item of a drop card.
 - **Levels**: 100 is the highest; reaching it pays 250 gold (the wiki's table). **Rating** starts at 100 for a new 0.26g account (LIKELY); accounts made before keep theirs.
 - **The seven days** (`bonus.rs`): a day counts when its three victories are made, a day missed or not made does not reset the run, and the reward comes with the third victory of the seventh such day (patch notes 0.24a, 0.24c). `SRP_DAILY_BONUS=off` turns the bonus off (no 0x99 is sent); `SRP_DAILY_BONUS_RESET_HOUR` moves the start of a bonus day.
@@ -369,3 +370,25 @@ reward those of no restart), `the_game_of_the_play_period_is_counted_across_a_re
 `rows_that_do_not_read_are_left_out_and_cleaned_up`,
 `results_attached_to_accounts_in_memory_are_plain_ones`; `persist/results.rs`:
 `the_rows_outlive_the_repository`, `a_database_of_before_gets_the_table`.
+
+## 12. The economy changes of 2026-10-13 (the owner's choices)
+
+What the live server's first two days showed (254 results of players who finished, 67 matches, match levels 0 to 4; 66 accounts that had played): a match paid 1,162 silver on average at the 80 % rate, quests 189 more; wear cost 44 silver a result at the shop's repair price, ammo 78 at the shop's price, defects 16. So the costs were about 12 % of the pay, because most players still used the free starting weapons and their free ammo. With bought gear they grow faster than the pay does (a level 15 weapon costs eleven times a level 3 one, the level's `money_k` is four times): a projection for a level 15 kit and 266 rounds a match (the live average) gave wear and ammo as about two thirds of the pay. 73 % of the results had a drop.
+
+| Change | Before | Now | Where |
+|---|---|---|---|
+| Match silver | 80 % of the original | **120 %** | `pay::DEFAULT_MONEY_RATE`, `SRP_MONEY_RATE` |
+| Wear of the weapons and armour played with | the game's (`degrade_per_match`, `degrade_per_use`), and a defect roll for a worn item | **none**; `SRP_ITEM_WEAR=on` brings the game's rule back | `pay::item_wear`, `rewards::Terms::wear` |
+| Items worn before the switch | - | made whole once: full condition, defects off, repairs over (`g26_meta` key `gear_mended`) | `GameAccounts::from_env`, `items_rules::mend_all` |
+| Ammo | the game's `base_cost` a clip | **about half**, each price set by hand and rounded down to a multiple of 5 | `prices::AMMO_PRICES` |
+| The play time bonus to the drop chance | the table's 40 % times 2, 1.75, 1.5, 1.25 for the first four games of an hour of play (srp's GUESS at the data's `playtime_dependence`) | **not applied**; `SRP_DROP_PLAYTIME_BONUS=on` brings it back | `pay::drop_playtime_bonus`, `rewards::Terms::playtime_bonus` |
+
+Not changed: a weapon or armour piece found after a match still arrives at 40 % with one defect (`SRP_DROP_CONDITION`, `SRP_DROP_DEFECT`), and stays so until its owner repairs it; the batteries' and premium's parts of the drop chance; quest silver, level rewards, the gold exchange; the prices of drugs, traps and grenades.
+
+What follows from them:
+
+- With wear off the auto-repair box has nothing to do after a match, and a repair is needed only for a found item (and a "reliability" modification, which lessens wear, does nothing).
+- **The kit's ammo window shows the game's own price** for a stack the player owns, and limits what can be added by it: an inventory item's cost is the client's own `base_cost` (`InventoryList`: `item_data.cost = descrData.cost`), only the shop's items carry the price the server sent (`GangShop.setupShopItems`). PROVEN in the ActionScript. The server takes its own price, so the player is charged half of what that window shows; the shop, the results screen's "Ammunition" list and the balance show the real one. Only a change of the client's data would make the window agree.
+- Selling ammo back pays a quarter of the game's price (the lobby shows it from the same `base_cost`); no price of the table is under that quarter (test `ammo_costs_the_owners_prices`).
+
+Tests: `rewards/tests.rs` `with_wear_off_a_match_leaves_the_items_whole`, the bonus-off part of the play period test, `the_money_rate_scales_the_rows_silver_and_premiums_half_of_it` (srp's own terms); `v026g/mod.rs` `mending_makes_weapons_and_armour_whole_and_leaves_the_stacks`; `persist.rs` `a_first_time_is_once_in_the_databases_life`; `prices.rs` `ammo_costs_the_owners_prices`.

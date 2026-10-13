@@ -1,5 +1,7 @@
 //! The 0.26g shop: prices from each item's `base_cost` in the dictionary
-//! (0.21d's data had none, hence its hand-made `crate::prices`).
+//! (0.21d's data had none, hence its hand-made `crate::prices`), but for
+//! ammo, which costs about half of it by the owner's choice
+//! ([`AMMO_PRICES`]).
 //!
 //! What the 0.26g client does with a price (`lobby_menu.swf`, decompiled
 //! with FFDec, and the exe):
@@ -189,6 +191,66 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
     ]
 };
 
+/// The owner's prices for a clip of ammo (2026-10-13): `(item name, the
+/// game's `base_cost`, srp's price)`. About half the game's, each set by
+/// hand and rounded down to a multiple of 5, as the game's own prices are.
+/// Every ammo with a price is here; the two the game gives away
+/// (7.62x25, 7.62x54R) stay free.
+///
+/// What the client does with it (`lobby_menu.swf`):
+/// - The shop shows this price: its item's cost is the price record's
+///   (`GangShop.setupShopItems`: `item.cost = p[i].cost`). PROVEN.
+/// - **The kit's ammo window shows the game's own price for a stack the
+///   player owns**: an inventory item's cost is the item descriptor's
+///   (`InventoryList`: `item_data.cost = descrData.cost`, the exe's
+///   `base_cost`), and only `canBuy`, the lock texts and `premiumCost` are
+///   taken from the shop's item. PROVEN. So that window shows, and counts
+///   what the player can afford by, twice what srp takes; the balance the
+///   server sends after is the true one.
+/// - Selling pays a quarter of the game's price ([`sell_price`], which the
+///   lobby shows from the descriptor), so no price here may be under that
+///   quarter: buying and selling back would make silver.
+pub const AMMO_PRICES: &[(&str, u32, u32)] = &[
+    ("ammo_12mm_buck", 20, 10),
+    ("ammo_12mm_slug", 30, 15),
+    ("ammo_9x18_makarov", 20, 10),
+    ("ammo_9x19p_para", 20, 10),
+    ("ammo_.357m", 50, 25),
+    ("ammo_.30-30", 50, 25),
+    ("ammo_7.62x51", 150, 75),
+    ("ammo_7.62x51_ap", 200, 100),
+    ("ammo_5.45x39_7n6m", 60, 30),
+    ("ammo_9x19_7n21", 50, 25),
+    ("ammo_7.62x39", 60, 30),
+    ("ammo_9x18_pbm", 50, 25),
+    // Half is 32.5.
+    ("ammo_9x21", 65, 30),
+    ("ammo_45acp", 65, 30),
+    ("ammo_7.62x39_m", 150, 75),
+    ("ammo_7.62x54_7n1", 220, 110),
+    ("ammo_7.62x39_7n23", 80, 40),
+    ("ammo_9x19p_7n31", 70, 35),
+    // Half is 42.5.
+    ("ammo_5.45x39_7n10", 85, 40),
+    ("ammo_pab9", 100, 50),
+    ("ammo_sp5", 120, 60),
+    ("ammo_sp6", 120, 60),
+    ("ammo_5.45x39_7n22", 120, 60),
+    ("ammo_6.5x39", 140, 70),
+    ("ammo_12.7x55", 150, 75),
+    ("ammo_12.7x54_pt", 250, 125),
+    ("ammo_12.7x54_vps", 300, 150),
+];
+
+/// What the shop takes for a step of `item`: [`AMMO_PRICES`] for ammo, else
+/// the game's `base_cost`.
+pub fn shop_cost(item: &Item) -> u32 {
+    AMMO_PRICES
+        .iter()
+        .find(|(name, _, _)| *name == item.name)
+        .map_or(item.base_cost, |&(_, _, cost)| cost)
+}
+
 /// The reputation level with its faction that buying an item of
 /// `item_level` needs (the module's rule), within the faction's levels.
 pub fn seller_level(dictionary: &Dictionary, faction_id: u8, item_level: u8) -> u8 {
@@ -247,7 +309,7 @@ pub fn sellers_of(dictionary: &Dictionary, item: &Item, params: &ItemParams) -> 
 }
 
 fn listed(item: &Item, params: &ItemParams) -> impl Iterator<Item = PriceItem> {
-    let (cost, dict_id) = (item.base_cost, item.dict_id);
+    let (cost, dict_id) = (shop_cost(item), item.dict_id);
     sellers_of(Dictionary::shared(), item, params)
         .into_iter()
         .map(move |(faction_id, level)| PriceItem {
@@ -392,6 +454,45 @@ mod tests {
     }
 
     #[test]
+    fn ammo_costs_the_owners_prices() {
+        let dictionary = Dictionary::shared();
+        // Every ammo the game prices is in the table, with the game's
+        // price as the table says it, and no other item is.
+        let priced: Vec<&str> = dictionary
+            .items
+            .iter()
+            .filter(|item| {
+                item.base_cost > 0
+                    && !item.is_premium
+                    && item_params(item.dict_id).is_some_and(|params| params.kind == "ammo")
+            })
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(priced.len(), AMMO_PRICES.len());
+        for &(name, game, cost) in AMMO_PRICES {
+            assert!(priced.contains(&name), "{name}");
+            let item = dictionary.item_named(name).unwrap();
+            assert_eq!(item.base_cost, game, "{name}");
+            assert_eq!(shop_cost(item), cost, "{name}");
+            // About half, never over it, in the game's own steps of 5.
+            assert!(cost * 2 <= game && cost * 5 >= game * 2, "{name}");
+            assert_eq!(cost % 5, 0, "{name}");
+            // Selling a clip back pays a quarter of the game's price
+            // (`sell_price`): never more than the clip cost.
+            let clip = super::super::item_params::shop_unit(item.dict_id);
+            let sold = sell_price(dictionary, item.dict_id, clip, 100);
+            assert!(sold <= u64::from(cost), "{name}: {sold} for {cost}");
+            assert_eq!(buy_cost(item.dict_id, 3), Some(u64::from(cost) * 3), "{name}");
+        }
+        // The 5.45x39 7N6M: 30 a clip, where the game says 60.
+        let rounds = dictionary.item_named("ammo_5.45x39_7n6m").unwrap();
+        assert_eq!(price(rounds.dict_id).unwrap().cost, 30);
+        // Anything else is the game's.
+        let medkit = dictionary.item_named("medkit").unwrap();
+        assert_eq!(shop_cost(medkit), medkit.base_cost);
+    }
+
+    #[test]
     fn prices_are_the_dictionarys_base_costs() {
         let dictionary = Dictionary::shared();
         let list = price_list();
@@ -402,7 +503,13 @@ mod tests {
         );
         for record in list {
             let item = dictionary.item(record.dict_id).unwrap();
-            assert_eq!(record.cost, item.base_cost, "{}", item.name);
+            let ammo = item_params(record.dict_id).is_some_and(|params| params.kind == "ammo");
+            if ammo && item.base_cost > 0 {
+                assert_eq!(record.cost, shop_cost(item), "{}", item.name);
+                assert!(record.cost < item.base_cost, "{}", item.name);
+            } else {
+                assert_eq!(record.cost, item.base_cost, "{}", item.name);
+            }
             assert!(!item.is_premium, "{}", item.name);
             // Only a stack is listed for nothing (the starting ammo).
             assert!(
@@ -593,11 +700,11 @@ mod tests {
 
     #[test]
     fn ammo_is_priced_a_clip() {
-        // 5.45x39 7N6M: 60 for a clip of 30.
+        // 5.45x39 7N6M: 30 for a clip of 30 (the game's 60, `AMMO_PRICES`).
         let ammo = price(7).unwrap();
-        assert_eq!((ammo.cost, ammo.faction_id, ammo.level), (60, 2, 5));
-        assert_eq!(buy_cost(7, 1), Some(60));
-        assert_eq!(buy_cost(7, 3), Some(180));
+        assert_eq!((ammo.cost, ammo.faction_id, ammo.level), (30, 2, 5));
+        assert_eq!(buy_cost(7, 1), Some(30));
+        assert_eq!(buy_cost(7, 3), Some(90));
         // A medkit is 20, one at a time.
         assert_eq!(buy_cost(67, 3), Some(60));
         assert_eq!(buy_cost(3, 1), Some(47500));

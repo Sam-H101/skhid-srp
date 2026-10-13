@@ -158,7 +158,7 @@ srp's reading of what only the server knew:
 | a gained modification is rolled as a drop's; a lost one is any of the item's own | [srp] |
 | a repair takes the defects off at once; the wait only locks the item in the lobby | [srp] |
 | a defect slot opens under its first `condition`; its chance goes from the first `probability` there to the second at condition 0 | LIKELY |
-| one defect roll for each match that wore the item, for its first free slot | [srp] (`SRP_ITEM_DEFECTS=off` switches defects off) |
+| one defect roll for each match that wore the item, for its first free slot | [srp] (`SRP_ITEM_DEFECTS=off` switches defects off). Since 2026-10-13 a match wears nothing unless `SRP_ITEM_WEAR=on` (the owner's choice, `results.md` §12), so only a found item has a defect |
 | a defect needs its type in `available_defects_mask` and, with `required_modifications`, such a modification on the item (a default counts) | LIKELY |
 | wear is multiplied by `1 + value` of the item's "reliability" modifications | LIKELY |
 | the kit's items' `money_bonus` / `experience_bonus` / `reputation_bonus` (modifications 1230..1280, defaults of the premium items) add that share to a match's pay, shown in the screen's "premium items" column | LIKELY for the meaning; that the three bytes of the column are percents is GUESS |

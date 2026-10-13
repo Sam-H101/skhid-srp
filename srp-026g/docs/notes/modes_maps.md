@@ -222,3 +222,8 @@ A rule ends the match by answering true to `rule_completed(t)` (vtable slot 18).
 ### What the results code needs from a snapshot
 
 Only the 11-byte statistics tail: `m_team_points[2]` (batteries or tickets) and `m_winner_team`; and for the phase, the timelimit rule's 13 bytes (snapshot_rules.md §2.2, §3.3).
+
+## Correction (2026-10-12): §11, the gather rule's completion
+
+- "The consumer of `rule_completed` … was not traced": the world's save asks every rule (slot 18) and writes the answer into the history item at +0xC0BBA (0x2D271D..0x2D2755); nothing in the client reads that byte. The end of a match is the server's.
+- "Ignored once the rule has completed" has a second half: at the completion the rule also clears its byte +0x160, and from then on no container can be used (match.md §26). Neither is taken back by a rollback, which is why the tenth battery does not go in while anybody else sends inputs.

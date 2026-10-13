@@ -7,6 +7,15 @@ then open a terminal in game/binaries/x86 and run:
 
     bash play_skhid.sh
 
+An archive with the Skhid launcher also has Skhid.sh at its top. Unpacked into
+the game's folder (the one that holds the game folder), it saves the walk:
+open a terminal in that folder and run
+
+    bash Skhid.sh
+
+It runs play_skhid.sh and nothing else; bash Skhid.sh launcher is
+bash play_skhid.sh launcher (below).
+
 Select an English keyboard layout before launching. In our Wine tests, starting
 with Russian selected could leave text input broken after switching to English.
 The game language is a separate setting: edit localization near the top of the
@@ -16,6 +25,28 @@ Full builds use the login address embedded in the executable. To override it,
 set server=host:port near the top of play_skhid.sh. Certificate-only builds have
 this value filled in by the release builder. No command-line arguments or
 Python are needed to play.
+
+THE SKHID LAUNCHER (UPDATES)
+
+For a new installation, unpack the Skhid archive into an empty folder with
+about 10 GB free and run bash Skhid.sh launcher there. The updater downloads
+the original game from Google Drive (2.9 GB), verifies its pinned SHA-256,
+and installs it before applying the Skhid files. No Google sign-in is needed.
+It is unpacked with 7zr.exe, a file of the Skhid archive, which is checked
+before it runs. A failed check stops installation; starting the launcher
+again retries it.
+
+    bash play_skhid.sh launcher
+
+starts launcher_skhid.exe in the same Wine prefix instead of the game. It asks
+the server whether the Skhid files are still the current ones, installs newer
+ones (itself and this script included), and its PLAY button starts the game in
+the language chosen at its top. Without the word launcher the script starts
+the game directly, as before, and looks for no updates. The launcher's page
+area stays empty under Wine (the script keeps Wine's browser engine off); its
+status line, language menu and PLAY button are what matter. This mode has not
+been run under Wine by us yet: if it fails, play without it and tell us what
+skhid-wine.log and updater_skhid.log say.
 
 FIRST RUN
 

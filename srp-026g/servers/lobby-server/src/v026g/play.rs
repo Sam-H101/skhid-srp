@@ -686,6 +686,12 @@ impl Core<'_> {
                 let host = self.match_host_for(addr, &ticket);
                 let found = waiting(0, 0, now);
                 let found = self.send(addr, found);
+                // Its game loads a match now: from here on it can show a
+                // results screen (`show_results`). Sessions that are over
+                // are forgotten here.
+                let store = self.store;
+                self.sent_to_match.retain(|id| !store.has_ended(*id));
+                self.sent_to_match.insert(session_id);
                 if let Some(player) = self.player_mut(addr) {
                     player.queued_since = None;
                     player.in_match = Some(match_id);
@@ -967,9 +973,20 @@ impl Core<'_> {
     /// (`session::v026g::rewards`), once: the screen of the last one (`97`)
     /// and the notices of all of them. A client that was signed in through
     /// the match's end gets what the match changed of its account first
-    /// (`MatchReport::lobby_push`); one that has just signed in
-    /// (`after_sign_in`) has that from the sign-in's pushes. Call it when
-    /// the client is in the lobby (`85 00`).
+    /// (`MatchReport::lobby_push`); one whose link is new (`after_sign_in`:
+    /// it signed in, or connected again) has that from the sign-in's pushes.
+    /// Call it when the client is in the lobby (`85 00`).
+    ///
+    /// A client whose session the lobby has sent into no match
+    /// (`sent_to_match`) gets the notices and **no screen**: the game would
+    /// die of it. The screen's code translates the map's name it kept from
+    /// the loading screen of its last match, and a game that has loaded no
+    /// match since it was started has none (a null pointer: `results.md` §6
+    /// hazard 10, seen in a crash dump on 2026-10-13). That is the player
+    /// whose game ended in a match and who starts it again, at the sign-in
+    /// when the match is over by then, and in the lobby when it ends later.
+    /// What the match changed of the account, such a client has from its
+    /// sign-in or gets with the account's next push.
     pub(super) fn show_results(&mut self, addr: SocketAddr, after_sign_in: bool) {
         let Some(who) = self.who(addr) else {
             return;
@@ -980,6 +997,15 @@ impl Core<'_> {
         // What it earned is its clan's too.
         if let Some(player) = unseen.report.player(who.account_id) {
             self.clan_experience(who.account_id, player.reward.experience);
+        }
+        if !self.sent_to_match.contains(&who.session_id) {
+            log::info!(
+                "{} gets the notices of match {:#x} and no results screen: its game has loaded no match since it signed in, and would die of one",
+                who.name,
+                unseen.report.match_id
+            );
+            self.notify(&who, &unseen.notices);
+            return;
         }
         let push = if after_sign_in {
             // The inventory once more if autobuy or auto-repair spent

@@ -58,6 +58,16 @@ itself takes changes only through pull requests.
    `SRP_TEST_SERVER=on`, `SRP_OTHER_SERVER_URL` (the players' server's page),
    `SRP_WEB_TRUST_PROXY=on`, and an admin token, path and address list of its
    own (never the players' server's).
+   The `download/` folder is the one thing in there the server reads, and
+   the server in the container is not root: give the folder mode 755 and a
+   ZIP in it mode 644. A folder only root can read gives no error at the
+   start, only the log line `SRP_DOWNLOAD_FILE ... is not a file; /download
+   is off`, a page with no download and `404` at `/api/client-files`. The
+   ZIP is `Survarium-0.26g-srp-files.zip`, made for this server's own
+   address (`make_client_026g.py --pack-zip --server=<its name>:1234`): the
+   launcher and the updater in it ask the site they were made for, so the
+   players' ZIP is of no use here. A new ZIP put in its place is seen
+   without a restart.
 3. `srp-test-deploy` to `/usr/local/sbin/`, owner root, mode 755. Run it once
    as root: it clones the repository to `/opt/srp-test/src`, builds and
    starts the server (compose project `srptest`, with the `tls` profile).
