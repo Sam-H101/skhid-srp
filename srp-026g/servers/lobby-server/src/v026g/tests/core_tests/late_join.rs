@@ -215,6 +215,14 @@ fn a_late_player_goes_to_the_weaker_side_without_changing_the_reward_level() {
     let running = &world.core.matches[&id];
     assert_eq!(running.seats.len(), 3);
     assert_eq!(running.strengths.len(), 3);
+    // The log names who is out of a match: a name for each roster place.
+    assert_eq!(running.names.len(), 3);
+    assert_eq!(running.names[2], "LevelJoiner");
+    let live = LiveView {
+        present: 0b011,
+        ..LiveView::default()
+    };
+    assert_eq!(Core::out_now(running, &live), ["LevelJoiner"]);
     world.assert_clean();
 }
 
