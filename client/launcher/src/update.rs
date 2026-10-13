@@ -85,11 +85,49 @@ pub fn validate_site(site: &str) -> Result<String> {
     Ok(site.trim().trim_end_matches('/').to_owned())
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(tag = "phase", rename_all = "lowercase")]
+pub enum Progress {
+    Checking,
+    Download {
+        received: u64,
+        total: u64,
+        bytes_per_second: u64,
+    },
+    Install,
+}
+
+impl std::fmt::Display for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Checking => write!(f, "Checking for updates…"),
+            Self::Install => write!(f, "Installing verified files…"),
+            Self::Download {
+                received, total, ..
+            } => write!(
+                f,
+                "Downloading {:.1} / {:.1} MiB",
+                *received as f64 / 1048576.0,
+                *total as f64 / 1048576.0
+            ),
+        }
+    }
+}
+
 pub fn fetch(
     site: &str,
     route: &str,
     limit: u64,
     progress: &mut dyn FnMut(String),
+) -> Result<Vec<u8>> {
+    fetch_progress(site, route, limit, &mut |p| progress(p.to_string()))
+}
+
+fn fetch_progress(
+    site: &str,
+    route: &str,
+    limit: u64,
+    progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<u8>> {
     let site = validate_site(site)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -111,6 +149,7 @@ pub fn fetch(
     let mut data = Vec::new();
     let mut buffer = [0; 65536];
     let mut next_notice = 0;
+    let started = std::time::Instant::now();
     loop {
         let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
         if n == 0 {
@@ -121,7 +160,15 @@ pub fn fetch(
         }
         data.extend_from_slice(&buffer[..n]);
         if data.len() >= next_notice {
-            progress(format!("Downloaded {} KiB", data.len() / 1024));
+            if route == "/download" {
+                progress(Progress::Download {
+                    received: data.len() as u64,
+                    total: limit,
+                    bytes_per_second: (data.len() as f64
+                        / started.elapsed().as_secs_f64().max(0.001))
+                        as u64,
+                });
+            }
             next_notice = data.len() + 256 * 1024;
         }
     }
@@ -350,10 +397,18 @@ fn reserved(name: &str) -> bool {
 }
 
 pub fn check(layout: &Layout, site: &str, progress: &mut dyn FnMut(String)) -> Result<String> {
+    check_progress(layout, site, &mut |p| progress(p.to_string()))
+}
+
+pub fn check_progress(
+    layout: &Layout,
+    site: &str,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<String> {
     let _lock = Lock::acquire(layout)?;
     recover(layout)?;
-    progress("Checking for updates…".into());
-    let bytes = fetch(site, "/api/client-files", 16384, progress)?;
+    progress(Progress::Checking);
+    let bytes = fetch_progress(site, "/api/client-files", 16384, progress)?;
     let manifest =
         manifest::parse_manifest(&bytes).map_err(|e| format!("Invalid server manifest: {e:?}"))?;
     let state_path = layout.place(STATE)?;
@@ -376,8 +431,12 @@ pub fn check(layout: &Layout, site: &str, progress: &mut dyn FnMut(String)) -> R
             return Ok("Your game files are up to date.".into());
         }
     }
-    progress("Downloading game update…".into());
-    let archive = fetch(site, "/download", manifest.size, progress)?;
+    progress(Progress::Download {
+        received: 0,
+        total: manifest.size,
+        bytes_per_second: 0,
+    });
+    let archive = fetch_progress(site, "/download", manifest.size, progress)?;
     if archive.len() as u64 != manifest.size || sha256::digest(&archive) != manifest.sha256 {
         return Err(
             "Download size or SHA-256 does not match the server manifest. Nothing installed."
@@ -447,7 +506,7 @@ pub fn check(layout: &Layout, site: &str, progress: &mut dyn FnMut(String)) -> R
         name: STATE.into(),
         data: Some(manifest::write_installed(&state)),
     });
-    progress("Installing verified files…".into());
+    progress(Progress::Install);
     let count = install(layout, files, &mut |_| Ok(()))?;
     Ok(format!("Update complete ({count} files changed)."))
 }

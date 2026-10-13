@@ -145,7 +145,12 @@ pub fn load_language(layout: &Layout) -> String {
         .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
         .filter(|s| LANGUAGES.iter().any(|(_, v)| *v == s.language))
         .map(|s| s.language)
-        .unwrap_or_else(|| "english".into())
+        .unwrap_or_else(|| {
+            std::env::var("SKHID_INITIAL_LANGUAGE")
+                .ok()
+                .filter(|l| LANGUAGES.iter().any(|(_, v)| *v == l))
+                .unwrap_or_else(|| "english".into())
+        })
 }
 
 pub fn save_language(layout: &Layout, language: &str) -> Result<()> {

@@ -2,3 +2,6 @@
 pub mod update;
 
 pub mod runtime;
+
+#[cfg(feature = "gui")]
+pub mod skin;

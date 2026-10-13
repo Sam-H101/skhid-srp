@@ -118,7 +118,11 @@ if [[ ! -f "$WINEPREFIX/.skhid-ready" || ! -f "$WINEPREFIX/system.reg" ]]; then
 fi
 if [[ ! -f "$WINEPREFIX/.skhid-dxvk" ]]; then
     echo 'Installing DXVK...'
-    winetricks -q dxvk >>"$log" 2>&1 || die "DXVK installation failed. See $log"
+    if [[ -n ${SKHID_DXVK_SETUP:-} ]]; then
+        COLUMNS=${COLUMNS:-80} "$SKHID_DXVK_SETUP" install >>"$log" 2>&1 || die "DXVK installation failed. See $log"
+    else
+        winetricks -q dxvk >>"$log" 2>&1 || die "DXVK installation failed. See $log"
+    fi
     touch "$WINEPREFIX/.skhid-dxvk"
 fi
 

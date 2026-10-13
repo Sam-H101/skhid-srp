@@ -1,19 +1,21 @@
 SURVARIUM 0.26g - LINUX
 
-EXPERIMENTAL NATIVE LAUNCHER
+NATIVE LAUNCHER
 
-The native launcher is an unfinished prototype. Its current interface does not
-yet match the original Windows launcher; that is required before completion.
+The native window uses the original launcher artwork and layout. The root
+flake provides programs.skhid for NixOS and Home Manager, including the game
+import and internal Wine/DXVK setup. See client/launcher/README.txt.
 
 Bundles built with --native-launcher include game/binaries/x86/skhid-launcher.
 In those bundles, bash Skhid.sh opens a native Linux window for updates, language
 selection and PLAY. Wine is used internally for game setup and the game itself.
-Set up Wine / DXVK prepares the prefix without starting the game; PLAY also
+F2 opens setup and repair options. Wine / DXVK setup prepares the prefix
+without starting the game; PLAY also
 does this on first use. Install Wine, Winetricks and graphics drivers as below.
 Without that optional binary, Skhid.sh retains its script-based behavior.
 
-The native launcher needs Linux x86-64, OpenGL, and Wayland or X11 runtime
-libraries. It uses the existing game folder; it does not download the full game.
+The native launcher needs Linux x86-64, GTK 3, WebKitGTK 4.1, and Wayland or X11
+runtime libraries. It uses the existing game folder; it does not download the full game.
 An unavailable update server does not prevent PLAY with the installed files.
 Native launcher details and build instructions: client/launcher/README.txt.
 

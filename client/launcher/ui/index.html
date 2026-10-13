@@ -1,0 +1,498 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="dark" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 899px;
+        height: 549px;
+        overflow: hidden;
+        background: #080808;
+        color: #b3b3b3;
+        font-family: Calibri, Carlito, Arial, sans-serif;
+        user-select: none;
+      }
+      header,
+      footer {
+        position: absolute;
+        left: 0;
+        width: 899px;
+        background-repeat: no-repeat;
+      }
+      header {
+        top: 0;
+        height: 128px;
+      }
+      footer {
+        top: 463px;
+        height: 86px;
+      }
+      button {
+        position: absolute;
+        margin: 0;
+        border: 0;
+        padding: 0;
+        background: transparent no-repeat;
+        color: white;
+        cursor: pointer;
+        font-family: inherit;
+        font-weight: 700;
+        white-space: pre-line;
+      }
+      button:focus-visible {
+        outline: 1px solid #e7a300;
+        outline-offset: -2px;
+      }
+      button:disabled {
+        cursor: default;
+      }
+      #website,
+      #shop {
+        top: 47px;
+        width: 133px;
+        height: 64px;
+        font-size: 13px;
+        line-height: 15px;
+        text-align: center;
+        padding-left: 45px;
+        padding-right: 5px;
+      }
+      #website {
+        left: 614px;
+      }
+      #shop {
+        left: 750px;
+      }
+      #minimize,
+      #close {
+        top: 12px;
+        width: 20px;
+        height: 20px;
+      }
+      #minimize {
+        left: 841px;
+      }
+      #close {
+        left: 863px;
+      }
+      #language {
+        left: 766px;
+        top: 12px;
+        width: 46px;
+        height: 20px;
+        font-size: 13px;
+        text-align: left;
+        padding-left: 6px;
+      }
+      #languages {
+        display: none;
+        position: absolute;
+        z-index: 3;
+        left: 762px;
+        top: 32px;
+        width: 53px;
+        height: 90px;
+        padding-top: 2px;
+      }
+      #languages.open {
+        display: block;
+      }
+      #languages button {
+        position: relative;
+        display: block;
+        margin-left: 1px;
+        width: 51px;
+        height: 17px;
+        text-align: left;
+        font-size: 12px;
+        padding-left: 23px;
+      }
+      #languages img {
+        position: absolute;
+        left: 5px;
+        top: 4px;
+        width: 14px;
+        height: 9px;
+      }
+      #page {
+        position: absolute;
+        top: 128px;
+        left: 0;
+        border: 0;
+        width: 899px;
+        height: 335px;
+        background: #000;
+      }
+      #play {
+        left: 694px;
+        top: 9px;
+        width: 189px;
+        height: 65px;
+        font-size: 38px;
+        color: #d3d1d1;
+        line-height: 65px;
+        text-align: center;
+      }
+      #play:disabled {
+        font-size: 23px;
+        color: #3c3c3c;
+      }
+      #status {
+        position: absolute;
+        left: 200px;
+        top: 43px;
+        width: 478px;
+        height: 18px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font:
+          bold 12px Arial,
+          sans-serif;
+      }
+      #progress {
+        position: absolute;
+        left: 200px;
+        top: 30px;
+        width: 478px;
+        height: 10px;
+        padding: 3px;
+        border: 1px solid #2b2b2b;
+        background: #090909;
+      }
+      #fill {
+        height: 4px;
+        width: 0;
+        background-repeat: repeat-x;
+      }
+      #detail {
+        position: absolute;
+        left: 200px;
+        top: 60px;
+        width: 478px;
+        font:
+          11px Arial,
+          sans-serif;
+        color: #888;
+      }
+      #version {
+        position: absolute;
+        left: 0;
+        top: -50px;
+        width: 427px;
+        height: 178px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        color: #dbab00;
+        font-size: 18px;
+        font-weight: bold;
+        pointer-events: none;
+      }
+      dialog {
+        width: 650px;
+        background: #191919;
+        color: #ddd;
+        border: 1px solid #555;
+        padding: 24px;
+        font:
+          14px Arial,
+          sans-serif;
+      }
+      dialog::backdrop {
+        background: #0009;
+      }
+      dialog button {
+        position: static;
+        background: #383838;
+        padding: 8px 16px;
+        margin: 8px 8px 0 0;
+        font-size: 14px;
+      }
+      dialog input {
+        display: block;
+        width: 100%;
+        margin: 8px 0 16px;
+        padding: 8px;
+        background: #080808;
+        color: white;
+        border: 1px solid #555;
+      }
+      dialog p {
+        user-select: text;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <header id="header">
+      <button id="website"></button><button id="shop"></button
+      ><button id="language" aria-haspopup="true"></button>
+      <div id="languages"></div>
+      <button id="minimize" aria-label="Minimize"></button
+      ><button id="close" aria-label="Close"></button
+      ><span id="version">0.26g</span>
+    </header>
+    <iframe
+      id="page"
+      title="Server page"
+      sandbox="allow-popups allow-popups-to-escape-sandbox"
+      referrerpolicy="no-referrer"
+    ></iframe>
+    <footer id="footer">
+      <div id="status" role="status"></div>
+      <div
+        id="progress"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <div id="fill"></div>
+      </div>
+      <div id="detail"></div>
+      <button id="play"></button>
+    </footer>
+    <dialog id="settings">
+      <form id="configuration">
+        <label id="folderLabel" for="folder"></label
+        ><input id="folder" required /><label id="siteLabel" for="site"></label
+        ><input id="site" required /><button id="save" type="submit"></button
+        ><button id="repair" type="button"></button
+        ><button id="setup" type="button"></button
+        ><button id="dismiss" type="button"></button>
+        <p id="error"></p>
+      </form>
+    </dialog>
+    <script>
+      "use strict";
+      const $ = (id) => document.getElementById(id),
+        send = (action, extra = {}) =>
+          window.ipc.postMessage(JSON.stringify({ action, ...extra }));
+      const langs = [
+        ["EN", "english", 1033],
+        ["RU", "russian", 1049],
+        ["UA", "ukrainian", 1058],
+        ["DE", "german", 1031],
+        ["PL", "polish", 1045],
+      ];
+      const translations = {
+        english: [
+          "Game folder",
+          "Update server",
+          "Save",
+          "Check / repair",
+          "Set up Wine / DXVK",
+          "Close",
+          "Preparing Wine and DXVK…",
+          "Game running…",
+        ],
+        russian: [
+          "Папка игры",
+          "Сервер обновлений",
+          "Сохранить",
+          "Проверить файлы",
+          "Настроить Wine / DXVK",
+          "Закрыть",
+          "Подготовка Wine и DXVK…",
+          "Игра запущена…",
+        ],
+        ukrainian: [
+          "Тека гри",
+          "Сервер оновлень",
+          "Зберегти",
+          "Перевірити файли",
+          "Налаштувати Wine / DXVK",
+          "Закрити",
+          "Підготовка Wine і DXVK…",
+          "Гру запущено…",
+        ],
+        german: [
+          "Spielordner",
+          "Update-Server",
+          "Speichern",
+          "Dateien prüfen",
+          "Wine / DXVK einrichten",
+          "Schließen",
+          "Wine und DXVK werden vorbereitet…",
+          "Spiel läuft…",
+        ],
+        polish: [
+          "Folder gry",
+          "Serwer aktualizacji",
+          "Zapisz",
+          "Sprawdź pliki",
+          "Skonfiguruj Wine / DXVK",
+          "Zamknij",
+          "Przygotowywanie Wine i DXVK…",
+          "Gra jest uruchomiona…",
+        ],
+      };
+      let model = { language: "english", busy: false, phase: "checking" },
+        skin = null;
+      function bitmap(id, normal, hover = normal, pressed = hover) {
+        let el = $(id);
+        el.style.backgroundImage = `url("${skin.images[normal]}")`;
+        el.onmouseenter = () => {
+          if (!el.disabled)
+            el.style.backgroundImage = `url("${skin.images[hover]}")`;
+        };
+        el.onmouseleave = () =>
+          (el.style.backgroundImage = `url("${skin.images[normal]}")`);
+        el.onmousedown = () => {
+          if (!el.disabled)
+            el.style.backgroundImage = `url("${skin.images[pressed]}")`;
+        };
+        el.onmouseup = () => {
+          if (!el.disabled)
+            el.style.backgroundImage = `url("${skin.images[hover]}")`;
+        };
+      }
+      function render() {
+        const lang = langs.find((l) => l[1] === model.language) || langs[0],
+          t = translations[lang[1]],
+          s = skin?.strings[lang[2]] || {};
+        const tr = (id, fallback) => s[id] || fallback;
+        $("website").textContent = tr(194, "PROJECT\nWEBSITE");
+        $("shop").textContent = tr(196, "SHOP");
+        $("language").textContent = lang[0];
+        for (const [i, id] of [
+          "folderLabel",
+          "siteLabel",
+          "save",
+          "repair",
+          "setup",
+          "dismiss",
+        ].entries())
+          $(id).textContent = t[i];
+        $("setup").hidden = !model.linux;
+        $("play").disabled = model.busy || !skin;
+        $("language").disabled = model.busy;
+        for (const id of ["save", "repair", "setup"])
+          $(id).disabled = model.busy;
+        $("play").textContent = tr(
+          model.busy ? 198 : 197,
+          model.busy ? "UPDATING..." : "PLAY",
+        );
+        if (skin)
+          bitmap(
+            "play",
+            model.busy ? 318 : 315,
+            model.busy ? 318 : 316,
+            model.busy ? 318 : 317,
+          );
+        const phases = {
+          checking: tr(134, "Checking game version..."),
+          ready: tr(135, "The latest version of the game is installed"),
+          download: tr(139, "Downloading"),
+          install: tr(180, "Extracting file %s").replace("%s", ""),
+          setup: t[6],
+          play: t[7],
+          error: tr(136, "Error"),
+        };
+        $("progress").hidden = model.phase === "ready";
+        $("status").style.top = model.phase === "ready" ? "35px" : "43px";
+        $("status").style.textAlign =
+          model.phase === "ready" ? "right" : "left";
+        $("status").textContent = phases[model.phase] || model.phase;
+        $("status").title = model.error || $("status").textContent;
+        $("detail").textContent = model.detail || "";
+        $("fill").style.width =
+          `${Math.max(0, Math.min(100, model.percent || 0))}%`;
+        $("progress").setAttribute("aria-valuenow", model.percent || 0);
+      }
+      window.receive = (m) => {
+        if (m.skin) {
+          skin = m.skin;
+          $("header").style.backgroundImage = `url("${skin.images[300]}")`;
+          $("footer").style.backgroundImage = `url("${skin.images[301]}")`;
+          for (const [id, a, b, c] of [
+            ["website", 325, 326, 327],
+            ["shop", 319, 320, 321],
+            ["minimize", 305, 306, 306],
+            ["close", 302, 303, 304],
+            ["language", 311, 312, 313],
+          ])
+            bitmap(id, a, b, c);
+          $("fill").style.backgroundImage = `url("${skin.images[359]}")`;
+          $("languages").style.backgroundImage = `url("${skin.images[314]}")`;
+          $("languages").replaceChildren(
+            ...langs.map(([label, value], i) => {
+              let b = document.createElement("button");
+              b.id = "lang" + i;
+              b.textContent = label;
+              let flag = document.createElement("img");
+              flag.src = skin.images[[361, 360, 362, 363, 364][i]];
+              flag.alt = "";
+              b.append(flag);
+              b.onclick = () => {
+                send("language", { language: value });
+                $("languages").classList.remove("open");
+              };
+              setTimeout(() => bitmap(b.id, 357, 358), 0);
+              return b;
+            }),
+          );
+        }
+        if (m.page !== undefined) {
+          $("page").srcdoc = m.page;
+          return;
+        }
+        Object.assign(model, m);
+        if (m.folder !== undefined) $("folder").value = m.folder;
+        if (m.site !== undefined) $("site").value = m.site;
+        render();
+        if (m.error) {
+          $("error").textContent = m.error;
+          if (!$("settings").open) $("settings").showModal();
+        }
+      };
+      $("play").onclick = () => send("play");
+      $("close").onclick = () => send("close");
+      $("minimize").onclick = () => send("minimize");
+      $("website").onclick = () => send("website");
+      $("shop").onclick = () => send("shop");
+      $("language").onclick = () => $("languages").classList.toggle("open");
+      $("header").onmousedown = (e) => {
+        if (e.target === $("header") || e.target === $("version")) send("drag");
+      };
+      $("configuration").onsubmit = (e) => {
+        e.preventDefault();
+        send("configure", { folder: $("folder").value, site: $("site").value });
+        $("settings").close();
+      };
+      $("repair").onclick = () => {
+        send("update");
+        $("settings").close();
+      };
+      $("setup").onclick = () => {
+        send("setup");
+        $("settings").close();
+      };
+      $("dismiss").onclick = () => $("settings").close();
+      window.onkeydown = (e) => {
+        if (e.key === "F5") {
+          e.preventDefault();
+          send("update");
+        }
+        if (e.key === "F2") {
+          e.preventDefault();
+          $("settings").showModal();
+        }
+      };
+      $("status").ondblclick = () => $("settings").showModal();
+      function resize() {
+        document.body.style.transformOrigin = "0 0";
+        document.body.style.transform = `scale(${window.innerWidth / 899})`;
+      }
+      window.addEventListener("resize", resize);
+      resize();
+      send("ready");
+    </script>
+  </body>
+</html>

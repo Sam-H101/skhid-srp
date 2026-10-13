@@ -105,6 +105,18 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Launcher exited with an error', result.stderr)
 
+    def test_packaged_dxvk_setup_avoids_winetricks_download(self):
+        self.copy_exe()
+        installer = self.tools / 'setup-dxvk'
+        installer.write_text('#!' + sys.executable + '\nimport os,sys\nassert sys.argv[1:] == ["install"]\nassert int(os.environ["COLUMNS"]) > 0\n')
+        installer.chmod(0o755)
+        self.env['SKHID_DXVK_SETUP'] = str(installer)
+        result = self.run_script('setup')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        self.assertFalse(any(c['name'] == 'winetricks' for c in calls))
+        self.assertTrue((self.bin / 'wineprefix/.skhid-dxvk').exists())
+
     def test_native_setup_prepares_prefix_without_starting_game(self):
         self.copy_exe()
         result = self.run_script('setup')

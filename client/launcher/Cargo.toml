@@ -11,14 +11,17 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe"]
+gui = ["dep:wry", "dep:tao", "dep:base64", "dep:open"]
 
 [dependencies]
 updater_logic = { package = "skhid-updater-logic", path = "../updater/logic" }
 ureq = { version = "=3.1.4", default-features = false, features = ["rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+wry = { version = "=0.57.0", optional = true }
+tao = { version = "=0.34.8", optional = true }
+base64 = { version = "0.22", optional = true }
+open = { version = "5", optional = true }
 
 [profile.release]
 lto = "thin"
