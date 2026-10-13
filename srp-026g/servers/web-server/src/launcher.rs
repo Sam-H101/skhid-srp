@@ -26,49 +26,81 @@ const TOP_PLAYERS: usize = 10;
 /// that asking often costs nothing.
 const BOARD_AGE: Duration = Duration::from_secs(15);
 
-/// The checksum of the download file as it was last read: it is read again
-/// only when the file's size or time changes (a new archive is put in its
-/// place without a restart).
+/// The name by which an archive is known to hold the launcher: a ZIP keeps
+/// its files' names as they are, in each file's header and in the list at
+/// its end.
+const LAUNCHER_NAME: &[u8] = b"game/binaries/x86/launcher_skhid.exe";
+
+/// What was read of the download file the last time: it is read again only
+/// when the file's size or time changes (a new archive is put in its place
+/// without a restart).
 struct Checked {
     file: PathBuf,
     size: u64,
     modified: Option<SystemTime>,
     sha256: String,
+    /// The archive holds the launcher, so the site's page tells players to
+    /// start that.
+    launcher: bool,
 }
 
 static CHECKED: Mutex<Option<Checked>> = Mutex::new(None);
 static BOARD: Mutex<Option<(Instant, Board)>> = Mutex::new(None);
 
-fn sha256_of(file: &PathBuf) -> Option<String> {
+/// The file's SHA-256, and whether [`LAUNCHER_NAME`] is in it, in one read.
+fn read_through(file: &PathBuf) -> Option<(String, bool)> {
     let mut open = File::open(file).ok()?;
     let mut hash = openssl::sha::Sha256::new();
-    let mut buffer = vec![0_u8; 64 * 1024];
+    // The end of what was read before stays in front of each new piece, so
+    // a name that lies across two pieces is found too.
+    let keep = LAUNCHER_NAME.len() - 1;
+    let mut buffer = vec![0_u8; keep + 64 * 1024];
+    let (mut kept, mut launcher) = (0, false);
     loop {
-        match open.read(&mut buffer) {
+        match open.read(&mut buffer[kept..]) {
             Ok(0) => break,
-            Ok(read) => hash.update(&buffer[..read]),
+            Ok(read) => {
+                hash.update(&buffer[kept..kept + read]);
+                let filled = kept + read;
+                launcher = launcher
+                    || buffer[..filled]
+                        .windows(LAUNCHER_NAME.len())
+                        .any(|part| part == LAUNCHER_NAME);
+                kept = filled.min(keep);
+                buffer.copy_within(filled - kept..filled, 0);
+            }
             Err(_) => return None,
         }
     }
-    Some(
-        hash.finish()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-    )
+    let sha256 = hash
+        .finish()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some((sha256, launcher))
 }
 
-/// The download file's `(sha256, size)`, if there is one.
-fn offered(file: &PathBuf) -> Option<(String, u64)> {
+/// What the download file is, if there is one.
+struct Offered {
+    sha256: String,
+    size: u64,
+    launcher: bool,
+}
+
+fn offered(file: &PathBuf) -> Option<Offered> {
     let meta = std::fs::metadata(file).ok().filter(|meta| meta.is_file())?;
     let (size, modified) = (meta.len(), meta.modified().ok());
     let mut checked = locked(&CHECKED);
     if let Some(known) = checked.as_ref() {
         if known.file == *file && known.size == size && known.modified == modified {
-            return Some((known.sha256.clone(), size));
+            return Some(Offered {
+                sha256: known.sha256.clone(),
+                size,
+                launcher: known.launcher,
+            });
         }
     }
-    let sha256 = sha256_of(file)?;
+    let (sha256, launcher) = read_through(file)?;
     // The file may have been replaced while it was read: what is said must
     // be of one file.
     let after = std::fs::metadata(file).ok()?;
@@ -80,8 +112,22 @@ fn offered(file: &PathBuf) -> Option<(String, u64)> {
         size,
         modified,
         sha256: sha256.clone(),
+        launcher,
     });
-    Some((sha256, size))
+    Some(Offered {
+        sha256,
+        size,
+        launcher,
+    })
+}
+
+/// Whether the archive `/download` hands out holds the launcher: the home
+/// page then tells players to start it, and else the start script, so the
+/// page is right before and after the archive is replaced.
+pub(super) fn offers_launcher() -> bool {
+    available_download()
+        .and_then(offered)
+        .is_some_and(|offered| offered.launcher)
 }
 
 fn text(status: &'static str, body: String) -> Response {
@@ -103,7 +149,7 @@ fn client_files_of(file: Option<&PathBuf>) -> Response {
         return text("404 Not Found", "no client files are offered here\n".into());
     };
     match offered(file) {
-        Some((sha256, size)) => text(
+        Some(Offered { sha256, size, .. }) => text(
             "200 OK",
             format!("skhid-client-files 1\nsha256 {sha256}\nsize {size}\n"),
         ),
@@ -500,6 +546,43 @@ mod tests {
             "503 Service Unavailable"
         );
         assert_eq!(client_files_of(None).status, "404 Not Found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_with_the_launcher_is_known_by_the_launchers_name() {
+        let dir = std::env::temp_dir().join(format!("srp-launcher-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("files.zip");
+        // Without it; then with it at the start, across the border of two
+        // pieces of the read, and at the end.
+        std::fs::write(&file, vec![b'x'; 200_000]).unwrap();
+        assert!(!offered(&file).unwrap().launcher);
+        for before in [
+            0,
+            64 * 1024 - 7,
+            64 * 1024 + 20,
+            2 * 64 * 1024 + 30,
+            199_000,
+        ] {
+            let mut bytes = vec![b'x'; before];
+            bytes.extend_from_slice(LAUNCHER_NAME);
+            if before != 199_000 {
+                bytes.resize(200_000, b'x');
+            }
+            std::fs::write(&file, &bytes).unwrap();
+            let (sha256, launcher) = read_through(&file).unwrap();
+            assert!(launcher, "{before}");
+            let whole: String = openssl::sha::sha256(&bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(sha256, whole, "{before}");
+        }
+        // The game exe's name is not the launcher's.
+        std::fs::write(&file, b"game/binaries/x86/survarium_skhid.exe").unwrap();
+        assert!(!read_through(&file).unwrap().1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
