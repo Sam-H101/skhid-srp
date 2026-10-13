@@ -1234,6 +1234,11 @@ impl<'a> Shared<'a> {
     /// its team's result and nothing more. A match with a test bot, with
     /// no known winner, or left by a whole side ([`MatchEnd::Deserted`]:
     /// its winner is who stayed) moves none.
+    ///
+    /// Each counts for the share of the match it was in
+    /// ([`balance::changes_by_share`]): its time in the match against the
+    /// longest anybody's was. One who came late or left early is that part
+    /// of a player to its side, and is moved by that part.
     fn balance_changes(&self, accounts: &GameAccounts) -> Vec<Option<i32>> {
         let mut changes = vec![None; self.result.players.len()];
         let Some(winner) = self.winner else {
@@ -1242,7 +1247,7 @@ impl<'a> Shared<'a> {
         if self.unrated || self.result.end == MatchEnd::Deserted {
             return changes;
         }
-        let rated: Vec<(usize, u8, balance::Balance)> = self
+        let rated: Vec<(usize, u8, balance::Balance, u32)> = self
             .result
             .players
             .iter()
@@ -1253,16 +1258,29 @@ impl<'a> Shared<'a> {
             })
             .filter_map(|(index, player)| {
                 let account = accounts.get(player.account_id)?;
-                Some((index, player.team, account.locked().balance))
+                let held = account.locked().balance;
+                Some((index, player.team, held, player.time_in_match_ms))
             })
             .collect();
-        let list: Vec<(u8, balance::Balance)> =
-            rated.iter().map(|&(_, team, held)| (team, held)).collect();
+        // The whole match is the longest stay: a result that names no
+        // times (0 for all) counts everybody in full.
+        let longest = rated.iter().map(|rated| rated.3).max().unwrap_or(0);
+        let list: Vec<(u8, balance::Balance, f64)> = rated
+            .iter()
+            .map(|&(_, team, held, time)| {
+                let share = if longest == 0 {
+                    1.0
+                } else {
+                    f64::from(time) / f64::from(longest)
+                };
+                (team, held, share)
+            })
+            .collect();
         // One side only: no match to learn from, and none counted.
         if !(0..2).all(|team| list.iter().any(|player| player.0 == team)) {
             return changes;
         }
-        for (&(index, _, _), change) in rated.iter().zip(balance::changes(&list, winner)) {
+        for (&(index, ..), change) in rated.iter().zip(balance::changes_by_share(&list, winner)) {
             changes[index] = Some(change);
         }
         changes

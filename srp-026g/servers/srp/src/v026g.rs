@@ -128,6 +128,18 @@ impl MatchHost for RegistryHost {
         self.0.admission_remaining(match_id, now)
     }
 
+    fn live(&self, match_id: u32, now: std::time::Instant) -> Option<lobby::LiveView> {
+        let live = self.0.live_match(match_id, now)?;
+        Some(lobby::LiveView {
+            present: live.present,
+            points: live.standing.map(|standing| standing.points),
+            kills: live.kills,
+            played: live
+                .played
+                .filter(|_| live.phase == matches::LivePhase::Playing),
+        })
+    }
+
     fn is_open(&self, match_id: u32) -> bool {
         self.0.is_open(match_id)
     }

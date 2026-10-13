@@ -60,6 +60,13 @@
 //!   player, a level of its account and a point of its balance rating
 //!   count for when the sides are made, in gear levels, and the matches
 //!   after which the rating counts for half (`session::v026g::balance`);
+//! - `SRP_BALANCE_BATTERY_LEAD` (default 0.55), `SRP_BALANCE_TICKET_LEAD`
+//!   (0.2), `SRP_BALANCE_DRAMATIC_LEAD` (2.5): in a match being played,
+//!   what a battery and a ticket of lead count for, in players, and the
+//!   lead from which the side that trails may get two players more than
+//!   the other when players join late; `SRP_LATE_JOIN_PATIENCE_SECONDS`
+//!   (60): how long a player who would make an even match uneven waits
+//!   for another before it goes in (`play.rs`);
 //! - `SRP_SQUADS` (default on), `SRP_SQUADS_OFF_TEXT`: with `off` nobody
 //!   is invited to a squad, and the one who tries is told so in a message
 //!   box (`social.rs`);
@@ -129,7 +136,7 @@ use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
 pub use patch_check::PatchCheck;
-pub use play::{MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
+pub use play::{LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
 
 /// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
 /// wiki of February 2015; `progression_sources.md` §9).
@@ -211,6 +218,10 @@ pub struct Settings {
     /// What a player counts for when the sides of a match are made
     /// (`SRP_BALANCE_*`; `session::v026g::balance`).
     pub balance: Weights,
+    /// How long a player waits for a match being played that it would
+    /// make less even, before it goes in all the same
+    /// (`SRP_LATE_JOIN_PATIENCE_SECONDS`).
+    pub late_join_patience: Duration,
     /// Whether players may form squads (`SRP_SQUADS`, default on).
     pub squads: bool,
     /// What the message box of a refused squad invite says: a text key of
@@ -362,7 +373,15 @@ impl Settings {
             player_level: weight("SRP_BALANCE_PLAYER_LEVEL", defaults.player_level),
             rating: weight("SRP_BALANCE_RATING", defaults.rating),
             trust_matches: weight("SRP_BALANCE_TRUST_MATCHES", defaults.trust_matches),
+            battery_lead: weight("SRP_BALANCE_BATTERY_LEAD", defaults.battery_lead),
+            ticket_lead: weight("SRP_BALANCE_TICKET_LEAD", defaults.ticket_lead),
+            dramatic_lead: weight("SRP_BALANCE_DRAMATIC_LEAD", defaults.dramatic_lead),
         };
+        let late_join_patience = seconds(
+            "SRP_LATE_JOIN_PATIENCE_SECONDS",
+            DEFAULT_LATE_JOIN_PATIENCE,
+            0,
+        );
         log::info!(
             "The sides of a match: a player counts for {} gear levels, a level of its account \
              for {}, a point of its balance rating for {} (for half after {} matches)",
@@ -370,6 +389,13 @@ impl Settings {
             balance.player_level,
             balance.rating,
             balance.trust_matches
+        );
+        log::info!(
+            "A match being played: a battery of lead counts for {} of a player, a ticket for              {}; from a lead of {} players the side that trails may get two players more; a              player who would make it less even waits {} s",
+            balance.battery_lead,
+            balance.ticket_lead,
+            balance.dramatic_lead,
+            late_join_patience.as_secs()
         );
         let squads = match var("SRP_SQUADS") {
             Some(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -392,6 +418,7 @@ impl Settings {
         }
         Self {
             balance,
+            late_join_patience,
             squads,
             squads_off_text,
             queue_chat,
@@ -434,6 +461,7 @@ impl Settings {
             outdated_text: patch_check::DEFAULT_OUTDATED_TEXT.to_owned(),
             update_hint: patch_check::DEFAULT_UPDATE_HINT.to_owned(),
             balance: Weights::default(),
+            late_join_patience: DEFAULT_LATE_JOIN_PATIENCE,
             squads: true,
             squads_off_text: DEFAULT_SQUADS_OFF_TEXT.to_owned(),
         }
@@ -446,6 +474,9 @@ impl Settings {
 pub const DEFAULT_SQUADS_OFF_TEXT: &str = "Squads are switched off on this server.";
 
 /// A `SRP_BALANCE_*` number: 0 to 1000.
+/// `SRP_LATE_JOIN_PATIENCE_SECONDS` when unset.
+pub const DEFAULT_LATE_JOIN_PATIENCE: Duration = Duration::from_secs(60);
+
 fn parse_weight(value: &str) -> Option<f64> {
     value
         .trim()

@@ -840,6 +840,7 @@ impl<'a> Core<'a> {
         }
 
         self.check_matches(now);
+        self.log_predictions(now);
         self.collect_away(now);
         self.clan_matches(now);
         let online = self.online_counts();

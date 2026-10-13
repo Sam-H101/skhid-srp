@@ -198,9 +198,300 @@ pub fn place(teams: [Team; 2], groups: &[Team], capacity: usize) -> Option<Place
     best
 }
 
+/// A side of a match being played, or a group that waits: its players and
+/// what they count for together beside being there (their strengths, in
+/// `crate::matchmaking::STRENGTH_SCALE`s).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Worth {
+    pub players: usize,
+    pub strength: i64,
+}
+
+/// A group that waits for a match being played.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Joiner {
+    pub worth: Worth,
+    /// It has waited as long as a joiner waits for a better moment: it
+    /// goes in though the sides then count less alike.
+    pub waited_out: bool,
+}
+
+/// How players are put into a match being played ([`place_late`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LateRule {
+    /// The most players of a side.
+    pub capacity: usize,
+    /// The roster places the match has left.
+    pub room: usize,
+    /// What a player counts for by being there.
+    pub player_value: i64,
+    /// What each side's lead counts for; nothing for the side that trails.
+    pub lead: [i64; 2],
+    /// The lead is one from which the side that trails may have two
+    /// players more than the other.
+    pub dramatic: bool,
+}
+
+/// Who goes into a match being played, and on which side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LatePlacement {
+    /// Group index and team, in queue order. A group is never split.
+    pub assignments: Vec<(usize, u8)>,
+    /// The sides with them.
+    pub sides: [Worth; 2],
+    /// What the sides count for apart, side 0 less side 1, before and with
+    /// them: players, strengths and the lead together.
+    pub apart_before: i64,
+    pub apart_after: i64,
+}
+
+impl LatePlacement {
+    pub fn population(&self) -> usize {
+        self.sides.iter().map(|side| side.players).sum()
+    }
+
+    /// [`Placement::score`] of the match with them.
+    pub fn score(&self, remaining: Duration, exponent: f64) -> Option<f64> {
+        (remaining > JOIN_CUTOFF && exponent.is_finite() && exponent > 0.0)
+            .then(|| (self.population() as f64).powf(exponent) * remaining.as_secs_f64() / 60.0)
+    }
+}
+
+/// Only so many of the groups that wait are looked at, the first that came:
+/// every way to leave each out or put it on a side is tried.
+pub const LATE_GROUPS: usize = 8;
+
+/// Whom of `groups` a match being played takes, whose sides are `sides`
+/// now (the players who are in it), and where each goes.
+///
+/// A side counts `player_value` for each player, their strengths and its
+/// lead. Of the ways to place whole groups that the rule allows, the one
+/// that takes the most players, and of those the one after which the sides
+/// count most alike. Allowed:
+/// - no side over `capacity`, no more players than `room`;
+/// - the sides at most one player apart; two when the lead is `dramatic`
+///   and it is the side that trails that has more; and sides that are
+///   further apart already may get players on the smaller one;
+/// - the sides do not count less alike than before by more than half a
+///   player, unless every group taken has `waited_out` or the sides get
+///   nearer in players: one player more in a match that is even decides
+///   it more often than anything else.
+pub fn place_late(sides: [Worth; 2], groups: &[Joiner], rule: &LateRule) -> Option<LatePlacement> {
+    let count = groups.len().min(LATE_GROUPS);
+    let worth = |sides: &[Worth; 2], side: usize| {
+        rule.player_value * sides[side].players as i64 + sides[side].strength + rule.lead[side]
+    };
+    let apart_before = worth(&sides, 0) - worth(&sides, 1);
+    let players_before = sides[0].players.abs_diff(sides[1].players);
+    let smaller = usize::from(sides[1].players < sides[0].players);
+    let trailing = (rule.lead[0] != rule.lead[1]).then(|| usize::from(rule.lead[1] < rule.lead[0]));
+    let mut best: Option<(usize, i64, LatePlacement)> = None;
+    // Base three, the first group the lowest digit: 0 out, 1 side 0, 2 side 1.
+    for code in 1..3_usize.pow(count as u32) {
+        let mut after = sides;
+        let mut taken = [0_usize; 2];
+        let mut assignments = Vec::new();
+        let mut patient = false;
+        let mut digits = code;
+        for (index, group) in groups.iter().enumerate().take(count) {
+            let digit = digits % 3;
+            digits /= 3;
+            if digit == 0 || group.worth.players == 0 {
+                continue;
+            }
+            let side = digit - 1;
+            after[side].players += group.worth.players;
+            after[side].strength += group.worth.strength;
+            taken[side] += group.worth.players;
+            patient |= !group.waited_out;
+            assignments.push((index, side as u8));
+        }
+        let admitted = taken[0] + taken[1];
+        if admitted == 0
+            || admitted > rule.room
+            || after.iter().any(|side| side.players > rule.capacity)
+        {
+            continue;
+        }
+        let players_after = after[0].players.abs_diff(after[1].players);
+        let larger = usize::from(after[1].players > after[0].players);
+        let sizes = players_after <= 1
+            || (players_after == 2 && rule.dramatic && trailing == Some(larger))
+            || (players_after < players_before && taken[1 - smaller] == 0);
+        if !sizes {
+            continue;
+        }
+        let apart_after = worth(&after, 0) - worth(&after, 1);
+        if patient
+            && players_after >= players_before
+            && apart_after.abs() > apart_before.abs() + rule.player_value / 2
+        {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(most, least, _)| {
+            (std::cmp::Reverse(admitted), apart_after.abs()) < (std::cmp::Reverse(*most), *least)
+        }) {
+            best = Some((
+                admitted,
+                apart_after.abs(),
+                LatePlacement {
+                    assignments,
+                    sides: after,
+                    apart_before,
+                    apart_after,
+                },
+            ));
+        }
+    }
+    best.map(|(_, _, placement)| placement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn side(players: usize, strength: i64) -> Worth {
+        Worth { players, strength }
+    }
+
+    fn joiner(players: usize, strength: i64) -> Joiner {
+        Joiner {
+            worth: side(players, strength),
+            waited_out: false,
+        }
+    }
+
+    fn rule() -> LateRule {
+        LateRule {
+            capacity: 10,
+            room: 20,
+            player_value: 1200,
+            lead: [0, 0],
+            dramatic: false,
+        }
+    }
+
+    #[test]
+    fn a_late_player_goes_to_the_side_with_fewer_players_in_the_match() {
+        let placed = place_late([side(3, 0), side(2, 0)], &[joiner(1, 700)], &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides, [side(3, 0), side(3, 700)]);
+        // Two short: both to the smaller side, though that is two at once.
+        let placed = place_late(
+            [side(5, 0), side(3, 0)],
+            &[joiner(1, 0), joiner(1, 0)],
+            &rule(),
+        )
+        .unwrap();
+        assert_eq!(placed.assignments, [(0, 1), (1, 1)]);
+        // And one of them when only one waits: the sides get nearer.
+        let placed = place_late([side(6, 0), side(3, 0)], &[joiner(1, 0)], &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+    }
+
+    #[test]
+    fn two_late_players_go_one_to_each_side_the_stronger_to_the_weaker_side() {
+        let placed = place_late(
+            [side(3, 2000), side(3, 1500)],
+            &[joiner(1, 900), joiner(1, 300)],
+            &rule(),
+        )
+        .unwrap();
+        assert_eq!(placed.assignments, [(0, 1), (1, 0)]);
+        assert_eq!(placed.apart_before, 500);
+        assert_eq!(placed.apart_after, -100);
+    }
+
+    #[test]
+    fn a_player_alone_waits_when_the_match_is_even_and_goes_in_once_it_has_waited() {
+        let even = [side(3, 1000), side(3, 1000)];
+        assert_eq!(place_late(even, &[joiner(1, 500)], &rule()), None);
+        let mut waited = joiner(1, 500);
+        waited.waited_out = true;
+        let placed = place_late(even, &[waited], &rule()).unwrap();
+        assert_eq!(placed.population(), 7);
+        // Three who wait: two go in, one to each side; the third waits.
+        let placed = place_late(even, &[joiner(1, 500); 3], &rule()).unwrap();
+        assert_eq!(placed.assignments.len(), 2);
+        assert_eq!(placed.sides[0].players, placed.sides[1].players);
+    }
+
+    #[test]
+    fn a_player_alone_goes_to_the_side_that_trails() {
+        // Two batteries behind at 0.55 of a player each: more than a player.
+        let behind = LateRule {
+            lead: [1320, 0],
+            ..rule()
+        };
+        let placed = place_late([side(3, 1000), side(3, 1000)], &[joiner(1, 500)], &behind);
+        assert_eq!(placed.unwrap().assignments, [(0, 1)]);
+        // The lead and the players count together: a side that leads with
+        // a player fewer gets the player.
+        let placed = place_late([side(2, 1000), side(3, 1000)], &[joiner(1, 500)], &behind);
+        assert_eq!(placed.unwrap().assignments, [(0, 0)]);
+    }
+
+    #[test]
+    fn the_side_that_trails_gets_two_more_only_when_the_lead_is_dramatic() {
+        let sides = [side(4, 0), side(4, 0)];
+        let two = [joiner(1, 0), joiner(1, 0)];
+        let led = LateRule {
+            lead: [3300, 0],
+            ..rule()
+        };
+        // Five batteries of lead, not called dramatic: one to each side.
+        let placed = place_late(sides, &two, &led).unwrap();
+        assert_eq!(placed.sides.map(|side| side.players), [5, 5]);
+        let dramatic = LateRule {
+            dramatic: true,
+            ..led
+        };
+        let placed = place_late(sides, &two, &dramatic).unwrap();
+        assert_eq!(placed.sides.map(|side| side.players), [4, 6]);
+        // Never the side that leads, and never three.
+        let placed = place_late([side(4, 0), side(5, 0)], &two, &dramatic).unwrap();
+        assert_eq!(placed.sides.map(|side| side.players), [5, 6]);
+        let leading = LateRule {
+            lead: [0, 3300],
+            dramatic: true,
+            ..rule()
+        };
+        let placed = place_late([side(4, 0), side(5, 0)], &two, &leading).unwrap();
+        assert_eq!(placed.sides.map(|side| side.players), [6, 5]);
+    }
+
+    #[test]
+    fn a_squad_goes_in_whole_and_only_where_the_sides_stay_within_one() {
+        let squad = joiner(3, 0);
+        assert_eq!(place_late([side(3, 0); 2], &[squad], &rule()), None);
+        // With a pair it fits, six against five: an even match made
+        // uneven, so only once they have waited.
+        let pair = joiner(2, 0);
+        assert_eq!(place_late([side(3, 0); 2], &[squad, pair], &rule()), None);
+        let waited = |joiner: Joiner| Joiner {
+            waited_out: true,
+            ..joiner
+        };
+        let placed = place_late([side(3, 0); 2], &[waited(squad), waited(pair)], &rule()).unwrap();
+        assert_eq!(placed.population(), 11);
+        let placed = place_late([side(2, 0), side(4, 0)], &[squad], &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+    }
+
+    #[test]
+    fn a_full_side_and_a_full_roster_take_nobody() {
+        let full = LateRule {
+            capacity: 3,
+            ..rule()
+        };
+        assert_eq!(
+            place_late([side(3, 0), side(3, 0)], &[joiner(1, 0); 2], &full),
+            None
+        );
+        let no_room = LateRule { room: 1, ..rule() };
+        let placed = place_late([side(3, 0), side(2, 0)], &[joiner(1, 0); 2], &no_room).unwrap();
+        assert_eq!(placed.population(), 6);
+    }
 
     fn team(players: usize, average: u32) -> Team {
         Team {

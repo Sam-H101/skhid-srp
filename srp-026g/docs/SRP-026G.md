@@ -150,6 +150,13 @@ A port that is not a number stops srp at start.
 | `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
 | `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |
 | `SRP_BALANCE_TRUST_MATCHES` | 5 | The matches after which a balance rating counts for half; one of no match counts for nothing |
+| `SRP_BALANCE_BATTERY_LEAD` | 0.55 | In a match being played (modes 2, 3): what a battery of lead counts for, in players, for the side that leads. Used where a player who joins late goes, and in the log's prediction (`matchmaking.md` §9) |
+| `SRP_BALANCE_TICKET_LEAD` | 0.2 | The same for a ticket of lead in a Team Deathmatch |
+| `SRP_BALANCE_DRAMATIC_LEAD` | 2.5 | The lead, in players, from which the side that trails may have two players more than the other when players join late (5 batteries, 13 tickets). 0: never more than one |
+| `SRP_LATE_JOIN_PATIENCE_SECONDS` | 60 | How long a player who would make the sides of a match being played count less alike waits for another before it goes in all the same |
+| `SRP_GROWING_MIN_PLAYERS` | 2 | The fewest players a new match of the late-join queue (games of patch revision 5 or later) starts with: 2 is one against one, and whoever comes later joins them |
+| `SRP_GROWING_GATHER_SECONDS` | 120 | How long after its second player pressed Play such a match starts when it is not full |
+| `SRP_GROWING_POPULATION_EXPONENT` | 1 | Which of several matches being played a player joins: the one with the highest (players with it)^this x minutes left |
 | `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
 | `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
 | `SRP_PATCH_REVISION_CHECK` | off | `warn`: a game whose exe says a patch revision under `SRP_MIN_PATCH_REVISION` is told in the general chat how to update. `refuse`: its Play and clan-team Play are also refused, with a message box (`patch_check.rs`). The late-join exe (0x80) and the test bots are never refused |

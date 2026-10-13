@@ -73,6 +73,21 @@ RUST_LOG=info
 # SRP_BALANCE_PLAYER_LEVEL=1.5
 # SRP_BALANCE_RATING=4
 # SRP_BALANCE_TRUST_MATCHES=5
+# Games of patch revision 5 or later join matches that are being played.
+# A match of theirs starts with this many players, this long after the
+# second one pressed Play, and takes who comes later:
+# SRP_GROWING_MIN_PLAYERS=2
+# SRP_GROWING_GATHER_SECONDS=120
+# A player who joins goes where the sides then count most alike: the
+# players in the match, what they count for (above), and the lead. What a
+# battery and a ticket of lead count for, in players; the lead, in players,
+# from which the side that trails may get two players more than the other
+# (5 batteries, 13 tickets); and how long a player who would make an even
+# match uneven waits for another before it goes in:
+# SRP_BALANCE_BATTERY_LEAD=0.55
+# SRP_BALANCE_TICKET_LEAD=0.2
+# SRP_BALANCE_DRAMATIC_LEAD=2.5
+# SRP_LATE_JOIN_PATIENCE_SECONDS=60
 # No squads: an invite is refused, and its sender is told in a message box.
 # SRP_SQUADS=off
 # SRP_SQUADS_OFF_TEXT=Squads are switched off on this server.

@@ -19,7 +19,16 @@
 //!   ([`PLAYER`]), so winning with it moves little.
 //! - **It is trusted by its matches** ([`Weights::trust`]): a rating of no
 //!   match counts for nothing, of [`Weights::trust_matches`] for half.
+//! - **A match that is being played** counts a third thing for the side
+//!   that leads: its lead ([`Weights::lead`]), a battery or a ticket being
+//!   a part of a player. A player who joins such a match goes where the
+//!   sides then count most alike, and the side that trails may get two
+//!   players more than the other, not one, once the lead is
+//!   [`Weights::dramatic`] (`crate::matchmaking_policy::place_late`).
+//!   [`Weights::expected`] is the chance the whole count gives a side; the
+//!   lobby writes it in its log each minute, to be fitted again.
 
+use survarium::v026g::maps::mode;
 use survarium::v026g::match_msgs::rules::DRAW;
 
 use crate::matchmaking::STRENGTH_SCALE;
@@ -68,33 +77,63 @@ impl Balance {
 /// team (2 a draw). A match with one side, or with no known winner, moves
 /// nothing; a player of no team is not moved.
 pub fn changes(players: &[(u8, Balance)], winner: u8) -> Vec<i32> {
-    let count = |team: u8| players.iter().filter(|player| player.0 == team).count();
+    let whole: Vec<(u8, Balance, f64)> = players
+        .iter()
+        .map(|&(team, balance)| (team, balance, 1.0))
+        .collect();
+    changes_by_share(&whole, winner)
+}
+
+/// [`changes`] of a match whose players were not all in it for all of it:
+/// the third of each is the share of the match it was in, 0 to 1. A side
+/// is what its players were for their shares (a player who came at half
+/// time is half a player and half its rating), and a player is moved by
+/// its share of what a whole match would move it. So a side that got a
+/// player late and won is not taken for the side that won alone, and the
+/// player who came into a lost match does not carry the loss.
+pub fn changes_by_share(players: &[(u8, Balance, f64)], winner: u8) -> Vec<i32> {
+    let share = |player: &(u8, Balance, f64)| {
+        if player.2.is_finite() {
+            player.2.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let count = |team: u8| -> f64 {
+        players
+            .iter()
+            .filter(|player| player.0 == team)
+            .map(share)
+            .sum()
+    };
     let (first, second) = (count(0), count(1));
-    if first == 0 || second == 0 || winner > DRAW {
+    if first <= 0.0 || second <= 0.0 || winner > DRAW {
         return vec![0; players.len()];
     }
     let side = |team: u8| if team == 0 { 1.0 } else { -1.0 };
     let apart: f64 = players
         .iter()
         .filter(|player| player.0 < 2)
-        .map(|&(team, balance)| side(team) * f64::from(balance.rating) / f64::from(UNIT))
+        .map(|player| side(player.0) * share(player) * f64::from(player.1.rating) / f64::from(UNIT))
         .sum::<f64>()
-        + PLAYER * (first as f64 - second as f64);
+        + PLAYER * (first - second);
     let expected = 1.0 / (1.0 + (-apart).exp());
     let score = match winner {
         0 => 1.0,
         1 => 0.0,
         _ => 0.5,
     };
-    let shared = 2.0 / (first + second) as f64;
+    let shared = 2.0 / (first + second);
     players
         .iter()
-        .map(|&(team, balance)| {
+        .map(|player| {
+            let (team, balance, _) = *player;
             if team > 1 {
                 return 0;
             }
             let step = STEP * (1.0 + NEW_PLAYER / (1.0 + f64::from(balance.matches))) * shared;
-            (step * (score - expected) * side(team) * f64::from(UNIT)).round() as i32
+            (step * share(player) * (score - expected) * side(team) * f64::from(UNIT)).round()
+                as i32
         })
         .collect()
 }
@@ -114,6 +153,14 @@ pub struct Weights {
     /// The matches after which a rating counts for half. 0: it counts in
     /// full from its first match.
     pub trust_matches: f64,
+    /// A battery of lead in a match being played (modes 2 and 3), in
+    /// players: what the side that leads counts for more.
+    pub battery_lead: f64,
+    /// The same for a ticket of lead in a Team Deathmatch.
+    pub ticket_lead: f64,
+    /// The lead, in players, from which the side that trails may have two
+    /// players more than the other. 0: never.
+    pub dramatic_lead: f64,
 }
 
 impl Default for Weights {
@@ -122,12 +169,22 @@ impl Default for Weights {
     /// 0.15, a player level 0.18, a rating point 0.58. In gear levels that
     /// is 15, 1.2 and 3.9; without the rating the same fit said 12 and
     /// 1.5, and the splits were the same from 8 to 12.
+    ///
+    /// The lead is the fit of the same day on the worlds saved of 66 of
+    /// those matches (who won against the players in the match and the
+    /// lead, at five moments of each): a battery 0.57 of a player (51
+    /// matches), ten tickets 2.2 players (15 matches, so taken lower). The
+    /// side that first led by five batteries won 28 of 30 matches, by
+    /// four 35 of 39; no lead of eleven tickets was lost (9).
     fn default() -> Self {
         Self {
             player: 12.0,
             player_level: 1.5,
             rating: 4.0,
             trust_matches: 5.0,
+            battery_lead: 0.55,
+            ticket_lead: 0.2,
+            dramatic_lead: 2.5,
         }
     }
 }
@@ -158,6 +215,40 @@ impl Weights {
                 + self.player_level * f64::from(player_level)
                 + self.rating * self.trust(balance.matches) * rating,
         )
+    }
+
+    /// What each side's lead counts for in a match of `game_mode` that
+    /// stands at `points` (batteries home, or tickets left), as the queue
+    /// takes it: nothing for the side that trails.
+    pub fn lead(&self, game_mode: u8, points: [u16; 2]) -> [i32; 2] {
+        let each = if game_mode == mode::TEAM_DEATHMATCH {
+            self.ticket_lead
+        } else {
+            self.battery_lead
+        };
+        let ahead = |side: usize| {
+            let lead = f64::from(points[side].saturating_sub(points[1 - side]));
+            scaled(lead * each.max(0.0) * self.player.max(0.0))
+        };
+        [ahead(0), ahead(1)]
+    }
+
+    /// Whether a lead that counts for `lead` ([`Self::lead`]) is one from
+    /// which the side that trails may have two players more.
+    pub fn dramatic(&self, lead: i32) -> bool {
+        let least = scaled(self.dramatic_lead * self.player);
+        self.dramatic_lead > 0.0 && least > 0 && lead >= least
+    }
+
+    /// The chance of side 0 when it counts for `apart` more than side 1
+    /// (players, strengths and lead together, as the queue takes them): a
+    /// player more is [`PLAYER`] rating points, as in [`changes`].
+    pub fn expected(&self, apart: i64) -> f64 {
+        let player = f64::from(self.player_value());
+        if player <= 0.0 {
+            return 0.5;
+        }
+        1.0 / (1.0 + (-PLAYER * apart as f64 / player).exp())
     }
 }
 
@@ -224,6 +315,67 @@ mod tests {
     }
 
     #[test]
+    fn a_player_who_came_late_counts_for_its_share_of_the_match() {
+        // Three against three, and a fourth for the last fifth of it.
+        let whole = |team| (team, rated(0, 20), 1.0);
+        let mut players = vec![whole(0), whole(0), whole(0), whole(1), whole(1), whole(1)];
+        let level = changes_by_share(&players, 0);
+        players.push((0, rated(0, 20), 0.2));
+        let late = changes_by_share(&players, 0);
+        // Its side was the likelier winner by that much: the win moves the
+        // others less than the win of an even match, more than a win with
+        // a player more from the start.
+        let more: Vec<(u8, Balance)> = players.iter().map(|p| (p.0, p.1)).collect();
+        let from_the_start = changes(&more, 0);
+        assert!(
+            late[0] < level[0] && late[0] > from_the_start[0],
+            "{late:?}"
+        );
+        // And itself by a fifth of what it moves them.
+        assert!((late[6] * 5 - late[0]).abs() <= 5, "{late:?}");
+        // Shares of one are `changes`.
+        let whole: Vec<(u8, Balance, f64)> = more.iter().map(|p| (p.0, p.1, 1.0)).collect();
+        assert_eq!(changes_by_share(&whole, 0), from_the_start);
+        // A player who was not in it is not moved and is nobody's side.
+        let absent = [(0, new(), 1.0), (1, new(), 0.0)];
+        assert_eq!(changes_by_share(&absent, 0), [0, 0]);
+    }
+
+    #[test]
+    fn a_lead_counts_for_the_side_that_has_it() {
+        let weights = Weights::default();
+        // Batteries: 0.55 of a player each, a player being twelve levels.
+        assert_eq!(weights.lead(mode::BATTERIES, [5, 3]), [1320, 0]);
+        assert_eq!(weights.lead(mode::TIMED_BATTERIES, [0, 5]), [0, 3300]);
+        assert_eq!(weights.lead(mode::BATTERIES, [4, 4]), [0, 0]);
+        // Tickets: a fifth of a player.
+        assert_eq!(weights.lead(mode::TEAM_DEATHMATCH, [80, 93]), [0, 3120]);
+        // Dramatic from two and a half players: five batteries, thirteen tickets.
+        let batteries = |lead| weights.lead(mode::BATTERIES, [lead, 0])[0];
+        assert!(!weights.dramatic(batteries(4)) && weights.dramatic(batteries(5)));
+        let tickets = |lead| weights.lead(mode::TEAM_DEATHMATCH, [lead, 0])[0];
+        assert!(!weights.dramatic(tickets(12)) && weights.dramatic(tickets(13)));
+        // With no weight for a player there is no lead to count.
+        let none = Weights {
+            player: 0.0,
+            ..weights
+        };
+        assert_eq!(none.lead(mode::BATTERIES, [9, 0]), [0, 0]);
+        assert!(!none.dramatic(i32::MAX));
+        assert_eq!(none.expected(5000), 0.5);
+    }
+
+    #[test]
+    fn the_chance_of_a_side_follows_what_it_counts_for_more() {
+        let weights = Weights::default();
+        assert_eq!(weights.expected(0), 0.5);
+        // A player more: the nine to one of the rating.
+        let player = i64::from(weights.player_value());
+        assert!((weights.expected(player) - 0.9).abs() < 0.01);
+        assert!((weights.expected(-player) - 0.1).abs() < 0.01);
+    }
+
+    #[test]
     fn one_side_or_no_winner_moves_nothing() {
         assert_eq!(changes(&[(0, new()), (0, new())], 0), [0, 0]);
         assert_eq!(changes(&[(0, new()), (1, new())], 3), [0, 0]);
@@ -262,7 +414,7 @@ mod tests {
             player: 0.0,
             player_level: 0.0,
             rating: 0.0,
-            trust_matches: 5.0,
+            ..Weights::default()
         };
         assert_eq!(
             weights.strength(7, 9, rated(3 * UNIT, 100)),

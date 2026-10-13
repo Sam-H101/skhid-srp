@@ -131,6 +131,9 @@ fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
     // One map, so the scripted simulation knows its mode
     // (`SRP_MATCH_MAPS`).
     options.lobby.maps = vec![MAP];
+    // A player alone goes into a match of two at once: the scripted
+    // clients are three (`SRP_LATE_JOIN_PATIENCE_SECONDS`).
+    options.lobby.late_join_patience = Duration::ZERO;
     options.bots = session::v026g::bots::parse(&bots.join(","));
     Stack::start(Arc::new(store), Arc::new(accounts), options).expect("the servers")
 }
@@ -233,8 +236,7 @@ impl Game {
             self.name,
             self.static_id
         );
-        let mut client = if self.revision == survarium::v026g::match_msgs::late_join::PATCH_REVISION
-        {
+        let mut client = if survarium::v026g::match_msgs::late_join::spoken_by(self.revision) {
             MatchClient::growing(session, 2, MAP)
         } else {
             MatchClient::new(session, true, 2, MAP)
