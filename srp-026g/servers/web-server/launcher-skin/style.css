@@ -1,0 +1,40 @@
+/* Original 0.26g page geometry and artwork; shared by online and local pages.
+   The two @...@ slots are replaced with data URLs, so MSHTML makes no requests
+   for images and the local pages also work without a connection (IE8+).
+   See README.txt for the source of the unmodified game artwork. */
+*{padding:0;margin:0;outline:0;border:0}
+html,body{background:#000;font-size:13px;color:#b3b3b3;font-family:Arial,Tahoma,sans-serif;overflow:hidden}
+a,a:link,a:visited,a:hover,a:focus,a:active{color:#fff;text-decoration:none}
+#container{position:relative;width:899px;height:335px;overflow:hidden;background:url("@BACKGROUND@") top left no-repeat}
+#left{position:absolute;left:15px;top:10px;width:456px;height:314px;overflow:hidden}
+#right{position:absolute;left:479px;top:11px;width:404px;height:313px}
+.tile{position:absolute;left:0;width:404px;height:98px;overflow:hidden}
+.tile.first{top:0}
+.tile.second{top:107px}
+.tile.third{top:215px}
+h1{height:30px;line-height:30px;padding:0 13px;font-size:13px;font-weight:bold;color:#e7a300;text-transform:uppercase}
+h1 i,.cap i{font-style:normal;text-transform:none}
+h1 em{float:right;font-style:normal;color:#fff;background:#b53a26;line-height:16px;padding:0 6px;margin-top:7px;font-size:11px}
+table{border-collapse:collapse;table-layout:fixed}
+#left table{width:456px}
+#left th,#left td{height:22px;line-height:22px;font-size:12px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#left th{height:20px;line-height:20px;font-size:10px;font-weight:normal;color:#939392;text-transform:uppercase}
+.n{width:30px;padding-left:13px;color:#939392}
+.p{color:#fff}
+.p i{font-style:normal;color:#e7a300}
+.l{width:60px}
+.r{width:70px;color:#e7a300;font-weight:bold}
+.none{padding:110px 13px 0 13px;text-align:center;color:#939392}
+.cap{position:absolute;left:0;bottom:0;width:378px;height:23px;padding:9px 13px 0 13px;background:url("@SHADOW@") top left repeat;font-weight:bold;color:#fff;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#left .cap{width:430px}
+.warn{color:#e7a300}
+.nums{width:404px;margin-top:11px}
+.nums td{text-align:center;vertical-align:top}
+.nums b{display:block;font-size:26px;line-height:32px;color:#fff;font-weight:bold}
+.nums span{display:block;font-size:10px;line-height:14px;color:#939392;text-transform:uppercase}
+p{padding:14px 13px 0 13px;line-height:18px}
+p.big{padding-top:90px;text-align:center;color:#939392}
+p.small{padding-top:9px;font-size:11px;line-height:13px;color:#939392}
+p.legal{padding:7px 13px 0 13px;font-size:11px;line-height:13px;color:#939392}
+.cap a.discord{float:right;text-transform:none}
+.cap a.discord:hover,.cap a.discord:focus{color:#e7a300;text-decoration:underline}

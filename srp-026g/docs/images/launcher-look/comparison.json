@@ -1,0 +1,160 @@
+{
+  "reference": {
+    "left": [
+      15,
+      10,
+      456,
+      314
+    ],
+    "tiles": [
+      [
+        479,
+        11,
+        404,
+        98
+      ],
+      [
+        479,
+        118,
+        404,
+        98
+      ],
+      [
+        479,
+        226,
+        404,
+        98
+      ]
+    ],
+    "captions": [
+      [
+        479,
+        77,
+        404,
+        32
+      ],
+      [
+        479,
+        184,
+        404,
+        32
+      ],
+      [
+        479,
+        292,
+        404,
+        32
+      ]
+    ]
+  },
+  "results": [
+    {
+      "file": "index-blank-de.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-blank-en.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-blank-pl.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-blank-ru.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-blank-ua.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-de.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-en.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-pl.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-ru.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "index-ua.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-en-down.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-en-empty.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-en-full.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-en-maintenance.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-uk-down.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-uk-empty.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-uk-full.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    },
+    {
+      "file": "online-uk-maintenance.html",
+      "geometry": "identical",
+      "changedSkinPixels": 0,
+      "overflow": false
+    }
+  ]
+}
