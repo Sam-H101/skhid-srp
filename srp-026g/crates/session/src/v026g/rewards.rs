@@ -42,9 +42,12 @@
 //!     score of the row's own events (every event that is no kill and no
 //!     help), counted with the weights the match was played with
 //!     ([`Terms::score_weights`], the ones the scoreboard used).
-//! - **The rates**: the three rows' silver times `SRP_MONEY_RATE` percent
-//!   (default 120, the owner's choice); their experience and reputation
-//!   times `SRP_EXPERIENCE_RATE` (default 1).
+//! - **The rates** (the owner's choices): the three rows' silver times the
+//!   percent of the match's level ([`pay::MONEY_RATES`]: 150 to level 5,
+//!   rising to 220 from level 12; or `SRP_MONEY_RATE` at every level);
+//!   their experience times `SRP_EXPERIENCE_RATE` (default 2); their
+//!   reputation and the quests' times `SRP_REPUTATION_RATE` percent
+//!   (default 120).
 //! - **Reputation** goes to the faction whose quests the account takes;
 //!   none until it chose one (PROVEN: patch note 0.25a).
 //! - **Premium**: half again of the three rows, of all three kinds (PROVEN
@@ -63,7 +66,8 @@
 //!   [`pay::START_RATING`].
 //! - **Quests**: [`quests::evaluate_scaled`] with the match's numbers:
 //!   a quest's silver and reputation times the match level's multipliers,
-//!   its reputation twice in one of the day's doubled matches.
+//!   its reputation times `SRP_REPUTATION_RATE` percent too, and twice in
+//!   one of the day's doubled matches.
 //! - **Wear** (only with `SRP_ITEM_WEAR=on`; off by the owner's choice,
 //!   [`pay::item_wear`]): every item of a kit the player used loses its
 //!   `degrade_per_match`; a kit's firearms share `degrade_per_use` for each
@@ -253,10 +257,14 @@ pub struct MatchResult {
 pub struct Terms {
     /// Unix seconds.
     pub now: u64,
-    /// What a match's experience and reputation are multiplied by.
+    /// What a match's experience is multiplied by.
     pub experience_rate: u32,
-    /// The percent of the original's silver the match's rows pay.
-    pub money_rate: u32,
+    /// The percent of the original's silver the match's rows pay, by the
+    /// match's level.
+    pub money_rate: pay::MoneyRate,
+    /// The percent of the original's reputation the match's rows and its
+    /// quests pay.
+    pub reputation_rate: u32,
     /// The match's score weights.
     pub score_weights: [f32; EVENTS],
     /// Whether the match wears the items of the kits played
@@ -268,8 +276,9 @@ pub struct Terms {
 }
 
 impl Terms {
-    /// srp's terms at `now`: `SRP_EXPERIENCE_RATE` (default 1),
-    /// `SRP_MONEY_RATE` (default 120), `SRP_ITEM_WEAR` and
+    /// srp's terms at `now`: `SRP_EXPERIENCE_RATE` (default 2),
+    /// `SRP_MONEY_RATE` (default: by the match's level),
+    /// `SRP_REPUTATION_RATE` (default 120), `SRP_ITEM_WEAR` and
     /// `SRP_DROP_PLAYTIME_BONUS` (both off unless set) and the weights
     /// srp's matches are made with.
     pub fn at(now: u64) -> Self {
@@ -277,6 +286,7 @@ impl Terms {
             now,
             experience_rate: pay::experience_rate(),
             money_rate: pay::money_rate(),
+            reputation_rate: pay::reputation_rate(),
             score_weights: SCORE_WEIGHTS,
             wear: pay::item_wear(),
             playtime_bonus: pay::drop_playtime_bonus(),
@@ -1513,7 +1523,8 @@ impl<'a> Shared<'a> {
 
         // The score's lines, and the premium half of each kit's column.
         let rate = f64::from(self.terms.experience_rate);
-        let money_share = f64::from(self.terms.money_rate) / 100.0;
+        let money_share = f64::from(self.terms.money_rate.at(self.result.match_level)) / 100.0;
+        let reputation_share = f64::from(self.terms.reputation_rate) / 100.0;
         let (money_k, experience_k, reputation_k) = self.multipliers;
         let faction = account.quest_faction;
         let lines = self.lines(player, main);
@@ -1540,13 +1551,12 @@ impl<'a> Shared<'a> {
                 let cell_money =
                     pay::cell(base.money, money_k * money_share).min(f64::from(u32::MAX)) as u32;
                 // What the wire's s16 holds.
-                let cell =
-                    |plain: f64, k: f64| pay::cell(plain, k * rate).min(f64::from(i16::MAX)) as i16;
-                let cell_experience = cell(base.experience, experience_k);
+                let cell = |plain: f64, k: f64| pay::cell(plain, k).min(f64::from(i16::MAX)) as i16;
+                let cell_experience = cell(base.experience, experience_k * rate);
                 let cell_reputation = if faction == 0 {
                     0
                 } else {
-                    cell(base.reputation, reputation_k)
+                    cell(base.reputation, reputation_k * reputation_share)
                 };
                 component.columns[kit] =
                     (amount as f32, cell_money, cell_experience, cell_reputation);
@@ -1631,6 +1641,7 @@ impl<'a> Shared<'a> {
         let scale = quests::Scale {
             money_k,
             reputation_k,
+            reputation_share,
             doubled: reward.daily_bonus,
         };
         let pay = quests::evaluate_scaled(account, &self.quest_stats(player), &scale, now, rng);

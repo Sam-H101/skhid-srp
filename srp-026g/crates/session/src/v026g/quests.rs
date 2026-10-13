@@ -204,6 +204,9 @@ pub struct Scale {
     /// multipliers is LIKELY (they are the match's own, `pay`).
     pub money_k: f64,
     pub reputation_k: f64,
+    /// srp's own rate of reputation (`pay::reputation_rate`, as a share: 1
+    /// is the original's), on top of the match level's.
+    pub reputation_share: f64,
     /// The match is one of the day's first three victories: the quest's
     /// reputation is paid twice (PROVEN that such a match changes a quest's
     /// award: patch note 0.25a, "Fixed bug in calculation of awards for
@@ -218,6 +221,7 @@ impl Scale {
     pub const PLAIN: Self = Self {
         money_k: 1.0,
         reputation_k: 1.0,
+        reputation_share: 1.0,
         doubled: false,
     };
 
@@ -229,7 +233,7 @@ impl Scale {
                 .floor()
                 .clamp(0.0, f64::from(u32::MAX)) as u32
         };
-        let reputation = scaled(reputation, self.reputation_k);
+        let reputation = scaled(reputation, self.reputation_k * self.reputation_share);
         (
             scaled(money, self.money_k),
             if self.doubled {
@@ -646,6 +650,7 @@ mod tests {
         let scale = Scale {
             money_k: crate::v026g::pay::multiplier(level.money_k),
             reputation_k: crate::v026g::pay::multiplier(level.reputation_k),
+            reputation_share: 1.0,
             doubled: false,
         };
         assert_eq!(scale.of(100, 100), (200, 105));
@@ -660,6 +665,22 @@ mod tests {
         assert_eq!(doubled.of(100, 100), (200, 210));
         let (_, twice) = paid(&doubled);
         assert_eq!(twice, (scaled.0, 2 * scaled.1));
+        // srp's rate of reputation: 120 % of 105, and of every award of
+        // the data at every match level a whole number comes out whole.
+        let raised = Scale {
+            reputation_share: 1.2,
+            ..scale
+        };
+        assert_eq!(raised.of(100, 100), (200, 126));
+        assert_eq!(Scale { doubled: true, ..raised }.of(100, 100), (200, 252));
+        assert_eq!(
+            Scale {
+                reputation_share: 1.2,
+                ..Scale::PLAIN
+            }
+            .of(50, 50),
+            (50, 60)
+        );
     }
 
     #[test]

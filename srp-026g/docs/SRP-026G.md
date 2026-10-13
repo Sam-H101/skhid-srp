@@ -225,8 +225,9 @@ name belongs to whoever registers it first, as any name does.
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_EXPERIENCE_RATE` | 1 | What a match's experience and reputation are multiplied by (1 to 100). 1 is the original's pace (it was 3 until 2026-10-12) |
-| `SRP_MONEY_RATE` | 120 | The percent of the original's silver a match's three rows pay (1 to 1000); premium's half follows. 120 is the owner's choice (80 until 2026-10-13) |
+| `SRP_EXPERIENCE_RATE` | 2 | What a match's experience is multiplied by (1 to 100). 1 is the original's pace; 2 is the owner's choice of 2026-10-14 (it was 1 from 2026-10-12 and 3 before). Until 2026-10-14 it multiplied the reputation too, which now has `SRP_REPUTATION_RATE` |
+| `SRP_MONEY_RATE` | unset: by match level | The percent of the original's silver a match's three rows pay; premium's half follows. Unset, it goes by the match's level (the owner's choice of 2026-10-14): 150 at levels 0 to 5, ten more each level, 220 from level 12. Set (1 to 1000), it is that percent at every level (it was 120 from 2026-10-13, 80 before) |
+| `SRP_REPUTATION_RATE` | 120 | The percent of the original's reputation a match's rows and the quests completed in it pay (1 to 1000). 120 is the owner's choice of 2026-10-14 |
 | `SRP_ITEM_WEAR` | off | `on`: a match wears the weapons and armour of the kits played, as the game's data says, and a worn item may get a defect. Off is the owner's choice (2026-10-13): an item stays as it is. The first start of a database with it off makes every worn weapon and armour piece whole, once |
 | `SRP_DROP_PLAYTIME_BONUS` | off | `on`: the first four games of an hour of play raise the chance of a drop by 100, 75, 50 and 25 % (the numbers are the game's data; how they were applied is a guess). Off is the owner's choice (2026-10-13): with it on, 73 % of the players who finished a match found something |
 | `SRP_DROP_CONDITION` | 40 | The condition, in percent, a weapon or armour piece found after a match arrives in (1 to 100; the owner's choice) |

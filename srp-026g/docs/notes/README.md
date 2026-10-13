@@ -25,6 +25,7 @@ given), LIKELY or GUESS.
 | [social.md](social.md) | Chat channels, friends, squads, clans, online stats |
 | [premium.md](premium.md) | Premium time, the shop's offers and bundles, items for gold, the daily bonus, the tutorial, a nickname change, autobuy and auto-repair, the level notice; their settings |
 | [results.md](results.md) | Match results screen, player details, drops, daily bonus, craft tables |
+| [progression_pace.md](progression_pace.md) | How long levels, faction ranks and gear tiers take, measured on the players' server, and the pay rates chosen from it |
 | [items.md](items.md) | Modifications, defects, cosmetics, reroll, craft, repair: the data, the wire, the rules |
 | [match.md](match.md) | Match protocol: lockstep, handshake, message ids, snapshot and hash, time sync, input rules |
 | [transport.md](transport.md) | The UDP transport that matches **and now the lobby** use: header, acks, per-id lengths, multipart |
@@ -128,8 +129,10 @@ Every setting has a default; none is needed on a dev PC.
 - `SRP_MATCH_TEAM_SIZE` (default 10), `SRP_MATCH_SEARCH_STEP_SECONDS`
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
-- `SRP_EXPERIENCE_RATE` (default 1), `SRP_MONEY_RATE` (percent, default
-  120): the rewards (`results.md` §10). `SRP_ITEM_WEAR` (off): whether a
+- `SRP_EXPERIENCE_RATE` (default 2), `SRP_MONEY_RATE` (percent; unset:
+  150 to 220 by the match's level), `SRP_REPUTATION_RATE` (percent,
+  default 120): the rewards (`results.md` §10, §13; how long progression
+  takes: `progression_pace.md`). `SRP_ITEM_WEAR` (off): whether a
   match wears the items played with. `SRP_DROP_CONDITION` (40),
   `SRP_DROP_DEFECT` (on): what a found weapon or armour arrives as.
   `SRP_DROP_PLAYTIME_BONUS` (off): the play time bonus to the drop chance.

@@ -323,12 +323,12 @@ Code: `crates/session/src/v026g/pay.rs` (every number, each with its tag) and `r
 
 - **Other score** = the score of the events of the row itself (every event that is no kill and no help; `event_categories` value 2), with the weights the match was played with. For a player whose helps are all assists that is "score − 10 a kill − 5 an assist", which is how both screens were read.
 - **A match not won** (lost, drawn, or with no known result) and played to the end pays half of the fixed part and the same for each point; **a player who left early** gets nothing of the fixed part. The owner's choice (2026-10-12), until a lost match's screen is seen.
-- **Rates** (srp's): the rows' silver × `SRP_MONEY_RATE` percent (default 120, the owner's choice of 2026-10-13; 80 before); their experience and reputation × `SRP_EXPERIENCE_RATE` (default 1).
+- **Rates** (srp's): the rows' silver × the percent of the match's level (`pay::MONEY_RATES`, the owner's choice of 2026-10-14: 150 to level 5, ten more a level, 220 from level 12; 120 at every level from 2026-10-13, 80 before; `SRP_MONEY_RATE` sets one percent for every level); their experience × `SRP_EXPERIENCE_RATE` (default 2 since 2026-10-14; 1, the original's pace, before); their reputation × `SRP_REPUTATION_RATE` percent (default 120). §13.
 - **Daily bonus** = the rows' experience and reputation once more, no silver; **premium** = half of the rows, of all three, not of the daily bonus; total = rows + daily + premium (PROVEN: SHOT1's 188 + 188 + 94 = 470, 26 + 26 + 13 = 65; SHOT2's 379 + 189 = 568).
 - **The money total is net of expenses in the client** (PROVEN, `VictoryScreen.updateMoney`): it adds the autobuy and repair lists of the inventory push (0x89) to the sum of the rows, quests and bonus blocks. 0x97 carries the gross rows; SHOT2's 9784 = 10707 + 5353 − 6276.
 - **The "x18" of SHOT1** against 17 kills on its scoreboard: the row's events are 0 (kill) and 4 (team kill), so the 18th is LIKELY a team kill, which paid nothing. It does not explain the lesser kind of kill (ten of them). srp's amount counts kills only [choice].
 - **Score weights** (`static_info.rs` `SCORE_WEIGHTS`): kill 10, assist 5, stolen battery 35 (the wiki of February 2015; the stolen battery is event 17, LIKELY); the others are srp's 0.21d choices divided by ten.
-- **Quests**: a quest's silver × `money_k` and its reputation × `reputation_k` of the match it was completed in (that the level matters is PROVEN, patch note 0.23h; these multipliers LIKELY), each rounded down; its reputation twice in one of the day's doubled victories (LIKELY, patch note 0.25a). A 0.26g quest awards no experience. `SRP_MONEY_RATE` does not touch a quest's silver.
+- **Quests**: a quest's silver × `money_k` and its reputation × `reputation_k` of the match it was completed in (that the level matters is PROVEN, patch note 0.23h; these multipliers LIKELY), each rounded down; its reputation twice in one of the day's doubled victories (LIKELY, patch note 0.25a). A 0.26g quest awards no experience. The silver rate does not touch a quest's silver; `SRP_REPUTATION_RATE` does raise its reputation (× the percent, in the same rounding down, before the doubling).
 - **Drop chance**, the four f32 of §1.3: base = the table's 40 % (with the play time bonus only when `SRP_DROP_PLAYTIME_BONUS=on`; off by the owner's choice of 2026-10-13, see §12); match result = 2.5 % for each battery the player's own team has at the end (modes 2 and 3; LIKELY); premium = 25 % for a premium account (LIKELY); penalty 0. The parts are cut so that their sum is at most 1, and the roll uses the sum.
 - **A weapon or armour found after a match** arrives at 40 % condition (`SRP_DROP_CONDITION`; the value is the owner's choice) with one defect (`SRP_DROP_DEFECT`), drawn by drop weight from the defects the item may have (`Modifications::defect_candidates`). Source: patch note 0.24a, "all the items found after a match will be in poor condition with critical malfunctions". Stacks, vouchers and cosmetics are as before, and so is an item of a drop card.
 - **Levels**: 100 is the highest; reaching it pays 250 gold (the wiki's table). **Rating** starts at 100 for a new 0.26g account (LIKELY); accounts made before keep theirs.
@@ -392,3 +392,26 @@ What follows from them:
 - Selling ammo back pays a quarter of the game's price (the lobby shows it from the same `base_cost`); no price of the table is under that quarter (test `ammo_costs_the_owners_prices`).
 
 Tests: `rewards/tests.rs` `with_wear_off_a_match_leaves_the_items_whole`, the bonus-off part of the play period test, `the_money_rate_scales_the_rows_silver_and_premiums_half_of_it` (srp's own terms); `v026g/mod.rs` `mending_makes_weapons_and_armour_whole_and_leaves_the_stacks`; `persist.rs` `a_first_time_is_once_in_the_databases_life`; `prices.rs` `ammo_costs_the_owners_prices`.
+
+## 13. The pay changes of 2026-10-14 (the owner's choices)
+
+What two days of the players' server showed is in `progression_pace.md`: the low tiers are the quick ones, a tier's whole kit costs 20 to 26 matches of silver up to tier 6 and 53 to 72 from tier 12, and for a whole kit the silver is what a player waits for at every tier (for a weapon alone, the rank).
+
+| Change | Before | Now | Where |
+|---|---|---|---|
+| Match silver | 120 % of the original at every match level | **by the match's level**: 150 % at levels 0 to 5, then 160, 170, 180, 190, 200, 210, and 220 % from level 12 | `pay::MONEY_RATES`, `pay::MoneyRate`; `SRP_MONEY_RATE` set = that percent at every level |
+| Reputation of a match's rows and of the quests completed in it | the original's | **120 %** (the owner: "increase reputation a bit for all"; the number is srp's reading of "a bit") | `pay::DEFAULT_REPUTATION_RATE`, `SRP_REPUTATION_RATE`, `quests::Scale::reputation_share` |
+| Experience of a match's rows | the original's | **twice** (the owner: "x2 exp") | `pay::DEFAULT_EXPERIENCE_RATE`, `SRP_EXPERIENCE_RATE` |
+| What `SRP_EXPERIENCE_RATE` multiplies | a match's experience and reputation | **its experience only**; the reputation has its own rate | `rewards.rs`, the rows' cells |
+
+Not changed: quest silver, level rewards (so their silver and gold come twice as fast), the level table, prices, the drops.
+
+What follows from them:
+
+- The percent is the match's, as `money_k` is: every player of a match is paid at its level's percent, whatever gear each wears. No match of the first two days was above level 5, so until matches are, only the 150 % is felt.
+- Past 220 % the model has the Renaissance rank arrive after the silver for tiers 12 to 15: more silver there would buy nothing sooner.
+- **The game's own numbers for a quest are the data's**: the quest window's award and the "Mission accomplished" card are counted by the client and do not know the 120 %; the results screen's quest reputation, the reputation bar and the rank are the server's and do. (The card already differed from what is paid: it uses the multiplier of the player's own level, the pay the match's.)
+- The daily bonus and premium are counted from the rows, so they follow all three rates: one of the day's first three victories now pays four times the original's experience.
+- The account level was the longest road: at the original's pace level 20 took about 67 hours of play and the skill tree's 81 points about 750; twice the experience makes them about 38 and 390 (`progression_pace.md` §7).
+
+Tests: `pay.rs` `the_silver_rate_rises_with_the_match_level`; `rewards/tests.rs` `the_owners_rates_raise_silver_by_match_level_experience_and_reputation`, the own-terms part of `the_money_rate_scales_the_rows_silver_and_premiums_half_of_it`; `quests.rs`, the raised part of the scale test.
