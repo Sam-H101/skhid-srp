@@ -350,10 +350,23 @@ whole protocol: `../../docs/notes/launcher.md`.
   folder, with and without `launcher`, and without the script it looks
   for.
 
+- Later that day, with the servers on the internet (HTTPS, Windows 11). The
+  test server, a fresh copy of the game with its ZIP unpacked over it: the
+  first check (the ZIP taken once, no file changed, the state written);
+  `Skhid.bat`, the window with the server's page and its top 10 with a
+  player in it, PLAY enabled; a second ZIP offered, with another launcher
+  in it (13 files installed in two seconds, the launcher replaced itself
+  and came up again; every other file of the folder was left as it was,
+  compared by checksum before and after); the language changed in the
+  window (saved at once; the updater is not told and stays); PLAY started
+  the real game, which signed in and reached the lobby. The players'
+  server: its ZIP taken from the site, unpacked, `updater_skhid.exe check`
+  run in it.
+
 **Not run:** Wine (`bash play_skhid.sh launcher`); another Windows than 11;
-the real game started from the launcher (the stand-in was); the page and
-the updater over HTTPS against the public server; a PC that still has the
-real game's installation and service.
+a download slow enough to watch the bar move in the launcher's window (6 MB
+came in under a second each time); a PC that still has the real game's
+installation and service.
 
 ## Limits, and what is not done
 
