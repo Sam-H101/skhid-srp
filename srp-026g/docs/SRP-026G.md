@@ -260,6 +260,19 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   lower-case hex SHA-1 of what was typed), with the same lockout; an unknown
   name is never registered; nothing of it is logged. An account that never
   signed in to the 0.26g lobby has nothing to exchange.
+- `/api/client-files` and `/launcher/…` (since 2026-10-13, for the patched game
+  launcher and its updater: `../client-patches/launcher/README.md`). The first answers with the
+  SHA-256 and size of the file `/download` hands out (`SRP_DOWNLOAD_FILE`), as
+  three lines of text; the file is read again when its size or time changes,
+  so a new ZIP put in its place is seen without a restart. The second is the
+  page the launcher shows in its window (899 by 335, made for Internet
+  Explorer's engine, no script, nothing from another host): the ten best
+  players by rating among those who were in a match (name, clan tag, level,
+  rating; test bots left out), players online, searching, matches running,
+  accounts, battles fought (how often an account was put in a match, all
+  accounts together), clans, a planned maintenance, the legal notice.
+  Ukrainian for `?lang=ua`, else as every page. Its numbers are counted again
+  at most every 15 seconds. Not on the players' server yet.
 - The admin page (token, path and address as in the table). Tabs:
   money (silver and gold, `+500` / `-100`); account (premium hours, set the
   level, experience, reputation with a faction 1 to 4); item (an item of the

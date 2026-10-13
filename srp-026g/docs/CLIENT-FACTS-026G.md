@@ -509,3 +509,34 @@ The most important open points (each note ends with its own list):
   (LIKELY), score events 24 and 26;
 - whether the original server moved late inputs (0xEF) or discarded them
   (0xF1).
+
+## The launcher (`survarium_launcher.exe`, build 2777)
+
+Proven by reading the exe on 2026-10-13 (`notes/launcher.md`, `notes/launcher_updater.md`), and by running the
+patched one (`../client-patches/launcher/README.md`):
+
+- Started from `game\binaries\x86` it makes no window: it has
+  `survarium_updater.exe copy` copy both to `<install>\temp` and starts the
+  copy. Only a path ending in `\temp\survarium_launcher.exe` gets a window
+  (`run_as_copy` 0x1472A, the constructor's test at 0x14442).
+- What PLAY starts is not in the exe. `file to execute`, `arguments`,
+  `working folder`, `update server` and `launcher` are read from
+  `HKLM\Software\Vostok Games\Survarium` through `registry_key::get_string`
+  (0x14027); the game's version is read out of the file `file to execute`
+  names (the mark `survarium_version_header_mark!!`, then `0.26g0`).
+- PLAY runs `"<exe>" -localization=<english|russian|ukrainian|german|polish>
+  <arguments>` with `CreateProcessW` and the launcher ends. The language is
+  `HKCU\Software\Vostok Games\Survarium`, `language` (0 to 4), changed in
+  the window without a restart.
+- It has no network code. The page is an Internet Explorer control on
+  `http://survarium.com/launcher/v2/survarium/?lang=<code>`, with the local
+  `game\launcher\index-<code>.html` when that fails; buttons run
+  `cmd.exe /c start <url>`.
+- The updater is started with fourteen arguments, the second being the pipe
+  `\\.\pipe\vostok_updater_pipe-Survarium`, which the launcher makes first.
+  A message is a 16-bit length and that many bytes, the first its type; the
+  launcher's table of 25 types has no bounds check (0, 24 and above 25 crash
+  it). PLAY is enabled by updater state 14 alone.
+- A 32-bit exe with "update" in its name and no manifest is taken for an
+  installer by Windows, which asks for administrator rights before it starts
+  (seen 2026-10-13). The original updater's manifest asks for them outright.

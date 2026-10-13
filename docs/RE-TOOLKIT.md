@@ -103,3 +103,17 @@ combat, batteries, traps, chat, queue, presence, time sync, retransmit).
 `e2e_dummy.py` signs in like the stock 0.100b client. They don't speak the
 0.21d or 0.26g protocols; those servers have scripted clients in their own
 test suites.
+
+## The launcher and the updater (0.26g)
+
+`tools/re-kit/launcher/scripts`: the scripts that read `survarium_launcher.exe`
+and `survarium_updater.exe` of build 2777 (no PDB; the 0.21d ones have PDBs,
+and their `dumpbin /DISASM` listings with symbol labels name the functions).
+`lpe.py` (sections, imports), `strings_xref.py` (every string with its
+references and the room after it), `annotate.py` and `show.py` (the listing
+with strings, imports and the names of `names_026g.txt`), `sites.py` (every
+patch site with its original bytes), `relocs.py` (whether a range holds a
+relocation), `rsrc.py` (resources, the string tables by language); `upd_*.py`
+do the same for the updater (message ids, states). The listings themselves
+are made with `dumpbin -DISASM` and are not kept in the repository. What was
+found: `srp-026g/docs/notes/launcher.md` and `launcher_updater.md`.
