@@ -1,0 +1,237 @@
+//! Every sentence the updater shows a player. Each says what went wrong
+//! and, where there is one, what to do about it. English only; the
+//! launcher's own states and its progress bar are in the launcher's
+//! language. A message goes to the launcher as at most 255 ASCII characters,
+//! so the sentences are short and name files by their last parts.
+
+use alloc::format;
+use alloc::string::String;
+
+use updater_logic::url::Url;
+use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL, ERROR_LOCK_VIOLATION,
+    ERROR_SHARING_VIOLATION, ERROR_WRITE_PROTECT,
+};
+use windows_sys::Win32::Networking::WinHttp::{
+    ERROR_WINHTTP_CANNOT_CONNECT, ERROR_WINHTTP_CONNECTION_ERROR, ERROR_WINHTTP_NAME_NOT_RESOLVED,
+    ERROR_WINHTTP_SECURE_CERT_CN_INVALID, ERROR_WINHTTP_SECURE_CERT_DATE_INVALID,
+    ERROR_WINHTTP_SECURE_CERT_REV_FAILED, ERROR_WINHTTP_SECURE_CERT_REVOKED,
+    ERROR_WINHTTP_SECURE_CHANNEL_ERROR, ERROR_WINHTTP_SECURE_FAILURE,
+    ERROR_WINHTTP_SECURE_INVALID_CA, ERROR_WINHTTP_SECURE_INVALID_CERT, ERROR_WINHTTP_TIMEOUT,
+};
+
+use crate::http::HttpError;
+use crate::install::InstallError;
+use crate::win::{self, Code};
+
+/// The title of the updater's own message boxes.
+pub const TITLE: &str = "Skhid updater";
+
+/// The last two parts of a path: enough to know the file, short enough for
+/// the launcher's line.
+fn short(path: &str) -> &str {
+    let mut cut = path.len();
+    for _ in 0..2 {
+        match path[..cut].rfind(['\\', '/']) {
+            Some(at) => cut = at,
+            None => return path,
+        }
+    }
+    &path[cut + 1..]
+}
+
+fn megabytes(bytes: u64) -> u64 {
+    bytes.div_ceil(1 << 20)
+}
+
+pub fn usage() -> String {
+    "The Skhid updater is started by launcher_skhid.exe. To update by hand, start it as: \
+     updater_skhid.exe check"
+        .into()
+}
+
+pub fn wrong_folder(path: &str) -> String {
+    format!(
+        "The updater must be in the game's folder game\\binaries\\x86, beside survarium.exe. \
+         It is here:\n{path}"
+    )
+}
+
+pub fn bad_address(address: &str, source: &str) -> String {
+    format!(
+        "The update server address \"{address}\" ({source}) is not valid. It must be \
+         https://host. Delete updater_skhid.url to use the default server."
+    )
+}
+
+pub fn newer_format(server: &Url) -> String {
+    format!(
+        "{} offers the client files in a newer form than this updater reads. Download the \
+         current files from the server's page and copy them over the game.",
+        server.host
+    )
+}
+
+pub fn archive_too_large(server: &Url) -> String {
+    format!(
+        "{} offers client files larger than this updater takes. Tell the server's operator.",
+        server.host
+    )
+}
+
+pub fn not_the_server(server: &Url, detail: &str) -> String {
+    format!(
+        "The answer from {} is not the update server's ({detail}). A proxy or a Wi-Fi sign-in \
+         page may stand in between. Try again later.",
+        server.host
+    )
+}
+
+pub fn nothing_offered(server: &Url) -> String {
+    format!(
+        "{} offers no client files now. Try again later.",
+        server.host
+    )
+}
+
+pub fn busy(server: &Url) -> String {
+    format!(
+        "{} is busy with other downloads. Try again in a minute.",
+        server.host
+    )
+}
+
+pub fn checksum_mismatch(server: &Url) -> String {
+    format!(
+        "The files downloaded from {} are damaged (the checksum is wrong). Nothing was \
+         installed. Try again.",
+        server.host
+    )
+}
+
+pub fn bad_archive(detail: &str) -> String {
+    format!(
+        "The downloaded archive cannot be used ({detail}). Nothing was installed. Tell the server's operator."
+    )
+}
+
+/// The server could not be asked, but the installed files are whole.
+pub fn offline(reason: &str) -> String {
+    format!("No update check: {reason} The installed files are complete, so you can play.")
+}
+
+/// The server could not be asked, and nothing was ever installed by this
+/// updater (the files were copied by hand).
+pub fn offline_unchecked(reason: &str) -> String {
+    format!("No update check: {reason} The files could not be checked; you can try to play.")
+}
+
+/// The server could not be asked, and a file it installed is gone or changed.
+pub fn offline_damaged(reason: &str, name: &str) -> String {
+    format!(
+        "{} is missing or damaged and cannot be repaired now: {reason}",
+        short(name)
+    )
+}
+
+pub fn restart_failed(reason: &str) -> String {
+    format!(
+        "The launcher was updated but could not be started again ({reason}). Start \
+         launcher_skhid.exe yourself."
+    )
+}
+
+pub fn repairing(name: &str) -> String {
+    format!("repairing {name}")
+}
+
+pub fn http(server: &Url, path: &str, error: &HttpError) -> String {
+    let host = &server.host;
+    match error {
+        HttpError::Network(step, code) => match *code {
+            ERROR_WINHTTP_NAME_NOT_RESOLVED => format!(
+                "The address {host} was not found. Check the internet connection and try again."
+            ),
+            ERROR_WINHTTP_CANNOT_CONNECT => format!(
+                "Cannot connect to {host}. The server may be down, or a firewall blocks \
+                 updater_skhid.exe. Try again later."
+            ),
+            ERROR_WINHTTP_TIMEOUT => format!(
+                "{host} did not answer in time. Check the internet connection and try again."
+            ),
+            ERROR_WINHTTP_CONNECTION_ERROR => {
+                format!("The connection to {host} broke off. Try again.")
+            }
+            ERROR_WINHTTP_SECURE_FAILURE
+            | ERROR_WINHTTP_SECURE_CHANNEL_ERROR
+            | ERROR_WINHTTP_SECURE_CERT_DATE_INVALID
+            | ERROR_WINHTTP_SECURE_CERT_CN_INVALID
+            | ERROR_WINHTTP_SECURE_INVALID_CA
+            | ERROR_WINHTTP_SECURE_INVALID_CERT
+            | ERROR_WINHTTP_SECURE_CERT_REVOKED
+            | ERROR_WINHTTP_SECURE_CERT_REV_FAILED => format!(
+                "No secure connection to {host} (error {code}). Check this PC's date and time, \
+                 and that no program intercepts HTTPS."
+            ),
+            code => format!("Network error {code} ({step}) while asking {host}. Try again later."),
+        },
+        HttpError::Status(status) => {
+            format!("{host} answered {path} with error {status}. Try again later.")
+        }
+        HttpError::TooLarge => format!("The answer of {host} to {path} is too large."),
+        HttpError::Cut { got, expected } => {
+            format!("The download from {host} broke off ({got} of {expected} bytes). Try again.")
+        }
+        HttpError::Stopped => "Stopped.".into(),
+    }
+}
+
+/// What to do about a file error, by its Windows code.
+fn advice(code: Code) -> &'static str {
+    match code {
+        ERROR_ACCESS_DENIED | ERROR_WRITE_PROTECT => {
+            " Move the game out of Program Files or start the launcher as administrator; \
+             an antivirus can block it too."
+        }
+        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION => {
+            " Another program holds the file: close the game and try again."
+        }
+        ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL => " The disk is full.",
+        _ => "",
+    }
+}
+
+pub fn install(error: &InstallError) -> String {
+    match error {
+        InstallError::Folder { path, code } => format!(
+            "Cannot make the folder {}: {} (error {code}).{}",
+            short(path),
+            win::error_text(*code),
+            advice(*code)
+        ),
+        InstallError::DiskFull { path, needed, free } => format!(
+            "Not enough free disk space for the update in {}: {} MB needed, {} MB free.",
+            short(path),
+            megabytes(*needed),
+            megabytes(*free)
+        ),
+        InstallError::Write { path, code } => format!(
+            "Cannot write {}: {} (error {code}).{}",
+            short(path),
+            win::error_text(*code),
+            advice(*code)
+        ),
+        InstallError::ReadBack { path } => format!(
+            "{} did not read back as it was written. An antivirus may have changed it, or the \
+             disk is failing. Nothing was installed.",
+            short(path)
+        ),
+        InstallError::Replace { path, code } => format!(
+            "Cannot replace {}: {} (error {code}). Nothing was changed.{}",
+            short(path),
+            win::error_text(*code),
+            advice(*code)
+        ),
+        InstallError::Stopped => "Stopped.".into(),
+    }
+}

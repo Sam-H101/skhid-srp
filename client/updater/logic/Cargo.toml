@@ -1,0 +1,13 @@
+[package]
+name = "skhid-updater-logic"
+version = "0.1.0"
+edition = "2024"
+
+# Everything the updater does that needs no Windows: the checksum, the ZIP
+# reader, the server's answer, the installed-state file, the launcher's pipe
+# messages. No dependencies; `cargo test` here runs on any host.
+
+[lib]
+name = "updater_logic"
+
+[dependencies]
