@@ -216,6 +216,10 @@ pass. None of it was seen by a client.
 - **Done, staged on 026g.skhid.link (restart when no match runs):** a player who left its match by the menu is queued for another match instead of being sent back to the one it left (match.md §25; `srp-026g/WORK.md`). The same is in the `srp-021d` tree, not deployed.
 - **The owner's to decide:** a match of two whose one player left for good goes on with the other alone to the time limit. Should it end at once, and who has won?
 
+## 0.26g, added 2026-10-12 (evening)
+
+- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team often cannot put its last battery in, and after the try nobody can use a container (match.md §26; 14 of the 19 live matches in which a team had all but one). The fix is two instructions of the client (client_patch.md §3.9, patch revision 3): built, self-tested, its handler run outside the game, not run in a match, not published. Publishing is a new ZIP on the site. A game started through the launcher takes it by itself; a game with a download from before the launcher keeps the old rule until its player takes the ZIP once more (on 2026-10-13 most accounts still signed in with revision 0), and old and new games part at a team's last battery. The login server logs the revision and does nothing else with it.
+
 ## 0.26g, added 2026-10-13: the launcher
 
 - **Built, not deployed, not in the players' download:** the game's launcher

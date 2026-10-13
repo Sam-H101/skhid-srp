@@ -148,6 +148,10 @@ struct Stats {
     /// start that, and keeps the start script and the command line for
     /// those who want them.
     launcher: bool,
+    /// The download's launcher brings the original game itself (0.26g):
+    /// the page tells players to unpack into an empty folder, and names
+    /// the game's own archive only as the way out when that fails.
+    installs_game: bool,
 }
 
 enum Form {
@@ -624,6 +628,7 @@ impl Web {
                     registrations_open: self.store.registrations_open(),
                     v026g: false,
                     launcher: false,
+                    installs_game: false,
                 }),
                 "",
             ),
@@ -1371,6 +1376,7 @@ fn file_size(bytes: u64) -> String {
 fn home(lang: Lang, stats: Stats) -> String {
     let v026g = stats.v026g;
     let with_launcher = stats.launcher;
+    let installs_game = with_launcher && stats.installs_game;
     let connect = CONNECT.get();
     let address = connect.map_or("127.0.0.1:1234", |connect| connect.address.as_str());
     let local = available_download().and_then(|file| std::fs::metadata(file).ok());
@@ -1406,7 +1412,19 @@ fn home(lang: Lang, stats: Stats) -> String {
     };
     // 0.26g: the game itself comes from elsewhere (step one); this server
     // hands out only the files that go over it.
-    let original = if v026g {
+    // With a download whose launcher brings the game there is no such
+    // step: the link is the way out, in the small print of the download.
+    let game_link = connect
+        .and_then(|connect| connect.game_url.as_deref())
+        .map(|url| {
+            format!(
+                "<a href=\"{}\" rel=noopener>{}</a>",
+                escape(url),
+                lang.tr("the original game", "оригінальну гру")
+            )
+        })
+        .unwrap_or_else(|| lang.tr("the original game", "оригінальну гру").to_string());
+    let original = if v026g && !installs_game {
         let link = match connect.and_then(|connect| connect.game_url.as_deref()) {
             Some(url) => format!(
                 "<div class=dl><a class=button href=\"{}\" rel=noopener>{}</a></div>",
@@ -1514,18 +1532,32 @@ fn home(lang: Lang, stats: Stats) -> String {
     let start = if with_launcher {
         format!(
             "{}<p>{}</p><p><small>{}</small></p><details><summary>{}</summary><p>{}</p>{command_line}</details>",
-            lang.tr(
-                "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens: choose your language at its top and press <b>PLAY</b>.",
-                "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер: оберіть мову вгорі його вікна й натисніть <b>PLAY</b>.",
-            ),
+            if installs_game {
+                lang.tr(
+                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens. <b>The first time it gets the game itself</b>: it downloads Survarium 0.26g (2.9 GB, from Google Drive), checks it and installs it, which takes a while; no sign-in is asked for. Then choose your language at the launcher's top and press <b>PLAY</b>.",
+                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер. <b>Першого разу він сам отримує гру</b>: завантажує Survarium 0.26g (2,9 ГБ, з Google Drive), перевіряє та встановлює її, на що потрібен час; входити нікуди не треба. Потім оберіть мову вгорі вікна лаунчера й натисніть <b>PLAY</b>.",
+                )
+            } else {
+                lang.tr(
+                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens: choose your language at its top and press <b>PLAY</b>.",
+                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер: оберіть мову вгорі його вікна й натисніть <b>PLAY</b>.",
+                )
+            },
             lang.tr(
                 "From then on this is all you do: each time it starts, the launcher looks for new files of ours and installs them by itself.",
                 "Відтоді це все, що потрібно робити: під час кожного запуску лаунчер перевіряє, чи є нові наші файли, і сам їх встановлює.",
             ),
-            lang.tr(
-                "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh</code> in that folder; <code>LINUX.txt</code> in the download says what it needs.",
-                "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux виконайте <code>bash Skhid.sh</code> у цій теці; що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
-            ),
+            if installs_game {
+                lang.tr(
+                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh launcher</code> in that folder the first time, so that the game is brought; <code>bash Skhid.sh</code> starts the game alone. <code>LINUX.txt</code> in the download says what it needs.",
+                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux першого разу виконайте в цій теці <code>bash Skhid.sh launcher</code>, щоб було отримано гру; <code>bash Skhid.sh</code> запускає лише гру. Що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                )
+            } else {
+                lang.tr(
+                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh</code> in that folder; <code>LINUX.txt</code> in the download says what it needs.",
+                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux виконайте <code>bash Skhid.sh</code> у цій теці; що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                )
+            },
             lang.tr("Without the launcher", "Без лаунчера"),
             lang.tr(
                 "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game alone, without looking for new files.",
@@ -1630,7 +1662,23 @@ fn home(lang: Lang, stats: Stats) -> String {
             "Можливі помилки та збої. Ваш прогрес, предмети й акаунти можуть зникнути або бути скинуті будь-коли, а сервер можуть зупинити будь-коли. Граючи, ви з цим погоджуєтесь."
         ),
         lang.tr("How to play", "Як зіграти"),
-        if with_launcher {
+        if installs_game {
+            format!(
+                "{}<p><small>{}</small></p><p><small>{}</small></p>",
+                lang.tr(
+                    "Download our files and unpack them into a new, empty folder on a disk with about 10 GB free. <b>You do this only once:</b> the launcher in them gets the game, and later picks up updates on its own.",
+                    "Завантажте наші файли й розпакуйте їх у нову порожню теку на диску, де вільно близько 10 ГБ. <b>Це робиться лише один раз:</b> лаунчер із цих файлів сам отримує гру, а далі сам отримує оновлення."
+                ),
+                lang.tr(
+                    "Already have Survarium 0.26g (build 2777)? Unpack our files into its folder instead, the one that holds the <code>game</code> folder, and say yes when asked to replace files: nothing is downloaded again. Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.",
+                    "Уже маєте Survarium 0.26g (збірка 2777)? Тоді розпакуйте наші файли в її теку, ту, в якій лежить тека <code>game</code>, і погодьтеся замінити файли: нічого не завантажується вдруге. Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється."
+                ),
+                lang.tr(
+                    &format!("If the launcher cannot get the game (it says why), get {game_link} yourself, a .7z archive that 7-Zip opens, unpack it, and unpack our files into its folder as above."),
+                    &format!("Якщо лаунчер не може отримати гру (він скаже чому), отримайте {game_link} самі (архів .7z, відкривається 7-Zip), розпакуйте її та розпакуйте наші файли в її теку, як сказано вище.")
+                ),
+            )
+        } else if with_launcher {
             lang.tr(
                 "Download our files and unpack them into the game's folder: the one that holds the <code>game</code> folder. Say yes when asked to replace files. <b>You do this only once:</b> later the launcher picks up updates on its own.<p><small>Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.</small></p>",
                 "Завантажте наші файли й розпакуйте їх у теку гри: ту, в якій лежить тека <code>game</code>. Погодьтеся замінити файли. <b>Це робиться лише один раз:</b> далі лаунчер сам отримує оновлення.<p><small>Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється.</small></p>"
@@ -2450,6 +2498,7 @@ mod tests {
             registrations_open: true,
             v026g: true,
             launcher,
+            installs_game: false,
         };
         // With the launcher: one file to start, nothing to type, and the
         // download is needed once. The script and the command line are
@@ -2487,6 +2536,66 @@ mod tests {
             assert_eq!(steps.matches("<details>").count(), 1);
             assert_eq!(steps.matches("</details>").count(), 1);
         }
+        // A download whose launcher brings the game: no step that sends a
+        // player for the game first; an empty folder, the room it needs, and
+        // that the first start downloads. The game's own archive is named
+        // only as the way out, and the folder of a game a player has already.
+        for (lang, empty, first, have, way_out) in [
+            (
+                Lang::En,
+                "into a new, empty folder on a disk with about 10 GB free",
+                "The first time it gets the game itself",
+                "Already have Survarium 0.26g",
+                "If the launcher cannot get the game",
+            ),
+            (
+                Lang::Uk,
+                "у нову порожню теку на диску, де вільно близько 10 ГБ",
+                "Першого разу він сам отримує гру",
+                "Уже маєте Survarium 0.26g",
+                "Якщо лаунчер не може отримати гру",
+            ),
+        ] {
+            let page = home(
+                lang,
+                Stats {
+                    installs_game: true,
+                    ..stats(true)
+                },
+            );
+            let steps = page.split("<ol>").nth(1).unwrap();
+            let steps = steps.split("</ol>").next().unwrap();
+            // The first step is the download, not the game.
+            let first_step = steps.split("</li>").next().unwrap();
+            assert!(first_step.contains(empty), "{first_step}");
+            assert!(first_step.contains("class=dl"), "{first_step}");
+            assert!(!steps.contains("Get the original Survarium"), "{steps}");
+            assert!(!steps.contains("Отримайте оригінальну"), "{steps}");
+            for said in [empty, first, have, way_out, "2.9", "Google Drive"] {
+                let said = if lang == Lang::Uk && said == "2.9" {
+                    "2,9"
+                } else {
+                    said
+                };
+                assert!(steps.contains(said), "{said}: {steps}");
+            }
+            assert!(steps.contains("<code>Skhid.bat</code>"), "{steps}");
+            assert!(
+                steps.contains("<code>bash Skhid.sh launcher</code>"),
+                "{steps}"
+            );
+            assert_eq!(steps.matches("<details>").count(), 1);
+        }
+        // An archive with the extractor and no launcher is not such a one.
+        let page = home(
+            Lang::En,
+            Stats {
+                installs_game: true,
+                ..stats(false)
+            },
+        );
+        assert!(page.contains("Get the original Survarium"));
+        assert!(!page.contains("empty folder"));
         // Without it: the page as it was.
         let page = home(Lang::En, stats(false));
         assert!(!page.contains("launcher_skhid.exe"));

@@ -11,7 +11,8 @@
 > real clients play on it (SRP-026G.md); a fact that live play confirmed or
 > corrected says so, and `srp-026g/WORK.md` has the day's findings. The
 > players' exe is the full patch (section build, 50 ms hash interval); its
-> upload code runs in every live match.
+> upload code runs in every live match. It does not have the battery rule
+> patch of that evening yet (the table of patch sites below).
 
 Addresses are virtual addresses in `survarium.exe` 0.26g (image base
 0x10000; `.text` VA 0x11000 = file 0x400, so file offset = VA − 0x10C00 in
@@ -484,6 +485,8 @@ MATCH-SYNC-026G.md.
 | Default hash interval 100 → 50 ms | 0x27CC4F (the byte at 0x27CC53, file 0x26C053) | `C7 44 24 18 64 00 00 00` → `… 32 …` | full | PROVEN bytes; effect not tried live |
 | Minimum video-memory check | 0x106411 (file 0xF5811) | `73 0F` → `EB 0F` | full | PROVEN bytes (`client_patch.md` §3.7) |
 | Patch revision in the sign-in's version field (byte 7) | 0x380862 (file 0x36FC62), in `sign_in_on_connected` 0x3807D0 | `8A 0D 9E AE 9D 00` → `C6 44 24 27 01 90`; the relocation at 0x380864 → type 0 | full | PROVEN bytes (`client_patch.md` §6); run with a client 2026-10-12 (logged as revision 1) |
+| Battery rule: an event after the completion is counted | 0x313A62 (file 0x302E62), in the container event handler 0x313A50 | `0F 85 D3 00 00 00` → six `90` | full, revision 3 | PROVEN bytes; the handler run outside the game (`client_patch.md` §3.9); not run in a match |
+| Battery rule: the containers stay usable | 0x313B34 (file 0x302F34), same handler | `C6 81 60 01 00 00 00` → seven `90` | full, revision 3 | PROVEN bytes; the handler run outside the game (`client_patch.md` §3.9); not run in a match |
 | First-sync hook, in `on_match_ready` 0x27AA20 | 0x27AEA1 | `8B 9B 48 1C 1F 00` → `E9 rel32 90` | full | PROVEN |
 | Upload-request hook, 0xF6 case | 0x27A505 | `80 3D 2C D3 F1 01 00` → `E9 rel32 90 90` | full | PROVEN |
 | Upload code, section build (default) | new section `.srp`, RVA 0xA415000, VA 0xA425000, file 0xC4AA00, 0x200 bytes | 8th section; the Authenticode blob moves to 0xC4AC00 | `--cave=section` | PROVEN by the self-test; whether the client minds an 8th section: LIKELY harmless |
@@ -496,6 +499,14 @@ with the video-memory check and the patch revision from 18:43 UTC that
 day, sha256 `3c7d7bf0…9c9d`, and has since 21:10 UTC the one that also
 holds the login address `skhid.link:1234`, patch revision 2, sha256
 `30e928dd…4883`), the full hash-mismatch build.
+
+The two battery rule rows are patch revision 3 (`client_patch.md` §3.9;
+why: `match.md` §26, the tenth battery of modes 2 and 3 cannot be put in).
+The players' download holds revision 2 until it is made again. Made as the
+download is (`--server=skhid.link:1234`), the revision 3 section build is
+sha256 `ac947abd…6d7b`, and differs from the download's exe
+(`30e928dd…4883`) in those 13 bytes, the revision byte and the PE checksum
+only.
 
 ## Not proven against a client yet
 

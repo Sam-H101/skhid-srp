@@ -6,6 +6,7 @@
 extern crate alloc;
 
 pub mod args;
+pub mod game;
 pub mod inflate;
 pub mod manifest;
 pub mod pipe;

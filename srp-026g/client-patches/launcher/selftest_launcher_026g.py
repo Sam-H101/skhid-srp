@@ -17,7 +17,8 @@ Checks:
  5. no relocation touches a changed instruction (but the two disabled ones);
  6. no address of the game's old sites is left in the file;
  7. with --nasm (or NASM in the environment): launcher_values_026g.asm
-    assembles to the checked-in .bin byte for byte.
+    assembles to the checked-in .bin byte for byte;
+ 8. all original native artwork and localized text resources are unchanged.
 """
 
 import hashlib
@@ -170,6 +171,16 @@ def main():
         check(7, assembled == code, f"launcher_values_026g.asm assembles to the checked-in .bin ({len(code)} bytes)")
     else:
         print("skip 7. no --nasm: the .bin was not assembled again")
+
+    # The page skin is separate from the native window's bitmaps and text.
+    # Compare the whole resource section, including every language and all
+    # normal/hover/pressed/disabled button and progress-bar images.
+    resource = next(section for section in old_headers.sections(original)
+                    if section[0].rstrip(b"\0") == b".rsrc")
+    resource_at, resource_size = resource[3], resource[4]
+    check(8, original[resource_at:resource_at + resource_size]
+          == patched[resource_at:resource_at + resource_size],
+          f"all {resource_size} bytes of the native window's artwork and text resources are unchanged")
 
     print(f"result: {len(patched)} bytes, sha256 {hashlib.sha256(patched).hexdigest()}")
     if failures:

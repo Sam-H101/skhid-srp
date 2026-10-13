@@ -11,14 +11,15 @@
 //! pipe, in the messages of the original updater, so the launcher's window
 //! shows it as it always did.
 //!
-//! It contacts one host only, the one it was built for (or the one named in
-//! `updater_skhid.url` beside it), over HTTPS. No torrent, no listening
+//! It asks its configured server for Skhid updates. Missing original game
+//! files come from a separate HTTPS mirror with compiled-in SHA-256 pins. No torrent, no listening
 //! port, no registry, no crash upload, no administrator rights.
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod game;
 mod http;
 mod install;
 mod log;
@@ -395,10 +396,20 @@ enum Done {
 }
 
 fn update(session: &mut Session, layout: &Layout) -> Done {
+    let _lock = match win::install_lock(&layout.exe_dir) {
+        Ok(lock) => lock,
+        Err(code) => {
+            return Done::Failed(format!(
+                "Cannot lock the installation folder (another updater may be running): {}.",
+                win::error_text(code)
+            ));
+        }
+    };
     let server = match server(layout) {
         Ok(server) => server,
         Err(message) => return Done::Failed(message),
     };
+    game::sweep(layout);
     let installed = read_installed(layout);
     install::clean_up(
         layout,
@@ -410,6 +421,11 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Ok(manifest) => manifest,
         Err(None) => return Done::Stopped,
         Err(Some(message)) => {
+            if !game::present(layout) {
+                return Done::Failed(format!(
+                    "The original game is not installed and the update server cannot be reached. {message}"
+                ));
+            }
             // No answer. What is installed and whole may still be played,
             // and so may files this updater never installed (copied by
             // hand, the first start): it knows nothing against them. Files
@@ -426,7 +442,37 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
             };
         }
     };
-    let Some(reason) = why_install(installed.as_ref(), &manifest, |file| look(layout, file)) else {
+    // The original game is unpacked with 7zr.exe, a file of the Skhid
+    // archive. With that file in place the game comes first, as a player's
+    // own copy of it would be there first. Without it (deleted, damaged, the
+    // archive only half unpacked) the Skhid files come first, which brings
+    // it, and the game after them.
+    let game_after = !game::present(layout) && !game::extractor_ready(layout);
+    let game_added = if game_after {
+        log!("the original game is missing and so is its extractor: the Skhid files first");
+        false
+    } else {
+        match game::ensure(session, layout) {
+            Ok(added) => added,
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
+    };
+    let reason = if game_added {
+        Some(Reason::NothingInstalled)
+    } else {
+        why_install(installed.as_ref(), &manifest, |file| look(layout, file))
+    };
+    let Some(reason) = reason else {
+        if game_after {
+            // The Skhid files are the server's and the extractor is not
+            // among them: this says so.
+            return match game::ensure(session, layout) {
+                Ok(_) => Done::Installed { restart: false },
+                Err(None) => Done::Stopped,
+                Err(Some(message)) => Done::Failed(message),
+            };
+        }
         log!("up to date");
         return Done::UpToDate;
     };
@@ -529,6 +575,15 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         outcome.written.len(),
         files.len()
     );
+    // The game that waited for its extractor. When the launcher or this
+    // program was replaced, the start that follows goes on with it.
+    if game_after && !outcome.restart {
+        match game::ensure(session, layout) {
+            Ok(_) => {}
+            Err(None) => return Done::Stopped,
+            Err(Some(message)) => return Done::Failed(message),
+        }
+    }
     Done::Installed {
         restart: outcome.restart,
     }

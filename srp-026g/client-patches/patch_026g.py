@@ -68,6 +68,19 @@ Patches:
   says 0. REVISION is raised in the change that makes a full build
   something else for the game; a server can only tell two clients apart
   by it;
+- the battery rule of modes 2 and 3 (gather_victory_items_rule_core's
+  container event handler 0x313A50): two instructions become nops. When a
+  team's count reaches the number of batteries the handler stores the
+  completion time (+0x15C) and clears the "containers can be used" byte
+  (+0x160); from then on it counts no event (`jnz` at 0x313A62) and no
+  container can be used (0x31CB16). Neither field is in the rule's
+  serialize/deserialize, so a rollback takes the tenth battery out of the
+  container again and leaves both as they were: the replay of the same
+  tick cannot put it in, and nobody can use a container for the rest of
+  the match (9 of 9 live matches in which a team had nine; match.md
+  section 26). Without the two instructions every event is counted and
+  the containers stay usable, so the replay ends as the first run did.
+  The match's end is the server's (it reads the points);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -139,8 +152,20 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # The base relocation of the address (0x380864) is disabled with the rest.
 # 0: an exe without this patch (the download of 2026-10-12). 1: the patches
 # above and the revision field. 2: adds the optional embedded-server patch.
-REVISION = 2
+# 3: adds the battery rule patch below, the first that changes what a match
+# computes: a game of revision 3 and an older one part at a team's last
+# battery (match.md section 26).
+REVISION = 3
 REVISION_SITE = (0x380862, bytes.fromhex("8a0d9eae9d00"), bytes([0xC6, 0x44, 0x24, 0x27, REVISION, 0x90]))
+
+# gather_victory_items_rule_core's container event handler 0x313A50:
+# `cmp dword [ecx+15Ch],-1` / `jnz 313B3Bh` (an event after the completion
+# is not counted) -> the jnz becomes nops;
+GATHER_EVENTS = (0x313A62, bytes.fromhex("0f85d3000000"), b"\x90" * 6)
+# `mov [ecx+15Ch],edx` / `mov byte [ecx+160h],0` / `ret 0Ch` (at the
+# completion no container can be used any more) -> the mov byte becomes nops.
+GATHER_LOCK = (0x313B34, bytes.fromhex("c6816001000000"), b"\x90" * 7)
+GATHER = (GATHER_EVENTS, GATHER_LOCK)
 
 # game_world_core::on_hash_mismatch, 0x47B bytes of code + 5 int3 of padding
 HASH_MISMATCH_VA, HASH_MISMATCH_SIZE, HASH_MISMATCH_REGION = 0x325A60, 0x47B, 0x480
@@ -345,6 +370,9 @@ def build(original, mode, code=None, server=None):
         patch(data, va, expected, hook)
         rewritten.append((va, va + len(expected)))
         cave += stub + server.encode("ascii") + b"\0"
+    for site in GATHER:
+        patch(data, *site)
+        rewritten.append((site[0], site[0] + len(site[1])))
     if mode == "hash-mismatch":
         if len(cave) > HASH_MISMATCH_SIZE:
             sys.exit(f"the cave code is {len(cave)} bytes; {HASH_MISMATCH_SIZE} fit")
@@ -379,7 +407,7 @@ def build(original, mode, code=None, server=None):
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
     return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, "
-                  f"patch revision {REVISION}, "
+                  f"patch revision {REVISION}, battery rule, "
                   f"{upload_size} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", default login server {server}" if server is not None else ""))

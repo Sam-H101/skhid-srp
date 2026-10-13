@@ -224,6 +224,9 @@ class UpdaterTest(unittest.TestCase):
         self.x86 = os.path.join(self.top, X86)
         os.makedirs(self.x86)
         shutil.copy(UPDATER, os.path.join(self.x86, "updater_skhid.exe"))
+        # These scenarios exercise overlay updates over an existing game.
+        self.write("game/resources.db", b"existing game resources")
+        self.write(f"{X86}/survarium.exe", b"existing original game")
         self.site = Site()
         self.write(f"{X86}/updater_skhid.url", self.site.url.encode())
         self.launchers = []

@@ -87,6 +87,89 @@ torrent" and the torrent port, are of the old updater). PROJECT WEBSITE
 opens `<site>/?lang=<code>` and SHOP opens `<site>/exchange?lang=<code>` in
 the player's browser.
 
+## Matching the original design
+
+The merged PR #23 kept the native window resources but approximated the
+embedded page. It replaced `back.jpg` with a flat background, added borders,
+used 24-pixel opaque captions instead of the original 32-pixel shadow strips,
+and placed the second and third tiles one pixel too low.
+
+The online, loading, and offline pages now share
+`../../servers/web-server/launcher-skin/style.css` and the original, unmodified
+`back.jpg` and `shadow.png`. Their provenance and SHA-256 hashes are beside
+them in `launcher-skin/README.txt`. The shared assets live under `servers/`
+so they are included by the existing Docker build too. Both renderers embed
+the images; the ZIP still contains ten self-contained HTML pages and needs
+no new image files or HTTP routes.
+
+The reference is the game's `game/launcher/index-en.html` and
+`public/style.css`, not a recreated screenshot. Measured at 100% scale:
+
+| Element | x, y | width × height |
+|---|---|---|
+| Browser page | 0, 0 | 899 × 335 |
+| Left panel | 15, 10 | 456 × 314 |
+| First tile | 479, 11 | 404 × 98 |
+| Second tile | 479, 118 | 404 × 98 |
+| Third tile | 479, 226 | 404 × 98 |
+| Tile captions | 479, 77 / 184 / 292 | 404 × 32 |
+
+Skhid's rankings, counts, maintenance, and legal text replace the old news.
+A Discord link at the right of the legal caption opens the project's existing
+invite (`https://discord.gg/Pxa4prXfwu`, also used by BugTrap) in the player's
+browser. It is available on the online, loading, and offline pages. The link
+markup is shared in `launcher-skin/discord-link.html`; no Discord content is
+loaded into the launcher.
+The removed obsolete controls described above remain removed. The native
+window, progress bar, and button artwork remain the game's own; the binary
+self-test checks the entire 4,468,736-byte resource section unchanged.
+
+The fixed-layout rankings table truncates long player/clan names with an
+ellipsis, keeping level/rating columns within the panel. Caption strips use
+the original white, bold, uppercase Arial/Tahoma text, padding, and image.
+Amber remains reserved for the Skhid headings/numbers and maintenance text.
+
+Verification, 2026-10-13: all 18 rendered page states matched the original
+panel/caption rectangles and skin pixels in Firefox at 899 × 335. For the
+pixel comparison only, news and Skhid content are removed and all three
+captions receive the same text; the original artwork, CSS geometry, and
+caption typography remain. The actual pages are also captured and checked
+for content overlapping captions or escaping the viewport. This covers all
+ten local pages plus English/Ukrainian online pages with ten long names,
+an empty board, upcoming maintenance, and downtime with the test badge.
+It is a browser comparison, not a new Windows/MSHTML runtime test.
+
+The page uses CSS supported by the original embedded browser. Both data URLs
+are below the [IE8 limit of 32,768 characters](https://learn.microsoft.com/en-us/previous-versions/cc848897(v=vs.85));
+the Rust regression test decodes them and checks their bytes and length.
+
+To repeat the comparison (Python 3, Node 22+, Firefox, Rust):
+
+```sh
+# From srp-026g:
+LAUNCHER_VISUAL_DIR=/tmp/launcher-visual cargo test -p web-server export_visual_fixtures -- --ignored
+python3 client-patches/launcher/launcher_pages.py /tmp/launcher-visual
+# Run Firefox separately with a fresh profile:
+mkdir -p /tmp/launcher-firefox
+firefox --headless --no-remote --profile /tmp/launcher-firefox --remote-debugging-port 9448
+# In another terminal, from srp-026g:
+node client-patches/launcher/check_visual.mjs /path/to/game/launcher /tmp/launcher-visual
+```
+
+The comparison writes `comparison.json`, the original and normalized skin
+screenshots, and screenshots of all eighteen real pages into the fixture
+folder. The optional final argument selects a different Firefox debug port.
+
+Captured comparison (899 × 335 Firefox page renders, not native window captures):
+[original game](../../docs/images/launcher-look/original.png),
+[merged PR #23](../../docs/images/launcher-look/merged.png),
+[patched page with Discord](../../docs/images/launcher-look/patched.png),
+[Ukrainian maintenance](../../docs/images/launcher-look/maintenance-uk.png),
+[Ukrainian offline](../../docs/images/launcher-look/offline-uk.png), and
+[measurements](../../docs/images/launcher-look/comparison.json).
+The merged/patched screenshots use the same deliberately long test names;
+they do not show live player data.
+
 ## How an update works
 
 The server (`servers/web-server`, the 0.26g page):
@@ -105,6 +188,18 @@ The server (`servers/web-server`, the 0.26g page):
 - `GET /launcher/v2/<product>/?lang=<en|ru|ua|de|pl>` is the page.
 
 The updater (`client/updater`):
+
+On a new installation, unpack the Skhid ZIP into an empty folder and start
+`Skhid.bat`. After contacting the update server, the updater downloads the
+original 0.26g game from the Google Drive mirror if `survarium.exe` or
+`resources.db` is missing. It unpacks it with `7zr.exe`, 7-Zip's standalone
+extractor, which is a file of the Skhid ZIP beside the updater and is not
+downloaded. The archive and the extractor both have
+compiled-in SHA-256 pins; neither is used until verified. Extraction happens
+in a fresh staging folder, and the extracted original exe is checked against
+its known SHA-256 too. The updater adds missing original files and then runs
+the overlay update below. Allow about 10 GB free. Mirror configuration and
+verification details: [updater README](../../../client/updater/README.md#original-game-download-and-verification).
 
 1. Reads `updater_skhid.url` beside it (else the address it was built with)
    and asks `/api/client-files`. HTTPS only, through Windows' own WinHTTP;
@@ -150,7 +245,8 @@ to `game\binaries\x86\updater_skhid.log`. Nothing is half installed.
 
 | What happened | What the player gets |
 |---|---|
-| The server cannot be reached (no internet, server down, firewall), three tries | The reason ("Cannot connect to skhid.link. The server may be down, or a firewall blocks updater_skhid.exe"), then PLAY is enabled if the installed files are complete, or were never checked (first start) |
+| The server cannot be reached (no internet, server down, firewall), three tries | The reason ("Cannot connect to skhid.link. The server may be down, or a firewall blocks updater_skhid.exe"), then PLAY is enabled if the original game is present and the installed Skhid files are complete, or were never checked (first start) |
+| The original game is missing and Drive returns an error, a sign-in page, a redirect or bytes that do not match the pinned SHA-256 | Installation stops, PLAY stays off, and no files from that download are extracted or run. Retry or configure another mirror; verification cannot be skipped |
 | ...and a file the updater installed is missing or damaged | "x86/survarium_skhid.exe is missing or damaged and cannot be repaired now: <reason>", status "Error", PLAY stays off |
 | The answer is not the server's (a Wi-Fi sign-in page, a proxy) | "The answer from <host> is not the update server's ..." |
 | The server has no ZIP to offer | "<host> offers no client files now" |

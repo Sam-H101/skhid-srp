@@ -84,6 +84,29 @@ pub fn get(
     limit: usize,
     progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
 ) -> Result<Vec<u8>, HttpError> {
+    let mut body = Vec::new();
+    get_stream(
+        url,
+        path,
+        limit as u64,
+        &mut |chunk| {
+            body.extend_from_slice(chunk);
+            Ok(())
+        },
+        progress,
+    )?;
+    Ok(body)
+}
+
+/// A bounded download to a sink; even multi-gigabyte files use one 64 KiB buffer.
+/// Redirects and cookies remain disabled, including for the game mirror.
+pub fn get_stream(
+    url: &Url,
+    path: &str,
+    limit: u64,
+    sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<(), HttpError> {
     let agent = wide("SkhidUpdater/1");
     let mut session = unsafe {
         WinHttpOpen(
@@ -147,16 +170,20 @@ pub fn get(
     )?;
     // The answer is this server's own or nothing: no redirect is followed,
     // and no cookie is kept or sent.
-    set_option(
+    if !set_option(
         &request,
         WINHTTP_OPTION_REDIRECT_POLICY,
         WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
-    );
-    set_option(
+    ) {
+        return Err(HttpError::Network("disable redirects", last_error()));
+    }
+    if !set_option(
         &request,
         WINHTTP_OPTION_DISABLE_FEATURE,
         WINHTTP_DISABLE_COOKIES,
-    );
+    ) {
+        return Err(HttpError::Network("disable cookies", last_error()));
+    }
     if unsafe { WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0) } == 0 {
         return Err(HttpError::Network("send", last_error()));
     }
@@ -169,16 +196,13 @@ pub fn get(
         return Err(HttpError::Status(status));
     }
     let expected = number_header(&request, WINHTTP_QUERY_CONTENT_LENGTH).map(u64::from);
-    if expected.is_some_and(|expected| expected > limit as u64) {
+    if expected.is_some_and(|expected| expected > limit) {
         return Err(HttpError::TooLarge);
     }
-    let mut body: Vec<u8> = Vec::new();
-    if let Some(expected) = expected {
-        body.reserve_exact(expected as usize);
-    }
+    let mut received = 0_u64;
     let mut buffer = alloc::vec![0_u8; 64 * 1024];
     loop {
-        if !progress(body.len() as u64, expected) {
+        if !progress(received, expected) {
             return Err(HttpError::Stopped);
         }
         let mut read = 0_u32;
@@ -196,19 +220,22 @@ pub fn get(
         if read == 0 {
             break;
         }
-        if body.len() + read as usize > limit {
+        if received + u64::from(read) > limit {
             return Err(HttpError::TooLarge);
         }
-        body.extend_from_slice(&buffer[..read as usize]);
+        sink(&buffer[..read as usize])?;
+        received += u64::from(read);
     }
     if let Some(expected) = expected
-        && body.len() as u64 != expected
+        && received != expected
     {
         return Err(HttpError::Cut {
-            got: body.len() as u64,
+            got: received,
             expected,
         });
     }
-    progress(body.len() as u64, expected);
-    Ok(body)
+    if !progress(received, expected) {
+        return Err(HttpError::Stopped);
+    }
+    Ok(())
 }

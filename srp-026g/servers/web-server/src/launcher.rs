@@ -7,7 +7,7 @@
 //!   place of the original game's news page: the best players, what the
 //!   server counts, and the legal notice. It is made for the launcher's
 //!   embedded browser (Internet Explorer's engine, 899 by 335 pixels): fixed
-//!   sizes, old CSS only, no script, no picture, nothing from another host.
+//!   sizes, old CSS only, no script, and embedded original background artwork.
 
 use std::fs::File;
 use std::io::Read;
@@ -22,6 +22,8 @@ use crate::{CONNECT, ContentType, Game, Lang, Response, available_download, esca
 
 /// The players the page lists.
 const TOP_PLAYERS: usize = 10;
+/// The same invite as the crash reporter; opened externally only on click.
+const DISCORD_LINK: &str = include_str!("../launcher-skin/discord-link.html");
 /// How long the page's numbers are kept before they are counted again, so
 /// that asking often costs nothing.
 const BOARD_AGE: Duration = Duration::from_secs(15);
@@ -30,6 +32,12 @@ const BOARD_AGE: Duration = Duration::from_secs(15);
 /// its files' names as they are, in each file's header and in the list at
 /// its end.
 const LAUNCHER_NAME: &[u8] = b"game/binaries/x86/launcher_skhid.exe";
+
+/// The name by which an archive is known to install the original game
+/// itself: the extractor its updater unpacks that game with
+/// (`client/updater`). An archive from before it has an updater that
+/// only keeps our files current.
+const EXTRACTOR_NAME: &[u8] = b"game/binaries/x86/7zr.exe";
 
 /// What was read of the download file the last time: it is read again only
 /// when the file's size or time changes (a new archive is put in its place
@@ -42,30 +50,33 @@ struct Checked {
     /// The archive holds the launcher, so the site's page tells players to
     /// start that.
     launcher: bool,
+    /// It holds the extractor too: its updater brings the original game,
+    /// so the page tells players to unpack into an empty folder.
+    extractor: bool,
 }
 
 static CHECKED: Mutex<Option<Checked>> = Mutex::new(None);
 static BOARD: Mutex<Option<(Instant, Board)>> = Mutex::new(None);
 
-/// The file's SHA-256, and whether [`LAUNCHER_NAME`] is in it, in one read.
-fn read_through(file: &PathBuf) -> Option<(String, bool)> {
+/// The file's SHA-256, and whether [`LAUNCHER_NAME`] and [`EXTRACTOR_NAME`]
+/// are in it, in one read.
+fn read_through(file: &PathBuf) -> Option<(String, bool, bool)> {
     let mut open = File::open(file).ok()?;
     let mut hash = openssl::sha::Sha256::new();
     // The end of what was read before stays in front of each new piece, so
     // a name that lies across two pieces is found too.
-    let keep = LAUNCHER_NAME.len() - 1;
+    let keep = LAUNCHER_NAME.len().max(EXTRACTOR_NAME.len()) - 1;
     let mut buffer = vec![0_u8; keep + 64 * 1024];
-    let (mut kept, mut launcher) = (0, false);
+    let (mut kept, mut launcher, mut extractor) = (0, false, false);
+    let holds = |read: &[u8], name: &[u8]| read.windows(name.len()).any(|part| part == name);
     loop {
         match open.read(&mut buffer[kept..]) {
             Ok(0) => break,
             Ok(read) => {
                 hash.update(&buffer[kept..kept + read]);
                 let filled = kept + read;
-                launcher = launcher
-                    || buffer[..filled]
-                        .windows(LAUNCHER_NAME.len())
-                        .any(|part| part == LAUNCHER_NAME);
+                launcher = launcher || holds(&buffer[..filled], LAUNCHER_NAME);
+                extractor = extractor || holds(&buffer[..filled], EXTRACTOR_NAME);
                 kept = filled.min(keep);
                 buffer.copy_within(filled - kept..filled, 0);
             }
@@ -77,7 +88,7 @@ fn read_through(file: &PathBuf) -> Option<(String, bool)> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Some((sha256, launcher))
+    Some((sha256, launcher, extractor))
 }
 
 /// What the download file is, if there is one.
@@ -85,6 +96,7 @@ struct Offered {
     sha256: String,
     size: u64,
     launcher: bool,
+    extractor: bool,
 }
 
 fn offered(file: &PathBuf) -> Option<Offered> {
@@ -97,10 +109,11 @@ fn offered(file: &PathBuf) -> Option<Offered> {
                 sha256: known.sha256.clone(),
                 size,
                 launcher: known.launcher,
+                extractor: known.extractor,
             });
         }
     }
-    let (sha256, launcher) = read_through(file)?;
+    let (sha256, launcher, extractor) = read_through(file)?;
     // The file may have been replaced while it was read: what is said must
     // be of one file.
     let after = std::fs::metadata(file).ok()?;
@@ -113,11 +126,13 @@ fn offered(file: &PathBuf) -> Option<Offered> {
         modified,
         sha256: sha256.clone(),
         launcher,
+        extractor,
     });
     Some(Offered {
         sha256,
         size,
         launcher,
+        extractor,
     })
 }
 
@@ -128,6 +143,16 @@ pub(super) fn offers_launcher() -> bool {
     available_download()
         .and_then(offered)
         .is_some_and(|offered| offered.launcher)
+}
+
+/// Whether the archive `/download` hands out brings the original game
+/// itself: it holds the launcher, whose updater does that, and the
+/// extractor the updater needs for it. The home page then tells players to
+/// unpack into an empty folder, and else to get the game first.
+pub(super) fn offers_game_install() -> bool {
+    available_download()
+        .and_then(offered)
+        .is_some_and(|offered| offered.launcher && offered.extractor)
 }
 
 fn text(status: &'static str, body: String) -> Response {
@@ -316,14 +341,16 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
     format!(
         "<!DOCTYPE html><html lang={code}><head><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\
          <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\">\
-         <title>Skhid</title><style type=\"text/css\">{STYLE}</style></head><body>\
+         <title>Skhid</title><style type=\"text/css\">{style}</style></head><body>\
          <div id=container>\
          <div id=left><h1>{top}{badge}</h1>{table}<div class=cap>{server}</div></div>\
          <div id=right>\
-         <div class=tile>{now}<div class=\"{status_class}\">{status}</div></div>\
-         <div class=tile>{totals}<div class=cap>{since}</div></div>\
-         <div class=tile><p class=legal>{legal}</p><div class=cap>{notice}</div></div>\
+         <div class=\"tile first\">{now}<div class=\"{status_class}\">{status}</div></div>\
+         <div class=\"tile second\">{totals}<div class=cap>{since}</div></div>\
+         <div class=\"tile third\"><p class=legal>{legal}</p><div class=cap>{discord}{notice}</div></div>\
          </div></div></body></html>",
+        style = style(),
+        discord = DISCORD_LINK.trim(),
         code = lang.code(),
         top = lang.tr("Top 10 players", "Топ-10 гравців"),
         server = lang.tr(
@@ -336,38 +363,28 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
     )
 }
 
-/// The original page's measures (`game/launcher/public/style.css`): a
-/// container of 899 by 335, a left panel of 456 by 314 at 15, 10, and three
-/// tiles of 404 by 98 on the right, each with a caption strip at its foot.
-/// Its colours: black panels, grey text, white captions, the amber of the
-/// maintenance line.
-const STYLE: &str = "*{padding:0;margin:0;outline:0;border:0}\
-html,body{background:#000;font-size:13px;color:#b3b3b3;font-family:Arial,Tahoma,sans-serif;overflow:hidden}\
-#container{position:relative;width:899px;height:335px;overflow:hidden;background:#161514}\
-#left{float:left;position:relative;width:454px;height:312px;margin:10px 0 0 15px;background:#000;border:1px solid #3b3832;overflow:hidden}\
-#right{float:right;width:404px;padding:4px 16px 0 0}\
-.tile{position:relative;width:402px;height:96px;margin:7px 0 10px 0;background:#000;border:1px solid #3b3832;overflow:hidden}\
-h1{height:30px;line-height:30px;padding:0 13px;font-size:13px;font-weight:bold;color:#e7a300;text-transform:uppercase;background:#1b1a18;border-bottom:1px solid #3b3832}\
-h1 em{float:right;font-style:normal;color:#fff;background:#b53a26;line-height:16px;padding:0 6px;margin-top:7px;font-size:11px}\
-table{border-collapse:collapse}\
-#left table{width:454px}\
-#left th,#left td{height:22px;line-height:22px;font-size:12px;text-align:left;white-space:nowrap;overflow:hidden}\
-#left th{height:20px;line-height:20px;font-size:10px;font-weight:normal;color:#77746c;text-transform:uppercase}\
-#left tr.o td{background:#0d0d0c}\
-.n{width:30px;padding-left:13px;color:#77746c}\
-.p{color:#fff}\
-.p i{font-style:normal;color:#e7a300}\
-.l{width:60px}\
-.r{width:70px;color:#e7a300;font-weight:bold}\
-.none{padding:110px 13px 0 13px;text-align:center;color:#939392}\
-.cap{position:absolute;left:0;bottom:0;width:100%;height:23px;line-height:23px;text-indent:13px;background:#1b1a18;border-top:1px solid #3b3832;font-weight:bold;color:#fff;text-transform:uppercase;white-space:nowrap;overflow:hidden}\
-.cap i{font-style:normal;text-transform:none}\
-.warn{color:#e7a300}\
-.nums{width:402px;margin-top:11px}\
-.nums td{width:134px;text-align:center;vertical-align:top}\
-.nums b{display:block;font-size:26px;line-height:32px;color:#fff;font-weight:bold}\
-.nums span{display:block;font-size:10px;line-height:14px;color:#939392;text-transform:uppercase}\
-.legal{padding:7px 13px 0 13px;font-size:11px;line-height:13px;color:#939392}";
+/// The same skin as the loading/offline pages. Keep the original artwork
+/// inline: this also works at every launcher URL, with no extra requests.
+fn style() -> &'static str {
+    static STYLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STYLE.get_or_init(|| {
+        include_str!("../launcher-skin/style.css")
+            .replace(
+                "@BACKGROUND@",
+                &format!(
+                    "data:image/jpeg;base64,{}",
+                    openssl::base64::encode_block(include_bytes!("../launcher-skin/back.jpg"))
+                ),
+            )
+            .replace(
+                "@SHADOW@",
+                &format!(
+                    "data:image/png;base64,{}",
+                    openssl::base64::encode_block(include_bytes!("../launcher-skin/shadow.png"))
+                ),
+            )
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -405,6 +422,43 @@ mod tests {
         }
     }
 
+    // Render the actual server output for the browser comparison; no server,
+    // credentials, or live player database is needed.
+    #[test]
+    #[ignore = "set LAUNCHER_VISUAL_DIR and run the browser comparison"]
+    fn export_visual_fixtures() {
+        let dir =
+            PathBuf::from(std::env::var_os("LAUNCHER_VISUAL_DIR").expect("LAUNCHER_VISUAL_DIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = Board {
+            top: (0..10)
+                .map(|i| BoardRow {
+                    name: format!("ДужеДовгеІм'яГравця_ABCDEFGHIJKLMNOPQRSTUVWXYZ_{i}"),
+                    clan_tag: "ДОВГИЙТЕГ".into(),
+                    rating: 12345 - i,
+                    level: 100,
+                })
+                .collect(),
+            battles: 1_234_567,
+        };
+        for lang in [Lang::En, Lang::Uk] {
+            for (state, board, maintenance, test) in [
+                ("full", &full, None, false),
+                ("empty", &Board::default(), None, false),
+                ("maintenance", &full, Some(25), true),
+                ("down", &full, Some(0), true),
+            ] {
+                let mut counts = counts();
+                counts.maintenance = maintenance;
+                std::fs::write(
+                    dir.join(format!("online-{}-{state}.html", lang.code())),
+                    render(lang, board, counts, test),
+                )
+                .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn the_page_lists_the_board_and_the_counts() {
         let page = render(Lang::En, &board(), counts(), false);
@@ -424,9 +478,61 @@ mod tests {
     }
 
     #[test]
+    fn the_skin_embeds_only_the_original_images_within_ie8_limits() {
+        let skin = style();
+        let mut urls = Vec::new();
+        let mut rest = skin;
+        while let Some((_, tail)) = rest.split_once("url(\"") {
+            let (url, tail) = tail.split_once("\")").unwrap();
+            urls.push(url);
+            rest = tail;
+        }
+        assert_eq!(urls.len(), 2);
+        for (url, prefix, original) in [
+            (
+                urls[0],
+                "data:image/jpeg;base64,",
+                include_bytes!("../launcher-skin/back.jpg").as_slice(),
+            ),
+            (
+                urls[1],
+                "data:image/png;base64,",
+                include_bytes!("../launcher-skin/shadow.png").as_slice(),
+            ),
+        ] {
+            assert!(url.len() <= 32768, "IE8 silently discards longer data URLs");
+            let decoded = openssl::base64::decode_block(url.strip_prefix(prefix).unwrap()).unwrap();
+            assert_eq!(decoded, original);
+        }
+        let css = skin.to_ascii_lowercase();
+        for banned in [
+            "http:",
+            "https:",
+            "@import",
+            "expression(",
+            "behavior:",
+            "javascript:",
+        ] {
+            assert!(!css.contains(banned), "{banned} in the skin");
+        }
+        assert_eq!(skin.matches("url(").count(), 2);
+    }
+
+    #[test]
     fn the_page_asks_nothing_of_another_host_and_runs_no_script() {
         for lang in [Lang::En, Lang::Uk] {
-            let page = render(lang, &board(), counts(), true).to_ascii_lowercase();
+            let page = render(lang, &board(), counts(), true);
+            assert!(page.contains(style()));
+            // The only external destination is an explicit user-clicked link,
+            // not an image, script, or automatic navigation.
+            let discord = DISCORD_LINK.trim();
+            assert_eq!(page.matches(discord).count(), 1);
+            assert!(discord.contains("href=\"https://discord.gg/Pxa4prXfwu\""));
+            assert!(discord.contains("target=\"_blank\""));
+            let page = page
+                .replace(style(), "")
+                .replace(discord, "")
+                .to_ascii_lowercase();
             for banned in [
                 "http://",
                 "https://",
@@ -572,8 +678,9 @@ mod tests {
                 bytes.resize(200_000, b'x');
             }
             std::fs::write(&file, &bytes).unwrap();
-            let (sha256, launcher) = read_through(&file).unwrap();
+            let (sha256, launcher, extractor) = read_through(&file).unwrap();
             assert!(launcher, "{before}");
+            assert!(!extractor, "{before}");
             let whole: String = openssl::sha::sha256(&bytes)
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -583,6 +690,19 @@ mod tests {
         // The game exe's name is not the launcher's.
         std::fs::write(&file, b"game/binaries/x86/survarium_skhid.exe").unwrap();
         assert!(!read_through(&file).unwrap().1);
+        // The extractor is known by its own name, alone or with the
+        // launcher, also across the border of two pieces of the read.
+        for before in [0, 64 * 1024 - 5, 64 * 1024 + 20, 199_000] {
+            let mut bytes = vec![b'x'; before];
+            bytes.extend_from_slice(EXTRACTOR_NAME);
+            std::fs::write(&file, &bytes).unwrap();
+            let (_, launcher, extractor) = read_through(&file).unwrap();
+            assert!(extractor && !launcher, "{before}");
+            bytes.extend_from_slice(LAUNCHER_NAME);
+            std::fs::write(&file, &bytes).unwrap();
+            let found = offered(&file).unwrap();
+            assert!(found.extractor && found.launcher, "{before}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
