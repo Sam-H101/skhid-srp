@@ -427,6 +427,163 @@ fn a_short_lived_message_is_dropped_at_the_end_of_its_lifetime() {
     assert!(transport.is_lost(unacked) && !transport.is_lost(snapshot));
 }
 
+/// How many of `datagrams` carry the message `id` (the others are
+/// keep-alives, or carry something else).
+fn carrying(datagrams: &[Vec<u8>], id: u8) -> usize {
+    datagrams
+        .iter()
+        .filter(|datagram| {
+            messages(Table::Match, datagram)
+                .iter()
+                .any(|message| message.0 == id)
+        })
+        .count()
+}
+
+#[test]
+fn a_message_lasts_as_long_as_its_sender_says() {
+    let (mut transport, now) = connect_match();
+    // The snapshot E8 with four seconds instead of the table's 1.75.
+    let patient = transport.send_lasting(0xE8, &[8; 40], ms(4000)).unwrap();
+    assert_eq!(carrying(&transport.poll(now), 0xE8), 1);
+    // Again every 500 ms, as the table has it.
+    assert_eq!(carrying(&transport.poll(now + ms(499)), 0xE8), 0);
+    assert_eq!(carrying(&transport.poll(now + ms(500)), 0xE8), 1);
+    transport.poll(now + ms(3999));
+    assert!(!transport.is_lost(patient));
+    transport.poll(now + ms(4000));
+    assert!(transport.is_lost(patient));
+
+    // What the table sends once, or keeps until it is acked, stays so.
+    let at = now + ms(5000);
+    transport.send_lasting(0xE5, &[1; 7], ms(4000)).unwrap();
+    let kept = transport.send_lasting(0xF3, &[1, 2, 3], ms(100)).unwrap();
+    let first = transport.poll(at);
+    assert_eq!((carrying(&first, 0xE5), carrying(&first, 0xF3)), (1, 1));
+    let again = transport.poll(at + ms(1000));
+    assert_eq!((carrying(&again, 0xE5), carrying(&again, 0xF3)), (0, 1));
+    assert!(!transport.is_lost(kept));
+}
+
+#[test]
+fn a_kept_message_goes_again_at_the_pace_its_sender_says() {
+    let (mut transport, now) = connect_match();
+    // A relay (EB: 250 ms of life, again every 50 ms) for a client that
+    // waits for its world: kept, and again every 150 ms.
+    let relay = transport.send_kept_every(0xEB, &[7; 10], ms(150)).unwrap();
+    assert_eq!(carrying(&transport.poll(now), 0xEB), 1);
+    assert_eq!(carrying(&transport.poll(now + ms(149)), 0xEB), 0);
+    assert_eq!(carrying(&transport.poll(now + ms(150)), 0xEB), 1);
+    assert_eq!(carrying(&transport.poll(now + ms(299)), 0xEB), 0);
+    assert_eq!(carrying(&transport.poll(now + ms(300)), 0xEB), 1);
+    // Long past a relay's own lifetime, and still not given up.
+    let late = transport.poll(now + ms(1950));
+    assert_eq!(carrying(&late, 0xEB), 1);
+    assert!(!transport.is_lost(relay));
+    transport.receive(&flow(1, late[0][0], &[]), now + ms(2000));
+    assert!(transport.is_delivered(relay));
+}
+
+/// The parts of a split message in `datagrams`: `(unique id, index)`.
+fn parts(datagrams: &[Vec<u8>]) -> Vec<(u8, u8)> {
+    datagrams
+        .iter()
+        .flat_map(|datagram| {
+            wire::parse(Table::Match, Direction::ToClient, datagram, 3)
+                .unwrap()
+                .messages
+                .iter()
+                .filter_map(|message| Some((message.x?, message.part?.index)))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn the_parts_of_a_split_message_leave_a_few_at_a_time() {
+    let (mut transport, now) = connect_match();
+    // A world of 14 KiB: 29 parts.
+    let world: Vec<u8> = (0..14_000u32).map(|i| (i % 239) as u8).collect();
+    // What was queued before it does not wait for it. What is queued
+    // behind it comes after its last part, as when the parts left at once
+    // (the discards right behind a world are for the game that loaded it).
+    transport.send(0xEB, &[7; 10]).unwrap();
+    transport.send(0xE8, &world).unwrap();
+    transport.send(0xF4, &[5, 5]).unwrap();
+    let first = transport.poll(now);
+    assert_eq!(messages(Table::Match, &first[0]), [(0xEB, None, 10)]);
+    assert_eq!(parts(&first), [(0, 0), (0, 1), (0, 2), (0, 3)]);
+    assert_eq!(carrying(&first, 0xF4), 0);
+    // One more every 3 ms, however often the server looks.
+    assert!(parts(&transport.poll(now + ms(1))).is_empty());
+    assert!(parts(&transport.poll(now + ms(2))).is_empty());
+    assert_eq!(parts(&transport.poll(now + ms(3))), [(0, 4)]);
+    assert!(parts(&transport.poll(now + ms(5))).is_empty());
+    assert_eq!(parts(&transport.poll(now + ms(6))), [(0, 5)]);
+    // A server that looks late sends what the time earned, four at most.
+    assert_eq!(parts(&transport.poll(now + ms(12))), [(0, 6), (0, 7)]);
+    assert_eq!(
+        parts(&transport.poll(now + ms(60))),
+        [(0, 8), (0, 9), (0, 10), (0, 11)]
+    );
+    // One that looks every 5 ms (the match server's own turn when nothing
+    // comes in) loses none of the time between: 5 parts in 15 ms.
+    let mut sent = 12;
+    let mut at = now + ms(60);
+    for expected in [1, 2, 2] {
+        at += ms(5);
+        let next = parts(&transport.poll(at));
+        assert_eq!(next.len(), expected, "{next:?}");
+        sent += expected as u8;
+    }
+    while sent < 29 {
+        at += ms(3);
+        let datagrams = transport.poll(at);
+        assert_eq!(parts(&datagrams), [(0, sent)]);
+        // With the last part, what was queued behind the world.
+        assert_eq!(carrying(&datagrams, 0xF4), usize::from(sent == 28));
+        sent += 1;
+    }
+    assert!(at <= now + ms(120));
+
+    // The parts nobody acked go again after their 500 ms, at the same
+    // pace; behind those nothing waits.
+    transport.send(0xF1, &[9]).unwrap();
+    let again = transport.poll(now + ms(700));
+    assert_eq!(parts(&again), [(0, 0), (0, 1), (0, 2), (0, 3)]);
+    assert_eq!(carrying(&again, 0xF1), 1);
+    assert_eq!(parts(&transport.poll(now + ms(703))), [(0, 4)]);
+}
+
+#[test]
+fn a_split_message_ends_whole_with_its_first_part() {
+    let (mut transport, now) = connect_match();
+    let world: Vec<u8> = (0..14_000u32).map(|i| (i % 239) as u8).collect();
+    let serial = transport.send(0xE8, &world).unwrap();
+    // Its 29 parts leave over 75 ms, so the last is 1.75 s old 75 ms
+    // after the first.
+    for step in 0..=25 {
+        transport.poll(now + ms(3) * step);
+    }
+    transport.poll(now + ms(1749));
+    assert!(!transport.is_lost(serial));
+    assert_eq!(transport.backlog(), 29);
+    // With the first part the message is lost, and no part of it goes
+    // any more: the client could not join it.
+    assert!(parts(&transport.poll(now + ms(1750))).is_empty());
+    assert!(transport.is_lost(serial));
+    assert_eq!(transport.backlog(), 0);
+    assert!(parts(&transport.poll(now + ms(1800))).is_empty());
+}
+
+#[test]
+fn the_lobby_sends_a_split_message_at_once() {
+    let (mut transport, now) = connect_lobby();
+    // 0x95, the shop: ordered, and split when it is large.
+    transport.send(0x95, &[0x5A; 6_000]).unwrap();
+    assert_eq!(transport.poll(now).len(), 13);
+}
+
 #[test]
 fn a_send_once_message_is_never_resent() {
     let (mut transport, now) = connect_match();

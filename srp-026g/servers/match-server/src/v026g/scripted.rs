@@ -393,6 +393,12 @@ pub struct Client {
     pub uploads_hashed_tick: bool,
     /// Does not answer 0xE5 (as if the answer were lost).
     pub mute_time_replies: bool,
+    /// Acks as the real game was seen to (live, 2026-10-13): a pure ack
+    /// only after 100 ms without a send (0x3FC1B1), and every datagram
+    /// names the 13 server seqs before the newest, not 34. The default
+    /// here acks at once and deep, which a game does only while it sends
+    /// its inputs.
+    pub slow_acks: bool,
     /// Datagrams from the server for which this is true are lost.
     pub lose: Option<Lose>,
     /// `-hash_check_interval_in_ms`: 50 with the full client patch (the
@@ -441,6 +447,7 @@ impl Client {
             simulates: true,
             uploads_hashed_tick: false,
             mute_time_replies: false,
+            slow_acks: false,
             lose: None,
             hash_interval_ms: 50,
             hash_last_sent: 0,
@@ -602,7 +609,11 @@ impl Client {
 
     fn datagram(&mut self, body: &[u8]) -> Vec<u8> {
         let (rseq, bits, tail) = match self.received.newest() {
-            Some(newest) => (newest, self.received.bits(), 4),
+            Some(newest) => (
+                newest,
+                self.received.bits(),
+                if self.slow_acks { 1 } else { 4 },
+            ),
             None => (0xFF, 0, 0),
         };
         let (ack0, tail_bytes) = ack::encode(bits, tail, false);
@@ -677,7 +688,8 @@ impl Client {
         let quiet = self
             .last_sent_ms
             .is_none_or(|sent| now_ms.saturating_sub(sent) >= 100);
-        if datagrams.is_empty() && self.sent_any && (self.ack_due || quiet) {
+        let ack_now = self.ack_due && !self.slow_acks;
+        if datagrams.is_empty() && self.sent_any && (ack_now || quiet) {
             datagrams.push(self.datagram(&[low_level::CONTINUOUS_FLOW]));
         }
         if !datagrams.is_empty() {

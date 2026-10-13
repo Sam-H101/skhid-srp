@@ -724,10 +724,12 @@ impl Bot {
                     generation,
                     time,
                     body,
+                    packed,
                 } => say(&format!(
                     "took the world (0xE8): generation {generation}, the world at {time} ms, {} \
-                     bytes",
-                    body.len()
+                     bytes{}",
+                    body.len(),
+                    if packed { ", sent compressed" } else { "" }
                 )),
                 _ => {}
             }

@@ -12,9 +12,15 @@
 //! 00                                  the end of the stream
 //! ```
 //!
-//! with `size` 1..=65536. So the server needs no LZMA encoder, at the cost
-//! of 3 bytes for each 64 KiB and 1 for the end. The tests check the bytes
-//! against Python's `lzma` (liblzma) raw LZMA2 decoder.
+//! with `size` 1..=65536. So the server needs no LZMA encoder for those, at
+//! the cost of 3 bytes for each 64 KiB and 1 for the end. The tests check
+//! the bytes against Python's `lzma` (liblzma) raw LZMA2 decoder.
+//!
+//! The world snapshot is the one payload that pays for a real encoder
+//! ([`packed`]): it goes to every client at every start and resync, as up
+//! to 31 datagrams when stored, and a thin line does not carry that burst
+//! (live, 2026-10-13: a player who never got one in two matches). Saved
+//! worlds of live matches shrink 2.6 times.
 //!
 //! **Chunks larger than the client's dictionary.** The client's decoder
 //! object has a 32 KiB dictionary (property byte 6), and a chunk here holds
@@ -36,8 +42,22 @@
 //! (0x578A0 bytes for the static info, 0x8000 for a compressed snapshot,
 //! `n × 8` for the prices).
 
+use std::io::{Read, Write};
+
+use lzma_rust2::{Lzma2Options, Lzma2Reader, Lzma2Writer, LzmaOptions};
+
 /// The most bytes one chunk holds.
 pub const CHUNK: usize = 0x1_0000;
+
+/// The client's decoder checks match distances against a dictionary of
+/// this size (property byte 6, `static_info.md` section 1).
+pub const DICTIONARY: u32 = 0x8000;
+
+/// The encoder's effort (xz's preset). The match server packs a world in
+/// the thread that relays the inputs: on 120 saved live worlds preset 3
+/// took a third of the time of the default 6 for 2 % more bytes (2.62
+/// against 2.67 times smaller; 0.6 ms a world on a desktop).
+const PRESET: u32 = 3;
 
 /// A stored chunk with a dictionary reset: the first of a stream.
 const STORED_RESET: u8 = 0x01;
@@ -85,6 +105,45 @@ pub fn unstore(stream: &[u8]) -> Option<Vec<u8>> {
         rest = &tail[2 + size..];
         first = false;
     }
+}
+
+/// `data` as a raw LZMA2 stream of compressed chunks, for a reader that
+/// decodes with the client's dictionary ([`DICTIONARY`]): the same bare
+/// chunk stream as [`stored`], ended by the same marker, with the LZMA
+/// SDK's default `lc`, `lp` and `pb` (3, 0, 2: the client's `Lzma2Decode`
+/// allocates for `lc + lp` up to 4). The first chunk resets the dictionary,
+/// the state and the properties, as the decoder demands of a first chunk.
+///
+/// srp sent no real client a compressed chunk before 2026-10-13: the
+/// client's code is the stock SDK's one-call decoder (0x3EE810), which
+/// reads such streams, but that it does so in the game is LIKELY until it
+/// is seen live.
+pub fn packed(data: &[u8]) -> Vec<u8> {
+    let options = Lzma2Options {
+        lzma_options: LzmaOptions {
+            dict_size: DICTIONARY,
+            ..LzmaOptions::with_preset(PRESET)
+        },
+        chunk_size: None,
+    };
+    let mut writer = Lzma2Writer::new(Vec::with_capacity(data.len() / 2 + 16), options);
+    writer
+        .write_all(data)
+        .expect("writing to memory does not fail");
+    writer.finish().expect("writing to memory does not fail")
+}
+
+/// Reads any raw LZMA2 stream back into its data, as the client does:
+/// stored chunks, compressed ones, or both. `None` if it is no such stream,
+/// or if the data is over `max` bytes (the client decodes into a buffer of
+/// a fixed size and does not check the result).
+pub fn unpack(stream: &[u8], max: usize) -> Option<Vec<u8>> {
+    let mut data = Vec::new();
+    Lzma2Reader::new(stream, DICTIONARY, None)
+        .take(max as u64 + 1)
+        .read_to_end(&mut data)
+        .ok()?;
+    (data.len() <= max).then_some(data)
 }
 
 #[cfg(test)]
@@ -182,14 +241,88 @@ mod tests {
     /// `python -I scripts/gen-data-026g/check_lzma2.py <dir of *.lzma2 + *.bin>`.
     #[test]
     fn a_real_decoder_reads_the_streams() {
+        let streams: Vec<_> = [0, 1, 65536, 65537, 200_000, 0x578A0]
+            .into_iter()
+            .map(|len| {
+                let data = pattern(len);
+                let stream = stored(&data);
+                (data, stream)
+            })
+            .collect();
+        real_decoder_reads("stored", &streams);
+    }
+
+    /// Bytes as a world has them: runs of zeros, repeated blocks, and some
+    /// that do not compress.
+    fn world_like(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| match i % 1024 {
+                0..300 => 0,
+                300..700 => (i % 37) as u8,
+                _ => (i * 31 + i / 251) as u8 ^ (i >> 3) as u8,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn packed_is_smaller_and_comes_back() {
+        for len in [0, 1, 2, 500, 9_000, 14_000, 0x8000] {
+            let data = world_like(len);
+            let stream = packed(&data);
+            assert_eq!(unpack(&stream, 0x8000).as_deref(), Some(&data[..]), "{len}");
+            assert_eq!(stream.last(), Some(&0x00), "{len}: the end marker");
+            if len >= 500 {
+                assert!(stream.len() < len, "{len}: {} bytes", stream.len());
+                // A first chunk the decoder takes: compressed, with a reset
+                // of the dictionary, the state and the properties.
+                assert!(stream[0] >= 0xE0, "{len}: control {:#04x}", stream[0]);
+            }
+        }
+        assert_eq!(packed(&[]), [0x00]);
+        // Bytes that do not compress come back all the same.
+        let noise: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        assert_eq!(unpack(&packed(&noise), 0x8000), Some(noise));
+    }
+
+    #[test]
+    fn unpack_reads_stored_streams_and_minds_the_buffer() {
+        let data = pattern(0x8000);
+        assert_eq!(unpack(&stored(&data), 0x8000), Some(data.clone()));
+        assert_eq!(unpack(&packed(&data), 0x8000), Some(data));
+        // One byte over the reader's buffer.
+        let over = pattern(0x8001);
+        assert_eq!(unpack(&stored(&over), 0x8000), None);
+        assert_eq!(unpack(&packed(&over), 0x8000), None);
+        // No stream at all, and one cut short.
+        assert_eq!(unpack(&[0x03], 0x8000), None);
+        let stream = packed(&world_like(9_000));
+        assert_eq!(unpack(&stream[..stream.len() / 2], 0x8000), None);
+    }
+
+    /// The compressed streams too, with the client's 32 KiB dictionary.
+    #[test]
+    fn a_real_decoder_reads_the_packed_streams() {
+        let streams: Vec<_> = [1, 500, 9_000, 14_000, 0x8000]
+            .into_iter()
+            .map(|len| {
+                let data = world_like(len);
+                let stream = packed(&data);
+                (data, stream)
+            })
+            .collect();
+        real_decoder_reads("packed", &streams);
+    }
+
+    fn real_decoder_reads(name: &str, streams: &[(Vec<u8>, Vec<u8>)]) {
         use std::process::Command;
 
-        let dir = std::env::temp_dir().join(format!("srp-lzma2-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("srp-lzma2-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        for len in [0, 1, 65536, 65537, 200_000, 0x578A0] {
-            let data = pattern(len);
-            std::fs::write(dir.join(format!("{len}.bin")), &data).unwrap();
-            std::fs::write(dir.join(format!("{len}.lzma2")), stored(&data)).unwrap();
+        for (index, (data, stream)) in streams.iter().enumerate() {
+            std::fs::write(dir.join(format!("{index}.bin")), data).unwrap();
+            std::fs::write(dir.join(format!("{index}.lzma2")), stream).unwrap();
         }
         let script = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -205,7 +338,8 @@ mod tests {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout);
                 assert!(
-                    output.status.success() && text.contains("6 streams decoded"),
+                    output.status.success()
+                        && text.contains(&format!("{} streams decoded", streams.len())),
                     "{text}{}",
                     String::from_utf8_lossy(&output.stderr)
                 );

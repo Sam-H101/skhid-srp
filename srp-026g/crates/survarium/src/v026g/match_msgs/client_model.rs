@@ -43,8 +43,8 @@ pub enum ModelError {
     /// set.
     SnapshotWithoutTime,
     /// A 0xE8 whose state is not a time, a mask, player blocks and six
-    /// sections; or a compressed one that is no stored LZMA2 stream or
-    /// decodes to more than 0x8000 bytes.
+    /// sections; or a compressed one that is no LZMA2 stream or decodes to
+    /// more than 0x8000 bytes.
     SnapshotState,
     /// A message with a tick, before any 0xE5 set the clock it is read
     /// against.
@@ -148,12 +148,12 @@ pub fn decode_server(id: u8, payload: &[u8], roster: u8) -> Result<ServerMessage
             if payload.len() <= 2 {
                 return Err(wrong_length);
             }
-            let state = if payload[1] == 0 {
-                payload[2..].to_vec()
-            } else {
-                lzma2::unstore(&payload[2..])
-                    .filter(|state| state.len() <= COMPRESSED_SNAPSHOT_BUFFER)
+            let packed = payload[1] != 0;
+            let state = if packed {
+                lzma2::unpack(&payload[2..], COMPRESSED_SNAPSHOT_BUFFER)
                     .ok_or(ModelError::SnapshotState)?
+            } else {
+                payload[2..].to_vec()
             };
             if state.len() < 4 {
                 return Err(ModelError::SnapshotState);
@@ -162,6 +162,7 @@ pub fn decode_server(id: u8, payload: &[u8], roster: u8) -> Result<ServerMessage
                 generation: payload[0],
                 time: u32_at(&state, 0),
                 body: state[4..].to_vec(),
+                packed,
             }
         }
         id::PLAYER_ENTERED => ServerMessage::PlayerEntered {
@@ -456,6 +457,7 @@ impl ClientModel {
                 generation,
                 time: snapshot_time,
                 body,
+                ..
             } => {
                 if !self.ready {
                     return Ok(Taken::Skipped(Skip::NoCore));
@@ -762,8 +764,13 @@ mod tests {
         payload.extend(lzma2::stored(&state));
         assert_eq!(
             decode_server(0xE8, &payload, 2),
-            Ok(ServerMessage::snapshot(3, 500, &EMPTY_WORLD))
+            Ok(ServerMessage::packed_snapshot(3, 500, &EMPTY_WORLD))
         );
+        // Really compressed, as the server sends a world that shrinks.
+        let world: Vec<u8> = EMPTY_WORLD.iter().copied().cycle().take(6_000).collect();
+        let sent = ServerMessage::packed_snapshot(3, 500, &world);
+        assert_eq!(sent.payload()[1], 1);
+        assert_eq!(decode_server(0xE8, &sent.payload(), 2), Ok(sent));
         // Over the client's 0x8000-byte buffer.
         let mut payload = vec![3, 1];
         payload.extend(lzma2::stored(&vec![0; COMPRESSED_SNAPSHOT_BUFFER + 1]));

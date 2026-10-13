@@ -34,6 +34,8 @@ clap = { version = "4.5.41", features = ["derive", "env"] }
 crc32fast = "1.4.2"
 encoding_rs = "0.8.35"
 iced-x86 = "1.21.0"
+# The world snapshot 0xE8 goes out as real LZMA2 (`survarium::v026g::lzma2`).
+lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "encoder", "optimization"] }
 num-derive = "0.4" # TODO: Remove
 num-traits = "0.2" # TODO: Remove
 openssl = "0.10"
