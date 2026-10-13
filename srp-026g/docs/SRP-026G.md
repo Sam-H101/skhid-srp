@@ -272,13 +272,21 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   three lines of text; the file is read again when its size or time changes,
   so a new ZIP put in its place is seen without a restart. The second is the
   page the launcher shows in its window (899 by 335, made for Internet
-  Explorer's engine, no script, nothing from another host): the ten best
+  Explorer's engine, one script of its own, nothing from another host): the ten best
   players by rating among those who were in a match (name, clan tag, level,
   rating; test bots left out), players online, searching, matches running,
   accounts, battles fought (how often an account was put in a match, all
   accounts together), clans, a planned maintenance, the legal notice.
   Ukrainian for `?lang=ua`, else as every page. Its numbers are counted again
   at most every 15 seconds. Not on the players' server yet.
+  While the window is open the page's script asks `/launcher/fresh/<uk|en>`
+  every 10 seconds: the board, the numbers of this moment with the
+  maintenance line, and the totals, as three pieces of markup with `<hr>`
+  between them. It puts in place only a piece that changed, so the page is
+  not loaded again and nothing else is drawn; a request that fails leaves
+  the page as it is (the launcher does not go to its offline page). These
+  two addresses alone are sent with a `Content-Security-Policy` that lets
+  that one script run, by its SHA-256, and ask this server.
 - The admin page (token, path and address as in the table). Tabs:
   money (silver and gold, `+500` / `-100`); account (premium hours, set the
   level, experience, reputation with a faction 1 to 4); item (an item of the

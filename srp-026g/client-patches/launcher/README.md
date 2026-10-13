@@ -186,6 +186,14 @@ The server (`servers/web-server`, the 0.26g page):
   It reads the file again when its size or time changes, so putting a new
   ZIP in its place is all a release needs: no restart, no setting.
 - `GET /launcher/v2/<product>/?lang=<en|ru|ua|de|pl>` is the page.
+- `GET /launcher/fresh/<uk|en>` is what changes on that page (the board,
+  the numbers, the maintenance line). The page's one script asks for it
+  every 10 seconds and puts in place what changed, so the numbers move
+  while the window is open and the page is never loaded again. Seen in the
+  real launcher on Windows 11 (its browser calls itself Trident/7.0)
+  against a local server, 2026-10-13: a request every 10 seconds, a planned
+  and a cancelled maintenance shown within that time, and the server
+  stopped and started again with the page staying as it was meanwhile.
 
 The updater (`client/updater`):
 

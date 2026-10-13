@@ -653,3 +653,83 @@ fn public_stats_http_has_json_headers_and_ignores_language() {
         r#"{"online":0,"registered":0,"matches":0,"queued":0}"#
     );
 }
+
+#[test]
+fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+    let world = world();
+    world
+        .told
+        .matches
+        .store(3, std::sync::atomic::Ordering::Relaxed);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let targets = [
+        "/launcher/v2/survarium/?lang=ua",
+        "/launcher/fresh/uk",
+        "/launcher/fresh/en",
+        "/",
+    ];
+    let server = std::thread::spawn(move || {
+        for _ in targets {
+            let (stream, _) = listener.accept().unwrap();
+            world.web.serve(stream);
+        }
+    });
+    let answers: Vec<(String, String)> = targets
+        .iter()
+        .map(|target| {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.0\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+            assert!(headers.starts_with("HTTP/1.0 200 OK\r\n"), "{target}");
+            assert!(
+                headers.contains("\r\nCache-Control: no-store\r\n"),
+                "{target}"
+            );
+            (headers.to_owned(), body.to_owned())
+        })
+        .collect();
+    server.join().unwrap();
+    let launchers = format!(
+        "\r\nContent-Security-Policy: {}\r\n",
+        crate::launcher::policy()
+    );
+    let (page, fresh_uk, fresh_en, home) = (&answers[0], &answers[1], &answers[2], &answers[3]);
+    assert!(page.0.contains(&launchers));
+    assert!(page.1.contains("<script type=\"text/javascript\">"));
+    assert!(page.1.contains("<b>3</b><span>матчів зараз</span>"));
+    // The fresh numbers are the three places of that page and nothing more.
+    for (fresh, matches) in [(fresh_uk, "матчів зараз"), (fresh_en, "matches now")] {
+        assert!(fresh.0.contains(&launchers));
+        assert!(
+            fresh
+                .0
+                .contains("\r\nContent-Type: text/html; charset=utf-8\r\n")
+        );
+        let parts: Vec<&str> = fresh.1.split("<hr>").collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[1].contains(&format!("<b>3</b><span>{matches}</span>")));
+        for banned in ["<script", "<style", "<html", "<body"] {
+            assert!(!fresh.1.contains(banned), "{banned}");
+        }
+    }
+    for part in fresh_uk.1.split("<hr>") {
+        assert!(page.1.contains(part));
+    }
+    // Every other page keeps the site's policy: no script at all.
+    assert!(home.0.contains(&format!(
+        "\r\nContent-Security-Policy: {}\r\n",
+        crate::POLICY
+    )));
+    assert!(!home.0.contains("script-src"));
+}

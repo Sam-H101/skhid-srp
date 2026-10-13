@@ -7,7 +7,10 @@
 //!   place of the original game's news page: the best players, what the
 //!   server counts, and the legal notice. It is made for the launcher's
 //!   embedded browser (Internet Explorer's engine, 899 by 335 pixels): fixed
-//!   sizes, old CSS only, no script, and embedded original background artwork.
+//!   sizes, old CSS only, and embedded original background artwork. Its one
+//!   script keeps the board and the numbers current while the window is open.
+//! - `GET /launcher/fresh/<language>`: the board and the numbers alone, which
+//!   that script asks for.
 
 use std::fs::File;
 use std::io::Read;
@@ -54,6 +57,47 @@ struct Checked {
     /// so the page tells players to unpack into an empty folder.
     extractor: bool,
 }
+
+/// Where the page's script asks for what changes on the page, with the
+/// page's language behind it.
+pub(super) const FRESH: &str = "/launcher/fresh/";
+/// The places on the page that are filled again, by their `id`, in the order
+/// [`FRESH`] answers them.
+const PLACES: [&str; 3] = ["board", "now", "totals"];
+/// What stands between two places in that answer. No place holds it: their
+/// markup has no such tag, and a name is text ([`escape`]).
+const BETWEEN: &str = "<hr>";
+/// The page's one script: every ten seconds it asks for [`FRESH`] and puts
+/// what changed into its place, so nothing else is drawn again and a link is
+/// never taken from under the pointer. A request that fails leaves the page
+/// as it is, and the next one is made all the same. It is written for the
+/// oldest engine the launcher's browser can be, and names no other host.
+const SCRIPT: &str = r#"(function(){
+var places=["board","now","totals"],shown=[],asking=false;
+function fresh(){
+if(asking)return;
+try{
+var ask=new XMLHttpRequest();
+ask.open("GET","/launcher/fresh/"+document.documentElement.lang,true);
+ask.onreadystatechange=function(){
+if(ask.readyState!=4)return;
+asking=false;
+try{
+if(ask.status!=200)return;
+var parts=ask.responseText.split("<hr>"),at;
+if(parts.length!=places.length)return;
+for(at=0;at<places.length;at++)if(parts[at]!=shown[at]){
+document.getElementById(places[at]).innerHTML=parts[at];
+shown[at]=parts[at];
+}
+}catch(e){}
+};
+asking=true;
+ask.send(null);
+}catch(e){asking=false;}
+}
+setInterval(fresh,10000);
+})();"#;
 
 static CHECKED: Mutex<Option<Checked>> = Mutex::new(None);
 static BOARD: Mutex<Option<(Instant, Board)>> = Mutex::new(None);
@@ -215,8 +259,28 @@ pub(super) struct Counts {
     pub maintenance: Option<u32>,
 }
 
-/// `GET /launcher/…`.
-pub(super) fn page(lang: Lang, store: &SessionStore, game: &Game) -> Response {
+/// Whether the path is the launcher's: its page, or [`FRESH`].
+pub(super) fn serves(path: &str) -> bool {
+    path == "/launcher" || path.starts_with("/launcher/")
+}
+
+/// The `Content-Security-Policy` of the launcher's page: the site's own, and
+/// the page's images (they are in its style as `data:`), its one script (by
+/// its SHA-256, so no other text on the page can run) and that script's
+/// request to this server.
+pub(super) fn policy() -> &'static str {
+    static POLICY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    POLICY.get_or_init(|| {
+        format!(
+            "{}; img-src data:; script-src 'sha256-{}'; connect-src 'self'",
+            crate::POLICY,
+            openssl::base64::encode_block(&openssl::sha::sha256(SCRIPT.as_bytes()))
+        )
+    })
+}
+
+/// The board and the counts as they are now.
+fn current(store: &SessionStore, game: &Game) -> (Board, Counts) {
     let board = {
         let mut kept = locked(&BOARD);
         match kept.as_ref() {
@@ -236,11 +300,28 @@ pub(super) fn page(lang: Lang, store: &SessionStore, game: &Game) -> Response {
         clans: game.accounts.clans().len(),
         maintenance: store.minutes_to_maintenance(),
     };
+    (board, counts)
+}
+
+/// `GET /launcher/…`.
+pub(super) fn page(lang: Lang, store: &SessionStore, game: &Game) -> Response {
+    let (board, counts) = current(store, game);
     let test = CONNECT.get().is_some_and(|connect| connect.test_server);
     Response {
         status: "200 OK",
         content_type: ContentType::Html,
         body: render(lang, &board, counts, test),
+    }
+}
+
+/// `GET /launcher/fresh/<language>`: what [`PLACES`] hold now, with
+/// [`BETWEEN`] between them.
+pub(super) fn fresh(lang: Lang, store: &SessionStore, game: &Game) -> Response {
+    let (board, counts) = current(store, game);
+    Response {
+        status: "200 OK",
+        content_type: ContentType::Html,
+        body: places(lang, &board, counts).join(BETWEEN),
     }
 }
 
@@ -257,7 +338,10 @@ fn grouped(value: u64) -> String {
     out
 }
 
-fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
+/// What each of [`PLACES`] holds: the board, the server's numbers of this
+/// moment with the line under them, and the numbers since it opened with
+/// theirs.
+fn places(lang: Lang, board: &Board, counts: Counts) -> [String; 3] {
     let mut rows = String::new();
     for (index, row) in board.top.iter().enumerate() {
         let clan = if row.clan_tag.is_empty() {
@@ -325,6 +409,18 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
     } else {
         "cap"
     };
+    [
+        table,
+        format!("{now}<div class=\"{status_class}\">{status}</div>"),
+        format!(
+            "{totals}<div class=cap>{}</div>",
+            lang.tr("Since the server opened", "Від відкриття сервера")
+        ),
+    ]
+}
+
+fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
+    let [table, now, totals] = places(lang, board, counts);
     let badge = if test {
         format!(" <em>{}</em>", lang.tr("TEST SERVER", "ТЕСТОВИЙ СЕРВЕР"))
     } else {
@@ -343,13 +439,17 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
          <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\">\
          <title>Skhid</title><style type=\"text/css\">{style}</style></head><body>\
          <div id=container>\
-         <div id=left><h1>{top}{badge}</h1>{table}<div class=cap>{server}</div></div>\
+         <div id=left><h1>{top}{badge}</h1><div id={board}>{table}</div>\
+         <div class=cap>{server}</div></div>\
          <div id=right>\
-         <div class=\"tile first\">{now}<div class=\"{status_class}\">{status}</div></div>\
-         <div class=\"tile second\">{totals}<div class=cap>{since}</div></div>\
+         <div class=\"tile first\" id={first}>{now}</div>\
+         <div class=\"tile second\" id={second}>{totals}</div>\
          <div class=\"tile third\"><p class=legal>{legal}</p><div class=cap>{discord}{notice}</div></div>\
-         </div></div></body></html>",
+         </div></div><script type=\"text/javascript\">{SCRIPT}</script></body></html>",
         style = style(),
+        board = PLACES[0],
+        first = PLACES[1],
+        second = PLACES[2],
         discord = DISCORD_LINK.trim(),
         code = lang.code(),
         top = lang.tr("Top 10 players", "Топ-10 гравців"),
@@ -357,7 +457,6 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
             "Skhid &middot; Survarium <i>0.26g</i> community server",
             "Схід &middot; ком'юніті сервер Survarium <i>0.26g</i>"
         ),
-        since = lang.tr("Since the server opened", "Від відкриття сервера"),
         notice = lang.tr("Legal notice", "Правова інформація"),
         legal = escape(&legal),
     )
@@ -519,10 +618,17 @@ mod tests {
     }
 
     #[test]
-    fn the_page_asks_nothing_of_another_host_and_runs_no_script() {
+    fn the_page_asks_nothing_of_another_host_and_runs_its_one_script_only() {
+        let script = format!("<script type=\"text/javascript\">{SCRIPT}</script>");
+        // The script asks this server alone, by a path, and makes no text
+        // into code.
+        for banned in ["http", "//", "href", "src", "eval", "write", "</"] {
+            assert!(!SCRIPT.contains(banned), "{banned} in the script");
+        }
         for lang in [Lang::En, Lang::Uk] {
             let page = render(lang, &board(), counts(), true);
             assert!(page.contains(style()));
+            assert_eq!(page.matches(&script).count(), 1);
             // The only external destination is an explicit user-clicked link,
             // not an image, script, or automatic navigation.
             let discord = DISCORD_LINK.trim();
@@ -532,6 +638,7 @@ mod tests {
             let page = page
                 .replace(style(), "")
                 .replace(discord, "")
+                .replace(&script, "")
                 .to_ascii_lowercase();
             for banned in [
                 "http://",
@@ -551,6 +658,59 @@ mod tests {
                 assert!(!page.contains(banned), "{banned} in the launcher page");
             }
         }
+    }
+
+    #[test]
+    fn the_script_fills_the_places_the_fresh_answer_names() {
+        // The script is plain text of its own: what it asks for, what it
+        // splits by and where it puts the pieces are the server's.
+        assert!(SCRIPT.contains(&format!("\"{FRESH}\"+document.documentElement.lang")));
+        assert!(SCRIPT.contains(&format!("split(\"{BETWEEN}\")")));
+        assert!(SCRIPT.contains(&format!("places=[\"{}\"]", PLACES.join("\",\""))));
+        assert!(SCRIPT.contains("setInterval(fresh,10000)"));
+        for lang in [Lang::En, Lang::Uk] {
+            // The page's own language is one the path of the answer reads.
+            assert_eq!(language(&format!("{FRESH}{}", lang.code()), Lang::En), lang);
+            assert_eq!(language(&format!("{FRESH}{}", lang.code()), Lang::Uk), lang);
+            let mut soon = counts();
+            soon.maintenance = Some(25);
+            for (board, counts) in [(board(), counts()), (Board::default(), soon)] {
+                let page = render(lang, &board, counts, false);
+                assert!(page.contains(&format!("lang={}>", lang.code())));
+                let parts = places(lang, &board, counts);
+                // Each place is on the page once, holding what the answer
+                // gives for it, so the first answer changes nothing seen.
+                for (place, part) in PLACES.iter().zip(&parts) {
+                    assert_eq!(page.matches(&format!(" id={place}>")).count(), 1);
+                    assert!(
+                        page.contains(&format!(" id={place}>{part}</div>")),
+                        "{place}"
+                    );
+                }
+                let answer = parts.join(BETWEEN);
+                assert_eq!(answer.split(BETWEEN).count(), PLACES.len());
+            }
+        }
+        // A name cannot stand for the border between two places.
+        let mut named = board();
+        named.top[0].name = BETWEEN.into();
+        named.top[0].clan_tag = BETWEEN.into();
+        let answer = places(Lang::En, &named, counts()).join(BETWEEN);
+        assert_eq!(answer.split(BETWEEN).count(), PLACES.len());
+    }
+
+    #[test]
+    fn the_launchers_policy_lets_its_script_run_and_no_other() {
+        let policy = policy();
+        assert!(policy.starts_with(crate::POLICY));
+        let hash = openssl::base64::encode_block(&openssl::sha::sha256(SCRIPT.as_bytes()));
+        assert!(policy.contains(&format!("script-src 'sha256-{hash}';")));
+        assert!(policy.contains("connect-src 'self'"));
+        assert!(policy.contains("img-src data:;"));
+        assert!(!policy.contains("unsafe-inline' 'sha256") && !policy.contains("unsafe-eval"));
+        assert!(!crate::POLICY.contains("script-src"));
+        assert!(serves("/launcher") && serves("/launcher/v2/survarium/") && serves(FRESH));
+        assert!(!serves("/launchers") && !serves("/") && !serves("/api/stats"));
     }
 
     #[test]
