@@ -291,8 +291,10 @@ team by the experimental descriptor limit. The end cutoff stays fixed at
 120 seconds. Tests configure gathering and exponent directly without
 changing process-global environment variables.
 
-Team level sums use each player's queue-time matchmaking level (the `min`
-field, including equipment and rating) for newcomers and launch-time levels
-for the initial roster. They stay fixed for those players if equipment or
-rating later changes. The original reward `match_level` remains fixed at
+Queued matchmaking levels are refreshed after equipment or rating changes,
+before choosing a running match or forming a new one. Refreshing a party
+invalidates older batch observations without extending the gathering timer.
+Team level sums use these refreshed levels (the `min` field) for newcomers
+and launch-time levels for the initial roster. They stay fixed after admission
+if equipment or rating later changes. The original reward `match_level` remains fixed at
 creation; admissions do not change reward multipliers.

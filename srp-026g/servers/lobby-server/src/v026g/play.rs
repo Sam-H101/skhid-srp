@@ -567,6 +567,36 @@ impl Core<'_> {
         self.squads_dirty = true;
     }
 
+    /// Equipment can change while searching. Refresh every waiting player
+    /// before any poll can form a match, including polls for other players.
+    /// A changed level restarts the whole party's search and range timer.
+    pub(super) fn refresh_search_levels(&mut self, now: Instant) {
+        let unix = quests::now();
+        let levels: Vec<_> = self
+            .players()
+            .into_iter()
+            .filter_map(|addr| {
+                let player = self.player(addr)?;
+                player.queued_since?;
+                Some((player.account_id, self.level_of(player.account_id, unix)))
+            })
+            .collect();
+        if levels.is_empty() {
+            return;
+        }
+        for player in self.store.matchmaking().refresh_levels(&levels, now) {
+            if let Some(addr) = self.by_account.get(&player.account_id).copied()
+                && let Some(state) = self.player_mut(addr)
+            {
+                state.queued_since = Some(now);
+            }
+            log::info!(
+                "Account {} restarts search after its party's equipment level changed",
+                player.account_id
+            );
+        }
+    }
+
     /// What the client is told of its place in the queue:
     /// - while it waits, its place and how long it has waited (the client
     ///   shows the wait the server last sent);
@@ -575,6 +605,7 @@ impl Core<'_> {
     /// - once its match is made, "match found" and where the match server
     ///   is (0x82), once.
     pub(super) fn queue_status(&mut self, addr: SocketAddr, now: Instant) {
+        self.refresh_search_levels(now);
         self.fill_running_matches(now);
         let Some(player) = self.player(addr) else {
             return;

@@ -225,6 +225,41 @@ fn departed_players_remain_in_population_and_level_counts() {
 }
 
 #[test]
+fn queued_levels_refresh_before_selecting_a_running_team() {
+    let mut world = World::new(Duration::ZERO);
+    let ticket = running(&mut world);
+    let id = *world.core.matches.keys().next().unwrap();
+    world.core.matches.get_mut(&id).unwrap().teams[0].level_sum = 0;
+    world.core.matches.get_mut(&id).unwrap().teams[1].level_sum = 4;
+    world.host.admitting.locked().remove(&ticket);
+    let newcomer = growing(&mut world, "ChangedLevel");
+    world.ask(newcomer, request::play(1));
+    assert_eq!(
+        world
+            .store
+            .matchmaking()
+            .queued_groups(QueuePool::GrowingRoster)[0]
+            .population()
+            .level_sum,
+        0
+    );
+    // A rating change outside an inventory request must be seen by the next
+    // queue poll too. Level zero favors team 1, but level five favors team 0.
+    world.account(newcomer).rating = 15_000;
+    assert_eq!(
+        session::v026g::matchmaking::level(&world.account(newcomer), 0).min,
+        5
+    );
+    world.host.admitting.locked().insert(ticket);
+    world.advance(Duration::from_secs(2));
+    assert_eq!(sent_to_match(&world.take(newcomer)).unwrap().0, ticket);
+    assert_eq!(world.host.made.locked()[0].1.players[2].profile.team, 0);
+    assert_eq!(world.core.matches[&id].teams[0].level_sum, 5);
+    assert_eq!(world.core.matches[&id].teams[0].players, 2);
+    world.assert_clean();
+}
+
+#[test]
 fn play_sends_a_new_player_to_the_running_match_without_resending_existing_players() {
     let mut world = World::new(Duration::ZERO);
     let ticket = running(&mut world);
