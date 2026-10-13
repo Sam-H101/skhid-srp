@@ -287,14 +287,35 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   accounts together), clans, a planned maintenance, the legal notice.
   Ukrainian for `?lang=ua`, else as every page. Its numbers are counted again
   at most every 15 seconds. Not on the players' server yet.
-  While the window is open the page's script asks `/launcher/fresh/<uk|en>`
-  every 10 seconds: the board, the numbers of this moment with the
-  maintenance line, and the totals, as three pieces of markup with `<hr>`
-  between them. It puts in place only a piece that changed, so the page is
-  not loaded again and nothing else is drawn; a request that fails leaves
-  the page as it is (the launcher does not go to its offline page). These
-  two addresses alone are sent with a `Content-Security-Policy` that lets
-  that one script run, by its SHA-256, and ask this server.
+  The left side has two tabs, "Top 10 players" and "Matches now"; a click
+  on a label in the heading shows that tab. The second lists the matches
+  made and not over, the oldest first, and names no player (the page is
+  open to everyone): the map and mode by the game's own names, each team's
+  players who have not left ("4 v 3"), how long ago play began ("6 min
+  ago"; "waiting" before the countdown, "starting" during it), the time to
+  the time limit in minutes rounded up ("≤ 9 min": the mode's own rule or
+  everyone leaving ends a match sooner), and the score with the leader's
+  number in amber (tickets left in a Team Deathmatch, batteries brought
+  otherwise). The score is the one of the newest world the match server
+  trusts (`servers/match-server`: the match loop tells the registry how
+  each match stands once a second, `MatchRegistry::live_matches`); it is
+  shown only for a match in play, and not when that world is more than
+  60 seconds old (the clients disagree), where a dash stands. Ten lines
+  fit: with more matches the last line counts the rest.
+  While the window is open the page's script asks
+  `/launcher/places/<uk|en>` every 10 seconds: the board, the matches, the
+  numbers of this moment with the maintenance line, and the totals, each
+  behind the `id` of its place, all with `<hr>` between them. It puts in
+  place only a piece that changed, so the page is not loaded again and
+  nothing else is drawn: the tab that was chosen stays (which one shows is
+  the class of the left side, outside every place). A request that fails
+  leaves the page as it is (the launcher does not go to its offline page).
+  A place the page does not have is passed over, so a page that stays open
+  over a later change of the server keeps what it knows.
+  `/launcher/fresh/<uk|en>` still answers the three places of the page
+  from before the tabs, in its form, for a launcher left open over that
+  deploy. These addresses alone are sent with a `Content-Security-Policy`
+  that lets that one script run, by its SHA-256, and ask this server.
 - The admin page (token, path and address as in the table). Tabs:
   money (silver and gold, `+500` / `-100`); account (premium hours, set the
   level, experience, reputation with a faction 1 to 4); item (an item of the

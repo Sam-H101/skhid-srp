@@ -21,6 +21,9 @@ use super::registry::{MatchEnd, MatchRegistry, MatchResult, PlayerResult, Result
 /// How long a receive waits before the matches are advanced anyway.
 const RECEIVE_WAIT: Duration = Duration::from_millis(5);
 const HOUSEKEEPING: Duration = Duration::from_secs(1);
+/// How often the registry is told how each match stands
+/// (`MatchRegistry::live_matches`).
+const LIVE_EVERY: Duration = Duration::from_secs(1);
 /// Larger than any client datagram (508 bytes).
 const RECEIVE_BUFFER: usize = 2048;
 /// How many stray addresses are remembered before the list starts over.
@@ -170,6 +173,7 @@ pub(crate) struct Server {
     /// each has a transport in `pending`.
     stray_datagrams: HashMap<SocketAddr, Stray>,
     next_housekeeping: Instant,
+    next_live: Instant,
 }
 
 impl Server {
@@ -194,6 +198,7 @@ impl Server {
             strays_logged: HashSet::new(),
             stray_datagrams: HashMap::new(),
             next_housekeeping: now,
+            next_live: now,
         }
     }
 
@@ -353,6 +358,10 @@ impl Server {
     pub fn poll(&mut self, now: Instant) -> Vec<(SocketAddr, Vec<u8>)> {
         let mut datagrams = Vec::new();
         let mut results = Vec::new();
+        let tell_live = now >= self.next_live;
+        if tell_live {
+            self.next_live = now + LIVE_EVERY;
+        }
         for game in self.games.values_mut() {
             if let Some(formed) = self.registry.formed(game.id) {
                 game.sync_roster(formed, now);
@@ -365,6 +374,9 @@ impl Server {
             }
             self.registry
                 .set_admitting(game.id, game.roster_size(), game.admission_deadline(now));
+            if tell_live {
+                self.registry.set_live(game.id, game.live_now(now));
+            }
             results.extend(game.take_result());
         }
         // Before the clients hear the end: back in the lobby, they ask.

@@ -9,13 +9,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::{self, MapMode};
 use survarium::v026g::match_msgs::MAX_PLAYERS;
 use survarium::v026g::match_msgs::players::Supplies;
-use survarium::v026g::match_msgs::snapshot::PlayerStatistics;
+use survarium::v026g::match_msgs::snapshot::{PlayerStatistics, Standing};
 use survarium::v026g::match_msgs::static_info::{
     MatchOptions, MatchProfile, SCORE_EVENTS, SCORE_WEIGHTS, StaticInfo, StaticInfoError,
 };
@@ -170,12 +170,74 @@ pub(crate) struct Formed {
     pub initial_players: usize,
 }
 
+/// How far a match is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LivePhase {
+    /// Made: its players load the level, and the countdown has not begun.
+    Gathering,
+    /// "Match begins in … seconds".
+    Countdown,
+    /// In play.
+    Playing,
+    /// It has its result, and lingers for its clients to hear the end.
+    Over,
+}
+
+/// What the match loop says of a match it runs ([`MatchRegistry::set_live`]):
+/// the registry is all that the lobby and the web page see of a match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Live {
+    /// When this was true. The times below are counted from it.
+    pub at: Instant,
+    pub phase: LivePhase,
+    /// Each team's players who have not left: before the countdown the
+    /// ones still to come count too.
+    pub players: [u8; 2],
+    /// Since play began.
+    pub played: Option<Duration>,
+    /// Until the time limit, known from the countdown on.
+    pub time_left: Option<Duration>,
+    /// The newest trusted snapshot's standing, and how old that world is.
+    pub standing: Option<(Standing, Duration)>,
+}
+
+/// The score of a match in play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveStanding {
+    /// Batteries brought (modes 2, 3) or tickets left (mode 4), by team.
+    pub points: [u16; 2],
+    /// The team that leads: 0, 1, or [`DRAW`].
+    pub winner: u8,
+    /// How old the world is that said so. The standing is the newest
+    /// trusted snapshot's: it stays behind while the clients disagree.
+    pub age: Duration,
+}
+
+/// A match made and not over, as it is now: for whoever shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveMatch {
+    /// The `maps_dict` id: the map and the mode.
+    pub map_id: u8,
+    pub phase: LivePhase,
+    /// Each team's players who have not left: before the countdown the
+    /// ones still to come count too.
+    pub players: [u8; 2],
+    /// Since play began.
+    pub played: Option<Duration>,
+    /// Until the time limit ends it, known from the countdown on. The
+    /// mode's own rule, or everyone leaving, ends it sooner.
+    pub time_left: Option<Duration>,
+    /// `None` until a world was trusted.
+    pub standing: Option<LiveStanding>,
+}
+
 #[derive(Default)]
 struct Inner {
     matches: HashMap<u32, std::sync::Arc<Formed>>,
     seats: HashMap<u32, Seat>,
     last_id: u32,
     admitting: HashMap<u32, std::time::Instant>,
+    live: HashMap<u32, Live>,
 }
 
 /// A new account could not be appended to a running match. Appended slots
@@ -594,6 +656,54 @@ impl MatchRegistry {
         self.inner().matches.get(&match_id).cloned()
     }
 
+    /// The match loop's word on a match that is open.
+    pub(crate) fn set_live(&self, match_id: u32, live: Live) {
+        let mut inner = self.inner();
+        if inner.matches.contains_key(&match_id) {
+            inner.live.insert(match_id, live);
+        }
+    }
+
+    /// The matches made and not over as they are at `now`, the oldest
+    /// first. One no client has reached yet is gathering its whole roster.
+    pub fn live_matches(&self, now: Instant) -> Vec<LiveMatch> {
+        let inner = self.inner();
+        let mut formed: Vec<_> = inner.matches.values().collect();
+        formed.sort_by_key(|formed| (formed.formed_at, formed.match_id));
+        formed
+            .into_iter()
+            .map(|formed| {
+                let Some(live) = inner.live.get(&formed.match_id) else {
+                    let mut players = [0; 2];
+                    for place in &formed.places {
+                        players[usize::from(place.team.min(1))] += 1;
+                    }
+                    return LiveMatch {
+                        map_id: formed.map.id,
+                        phase: LivePhase::Gathering,
+                        players,
+                        played: None,
+                        time_left: None,
+                        standing: None,
+                    };
+                };
+                let since = now.saturating_duration_since(live.at);
+                LiveMatch {
+                    map_id: formed.map.id,
+                    phase: live.phase,
+                    players: live.players,
+                    played: live.played.map(|played| played + since),
+                    time_left: live.time_left.map(|left| left.saturating_sub(since)),
+                    standing: live.standing.map(|(standing, age)| LiveStanding {
+                        points: standing.points,
+                        winner: standing.winner,
+                        age: age + since,
+                    }),
+                }
+            })
+            .collect()
+    }
+
     /// Every open match and when it was made.
     pub(crate) fn matches(&self) -> Vec<(u32, Instant)> {
         self.inner()
@@ -607,6 +717,7 @@ impl MatchRegistry {
     pub(crate) fn end(&self, match_id: u32) -> Option<std::sync::Arc<Formed>> {
         let mut inner = self.inner();
         inner.admitting.remove(&match_id);
+        inner.live.remove(&match_id);
         inner.seats.retain(|_, seat| seat.match_id != match_id);
         inner.matches.remove(&match_id)
     }

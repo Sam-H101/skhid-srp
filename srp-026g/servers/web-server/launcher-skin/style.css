@@ -25,6 +25,22 @@ table{border-collapse:collapse;table-layout:fixed}
 .l{width:60px}
 .r{width:70px;color:#e7a300;font-weight:bold}
 .none{padding:110px 13px 0 13px;text-align:center;color:#939392}
+/* The online page's two tabs of the left panel: the class of #left says which
+   one shows, and the labels in the heading are amber for it, grey otherwise. */
+h1 span{margin-right:18px;cursor:pointer}
+#tab-live,#left.live #tab-board{color:#939392}
+#tab-live:hover,#left.live #tab-board:hover{color:#fff}
+#left.live #tab-live{color:#e7a300}
+#live,#left.live #board{display:none}
+#left.live #live{display:block}
+#live .m{padding-left:13px}
+#live td.m{color:#fff}
+#live .m i{font-style:normal;color:#939392}
+#live .s{width:56px}
+#live .a{width:76px}
+#live .e{width:62px}
+#live .c{width:70px}
+#live .c b{color:#e7a300}
 .cap{position:absolute;left:0;bottom:0;width:378px;height:23px;padding:9px 13px 0 13px;background:url("@SHADOW@") top left repeat;font-weight:bold;color:#fff;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #left .cap{width:430px}
 .warn{color:#e7a300}

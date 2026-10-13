@@ -1744,3 +1744,149 @@ fn a_client_that_restores_do_not_help_is_put_out_when_the_setting_says_so() {
     assert_eq!(bench.stages().len(), 3);
     assert!(!bench.clients[2].disconnected);
 }
+
+/// What the registry says of the bench's one match now.
+fn live(bench: &Bench) -> crate::v026g::LiveMatch {
+    let mut all = bench.registry.live_matches(bench.now());
+    assert_eq!(all.len(), 1);
+    all.remove(0)
+}
+
+/// The registry is what a page outside the match server reads: it follows a
+/// match from the moment it is made to its end, a second behind at most.
+#[test]
+fn the_registry_says_how_a_match_stands_while_it_runs() {
+    use crate::v026g::{LiveMatch, LivePhase, LiveStanding};
+    use std::time::Duration;
+    use survarium::v026g::match_msgs::snapshot::Tdm;
+    let mut bench = Bench::new(3, MAP_TDM, Settings::default());
+    // Made, and no client has come: the whole roster is expected, by team
+    // (the places are of teams 0, 1, 0).
+    assert_eq!(
+        live(&bench),
+        LiveMatch {
+            map_id: MAP_TDM,
+            phase: LivePhase::Gathering,
+            players: [2, 1],
+            played: None,
+            time_left: None,
+            standing: None,
+        }
+    );
+    // One of three is in: the countdown waits for the second.
+    bench.join(0);
+    bench.run(1_100);
+    let waiting = live(&bench);
+    assert_eq!(waiting.phase, LivePhase::Gathering);
+    assert_eq!(waiting.players, [2, 1]);
+    assert_eq!((waiting.played, waiting.time_left), (None, None));
+
+    // The countdown: the time limit is known from here, 20 s and 15 min on.
+    bench.join(1);
+    bench.join(2);
+    assert_eq!(bench.game().rule_state(), state::COUNTDOWN);
+    bench.run(1_100);
+    let countdown = live(&bench);
+    assert_eq!(countdown.phase, LivePhase::Countdown);
+    assert_eq!(countdown.played, None);
+    let left = countdown.time_left.expect("the time limit");
+    assert!(
+        left > Duration::from_secs(900) && left <= Duration::from_secs(920),
+        "{left:?}"
+    );
+
+    // In play: the two times add up to the match's 15 minutes, and the
+    // standing is the one the clients agree on.
+    settle(&mut bench);
+    bench.run_long(25_000);
+    assert_eq!(bench.game().rule_state(), state::IN_PROCESS);
+    let playing = live(&bench);
+    assert_eq!(playing.phase, LivePhase::Playing);
+    assert_eq!(playing.players, [2, 1]);
+    let played = playing.played.expect("play began");
+    assert!(played < Duration::from_secs(15), "{played:?}");
+    assert_eq!(
+        played + playing.time_left.unwrap(),
+        Duration::from_secs(900)
+    );
+    let standing = playing.standing.expect("a trusted world");
+    assert_eq!((standing.points, standing.winner), ([100, 100], DRAW));
+    assert!(standing.age < Duration::from_secs(10), "{:?}", standing.age);
+
+    // Tickets go: team 0 leads.
+    let at = bench.clock() / 50 * 50 + 100;
+    for client in &mut bench.clients {
+        client.sim.tdm_from = Some((
+            at,
+            Tdm {
+                tickets: [91, 64],
+                alive_players_mask: 0b111,
+                active_players_mask: 0b111,
+            },
+        ));
+    }
+    bench.run_long(8_000);
+    let standing = live(&bench).standing.unwrap();
+    assert_eq!((standing.points, standing.winner), ([91, 64], 0));
+    // Between two words of the match loop the times go on by themselves.
+    let before = live(&bench);
+    bench.ms += 400;
+    let after = live(&bench);
+    bench.ms -= 400;
+    let step = Duration::from_millis(400);
+    assert_eq!(after.played, before.played.map(|played| played + step));
+    assert_eq!(after.time_left, before.time_left.map(|left| left - step));
+    assert_eq!(
+        after.standing,
+        before.standing.map(|standing| LiveStanding {
+            age: standing.age + step,
+            ..standing
+        })
+    );
+
+    // A player who leaves is no longer counted in its team.
+    bench.clients[1].leave();
+    bench.run(1_500);
+    assert_eq!(live(&bench).players, [2, 0]);
+    assert_eq!(live(&bench).phase, LivePhase::Playing);
+
+    // The end: the match has its result and lingers, then it is gone.
+    bench.clients[0].leave();
+    bench.clients[2].leave();
+    bench.run(1_500);
+    assert!(bench.results.try_recv().is_ok());
+    assert!(bench.registry.live_matches(bench.now()).is_empty());
+    bench.assert_no_faults();
+}
+
+/// A match that ends by its own rule is said to be over for the seconds it
+/// lingers, so that nobody shows it as still played.
+#[test]
+fn the_registry_says_a_match_with_its_result_is_over() {
+    use crate::v026g::LivePhase;
+    use survarium::v026g::match_msgs::snapshot::Tdm;
+    let mut bench = Bench::new(2, MAP_TDM, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    bench.run_long(25_000);
+    assert_eq!(live(&bench).phase, LivePhase::Playing);
+    let at = bench.clock() / 50 * 50 + 100;
+    for client in &mut bench.clients {
+        client.sim.tdm_from = Some((
+            at,
+            Tdm {
+                tickets: [37, 0],
+                alive_players_mask: 0b01,
+                active_players_mask: 0b11,
+            },
+        ));
+    }
+    assert!(bench.until(12_000, |bench| bench.results.try_recv().is_ok()));
+    bench.run(1_100);
+    let over = live(&bench);
+    assert_eq!(over.phase, LivePhase::Over);
+    let standing = over.standing.unwrap();
+    assert_eq!((standing.points, standing.winner), ([37, 0], 0));
+    bench.run_long(8_000);
+    assert!(bench.registry.live_matches(bench.now()).is_empty());
+}

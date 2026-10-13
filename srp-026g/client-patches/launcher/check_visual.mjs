@@ -66,7 +66,7 @@ try {
         document.querySelectorAll('#right-container span').forEach(e=>e.textContent='SURVARIUM · СХІД');`);
     const referencePixels = await screenshot('reference-skin');
     const files = (await fs.readdir(output)).filter(f => /^(online-|index-).*\.html$/.test(f)).sort();
-    assert.equal(files.length, 18, 'Expected 8 server fixtures and all 10 local pages');
+    assert.equal(files.length, 24, 'Expected 14 server fixtures and all 10 local pages');
     const results = [];
     for (const file of files) {
         await navigate(path.join(output, file));
@@ -77,8 +77,13 @@ try {
             const discord=document.querySelector('a.discord');
             if(!discord || discord.href!=='https://discord.gg/Pxa4prXfwu' || discord.target!=='_blank') issues.push('missing external Discord link');
             if(discord && (discord.getBoundingClientRect().width===0 || discord.getBoundingClientRect().right>883)) issues.push('Discord link clipped');
-            const left=document.querySelector('#left'), table=left.querySelector('table'), cap=left.querySelector('.cap');
-            if(table && (table.getBoundingClientRect().right>left.getBoundingClientRect().right || table.getBoundingClientRect().bottom>cap.getBoundingClientRect().top)) issues.push('board overflow');
+            const left=document.querySelector('#left'), cap=left.querySelector('.cap');
+            // The board and the matches are two tabs: the one that is not shown has no size.
+            const tabs=[...left.querySelectorAll('#board,#live')].filter(tab=>tab.getBoundingClientRect().height>0);
+            if(left.querySelector('#board') && (tabs.length!==1 || tabs[0].id!==(left.className==='live'?'live':'board'))) issues.push('wrong tab shown');
+            for(const tab of tabs) for(const child of tab.children) if(child.getBoundingClientRect().right>left.getBoundingClientRect().right || child.getBoundingClientRect().bottom>cap.getBoundingClientRect().top) issues.push('board overflow');
+            const heading=left.querySelector('h1');
+            if(heading.scrollWidth>heading.clientWidth || heading.getBoundingClientRect().height!==30) issues.push('heading overflow');
             document.querySelectorAll('.tile').forEach(tile=>{
                 const cap=tile.querySelector('.cap');
                 for(const child of tile.children) if(child!==cap && child.getBoundingClientRect().bottom>cap.getBoundingClientRect().top) issues.push('caption covers content');

@@ -27,7 +27,7 @@ mod launcher;
 mod stats;
 mod v026g;
 
-pub use v026g::{Game, LobbyLink, MatchCounter};
+pub use v026g::{Game, LiveMatch, LivePhase, LiveStanding, LobbyLink, MatchCounter};
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -615,6 +615,13 @@ impl Web {
                     "/api/client-files" => return launcher::client_files(),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(
+                            launcher::language(path, request.lang),
+                            &self.store,
+                            game,
+                        );
+                    }
+                    path if path.starts_with(launcher::FRESH_BEFORE) => {
+                        return launcher::fresh_before(
                             launcher::language(path, request.lang),
                             &self.store,
                             game,
