@@ -1,0 +1,137 @@
+{
+  "target": {
+    "file_size": 12894840,
+    "machine": "i386",
+    "preferred_image_base": "0x00010000",
+    "sections": [
+      {
+        "name": ".text",
+        "raw_offset": 1024,
+        "raw_size": 8775168,
+        "rva": "0x00001000",
+        "va": "0x00011000",
+        "virtual_size": 8775075
+      },
+      {
+        "name": ".rdata",
+        "raw_offset": 8776192,
+        "raw_size": 2021888,
+        "rva": "0x00860000",
+        "va": "0x00870000",
+        "virtual_size": 2021696
+      },
+      {
+        "name": ".data",
+        "raw_offset": 10798080,
+        "raw_size": 598528,
+        "rva": "0x00a4e000",
+        "va": "0x00a5e000",
+        "virtual_size": 159740512
+      },
+      {
+        "name": "STLPORT_",
+        "raw_offset": 11396608,
+        "raw_size": 512,
+        "rva": "0x0a2a6000",
+        "va": "0x0a2b6000",
+        "virtual_size": 32
+      },
+      {
+        "name": ".tls",
+        "raw_offset": 11397120,
+        "raw_size": 512,
+        "rva": "0x0a2a7000",
+        "va": "0x0a2b7000",
+        "virtual_size": 17
+      },
+      {
+        "name": ".rsrc",
+        "raw_offset": 11397632,
+        "raw_size": 562176,
+        "rva": "0x0a2a8000",
+        "va": "0x0a2b8000",
+        "virtual_size": 562132
+      },
+      {
+        "name": ".reloc",
+        "raw_offset": 11959808,
+        "raw_size": 928768,
+        "rva": "0x0a332000",
+        "va": "0x0a342000",
+        "virtual_size": 928472
+      }
+    ],
+    "sha256": "ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153",
+    "version": "026g"
+  },
+  "reference": {
+    "file_size": 10463352,
+    "machine": "i386",
+    "preferred_image_base": "0x00010000",
+    "sections": [
+      {
+        "name": ".text",
+        "raw_offset": 1024,
+        "raw_size": 6885376,
+        "rva": "0x00001000",
+        "va": "0x00011000",
+        "virtual_size": 6884875
+      },
+      {
+        "name": ".rdata",
+        "raw_offset": 6886400,
+        "raw_size": 1855488,
+        "rva": "0x00692000",
+        "va": "0x006a2000",
+        "virtual_size": 1855280
+      },
+      {
+        "name": ".data",
+        "raw_offset": 8741888,
+        "raw_size": 487424,
+        "rva": "0x00857000",
+        "va": "0x00867000",
+        "virtual_size": 82348704
+      },
+      {
+        "name": "STLPORT_",
+        "raw_offset": 9229312,
+        "raw_size": 512,
+        "rva": "0x056e0000",
+        "va": "0x056f0000",
+        "virtual_size": 32
+      },
+      {
+        "name": ".tls",
+        "raw_offset": 9229824,
+        "raw_size": 512,
+        "rva": "0x056e1000",
+        "va": "0x056f1000",
+        "virtual_size": 33
+      },
+      {
+        "name": ".rsrc",
+        "raw_offset": 9230336,
+        "raw_size": 562176,
+        "rva": "0x056e2000",
+        "va": "0x056f2000",
+        "virtual_size": 562132
+      },
+      {
+        "name": ".reloc",
+        "raw_offset": 9792512,
+        "raw_size": 664576,
+        "rva": "0x0576c000",
+        "va": "0x0577c000",
+        "virtual_size": 664256
+      }
+    ],
+    "sha256": "def82eeaed9d544b2e1c1e0ec971f7359c24a942dd52ace6b45e6d82e7c34a0a",
+    "version": "021d"
+  },
+  "reference_pdb_sha256": "7e3624e684d42a42468b0b27288a2a3167485f84ca4938a6b2cba856058a19ca",
+  "addresses": "functions.json values are lists of preferred-image virtual addresses; functions.info.json and abi.json are keyed by those VAs.",
+  "rva_formula": "RVA = listed VA - target.preferred_image_base",
+  "runtime_formula": "Runtime address = actual loaded module base + RVA",
+  "scope": "Accepted non-vendor game and engine labels, with condensed target ABI observations. Unresolved entries and detailed evidence remain in the private archive."
+}
