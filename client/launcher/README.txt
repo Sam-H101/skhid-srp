@@ -1,8 +1,15 @@
-Skhid native launcher (Linux and Windows)
+Skhid native launcher experiment (Linux and Windows)
 
 A native Rust desktop launcher for the existing Survarium 0.26g game. Updates,
 settings and the launcher window run on the host OS. Linux runs the Windows game
 through Wine; Windows starts it directly.
+
+This is an unfinished prototype, not a release-ready launcher. The native UI
+must match the existing patched 0.26g Windows launcher: window layout and size,
+artwork, typography, controls, update progress, embedded server page, and
+localized launcher text and links. The current simplified egui window does
+not meet that requirement. Compare both launchers with the same language,
+server page and update state before treating the port as complete.
 
 Build and run
 
@@ -94,4 +101,4 @@ Tests
 The integration tests start only a localhost server and use synthetic files.
 Set SKHID_NATIVE_EXE to test a release binary. They do not require Wine or the
 game. The unit tests also exercise rollback, interrupted-update recovery and
-locking. Linux/Windows CI builds the native binary and runs the updater tests.
+locking. These checks are run locally; this experiment has no CI workflow.

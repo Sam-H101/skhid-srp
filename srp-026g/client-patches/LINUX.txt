@@ -1,6 +1,9 @@
 SURVARIUM 0.26g - LINUX
 
-NATIVE LAUNCHER
+EXPERIMENTAL NATIVE LAUNCHER
+
+The native launcher is an unfinished prototype. Its current interface does not
+yet match the original Windows launcher; that is required before completion.
 
 Bundles built with --native-launcher include game/binaries/x86/skhid-launcher.
 In those bundles, bash Skhid.sh opens a native Linux window for updates, language
