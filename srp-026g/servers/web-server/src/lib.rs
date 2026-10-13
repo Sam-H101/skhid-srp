@@ -1560,8 +1560,8 @@ fn home(lang: Lang, stats: Stats) -> String {
             },
             lang.tr("Without the launcher", "Без лаунчера"),
             lang.tr(
-                "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game alone, without looking for new files.",
-                "<code>play_skhid.bat</code> у теці <code>game\\binaries\\x86</code> запускає лише гру, без перевірки нових файлів.",
+                "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game alone, without looking for new files. If the game says it is outdated, start <code>Skhid.bat</code>: the launcher brings the new files.",
+                "<code>play_skhid.bat</code> у теці <code>game\\binaries\\x86</code> запускає лише гру, без перевірки нових файлів. Якщо гра каже, що її версія застаріла, запустіть <code>Skhid.bat</code>: лаунчер сам отримає нові файли.",
             ),
         )
     } else {

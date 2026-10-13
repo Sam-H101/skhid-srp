@@ -64,6 +64,13 @@ RUST_LOG=info
 # widen a player's range of levels by one (raise it on a full server).
 # SRP_MATCH_TEAM_SIZE=8
 # SRP_MATCH_SEARCH_STEP_SECONDS=4
+# A game older than a patch revision (what the exe says at its sign-in):
+# `warn` tells it in the general chat how to update, `refuse` also refuses
+# its Play with the game's own "outdated version" message box. Off when
+# left out. The hint is the chat line: name your page in it.
+# SRP_PATCH_REVISION_CHECK=refuse
+# SRP_MIN_PATCH_REVISION=4
+# SRP_UPDATE_HINT=Your game is outdated. Close it and start Skhid.bat: it updates the game. No Skhid.bat? Download the new game files at example.org.
 # A silent client: its lobby link goes after the first (the second for a
 # player in a match), and its session waits the third for the client to
 # connect again by itself.
