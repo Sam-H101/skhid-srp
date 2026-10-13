@@ -15,6 +15,7 @@ import unittest
 import make_client_026g as overlay
 
 SCRIPT = Path(__file__).resolve().parent / 'play_skhid.sh'
+STARTER = Path(__file__).resolve().parent / 'Skhid.sh'
 # Only the bytes inspected by the launcher; no game binary is needed.
 FIXTURE = bytearray(0xf582d)
 FIXTURE[:2] = b'MZ'
@@ -82,9 +83,76 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.exe = self.bin / 'survarium_skhid.exe'
         self.exe.write_bytes(FIXTURE)
 
-    def run_script(self):
-        return subprocess.run([str(self.tools / 'bash'), str(self.script)],
+    def run_script(self, *arguments):
+        return subprocess.run([str(self.tools / 'bash'), str(self.script), *arguments],
             cwd=self.root, env=self.env, text=True, capture_output=True)
+
+    def test_launcher_mode_starts_the_skhid_launcher_in_the_same_wine(self):
+        self.copy_exe()
+        self.exe.write_bytes(PATCHED_FIXTURE)
+        for name in ('launcher_skhid.exe', 'updater_skhid.exe'):
+            (self.bin / name).write_bytes(b'MZ fixture')
+        result = self.run_script('launcher')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        # No game arguments: the launcher passes the language and the rest.
+        self.assertEqual(calls[-1]['args'], ['launcher_skhid.exe'])
+        self.assertEqual(calls[-1]['cwd'], str(self.bin))
+        self.assertIn('d3d11,dxgi=n,b', calls[-1]['dll'])
+        self.assertNotIn(['survarium_skhid.exe'], [c['args'][:1] for c in calls])
+        self.env['TEST_FAIL'] = 'wine:launcher_skhid.exe'
+        result = self.run_script('launcher')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Launcher exited with an error', result.stderr)
+
+    def test_the_starter_beside_game_runs_the_script_with_its_arguments(self):
+        # Skhid.sh in the game's folder, the script where the archive puts it.
+        install = self.root / "install with spaces & apostrophe's"
+        nested = install / 'game/binaries/x86'
+        nested.mkdir(parents=True)
+        starter = install / 'Skhid.sh'
+        starter.write_text(STARTER.read_text())
+        # Unpacked in the wrong place: it says where it belongs, runs nothing.
+        result = subprocess.run([str(self.tools / 'bash'), str(starter)],
+            cwd=self.root, env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('play_skhid.sh was not found', result.stderr)
+        self.assertIn('the one that holds the', result.stderr)
+        self.assertFalse(self.calls.exists())
+        # In its place: the script runs in its own folder, whatever the
+        # caller's folder, and gets the arguments.
+        (nested / 'play_skhid.sh').write_text(self.script.read_text())
+        (nested / 'survarium_skhid.exe').write_bytes(PATCHED_FIXTURE)
+        for name in ('launcher_skhid.exe', 'updater_skhid.exe'):
+            (nested / name).write_bytes(b'MZ fixture')
+        for arguments, started in (((), 'survarium_skhid.exe'), (('launcher',), 'launcher_skhid.exe')):
+            result = subprocess.run([str(self.tools / 'bash'), str(starter), *arguments],
+                cwd=self.root, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            last = [json.loads(s) for s in self.calls.read_text().splitlines()][-1]
+            self.assertEqual(last['args'][0], started)
+            self.assertEqual(last['cwd'], str(nested))
+        result = subprocess.run([str(self.tools / 'bash'), str(starter), 'other'],
+            cwd=self.root, env=self.env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Usage', result.stderr)
+
+    def test_launcher_mode_needs_the_launcher_and_its_updater(self):
+        self.copy_exe()
+        (self.bin / 'launcher_skhid.exe').write_bytes(b'MZ fixture')
+        result = self.run_script('launcher')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('updater_skhid.exe', result.stderr)
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.exe.read_bytes(), FIXTURE)
+
+    def test_other_arguments_are_refused(self):
+        self.copy_exe()
+        for arguments in (('game',), ('launcher', 'more'), ('',  'x')):
+            result = self.run_script(*arguments)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Usage', result.stderr)
+        self.assertFalse(self.calls.exists())
 
     def test_missing_dependencies_fail_before_changes(self):
         for name in ('wine', 'winetricks', 'wineserver'):

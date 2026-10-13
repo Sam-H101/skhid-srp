@@ -112,6 +112,7 @@ impl Web {
                     maintenance: self.store.minutes_to_maintenance(),
                     registrations_open: self.store.registrations_open(),
                     v026g: true,
+                    launcher: crate::launcher::offers_launcher(),
                 }),
                 "",
             ),

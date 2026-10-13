@@ -26,6 +26,7 @@ published.
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
+| `launcher/` | The game's launcher made to work again, and to keep these files current: its patch tool, the one piece of new code, the self-test and its own README. Its updater is `../../client/updater` |
 
 ## How to apply
 
@@ -55,9 +56,23 @@ It writes `game/binaries/x86/survarium_skhid.exe`,
 `game/binaries/x86/play_skhid.bat` and `play_skhid.sh` (Windows and Linux launchers),
 `game/resources/ssl/survarium_login_server.crt` and
 `README.txt` and `LINUX.txt` into the new folder, or a ZIP with `--pack-zip`, to be copied over
-the game. These are
+the game. With `--no-launcher` these are
 the only seven files shipped; source, symbols, tests and development tools are
-excluded. Back up the original `bugtrap.dll` and login certificate before
+excluded.
+
+Without that option it adds the launcher (`launcher/README.md`), made from the
+game folder's own `survarium_launcher.exe`: `game/binaries/x86/launcher_skhid.exe`,
+`updater_skhid.exe` (build it first with `../../client/updater/build.sh`, or pass
+`--updater=<path>`), `updater_skhid.url`, the ten pages of
+`game/binaries/x86/launcher_skhid/`, and `Skhid.bat` and `Skhid.sh` at the top, beside `game/`
+(`Skhid.sh` is the file of that name here: on Linux, `bash Skhid.sh` in the game's folder runs
+`play_skhid.sh` from there).
+`--site=https://<host>` names the server's web
+page when it is not `https://<host of --server>`. A player then unpacks the ZIP into
+the game's folder (the one that holds `game`) once and double-clicks `Skhid.bat`,
+which starts `launcher_skhid.exe`: it looks for a newer ZIP on that site, installs it, and its
+PLAY button starts the game in the language chosen in it. The same input gives the
+same ZIP byte for byte, which the updater relies on. Back up the original `bugtrap.dll` and login certificate before
 installing. `--check` does every check and writes nothing. Existing ZIPs are
 never overwritten. `--bugtrap=<path>` selects another built DLL; by default
 the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
@@ -81,6 +96,9 @@ game settings. Full builds use the embedded server; edit `server=` at the top
 of the script for an override. Certificate-only builds fill in that value.
 Both launchers use the builder's `--localization` setting. See `LINUX.txt` for
 details, including the English-keyboard-layout startup workaround.
+
+`bash play_skhid.sh launcher` starts `launcher_skhid.exe` in the same Wine
+prefix instead of the game (not run under Wine by us yet).
 
 The launcher is executable in folder output and has Unix executable permissions
 in ZIP metadata. Launcher and packaging tests use synthetic fixtures and mocked
