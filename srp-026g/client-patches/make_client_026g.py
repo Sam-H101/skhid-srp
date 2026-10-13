@@ -70,11 +70,14 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/game/binaries/x86/launcher_skhid/index-*.html
         what the launcher shows while and when the server's page does not
         load (launcher/launcher_pages.py).
+    <output>/Skhid.bat
+        the one file a player starts: it starts launcher_skhid.exe, and
+        says where the files belong when it is not found.
     <output>/README.txt
         what to do with it, and where the original game is had.
 
-A player copies the overlay's `game` folder over the game's own `game`
-folder and starts launcher_skhid.exe (or play_skhid.bat: the game alone, no
+A player unpacks the overlay into the game's folder (the one that holds
+`game`) and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash play_skhid.sh on Linux. --pack-zip directly makes the
 download the web page offers (SRP_DOWNLOAD_FILE), which is also what the
 updater installs from then on. Only the player files are included: no
@@ -108,6 +111,9 @@ GAME_URL = (
 )
 SRP_CERT = os.path.join(HERE, "survarium_login_server.crt")
 EXE_DIR = os.path.join("binaries", "x86")
+EXE_DIR_WINDOWS = "binaries\\x86"
+# The one file a player starts: beside the `game` folder.
+STARTER = "Skhid.bat"
 CERT_REL = os.path.join("resources", "ssl", "survarium_login_server.crt")
 LINUX_LAUNCHER = os.path.join("game", EXE_DIR, "play_skhid.sh")
 # The localizations the client knows (login_chat.md: the language byte).
@@ -205,6 +211,33 @@ def bat(server, localization, embedded=False):
     return "\r\n".join(lines).encode("ascii")
 
 
+def starter():
+    """`Skhid.bat`, beside the game's `game` folder: one file to double-click
+    in the place of a walk to game\\binaries\\x86. It starts the launcher and
+    nothing else; a player who unpacked the archive somewhere else is told
+    where it belongs."""
+    launcher = f"%~dp0game\\{EXE_DIR_WINDOWS}\\{L.LAUNCHER_NAME}"
+    lines = [
+        "@echo off",
+        "rem Starts the Skhid launcher. This file belongs in the game's folder,",
+        "rem beside the folder named game.",
+        f'if not exist "{launcher}" goto missing',
+        f'start "" /d "%~dp0game\\{EXE_DIR_WINDOWS}" "{launcher}"',
+        "exit /b 0",
+        ":missing",
+        f"echo {L.LAUNCHER_NAME} was not found in",
+        f'echo   "%~dp0game\\{EXE_DIR_WINDOWS}"',
+        "echo.",
+        "echo Unpack the Skhid files into the game's folder, the one that holds the",
+        "echo folder named game, and start Skhid.bat from there.",
+        "echo.",
+        "pause",
+        "exit /b 1",
+        "",
+    ]
+    return "\r\n".join(lines).encode("ascii")
+
+
 def sh(server, localization, embedded=False):
     with open(os.path.join(HERE, "play_skhid.sh"), "rb") as source:
         # Windows checkouts may use CRLF; Bash and the substitutions need LF.
@@ -234,24 +267,32 @@ def readme(server, localization, description, files, embedded=False, site=None):
         "   2.9 GB (7-Zip opens it), and unpack it:",
         f"   {GAME_URL}",
         "   The game is in its Survarium\\game folder.",
-        "2. Copy the `game` folder of this archive over the game's own `game`",
-        "   folder. It adds survarium_skhid.exe, play_skhid.bat and play_skhid.sh to",
-        "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
-        "   game\\resources\\ssl\\survarium_login_server.crt. Back up those two",
-        "   original files first. The game's own survarium.exe is not changed.",
     ]
     if site:
         lines += [
-            "   It also adds launcher_skhid.exe and updater_skhid.exe there, and the",
-            "   folder launcher_skhid with the launcher's own pages.",
-            "3. Windows: double-click game\\binaries\\x86\\launcher_skhid.exe. It looks",
-            "   for newer Skhid files, installs them, and its PLAY button starts the",
-            "   game in the language chosen at its top. (play_skhid.bat starts the",
-            "   game alone, without looking for updates.)",
+            "2. Unpack this archive into that Survarium folder, the one that holds",
+            "   the `game` folder, and say yes when asked to replace files. Two of the",
+            "   game's files are replaced: game\\binaries\\x86\\bugtrap.dll and",
+            "   game\\resources\\ssl\\survarium_login_server.crt. Back them up first if",
+            "   you want the originals. The game's own survarium.exe is not changed.",
+            f"3. Windows: double-click {STARTER} in that folder (Windows may show it as",
+            f"   \"{STARTER.rsplit('.', 1)[0]}\"). The launcher opens: choose your language at its top and",
+            "   press PLAY. If Windows warns about an unknown publisher, let it run:",
+            "   these files are not signed.",
             "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
             "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
             "4. Sign in with any user name and password. A new name is registered on its",
             "   first sign-in; remember the password.",
+            "",
+            "You download this archive once: each time the launcher starts, it looks",
+            "for newer Skhid files and installs them by itself.",
+            "",
+            "WHAT THE ARCHIVE ADDS",
+            f"{STARTER} beside the `game` folder: it starts the launcher, nothing else.",
+            "In game\\binaries\\x86: survarium_skhid.exe (the game for this server),",
+            "launcher_skhid.exe, updater_skhid.exe with updater_skhid.url, the folder",
+            "launcher_skhid (the launcher's own pages), and play_skhid.bat and",
+            "play_skhid.sh, which start the game alone, without looking for updates.",
             "",
             "THE LAUNCHER AND ITS UPDATES",
             "launcher_skhid.exe is the game's own launcher, changed to work without an",
@@ -268,6 +309,11 @@ def readme(server, localization, description, files, embedded=False, site=None):
         ]
     else:
         lines += [
+            "2. Copy the `game` folder of this archive over the game's own `game`",
+            "   folder. It adds survarium_skhid.exe, play_skhid.bat and play_skhid.sh to",
+            "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
+            "   game\\resources\\ssl\\survarium_login_server.crt. Back up those two",
+            "   original files first. The game's own survarium.exe is not changed.",
             "3. Windows: double-click game\\binaries\\x86\\play_skhid.bat.",
             "   Linux: install Wine and Winetricks, then run bash play_skhid.sh",
             "   from game/binaries/x86. See LINUX.txt for setup and troubleshooting.",
@@ -390,6 +436,7 @@ def main():
             (os.path.join("game", EXE_DIR, L.LAUNCHER_NAME), bytes(launcher_exe)),
             (os.path.join("game", EXE_DIR, L.UPDATER_NAME), read_updater(updater_path)),
             (os.path.join("game", EXE_DIR, "updater_skhid.url"), (site + "\r\n").encode("ascii")),
+            (STARTER, starter()),
         ]
         files += [(os.path.join("game", EXE_DIR, L.PAGES_DIR, name), data)
                   for name, data in sorted(launcher_pages.pages(site).items())]

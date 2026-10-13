@@ -52,14 +52,18 @@ python ../make_client_026g.py <game folder> <new.zip> --pack-zip --server=<host>
 In the ZIP they are, all in `game/binaries/x86/`: `launcher_skhid.exe`,
 `updater_skhid.exe`, `updater_skhid.url` (the site, one line) and the folder
 `launcher_skhid/` with `index-<code>.html` and `index-blank-<code>.html` for
-`en`, `ru`, `ua`, `de`, `pl`.
+`en`, `ru`, `ua`, `de`, `pl`. At the top of the ZIP, beside `game/`, is
+`Skhid.bat`: the one file a player starts. It starts `launcher_skhid.exe`
+in its folder and does nothing else; if the launcher is not where it looks
+(the ZIP was unpacked somewhere else), it says where the files belong.
 
 The same input gives the same ZIP byte for byte. That matters: the updater
 installs whenever the ZIP's checksum changes.
 
 ## What a player sees
 
-1. Double-click `launcher_skhid.exe`. The launcher's window opens as it
+1. Double-click `Skhid.bat` in the game's folder (or `launcher_skhid.exe`
+   itself in `game\binaries\x86`). The launcher's window opens as it
    always looked, with the server's page in it. The line at the bottom says
    "Checking game version...".
 2. `updater_skhid.exe` asks the server which ZIP it offers now. If it is the
@@ -334,8 +338,12 @@ whole protocol: `../../docs/notes/launcher.md`.
   closed); a changed game exe repaired at the next start; a new ZIP with
   another launcher in it (the launcher replaced itself and came up again);
   the server stopped (the local page, the message, PLAY enabled).
-- `selftest_launcher_026g.py`: all checks. `test_release_overlay.py`: 9
-  tests. `test_linux_launcher.py`: 24 tests (in WSL).
+- `selftest_launcher_026g.py`: all checks. `test_release_overlay.py`: 10
+  tests; one runs the real `Skhid.bat` in a folder with a space and a
+  bracket in its name, with a stand-in for the launcher (it was started by
+  its full path, in its own folder), and without the launcher (the text
+  that says where the files belong). `test_linux_launcher.py`: 24 tests
+  (in WSL).
 
 **Not run:** Wine (`bash play_skhid.sh launcher`); another Windows than 11;
 the real game started from the launcher (the stand-in was); the page and
@@ -367,4 +375,10 @@ real game's installation and service.
 2. Build the ZIP with `make_client_026g.py --pack-zip` for that server and
    put it where `SRP_DOWNLOAD_FILE` points. Players who have the launcher
    get it at their next start; the others take it from the page once.
+   The site's "How to play" follows the file: while the ZIP it offers holds
+   `launcher_skhid.exe`, the steps say to unpack it into the game's folder
+   once, double-click `Skhid.bat` and press PLAY, with the start script and
+   the command line folded under "Without the launcher"; for a ZIP without
+   it they are the steps as before. Nothing is
+   set by hand and no restart is needed.
 3. From then on a release is: build the ZIP, replace the file.

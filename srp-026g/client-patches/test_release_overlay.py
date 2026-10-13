@@ -3,13 +3,20 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 import zipfile
 
 import make_client_026g as overlay
+
+# A program that writes down how it was started (client/updater/tests).
+STAND_IN = Path(overlay.HERE, '..', '..', 'client', 'updater', 'tests', 'fake_exe', 'target',
+                'i686-pc-windows-msvc', 'release', 'fake-exe.exe').resolve()
 
 
 class ReleaseTests(unittest.TestCase):
@@ -46,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
             'game/resources/ssl/survarium_login_server.crt'}
         self.names = self.without_launcher | {
             'game/binaries/x86/launcher_skhid.exe', 'game/binaries/x86/updater_skhid.exe',
-            'game/binaries/x86/updater_skhid.url',
+            'game/binaries/x86/updater_skhid.url', 'Skhid.bat',
         } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
              for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
 
@@ -99,8 +106,46 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('href="https://release.example/"', offline)
         self.assertNotIn('survarium.com', offline)
         readme = paths['README.txt'].read_text(encoding='utf-8')
-        self.assertIn('double-click game\\binaries\\x86\\launcher_skhid.exe', readme)
+        # One file to start, beside `game`; nothing to type, and the archive
+        # is downloaded once.
+        self.assertIn('double-click Skhid.bat in that folder', readme)
+        self.assertIn('You download this archive once', readme)
+        self.assertNotIn('double-click game\\binaries', readme)
         self.assertIn('asks https://release.example whether', readme)
+        starter = paths['Skhid.bat'].read_bytes()
+        self.assertIn(b'start "" /d "%~dp0game\\binaries\\x86" "%~dp0game\\binaries\\x86\\launcher_skhid.exe"\r\n',
+                      starter)
+        self.assertEqual(starter.count(b'\n'), starter.count(b'\r\n'))
+
+    @unittest.skipUnless(os.name == 'nt' and STAND_IN.is_file(),
+                         'Windows, and the stand-in exe of client/updater/tests (build.sh there)')
+    def test_the_starter_starts_the_launcher_from_its_folder(self):
+        # A path with a space and a bracket, as a player's folder may have.
+        install = self.root / 'My games (old)' / 'Survarium'
+        folder = install / 'game' / 'binaries' / 'x86'
+        folder.mkdir(parents=True)
+        (install / 'Skhid.bat').write_bytes(overlay.starter())
+        run = lambda: subprocess.run(  # noqa: E731
+            ['cmd.exe', '/d', '/c', str(install / 'Skhid.bat')], cwd=self.root, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=60)
+        # Unpacked in the wrong place: it says where it belongs.
+        missing = run()
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn(b'launcher_skhid.exe was not found', missing.stdout)
+        self.assertIn(b'the one that holds the', missing.stdout)
+        # In its place: the launcher is started, in its own folder.
+        launcher = folder / 'launcher_skhid.exe'
+        shutil.copyfile(STAND_IN, launcher)
+        started = run()
+        self.assertEqual((started.returncode, started.stdout, started.stderr), (0, b'', b''))
+        note = Path(str(launcher) + '.started.txt')
+        for _ in range(100):
+            if note.is_file() and note.stat().st_size:
+                break
+            time.sleep(0.1)
+        command_line, working_folder = note.read_bytes().decode('utf-16').splitlines()[:2]
+        self.assertEqual(command_line.strip().strip('"').lower(), str(launcher).lower())
+        self.assertEqual(working_folder.lower(), str(folder).lower())
 
     def test_the_same_input_gives_the_same_archive(self):
         # The updater installs whenever the archive's checksum changes, so a

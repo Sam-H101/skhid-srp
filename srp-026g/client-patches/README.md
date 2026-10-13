@@ -63,10 +63,12 @@ excluded.
 Without that option it adds the launcher (`launcher/README.md`), made from the
 game folder's own `survarium_launcher.exe`: `game/binaries/x86/launcher_skhid.exe`,
 `updater_skhid.exe` (build it first with `../../client/updater/build.sh`, or pass
-`--updater=<path>`), `updater_skhid.url` and the ten pages of
-`game/binaries/x86/launcher_skhid/`. `--site=https://<host>` names the server's web
-page when it is not `https://<host of --server>`. A player then starts
-`launcher_skhid.exe`: it looks for a newer ZIP on that site, installs it, and its
+`--updater=<path>`), `updater_skhid.url`, the ten pages of
+`game/binaries/x86/launcher_skhid/`, and `Skhid.bat` at the top, beside `game/`.
+`--site=https://<host>` names the server's web
+page when it is not `https://<host of --server>`. A player then unpacks the ZIP into
+the game's folder (the one that holds `game`) once and double-clicks `Skhid.bat`,
+which starts `launcher_skhid.exe`: it looks for a newer ZIP on that site, installs it, and its
 PLAY button starts the game in the language chosen in it. The same input gives the
 same ZIP byte for byte, which the updater relies on. Back up the original `bugtrap.dll` and login certificate before
 installing. `--check` does every check and writes nothing. Existing ZIPs are
