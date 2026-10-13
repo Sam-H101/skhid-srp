@@ -10,6 +10,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GENERIC_READ,
     GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, SYSTEMTIME,
 };
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CreateDirectoryW, CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FindClose,
@@ -514,19 +515,82 @@ fn ends_with_us(process: &Handle) -> Option<Handle> {
     (set != 0 && unsafe { AssignProcessToJobObject(job.0, process.0) } != 0).then_some(job)
 }
 
+/// A new file (over one of the same name) that a program started by this
+/// one may write to as its output; others may read it meanwhile.
+fn open_output(path: &str) -> Result<Handle, Code> {
+    let inherited = SECURITY_ATTRIBUTES {
+        nLength: core::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 1,
+    };
+    let handle = unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ,
+            &inherited,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(last_error())
+    } else {
+        Ok(Handle(handle))
+    }
+}
+
+/// The end of a file: its last `limit` bytes, or all of it when it is
+/// shorter.
+pub fn read_tail(path: &str, limit: usize) -> Result<Vec<u8>, Code> {
+    let file = open_read(path)?;
+    let mut size = 0_i64;
+    if unsafe { GetFileSizeEx(file.0, &mut size) } == 0 {
+        return Err(last_error());
+    }
+    let skipped = (size.max(0) as u64).saturating_sub(limit as u64);
+    // 0 = FILE_BEGIN.
+    if unsafe { SetFilePointerEx(file.0, skipped as i64, null_mut(), 0) } == 0 {
+        return Err(last_error());
+    }
+    let mut data = alloc::vec![0_u8; limit];
+    let mut filled = 0;
+    while filled < data.len() {
+        match read_some(&file, &mut data[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    data.truncate(filled);
+    Ok(data)
+}
+
 /// Runs the pinned extractor, pumping cancellation while it works. A cancelled
 /// process is terminated and reaped before the caller removes staging files.
+/// What the extractor prints (its messages and its errors) goes to the file
+/// `output`; when that file cannot be made, the extractor runs all the same
+/// and what it prints is lost.
 pub fn run_wait(
     application: &str,
     command: &str,
     folder: &str,
+    output: &str,
     pump: &mut dyn FnMut() -> bool,
 ) -> Result<u32, Code> {
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+        CREATE_NO_WINDOW, GetExitCodeProcess, STARTF_USESTDHANDLES, TerminateProcess,
+        WaitForSingleObject,
     };
     let mut startup: STARTUPINFOW = unsafe { core::mem::zeroed() };
     startup.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
+    // Closed when this function returns: the caller then reads the file.
+    let output = open_output(output).ok();
+    if let Some(output) = &output {
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = output.0;
+        startup.hStdError = output.0;
+    }
     let mut process: PROCESS_INFORMATION = unsafe { core::mem::zeroed() };
     let mut command = wide(command);
     if unsafe {
@@ -535,7 +599,9 @@ pub fn run_wait(
             command.as_mut_ptr(),
             null(),
             null(),
-            0,
+            // Of the handles this program opens, only the output file can
+            // be inherited.
+            i32::from(output.is_some()),
             CREATE_NO_WINDOW,
             null(),
             wide(folder).as_ptr(),

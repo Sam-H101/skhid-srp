@@ -95,6 +95,16 @@ class GameDownloadTest(unittest.TestCase):
         self.log = (self.x86 / "updater_skhid.log").read_text()
         return result.returncode
 
+    def cache_archive(self):
+        # The pinned archive as a finished download in the game folder.
+        archive = Path(os.environ["SKHID_TEST_GAME_ARCHIVE"])
+        cached = self.game / ".skhid-game.7z"
+        try:
+            os.link(archive, cached)
+        except OSError:
+            shutil.copyfile(archive, cached)
+        return cached
+
     def assert_rejected(self, reason):
         self.assertEqual(self.run_updater(), 1, self.log)
         self.assertIn(reason, self.log)
@@ -225,16 +235,46 @@ class GameDownloadTest(unittest.TestCase):
         # The extractor is a file of the Skhid archive: it stays.
         self.assertEqual(self.extractor.read_bytes(), EXTRACTOR.read_bytes())
         self.assertFalse(list(self.game.glob(".skhid-extract-*")))
+        # What the extractor printed is in the log, and its file is gone.
+        self.assertIn(" 7zr: Everything is Ok", self.log)
+        self.assertIn("the extractor ended with exit 0", self.log)
+        self.assertFalse((self.x86 / "updater_skhid.7zr.txt").exists())
+
+    @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE") and os.name == "nt",
+                         "needs the pinned archive; has Windows refuse the extractor's files")
+    def test_what_a_failed_extractor_printed_is_in_the_log(self):
+        self.cache_archive()
+        # New folders in the game folder may hold folders but no files: the
+        # extractor makes its folders and is refused each of the five files.
+        # `binaries` keeps the rights it has, so the updater's own files
+        # beside it are written as ever.
+        everyone = "*S-1-1-0"
+        subprocess.run(["icacls", str(self.game / "binaries"), "/inheritance:d"],
+                       check=True, capture_output=True)
+        subprocess.run(["icacls", str(self.game), "/deny", everyone + ":(CI)(IO)(WD)"],
+                       check=True, capture_output=True)
+        self.addCleanup(subprocess.run, ["icacls", str(self.game), "/remove:d", everyone],
+                        capture_output=True)
+        self.assertEqual(self.run_updater(timeout=900), 1, self.log)
+        self.assertIn("the extractor ended with exit 2", self.log)
+        self.assertIn("The game extractor failed (exit 2)", self.log)
+        refused = [line for line in self.log.splitlines()
+                   if " 7zr: ERROR:" in line and line.endswith("survarium.exe")]
+        self.assertTrue(refused, self.log)
+        self.assertIn(" 7zr: Sub items Errors: 5", self.log)
+        self.assertFalse((self.x86 / "updater_skhid.7zr.txt").exists())
+        # Nothing was installed, nothing is left, the download is kept.
+        self.assertFalse((self.x86 / "survarium.exe").exists())
+        self.assertFalse((self.game / "resources.db").exists())
+        self.assertEqual((self.x86 / "survarium_skhid.exe").read_bytes(), self.old)
+        self.assertFalse(list(self.game.glob(".skhid-extract-*")))
+        self.assertEqual((self.game / ".skhid-game.7z").stat().st_size, GAME_SIZE)
+        self.assertNotIn("/game", self.requests)
 
     @unittest.skipUnless(os.environ.get("SKHID_TEST_GAME_ARCHIVE") and os.name == "nt",
                          "needs the pinned archive; kills the updater as Windows' task manager would")
     def test_an_updater_killed_while_extracting_leaves_nothing_for_good(self):
-        archive = Path(os.environ["SKHID_TEST_GAME_ARCHIVE"])
-        cached = self.game / ".skhid-game.7z"
-        try:
-            os.link(archive, cached)
-        except OSError:
-            shutil.copyfile(archive, cached)
+        cached = self.cache_archive()
         updater = subprocess.Popen([str(self.exe), "check", "quiet"],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(updater.kill)
@@ -264,9 +304,12 @@ class GameDownloadTest(unittest.TestCase):
             time.sleep(0.5)
         self.assertFalse(extractors(), "the extractor outlived the updater")
         self.assertFalse((self.x86 / "survarium.exe").exists())
+        self.assertTrue((self.x86 / "updater_skhid.7zr.txt").exists())
         # The next start removes what was left, takes the archive that is
         # there (hashed again) and installs.
         self.assertEqual(self.run_updater(timeout=900), 0, self.log)
+        self.assertIn("what the extractor printed in an attempt that was cut short", self.log)
+        self.assertFalse((self.x86 / "updater_skhid.7zr.txt").exists())
         self.assertIn("removed a left-over extraction folder", self.log)
         self.assertIn("reusing verified download", self.log)
         self.assertNotIn("/game", self.requests)
