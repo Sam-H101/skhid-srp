@@ -161,6 +161,10 @@ pub struct Account {
     /// moved it.
     pub rating: u16,
     pub rating_before: u16,
+    /// What the sides of a match are made with, beside its gear and its
+    /// level: not the ranking's rating, and shown to nobody
+    /// ([`super::balance`]).
+    pub balance: super::balance::Balance,
     pub kits: Vec<Kit>,
     /// The id of the kit it plays.
     pub active_kit: u32,
@@ -238,6 +242,7 @@ impl Account {
             quest_faction: 0,
             rating: super::pay::START_RATING,
             rating_before: super::pay::START_RATING,
+            balance: Default::default(),
             kits: (1..=KITS as u32).map(Kit::empty).collect(),
             active_kit: 1,
             autobuy: false,

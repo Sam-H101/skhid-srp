@@ -116,7 +116,7 @@ What else is new:
 | Rule | Tag |
 |---|---|
 | A match is two sides of at most `SRP_MATCH_TEAM_SIZE` players (10 since 2026-10-13, 8 before; 1..=10) | 10: the client's roster of 20 (PROVEN); the wiki of Feb 2015 says "up to 8" |
-| A squad stays on one side; the sides are as even as the squads allow, first in players, then in the sum of levels | choice |
+| A squad stays on one side; the sides are at most a player apart when the squads allow it, and among those splits they count as alike as can be (§8; until 2026-10-13: even in players, then in the sum of levels) | choice |
 | **A squad is one party, and a match needs two parties**: two players alone, or a squad and at least one player who is not of it (alone, or of another squad). The gather window starts with the second party | the owner's rule, 2026-10-12 |
 | A squad is looked for by its highest member | LIKELY (as the kits of one account are) |
 | A match is formed around a waiting player (the longest waiting first) from the players whose level is in its range: `min − w ..= max + w`, `w = its wait / step` | the range: PROVEN as what the client shows; that the server matched by it: LIKELY |
@@ -190,6 +190,10 @@ Schema step 5 of the `g26_*` tables (`g26_meta`): `g26_map_plays (account_id, ma
 primary key `(account_id, map)`. Additive; an account of before has no rows (has played
 nothing). Tested from version 4.
 
+Schema step 7: `g26_balance (account_id, rating, matches)`, the balance
+rating of §8.3. Additive; an account of before has no row (the average, no
+match). A build of before refuses the file once the step is made.
+
 ## 7. Not done / open
 
 - The original's step and whether its range was symmetric in practice: unknown; the client only
@@ -198,6 +202,134 @@ nothing). Tested from version 4.
   (§4).
 - New-player protection in the matchmaker (the account's `protection` byte): not used.
 - Nothing here was seen in a live client: the search screen's range and columns want a look.
+
+## 8. The sides: what a player counts for — choice (2026-10-13)
+
+Code: `crates/session/src/v026g/balance.rs` (the weights, the balance rating),
+`crates/session/src/matchmaking.rs` (`seat_balanced`, `set_strengths`,
+`set_player_value`), `servers/lobby-server/src/v026g/play.rs` (`strength_of`, the
+log line), `crates/session/src/v026g/rewards.rs` (`balance_changes`),
+`persist/balance.rs` (`g26_balance`, schema step 7).
+
+Nothing of this is in the client: it is srp's own rule, from the players'
+server's matches of 2026-10-12 and 13.
+
+### 8.1 What was found
+
+106 matches were made, 88 had a winner (no draw, not left by a whole side).
+
+| | |
+|---|---|
+| The side with a player more | won 35 of 38 (3 players: 14 of 14; 5: 9 of 12; 7: 6 of 6; 9 and more: 6 of 6) |
+| Odd counts where the smaller side had the higher gear sum by 1 to 6 | the bigger side still won 9 of 10 |
+| Even counts, gear sums 1 or 2 apart | the higher side won 8, lost 6 |
+| Even counts, gear sums 3 to 5 apart | won 11, lost 5 |
+| A squad in the match (57 of 106) | the mean gap of the gear sums was 2.6 to 2.7; the same players with no squad could be split to 0.7 to 1.5 |
+
+Each match's winner said from the others (logistic fit, no intercept; the
+error is the mean log loss, a coin is 0.693), with what was known before it:
+
+| Known | Right | Error |
+|---|---|---|
+| The players' counts | 53 of 87 | 0.522 |
+| + gear level (§1) | 62 | 0.483 |
+| + the account's level | 64 | 0.463 |
+| + both | 66 | 0.456 |
+| + both and a rating of the earlier results | 70 | 0.440 |
+| The ranking's rating (replayed) instead | 66 of 88 | 0.473 |
+
+The differences past the first two rows are within what 88 matches can tell.
+The ranking's rating (`Account::rating`) says little: it moves by 4 at most,
+by the same for every player of a side, whatever the sides' sizes.
+
+### 8.2 The rule
+
+A side **counts** the sum, over its players, of
+
+`SRP_BALANCE_PLAYER` + gear level + `SRP_BALANCE_PLAYER_LEVEL` × account level
++ `SRP_BALANCE_RATING` × trust × balance rating
+
+in gear levels (defaults 12, 1.5, 4). The gear level is §1's `min`; the
+account's level is `Account::level` (its skill points); trust is
+`matches / (matches + SRP_BALANCE_TRUST_MATCHES)` (default 5), 0 for a rating
+of no match.
+
+`seat_balanced` takes, of all splits: no side over `SRP_MATCH_TEAM_SIZE`; the
+sides at most one player apart when the squads allow it; then the two sides
+counting as alike as can be. So:
+
+- An even count is split as before, by what the players count for (now with
+  the level and the rating, not the gear alone).
+- **An odd count: the side with a player more has `SRP_BALANCE_PLAYER` more
+  to make up, so the stronger players are the side of fewer.** It is never
+  more than one player apart for this. In a small match there is not that
+  much to give (five players of gear 0 to 6: about 4 gear levels), so the
+  bigger side stays ahead; the rule only lessens it.
+- `SRP_BALANCE_PLAYER=0`, `SRP_BALANCE_PLAYER_LEVEL=0`, `SRP_BALANCE_RATING=0`
+  is the rule of before.
+
+The lobby gives the queue each waiting player's number before every poll
+(`refresh_search_levels` → `Matchmaking::set_strengths`), without touching
+anybody's wait. A queue that was given none counts a player for its level
+(0.21d's entry, the tests).
+
+The weights are the fit's, in gear levels: with the rating a player is 15, a
+level 1.2, a rating point 3.9; without it 12 and 1.5. On the same rosters the
+splits were the same for a player's value from 8 to 12. They are settings
+because 88 matches are few: fit them again.
+
+### 8.3 The balance rating
+
+Kept per account (`Account::balance`: thousandths of a point and the matches
+that moved it), shown to nobody, and not the ranking's. 0 is the average.
+
+At the end of a match with a trusted winner (`balance::changes`):
+
+1. `apart` = the sum of the ratings of team 0 − of team 1 + 2.2 × (players
+   of team 0 − of team 1). 2.2 is what a player more was worth (the fit).
+2. Team 0 was expected to win with `1 / (1 + e^(−apart))`.
+3. Each player moves by `step × (result − expected)`, the result 1 for a
+   win, 0 for a loss, 0.5 for a draw; `step = 0.8 × (1 + 3 / (1 + its
+   matches)) × 2 / (players in the match)`.
+
+So winning with a player more moves little and losing with one much; a new
+player's rating moves four times as far as an old one's; and the step is
+shared among the players, so a match of seven a side moves its sides as far
+as a duel (a step for each player called a seven against seven at 99 to 1,
+and it was lost: live, 2026-10-13).
+
+Who is counted: the players who were in the match (the ranking's: one who
+left has its team's result and nothing more; one whose game never got in is
+not counted and not moved). No change: a match with a test bot, with no
+trusted result, with one side, or left by a whole side (its winner is who
+stayed).
+
+Variants tried on the same matches (a step for each player or shared, new
+players faster or not, draws counted or not, steps 0.2 to 3.2): all within
+0.01 to 0.03 of each other. The shared step with faster new players was
+taken for the reason above, not for its error.
+
+### 8.4 The log
+
+One line a match, after "made for": each side's sum, and for each player
+what it counts for and why (gear level, account level, rating, matches).
+With the "settled" line (the winner) it is what a later fit needs.
+
+### 8.5 Squads
+
+`SRP_SQUADS=off`: no invite is passed on and nobody is added
+(`social.md` §9.4). Squads were in 57 of 106 matches and are what kept the
+sides from being made even; with them on, a squad is still one side and
+the rule above works around it.
+
+### 8.6 Not done
+
+- Late joins (the growing-roster pool below) are placed by the sides' sizes
+  and their mean gear level, as before: not by this number.
+- No draw among splits that count alike: the same players in the same order
+  get the same sides until a rating moves.
+- Not seen live. The numbers above are fits on the matches the old rule
+  made; what the new one does to who wins is to be measured.
 
 ## Correction (2026-10-12): a seat is kept for a game that broke, not for a player who left
 

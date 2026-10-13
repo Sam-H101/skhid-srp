@@ -23,6 +23,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 pub mod account;
 pub mod autobuy;
+pub mod balance;
 pub mod bonus;
 pub mod bots;
 pub mod clans;

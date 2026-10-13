@@ -55,6 +55,14 @@
 //!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
 //! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
 //!   side; a match has two sides;
+//! - `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
+//!   `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a
+//!   player, a level of its account and a point of its balance rating
+//!   count for when the sides are made, in gear levels, and the matches
+//!   after which the rating counts for half (`session::v026g::balance`);
+//! - `SRP_SQUADS` (default on), `SRP_SQUADS_OFF_TEXT`: with `off` nobody
+//!   is invited to a squad, and the one who tries is told so in a message
+//!   box (`social.rs`);
 //! - `SRP_PATCH_REVISION_CHECK` (default off; `warn`, `refuse`),
 //!   `SRP_MIN_PATCH_REVISION` (default 4), `SRP_OUTDATED_TEXT`,
 //!   `SRP_UPDATE_HINT`: a game older than that patch revision is told in
@@ -113,6 +121,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use session::v026g::GameAccounts;
+use session::v026g::balance::Weights;
 use session::v026g::rewards::Results;
 use session::{LockExt, SessionStore};
 use survarium::v026g::lobby::ServerMessage;
@@ -152,7 +161,7 @@ const DEFAULT_MATCH_LINK_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_SESSION_GRACE: Duration = Duration::from_secs(60);
 
 /// What the lobby is run with.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// `host:port` of the UDP socket.
     pub bind: String,
@@ -199,6 +208,14 @@ pub struct Settings {
     /// The line in the general chat that says how to update
     /// (`SRP_UPDATE_HINT`; empty: no line).
     pub update_hint: String,
+    /// What a player counts for when the sides of a match are made
+    /// (`SRP_BALANCE_*`; `session::v026g::balance`).
+    pub balance: Weights,
+    /// Whether players may form squads (`SRP_SQUADS`, default on).
+    pub squads: bool,
+    /// What the message box of a refused squad invite says: a text key of
+    /// the game, or a sentence (`SRP_SQUADS_OFF_TEXT`).
+    pub squads_off_text: String,
 }
 
 impl Settings {
@@ -330,7 +347,53 @@ impl Settings {
                  {min_patch_revision}"
             );
         }
+        let weight = |name: &str, default: f64| match var(name) {
+            Some(value) => parse_weight(&value).unwrap_or_else(|| {
+                log::error!(
+                    "{name} is `{value}`; it must be a number from 0 to 1000. Using {default}"
+                );
+                default
+            }),
+            None => default,
+        };
+        let defaults = Weights::default();
+        let balance = Weights {
+            player: weight("SRP_BALANCE_PLAYER", defaults.player),
+            player_level: weight("SRP_BALANCE_PLAYER_LEVEL", defaults.player_level),
+            rating: weight("SRP_BALANCE_RATING", defaults.rating),
+            trust_matches: weight("SRP_BALANCE_TRUST_MATCHES", defaults.trust_matches),
+        };
+        log::info!(
+            "The sides of a match: a player counts for {} gear levels, a level of its account \
+             for {}, a point of its balance rating for {} (for half after {} matches)",
+            balance.player,
+            balance.player_level,
+            balance.rating,
+            balance.trust_matches
+        );
+        let squads = match var("SRP_SQUADS") {
+            Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" | "yes" => true,
+                "off" | "0" | "false" | "no" => false,
+                _ => {
+                    log::error!("SRP_SQUADS is `{value}`; it must be on or off. Using on");
+                    true
+                }
+            },
+            None => true,
+        };
+        // A text the client reads into 256 bytes (`lobby::limits::TEXT`).
+        let squads_off_text = var("SRP_SQUADS_OFF_TEXT")
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty() && text.len() <= 255)
+            .unwrap_or_else(|| DEFAULT_SQUADS_OFF_TEXT.to_owned());
+        if !squads {
+            log::info!("Squads are off: an invite is refused with `{squads_off_text}`");
+        }
         Self {
+            balance,
+            squads,
+            squads_off_text,
             queue_chat,
             queue_chat_name,
             patch_check,
@@ -370,8 +433,25 @@ impl Settings {
             min_patch_revision: patch_check::DEFAULT_MIN_PATCH_REVISION,
             outdated_text: patch_check::DEFAULT_OUTDATED_TEXT.to_owned(),
             update_hint: patch_check::DEFAULT_UPDATE_HINT.to_owned(),
+            balance: Weights::default(),
+            squads: true,
+            squads_off_text: DEFAULT_SQUADS_OFF_TEXT.to_owned(),
         }
     }
+}
+
+/// What a refused squad invite says (`SRP_SQUADS_OFF_TEXT`). The game has
+/// no text of its own for it (`social.md` §9.2), and its client shows a
+/// text that is no key of its as it is (`lobby_requests.md` §4.2).
+pub const DEFAULT_SQUADS_OFF_TEXT: &str = "Squads are switched off on this server.";
+
+/// A `SRP_BALANCE_*` number: 0 to 1000.
+fn parse_weight(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|weight| weight.is_finite() && (0.0..=1000.0).contains(weight))
 }
 
 /// `SRP_MATCH_MODES`: modes of 2, 3 and 4, at least one.

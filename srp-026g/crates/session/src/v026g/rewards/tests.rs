@@ -2472,3 +2472,141 @@ fn results_attached_to_accounts_in_memory_are_plain_ones() {
     assert_eq!(store.flush(), 0);
     assert!(results.has_unseen(10));
 }
+
+/// Three players of team 0 and two of team 1, all with counters.
+fn three_and_two() -> Vec<PlayerResult> {
+    [
+        (0, "Alice"),
+        (1, "Bob"),
+        (0, "Carol"),
+        (1, "Dave"),
+        (0, "Erin"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(place, (team, name))| {
+        player(
+            place as u8,
+            team,
+            name,
+            counters_of(0, &[(event::KILL, 1), (event::DEATH, 1)]),
+        )
+    })
+    .collect()
+}
+
+#[test]
+fn a_match_moves_the_balance_rating_by_the_sides_sizes() {
+    use crate::v026g::balance::Balance;
+
+    // Team 0, the three, wins: what was expected, so it moves little.
+    let players = three_and_two();
+    let store = accounts(&players);
+    Results::new()
+        .settle(&result(players.clone()), &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    let expected = account(&store, 10).balance;
+    assert!(expected.rating > 0 && expected.matches == 1, "{expected:?}");
+    assert_eq!(account(&store, 12).balance, expected);
+    let loser = account(&store, 11).balance;
+    assert_eq!(
+        loser,
+        Balance {
+            rating: -expected.rating,
+            matches: 1
+        }
+    );
+
+    // The two win: an upset, and it moves much further.
+    let store = accounts(&players);
+    let mut upset = result(players.clone());
+    upset.winner = Some(1);
+    upset.team_points = [1, 3];
+    Results::new()
+        .settle(&upset, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    let won = account(&store, 11).balance;
+    assert!(won.rating > 5 * expected.rating, "{won:?} {expected:?}");
+    assert_eq!(account(&store, 10).balance.rating, -won.rating);
+    // The ranking's rating is as it was before this was added: by the
+    // teams' averages, whatever their sizes.
+    assert_eq!(account(&store, 11).rating, 102);
+    assert_eq!(account(&store, 10).rating, 98);
+}
+
+#[test]
+fn the_balance_rating_is_not_moved_by_a_match_that_says_nothing() {
+    use crate::v026g::balance::Balance;
+
+    let players = three_and_two();
+    let untouched =
+        |store: &GameAccounts| (10..15).all(|id| account(store, id).balance == Balance::default());
+
+    // A whole side left: the winner is who stayed.
+    let store = accounts(&players);
+    let mut deserted = result(players.clone());
+    deserted.end = MatchEnd::Deserted;
+    Results::new()
+        .settle(&deserted, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    assert!(untouched(&store));
+    // The ranking's rating still moves, as before.
+    assert_ne!(account(&store, 10).rating, pay::START_RATING);
+
+    // No trusted result.
+    let store = accounts(&players);
+    let mut unknown = result(players.clone());
+    unknown.trusted_by = 0;
+    unknown.trusted_snapshot_ms = None;
+    Results::new()
+        .settle(&unknown, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    assert!(untouched(&store));
+
+    // A test bot in it.
+    let store = accounts(&players);
+    store.set_bots(&["dave".to_owned()]);
+    Results::new()
+        .settle(&result(players.clone()), &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    assert!(untouched(&store));
+
+    // A draw is a match: it counts, and with equal sides it moves nothing.
+    let pair = alice_and_bob();
+    let store = accounts(&pair);
+    let mut draw = result(pair);
+    draw.winner = Some(DRAW);
+    draw.team_points = [2, 2];
+    Results::new()
+        .settle(&draw, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    assert_eq!(
+        account(&store, 10).balance,
+        Balance {
+            rating: 0,
+            matches: 1
+        }
+    );
+}
+
+#[test]
+fn one_who_left_or_never_got_in_and_the_balance_rating() {
+    let mut players = three_and_two();
+    // Erin (team 0) left before the end; Dave (team 1) never got in.
+    players[4].present_at_end = false;
+    players[4].left = true;
+    players[3].entered = false;
+    players[3].present_at_end = false;
+    let store = accounts(&players);
+    Results::new()
+        .settle(&result(players), &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    // Three against one, as it was played: Erin has her team's result and
+    // nothing more, Dave is not counted and not moved.
+    let alice = account(&store, 10).balance;
+    assert!(alice.rating > 0);
+    assert_eq!(account(&store, 14).balance, alice);
+    assert_eq!(account(&store, 13).balance, Default::default());
+    let bob = account(&store, 11).balance;
+    assert_eq!((bob.rating < 0, bob.matches), (true, 1));
+}

@@ -116,6 +116,11 @@ pub struct Level {
     pub max: u8,
 }
 
+/// One level, as a player's strength counts it
+/// ([`QueuedGroup::player_strength`]): strengths are whole numbers, so a
+/// part of a level can be told.
+pub const STRENGTH_SCALE: i32 = 100;
+
 /// The rules of a queue that looks at levels (0.26g's). Without them
 /// ([`Matchmaking::poll`]) a match takes whoever waits, up to
 /// [`MAX_PLAYERS_PER_MATCH`], as 0.21d's does.
@@ -156,6 +161,10 @@ pub struct QueuedGroup {
     pub players: Vec<Player>,
     /// By player; empty in a queue without levels.
     levels: Vec<Level>,
+    /// By player: what it counts for when the sides are made
+    /// ([`Matchmaking::set_strengths`]); a player without one counts for
+    /// its level.
+    strengths: Vec<Option<i32>>,
     pub squad: bool,
     pub since: Instant,
     pub pool: QueuePool,
@@ -196,6 +205,16 @@ impl QueuedGroup {
         self.levels.get(index).map_or(0, |level| level.min)
     }
 
+    /// What a player counts for when the sides are made, in
+    /// [`STRENGTH_SCALE`]s: the strength it was given, else its level.
+    pub fn player_strength(&self, index: usize) -> i32 {
+        self.strengths
+            .get(index)
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| i32::from(self.player_level(index)) * STRENGTH_SCALE)
+    }
+
     /// How many parties it is: a squad is one (its players came together
     /// and play on one team), every other player one of its own.
     fn parties(&self) -> usize {
@@ -220,6 +239,9 @@ struct Inner {
     extension: Duration,
     /// The longest a countdown runs.
     max_countdown: Duration,
+    /// What a player counts for by being there, whatever its strength
+    /// ([`Matchmaking::set_player_value`]).
+    player_value: i32,
     /// When someone last pressed Play.
     last_joined: Option<Instant>,
     pool_last_joined: HashMap<QueuePool, Instant>,
@@ -263,6 +285,7 @@ impl Matchmaking {
                     .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
                 max_countdown: env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
                     .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
+                player_value: 0,
                 last_joined: None,
                 pool_last_joined: HashMap::new(),
                 pool_countdowns: HashMap::new(),
@@ -314,6 +337,32 @@ impl Matchmaking {
         inner.min_players = min_players;
         inner.extension = extension;
         inner.max_countdown = longest;
+    }
+
+    /// What a player counts for by being there when the leveled queue
+    /// makes the sides, in [`STRENGTH_SCALE`]s, on top of its own strength.
+    /// With an odd count the side with one player more has this much more,
+    /// so the stronger players go to the smaller side. 0 (the default):
+    /// only the strengths are made even.
+    pub fn set_player_value(&self, value: i32) {
+        self.inner.locked().player_value = value.max(0);
+    }
+
+    /// What each of these accounts counts for when the sides are made, in
+    /// [`STRENGTH_SCALE`]s, for the ones that wait. Nothing else of the
+    /// queue changes: no party's wait or countdown starts again.
+    pub fn set_strengths(&self, strengths: &[(u32, i32)]) {
+        let mut inner = self.inner.locked();
+        for group in &mut inner.queue {
+            group.strengths.resize(group.players.len(), None);
+            for (player, strength) in group.players.iter().zip(&mut group.strengths) {
+                if let Some((_, current)) =
+                    strengths.iter().find(|(id, _)| *id == player.account_id)
+                {
+                    *strength = Some(*current);
+                }
+            }
+        }
     }
 
     /// Players press Play: one alone, or a whole squad (`squad`) once all
@@ -375,6 +424,7 @@ impl Matchmaking {
                 inner.queue.push(QueuedGroup {
                     players: vec![player],
                     levels: vec![level],
+                    strengths: Vec::new(),
                     squad: false,
                     since: now,
                     pool,
@@ -384,6 +434,7 @@ impl Matchmaking {
             inner.queue.push(QueuedGroup {
                 players: waiting,
                 levels: waiting_levels,
+                strengths: Vec::new(),
                 squad,
                 since: now,
                 pool,
@@ -1001,7 +1052,7 @@ impl Inner {
             taken.reverse();
             let id = self.next_match_id;
             self.next_match_id += 1;
-            let seats = seat_balanced(taken, rules.team_size);
+            let seats = seat_balanced(taken, rules.team_size, self.player_value);
             log::info!(
                 "Match {id:#x} formed for {} players: {:?}",
                 seats.len(),
@@ -1143,42 +1194,47 @@ fn sides_fit(sizes: &[usize], team_size: usize) -> bool {
 }
 
 /// [`seat`], with sides of at most `team_size` and as even as the groups
-/// allow: first in players, then in the sum of their levels. The teams are
-/// `seat`'s whenever no other split is better.
-fn seat_balanced(groups: Vec<QueuedGroup>, team_size: usize) -> Vec<Seat> {
+/// allow. The sides are at most one player apart when the groups allow it;
+/// among those splits the one whose sides count for the most alike is
+/// taken, a side counting `player_value` for each of its players and each
+/// player's own strength ([`QueuedGroup::player_strength`]). So with an odd
+/// count the side with a player fewer gets the stronger ones, as far as
+/// `player_value` asks. The teams are `seat`'s whenever no other split is
+/// better.
+fn seat_balanced(groups: Vec<QueuedGroup>, team_size: usize, player_value: i32) -> Vec<Seat> {
     let count = groups.len();
     let sizes: Vec<i64> = groups
         .iter()
         .map(|group| group.players.len() as i64)
         .collect();
-    let levels: Vec<i64> = groups
+    let strengths: Vec<i64> = groups
         .iter()
         .map(|group| {
             (0..group.players.len())
-                .map(|index| i64::from(group.player_level(index)))
+                .map(|index| i64::from(group.player_strength(index)))
                 .sum()
         })
         .collect();
+    let player_value = i64::from(player_value);
     // What a split is worth, the less the better: players over a side's
-    // size, then the difference in players, then in levels. Bit `i` of
-    // `mask`: group `i` is on team 1.
+    // size, then players apart past one (an even count is never one apart,
+    // nor an odd one none), then what the sides count for apart. Bit `i`
+    // of `mask`: group `i` is on team 1.
     let score = |mask: u32| {
         let mut players = [0_i64; 2];
-        let mut level = [0_i64; 2];
+        let mut strength = [0_i64; 2];
         for index in 0..count {
             let team = (mask >> index & 1) as usize;
             players[team] += sizes[index];
-            level[team] += levels[index];
+            strength[team] += strengths[index];
         }
         let over: i64 = players
             .iter()
             .map(|&side| (side - team_size as i64).max(0))
             .sum();
-        (
-            over,
-            (players[0] - players[1]).abs(),
-            (level[0] - level[1]).abs(),
-        )
+        let apart = (players[0] - players[1]).abs();
+        let worth = |side: usize| player_value * players[side] + strength[side];
+        (over, (apart - 1).max(0), (worth(0) - worth(1)).abs())
     };
     let mut best = seat_teams_of(&groups)
         .iter()
@@ -2235,6 +2291,106 @@ mod tests {
         let mut teams = teams(&mm, FIRST_MATCH_ID);
         teams.sort();
         assert_eq!(teams, [vec![1, 4], vec![2, 3]]);
+    }
+
+    /// The sides of a match of players alone at these levels, the rules'
+    /// step zero, with `player_value` and the strengths given.
+    fn sides_of(levels: &[u8], player_value: i32, strengths: &[(u32, i32)]) -> [Vec<u32>; 2] {
+        let start = Instant::now();
+        let mm = Matchmaking::new(Duration::ZERO).with_start_rules(
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        );
+        mm.set_player_value(player_value);
+        let rules = LevelRules {
+            team_size: 10,
+            step: Duration::ZERO,
+        };
+        for (index, &level) in levels.iter().enumerate() {
+            mm.queue_leveled(&[player(index as u32 + 1)], &[at(level)], false, start);
+        }
+        mm.set_strengths(strengths);
+        mm.poll_with(1, start, Some(&rules));
+        teams(&mm, FIRST_MATCH_ID)
+    }
+
+    #[test]
+    fn with_an_odd_count_the_side_of_fewer_gets_the_stronger_players() {
+        // Levels 6, 5, 1, 1, 0. Without a value for a player the sums are
+        // made even (6 against 7), so the two highest are not the two.
+        let mut even = sides_of(&[6, 5, 1, 1, 0], 0, &[]);
+        even.sort_by_key(Vec::len);
+        assert_eq!(even[0].len(), 2);
+        assert_ne!(even[0], vec![1, 2]);
+        // A player counting for 12 levels: the two highest are the two.
+        let mut fair = sides_of(&[6, 5, 1, 1, 0], 12 * STRENGTH_SCALE, &[]);
+        fair.sort_by_key(Vec::len);
+        assert_eq!(fair, [vec![1, 2], vec![3, 4, 5]]);
+    }
+
+    #[test]
+    fn a_players_value_never_puts_the_sides_more_than_one_apart() {
+        // One at level 15 and four at 0: with any value it is two against
+        // three, never one against four, and with a value the one at 15 is
+        // of the two.
+        for value in [0, 4, 12, 100] {
+            let mut sides = sides_of(&[15, 0, 0, 0, 0], value * STRENGTH_SCALE, &[]);
+            sides.sort_by_key(Vec::len);
+            assert_eq!((sides[0].len(), sides[1].len()), (2, 3), "value {value}");
+            assert!(value == 0 || sides[0].contains(&1), "value {value}");
+        }
+    }
+
+    #[test]
+    fn an_even_count_is_not_changed_by_a_players_value() {
+        for value in [0, 12 * STRENGTH_SCALE] {
+            let mut sides = sides_of(&[15, 14, 1, 0], value, &[]);
+            sides.sort();
+            assert_eq!(sides, [vec![1, 4], vec![2, 3]]);
+        }
+    }
+
+    #[test]
+    fn the_sides_are_made_by_the_strengths_given_and_by_the_level_without_one() {
+        // By level: 4 + 0 against 3 + 2. Player 4 (level 0) is given the
+        // strength of 5 levels: 4 + 3 against 2 + 5.
+        let mut by_level = sides_of(&[4, 3, 2, 0], 0, &[]);
+        by_level.sort();
+        assert_eq!(by_level, [vec![1, 4], vec![2, 3]]);
+        let fourth = player(4).account_id;
+        let mut given = sides_of(&[4, 3, 2, 0], 0, &[(fourth, 5 * STRENGTH_SCALE)]);
+        given.sort();
+        assert_eq!(given, [vec![1, 2], vec![3, 4]]);
+    }
+
+    #[test]
+    fn giving_strengths_restarts_no_wait() {
+        let start = Instant::now();
+        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        );
+        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
+        mm.queue_leveled(&[player(2)], &[at(0)], false, start);
+        let before: Vec<Instant> = mm
+            .queued_groups(QueuePool::Standard)
+            .iter()
+            .map(|group| group.since)
+            .collect();
+        mm.set_strengths(&[
+            (player(1).account_id, 250),
+            (player(2).account_id, -40),
+            (9, 1),
+        ]);
+        let groups = mm.queued_groups(QueuePool::Standard);
+        assert_eq!(
+            groups.iter().map(|group| group.since).collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(groups[0].player_strength(0), 250);
+        assert_eq!(groups[1].player_strength(0), -40);
     }
 
     #[test]

@@ -64,6 +64,18 @@ RUST_LOG=info
 # widen a player's range of levels by one (raise it on a full server).
 # SRP_MATCH_TEAM_SIZE=8
 # SRP_MATCH_SEARCH_STEP_SECONDS=4
+# What a player counts for when the sides of a match are made, in gear
+# levels: by being there (with an odd count the side with a player more has
+# this much more, so the stronger players are the side of fewer), for a
+# level of its account, and for a point of its balance rating; and the
+# matches after which that rating counts for half. The defaults:
+# SRP_BALANCE_PLAYER=12
+# SRP_BALANCE_PLAYER_LEVEL=1.5
+# SRP_BALANCE_RATING=4
+# SRP_BALANCE_TRUST_MATCHES=5
+# No squads: an invite is refused, and its sender is told in a message box.
+# SRP_SQUADS=off
+# SRP_SQUADS_OFF_TEXT=Squads are switched off on this server.
 # A game older than a patch revision (what the exe says at its sign-in):
 # `warn` tells it in the general chat how to update, `refuse` also refuses
 # its Play with the game's own "outdated version" message box. Off when

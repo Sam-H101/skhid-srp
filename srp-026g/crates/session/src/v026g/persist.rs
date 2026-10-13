@@ -20,6 +20,7 @@ use super::clans::Clan;
 use crate::LockExt;
 use crate::persist::{DATA_DIR_VAR, DB_FILE, DB_VAR, DEFAULT_DATA_DIR, PersistError};
 
+mod balance;
 mod clans;
 mod extras;
 mod items;
@@ -123,6 +124,8 @@ const MIGRATIONS: &[&str] = &[
     map_plays::MIGRATION,
     // 6: the finished matches' reports and play periods (`results`).
     results::MIGRATION,
+    // 7: the balance rating the sides of a match are made with (`balance`).
+    balance::MIGRATION,
 ];
 
 /// The child tables of an account, children of children first.
@@ -443,6 +446,7 @@ impl GameRepository for SqliteGameRepository {
                         quest_faction: row.get(7)?,
                         rating: row.get(8)?,
                         rating_before: row.get(9)?,
+                        balance: Default::default(),
                         kits: Vec::new(),
                         active_kit: row.get(10)?,
                         autobuy: row.get(11)?,
@@ -466,6 +470,7 @@ impl GameRepository for SqliteGameRepository {
             let account_id = *account_id;
             account.extras = extras::load(&transaction, account_id)?;
             account.map_plays = map_plays::load(&transaction, account_id)?;
+            account.balance = balance::load(&transaction, account_id)?;
             {
                 let mut statement = transaction.prepare_cached(
                     "SELECT skill_id, points FROM g26_skills WHERE account_id = ?1 ORDER BY seq",
@@ -626,6 +631,7 @@ impl GameRepository for SqliteGameRepository {
         )?;
         extras::save(&transaction, account_id, &account.extras)?;
         map_plays::save(&transaction, account_id, &account.map_plays)?;
+        balance::save(&transaction, account_id, account.balance)?;
         for (seq, &(skill_id, points)) in account.skills.iter().enumerate() {
             transaction.execute(
                 "INSERT INTO g26_skills (account_id, seq, skill_id, points)
@@ -803,6 +809,10 @@ mod tests {
         account.rating = 137;
         account.rating_before = 125;
         account.map_plays = vec![(1, 4), (6, 2)];
+        account.balance = crate::v026g::balance::Balance {
+            rating: -1250,
+            matches: 9,
+        };
         account.extras.auto_repair = true;
         account.extras.tutorial_flags = 0b101;
         account.extras.bonus.day = 3;
