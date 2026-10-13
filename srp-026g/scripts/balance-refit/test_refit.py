@@ -30,6 +30,7 @@ class Refit(unittest.TestCase):
                 + "12:30:00.000Z [srp] [INFO] Match 0xa settled (TimeLimit, winner Some(1), 2 players): x\n"
                 + line("12:40:00.000", "Match 0xb sides: team 0 counts 1.0: " + player("D", 10, 0, 0, 0, 0)
                        + " | team 1 counts 1.0: " + player("E", 10, 0, 0, 0, 0)) + "\n"
+                + line("12:50:00.000", "Match 0xb late join: X 12.0 to team 1, with them team 0 counts 1.0") + "\n"
                 + "13:00:00.000Z [srp] [INFO] Match 0xb settled (ModeRule, winner Some(2), 2 players): x\n",
                 encoding="utf-8")
             ms = list(refit.read_matches([d], "", ""))
@@ -40,6 +41,7 @@ class Refit(unittest.TestCase):
             self.assertTrue(refit.explained_by(a, refit.IN_FORCE, 5.0))
             self.assertFalse(refit.explained_by(a, (12.0, 1.0, 1.5, 4.0), 5.0))
             self.assertEqual(ms[1]["winner"], 2)
+            self.assertEqual([m["late"] for m in ms], [False, True])
             # since filter
             self.assertEqual(len(list(refit.read_matches([d], "2026-10-13T12:35", ""))), 1)
 

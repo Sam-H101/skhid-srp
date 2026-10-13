@@ -16,7 +16,7 @@ python scripts/balance-refit/refit.py LOGDIR --weights 10,1,2,4 --weights 8,1,2.
 - Scored weights: the ones in force, the ones before, any `--weights P,G,L,R`,
   and each part alone, by log loss on the same matches.
 - Use it after about 60 matches on one setting. Under about 40 the free fit
-  is noise and the script says so. `--strict` keeps only matches whose
+  is noise and the script says so. `--strict` keeps only matches with no late join and whose
   roster did not change (late joins and leavers make the logged sides not what
   played).
 - The logged rating is the one at match start; the server updates it after.

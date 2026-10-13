@@ -17,7 +17,7 @@ Usage:
   refit.py LOG [LOG ...]                       # files or directories of srp-*.log
   refit.py logs/ --since 2026-10-13T21:31      # only matches made after that UTC time
   refit.py logs/ --weights 12,1,1.5,4 --weights 10,1,2,4
-  refit.py logs/ --strict                      # only matches whose roster did not change
+  refit.py logs/ --strict                      # only matches with no late join and no roster change
 
 Needs only Python 3. Prints no player names.
 
@@ -35,6 +35,7 @@ from pathlib import Path
 
 LINE = re.compile(r"^(\d\d:\d\d:\d\d(?:\.\d+)?)Z ")
 SIDES = re.compile(r"Match (0x[0-9a-f]+) sides: team 0 counts [\d.]+: (.*) \| team 1 counts [\d.]+: (.*)$")
+LATE = re.compile(r"Match (0x[0-9a-f]+) late join:")
 SETTLED = re.compile(r"Match (0x[0-9a-f]+) settled \((\w+), winner (Some\((\d+)\)|None), (\d+) players\)")
 PLAYER = re.compile(
     r"(?:^|, )(.*?) (-?\d+\.\d+) \(gear (\d+), level (\d+), rating ([+-]\d+\.\d+) of (\d+) matches\)"
@@ -58,7 +59,7 @@ def read_matches(paths, since, until):
     for p in paths:
         p = Path(p)
         files += sorted(p.glob("srp-*.log")) if p.is_dir() else [p]
-    sides, settled = {}, {}
+    sides, settled, late = {}, {}, set()
     for f in files:
         day = re.search(r"(\d{4}-\d\d-\d\d)", f.name)
         day = day.group(1) if day else ""
@@ -71,13 +72,18 @@ def read_matches(paths, since, until):
                     continue
                 sides.setdefault(m.group(1), [parse_side(m.group(2)), parse_side(m.group(3))])
                 continue
+            m = LATE.search(line)
+            if m:
+                late.add(m.group(1))
+                continue
             m = SETTLED.search(line)
             if m:
                 win = int(m.group(4)) if m.group(4) is not None else None
                 settled[m.group(1)] = (win, int(m.group(5)))
     for mid, s in sides.items():
         if mid in settled:
-            yield dict(id=mid, sides=s, winner=settled[mid][0], settled_players=settled[mid][1])
+            yield dict(id=mid, sides=s, winner=settled[mid][0], settled_players=settled[mid][1],
+                       late=mid in late)
 
 
 def explained_by(match, weights, trust_matches, tol=0.08):
@@ -194,8 +200,10 @@ def main():
     total = len(ms)
     ms = [m for m in ms if m["winner"] in (0, 1)]
     draws = total - len(ms)
+    joined = sum(1 for m in ms if m["late"])
     if args.strict:
-        ms = [m for m in ms if m["settled_players"] == len(m["sides"][0]) + len(m["sides"][1])]
+        ms = [m for m in ms if not m["late"]
+              and m["settled_players"] == len(m["sides"][0]) + len(m["sides"][1])]
     if len(ms) < 8:
         sys.exit(f"{len(ms)} usable matches ({total} paired, {draws} without a winner 0/1): too few to fit.")
 
@@ -206,6 +214,9 @@ def main():
         feats.append([x - y for x, y in zip(a, b)])
         ys.append(1 if m["winner"] == 0 else 0)
 
+    if joined and not args.strict:
+        print(f"NOTE: {joined} matches had late joins; the script sees only the roster the match "
+              "started with (the late-join and per-minute lines are not read). --strict leaves them out.")
     print(f"{len(ms)} matches used ({total} paired by id, {draws} dropped for no winner 0/1"
           f"{', strict roster' if args.strict else ''}); team 0 won {sum(ys)}.")
     known = [IN_FORCE, (12.0, 1.0, 1.5, 4.0)]
