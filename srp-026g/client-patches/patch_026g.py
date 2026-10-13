@@ -112,6 +112,16 @@ Patches:
   into late_join_026g.section.bin); a writable page `.srpd` holds its
   state. Such a game computes a match unlike every game without it: the
   server never puts the two in one match (client_patch.md section 3.11);
+- a game that goes on without the focus (patch revision 5, with the late
+  join): engine_world::logic_tick 0x1A030 calls game::tick only while the
+  window is the active one; otherwise it only sends what is queued, and
+  the game stands still until the player comes back (alt-tab, a click on
+  another window). Such a game answers nothing the match asks of it: the
+  others see it frozen, and no player can be taken into the match while
+  it is away, because every game in it has to prepare for the newcomer.
+  The `jz` after the active check (0x1A0EE) becomes two nops: the window
+  being active no longer matters to the simulation (client_patch.md
+  section 3.12);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -188,7 +198,8 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # battery (match.md section 26). 4: adds the two start-up patches below
 # (a Documents folder the game may not write to); a match is not affected.
 # 5: adds the late join below. A game with it and one without never play
-# together: the world they keep and the packets they send differ.
+# together: the world they keep and the packets they send differ. With it
+# goes the game that goes on without the focus (RUN_UNFOCUSED).
 REVISION = 5
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -302,6 +313,20 @@ LATE_JOIN_HOOKS = (
 # the late join) goes to ready_hook, which goes on to the upload code.
 LATE_JOIN_READY_VA = 0x27AEA1
 LATE_JOIN_READY_OFFSET = 1664
+
+# engine_world::logic_tick 0x1A030, after the window was shown
+# (engine_world+313h): `mov edx,[ebx+8]` / `mov eax,[edx+30h]` /
+# `lea ecx,[ebx+8]` / `call eax` (is_application_active) / `test al,al` /
+# `jz 1A113h`. Not active: the branch at 0x1A113 calls the game's
+# on_waiting_for_render (it sends what is queued and ticks the lobby link)
+# and game::tick is not called (transport.md section 6.1). The `jz`
+# becomes two nops; the call stays, so whatever it does is still done.
+# In the builds of patch revision 5 only (the late join needs every game
+# of a match to answer). (address, the original's bytes, the new ones.)
+RUN_UNFOCUSED_VA = 0x1A0E1
+RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
+RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
+                 bytes.fromhex("8b53088b42308d4b08ffd084c09090"))
 
 
 def late_join_state_va(code):
@@ -585,6 +610,8 @@ def build(original, mode, code=None, server=None, late_join=None):
         for va, expected, offset, opcode in LATE_JOIN_HOOKS:
             patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
             sites.append((va, va + len(expected)))
+        patch(data, *RUN_UNFOCUSED)
+        sites.append((RUN_UNFOCUSED_VA, RUN_UNFOCUSED_VA + len(RUN_UNFOCUSED[1])))
         # None of these instructions holds an address: a relocation under
         # one would mean another exe than the one they were read in.
         if neutralize_relocs(data, sites):
@@ -603,7 +630,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                   f"{upload_size} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
-                     f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks)"
+                     f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
+                     "goes on without the focus"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
