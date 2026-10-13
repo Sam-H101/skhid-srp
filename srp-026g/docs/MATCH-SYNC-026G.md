@@ -422,7 +422,7 @@ From `servers/match-server/src/v026g/mod.rs`, read once at start:
 | `SRP_CHECK_INITIAL_WORLD` | `on` | `off`: take a first world that already has statistics in it (for when the reader, not the world, is wrong) |
 | `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where uploaded worlds are saved; `off` or empty for none |
 | `SRP_COMPRESS_STATE` | `on` | `off`: 0xE8 goes as it is, not as LZMA2 (match.md §27) |
-| `SRP_ENTRY_STATE_SECONDS` | 4 | A game's first world is kept on its way this long (2 to 10) before its sync starts over |
+| `SRP_ENTRY_STATE_SECONDS` | 4 | A game's first world is kept on its way this long (2 to 5) before its sync starts over; less where its snapshot is old, so that the ticks of the inputs relayed meanwhile stay within 127 of the clock the game waits at |
 | `SRP_BOT_ACCOUNTS` | not set | **Testing only.** The accounts that are test bots (read by `srp`, marked by the lobby on a match's places): above, "Test bots" |
 | `SRP_PACKET_LOG=<dir>` | off | Every datagram in and out, one file a connection (`crates/udp-transport`). **Set it for every live test** |
 | `SRP_BIND_HOST`, `SRP_PUBLIC_HOST`, `SRP_MATCH_PORT` (1236), `SRP_MATCH_BIND`, `SRP_MATCH_PUBLIC_HOST` | 127.0.0.1 | The address (`crates/vostok/src/config.rs`) |

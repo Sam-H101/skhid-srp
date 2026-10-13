@@ -342,6 +342,15 @@ const WAITING_RELAY_FLUSH: Duration = Duration::from_millis(50);
 /// Such an input is sent again this often until it is acked, not every
 /// 50 ms: the waiting game's acks come every 100 ms.
 const WAITING_RELAY_RESEND: Duration = Duration::from_millis(150);
+/// How far past its own clock the match may run for a game that waits for
+/// its first world. That game's clock stands where 0xE5 put it: its `move`
+/// returns at once (0x2D2E4A) and nothing else moves the time the handlers
+/// read a tick against (core+0x191B8, 0x27C2D5). A tick on the wire is
+/// right within 127 ticks of that (6.35 s), and the others' inputs are of
+/// the match clock or a little ahead of it: 850 ms are left for that.
+const WAITING_REACH_MS: u32 = 5_500;
+/// 0xE8's own lifetime in the client's table (`udp_transport::Table`).
+const WORLD_LIFETIME: Duration = Duration::from_millis(1750);
 
 /// The last 0xE6 sent.
 #[derive(Clone, Copy)]
@@ -1792,7 +1801,9 @@ impl Game {
         // A game with no world yet stands still until it has one: its
         // first is kept on its way for longer than the client table's
         // 1.75 s, so that what a thin line lets through of it adds up.
-        let lifetime = entering.then_some(self.settings.timing.entry_state);
+        let lifetime = entering
+            .then(|| entry_lifetime(self.settings.timing.entry_state, clock, start))
+            .flatten();
         // The time once more, for this very moment: it travels ahead of
         // the inputs and the snapshot's first part.
         if !world_only {
@@ -3973,6 +3984,18 @@ fn flush_held(peer: &mut Peer) {
     }
 }
 
+/// How long the first world of a game is kept on its way, when that is
+/// longer than 0xE8's own 1.75 s: `wanted` (`Timing::entry_state`), but
+/// not past the moment the match clock is [`WAITING_REACH_MS`] ahead of
+/// the clock the game was given (`start`, with the match at `clock`). An
+/// input relayed after that would be read at a tick 12.8 s back, before
+/// the world, and never played.
+fn entry_lifetime(wanted: Duration, clock: u32, start: u32) -> Option<Duration> {
+    let reach = WAITING_REACH_MS.saturating_sub(clock.saturating_sub(start));
+    let kept = wanted.min(Duration::from_millis(u64::from(reach)));
+    (kept > WORLD_LIFETIME).then_some(kept)
+}
+
 /// 0xE8 with its payload as it goes on the wire, for the table's 1.75 s or
 /// for `lifetime`.
 fn send_world(peer: &mut Peer, payload: &[u8], lifetime: Option<Duration>) -> Option<u64> {
@@ -4105,6 +4128,30 @@ mod tests {
         assert_eq!(grid_up(1), 50);
         assert_eq!(grid_up(50), 50);
         assert_eq!(grid_up(51), 100);
+    }
+
+    #[test]
+    fn a_first_world_is_not_kept_past_the_reach_of_the_ticks() {
+        let secs = Duration::from_secs;
+        let ms = Duration::from_millis;
+        // A fresh snapshot: the game's clock is given the match's.
+        assert_eq!(entry_lifetime(secs(4), 60_000, 60_000), Some(secs(4)));
+        // The oldest that is fresh (1.5 s, the clock 350 ms past it).
+        assert_eq!(entry_lifetime(secs(4), 60_000, 58_850), Some(secs(4)));
+        assert_eq!(entry_lifetime(secs(5), 60_000, 58_850), Some(ms(4_350)));
+        // An old one, taken when no fresh one came: the game's clock
+        // stands 4.65 s behind, and 127 ticks from it are 6.35 s. Then
+        // 0xE8's own 1.75 s, as before.
+        assert_eq!(entry_lifetime(secs(4), 60_000, 55_350), None);
+        assert_eq!(entry_lifetime(secs(4), 60_000, 57_000), Some(ms(2_500)));
+        // Every relay sent while the world is on its way is within 127
+        // ticks of the game's clock, with 850 ms for an input ahead of
+        // the match clock.
+        for behind in (0..5_000).step_by(50) {
+            let kept = entry_lifetime(secs(5), 60_000, 60_000 - behind).unwrap_or(WORLD_LIFETIME);
+            let last = behind + kept.as_millis() as u32 + 850;
+            assert!(last <= 127 * TICK_MS || kept == WORLD_LIFETIME, "{behind}");
+        }
     }
 
     #[test]

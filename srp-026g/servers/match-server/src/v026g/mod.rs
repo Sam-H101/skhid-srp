@@ -237,15 +237,18 @@ impl Settings {
                     // A client loading its level is never given less than
                     // a playing one.
                     loading_timeout: Timing::default().loading_timeout.max(client_timeout),
-                    // Never under the client table's own 1.75 s; and the
-                    // game catches up 20 ticks for each second of it.
+                    // Never under the client table's own 1.75 s. The game
+                    // catches up 20 ticks for each second of it, and the
+                    // ticks on the wire reach 6.35 s from the clock it
+                    // waits at: a sync cuts this short where its snapshot
+                    // is old (`game.rs`, `entry_lifetime`).
                     entry_state: Duration::from_secs(u64::from(
                         parse_number(
                             "SRP_ENTRY_STATE_SECONDS",
                             var("SRP_ENTRY_STATE_SECONDS").as_deref(),
                             4,
                         )
-                        .clamp(2, 10),
+                        .clamp(2, 5),
                     )),
                     ..Timing::default()
                 }

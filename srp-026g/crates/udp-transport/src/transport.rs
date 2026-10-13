@@ -34,8 +34,9 @@
 //!   one millisecond are more than some lines carry (live, 2026-10-13: a
 //!   client that reported 314 of 325 such datagrams missing and every small
 //!   one around them received). The client takes parts in any order and
-//!   with no time limit (0x3F4DA0), and whole messages do not wait behind
-//!   them.
+//!   with no time limit (0x3F4DA0). What was queued behind a split message
+//!   stays behind it until each part has gone once; what was queued before
+//!   it, and anything once its parts only go again, does not wait.
 //! - From the client: plain messages are not deduplicated by the transport
 //!   (the client's own has none either), so a resent D8, D9, DA, DE or E0
 //!   reaches the caller again and the caller must dedup them. Unique ones
@@ -137,7 +138,8 @@ impl Config {
             guard: Duration::from_millis(500),
             // A match's large messages are the static info and the world:
             // 4 parts at once and one more every 3 ms is 1.35 Mbit/s, so a
-            // world of 11 parts is out in 21 ms and one of 31 in 81 ms.
+            // world of 11 parts is out in 21 ms and one of 31 in 81 ms
+            // (to the 5 ms of the server's turn).
             // The lobby's sign-in is left as it was: its messages live
             // until they are acked, so a thin line only makes it slow.
             bulk_burst: match table {
@@ -946,9 +948,16 @@ impl Transport {
         let pace = self.config.bulk_pace.as_micros().max(1);
         let earned = now.saturating_duration_since(self.bulk_at).as_micros() / pace;
         if earned > 0 {
-            self.bulk_budget = (u128::from(self.bulk_budget) + earned)
-                .min(u128::from(self.config.bulk_burst)) as u32;
-            self.bulk_at = now;
+            let budget = u128::from(self.bulk_budget) + earned;
+            if budget >= u128::from(self.config.bulk_burst) {
+                self.bulk_budget = self.config.bulk_burst;
+                self.bulk_at = now;
+            } else {
+                // The rest of the time counts on: a server that looks
+                // every 5 ms sends 5 parts in 15 ms, not 3.
+                self.bulk_budget = budget as u32;
+                self.bulk_at += Duration::from_micros((earned * pace) as u64);
+            }
         }
     }
 
@@ -969,6 +978,15 @@ impl Transport {
         };
         self.unacked.retain(|(message, _)| alive(message));
         self.pending.retain(|message| alive(message));
+        // The parts of a split message leave one after another, so they
+        // end one after another: with the first, the rest is of no use to
+        // the client and goes too.
+        if !lost.is_empty() {
+            self.unacked
+                .retain(|(message, _)| !lost.contains(&message.serial));
+            self.pending
+                .retain(|message| !lost.contains(&message.serial));
+        }
         for serial in lost {
             if !self.lost.contains(&serial) {
                 if self.lost.len() == LOST_KEPT {
@@ -1012,7 +1030,9 @@ impl Transport {
     /// Take the messages of the next datagram off the queue, in order: the
     /// first that may go, then as many more as fit with it. `None` when
     /// nothing may go. A part of a split message waits for its turn
-    /// (`bulk_burst`), and what is behind it goes ahead.
+    /// (`bulk_burst`). On its first way out it holds back what was queued
+    /// behind it, so a message's order is the order it had when all its
+    /// parts left at once; a part that goes again holds nothing back.
     fn take_messages(&mut self, bases: (Option<u64>, Option<u64>)) -> Option<Vec<Outgoing>> {
         let may_go = |channel: Channel| {
             let (base, count) = match channel {
@@ -1027,7 +1047,16 @@ impl Transport {
         let mut used = 0;
         let mut bulk = self.bulk_budget;
         for (index, message) in self.pending.iter().enumerate() {
-            if !may_go(message.channel) || (message.is_part() && bulk == 0) {
+            if !may_go(message.channel) {
+                continue;
+            }
+            if message.is_part() && bulk == 0 {
+                // A part that has not gone yet keeps its place: what its
+                // sender queued behind the message is meant to come after
+                // it (the discards right behind a world, `send_sync`).
+                if message.sent_in.is_empty() {
+                    break;
+                }
                 continue;
             }
             let cost = message.multi_len();
