@@ -286,6 +286,7 @@ list):
 | Three a day, bronze / silver / gold; what a change of faction does | "Группировкой будет выдаваться только три ежедневных задания, один раз в сутки"; unfinished quests are replaced on a change | N `gruppirovki-razvitie-igroka`, N `prevyu-obnovleniya-027`; PN 0.27a | official | later (0.27) | drop the old faction's quests unpaid | not applied; what 0.26 did on a change is not stated anywhere |
 | Loyalty | removed in 0.24a | PN 0.24a | official | official | none | keep |
 | Time limits, how often new ones come | nothing beyond the data's `ttl_minutes` 1440 and cooldown 120 | - | - | - | data | - |
+| What a goal counts | the client's own counter of each quest type (bring = a battery found and carried alone, event 24; steal = event 26; K/D with no death = the kills); the battery goals are listed only in the battery modes | 0.26g | client code: `refresh_quest_ui_data` 0x2A2FD0, `set_player_quests` 0x2A35E0 | PROVEN | followed since 2026-10-14 (the table in `crates/survarium/src/v026g/quests.rs`); that a goal needs the battle won, and "at least" for K/D, are from the objective texts | keep |
 
 ## 5. Shop
 

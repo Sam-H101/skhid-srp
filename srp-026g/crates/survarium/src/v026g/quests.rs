@@ -15,15 +15,41 @@
 //! (`v021d::quests::{refresh, change, settle}`) carry over unchanged, since
 //! the quest entries' keys, the awards and the preconditions did not change.
 //!
-//! The goals 0.21d had are checked as its client's HUD counted them
-//! (`calculate_player_game_progress`, 0.21d 0x1B3859); the 0.26g function
-//! was not traced. The four new goals are read from their names and the
-//! English objective texts [LIKELY]:
-//! - `steal_box` "Steal a battery from the enemy base and bring it to your
-//!   base";
-//! - `entrap_enemies` "Catch enemies in a trap";
-//! - `grenade_enemies` "Kill enemies with grenade in a match";
-//! - `meele_kill` "Kill enemies using melee".
+//! The goals are checked as the 0.26g client's own counter of them counts
+//! (PROVEN): `game_quest_progress_calculator::refresh_quest_ui_data`
+//! 0x2A2FD0 (the function names itself in an assert) switches on the
+//! quest's type and reads the player's statistics record, where event `e`
+//! has its three kits' counters at `e × 6`. `set_player_quests` 0x2A35E0
+//! makes the list it counts and sets each quest's target.
+//!
+//! | type | the client's counter | target |
+//! |---|---|---|
+//! | 6 `bring_x_items` | event 24, a battery found and carried alone ([`MatchStats::delivered`]); 0.21d counted event 20, every battery put into the container | `n` |
+//! | 7 `steal_box` | event 26, an enemy's battery put into the container by the one who took it | `n` |
+//! | 10 `find_artifacts` | event 5 | `n` |
+//! | 11 `entrap_enemies` | event 21 | `n` |
+//! | 12 `kill_enemies` | event 0 | `n` |
+//! | 16 `grenade_enemies` | event 25 | `n` |
+//! | 17 `meele_kill` | event 13 | `n` |
+//! | 18 `headshots` | event 15 | `n` |
+//! | 21 `killstreak` | the longest kill streak | `n` |
+//! | 30 `win_x_games` | the games counted so far, and one more when the player's team is the winner | `max_games_count` |
+//! | 31 `kd_ratio` | kills (event 0) / deaths (event 2); 0 with no kill; the kills themselves with no death | `y` |
+//! | 32 `accuracy` | hits (event 23) × 100 / shots (event 22); 0 with no shot | `y` × 100 |
+//! | 34 `win_score` | the batteries in the team's base | `n` |
+//! | 35 `defend_items` | 1, and 0 once a player of the other team has event 17 | 1 |
+//!
+//! Types 6, 7, 34 and 35 are listed only in the two battery modes
+//! (0x2A36B1, 0x2A3AD5, 0x2A3BE9 test the mode for 2 or 3): Team
+//! Deathmatch has none of them.
+//!
+//! Not in that code, and read from the English objective texts [LIKELY]:
+//! - which goals need the battle won ([`Quest::needs_win`]): the counter
+//!   shows the number alone;
+//! - that a counter at its target is the goal met: `kd_ratio` reads "the
+//!   kill/death ratio of at least". `accuracy` reads "accuracy rate higher
+//!   than" for one faction and "accuracy rate:" for the others; srp takes
+//!   the target itself as met.
 
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
@@ -130,14 +156,29 @@ pub struct MatchStats {
     pub shots: u32,
     pub hits: u32,
     pub artefacts: u16,
-    /// Batteries the player brought to the base.
+    /// Batteries the player found and brought to the base: the game's
+    /// event 24 (`match_msgs::snapshot::event::SOLO_DELIVERY`), which is
+    /// what the client's own counter of `bring_x_items` shows. A battery
+    /// put into the container counts when the player was the first to pick
+    /// it up while it was new, or it was the enemy's, and no teammate
+    /// carried it since it last left a container. So a carry finished for
+    /// a teammate, a new battery somebody else dropped and the team's own
+    /// battery brought back do not count.
     pub delivered: u16,
-    /// Of those, batteries taken from the enemy's base.
+    /// Batteries of the enemy's the player took from its base and put into
+    /// the container itself: the game's event 26
+    /// (`match_msgs::snapshot::event::STOLEN_AND_DELIVERED`), counted by
+    /// ones. Not event 17, the credit for a stolen battery, which is
+    /// shared out by the distance each carrier carried it.
     pub stolen: u16,
     /// Batteries the player's team has at the end.
     pub team_batteries: u16,
     /// Whether the enemy took a battery from the team's base.
     pub base_robbed: bool,
+    /// Whether the match was of a battery mode (2 or 3). The client lists
+    /// the battery goals in no other mode, so "Win a match without losing
+    /// batteries" is not met by a Team Deathmatch won.
+    pub battery_mode: bool,
 }
 
 impl Quest {
@@ -173,18 +214,22 @@ impl Quest {
             kind::HEADSHOTS => u32::from(stats.headshots) >= n,
             kind::KILLSTREAK => u32::from(stats.max_killstreak) >= n,
             kind::KD_RATIO => {
-                // As a float divide: no deaths is infinite, unless no kills.
-                if stats.deaths == 0 {
-                    stats.kills > 0
+                // The client's counter (0x2A3294): nothing without a kill,
+                // the kills themselves without a death.
+                let ratio = if stats.kills == 0 {
+                    0.0
+                } else if stats.deaths == 0 {
+                    f32::from(stats.kills)
                 } else {
-                    f32::from(stats.kills) / f32::from(stats.deaths) > self.y
-                }
+                    f32::from(stats.kills) / f32::from(stats.deaths)
+                };
+                ratio >= self.y
             }
             kind::ACCURACY => {
                 stats.shots > 0 && stats.hits as f32 * 100.0 / stats.shots as f32 >= self.y * 100.0
             }
             kind::WIN_SCORE => u32::from(stats.team_batteries) >= n,
-            kind::DEFEND_ITEMS => !stats.base_robbed,
+            kind::DEFEND_ITEMS => stats.battery_mode && !stats.base_robbed,
             kind::WIN_GAMES => true,
             _ => false,
         }
@@ -425,6 +470,7 @@ mod tests {
             stolen: 1,
             team_batteries: 7,
             base_robbed: false,
+            battery_mode: true,
         };
         let met = |kind, n, y| quest_of(kind, n, y).met_by(&stats);
         assert!(met(kind::BRING_ITEMS, 3, 0.0) && !met(kind::BRING_ITEMS, 4, 0.0));
@@ -436,7 +482,8 @@ mod tests {
         assert!(!met(kind::MELEE_KILL, 1, 0.0));
         assert!(met(kind::HEADSHOTS, 2, 0.0) && !met(kind::HEADSHOTS, 3, 0.0));
         assert!(met(kind::KILLSTREAK, 3, 0.0) && !met(kind::KILLSTREAK, 4, 0.0));
-        assert!(met(kind::KD_RATIO, 0, 1.4) && !met(kind::KD_RATIO, 0, 1.5));
+        // 6 / 4: "at least" 1.5 is met by 1.5 itself.
+        assert!(met(kind::KD_RATIO, 0, 1.5) && !met(kind::KD_RATIO, 0, 1.6));
         assert!(met(kind::ACCURACY, 0, 0.25) && !met(kind::ACCURACY, 0, 0.3));
         assert!(met(kind::WIN_SCORE, 7, 0.0) && !met(kind::WIN_SCORE, 8, 0.0));
         assert!(met(kind::DEFEND_ITEMS, 1, 0.0));
@@ -459,19 +506,48 @@ mod tests {
         }
         assert!(quest_of(kind::KILL_ENEMIES, 6, 0.0).met_by(&lost));
         assert!(quest_of(kind::STEAL_BOX, 1, 0.0).met_by(&lost));
-        // No deaths: any kill is enough; no shots: no accuracy.
+        // No deaths: the kills are the ratio; no shots: no accuracy.
         let clean = MatchStats {
             deaths: 0,
             shots: 0,
             hits: 0,
             ..stats
         };
-        assert!(quest_of(kind::KD_RATIO, 0, 9.0).met_by(&clean));
+        assert!(quest_of(kind::KD_RATIO, 0, 6.0).met_by(&clean));
+        assert!(!quest_of(kind::KD_RATIO, 0, 6.5).met_by(&clean));
         assert!(!quest_of(kind::ACCURACY, 0, 0.1).met_by(&clean));
+        // No kills: no ratio, deaths or not.
+        let harmless = MatchStats { kills: 0, ..clean };
+        assert!(!quest_of(kind::KD_RATIO, 0, 1.0).met_by(&harmless));
+        // Every K/D number of the data is met by the match that has
+        // exactly it (11 / 10 for 1.1, and so on).
+        for quest in &Quests::shared().quests {
+            if quest.kind != kind::KD_RATIO {
+                continue;
+            }
+            let tenths = (quest.y * 10.0).round() as u16;
+            let exact = MatchStats {
+                kills: tenths,
+                deaths: 10,
+                ..stats
+            };
+            assert!(quest.met_by(&exact), "{}", quest.id);
+            let short = MatchStats {
+                kills: tenths - 1,
+                ..exact
+            };
+            assert!(!quest.met_by(&short), "{}", quest.id);
+        }
         let robbed = MatchStats {
             base_robbed: true,
             ..stats
         };
         assert!(!quest_of(kind::DEFEND_ITEMS, 1, 0.0).met_by(&robbed));
+        // A Team Deathmatch has no batteries to defend.
+        let deathmatch = MatchStats {
+            battery_mode: false,
+            ..stats
+        };
+        assert!(!quest_of(kind::DEFEND_ITEMS, 1, 0.0).met_by(&deathmatch));
     }
 }

@@ -800,8 +800,14 @@ fn the_quest_numbers_come_from_the_counters() {
                 (event::BULLET_FIRE, 200),
                 (event::BULLET_HIT, 50),
                 (event::ARTEFACT, 5),
-                (event::PUT_VICTORY_ITEM_IN_CONTAINER, 2),
+                // Five batteries put into the container; two of them found
+                // and carried by Alice alone.
+                (event::PUT_VICTORY_ITEM_IN_CONTAINER, 5),
+                (event::SOLO_DELIVERY, 2),
+                // Two and a half batteries' worth of credit for stolen
+                // ones; one of them put into the container by Alice.
                 (event::STEAL_VICTORY_ITEM, 250),
+                (event::STOLEN_AND_DELIVERED, 1),
             ],
         ),
     );
@@ -824,9 +830,10 @@ fn the_quest_numbers_come_from_the_counters() {
             hits: 50,
             artefacts: 5,
             delivered: 2,
-            stolen: 2,
+            stolen: 1,
             team_batteries: 3,
             base_robbed: false,
+            battery_mode: true,
         }
     );
     // Alice stole from Bob's base.
@@ -838,7 +845,9 @@ fn the_quest_numbers_come_from_the_counters() {
     let mut deathmatch = result.clone();
     deathmatch.game_mode = mode::TEAM_DEATHMATCH;
     let shared = Shared::of(&deathmatch, &terms);
-    assert_eq!(shared.quest_stats(&deathmatch.players[0]).team_batteries, 0);
+    let alice = shared.quest_stats(&deathmatch.players[0]);
+    assert_eq!(alice.team_batteries, 0);
+    assert!(!alice.battery_mode);
 }
 
 #[test]

@@ -1366,15 +1366,19 @@ impl<'a> Shared<'a> {
             shots: total(&events, event::BULLET_FIRE),
             hits: total(&events, event::BULLET_HIT),
             artefacts: count(event::ARTEFACT),
-            delivered: count(event::PUT_VICTORY_ITEM_IN_CONTAINER),
-            // Counted in hundredths: the credit for a battery is shared.
-            stolen: clamp_u16(total(&events, event::STEAL_VICTORY_ITEM) / 100),
+            // The game's own count for "Find and bring batteries", not
+            // every battery put into the container (`quests::MatchStats`).
+            delivered: count(event::SOLO_DELIVERY),
+            // The game's own count for "Steal a battery", by ones; not
+            // the shared credit for a stolen battery (event 17).
+            stolen: count(event::STOLEN_AND_DELIVERED),
             team_batteries: if batteries && self.trusted && player.team < 2 {
                 self.result.team_points[usize::from(player.team)]
             } else {
                 0
             },
             base_robbed: player.team < 2 && self.stole[usize::from(1 - player.team)],
+            battery_mode: batteries,
         }
     }
 
