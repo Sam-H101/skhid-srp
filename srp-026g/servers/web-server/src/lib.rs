@@ -3,6 +3,9 @@
 //! - `/` is a home page: what the project is and where it came from.
 //! - `/exchange` lets a player exchange silver for gold: user name and password,
 //!   then how much gold ([`SILVER_PER_GOLD`] silver each).
+//! - `/launcher/…` and `/api/client-files` (the 0.26g page only) are for the
+//!   patched game launcher and its updater ([`launcher`]): the page it shows
+//!   in its window, and which archive `/download` hands out now.
 //! - The admin page changes the silver and gold of any account, for testing.
 //!   It exists only when `SRP_ADMIN_TOKEN` and `SRP_ADMIN_PATH` (a hard to
 //!   guess name, served at `/<name>`) are set, and only for the addresses in
@@ -20,6 +23,7 @@
 //! [`run_026g`] the 0.26g one ([`v026g`]: the 0.26g accounts, the lobby told
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
+mod launcher;
 mod stats;
 mod v026g;
 
@@ -99,10 +103,11 @@ enum Lang {
 
 impl Lang {
     /// `?lang=` or the form's `lang`, else the browser's `Accept-Language`
-    /// (Ukrainian when it comes first), else English.
+    /// (Ukrainian when it comes first), else English. (`ua` is what the
+    /// game's launcher calls Ukrainian in the addresses it opens.)
     fn pick(chosen: &str, accept: &str) -> Self {
         match chosen {
-            "uk" => return Self::Uk,
+            "uk" | "ua" => return Self::Uk,
             "en" => return Self::En,
             _ => {}
         }
@@ -424,6 +429,7 @@ impl Request {
 enum ContentType {
     Html,
     Json,
+    Text,
 }
 
 impl ContentType {
@@ -431,6 +437,7 @@ impl ContentType {
         match self {
             Self::Html => "text/html; charset=utf-8",
             Self::Json => "application/json",
+            Self::Text => "text/plain; charset=utf-8",
         }
     }
 }
@@ -587,8 +594,19 @@ impl Web {
 
     fn route(&self, request: &Request, peer: &str) -> Response {
         if let Some(game) = &self.game {
-            if request.method == "GET" && request.path == "/api/stats" {
-                return stats::response(&self.store, game);
+            if request.method == "GET" {
+                match request.path.as_str() {
+                    "/api/stats" => return stats::response(&self.store, game),
+                    "/api/client-files" => return launcher::client_files(),
+                    path if path == "/launcher" || path.starts_with("/launcher/") => {
+                        return launcher::page(
+                            launcher::language(path, request.lang),
+                            &self.store,
+                            game,
+                        );
+                    }
+                    _ => {}
+                }
             }
             return self.route_026g(request, peer);
         }
