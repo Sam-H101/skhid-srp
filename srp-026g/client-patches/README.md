@@ -8,7 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `eedc5b5c9aa6111c999267eef8c6c27688d012aa203a7c6f6ccdbbc93262cf0d` (patch revision 3); embedding a server changes the hash and may increase the size. With `--server=skhid.link:1234`, as the players' download is made: sha256 `ac947abd212d05f3172035967076517f057019b9e1499be06c28b622baf36d7b` |
+| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd` (patch revision 4); embedding a server changes the hash and may increase the size. With `--server=skhid.link:1234`, as the players' download is made: sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25` |
+| Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **Not in the players' download.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10; not run past the sign-in screen. It plays together with revision 3 |
 | Revision 3 and the players' download | Revision 3 is revision 2 with patch 9 (the battery rule). **The players' download holds revision 2 until it is made again** (the rows below are the downloads so far): the two exes differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Revision 3 was not run in a match yet; its rule was run outside the game (`run_battery_rule.ps1`). A game of revision 3 and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 09:50 UTC: 6 293 491 bytes, sha256 `adb90bccf0254bc2c9fbc8710ffaa9152f95948fd46dcb96a390e04124cc0c4f`, 22 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` 4a68dc7 with `--bugtrap=` naming the `bugtrap.dll` of the download before. It is that download with the launcher (`launcher/README.md`) added: `launcher_skhid.exe` (4 735 488 bytes, sha256 `9110bf7526794d73c2d3713f61b509c526dd8d442e442ca5e08db77427b97d38`), `updater_skhid.exe` (79 360 bytes, sha256 `0ae3c3463b95073fe29797d87dd2ffda3be911832fb489ffb1b9daec299949fd`), `updater_skhid.url` (`https://skhid.link`), the ten pages of `launcher_skhid/`, and `Skhid.bat` and `Skhid.sh` beside `game/`. The game exe (sha256 `30e928dd…4883`, patch revision 2), `bugtrap.dll` (`3d8190b3…1d57`) and the login certificate are byte for byte those of the download before; `play_skhid.bat` is too, and `play_skhid.sh`, `README.txt` and `LINUX.txt` have the launcher in their texts. From this download on the launcher keeps a player's Skhid files the same as the ZIP the site offers, so a release is: build the ZIP, replace the file |
 | Checked, the launcher | 2026-10-13. The same build made for the test server (it differs in the two addresses only), over HTTPS with a real game folder on Windows 11: unpacked over a fresh copy of the game it added 20 files and replaced two (`bugtrap.dll`, the certificate); the first start took the ZIP once and changed nothing; a second ZIP put on the server, differing in the launcher, its pages, `updater_skhid.url` and `README.txt`, was installed at the next start (13 files, the launcher replaced itself and came up again, 2 seconds in all; of 58 files in the folder 43 were untouched and the other two were the updater's own state and log); PLAY started the game, which signed in and reached the lobby. This download itself: taken from the site, unpacked, and `updater_skhid.exe check` run in it (the ZIP fetched, 22 files right, nothing written but its state). Not run: Wine; a Windows other than 11 |
@@ -212,8 +213,9 @@ original bytes first, so another build or an already patched file is refused.
   the exe as before, and an exe without this patch says 0.
 - **What reads it:** the login server writes it in its log
   (`Client version: 0.26g0, patch revision 1`). It refuses nobody for it.
-- **The number:** `REVISION` in `patch_026g.py`, 2 now. Revision 1 introduced this
-  field; revision 2 adds the optional embedded login server. Raise it in the
+- **The number:** `REVISION` in `patch_026g.py`, 4 now. Revision 1 introduced this
+  field; revision 2 adds the optional embedded login server; revision 3 the
+  battery rule (patch 9); revision 4 the two start-up sites (patch 10). Raise it in the
   change that makes a full build something else for the game, so that
   the two kinds of client can be told apart.
 - It is what the exe says of itself, not proof: a changed exe can say
@@ -282,6 +284,53 @@ original bytes first, so another build or an already patched file is refused.
   with revision 0, the first download.
 - Evidence: `../docs/notes/match.md` section 26,
   `../docs/notes/client_patch.md` section 3.9.
+
+### 10. A start with a Documents folder the game may not write to
+
+- **Where:** two sites, eight bytes, no added code.
+  `xor ecx,ecx` / `jmp short 46B12h` at VA 0x46B0B (file offset 0x35F0B)
+  in `vfs::mounter::finish` becomes `jmp short 46B36h` / two `nop`s:
+  `33 C9 EB 03` → `EB 29 90 90`. The address in `mov eax,9DB51Ch` at VA
+  0x851CC7 (file offset 0x8410C7), the initializer of the option
+  `-record_journal`, becomes 0x9DBF0C: `B8 1C B5 9D 00` → `B8 0C BF 9D 00`.
+  Its base relocation stays: the new value is an address too.
+- **Why:** the game keeps its settings, its log and a journal in the folder
+  `Survarium` of the player's Documents folder, and no option moves it.
+  A game that could not write there stopped two seconds after its start,
+  before the sign-in, in one of two ways (two crash reports of one player,
+  2026-10-13):
+  - The folder is not there and cannot be made. Its mount (`user_data`)
+    fails and has no root, the engine still announces it as mounted, and
+    the receiver reads a null pointer: access violation at 0xF9A8F.
+  - The folder is there, but a file cannot be made in it. The journal
+    `Survarium_<Windows user>.journal` is made anew at every start, and
+    the failure is a fatal assertion: "failed opening file … with open
+    flags:create_always+read_write", a breakpoint at 0x40141.
+- **What the patch does:** a mount without a root is not announced, and
+  the journal is not recorded unless the game is started with
+  `-record_journal=1` (the exe's own option; "1" was its default). Such a
+  game starts and can be played. Its settings are not saved. The crash
+  reporter of the download (`client/bugtrap`) tells the player so at the
+  game's start, with what to do (its README, "Start-up notice").
+- **What is lost:** the journal, a recording of a session's input and
+  packets that only the same build's `-replay_journal` reads. It was
+  overwritten at every start and nothing here uses it.
+- **Does not change** what a match computes: revision 4 and revision 3
+  play together.
+- **Tried** (2026-10-13, Windows 11, the built exe, 28 s each, to the
+  sign-in screen): a Documents folder that refuses new folders; a folder
+  `Survarium` that refuses new files; an ordinary folder (no journal file
+  is made); the same with `-record_journal=1` (the journal is made). No
+  crash in any. Before the patch the first two give the two crashes
+  above, with the addresses and registers of the reports.
+- **Not tried:** a sign-in, a match, and saving the options into a folder
+  that refuses the file.
+- **What makes a Documents folder like that** is not known from the
+  reports. Windows' "Controlled folder access" does it to a program it
+  does not know, and so do file rights on a Documents folder moved to
+  another drive.
+- Full builds only; `--cert-only` keeps both. Evidence:
+  `../docs/notes/client_patch.md` section 3.10; self-test check 14.
 
 ## Not ported, not done
 

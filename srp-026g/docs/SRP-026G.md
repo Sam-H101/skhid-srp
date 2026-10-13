@@ -432,7 +432,9 @@ certificate check (without it every stock 0.26g client stops with "Resources
 archive is corrupted": the certificate ran out in 2015), the single-instance
 check, the default hash interval (100 → 50 ms), two instructions of the
 battery rule of modes 2 and 3 (so that a team's last battery can be put in;
-patch revision 3, not in the players' download yet), and adds the snapshot
+patch revision 3, not in the players' download yet), two sites that let a
+game start whose Documents folder it may not write to (patch revision 4,
+not in the players' download), and adds the snapshot
 upload in a new PE section. `--cert-only` and `--cave=hash-mismatch` are the
 other builds. Detail: MATCH-SYNC-026G.md and `client_patch.md`.
 

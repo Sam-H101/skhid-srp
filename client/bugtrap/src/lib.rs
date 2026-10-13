@@ -10,6 +10,8 @@ mod api;
 mod arithmetic;
 mod dump;
 mod modules;
+mod notice;
+mod notice_text;
 mod runtime;
 mod text;
 mod ui;
