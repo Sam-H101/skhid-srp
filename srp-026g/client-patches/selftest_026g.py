@@ -784,7 +784,8 @@ def late_join_sites():
     """[(address, length)] of every site the late join changes beside the
     revision and the ready hook, which the build without it changes too."""
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
-        [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS]
+        [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
+        [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1]))]
 
 
 def test_late_join_bin():
@@ -893,6 +894,20 @@ def test_late_join(original, without, server, source):
               and branch_target(rows[0][2]) == P.LATE_JOIN_VA + offset
               and all(text == "nop" for _, _, text in rows[1:]) and len(rows) == len(old) - 4,
               f"hook {va:#x}: {rows[0][2]} + {len(rows) - 1} nop (entry {offset})")
+    # The game that goes on without the focus: the same instructions up to
+    # the test, then two nops where the original (and the build without the
+    # late join) jumps to the branch that does not call game::tick.
+    va, old, new = P.RUN_UNFOCUSED
+    rows, original_rows = rows_at(va, len(old)), ndisasm(Image(original).read(va, len(old)), va)
+    texts = [text for _, _, text in rows]
+    check(image.read(va, len(old)) == new and Image(original).read(va, len(old)) == old
+          and before.read(va, len(old)) == old
+          and texts[:-2] == [text for _, _, text in original_rows[:-1]]
+          and texts[-3:] == ["test al,al", "nop", "nop"] and texts[-4] == "call eax"
+          and original_rows[-1][0] == P.RUN_UNFOCUSED_BRANCH_VA and original_rows[-1][2].startswith("jz")
+          and branch_target(original_rows[-1][2]) == 0x1A113,
+          f"{va:#x}: the active check's `{original_rows[-1][2]}` at {P.RUN_UNFOCUSED_BRANCH_VA:#x} is two nops; "
+          "the call and the test before it are the original's; the build without the late join keeps the jump")
     ready = ndisasm(image.read(P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET, 128), P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET)
     onward = [branch_target(text) for _, _, text in ready if text.startswith("jmp")]
     check(ready[0][2] == "pusha" and onward[:1] == [P.SECTION_VA],

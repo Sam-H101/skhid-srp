@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `8a38bb811e2f5bce8806d711f6bad108d559c7f3da4dab2e2bccf94f53ef8d7f` (patch revision 5); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `d0466da177098a629d39ce4e27e5277dfd523e8e3833f540353d3c7c64dce380`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 | Revision 4 with patch 11: the late join (a player enters a match that is being played). **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `07a846d1c991a4a7a1a63e2c1eaf8dd7f067bcb7aaa76619577161387e74c3df` (patch revision 5); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `3f216a962dd12094ef6032c176dbbbefe41030ac864ab4f1a7ef02146bf1fbd5`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 | Revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -121,7 +121,7 @@ of two games into three and four on map 61, a battery mode, with the
 starter kit and with other equipment, in step from 53.4 s to 133.3 s with
 no resync. The revision 5 exe has the same code at another address; its
 build passes the self-test, the machine-code checks and the C tests
-(2026-10-14). **Not run with the revision 5 exe: any match.** Never run with either: a join into a Team
+(2026-10-14). **Run with the revision 5 exe (2026-10-13, the test server): a match of two games, in step. Not run with it: a join that completes** (the one tried was given up by the server because the games stood on one PC and only the one in front played: patch 12). Never run with either: a join into a Team
 Deathmatch, a fight, a death and a respawn after a join, a change of kit,
 a roster over four, a match that nobody joins played to its end.
 
@@ -438,6 +438,44 @@ original bytes first, so another build or an already patched file is refused.
   minutes later.
 - Full builds only; `--cert-only` keeps both. Evidence:
   `../docs/notes/client_patch.md` section 3.10; self-test check 14.
+
+### 12. A game that goes on without the focus (patch revision 5)
+
+A 0.26g game whose window is not the active one stands still. Its logic
+thread calls `game::tick` only while `is_application_active` says yes
+(`engine_world::logic_tick` 0x1A030; the call at 0x1A0E1, `test al,al`,
+`jz 1A113h` at 0x1A0EE). Otherwise it only sends what is queued and keeps
+the lobby link up (`docs/notes/transport.md` section 6.1): the link looks
+healthy and nothing of the match moves. When the player comes back the
+game makes up the time at once (its log says `eating time: N`).
+
+In a match that is a player the others see frozen, who is resynced or
+taken for gone on the way back. With the late join it is worse: before a
+newcomer enters, every game in the match has to prepare for it and say so,
+and a game without the focus says nothing, so one player who looks at
+another window holds every join up until the server gives it up after 60 s.
+
+The patch: the `jz` at 0x1A0EE becomes two nops (`74 23` -> `90 90`). The
+call and the test stay. It is in the builds of patch revision 5 only
+(`RUN_UNFOCUSED` in `patch_026g.py`); `--no-late-join` gives the revision 4
+exe as before.
+
+Measured on one PC, 2026-10-14, one game in the lobby of the test server,
+windowed 1280x720, 15 s each (`eating time` is the game's own word for a
+freeze it makes up):
+
+| | without the patch | with it |
+|---|---|---|
+| Window not in front | froze: `eating time: 18.4`; 101 % of one core | no freeze; 46 % of one core |
+| Window minimised | froze: `eating time: 15.6`; 100 % of one core | no freeze; 146 % of one core |
+| Back in front | went on | went on |
+| The mouse, window not in front | Windows' cursor shown, free on the whole desktop, also over the game | the same |
+
+**Not run:** a match (so: mouse look and the cursor in a match, a fight
+seen by the others while one game is not in front, a join with a game not
+in front); exclusive fullscreen (`r_fullscreen on`) with alt-tab; another
+graphics card. Known cost: a minimised game uses about half a core more
+than before. Sound goes on while the game is not in front.
 
 ## Not ported, not done
 
