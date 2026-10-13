@@ -120,8 +120,8 @@ as revision `0x80`, with the code 0xE5C bytes lower in the section): joins
 of two games into three and four on map 61, a battery mode, with the
 starter kit and with other equipment, in step from 53.4 s to 133.3 s with
 no resync. The revision 5 exe has the same code at another address; its
-build passes the self-test, and the C tests pass. **Not run with the
-revision 5 exe: any match.** Never run with either: a join into a Team
+build passes the self-test, the machine-code checks and the C tests
+(2026-10-14). **Not run with the revision 5 exe: any match.** Never run with either: a join into a Team
 Deathmatch, a fight, a death and a respawn after a join, a change of kit,
 a roster over four, a match that nobody joins played to its end.
 
