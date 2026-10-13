@@ -53,7 +53,7 @@
 //!   store is made); and the 0.26g queue's own: `SRP_MATCH_MIN_PLAYERS`
 //!   (default 4), `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30),
 //!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
-//! - `SRP_MATCH_TEAM_SIZE` (default 6, 1 to 10): the most players of a
+//! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
 //!   side; a match has two sides;
 //! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
 //!   lines in the general chat when somebody joins or leaves the search and
@@ -115,8 +115,9 @@ use udp_transport::PacketLog;
 
 pub use play::{MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
 
-/// Default policy: six per team. The client capacity is a separate ceiling.
-const DEFAULT_TEAM_SIZE: usize = 6;
+/// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
+/// wiki of February 2015; `progression_sources.md` §9).
+const DEFAULT_TEAM_SIZE: usize = 10;
 /// The most a side can be: the client's roster has 20 places.
 const MAX_TEAM_SIZE: usize = session::MAX_PLAYERS_PER_MATCH / 2;
 /// `SRP_MATCH_SEARCH_STEP_SECONDS` when unset. [choice] The step is not in
