@@ -24,7 +24,7 @@
 //!   its client to connect again, through the match of a player who was in
 //!   one: `away` has the rule.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -199,6 +199,11 @@ pub(super) struct Core<'a> {
     /// The sessions whose link went silent, kept for their clients to
     /// connect again (`away`).
     pub away: HashMap<u32, super::away::Away>,
+    /// The sessions the lobby has sent into a match. Such a session's game
+    /// has loaded a match and can show a results screen; any other would
+    /// die of one (`show_results`). A lobby started anew knows of none, so
+    /// a game that outlived it is shown no screen until its next match.
+    pub sent_to_match: HashSet<u32>,
 }
 
 impl<'a> Core<'a> {
@@ -237,6 +242,7 @@ impl<'a> Core<'a> {
             squads_dirty: false,
             clan: Default::default(),
             away: HashMap::new(),
+            sent_to_match: HashSet::new(),
         }
     }
 

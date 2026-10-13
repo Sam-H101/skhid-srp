@@ -244,6 +244,7 @@ Flash `victory_screen_request_player_data` (handler 0x29ED70, slot +0x6A0; slot 
 7. **Descriptors** (0x97, 0x98, 0x99): mods > 8 or upgrades > 3 -> fatal assert "buffer overflow".
 8. **0x99** day count n > 7 overwrites the reward descriptor and beyond.
 9. Score components: forgetting that the 8 bytes per column are omitted for amount == 0.0 desyncs the rest of 0x97/0x93.
+10. **0x97 to a game that has loaded no match** (PROVEN, crash dump of 2026-10-13): the screen's builder reads the map's name from lobby_menu+0x313C (0x29ABE1) and gives it to `translate_text` (0x29AC04 -> 0x1FF0F0), which reads the string at once (0xF6C47). The field has one writer in the whole exe, the match loading screen (0x22052A), so it is NULL until the game has loaded its first match: access violation reading address 0. A game started anew after its player's match (the game was closed or died in it) is such a game. srp sends 0x97 only to a session the lobby has sent into a match (`Core::sent_to_match`, `show_results`); the others get the match's notices and no screen.
 
 ---
 
