@@ -81,16 +81,41 @@ min, max }`. A new account (TT-33, Mosin carbine) is level 0, range 0..=1.
 
 ## 3. The queue's rules in srp
 
-When a match starts is 0.21d's rule (the owner's: no blocking on player counts) but for squads
-(below): two parties, the gather window from the second (`SRP_MATCH_GATHER_SECONDS`, 60), sooner
-with `SRP_MATCH_FILL_PLAYERS` (10) players waiting and nobody new for `SRP_MATCH_QUIET_SECONDS`
-(10), at once when full. A player alone waits, and so does a squad alone.
+When a match starts: the rules below (0.21d's, the owner's "no blocking on player counts", was
+replaced for 0.26g on 2026-10-13 by a minimum of 4 players, at the owner's word: "keep 4 minimum").
 
-What is new:
+**The queue's rules (since 2026-10-13, 0.26g; the owner's, from the prod data of 2026-10-12):**
+
+1. 20 players (a full match, 10 a side): it starts at once.
+2. 10 to 19: it starts when nobody has pressed Play for 30 s.
+3. 4 to 9: a countdown of 60 s starts when the queue gets its 4th player;
+   each time somebody presses Play, 30 s are added to what is left of it.
+4. No countdown runs longer than 2 minutes from its start (rules 2 and 3).
+5. Fewer than 4 players, or only one side (a player alone, a squad alone):
+   no match. If the queue drops under 4, the countdown is cancelled and
+   starts anew with the 4th.
+
+Squads: a squad's players count toward the 4 and toward the 20, but a squad
+is **one side** (one party) and is never split: a squad of 4 alone waits for
+somebody who is not of it; a squad of 3 and one player start after the
+countdown, 3 against 1. `SRP_MATCH_MIN_PLAYERS` (4),
+`SRP_MATCH_JOIN_EXTENSION_SECONDS` (30), `SRP_MATCH_MAX_COUNTDOWN_SECONDS`
+(120), `SRP_MATCH_GATHER_SECONDS` (60, the countdown's start),
+`SRP_MATCH_FILL_PLAYERS` (10), `SRP_MATCH_QUIET_SECONDS` (30),
+`SRP_MATCH_TEAM_SIZE` (10) set the numbers. The levels' range widening
+(§1) is unchanged and the conditions are counted over the players in range.
+
+**Why (prod 0.26g, 16:32 to 21:32 UTC on 2026-10-12):** 75 players pressed
+Play 313 times, 50 matches were made (24 of them with 2 or 3 players), the
+queue never held 10. The roster of 20 is the client's (`player_profile[20]`,
+PROVEN); matches above 9 players have not been run live yet, nor the 10 a
+side the roster allows (the old default was 8 a side, 16).
+
+What else is new:
 
 | Rule | Tag |
 |---|---|
-| A match is two sides of at most `SRP_MATCH_TEAM_SIZE` players (8; 1..=10) | 8: wiki of Feb 2015, "two teams of up to 8 players" |
+| A match is two sides of at most `SRP_MATCH_TEAM_SIZE` players (10 since 2026-10-13, 8 before; 1..=10) | 10: the client's roster of 20 (PROVEN); the wiki of Feb 2015 says "up to 8" |
 | A squad stays on one side; the sides are as even as the squads allow, first in players, then in the sum of levels | choice |
 | **A squad is one party, and a match needs two parties**: two players alone, or a squad and at least one player who is not of it (alone, or of another squad). The gather window starts with the second party | the owner's rule, 2026-10-12 |
 | A squad is looked for by its highest member | LIKELY (as the kits of one account are) |

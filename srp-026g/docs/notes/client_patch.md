@@ -4,7 +4,7 @@ Version scope: client 0.26g (build 2777, "0.26g0", linked 2015-01-15, no PDB) vs
 
 Tags: **[V]** read in the exe/disassembly; **[I]** inferred. Patch-site status: **PROVEN** (0.26g VA + original bytes + the 0.21d site it corresponds to), **LIKELY**, **GUESS**.
 
-Summary: the mutex patch ports 1:1 (PROVEN). One patch is 0.26g's own: two instructions of the battery rule (§3.8, added 2026-10-12). The snapshot upload is still needed (the world is still frozen until the 0xE8 snapshot, and the client never sends its state); it ports with new addresses. Only 0x5D bytes of .text padding exist, so the upload code goes into a new PE section `.srp` (default) or over the dead `on_hash_mismatch` (fallback). The patcher, the assembly and a self-test are in `srp-026g/client-patches/` (reviewed against the disassembly 2026-10-12, §3.1–§3.5; not run live yet). The mode 3 battery patch is not needed: 0.26g serializes the next-battery time.
+Summary: the mutex patch ports 1:1 (PROVEN). One patch is 0.26g's own: two instructions of the battery rule (§3.9, written 2026-10-12, patch revision 3). The snapshot upload is still needed (the world is still frozen until the 0xE8 snapshot, and the client never sends its state); it ports with new addresses. Only 0x5D bytes of .text padding exist, so the upload code goes into a new PE section `.srp` (default) or over the dead `on_hash_mismatch` (fallback). The patcher, the assembly and a self-test are in `srp-026g/client-patches/` (reviewed against the disassembly 2026-10-12, §3.1–§3.5; not run live yet). The mode 3 battery patch is not needed: 0.26g serializes the next-battery time.
 
 ## Function map (`tools/re-kit/v026g/functions_matched.txt`)
 
@@ -216,7 +216,7 @@ starts at 0x7F80 and has 128 data bytes.
 
 - `snapshot_upload_026g.asm` → `nasm -f bin -DCAVE=0xA425000 … -o snapshot_upload_026g.section.bin` and `-DCAVE=0x325A60 … -o snapshot_upload_026g.hash-mismatch.bin` (433 bytes each = 420 cave + 6 + 7 hook bytes; both checked in).
 - `patch_026g.py <survarium.exe> <out.exe> [--cave=section|hash-mismatch] [--cert-only] [--bin=<file>]`, or `<survarium.exe> --check …` (everything in memory, nothing written). It checks the exe sha256 (`ac33d993…f153`), each site's original bytes, the free section table entry and the file layout (section mode) or the function's sha256 (hash-mismatch mode), and refuses a .bin assembled for the other cave. `--cert-only` output is byte-identical to the `survarium_srp.exe` installed in step 0.
-- (Since §3.7 and §3.8, 2026-10-12: the self-test counts 54 bytes in 15 ranges for the section build and 1213 in 58 for hash-mismatch, the two battery rule sites being 13 bytes in 2 ranges and the VRAM check 1 byte in 1; and the cert-only output is no longer the installed `survarium_srp.exe`, which is the section build of that morning.)
+- (Later patches change these counts and hashes: §3.7, §3.8, §3.9 and §6 each name their own. With all of them, revision 3, the self-test counts 61 bytes in 17 ranges for the section build and 1220 in 60 for hash-mismatch. The cert-only output is no longer the installed `survarium_srp.exe`, which is a full build since the morning of 2026-10-12.)
 - `selftest_026g.py` builds the three variants into `srp-026g/target-a4/scratch/` and checks each: PE re-parse (sections aligned and contiguous, SizeOfImage, data directories, certificate table last and identical); every byte outside the intended ranges equals the original (section build: 40 changed bytes in 12 ranges below the old end of file, plus the 0x200 new bytes; hash-mismatch: 1199 bytes in 55 ranges; the counts include the checksum's bytes that happen to differ); no active relocation under rewritten bytes and the rest of `.reloc` untouched; ndisasm of the cave and hooks (every direct branch inside the cave or to one of the 7 external addresses, the two indirect calls are `[eax+18h]` / `[eax+1Ch]`, both entries start with `pushad`); no branch or pointer into the hooks anywhere in `.text`; imagehlp's checksum equals the header's; the client's own `CryptQueryObject` call still yields the survarium.com certificate; the hash interval site (§3.6) is `mov dword [esp+18h],32h` in the full builds and the original in `--cert-only`. **All checks pass (2026-10-12, again with §3.6).** Nothing was run or installed; the builds in the scratch folder are for inspection only.
 - Not tested: the code itself running (needs a 0.26g match server to reach `on_match_ready`).
 
@@ -244,22 +244,86 @@ patcher) and its disassembly:
   0x14000000. Neither the measurement nor the fallback is changed. [V]
 - This bypasses the startup rejection for a low reported VRAM size; it does
   not increase memory or replace the allocator launch options.
+- **Who is affected** (read in the exe, 2026-10-12, not run): for a size of 320 MiB or more, and for a size that cannot be detected (0, answered as 320 MiB at 0x1063F7), the original `jae` already went to 0x106422, so the patched exe does there exactly what the original does. Only a detected size under 320 MiB takes another way: the original stops in 0x113580 (it formats the text and never returns), the patched one returns the size. The function's one caller (0xE9C3F) stores the size (0x1B3A1F0, 0x1B3A1F8) and then has a check of its own, 0xE9D26..0xE9D47: under the minimum it holds at `[esp+28h]`, which is 320 MiB again (0xE990A), it stops with "Not enough video memory to run Vostok Engine v1.0". So by the code a card under 320 MiB is still stopped, with that other text, unless that second check does not see it; this was not tried. The size goes to the memory statistics, a log line and one initializer (0x15583 → 0x13C40) and to nothing of a match's world.
 - Applied to `section` and `hash-mismatch` builds, before the existing PE
   checksum update. `--cert-only` stays unchanged. The self-test checks the
   branch target, unchanged return paths, exact changed byte, relocation
   coverage, and rejection of unexpected instruction bytes.
 
-### 3.8 The battery rule: two instructions become nops (added 2026-10-12) — PROVEN bytes, not run live
+### 3.8 Embedded default login server (optional)
+
+`patch_026g.py --server=host:port` embeds a login address in either full
+build. `make_client_026g.py` supplies its existing `--server` argument to
+this patch and omits `-server=` from the generated full-build launch line.
+Without an embedded address, the old behavior is unchanged. Cert-only
+builds retain the old behavior too.
+
+- Original path: `game::on_base_resources_created` reads the `server`
+  option at 0x1EAE5F, then checks `replay` at 0x1EB0A4 if it is absent.
+  Only when both are absent does `jz` at 0x1EB0AB reach the fatal error at
+  **0x1EB25B** (`push 0x9FA990; call 0x113580`). [V]
+- Replace those ten error bytes with a relative jump and five NOPs. The
+  hook enters `default_server_026g.asm`, appended after the unchanged
+  420-byte snapshot code in either cave. Its assembled stub is 51 bytes;
+  the patcher appends the validated ASCII address and NUL. [V]
+- The stub initializes the parsed `server` key at **0xA9C550**: copy to
+  its existing 512-byte buffer, update the end pointer at +4 excluding
+  NUL, and set the type at +0x224 to **4 (`type_string`)**. It jumps back
+  to **0x1EAE2D** to rebuild the temporary string (begin, end and buffer
+  limit), then the original `is_set_as_string` call at 0x1EAE5F fills it
+  and selects the normal startup path. ECX, EDX,
+  ESI and EDI are saved/restored; EBX and EBP are untouched. [V]
+- Both the string and key are located relative to call/pop; the return
+  jump is also relative. No injected absolute pointer needs relocation.
+  The original hook's push operand relocation is neutralized by the
+  existing range logic.
+- Input investigation: filling only the temporary stack string and jumping to
+  0x1EAE90 left the parsed key `type_unset`. That draft displayed the
+  login screen but did not accept typing in manual tests; supplying an
+  explicit `-server=` restored input. Initialize the key and re-enter
+  the original option read instead. This is an observed correlation; the
+  downstream cause of the typing failure has not been established. No
+  direct keyboard use of this key was found. In the controlled A/B retest
+  on 2026-10-12, both the original fallback and the corrected fallback
+  accepted typing with the same shell launcher and Wine prefix. Only the
+  fallback payload and PE checksum differed. The absent-key explanation
+  is therefore unsupported; the original input failure remains unreproduced.
+- Re-entry regression: 0x1EAE47 skipped the `lea edx,[ebp-0x288]` that
+  sets the temporary string's buffer limit, then stored the stale EDX
+  at +8. An execution harness using the original startup instructions
+  reproduced the wrong limit; returning to 0x1EAE2D fixes it. This is a
+  separate proven defect, not an established cause of the input failure.
+- Explicit server values (including malformed ones) and replay selection
+  remain untouched. Only the login address is embedded: the TLS login
+  reply supplies the lobby address, and the lobby supplies the match
+  address (`login_chat.md` sections 2 and 4.1).
+- Hostnames are at most 63 ASCII bytes (the login host field is 64 bytes
+  including NUL), and ports are 1..65535. The self-test checks both caves,
+  a normal address and the maximum length, and the unmodified variants.
+  Byte/disassembly checks cover all seven variants. A native 32-bit
+  execution harness verifies both caves, normal/max-length addresses,
+  rebasing, buffer bounds, key type and register/stack preservation.
+  Sixteen further cases execute the original startup and key-read code
+  for both caves and address lengths, covering fallback, explicit server,
+  replay, and both options together, including the stack buffer limit.
+  Under Wine Staging 11.8 / DXVK 3.1.1, the section build was launched
+  through the existing shell launcher with `-server=` removed; the user
+  confirmed the final revision-2 build accepts input. Lobby handoff and match
+  entry were not separately verified.
+
+### 3.9 The battery rule: two instructions become nops (written 2026-10-12, patch revision 3) — PROVEN bytes, the handler run outside the game, not run live
 
 - **Why.** match.md §26: the rule's completion (the time at +0x15C, the "containers can be used" byte at +0x160) is not serialized, a rollback of the completing tick leaves it set, and the tenth battery cannot be put in again; the containers are closed for the rest of the match.
 - **Where.** `gather_victory_items_rule_core`'s event handler 0x313A50 (mode 3's rule shares it):
   - 0x313A62 `0F 85 D3 00 00 00` (`jnz 313B3Bh`, after `cmp dword [ecx+15Ch],-1`) → six `90`: an event after a completion is counted.
   - 0x313B34 `C6 81 60 01 00 00 00` (`mov byte [ecx+160h],0`, between `mov [ecx+15Ch],edx` and `ret 0Ch`) → seven `90`: the containers stay usable.
 - **What is left:** the handler counts every put and take, sets the completion time when a team has all and takes it back when not: 0.21d's handler 0x1FB8A9, with 0.26g's 3 s.
-- **Checked** (`selftest_026g.py` check 10; the VRAM check of §3.7 is check 11): the instructions around each site, no base relocation on either, no branch into either, `mov byte [reg+160h],0` nowhere else in the rule's code. The section build differs from the exe of 2026-10-12 06:05 in these 13 bytes and the PE checksum only.
+- **Checked** (`selftest_026g.py` check 13): the instructions around each site, no base relocation on either, no branch into either, `mov byte [reg+160h],0` nowhere else in the rule's code.
+- **Run outside the game** (2026-10-13, `client-patches/run_battery_rule.ps1`, Windows 11): the handler's 238 bytes (0x313A50..0x313B3D; no call, no absolute address) copied out of an exe and called in a 32-bit process on a made-up rule object (ten batteries, `+0x15C` = -1, `+0x160` = 1, a world with no lobby menu). Revision 2 (the players' exe): nine puts 9:0; the tenth 10:0, time t + 3000, byte 0; the count set back to 9 as a rollback does; the same put again: **not counted**, 9:0, byte 0; a take and a put: not counted. Revision 3: the tenth 10:0, time set, byte 1; after the count is set back the same put gives 10:0 again; a take gives 9:0 and time -1; a put 10:0 and a new time; a count set back with no replay leaves the time set until the next event, which takes it back. This is the handler alone: `can_use`, the rollback itself and the server's reading of the world were not run.
 - Full builds only; `--cert-only` keeps the handler.
-- **Builds** (with the VRAM check of §3.7, merged the same evening): section sha256 `053c359586aaef3d04fb6de541366b719fe413d53f8634575c118ca06bb1fd86` (12 895 352 bytes), hash-mismatch `a8aadcc2482107a599a2541f0fe684b0a746a993370735e1c3d61d1e635660d4`. Before §3.7 was merged they were `a39162d1…91ba` and `2477e934…ca73`; with §3.7 and without this patch the section build is `2cb92dff…0dac`. The players' download of 2026-10-12 holds the section build with neither, `166d25bcc49f6e1b83fc0d85c25e822c85c7284d4d846143358ca2f28bd31ddf`: until a new overlay is made and given out, `patch_026g.py` no longer gives the players' exe byte for byte (the 13 bytes, the VRAM byte and the checksum differ).
-- **Not done:** a run in a match of two or more players; publishing (every player's exe changes; old and new games part at the tenth battery, match.md §26).
+- **Builds** (revision 3, with everything of §3.7, §3.8 and §6): section sha256 `eedc5b5c9aa6111c999267eef8c6c27688d012aa203a7c6f6ccdbbc93262cf0d` (12 895 352 bytes), hash-mismatch `59eb5dfb1d1edb78e62d40001de04c47a10d6e3d4c22051f44be023112f49746`; with `--server=skhid.link:1234`, as the players' download is made, the section build is `ac947abd212d05f3172035967076517f057019b9e1499be06c28b622baf36d7b`. That one differs from the exe of the players' download of 2026-10-13 (revision 2, `30e928dd…4883`) in these 13 bytes (file 0x302E62, 0x302F34), the revision byte (file 0x36FC66, `02` → `03`) and the PE checksum, and in nothing else (compared byte by byte). The self-test counts 61 bytes in 17 ranges for the section build and 1220 in 60 for hash-mismatch.
+- **Not done:** a run in a match of two or more players; publishing (a new ZIP on the site: a game started through the launcher takes it by itself, a game with an older download keeps the old rule until its player takes the ZIP; old and new games part at the tenth battery, match.md §26).
+
 
 ## 4. Mode 3 batteries: not needed in 0.26g
 
@@ -270,6 +334,25 @@ patcher) and its disassembly:
 ## 5. Manually identified 0.26g functions (not all in the automatic map)
 
 0x124D0 single-instance check · 0x27A300 `network_client::on_match_packet_received` · 0x27AA20 `network_client::on_match_ready` · 0x27CBF0 `network_client::try_send_all` · 0x27B830 / 0x27B880 / 0x27B570 / 0x27B770 / 0x27B7F0 / 0x27BFF0 / 0x27C5F0 / 0x27C690 = handlers of 0xE3 / E4 / E5 / E6 / E7 / E8 / E9 / EA · 0x27A1B0 `match_client::connect` · 0x279A60 / 0x279B10 sending / received message info · 0x278D00 `udp_match_packet` ctor · 0x37A0E0 `network::match_client::new_packet` · 0x324BE0 `game_state_history_item::serialize` · 0x324D80 `game_state_history_item::deserialize` · 0x325150 `game_state_history_item::hash` · 0x325A60 `game_world_core::on_hash_mismatch` · 0x3285D0 `game_world_core::dump_game_state` · 0x2D04F0 `game_world_core::serialize` · 0x2D09C0 `game_world_core::new_game_state_history_item` · 0x2D0B30 `event_horizon_history_item` · 0x2D1070 `is_there_event_horizon_item` · 0x2D2E40 `game_world_core::move` · 0x7AB30 `mutable_buffer::resize` · 0x7AC10 `buffer_writer::w(src, n)` · 0x424CA0 `_alloca_probe_16` · 0x1C210 CRC-32 table init · 0x3147A0 / 0x3148A0 / 0x3149B0 / 0x314B90 `match_time_vi_spawn_rule_core` ctor / tick / serialize / deserialize.
+
+## 6. A patch revision in the sign-in (added 2026-10-12) — PROVEN bytes, run with a client
+
+A server cannot tell one patched exe from another: nothing a client sends depends on a patch. What a client says of its build is the 12-byte version field of the first login message and nothing else (login_chat.md §4.1 and §7.8; no message has a hash of the exe).
+
+- **PROVEN, the field** (`sign_in_on_connected`, 0x380847..0x38088C): eight zero bytes on the stack (`pxor` / `movq [esp+20h]`), `"0.26"` at +0, `"g0"` at +4, the string's own zero at +6 (`mov cl,[9DAE9Eh]` 0x380862, `mov [esp+26h],cl` 0x38086C) and a zero again at +6 (`mov [esp+26h],al` 0x38087B, `eax` being 0); then the eight bytes and four more zero bytes (`mov [edi+8],eax`) go into the message. Bytes 7..11 of the field are always 0.
+- **PROVEN, the server:** `parse_sign_in` takes the field up to its first zero, so what stands after it is not read by any server built from this repository so far.
+- **The patch** (`REVISION_SITE`, full builds only; `--cert-only` keeps the code): the six bytes at 0x380862, `8A 0D 9E AE 9D 00` (`mov cl,[9DAE9Eh]`), become `C6 44 24 27 NN 90` (`mov byte [esp+27h],NN` / `nop`): byte 7 of the field is the revision NN. Byte 6 still gets its zero at 0x38087B (0x38086C then writes the `'0'` left in `cl` there first, which is overwritten). The base relocation at 0x380864 (HIGHLOW; the three of this code are at 0x380849, 0x380850, 0x380864) is made a no-op as the hooks' are. The string, the title and replays are untouched. NN is `REVISION` of `patch_026g.py`. It is raised in the change that makes a full build something else for the game: **1** is the patch set of this change (the VRAM check of §3.7 and this byte beside what the download of 2026-10-12 has). 0 is every exe without this patch: the download of 2026-10-12 and anything built before.
+- **Revision 2:** adds the optional embedded login server in §3.8. Full builds now advertise 2, whether or not an address is supplied at patch time; cert-only remains 0. The revision-1 build hashes and live test below describe the earlier published download.
+- **Revision 3:** adds the battery rule patch of §3.9, the first of these patches that changes what a match computes: a game of revision 3 and an older one stay in step until a team's last battery goes in, and part there (match.md §26). Revisions 0, 1 and 2 play together as before.
+- **Checked** (`selftest_026g.py` check 11): the field is worked out from the instructions that fill it (the bytes of the string are read from the image): `0.26g0` and six zero bytes in the original and in cert-only; `0.26g0`, a zero, the revision in byte 7 and four zero bytes in the full builds, the EULA flag following as before. Of the three relocations only the one at 0x380864 is disabled; no branch of the function lands inside the instruction.
+- **Why nothing else changes** (read in the exe, 2026-10-12): the replaced instruction only loaded `cl`, which `mov ecx,[ebp+0Ch]` (0x380870) overwrites before any other use; neither it nor its replacement touches a flag. The eight stack bytes are read once, by the `movq` at 0x38087F, and nothing of the function reads them after that (to its `ret` at 0x380930 it builds the send callback above them and sends). The message's length does not change. The four references to the version string are this code, the title, the `%s (%d)` text and the replay check (login_chat.md §7.8); the patch touches none of the string's bytes. Nothing of it is in the world a match computes, so a patched and an unpatched client play one match as two unpatched ones do.
+- **Builds:** section sha256 `3c7d7bf0195db000f0c6dc81e57fa15a50decec4fa0c0ea5494f361f91049c9d`, hash-mismatch `9f7f8b65203df7abf9720a174ad6782db42a5e42517430ec700a0c97f4707e91`; 48 bytes in 15 ranges and 1207 in 58 differ from the original. The section build differs from the exe of the first download of 2026-10-12 (`166d25bc…1ddf`) in the VRAM byte (file 0xF5811), these six bytes (file 0x36FC62), one relocation entry (file 0xB86623, `38` → `08`) and the PE checksum, and in nothing else (compared byte by byte).
+- **The server** (2026-10-12): `parse_sign_in` reads byte 7 of a whole 12-byte field whose text ends before it (`patch_revision`; 0 otherwise), and the login server writes it in the sign-in's log line: `Client version: 0.26g0, patch revision 1 (…)`. Nothing else is done with it yet (the owner: "only log at first"). Tests: `a_patched_0_26g_client_says_its_patch_revision`, `a_client_that_says_a_patch_revision_signs_in_as_any_other`.
+- **Run with a client** (2026-10-12, a local server and one game with the section build): the sign-in was logged as `Client version: 0.26g0, patch revision 1`, a client that sends the stock field (the test bot) as `patch revision 0`; the game went through the lobby and a match. The players' download of 026g.skhid.link has this exe since 2026-10-12 18:43 UTC (`Survarium-0.26g-srp-files.zip`, sha256 `16eb1f23c99d5d73c5228c168021c58adff5e0ebf3d543984f916b416cef9528`); the first download's exe says nothing, so 0.
+- **What it gives:** the version text stays `0.26g0`, so a server that knows nothing of the byte takes the new exe as it takes the old, and a server that reads it sees 0 from the earlier unversioned exes.
+- **What a server can do with it beyond the log:** show it on the admin page; refuse a sign-in under a set minimum with the answer 0x22, for which the client shows its own `st_login_menu_status_invalid_version`, "You're using an outdated version of the game." (PROVEN: 0x22 → 0x21ACE5 → `set_status(9)` 0x21AD8D → the text key 0xA0005C at 0x21F0F3; the server has sent 0x22 to two sign-ins of another build, 0.26e0, in the kept logs); or, in a match of both kinds whose worlds part, take the newer one's world.
+- **What it is not:** proof. The byte is what the exe says of itself; a changed exe can say anything.
+- **Not taken:** changing the string itself (`0.26g1`): one byte, no code, but the title and the replay check change with it, and every server not yet updated refuses the new exe. A hash of the exe sent by the client: new code in the exe for no more than the byte gives.
 
 ## Open questions
 

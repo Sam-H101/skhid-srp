@@ -1,0 +1,19 @@
+[build]
+target = "i686-pc-windows-msvc"
+
+[target.i686-pc-windows-msvc]
+linker = "rust-lld"
+# The manifest says "as the user who started it". Without one, Windows takes
+# a 32-bit program with "update" in its name for an installer and asks for
+# administrator rights before it starts.
+rustflags = [
+    "-C", "link-arg=/ENTRY:entry",
+    "-C", "link-arg=/NODEFAULTLIB",
+    "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.0",
+    "-C", "link-arg=/MANIFEST:EMBED",
+    "-C", "link-arg=/MANIFESTUAC:level='asInvoker' uiAccess='false'",
+]
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

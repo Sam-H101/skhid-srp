@@ -24,7 +24,7 @@
 //!   its client to connect again, through the match of a player who was in
 //!   one: `away` has the rule.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,6 +68,10 @@ pub(super) struct Player<'a> {
     pub channel_ids: [u32; 10],
     /// When it pressed Play, while it waits.
     pub queued_since: Option<Instant>,
+    /// When its join was last said in the general chat, and whether that
+    /// join is still to be answered by a leave line (`queue_chat`).
+    pub queue_line: Option<Instant>,
+    pub queue_announced: bool,
     /// The order id of its Play (0x85), which `31` gives back.
     pub order_id: u32,
     /// The match (the queue's id) it was sent to, while it lasts.
@@ -195,6 +199,11 @@ pub(super) struct Core<'a> {
     /// The sessions whose link went silent, kept for their clients to
     /// connect again (`away`).
     pub away: HashMap<u32, super::away::Away>,
+    /// The sessions the lobby has sent into a match. Such a session's game
+    /// has loaded a match and can show a results screen; any other would
+    /// die of one (`show_results`). A lobby started anew knows of none, so
+    /// a game that outlived it is shown no screen until its next match.
+    pub sent_to_match: HashSet<u32>,
 }
 
 impl<'a> Core<'a> {
@@ -233,6 +242,7 @@ impl<'a> Core<'a> {
             squads_dirty: false,
             clan: Default::default(),
             away: HashMap::new(),
+            sent_to_match: HashSet::new(),
         }
     }
 
@@ -576,6 +586,8 @@ impl<'a> Core<'a> {
             reached: reached_address(from),
             channel_ids: [0; 10],
             queued_since: None,
+            queue_line: None,
+            queue_announced: false,
             order_id: 0,
             in_match,
             connect: None,
@@ -673,7 +685,7 @@ impl<'a> Core<'a> {
         if self.by_account.get(&player.account_id) == Some(&addr) {
             self.by_account.remove(&player.account_id);
         }
-        self.store.matchmaking().leave_queue(player.session_id);
+        self.leave_queue_said(player.session_id, &player.name, player.queue_announced);
         self.store.squads().set_ready(player.account_id, false);
         // Nor in its clan team, which it leaves with its session.
         self.clan_link_gone(player.account_id, end_session);

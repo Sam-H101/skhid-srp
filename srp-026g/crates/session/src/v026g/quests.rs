@@ -15,6 +15,10 @@
 //! - the chosen faction keeps [`QUESTS_AT_ONCE`] quests going, drawn from
 //!   the quests it offers at the account's reputation level with it
 //!   ([`Quests::band`]) that are not resting ([`Quest::cooldown_minutes`]);
+//! - grenade-kill quests are offered only once a store sells RGD-5
+//!   grenades to the account, using the shop's reputation requirements;
+//! - artifact quests likewise require store access to gear whose default
+//!   modifications add artifact containers;
 //! - a quest that runs out (`ttl_minutes`) fails, and another is drawn;
 //! - choosing another faction drops the old faction's quests unpaid.
 //!
@@ -26,6 +30,7 @@
 
 use survarium::v026g::drops::Rng;
 use survarium::v026g::quests::{MatchStats, Quests, kind};
+use survarium::v026g::{dictionary::Dictionary, item_params, modifications::Modifications, prices};
 
 use super::account::{Account, QuestInstance};
 use super::rules::{ActionError, faction_unlocked};
@@ -72,6 +77,46 @@ pub fn choose_faction(account: &mut Account, faction: u8) -> Result<(), ActionEr
     Ok(())
 }
 
+/// RGD-5 is the damaging grenade in 0.26g; unlocking RDG-M smoke does
+/// not make grenade-kill quests available. Use the same seller rules as
+/// purchases, independent of the chosen quest faction, balance or loadout.
+fn grenades_available_in_store(account: &Account) -> bool {
+    Dictionary::shared()
+        .items
+        .iter()
+        .find(|item| item.name == "rgd-5")
+        .is_some_and(|item| {
+            matches!(
+                prices::record_for(item.dict_id, 0, |seller| account.reputation_level(seller)),
+                Ok(Some(_))
+            )
+        })
+}
+
+/// Container capacity in 0.26g comes from gear's default modifications.
+/// Check actual shop records: backpacks that only add pockets do not
+/// qualify, and any seller may unlock the quest regardless of its faction.
+fn artifact_containers_available_in_store(account: &Account) -> bool {
+    let modifications = Modifications::shared();
+    item_params::ITEM_PARAMS.iter().any(|item| {
+        let has_container = item
+            .default_modifications
+            .iter()
+            .filter_map(|&id| modifications.modification(id))
+            .flat_map(|modification| &modification.modifiers)
+            .any(|modifier| {
+                modifier.path == "parameters/artefact_slots_modifier"
+                    && modifier.kind == 1
+                    && modifier.value > 0.0
+            });
+        has_container
+            && matches!(
+                prices::record_for(item.dict_id, 0, |seller| account.reputation_level(seller)),
+                Ok(Some(_))
+            )
+    })
+}
+
 /// Bring the account's quests up to date at `now`: a quest that ran out
 /// fails, quests of a faction it no longer takes them from go, and the
 /// chosen faction's quests are filled up to [`QUESTS_AT_ONCE`].
@@ -97,12 +142,19 @@ pub fn refresh(account: &mut Account, now: u64, rng: &mut Rng) -> Vec<Notice> {
     if faction == 0 {
         return notices;
     }
+    // TODO: Quest equipment prerequisites should be data-driven. Hardcoding
+    // grenade and artifact requirements here is a stopgap; keep these checks
+    // for now until prerequisites are represented in the quest data.
+    let grenades_available = grenades_available_in_store(account);
+    let artifact_containers_available = artifact_containers_available_in_store(account);
     loop {
         if account.quests.len() >= QUESTS_AT_ONCE {
             break;
         }
         let available: Vec<(u32, u32)> = quests
             .band(faction, |with| account.reputation_level(with))
+            .filter(|quest| quest.kind != kind::GRENADE_ENEMIES || grenades_available)
+            .filter(|quest| quest.kind != kind::FIND_ARTEFACTS || artifact_containers_available)
             .filter(|quest| {
                 !account
                     .quest_cooldowns
@@ -261,6 +313,133 @@ mod tests {
 
     fn account() -> Account {
         Account::new("Alice")
+    }
+
+    fn reputation_for(faction: u8, level: usize) -> u32 {
+        Dictionary::shared()
+            .factions
+            .iter()
+            .find(|entry| entry.id == faction)
+            .unwrap()
+            .levels[level]
+            .value
+    }
+
+    /// Leave only the requested kind in the pool, making the result independent
+    /// of random selection. Ordinary quest filling is covered below.
+    fn quest_account(faction: u8, level: usize, kind: u32) -> Account {
+        let mut account = account();
+        account.add_reputation(faction, reputation_for(faction, level));
+        choose_faction(&mut account, faction).unwrap();
+        account.quest_cooldowns = Quests::shared()
+            .quests
+            .iter()
+            .filter(|quest| quest.kind != kind)
+            .map(|quest| (quest.id, 100_000))
+            .collect();
+        assert!(
+            Quests::shared()
+                .band(faction, |with| account.reputation_level(with))
+                .any(|quest| quest.kind == kind)
+        );
+        account
+    }
+
+    fn grenade_quest_account(faction: u8, level: usize) -> Account {
+        quest_account(faction, level, kind::GRENADE_ENEMIES)
+    }
+
+    #[test]
+    fn artifact_quests_wait_until_container_gear_is_available_from_either_seller() {
+        for seller in [1, 4] {
+            let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+            // Edge offers artifact quests at rank 0. The first container
+            // gear unlocks at rank 1 with either Scavengers or Edge.
+            account.add_reputation(seller, reputation_for(seller, 1) - 1);
+            assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+            assert!(account.quests.is_empty());
+            account.add_reputation(seller, 1);
+            account.generic_money = 0;
+            // The store unlock is enough, regardless of money or loadout.
+            assert!(!refresh(&mut account, 1_001, &mut Rng::new(1)).is_empty());
+            assert!(!account.quests.is_empty());
+            assert!(account.quests.iter().all(|instance| {
+                let quest = Quests::shared().quest(instance.quest_id).unwrap();
+                quest.kind == kind::FIND_ARTEFACTS && quest.faction == 4
+            }));
+        }
+    }
+
+    #[test]
+    fn stores_without_artifact_containers_do_not_unlock_artifact_quests() {
+        let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+        account.add_reputation(2, reputation_for(2, 5));
+        account.add_reputation(3, reputation_for(3, 10));
+        // These stores offer backpacks and pockets, but no artifact slots.
+        assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+        assert!(account.quests.is_empty());
+    }
+
+    #[test]
+    fn owned_container_gear_does_not_bypass_the_store_unlock_requirement() {
+        let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
+        let container = Dictionary::shared().item_named("scav_back_1").unwrap();
+        account.add_item(container.dict_id, 1);
+        assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+        assert!(account.quests.is_empty());
+    }
+
+    #[test]
+    fn grenade_quests_wait_until_a_store_seller_is_unlocked() {
+        for seller in [1, 2] {
+            let mut account = grenade_quest_account(seller, 2);
+            // Even one point short of rank 3, the RGD-5 is unavailable.
+            account.add_reputation(
+                seller,
+                reputation_for(seller, 3) - 1 - account.reputation(seller),
+            );
+            assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+            assert!(account.quests.is_empty());
+            account.add_reputation(seller, 1);
+            account.generic_money = 0;
+            // Availability is enough: the player need not own or equip
+            // grenades, or currently have the money to buy one.
+            assert!(!refresh(&mut account, 1_001, &mut Rng::new(1)).is_empty());
+            assert!(!account.quests.is_empty());
+            assert!(account.quests.iter().all(|instance| {
+                Quests::shared().quest(instance.quest_id).unwrap().kind == kind::GRENADE_ENEMIES
+            }));
+        }
+    }
+
+    #[test]
+    fn grenade_quest_availability_uses_either_seller_not_the_quest_faction() {
+        for quest_faction in [3, 4] {
+            for seller in [1, 2] {
+                let mut account = grenade_quest_account(quest_faction, 1);
+                // Rank 1 here unlocks smoke grenades, not RGD-5.
+                assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+                account.add_reputation(seller, reputation_for(seller, 3));
+                assert!(!refresh(&mut account, 1_001, &mut Rng::new(1)).is_empty());
+                assert!(account.quests.iter().all(|instance| {
+                    Quests::shared().quest(instance.quest_id).unwrap().faction == quest_faction
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn owned_grenades_do_not_bypass_the_store_unlock_requirement() {
+        let mut account = grenade_quest_account(1, 2);
+        let grenade = Dictionary::shared()
+            .items
+            .iter()
+            .find(|item| item.name == "rgd-5")
+            .unwrap()
+            .dict_id;
+        account.add_item(grenade, 10);
+        assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
+        assert!(account.quests.is_empty());
     }
 
     #[test]

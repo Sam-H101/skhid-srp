@@ -483,8 +483,10 @@ MATCH-SYNC-026G.md.
 | Certificate chain check | 0x12A10 | `83 EC 2C` → `31 C0 C3` | all | PROVEN live |
 | Single-instance mutex | 0x124F9 | `74 09` → `90 90` | full | PROVEN |
 | Default hash interval 100 → 50 ms | 0x27CC4F (the byte at 0x27CC53, file 0x26C053) | `C7 44 24 18 64 00 00 00` → `… 32 …` | full | PROVEN bytes; effect not tried live |
-| Battery rule: an event after the completion is counted | 0x313A62 (file 0x302E62), in the container event handler 0x313A50 | `0F 85 D3 00 00 00` → six `90` | full | PROVEN bytes; not run in a match |
-| Battery rule: the containers stay usable | 0x313B34 (file 0x302F34), same handler | `C6 81 60 01 00 00 00` → seven `90` | full | PROVEN bytes; not run in a match |
+| Minimum video-memory check | 0x106411 (file 0xF5811) | `73 0F` → `EB 0F` | full | PROVEN bytes (`client_patch.md` §3.7) |
+| Patch revision in the sign-in's version field (byte 7) | 0x380862 (file 0x36FC62), in `sign_in_on_connected` 0x3807D0 | `8A 0D 9E AE 9D 00` → `C6 44 24 27 01 90`; the relocation at 0x380864 → type 0 | full | PROVEN bytes (`client_patch.md` §6); run with a client 2026-10-12 (logged as revision 1) |
+| Battery rule: an event after the completion is counted | 0x313A62 (file 0x302E62), in the container event handler 0x313A50 | `0F 85 D3 00 00 00` → six `90` | full, revision 3 | PROVEN bytes; the handler run outside the game (`client_patch.md` §3.9); not run in a match |
+| Battery rule: the containers stay usable | 0x313B34 (file 0x302F34), same handler | `C6 81 60 01 00 00 00` → seven `90` | full, revision 3 | PROVEN bytes; the handler run outside the game (`client_patch.md` §3.9); not run in a match |
 | First-sync hook, in `on_match_ready` 0x27AA20 | 0x27AEA1 | `8B 9B 48 1C 1F 00` → `E9 rel32 90` | full | PROVEN |
 | Upload-request hook, 0xF6 case | 0x27A505 | `80 3D 2C D3 F1 01 00` → `E9 rel32 90 90` | full | PROVEN |
 | Upload code, section build (default) | new section `.srp`, RVA 0xA415000, VA 0xA425000, file 0xC4AA00, 0x200 bytes | 8th section; the Authenticode blob moves to 0xC4AC00 | `--cave=section` | PROVEN by the self-test; whether the client minds an 8th section: LIKELY harmless |
@@ -492,16 +494,19 @@ MATCH-SYNC-026G.md.
 | Base relocation under the request hook | 0x27A507 | type → 0 | full | PROVEN |
 
 Builds: `--cert-only` (only the first row; what step 0 installed), the full
-section build (**installed 2026-10-12**), the full hash-mismatch build.
+section build (**installed 2026-10-12**; the players' download had the one
+with the video-memory check and the patch revision from 18:43 UTC that
+day, sha256 `3c7d7bf0…9c9d`, and has since 21:10 UTC the one that also
+holds the login address `skhid.link:1234`, patch revision 2, sha256
+`30e928dd…4883`), the full hash-mismatch build.
 
-The two battery rule rows were added on the evening of 2026-10-12
-(`client_patch.md` §3.8; why: `match.md` §26, the tenth battery of modes 2
-and 3 cannot be put in). The exe installed that morning and the players'
-download (sha256 `166d25bc…1ddf`) are the full section build **without**
-them; with them and the minimum video-memory check patch (`client_patch.md`
-§3.7, merged the same evening) the section build is sha256
-`053c3595…fd86`, and differs from that exe in those 13 bytes, the one byte
-of the video-memory check and the PE checksum only.
+The two battery rule rows are patch revision 3 (`client_patch.md` §3.9;
+why: `match.md` §26, the tenth battery of modes 2 and 3 cannot be put in).
+The players' download holds revision 2 until it is made again. Made as the
+download is (`--server=skhid.link:1234`), the revision 3 section build is
+sha256 `ac947abd…6d7b`, and differs from the download's exe
+(`30e928dd…4883`) in those 13 bytes, the revision byte and the PE checksum
+only.
 
 ## Not proven against a client yet
 
@@ -515,3 +520,34 @@ The most important open points (each note ends with its own list):
   (LIKELY), score events 24 and 26;
 - whether the original server moved late inputs (0xEF) or discarded them
   (0xF1).
+
+## The launcher (`survarium_launcher.exe`, build 2777)
+
+Proven by reading the exe on 2026-10-13 (`notes/launcher.md`, `notes/launcher_updater.md`), and by running the
+patched one (`../client-patches/launcher/README.md`):
+
+- Started from `game\binaries\x86` it makes no window: it has
+  `survarium_updater.exe copy` copy both to `<install>\temp` and starts the
+  copy. Only a path ending in `\temp\survarium_launcher.exe` gets a window
+  (`run_as_copy` 0x1472A, the constructor's test at 0x14442).
+- What PLAY starts is not in the exe. `file to execute`, `arguments`,
+  `working folder`, `update server` and `launcher` are read from
+  `HKLM\Software\Vostok Games\Survarium` through `registry_key::get_string`
+  (0x14027); the game's version is read out of the file `file to execute`
+  names (the mark `survarium_version_header_mark!!`, then `0.26g0`).
+- PLAY runs `"<exe>" -localization=<english|russian|ukrainian|german|polish>
+  <arguments>` with `CreateProcessW` and the launcher ends. The language is
+  `HKCU\Software\Vostok Games\Survarium`, `language` (0 to 4), changed in
+  the window without a restart.
+- It has no network code. The page is an Internet Explorer control on
+  `http://survarium.com/launcher/v2/survarium/?lang=<code>`, with the local
+  `game\launcher\index-<code>.html` when that fails; buttons run
+  `cmd.exe /c start <url>`.
+- The updater is started with fourteen arguments, the second being the pipe
+  `\\.\pipe\vostok_updater_pipe-Survarium`, which the launcher makes first.
+  A message is a 16-bit length and that many bytes, the first its type; the
+  launcher's table of 25 types has no bounds check (0, 24 and above 25 crash
+  it). PLAY is enabled by updater state 14 alone.
+- A 32-bit exe with "update" in its name and no manifest is taken for an
+  installer by Windows, which asks for administrator rights before it starts
+  (seen 2026-10-13). The original updater's manifest asks for them outright.

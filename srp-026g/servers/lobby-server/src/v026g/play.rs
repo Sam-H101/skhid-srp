@@ -9,7 +9,7 @@
 //! plays on one team. A seat is kept for the whole match: Play sends a
 //! player who left back to it.
 //!
-//! Who plays whom is 0.26g's (`docs/notes/matchmaking.md`,
+//! Who plays whom is 0.26g's (`resources/notes/v026g/matchmaking.md`,
 //! `session::v026g::matchmaking`):
 //! - a match has two sides of at most [`Settings::team_size`] (8), as even
 //!   as the squads allow, in players and then in levels;
@@ -283,6 +283,7 @@ impl Core<'_> {
             state.queued_since = Some(now);
             state.order_id = order_id;
         }
+        let waiting_before = self.store.matchmaking().queued_players();
         let mut mates = Vec::new();
         match self.store.squads().set_ready(who.account_id, true) {
             None => {
@@ -327,6 +328,15 @@ impl Core<'_> {
         }
         self.squads_dirty = true;
         log::info!("{} pressed Play with kit {kit_id}", who.name);
+        if self.store.matchmaking().queued_players() > waiting_before {
+            // A squad in its own order; a player alone.
+            let joined = if mates.is_empty() {
+                vec![who.account_id]
+            } else {
+                mates.clone()
+            };
+            self.announce_joined(&who, &joined, now);
+        }
         self.queue_status(who.addr, now);
         for mate in mates {
             if mate != who.account_id
@@ -345,7 +355,7 @@ impl Core<'_> {
                 account.locked().play = None;
             }
             // Its squad's group leaves the queue with it.
-            self.store.matchmaking().leave_queue(who.session_id);
+            self.leave_queue_announced(who.session_id, who.account_id, &who.name);
             self.store.squads().set_ready(who.account_id, false);
         }
         if let Some(player) = self.player_mut(who.addr) {
@@ -375,6 +385,36 @@ impl Core<'_> {
         self.squads_dirty = true;
     }
 
+    /// Equipment can change while searching. Refresh every waiting player
+    /// before any poll can form a match, including polls for other players.
+    /// A changed level restarts the whole party's search and range timer.
+    pub(super) fn refresh_search_levels(&mut self, now: Instant) {
+        let unix = quests::now();
+        let levels: Vec<_> = self
+            .players()
+            .into_iter()
+            .filter_map(|addr| {
+                let player = self.player(addr)?;
+                player.queued_since?;
+                Some((player.account_id, self.level_of(player.account_id, unix)))
+            })
+            .collect();
+        if levels.is_empty() {
+            return;
+        }
+        for player in self.store.matchmaking().refresh_levels(&levels, now) {
+            if let Some(addr) = self.by_account.get(&player.account_id).copied()
+                && let Some(state) = self.player_mut(addr)
+            {
+                state.queued_since = Some(now);
+            }
+            log::info!(
+                "Account {} restarts search after its party's equipment level changed",
+                player.account_id
+            );
+        }
+    }
+
     /// What the client is told of its place in the queue:
     /// - while it waits, its place and how long it has waited (the client
     ///   shows the wait the server last sent);
@@ -383,6 +423,7 @@ impl Core<'_> {
     /// - once its match is made, "match found" and where the match server
     ///   is (0x82), once.
     pub(super) fn queue_status(&mut self, addr: SocketAddr, now: Instant) {
+        self.refresh_search_levels(now);
         let Some(player) = self.player(addr) else {
             return;
         };
@@ -462,6 +503,12 @@ impl Core<'_> {
                 let host = self.match_host_for(addr, &ticket);
                 let found = waiting(0, 0, now);
                 let found = self.send(addr, found);
+                // Its game loads a match now: from here on it can show a
+                // results screen (`show_results`). Sessions that are over
+                // are forgotten here.
+                let store = self.store;
+                self.sent_to_match.retain(|id| !store.has_ended(*id));
+                self.sent_to_match.insert(session_id);
                 if let Some(player) = self.player_mut(addr) {
                     player.queued_since = None;
                     player.in_match = Some(match_id);
@@ -600,6 +647,15 @@ impl Core<'_> {
                         self.accounts.mark_dirty(account_id);
                     }
                 }
+                let mut accounts = Vec::new();
+                let mut teams: [Vec<String>; 2] = [Vec::new(), Vec::new()];
+                for seat in &formed.seats {
+                    accounts.push(seat.player.account_id);
+                    if let Some(account) = self.accounts.get(seat.player.account_id) {
+                        teams[usize::from(seat.team.min(1))].push(account.locked().name.clone());
+                    }
+                }
+                self.announce_match(&accounts, teams);
                 self.matches.insert(
                     match_id,
                     Running {
@@ -714,9 +770,20 @@ impl Core<'_> {
     /// (`session::v026g::rewards`), once: the screen of the last one (`97`)
     /// and the notices of all of them. A client that was signed in through
     /// the match's end gets what the match changed of its account first
-    /// (`MatchReport::lobby_push`); one that has just signed in
-    /// (`after_sign_in`) has that from the sign-in's pushes. Call it when
-    /// the client is in the lobby (`85 00`).
+    /// (`MatchReport::lobby_push`); one whose link is new (`after_sign_in`:
+    /// it signed in, or connected again) has that from the sign-in's pushes.
+    /// Call it when the client is in the lobby (`85 00`).
+    ///
+    /// A client whose session the lobby has sent into no match
+    /// (`sent_to_match`) gets the notices and **no screen**: the game would
+    /// die of it. The screen's code translates the map's name it kept from
+    /// the loading screen of its last match, and a game that has loaded no
+    /// match since it was started has none (a null pointer: `results.md` §6
+    /// hazard 10, seen in a crash dump on 2026-10-13). That is the player
+    /// whose game ended in a match and who starts it again, at the sign-in
+    /// when the match is over by then, and in the lobby when it ends later.
+    /// What the match changed of the account, such a client has from its
+    /// sign-in or gets with the account's next push.
     pub(super) fn show_results(&mut self, addr: SocketAddr, after_sign_in: bool) {
         let Some(who) = self.who(addr) else {
             return;
@@ -727,6 +794,15 @@ impl Core<'_> {
         // What it earned is its clan's too.
         if let Some(player) = unseen.report.player(who.account_id) {
             self.clan_experience(who.account_id, player.reward.experience);
+        }
+        if !self.sent_to_match.contains(&who.session_id) {
+            log::info!(
+                "{} gets the notices of match {:#x} and no results screen: its game has loaded no match since it signed in, and would die of one",
+                who.name,
+                unseen.report.match_id
+            );
+            self.notify(&who, &unseen.notices);
+            return;
         }
         let push = if after_sign_in {
             // The inventory once more if autobuy or auto-repair spent

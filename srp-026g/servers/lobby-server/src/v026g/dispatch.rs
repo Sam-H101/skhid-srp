@@ -429,6 +429,9 @@ impl Core<'_> {
             }
             M::ImportantRead { message_id, answer } => self.important_read(who, message_id, answer),
         }
+        // Inventory moves, purchases into slots, and kit changes can all
+        // change the search level. Preserve the wait when it is unchanged.
+        self.refresh_search_levels(now);
     }
 
     /// The answer to a skills request: a refusal's text, then the skills as

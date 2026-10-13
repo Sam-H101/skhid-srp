@@ -34,7 +34,12 @@ struct Server {
 impl Server {
     /// A lobby on a free port whose queue gathers for `gather`.
     fn start(gather: Duration, link_timeout: Duration) -> Self {
-        let store = Arc::new(SessionStore::with_gather_window(gather));
+        let store = Arc::new(SessionStore::with_start_rules(
+            gather,
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        ));
         let accounts = Arc::new(GameAccounts::new());
         let host = Arc::new(TestHost::default());
         let inbox = Inbox::new();

@@ -1,4 +1,4 @@
-//! The 0.26g lobby (`docs/notes/lobby.md`, `lobby_requests.md`,
+//! The 0.26g lobby (`resources/notes/v026g/lobby.md`, `lobby_requests.md`,
 //! `social.md`; `PLAN-026G.md` steps 3 and 8), beside the 0.21d one.
 //!
 //! What 0.26g changed: the lobby is one UDP link on the match transport
@@ -50,10 +50,15 @@
 //!   address (`vostok::config`), the one the 0.26g login server announces;
 //! - `SRP_MATCH_GATHER_SECONDS`, `SRP_MATCH_FILL_PLAYERS`,
 //!   `SRP_MATCH_QUIET_SECONDS`: the queue's, as for 0.21d (read where the
-//!   store is made);
-//! - `SRP_MATCH_TEAM_SIZE` (default 8, 1 to 10): the most players of a
+//!   store is made); and the 0.26g queue's own: `SRP_MATCH_MIN_PLAYERS`
+//!   (default 4), `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30),
+//!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
+//! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
 //!   side; a match has two sides;
-//! - `SRP_MATCH_SEARCH_STEP_SECONDS` (default 4, 1 to 3600): a waiting
+//! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
+//!   lines in the general chat when somebody joins or leaves the search and
+//!   when a match starts, with whom (`queue_chat.rs`);
+//! - `SRP_MATCH_SEARCH_STEP_SECONDS (default 4, 1 to 3600): a waiting
 //!   player's range of levels grows by one at each end every so many
 //!   seconds (the client shows the range from the same number);
 //! - `SRP_MATCH_MODES`: the game modes to play, comma-separated (default
@@ -80,6 +85,7 @@ mod core;
 mod dispatch;
 mod items;
 mod play;
+mod queue_chat;
 mod shop;
 mod social;
 
@@ -111,7 +117,7 @@ pub use play::{MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
 
 /// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
 /// wiki of February 2015; `progression_sources.md` §9).
-const DEFAULT_TEAM_SIZE: usize = 8;
+const DEFAULT_TEAM_SIZE: usize = 10;
 /// The most a side can be: the client's roster has 20 places.
 const MAX_TEAM_SIZE: usize = session::MAX_PLAYERS_PER_MATCH / 2;
 /// `SRP_MATCH_SEARCH_STEP_SECONDS` when unset. [choice] The step is not in
@@ -167,6 +173,12 @@ pub struct Settings {
     pub search_step: NonZeroU16,
     /// The most players of a side of a match.
     pub team_size: usize,
+    /// Lines in the general chat about the search: who joined it, who left
+    /// it, and with whom a match starts (`SRP_QUEUE_CHAT`, default on).
+    pub queue_chat: bool,
+    /// The sender name of those lines (`SRP_QUEUE_CHAT_NAME`, default
+    /// none: the client then shows the line with no name).
+    pub queue_chat_name: String,
 }
 
 impl Settings {
@@ -249,7 +261,23 @@ impl Settings {
             }),
             None => default_step,
         };
+        let queue_chat = match var("SRP_QUEUE_CHAT") {
+            Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "on" | "1" | "true" | "yes" => true,
+                "off" | "0" | "false" | "no" => false,
+                _ => {
+                    log::error!("SRP_QUEUE_CHAT is `{value}`; it must be on or off. Using on");
+                    true
+                }
+            },
+            None => true,
+        };
+        let queue_chat_name = var("SRP_QUEUE_CHAT_NAME")
+            .map(|name| name.trim().chars().take(20).collect())
+            .unwrap_or_default();
         Self {
+            queue_chat,
+            queue_chat_name,
             bind: config.bind_addr(),
             public_host: config.public_host.clone(),
             local_peers: config.local_peers,
@@ -277,6 +305,8 @@ impl Settings {
             maps: map_pool(&DEFAULT_MODES, &[]),
             search_step: NonZeroU16::new(DEFAULT_SEARCH_STEP).expect("the default is not 0"),
             team_size: DEFAULT_TEAM_SIZE,
+            queue_chat: true,
+            queue_chat_name: String::new(),
         }
     }
 }

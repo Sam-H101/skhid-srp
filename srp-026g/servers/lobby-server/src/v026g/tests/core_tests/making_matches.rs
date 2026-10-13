@@ -1,5 +1,5 @@
 //! Who is put in a match, on what map and at what level
-//! (`docs/notes/matchmaking.md`).
+//! (`resources/notes/v026g/matchmaking.md`).
 
 use session::v026g::KitSlot;
 use session::v026g::matchmaking::{self, count_map_play, map_plays};
@@ -128,6 +128,198 @@ fn players_of_one_level_meet_as_before_levels_counted() {
 }
 
 #[test]
+fn raising_equipment_after_queueing_restarts_search_at_the_new_level() {
+    // Actual inventory requests, both in the kit used for Play and in
+    // another playable kit, must replace the old search.
+    for (kit_id, weapon_slot, ammo_slot) in [(1, 10, 11), (2, 7, 8)] {
+        let mut world = World::new(Duration::ZERO);
+        let alice = world.connect("Alice");
+        let bob = world.connect("Bob");
+        let rifle_dict = dict_id("ak_74m");
+        let rounds_dict = dict_id("ammo_5.45x39_7n10");
+        let (mut rifle, mut rounds) = (0, 0);
+        world.change(alice, |account| {
+            rifle = account.add_item(rifle_dict, FULL_CONDITION);
+            rounds = account.add_item(rounds_dict, 60);
+        });
+        assert_eq!(matchmaking::level(&world.account(alice), 0).min, 0);
+        world.ask(alice, request::play(1));
+        let mut expected = [0_u16; 20];
+        expected[0] = 1;
+        assert_eq!(world.store.matchmaking().waiting_by_level::<20>(), expected);
+        world.advance(Duration::from_secs(40));
+        world.take(alice);
+
+        world.ask(
+            alice,
+            request::move_item(kit_id, rifle, rifle_dict, INVENTORY_SLOT, weapon_slot, 1),
+        );
+        world.ask(
+            alice,
+            request::move_item(kit_id, rounds, rounds_dict, INVENTORY_SLOT, ammo_slot, 60),
+        );
+        assert_eq!(matchmaking::level(&world.account(alice), 0).min, 10);
+        // The old widened range must not carry over to the new search.
+        expected[0] = 0;
+        expected[10] = 1;
+        assert_eq!(world.store.matchmaking().waiting_by_level::<20>(), expected);
+        assert!(world.host.made.lock().unwrap().is_empty());
+
+        world.ask(bob, request::play(1));
+        world.advance(Duration::from_secs(2));
+        let decoded = world.take(alice);
+        assert!(sent_to_match(&decoded).is_none());
+        assert!(matches!(queue_state(&decoded), Some(ClientState::InQueue {
+            current_wait_seconds: 0..=3, search_properties, ..
+        }) if search_properties[0] == 1 && search_properties[10] == 1));
+        assert!(world.host.made.lock().unwrap().is_empty());
+        // They can still meet after the new range has widened normally.
+        world.advance(Duration::from_secs(36));
+        assert!(sent_to_match(&world.take(alice)).is_some());
+        assert!(sent_to_match(&world.take(bob)).is_some());
+        let made = world.host.made.lock().unwrap().clone();
+        assert_eq!(made.len(), 1);
+        let setup = &made[0].1;
+        // Current equipment is used both for matching and for rewards.
+        assert_eq!(setup.match_level, 5);
+        let profile = &setup
+            .players
+            .iter()
+            .find(|player| player.account_id == world.ids[alice].0)
+            .unwrap()
+            .profile;
+        let kit = profile.kits.iter().find(|kit| kit.id == kit_id).unwrap();
+        assert_ne!(
+            kit.state,
+            survarium::v026g::match_msgs::static_info::KIT_NOT_LOADED
+        );
+        let (item_index, _) = kit.slots[usize::from(weapon_slot)].unwrap();
+        assert_eq!(profile.items[usize::from(item_index)].dict_id, rifle_dict);
+        world.assert_clean();
+    }
+}
+
+#[test]
+fn a_squads_search_restarts_together_when_a_members_level_changes() {
+    let mut world = World::new(Duration::from_secs(600));
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    let carol = world.connect("Carol");
+    let rifle_dict = dict_id("ak_74m");
+    let rounds_dict = dict_id("ammo_5.45x39_7n10");
+    let (mut rifle, mut rounds) = (0, 0);
+    world.change(alice, |account| {
+        rifle = account.add_item(rifle_dict, FULL_CONDITION);
+        rounds = account.add_item(rounds_dict, 60);
+    });
+    form_squad(&mut world, alice, bob);
+    for player in [alice, bob, carol] {
+        world.ask(player, request::play(1));
+    }
+    world.advance(Duration::from_secs(10));
+    for player in [alice, bob, carol] {
+        world.take(player);
+    }
+    world.ask(
+        alice,
+        request::move_item(2, rifle, rifle_dict, INVENTORY_SLOT, 7, 1),
+    );
+    world.ask(
+        alice,
+        request::move_item(2, rounds, rounds_dict, INVENTORY_SLOT, 8, 60),
+    );
+    world.advance(Duration::from_secs(2));
+    let mut expected = [0; 20];
+    expected[0] = 2;
+    expected[10] = 1;
+    assert_eq!(world.store.matchmaking().waiting_by_level::<20>(), expected);
+    for player in [alice, bob] {
+        assert!(matches!(
+            queue_state(&world.take(player)),
+            Some(ClientState::InQueue {
+                place: 2,
+                current_wait_seconds: 0..=3,
+                ..
+            })
+        ));
+    }
+    assert!(matches!(
+        queue_state(&world.take(carol)),
+        Some(ClientState::InQueue {
+            place: 1,
+            current_wait_seconds: 10..,
+            ..
+        })
+    ));
+    assert!(
+        world
+            .store
+            .squads()
+            .of(world.ids[alice].0)
+            .unwrap()
+            .all_ready()
+    );
+
+    // Lowering the level also replaces the search, without breaking up
+    // the squad or requiring its members to press Play again.
+    world.advance(Duration::from_secs(10));
+    world.ask(
+        alice,
+        request::move_item(2, rifle, rifle_dict, 7, INVENTORY_SLOT, 1),
+    );
+    world.advance(Duration::from_secs(2));
+    expected[0] = 3;
+    expected[10] = 0;
+    assert_eq!(world.store.matchmaking().waiting_by_level::<20>(), expected);
+    for player in [alice, bob] {
+        assert!(matches!(
+            queue_state(&world.take(player)),
+            Some(ClientState::InQueue {
+                current_wait_seconds: 0..=3,
+                ..
+            })
+        ));
+    }
+    assert!(world.host.made.lock().unwrap().is_empty());
+    world.assert_clean();
+}
+
+#[test]
+fn equipment_moves_that_keep_the_level_preserve_the_search_wait() {
+    let mut world = World::new(Duration::ZERO);
+    let alice = world.connect("Alice");
+    world.ask(alice, request::play(1));
+    world.advance(Duration::from_secs(10));
+    let before = world
+        .core
+        .player(world.clients[alice].0)
+        .unwrap()
+        .queued_since;
+    // Moving the starter weapon out and back keeps the search level at zero.
+    world.ask(alice, request::move_item(1, 1, 18, 7, INVENTORY_SLOT, 1));
+    world.ask(alice, request::move_item(1, 1, 18, INVENTORY_SLOT, 7, 1));
+    // A rejected move must not restart search either.
+    world.ask(alice, request::move_item(1, 1, 18, 7, 0, 1));
+    world.advance(Duration::from_secs(2));
+    assert_eq!(
+        world
+            .core
+            .player(world.clients[alice].0)
+            .unwrap()
+            .queued_since,
+        before
+    );
+    assert!(matches!(
+        queue_state(&world.take(alice)),
+        Some(ClientState::InQueue {
+            current_wait_seconds: 10..,
+            ..
+        })
+    ));
+    world.assert_clean();
+}
+
+#[test]
 fn a_match_takes_two_sides_of_the_size_set_and_the_rest_wait() {
     let mut world = World::new(Duration::from_secs(600));
     world.core.settings.team_size = 2;
@@ -190,9 +382,9 @@ fn the_side_size_and_the_search_step_are_settings() {
     use crate::v026g::{parse_search_step, parse_team_size};
 
     let settings = Settings::local("127.0.0.1:0");
-    // "Two teams of up to 8 players"; every level in range within the
+    // Two teams of up to 10 (the client's roster of 20); every level in range within the
     // default gather window of a minute (14 steps from 0..=1 to 15).
-    assert_eq!(settings.team_size, 8);
+    assert_eq!(settings.team_size, 10);
     assert_eq!(settings.search_step.get(), 4);
     assert!(u64::from(settings.search_step.get()) * 14 <= session::DEFAULT_GATHER_WINDOW.as_secs());
 

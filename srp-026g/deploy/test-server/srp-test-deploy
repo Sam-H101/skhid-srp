@@ -1,0 +1,68 @@
+#!/bin/bash
+# Puts the current `main` of the repository on the test server.
+#
+# Installed on the test host as /usr/local/sbin/srp-test-deploy, owned by
+# root, mode 755. The user the GitHub Actions runner runs as may start
+# exactly this through sudo and nothing else (see README.md beside this
+# file). It takes no arguments and reads nothing from its caller: whoever
+# starts it, what is deployed is `main`, built from a checkout only root
+# writes and run by a compose file and settings only root writes.
+set -euo pipefail
+[ $# -eq 0 ] || { echo "srp-test-deploy takes no arguments" >&2; exit 2; }
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The image takes the files with the modes they have here, and the server in
+# it is not root: a checkout made under a tighter umask gave it a login
+# certificate it could not read.
+umask 022
+
+REPO=https://github.com/srp-survarium/skhid-srp.git
+RUN=/opt/srp-test            # docker-compose.yml, .env, download/ (root's)
+SRC=$RUN/src                 # the checkout
+PROJECT=srptest
+SERVICE=srp26
+
+exec 9>/run/srp-test-deploy.lock
+flock -n 9 || { echo "another deploy is running" >&2; exit 1; }
+
+compose() {
+    docker compose -p "$PROJECT" -f "$RUN/docker-compose.yml" --profile tls "$@"
+}
+
+if [ ! -d "$SRC/.git" ]; then
+    git clone --quiet --branch main --single-branch "$REPO" "$SRC"
+fi
+git -C "$SRC" fetch --quiet --prune origin main
+git -C "$SRC" reset --quiet --hard origin/main
+git -C "$SRC" clean --quiet -fdx
+chmod -R u+rwX,go+rX,go-w "$SRC/srp-026g"
+rev=$(git -C "$SRC" rev-parse --short HEAD)
+echo "main is $rev: $(git -C "$SRC" log -1 --format=%s)"
+
+# The build sees the repository's 0.26g folder and nothing of the host. The
+# compose file is the host's own copy, not the checkout's: what a container
+# may reach on the host is not decided by the repository.
+docker build --tag srp-026g:latest "$SRC/srp-026g"
+compose up -d --no-build --remove-orphans
+docker image prune --force >/dev/null
+
+# The first health check comes 30 s after the start.
+name=$PROJECT-$SERVICE-1
+state=none
+for _ in $(seq 1 45); do
+    state=$(docker inspect --format '{{.State.Health.Status}}' "$name" 2>/dev/null || echo none)
+    [ "$state" = healthy ] && break
+    sleep 2
+done
+if [ "$state" != healthy ]; then
+    echo "deployed $rev, but the server is '$state' after 90 s" >&2
+    compose logs --tail 30 "$SERVICE" >&2
+    exit 1
+fi
+# The health check is the web page's port alone. The login server is a part
+# of its own that can fail while the page answers: ask its port too.
+if ! docker exec "$name" bash -c '</dev/tcp/127.0.0.1/$SRP_LOGIN_PORT' 2>/dev/null; then
+    echo "deployed $rev: the web page answers, but the login server does not" >&2
+    compose logs --tail 30 "$SERVICE" >&2
+    exit 1
+fi
+echo "deployed $rev: healthy, the login server answers"

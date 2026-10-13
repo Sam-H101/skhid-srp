@@ -27,9 +27,15 @@ SRP_WEB_TRUST_PROXY=off
 # `tls`, on a host whose port 443 is free). With it set SRP_WEB_TRUST_PROXY
 # to on and put your own public IP in SRP_ADMIN_IPS.
 # SRP_WEB_DOMAIN=example.org
-# The page of a server for another game version (0.21d): every page here
-# links to it. https only.
+# Several names: commas between them, the whole in quotes.
+# SRP_WEB_DOMAIN="example.org, www.example.org"
+# The page of another server of ours: every page's header links to it, as
+# the server for the other game version. https only. Leave it out where
+# there is none.
 # SRP_OTHER_SERVER_URL=
+# A test server: every page says that it is one, and SRP_OTHER_SERVER_URL
+# is then named in the notice as the players' server.
+# SRP_TEST_SERVER=on
 
 # The download the home page offers: a zip in ./download, or a https link.
 # SRP_DOWNLOAD_FILE=/srv/srp/download/Survarium-0.26g-srp-files.zip

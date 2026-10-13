@@ -54,9 +54,13 @@ services:
       - SRP_GAME_URL=${SRP_GAME_URL:-https://archive.org/download/vostok_engine_v0.26g0_build_2777_internal_id_1104_jan_14_2015/survarium_full_026g0.7z}
       - SRP_DOWNLOAD_URL=${SRP_DOWNLOAD_URL:-}
       - SRP_DOWNLOAD_SHA256=${SRP_DOWNLOAD_SHA256:-}
-      # The page of the server for the other game version (0.21d): a link
-      # to it in the header of every page. https:// only; empty: no link.
+      # The page of another server of ours: a link to it in the header of
+      # every page (named as the other game version), or, on a test server,
+      # in its notice as the players' server. https:// only; empty: no link.
       - SRP_OTHER_SERVER_URL=${SRP_OTHER_SERVER_URL:-}
+      # `on`: every page says this is the test server (a badge, the title,
+      # a notice that accounts here can be reset).
+      - SRP_TEST_SERVER=${SRP_TEST_SERVER:-}
       # The worlds the match server accepted are kept here to compare.
       - SRP_SNAPSHOT_DIR=/srv/srp/data/snapshots
       # The server's log, one file per UTC day, in the data volume: it
@@ -74,6 +78,10 @@ services:
       - SRP_MATCH_GATHER_SECONDS
       - SRP_MATCH_FILL_PLAYERS
       - SRP_MATCH_QUIET_SECONDS
+      - SRP_MATCH_MIN_PLAYERS
+      - SRP_MATCH_JOIN_EXTENSION_SECONDS
+      - SRP_MATCH_MAX_COUNTDOWN_SECONDS
+      - SRP_MATCH_TEAM_SIZE
       - SRP_MATCH_MODES
       - SRP_MATCH_MAPS
       - SRP_LOBBY_LINK_TIMEOUT_SECONDS
@@ -126,14 +134,23 @@ services:
       retries: 3
   # HTTPS for the web page, ONLY on a host whose port 443 is free:
   #   docker compose --profile tls up -d
-  # with SRP_WEB_DOMAIN set to a name that points at this host (the
-  # certificate comes by TLS-ALPN on 443). Beside the live 0.21d server 443
-  # is its caddy's: do not start this there (see DEPLOY.md for the choices).
+  # with SRP_WEB_DOMAIN set to a name that points at this host, or to
+  # several with commas between them ("skhid.link, www.skhid.link"); the
+  # certificates come by TLS-ALPN on 443. Where another web server has 443,
+  # do not start this (see DEPLOY.md for the choices).
   caddy26:
     profiles: [tls]
     image: caddy:2-alpine
     restart: unless-stopped
-    command: caddy reverse-proxy --from ${SRP_WEB_DOMAIN:-set-SRP_WEB_DOMAIN.invalid} --to srp26:8088
+    environment:
+      - SRP_WEB_NAMES=${SRP_WEB_DOMAIN:-set-SRP_WEB_DOMAIN.invalid}
+    # A site of all the names, written at start (the root is read-only).
+    command:
+      - sh
+      - -c
+      - >-
+        printf '%s {\n\treverse_proxy srp26:8088\n}\n' "$$SRP_WEB_NAMES" > /tmp/Caddyfile
+        && exec caddy run --config /tmp/Caddyfile --adapter caddyfile
     ports:
       - "${SRP26_HTTPS_PORT:-443}:443/tcp"
     volumes:

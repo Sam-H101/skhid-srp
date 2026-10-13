@@ -1,6 +1,6 @@
 # Open issues: the 0.21d server
 
-> **Version scope:** the 0.21d server and client (live on skhid.link), unless
+> **Version scope:** the 0.21d server and client (hosted on skhid.link until 2026-10-12; not hosted now), unless
 > an item is marked 0.100b. As of 2026-10-12. Players are written by label,
 > never by name (`docs/PUBLISHING.md` at the repository's root). The 0.26g
 > server's list is `srp-026g/docs/OPEN-ISSUES.md`.

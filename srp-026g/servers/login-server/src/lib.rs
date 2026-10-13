@@ -291,6 +291,11 @@ struct SignIn {
     /// name, an email or not.
     user_name: String,
     version: String,
+    /// 0.26g: what a patched client says of its patches, 0 from an exe
+    /// that says nothing (`docs/notes/client_patch.md` §6).
+    /// The version field is 12 bytes, the text and zeros; the patch puts
+    /// this into byte 7, past the zero that ends a text of six letters.
+    patch_revision: u8,
     /// 0.21d: 1 when the player signs in from the EULA window.
     from_eula_window: bool,
     /// 0.21d: the place in the online queue it rejoins, `u32::MAX` for none.
@@ -301,7 +306,14 @@ struct SignIn {
 fn parse_sign_in(message: &[u8]) -> SignIn {
     let name_end = 1 + usize::from(message[0]);
     let (version, rest) = message[name_end..].split_at((message.len() - name_end).min(12));
-    let version = version.split(|&byte| byte == 0).next().unwrap_or_default();
+    let field = version;
+    let version = field.split(|&byte| byte == 0).next().unwrap_or_default();
+    // Only past the text's own zero, and only in a whole field.
+    let patch_revision = if field.len() == 12 && version.len() < 7 {
+        field[7]
+    } else {
+        0
+    };
     let (from_eula_window, queue_order_id) = match *rest {
         [eula, a, b, c, d] => (eula != 0, u32::from_le_bytes([a, b, c, d])),
         _ => (false, u32::MAX),
@@ -309,6 +321,7 @@ fn parse_sign_in(message: &[u8]) -> SignIn {
     SignIn {
         user_name: String::from_utf8_lossy(&message[1..name_end]).into_owned(),
         version: String::from_utf8_lossy(version).into_owned(),
+        patch_revision,
         from_eula_window,
         queue_order_id,
     }
@@ -653,6 +666,7 @@ mod tests {
             SignIn {
                 user_name: "player@e2e.invalid".into(),
                 version: "0.21d".into(),
+                patch_revision: 0,
                 from_eula_window: true,
                 queue_order_id: 7,
             }
@@ -664,10 +678,36 @@ mod tests {
             SignIn {
                 user_name: "a@b".into(),
                 version: "0.100b".into(),
+                patch_revision: 0,
                 from_eula_window: false,
                 queue_order_id: u32::MAX,
             }
         );
+    }
+
+    #[test]
+    fn a_patched_0_26g_client_says_its_patch_revision() {
+        let read = |field: &[u8; 12]| {
+            let mut sign_in = vec![3];
+            sign_in.extend(b"a@b");
+            sign_in.extend(field);
+            sign_in.push(0);
+            sign_in.extend(u32::MAX.to_le_bytes());
+            let sign_in = parse_sign_in(&sign_in);
+            (sign_in.version, sign_in.patch_revision)
+        };
+        // The stock field, and what the patched `sign_in_on_connected`
+        // 0x3807D0 makes of it: the text is the same.
+        assert_eq!(read(b"0.26g0\0\0\0\0\0\0"), ("0.26g0".into(), 0));
+        assert_eq!(read(b"0.26g0\0\x01\0\0\0\0"), ("0.26g0".into(), 1));
+        assert_eq!(read(b"0.26g0\0\x02\0\0\0\0"), ("0.26g0".into(), 2));
+        // A text that reaches byte 7 keeps it: no revision.
+        assert_eq!(read(b"0.26g001\0\0\0\0"), ("0.26g001".into(), 0));
+        assert_eq!(read(b"0.26g00\0\x01\0\0\0"), ("0.26g00".into(), 0));
+        // 0.100b's field is shorter than 12 bytes.
+        let mut old = vec![3];
+        old.extend(b"a@b0.100b\0\0");
+        assert_eq!(parse_sign_in(&old).patch_revision, 0);
     }
 
     #[test]

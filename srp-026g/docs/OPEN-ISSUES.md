@@ -218,4 +218,24 @@ pass. None of it was seen by a client.
 
 ## 0.26g, added 2026-10-12 (evening)
 
-- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team cannot put its last battery in, and after the try nobody can use a container (match.md §26; 9 of 9 live matches). The fix is two instructions of the client (client_patch.md §3.8): built (`target-a4/scratch/survarium_srp.section.exe`), self-tested, not run in a match, not published. Publishing means a new overlay zip and every player taking it.
+- **The owner's to decide: the client patch for the tenth battery.** In modes 2 and 3 a team often cannot put its last battery in, and after the try nobody can use a container (match.md §26; 14 of the 19 live matches in which a team had all but one). The fix is two instructions of the client (client_patch.md §3.9, patch revision 3): built, self-tested, its handler run outside the game, not run in a match, not published. Publishing is a new ZIP on the site. A game started through the launcher takes it by itself; a game with a download from before the launcher keeps the old rule until its player takes the ZIP once more (on 2026-10-13 most accounts still signed in with revision 0), and old and new games part at a team's last battery. The login server logs the revision and does nothing else with it.
+
+## 0.26g, added 2026-10-13: the launcher
+
+- **Built, not deployed, not in the players' download:** the game's launcher
+  patched to run from an unpacked game and to ask this server only, with an
+  updater of ours that installs the ZIP the page offers whenever it changes
+  (`../client-patches/launcher/README.md`). Run on Windows 11 with a local server.
+- **The owner's to decide:** deploying the server part (`/api/client-files`,
+  `/launcher/`; a restart), then offering the ZIP with the launcher. The order
+  matters: a launcher asking a server without the routes says "offers no
+  client files now" at every start (PLAY still works).
+- **Not run:** `bash play_skhid.sh launcher` under Wine; the real game started
+  from the launcher's PLAY (a stand-in exe was); Windows 7, 8 and 10; a PC
+  that still has the real game's installation and its update service.
+- **Not done:** a signature on the ZIP with a key kept off the server (today
+  the ZIP is trusted because HTTPS is); a line in the launcher for "the
+  server could not be asked" (it says "The latest version of the game is
+  installed" after the message box); the updater's messages in other
+  languages than English; a count of kills for the page (the database keeps
+  none).

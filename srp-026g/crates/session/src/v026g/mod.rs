@@ -58,6 +58,25 @@ struct Writer {
 /// ([`GameAccounts::on_flush`]).
 pub type FlushHook = Box<dyn Fn(&mut dyn GameRepository) + Send + Sync>;
 
+/// One line of [`GameAccounts::board`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardRow {
+    pub name: String,
+    /// Empty for a player of no clan.
+    pub clan_tag: String,
+    pub rating: u16,
+    pub level: u8,
+}
+
+/// [`GameAccounts::board`]: the best players and the battles fought.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Board {
+    pub top: Vec<BoardRow>,
+    /// How many times an account was put in a match, all accounts together
+    /// (a match of eight players counts eight).
+    pub battles: u64,
+}
+
 /// The 0.26g accounts of a running srp, by account id. Shared as an
 /// `Arc<GameAccounts>`; each account is handed out as `Arc<Mutex<Account>>`
 /// so a change in the lobby is seen wherever the account is held. Whoever
@@ -264,6 +283,53 @@ impl GameAccounts {
         rows
     }
 
+    /// What the launcher's page shows of the accounts: the `count` best by
+    /// rating among those that were put in a match at least once (ties by
+    /// id, as in [`Self::ranking`]), and how many times an account was put
+    /// in a match, all accounts together. Test bots ([`bots`]) are not
+    /// counted.
+    pub fn board(&self, count: usize) -> Board {
+        let accounts: Vec<(u32, Arc<Mutex<Account>>)> = self
+            .accounts
+            .locked()
+            .iter()
+            .map(|(&id, account)| (id, account.clone()))
+            .collect();
+        let bots = self.bots.locked().clone();
+        let mut battles = 0_u64;
+        let mut rows: Vec<(u32, BoardRow)> = Vec::new();
+        for (id, account) in accounts {
+            let account = account.locked();
+            if bots.contains(&account.name.to_ascii_lowercase()) {
+                continue;
+            }
+            let played: u64 = account
+                .map_plays
+                .iter()
+                .map(|&(_, plays)| u64::from(plays))
+                .sum();
+            if played == 0 {
+                continue;
+            }
+            battles += played;
+            rows.push((
+                id,
+                BoardRow {
+                    name: account.name.clone(),
+                    clan_tag: account.clan_tag.clone(),
+                    rating: account.rating,
+                    level: account.level(),
+                },
+            ));
+        }
+        rows.sort_by(|a, b| b.1.rating.cmp(&a.1.rating).then(a.0.cmp(&b.0)));
+        rows.truncate(count);
+        Board {
+            top: rows.into_iter().map(|(_, row)| row).collect(),
+            battles,
+        }
+    }
+
     /// The account changed: it is written on the next pass. Never waits on
     /// an account, so it may be called with one locked.
     pub fn mark_dirty(&self, account_id: u32) {
@@ -437,5 +503,44 @@ mod tests {
         store.get_or_create(3, "Eve");
         let names: Vec<String> = store.ranking().into_iter().map(|row| row.1).collect();
         assert_eq!(names, ["Bob", "Alice", "Eve"]);
+    }
+
+    #[test]
+    fn the_board_is_of_those_who_played_and_counts_their_battles() {
+        let store = GameAccounts::new();
+        // Never in a match: not on the board, whatever the rating.
+        store.get_or_create(1, "Alice").locked().rating = 2000;
+        for (id, name, rating, plays) in [
+            (2, "Bob", 1200, 3),
+            (3, "Eve", 1300, 1),
+            (4, "Dan", 1200, 2),
+        ] {
+            let account = store.get_or_create(id, name);
+            let mut account = account.locked();
+            account.rating = rating;
+            account.clan_tag = if id == 3 { "TAG".into() } else { String::new() };
+            for _ in 0..plays {
+                matchmaking::count_map_play(&mut account, 1 + id as u8 % 2);
+            }
+        }
+        let board = store.board(10);
+        let rows: Vec<(&str, &str, u16)> = board
+            .top
+            .iter()
+            .map(|row| (row.name.as_str(), row.clan_tag.as_str(), row.rating))
+            .collect();
+        assert_eq!(
+            rows,
+            [("Eve", "TAG", 1300), ("Bob", "", 1200), ("Dan", "", 1200)]
+        );
+        assert_eq!(board.battles, 6);
+        assert_eq!(store.board(2).top.len(), 2);
+        assert_eq!(store.board(2).battles, 6);
+        // A test bot is neither listed nor counted.
+        store.set_bots(&["bob".to_owned()]);
+        let board = store.board(10);
+        assert_eq!(board.top.len(), 2);
+        assert_eq!(board.battles, 3);
+        assert_eq!(GameAccounts::new().board(10), Board::default());
     }
 }

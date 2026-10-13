@@ -33,6 +33,8 @@ given), LIKELY or GUESS.
 | [modes_maps.md](modes_maps.md) | Maps, game modes, map ids, rule classes, match settings now in data |
 | [data.md](data.md) | `resources.db`: items, skills, drops, quests, item configs |
 | [client_patch.md](client_patch.md) | Porting the srp client patch, the function map |
+| [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
+| [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
 
 The draft patcher is in `srp-026g/client-patches/`. The data dumps
@@ -88,21 +90,27 @@ Every setting has a default; none is needed on a dev PC.
   `SRP_LOG_KEEP_DAYS` (default 14): older files are deleted. The compose
   file sets it to `/srv/srp/data/logs`, in the data volume (since
   2026-10-12: a container's own output is gone at every update).
-- `SRP_MATCH_GATHER_SECONDS` (default 60), `SRP_MATCH_FILL_PLAYERS`,
-  `SRP_MATCH_QUIET_SECONDS`: the queue. A match needs two players who did
-  not come as one squad; the window starts with the second (a squad alone
-  waits: matchmaking.md §3). For a quick test: `SRP_MATCH_GATHER_SECONDS=5`.
+- `SRP_MATCH_GATHER_SECONDS` (default 60), `SRP_MATCH_FILL_PLAYERS` (10),
+  `SRP_MATCH_QUIET_SECONDS` (30), `SRP_MATCH_MIN_PLAYERS` (4),
+  `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30), `SRP_MATCH_MAX_COUNTDOWN_SECONDS`
+  (120): the queue. A match needs 4 players on two sides (a squad is one
+  side and waits for somebody who is not of it); the countdown starts with
+  the 4th (matchmaking.md §3). For a quick test:
+  `SRP_MATCH_GATHER_SECONDS=5 SRP_MATCH_MIN_PLAYERS=2 SRP_MATCH_JOIN_EXTENSION_SECONDS=0`.
 - `SRP_LOBBY_LINK_TIMEOUT_SECONDS` (default 30),
   `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` (120),
   `SRP_LOBBY_SESSION_GRACE_SECONDS` (60): a silent client's lobby link
   goes after the first (the second for a player in a match), and its
   session waits the third for the client to connect again (transport.md
   §6.1).
+- `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none): lines in
+  the general chat when somebody joins or leaves the search and when a match
+  starts, with whom (social.md §9.7).
 - `SRP_MATCH_MODES` (default `2,3,4`), `SRP_MATCH_MAPS` (default: every
   playable map, 72 of them): a match gets the map its players played least
   and a mode and weather at random, so for a first test name one, e.g.
   `SRP_MATCH_MAPS=117` (Team Deathmatch on level_01).
-- `SRP_MATCH_TEAM_SIZE` (default 8), `SRP_MATCH_SEARCH_STEP_SECONDS`
+- `SRP_MATCH_TEAM_SIZE` (default 10), `SRP_MATCH_SEARCH_STEP_SECONDS`
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 1), `SRP_MONEY_RATE` (percent, default
@@ -140,8 +148,8 @@ the certificate patch (`--cert-only`), is beside it as
 `survarium_srp.cert-only.bak.exe`. The upload code runs in live matches
 since 2026-10-12 (`WORK.md`; `client_patch.md` was written before that).
 Since the evening of that day `patch_026g.py` also patches the battery rule
-(`client_patch.md` §3.8) and skips the minimum video-memory check (§3.7): the installed exe and the players' download do not
-have that yet.
+(`client_patch.md` §3.9; patch revision 3) and skips the minimum video-memory check (§3.7): the installed exe has neither, and the players' download
+has the second and not the first.
 
 ### A match alone: the test bot (added 2026-10-12)
 

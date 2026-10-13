@@ -12,6 +12,9 @@ USAGE (this script never touches the source exe):
         (the fallback if a client with one more section misbehaves)
     python patch_026g.py <survarium.exe> <survarium_srp.exe> --cert-only
         only the certificate patch (what step 0 installed)
+    python patch_026g.py <survarium.exe> <survarium_srp.exe> --server=<host>:<port>
+        full patch with an embedded default login server; -server= at
+        game launch still overrides it, and -replay keeps its original path
     python patch_026g.py <survarium.exe> --check [--cave=...] [--cert-only]
         every check and patch in memory, nothing written
     python selftest_026g.py
@@ -43,6 +46,11 @@ Patches:
 - the minimum VRAM check (0x106411 `jae` -> `jmp`), skipping the fatal
   warning when detected video memory is below 320 MiB. The detected size
   and the original fallback for an unknown size are kept;
+- optionally, a default login server (--server=host:port at patch time).
+  The missing-server error at 0x1EB25B becomes a jump into a 51-byte stub
+  appended to the upload code. It initializes the parsed server key and
+  repeats the original option read and connection path. Explicit server/replay options
+  take their original paths. The lobby address still comes from login;
 - the default of -hash_check_interval_in_ms, 100 -> 50 (the imm32 of
   `mov dword [esp+18h],64h` at 0x27CC4F, one byte at 0x27CC53). A stock
   client reports its world hash (0xDF) for every second 50 ms tick, on a
@@ -50,6 +58,16 @@ Patches:
   tick, and the match server then cannot compare their worlds (match.md
   section 14). With 50 every client reports every tick. The key on the
   command line still overrides it;
+- the patch revision in the sign-in (sign_in_on_connected 0x3807D0). The
+  first login message has a 12-byte version field: "0.26g0" and six zero
+  bytes. `mov cl,[9DAE9Eh]` at 0x380862 (it reads the string's own zero,
+  which 0x38087B writes into the field once more) becomes
+  `mov byte [esp+27h],REVISION` / `nop`: byte 7 of the field says which
+  of these patches the exe has. The text stays "0.26g0", so a server that
+  does not read the byte is not affected, and an exe without this patch
+  says 0. REVISION is raised in the change that makes a full build
+  something else for the game; a server can only tell two clients apart
+  by it;
 - the battery rule of modes 2 and 3 (gather_victory_items_rule_core's
   container event handler 0x313A50): two instructions become nops. When a
   team's count reaches the number of batteries the handler stores the
@@ -89,6 +107,7 @@ or an already patched file is refused rather than patched twice.
 
 import hashlib
 import os
+import re
 import struct
 import sys
 
@@ -108,6 +127,14 @@ MUTEX = (0x124F9, bytes.fromhex("7409"), bytes.fromhex("9090"))
 # The branch still targets 0x106422, which returns the detected size.
 MEMORY_CHECK = (0x106411, bytes.fromhex("730f"), bytes.fromhex("eb0f"))
 
+# Missing-server fatal error, reached only after both server and replay
+# options were absent. Replace the push+call with jmp + nops when embedding.
+DEFAULT_SERVER_HOOK = (0x1EB25B, bytes.fromhex("6890a99f00e81b83f2ff"))
+DEFAULT_SERVER_OFFSET = 420  # immediately after the snapshot upload code
+DEFAULT_SERVER_RETURN = 0x1EAE2D
+DEFAULT_SERVER_OPTION = 0xA9C550
+
+
 # network_client::try_send_all, the one-time read of the option object
 # 0xAA19F8 (-hash_check_interval_in_ms) into the static 0xA2B393C:
 # mov dword [esp+18h],64h (the default, kept when the key is absent) -> 32h.
@@ -116,6 +143,20 @@ HASH_INTERVAL_VA = 0x27CC4F
 HASH_INTERVAL = (HASH_INTERVAL_VA, bytes.fromhex("c744241864000000"), bytes.fromhex("c744241832000000"))
 HASH_INTERVAL_BYTE_VA = HASH_INTERVAL_VA + 4  # the one byte that differs
 HASH_INTERVAL_MS = 50                         # = one tick
+
+# sign_in_on_connected 0x3807D0 builds the 12-byte version field of the first
+# login message on the stack at [esp+20h]: eight zero bytes, "0.26" at +0,
+# "g0" at +4, the string's own zero at +6 (through cl, read here) and a zero
+# at +6 again (`mov [esp+26h],al`, 0x38087B); four more zero bytes follow in
+# the message. mov cl,[9DAE9Eh] -> mov byte [esp+27h],REVISION / nop.
+# The base relocation of the address (0x380864) is disabled with the rest.
+# 0: an exe without this patch (the download of 2026-10-12). 1: the patches
+# above and the revision field. 2: adds the optional embedded-server patch.
+# 3: adds the battery rule patch below, the first that changes what a match
+# computes: a game of revision 3 and an older one part at a team's last
+# battery (match.md section 26).
+REVISION = 3
+REVISION_SITE = (0x380862, bytes.fromhex("8a0d9eae9d00"), bytes([0xC6, 0x44, 0x24, 0x27, REVISION, 0x90]))
 
 # gather_victory_items_rule_core's container event handler 0x313A50:
 # `cmp dword [ecx+15Ch],-1` / `jnz 313B3Bh` (an event after the completion
@@ -144,6 +185,14 @@ HOOKS = [
     # on_match_packet_received, case 0xF6: cmp byte [g_debug_hash_mismatches],0
     (0x27A505, bytes.fromhex("803d2cd3f10100")),
 ]
+
+
+def parse_server(text):
+    """The login client has a 64-byte host buffer; reserve its NUL byte."""
+    match = re.fullmatch(r"([A-Za-z0-9](?:[A-Za-z0-9.-]{0,61}[A-Za-z0-9])?):([0-9]{1,5})", text)
+    if not match or not 1 <= int(match.group(2)) <= 65535:
+        sys.exit("server must be host:port (ASCII host up to 63 bytes, port 1..65535)")
+    return f"{match.group(1)}:{int(match.group(2))}"
 
 
 def file_offset(va):
@@ -281,11 +330,16 @@ def add_section(data, cave):
     return out
 
 
-def build(original, mode, code=None):
+def build(original, mode, code=None, server=None):
     """Returns (patched file, description). mode: "cert-only", "section" or
-    "hash-mismatch"; code = the assembled .bin for that cave."""
+    "hash-mismatch"; code = the assembled .bin for that cave. An optional
+    server embeds a default host:port in full builds only."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
+    if server is not None:
+        server = parse_server(server)
+        if mode == "cert-only":
+            sys.exit("embedding a server requires a full patch, not --cert-only")
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -298,6 +352,24 @@ def build(original, mode, code=None):
     patch(data, *HASH_INTERVAL)
     rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1),
                  (MEMORY_CHECK[0], MEMORY_CHECK[0] + 1)]
+    patch(data, *REVISION_SITE)
+    rewritten.append((REVISION_SITE[0], REVISION_SITE[0] + len(REVISION_SITE[1])))
+    upload_size = len(cave)
+    if server is not None:
+        if upload_size != DEFAULT_SERVER_OFFSET:
+            sys.exit("embedding a server requires the standard 420-byte snapshot cave")
+        stub = open(default_server_bin(mode), "rb").read()
+        # The checked-in stub ends with the relative jump to the original
+        # server-option read; reject a stub assembled for the other placement.
+        if len(stub) < 5 or stub[-5] != 0xE9 or \
+                cave_va + upload_size + len(stub) + struct.unpack_from("<i", stub, len(stub) - 4)[0] != DEFAULT_SERVER_RETURN:
+            sys.exit("the default-server stub has the wrong return target")
+        target = cave_va + upload_size
+        va, expected = DEFAULT_SERVER_HOOK
+        hook = b"\xE9" + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
+        patch(data, va, expected, hook)
+        rewritten.append((va, va + len(expected)))
+        cave += stub + server.encode("ascii") + b"\0"
     for site in GATHER:
         patch(data, *site)
         rewritten.append((site[0], site[0] + len(site[1])))
@@ -334,19 +406,25 @@ def build(original, mode, code=None):
         data = add_section(data, cave)
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
-    return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, battery rule, "
-                  f"{len(cave)} bytes of upload code {where} "
-                  f"({len(relocs)} relocations disabled), {len(HOOKS)} hooks")
+    return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, "
+                  f"patch revision {REVISION}, battery rule, "
+                  f"{upload_size} bytes of upload code {where} "
+                  f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
+                  + (f", default login server {server}" if server is not None else ""))
 
 
 def default_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"snapshot_upload_026g.{mode}.bin")
 
 
+def default_server_bin(mode):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--") or a == "--check"]
     options = [a for a in sys.argv[1:] if a.startswith("--") and a != "--check"]
-    mode, bin_path = "section", None
+    mode, bin_path, server = "section", None, None
     for option in options:
         if option == "--cert-only":
             mode = "cert-only"
@@ -354,6 +432,8 @@ def main():
             mode = option[7:]
         elif option.startswith("--bin="):
             bin_path = option[6:]
+        elif option.startswith("--server="):
+            server = parse_server(option[9:])
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) == 3:                                     # the draft's form: <exe> <out> <bin>
@@ -366,7 +446,7 @@ def main():
     code = None
     if mode != "cert-only":
         code = open(bin_path or default_bin(mode), "rb").read()
-    data, description = build(open(source, "rb").read(), mode, code)
+    data, description = build(open(source, "rb").read(), mode, code, server)
     if target != "--check":
         with open(target, "wb") as out:
             out.write(data)
