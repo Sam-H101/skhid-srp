@@ -441,15 +441,23 @@ player joined at.
 ### 9.5 The log
 
 - `Match 0x… sides: …` when a match is made (§8.4), in both queues.
-- `Match 0x… late join: <name> <what it counts for> to team <n>, …; with
-  them team 0 counts X (n in, lead L), team 1 counts Y (m in, lead L); the
-  sides were Z apart`.
+- `Match 0x… late join: <name> <what it counts for> (gear g, level l,
+  rating r of m matches) to team <n>, …; with them team 0 counts X (n in,
+  lead L), team 1 counts Y (m in, lead L); the sides were Z apart`. Each
+  joiner is written as the "sides" line writes a player (the parts since
+  2026-10-14; before, the name and the sum alone).
 - **Each minute of every match being played**, in both queues: `Match 0x…
   at <s> s: team 0 counts X (n in, lead L), team 1 counts Y (m in, lead
-  L); points [a, b], kills [k0, k1]; team 0 expected at P %`. P is
-  `Weights::expected` of what the sides count apart, a player more being
-  the rating's nine to one. The parts are there so that the numbers can be
-  fitted again from these lines and the results; the line changes nothing.
+  L); points [a, b], kills [k0, k1]; team 0 expected at P %; out: <name>,
+  …`. P is `Weights::expected` of what the sides count apart, a player
+  more being the rating's nine to one. "out" names the players of the
+  roster who are not in the match at that moment, and is not there when all
+  are in (since 2026-10-14). The parts are there so that the numbers can
+  be fitted again from these lines and the results; the line changes
+  nothing.
+- `scripts/balance-refit/refit.py` reads these lines and the "settled"
+  one: the weights of §8 fitted on who was in each match, minute by
+  minute. It does not fit the numbers of the lead.
 
 ### 9.6 Not done, not known
 

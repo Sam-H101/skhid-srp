@@ -159,8 +159,22 @@ pub(super) struct Running {
     /// By place: what its player counted for when it was seated, beside
     /// being there (`Weights::strength`).
     pub strengths: Vec<i32>,
+    /// By place: its player's name, for the log.
+    pub names: Vec<String>,
     /// When the log last had what the sides count for.
     pub predicted_at: Option<Instant>,
+}
+
+/// One player as the log's "sides" and "late join" lines have it: what it
+/// counts for and the parts of that. `scripts/balance-refit` reads these.
+fn counted_player(account: &Account, counts: f64, gear: u8) -> String {
+    format!(
+        "{} {counts:.1} (gear {gear}, level {}, rating {:+.2} of {} matches)",
+        account.name,
+        account.level(),
+        f64::from(account.balance.rating) / f64::from(session::v026g::balance::UNIT),
+        account.balance.matches
+    )
 }
 
 /// The account as a match shows it: every kit with what it wears, the
@@ -296,6 +310,16 @@ impl Core<'_> {
         sides
     }
 
+    /// The players of a running match's roster who are not in it now, by
+    /// name and in the roster's order: what the log's per-minute line ends
+    /// with.
+    pub(super) fn out_now<'a>(running: &'a Running, live: &LiveView) -> Vec<&'a str> {
+        (0..running.seats.len())
+            .filter(|&place| live.present >> place & 1 == 0)
+            .map(|place| running.names.get(place).map_or("", String::as_str))
+            .collect()
+    }
+
     /// What each side's lead counts for in a running match
     /// (`Weights::lead`), and whether it is a dramatic one.
     fn lead_now(&self, running: &Running, live: Option<&LiveView>) -> ([i64; 2], bool) {
@@ -325,9 +349,10 @@ impl Core<'_> {
     }
 
     /// Each minute of a match being played: what its sides count for now
-    /// (the players in it, their strengths, the lead), the score, and the
-    /// chance that count gives team 0. For the log alone: the numbers of
-    /// the balance rule are fitted from these lines and the results.
+    /// (the players in it, their strengths, the lead), the score, the
+    /// chance that count gives team 0, and who of its roster is not in it.
+    /// For the log alone: the numbers of the balance rule are fitted from
+    /// these lines and the results.
     pub(super) fn log_predictions(&mut self, now: Instant) {
         let due: Vec<u32> = self
             .matches
@@ -352,9 +377,10 @@ impl Core<'_> {
             let counted = self.counted(sides, lead);
             let scale = f64::from(session::STRENGTH_SCALE);
             let apart = ((counted[0].0 - counted[1].0) * scale).round() as i64;
+            let out = Self::out_now(running, &live);
             log::info!(
                 "Match {:#x} at {} s: team 0 counts {:.1} ({} in, lead {:.1}), team 1 counts {:.1} \
-                 ({} in, lead {:.1}); points {}, kills {:?}{}; team 0 expected at {:.0} %",
+                 ({} in, lead {:.1}); points {}, kills {:?}{}; team 0 expected at {:.0} %{}",
                 running.ticket.match_id,
                 played.as_secs(),
                 counted[0].0,
@@ -367,7 +393,12 @@ impl Core<'_> {
                     .map_or("unknown".to_owned(), |points| format!("{points:?}")),
                 live.kills,
                 if dramatic { ", a dramatic lead" } else { "" },
-                100.0 * self.settings.balance.expected(apart)
+                100.0 * self.settings.balance.expected(apart),
+                if out.is_empty() {
+                    String::new()
+                } else {
+                    format!("; out: {}", out.join(", "))
+                }
             );
             if let Some(running) = self.matches.get_mut(&id) {
                 running.predicted_at = Some(now);
@@ -523,16 +554,22 @@ impl Core<'_> {
                     let strength = group.player_strength(index);
                     running.seats.push((player.session_id, team));
                     running.strengths.push(strength);
+                    let mut name = String::new();
                     if let Some(account) = self.accounts.get(player.account_id) {
                         let mut account = account.locked();
+                        name.clone_from(&account.name);
                         joined.push(format!(
-                            "{} {:.1} to team {team}",
-                            account.name,
-                            weights.player + f64::from(strength) / scale
+                            "{} to team {team}",
+                            counted_player(
+                                &account,
+                                weights.player + f64::from(strength) / scale,
+                                matchmaking::level(&account, unix).min
+                            )
                         ));
                         matchmaking::count_map_play(&mut account, map);
                         self.accounts.mark_dirty(player.account_id);
                     }
+                    running.names.push(name);
                 }
             }
             log::info!(
@@ -974,6 +1011,7 @@ impl Core<'_> {
         let weights = self.settings.balance;
         let mut sides: [(f64, Vec<String>); 2] = Default::default();
         let mut strengths = Vec::with_capacity(formed.seats.len());
+        let mut names = Vec::with_capacity(formed.seats.len());
         let players: Option<Vec<MatchPlayer>> = formed
             .seats
             .iter()
@@ -986,16 +1024,11 @@ impl Core<'_> {
                 let scale = f64::from(session::STRENGTH_SCALE);
                 let strength = weights.strength(level, account.level(), account.balance);
                 strengths.push(strength);
+                names.push(account.name.clone());
                 let counts = weights.player + f64::from(strength) / scale;
                 let side = &mut sides[usize::from(seat.team.min(1))];
                 side.0 += counts;
-                side.1.push(format!(
-                    "{} {counts:.1} (gear {level}, level {}, rating {:+.2} of {} matches)",
-                    account.name,
-                    account.level(),
-                    f64::from(account.balance.rating) / f64::from(session::v026g::balance::UNIT),
-                    account.balance.matches
-                ));
+                side.1.push(counted_player(&account, counts, level));
                 for &(map, count) in &account.map_plays {
                     plays[usize::from(map)] += u64::from(count);
                 }
@@ -1079,6 +1112,7 @@ impl Core<'_> {
                             .map(|seat| (seat.player.session_id, seat.team))
                             .collect(),
                         strengths,
+                        names,
                         predicted_at: None,
                     },
                 );
