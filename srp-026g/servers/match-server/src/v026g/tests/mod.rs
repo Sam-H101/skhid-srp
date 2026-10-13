@@ -10,6 +10,8 @@ use super::test_client as client;
 
 mod bots;
 mod game;
+mod late_join;
+mod late_join_edge_cases;
 mod sockets;
 mod units;
 
@@ -109,6 +111,20 @@ impl Bench {
     /// (`MatchPlayer::bot`) and given clients that simulate nothing
     /// (`Client::idle`, what `srp-bot` runs).
     pub fn with_bots(players: usize, map_id: u8, settings: Settings, bots: &[usize]) -> Self {
+        Self::with_dialect(players, map_id, settings, bots, false)
+    }
+
+    pub fn growing(players: usize, map_id: u8, settings: Settings) -> Self {
+        Self::with_dialect(players, map_id, settings, &[], true)
+    }
+
+    fn with_dialect(
+        players: usize,
+        map_id: u8,
+        settings: Settings,
+        bots: &[usize],
+        growing: bool,
+    ) -> Self {
         log_to_stderr();
         let start = Instant::now();
         let registry = Arc::new(MatchRegistry::new("127.0.0.1", 1236));
@@ -117,7 +133,7 @@ impl Bench {
             setup.players[*place].bot = true;
         }
         let ticket = registry
-            .create_at(setup, start)
+            .create_with_dialect(setup, start, growing)
             .expect("a match the clients can hold");
         let (sink, results) = channel();
         let server = Server::new(
@@ -134,7 +150,9 @@ impl Bench {
             results,
             clients: (0..players)
                 .map(|place| {
-                    if bots.contains(&place) {
+                    if growing {
+                        Client::growing(session_of(place), players, map_id)
+                    } else if bots.contains(&place) {
                         Client::idle(session_of(place))
                     } else {
                         Client::new(session_of(place), true, players, map_id)

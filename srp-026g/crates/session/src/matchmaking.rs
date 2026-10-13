@@ -78,6 +78,8 @@ pub struct Seat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormedMatch {
     pub id: u32,
+    pub pool: QueuePool,
+    pub fixed_teams: bool,
     /// The roster: a seat's index is the player's index in the match.
     pub seats: Vec<Seat>,
 }
@@ -133,16 +135,26 @@ impl LevelRules {
     }
 }
 
-/// Players waiting together: one player, or a squad.
-struct Group {
-    players: Vec<Player>,
-    /// By player; empty in a queue without levels.
-    levels: Vec<Level>,
-    squad: bool,
-    since: Instant,
+/// Clients from different pools never share a newly formed match.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum QueuePool {
+    #[default]
+    Standard,
+    GrowingRoster,
 }
 
-impl Group {
+/// An immutable queue observation; admission checks it again before committing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedGroup {
+    pub players: Vec<Player>,
+    /// By player; empty in a queue without levels.
+    levels: Vec<Level>,
+    pub squad: bool,
+    pub since: Instant,
+    pub pool: QueuePool,
+}
+
+impl QueuedGroup {
     /// The group is looked for a match by its highest player [LIKELY: the
     /// client takes the highest of an account's kits the same way].
     fn level(&self) -> Level {
@@ -151,6 +163,16 @@ impl Group {
             .copied()
             .max_by_key(|level| (level.min, level.max))
             .unwrap_or_default()
+    }
+
+    /// Does this group's widened search range include an existing match?
+    pub fn accepts_level(&self, level: u8, now: Instant, rules: &LevelRules) -> bool {
+        let own = self.level();
+        let distance = u128::from(own.min.saturating_sub(level))
+            + u128::from(level.saturating_sub(own.max.max(own.min)));
+        rules
+            .widened(now.saturating_duration_since(self.since))
+            .is_none_or(|widened| distance <= widened)
     }
 
     /// The level of a player, 0 without levels.
@@ -165,6 +187,11 @@ impl Group {
     }
 }
 
+struct Countdown {
+    since: Instant,
+    extra: Duration,
+}
+
 struct Inner {
     gather: Duration,
     fill_players: usize,
@@ -175,19 +202,18 @@ struct Inner {
     extension: Duration,
     /// The longest a countdown runs.
     max_countdown: Duration,
-    /// When the leveled queue got its `min_players`th player (and two
-    /// parties); `None` while it has fewer.
-    countdown_since: Option<Instant>,
-    /// What the presses of Play since then added to the countdown.
-    countdown_extra: Duration,
     /// When someone last pressed Play.
     last_joined: Option<Instant>,
+    pool_last_joined: HashMap<QueuePool, Instant>,
+    pool_countdowns: HashMap<QueuePool, Countdown>,
     /// When the queue got its second party (a player alone or a squad:
-    /// [`Group::parties`]); `None` while it has fewer.
+    /// [`QueuedGroup::parties`]); `None` while it has fewer.
     gathering_since: Option<Instant>,
     next_match_id: u32,
-    queue: Vec<Group>,
+    queue: Vec<QueuedGroup>,
     matches: HashMap<u32, Vec<Seat>>,
+    match_pools: HashMap<u32, QueuePool>,
+    fixed_teams: HashSet<u32>,
     formed_at: HashMap<u32, Instant>,
     /// The seated sessions a lobby connection has sent to their match. A
     /// seat is sent by whichever connection the session has, also one made
@@ -214,13 +240,15 @@ impl Matchmaking {
                     .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
                 max_countdown: env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
                     .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
-                countdown_since: None,
-                countdown_extra: Duration::ZERO,
                 last_joined: None,
+                pool_last_joined: HashMap::new(),
+                pool_countdowns: HashMap::new(),
                 gathering_since: None,
                 next_match_id: FIRST_MATCH_ID,
                 queue: Vec::new(),
                 matches: HashMap::new(),
+                match_pools: HashMap::new(),
+                fixed_teams: HashSet::new(),
                 formed_at: HashMap::new(),
                 told: HashSet::new(),
                 given_up: HashSet::new(),
@@ -262,6 +290,17 @@ impl Matchmaking {
     /// `players[i]`'s; a player without one has level 0), for a queue
     /// polled with [`Self::poll_with`].
     pub fn queue_leveled(&self, players: &[Player], levels: &[Level], squad: bool, now: Instant) {
+        self.queue_in_pool(players, levels, squad, now, QueuePool::Standard);
+    }
+
+    pub fn queue_in_pool(
+        &self,
+        players: &[Player],
+        levels: &[Level],
+        squad: bool,
+        now: Instant,
+        pool: QueuePool,
+    ) {
         let mut inner = self.inner.locked();
         let mut waiting = Vec::new();
         let mut waiting_levels = Vec::new();
@@ -291,24 +330,111 @@ impl Matchmaking {
             })
         });
         let joined = waiting.len();
-        let counting = inner.countdown_since.is_some();
-        inner.queue.push(Group {
+        let counting = inner.pool_countdowns.contains_key(&pool);
+        inner.queue.push(QueuedGroup {
             players: waiting,
             levels: waiting_levels,
             squad,
             since: now,
+            pool,
         });
-        inner.last_joined = Some(now);
+        if pool == QueuePool::Standard {
+            inner.last_joined = Some(now);
+        }
+        inner.pool_last_joined.insert(pool, now);
         inner.track(now);
-        if counting && inner.countdown_since.is_some() {
-            let extension = inner.extension;
-            inner.countdown_extra += extension;
+        let extension = inner.extension;
+        if counting && let Some(countdown) = inner.pool_countdowns.get_mut(&pool) {
+            countdown.extra += extension;
         }
         log::info!(
             "Queue: {joined} joined{}; {} waiting",
             if squad { " as a squad" } else { "" },
             inner.waiting()
         );
+    }
+
+    /// Read waiting parties without forming new matches.
+    pub fn queued_groups(&self, pool: QueuePool) -> Vec<QueuedGroup> {
+        self.inner
+            .locked()
+            .queue
+            .iter()
+            .filter(|group| group.pool == pool)
+            .cloned()
+            .collect()
+    }
+
+    /// Commit only if the observed party still waits and the host reserves it.
+    /// `reserve` runs under the queue lock and must not call matchmaking again.
+    pub fn append_group(
+        &self,
+        match_id: u32,
+        group: &QueuedGroup,
+        team: u8,
+        now: Instant,
+        reserve: impl FnOnce(usize, &[Seat]) -> bool,
+    ) -> bool {
+        let mut inner = self.inner.locked();
+        let Some(position) = inner.queue.iter().position(|waiting| waiting == group) else {
+            return false;
+        };
+        if group.pool != QueuePool::GrowingRoster
+            || inner.fixed_teams.contains(&match_id)
+            || inner.match_pools.get(&match_id) != Some(&group.pool)
+        {
+            return false;
+        }
+        let Some(roster) = inner.matches.get(&match_id) else {
+            return false;
+        };
+        if team > 1
+            || group.players.is_empty()
+            || group.players.len() > MAX_PLAYERS_PER_MATCH - roster.len()
+            || group.players.iter().any(|player| {
+                inner.live_seat_of_account(player.account_id).is_some()
+                    || roster
+                        .iter()
+                        .any(|seat| seat.player.account_id == player.account_id)
+            })
+        {
+            return false;
+        }
+        let first = roster.len();
+        let squad = if group.squad {
+            let Some(next) = roster
+                .iter()
+                .map(|seat| seat.squad)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+            else {
+                return false;
+            };
+            next
+        } else {
+            0
+        };
+        let seats: Vec<_> = group
+            .players
+            .iter()
+            .map(|&player| Seat {
+                player,
+                team,
+                squad,
+            })
+            .collect();
+        if !reserve(first, &seats) {
+            return false;
+        }
+        inner
+            .matches
+            .get_mut(&match_id)
+            .expect("match checked under lock")
+            .extend(seats);
+        inner.queue.remove(position);
+        inner.track(now);
+        true
     }
 
     /// A player leaves the queue, and its squad with it.
@@ -406,6 +532,15 @@ impl Matchmaking {
     /// match, or one of the players has a seat in a match being played.
     /// The players leave the queue.
     pub fn seat_teams(&self, teams: [&[Player]; 2], now: Instant) -> Option<u32> {
+        self.seat_teams_in_pool(teams, now, QueuePool::Standard)
+    }
+
+    pub fn seat_teams_in_pool(
+        &self,
+        teams: [&[Player]; 2],
+        now: Instant,
+        pool: QueuePool,
+    ) -> Option<u32> {
         let mut inner = self.inner.locked();
         let players = || teams.iter().flat_map(|team| team.iter());
         if teams.iter().any(|team| team.is_empty())
@@ -441,6 +576,8 @@ impl Matchmaking {
             teams[1].len()
         );
         inner.matches.insert(id, seats);
+        inner.match_pools.insert(id, pool);
+        inner.fixed_teams.insert(id);
         inner.formed_at.insert(id, now);
         Some(id)
     }
@@ -470,6 +607,13 @@ impl Matchmaking {
         self.inner.locked().told.contains(&session_id)
     }
 
+    /// Compatibility of an account's retained seat, if it has one.
+    pub fn pool_of_account(&self, account_id: u32) -> Option<QueuePool> {
+        let inner = self.inner.locked();
+        let (id, _, _) = inner.live_seat_of_account(account_id)?;
+        inner.match_pools.get(&id).copied()
+    }
+
     /// The match and roster index of a session's seat.
     pub fn seat(&self, session_id: u32) -> Option<(u32, usize)> {
         let inner = self.inner.locked();
@@ -484,6 +628,12 @@ impl Matchmaking {
         let seats = inner.matches.get(&match_id)?.clone();
         Some(FormedMatch {
             id: match_id,
+            pool: inner
+                .match_pools
+                .get(&match_id)
+                .copied()
+                .unwrap_or_default(),
+            fixed_teams: inner.fixed_teams.contains(&match_id),
             seats,
         })
     }
@@ -498,6 +648,8 @@ impl Matchmaking {
         }
         inner.given_up.retain(|(id, _)| *id != match_id);
         inner.formed_at.remove(&match_id);
+        inner.match_pools.remove(&match_id);
+        inner.fixed_teams.remove(&match_id);
     }
 
     /// The matches being played, with when each formed.
@@ -563,23 +715,41 @@ impl Inner {
     }
 
     /// Starts the gathering window when the queue has two parties
-    /// ([`Group::parties`]), and ends it when it has fewer: a squad plays
+    /// ([`QueuedGroup::parties`]), and ends it when it has fewer: a squad plays
     /// on one team, so one alone has nobody to play against.
     fn track(&mut self, now: Instant) {
-        let parties: usize = self.queue.iter().map(Group::parties).sum();
+        for pool in [QueuePool::Standard, QueuePool::GrowingRoster] {
+            let parties: usize = self
+                .queue
+                .iter()
+                .filter(|group| group.pool == pool)
+                .map(QueuedGroup::parties)
+                .sum();
+            let players: usize = self
+                .queue
+                .iter()
+                .filter(|group| group.pool == pool)
+                .map(|group| group.players.len())
+                .sum();
+            if parties < 2 || players < self.min_players {
+                self.pool_countdowns.remove(&pool);
+            } else {
+                self.pool_countdowns.entry(pool).or_insert(Countdown {
+                    since: now,
+                    extra: Duration::ZERO,
+                });
+            }
+        }
+        let parties: usize = self
+            .queue
+            .iter()
+            .filter(|group| group.pool == QueuePool::Standard)
+            .map(QueuedGroup::parties)
+            .sum();
         if parties < 2 {
             self.gathering_since = None;
         } else if self.gathering_since.is_none() {
             self.gathering_since = Some(now);
-        }
-        if parties >= 2 && self.waiting() >= self.min_players {
-            if self.countdown_since.is_none() {
-                self.countdown_since = Some(now);
-                self.countdown_extra = Duration::ZERO;
-            }
-        } else {
-            self.countdown_since = None;
-            self.countdown_extra = Duration::ZERO;
         }
     }
 
@@ -592,7 +762,12 @@ impl Inner {
             let Some(since) = self.gathering_since else {
                 return;
             };
-            let total: usize = self.queue.iter().map(|group| group.players.len()).sum();
+            let total: usize = self
+                .queue
+                .iter()
+                .filter(|group| group.pool == QueuePool::Standard)
+                .map(|group| group.players.len())
+                .sum();
             let settled = total >= self.fill_players
                 && self
                     .last_joined
@@ -606,6 +781,9 @@ impl Inner {
             let mut chosen = Vec::new();
             let mut count = 0;
             for (index, group) in self.queue.iter().enumerate() {
+                if group.pool != QueuePool::Standard {
+                    continue;
+                }
                 let size = group.players.len();
                 if count + size <= MAX_PLAYERS_PER_MATCH {
                     count += size;
@@ -620,7 +798,7 @@ impl Inner {
             if parties < 2 {
                 return;
             }
-            let mut taken: Vec<Group> = chosen
+            let mut taken: Vec<QueuedGroup> = chosen
                 .iter()
                 .rev()
                 .map(|&index| self.queue.remove(index))
@@ -638,6 +816,7 @@ impl Inner {
                     .collect::<Vec<_>>()
             );
             self.matches.insert(id, seats);
+            self.match_pools.insert(id, QueuePool::Standard);
             self.formed_at.insert(id, now);
             // Whoever is left waits a new window.
             self.gathering_since = None;
@@ -659,17 +838,17 @@ impl Inner {
         let min_players = self.min_players.min(size);
         loop {
             self.track(now);
-            let Some(since) = self.countdown_since else {
-                return;
-            };
-            let elapsed = now.saturating_duration_since(since);
-            let longest = self.max_countdown.max(self.gather);
-            let window_over = elapsed >= (self.gather + self.countdown_extra).min(longest);
-            let capped = elapsed >= longest;
-            let quiet = self
-                .last_joined
-                .is_none_or(|joined| now.saturating_duration_since(joined) >= self.quiet);
             let found = (0..self.queue.len()).find_map(|anchor| {
+                let pool = self.queue[anchor].pool;
+                let countdown = self.pool_countdowns.get(&pool)?;
+                let elapsed = now.saturating_duration_since(countdown.since);
+                let longest = self.max_countdown.max(self.gather);
+                let window_over = elapsed >= (self.gather + countdown.extra).min(longest);
+                let capped = elapsed >= longest;
+                let quiet = self
+                    .pool_last_joined
+                    .get(&pool)
+                    .is_none_or(|joined| now.saturating_duration_since(*joined) >= self.quiet);
                 let near = self.in_range_of(anchor, now, rules);
                 let chosen = fitting(&self.queue, near, size, rules.team_size);
                 let players: usize = chosen
@@ -693,9 +872,10 @@ impl Inner {
             let Some(mut chosen) = found else {
                 return;
             };
+            let pool = self.queue[chosen[0]].pool;
             // In the order they came.
             chosen.sort_unstable();
-            let mut taken: Vec<Group> = chosen
+            let mut taken: Vec<QueuedGroup> = chosen
                 .iter()
                 .rev()
                 .map(|&index| self.queue.remove(index))
@@ -713,10 +893,11 @@ impl Inner {
                     .collect::<Vec<_>>()
             );
             self.matches.insert(id, seats);
+            self.match_pools.insert(id, pool);
             self.formed_at.insert(id, now);
             // Whoever is left waits a new window.
             self.gathering_since = None;
-            self.countdown_since = None;
+            self.pool_countdowns.remove(&pool);
         }
     }
 
@@ -735,7 +916,8 @@ impl Inner {
         };
         let mut near: Vec<usize> = (0..self.queue.len())
             .filter(|&index| {
-                index == anchor || widened.is_none_or(|widened| distance(index) <= widened)
+                self.queue[index].pool == self.queue[anchor].pool
+                    && (index == anchor || widened.is_none_or(|widened| distance(index) <= widened))
             })
             .collect();
         near.sort_by_key(|&index| (index != anchor, distance(index), index));
@@ -745,7 +927,7 @@ impl Inner {
 
 /// Of the groups at `order`, in that order, as many as fit a match of
 /// `size` players whose two sides both fit `team_size`.
-fn fitting(queue: &[Group], order: Vec<usize>, size: usize, team_size: usize) -> Vec<usize> {
+fn fitting(queue: &[QueuedGroup], order: Vec<usize>, size: usize, team_size: usize) -> Vec<usize> {
     let mut chosen = Vec::new();
     let mut sizes = Vec::new();
     for index in order {
@@ -780,7 +962,7 @@ fn sides_fit(sizes: &[usize], team_size: usize) -> bool {
 /// [`seat`], with sides of at most `team_size` and as even as the groups
 /// allow: first in players, then in the sum of their levels. The teams are
 /// `seat`'s whenever no other split is better.
-fn seat_balanced(groups: Vec<Group>, team_size: usize) -> Vec<Seat> {
+fn seat_balanced(groups: Vec<QueuedGroup>, team_size: usize) -> Vec<Seat> {
     let count = groups.len();
     let sizes: Vec<i64> = groups
         .iter()
@@ -843,7 +1025,7 @@ fn seat_balanced(groups: Vec<Group>, team_size: usize) -> Vec<Seat> {
 
 /// [`seat`]'s teams, by group: the largest first, each on the team with
 /// fewer players.
-fn seat_teams_of(groups: &[Group]) -> Vec<u8> {
+fn seat_teams_of(groups: &[QueuedGroup]) -> Vec<u8> {
     let mut by_size: Vec<usize> = (0..groups.len()).collect();
     by_size.sort_by_key(|&index| std::cmp::Reverse(groups[index].players.len()));
     let mut team_of = vec![0; groups.len()];
@@ -858,13 +1040,13 @@ fn seat_teams_of(groups: &[Group]) -> Vec<u8> {
 
 /// Teams of the groups: the largest first, each on the team with fewer
 /// players. Seats keep the order the groups came in.
-fn seat(groups: Vec<Group>) -> Vec<Seat> {
+fn seat(groups: Vec<QueuedGroup>) -> Vec<Seat> {
     let team_of = seat_teams_of(&groups);
     seats_of(groups, &team_of)
 }
 
 /// The seats of groups on the teams given, in the order the groups came.
-fn seats_of(groups: Vec<Group>, team_of: &[u8]) -> Vec<Seat> {
+fn seats_of(groups: Vec<QueuedGroup>, team_of: &[u8]) -> Vec<Seat> {
     let mut seats = Vec::new();
     let mut next_squad = 0;
     for (group, &team) in groups.into_iter().zip(team_of) {
@@ -949,6 +1131,173 @@ mod tests {
             account_id: 1000 + id,
             profile_id: 1,
         }
+    }
+
+    #[test]
+    fn incompatible_pools_have_separate_rosters_and_gather_windows() {
+        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        );
+        let now = Instant::now();
+        mm.queue_in_pool(&[player(1)], &[at(0)], false, now, QueuePool::Standard);
+        mm.queue_in_pool(&[player(2)], &[at(0)], false, now, QueuePool::GrowingRoster);
+        mm.poll_with(1, after(now, 60), Some(&EIGHT));
+        assert_eq!(mm.match_count(), 0);
+        mm.queue_in_pool(
+            &[player(3)],
+            &[at(0)],
+            false,
+            after(now, 60),
+            QueuePool::GrowingRoster,
+        );
+        mm.poll_with(2, after(now, 119), Some(&EIGHT));
+        assert_eq!(mm.match_count(), 0);
+        mm.poll_with(2, after(now, 120), Some(&EIGHT));
+        let (id, _) = mm.seat(2).unwrap();
+        assert_eq!(mm.seat(3).map(|seat| seat.0), Some(id));
+        assert!(mm.seat(1).is_none());
+        let formed = mm.formed_match(id).unwrap();
+        assert_eq!(formed.pool, QueuePool::GrowingRoster);
+        assert!(!formed.fixed_teams);
+        assert_eq!(formed.seats.len(), 2);
+    }
+
+    #[test]
+    fn growing_queue_does_not_shorten_the_legacy_gather_window() {
+        let mm = Matchmaking::new(Duration::from_secs(60));
+        let now = Instant::now();
+        mm.queue(&[player(1), player(2)], false, now);
+        let growing: Vec<_> = (3..23).map(player).collect();
+        mm.queue_in_pool(&growing, &[], false, now, QueuePool::GrowingRoster);
+        mm.poll(1, now);
+        assert_eq!(mm.match_count(), 0);
+        mm.poll(1, after(now, 60));
+        assert!(mm.seat(1).is_some());
+        assert!(mm.seat(3).is_none());
+        assert_eq!(mm.match_count(), 1);
+    }
+
+    #[test]
+    fn minimum_players_and_countdown_extensions_are_independent_per_pool() {
+        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
+            4,
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+        );
+        let now = Instant::now();
+        mm.queue_in_pool(
+            &[player(1), player(2)],
+            &[],
+            false,
+            now,
+            QueuePool::Standard,
+        );
+        mm.queue_in_pool(
+            &[player(10), player(11)],
+            &[],
+            false,
+            now,
+            QueuePool::GrowingRoster,
+        );
+        mm.poll_with(1, after(now, 600), Some(&EIGHT));
+        assert_eq!(mm.match_count(), 0);
+        mm.queue_in_pool(
+            &[player(3), player(4)],
+            &[],
+            false,
+            after(now, 600),
+            QueuePool::Standard,
+        );
+        mm.queue_in_pool(
+            &[player(12), player(13)],
+            &[],
+            false,
+            after(now, 610),
+            QueuePool::GrowingRoster,
+        );
+        mm.queue_in_pool(
+            &[player(5)],
+            &[],
+            false,
+            after(now, 620),
+            QueuePool::Standard,
+        );
+        mm.poll_with(10, after(now, 669), Some(&EIGHT));
+        assert_eq!(mm.match_count(), 0);
+        mm.poll_with(10, after(now, 670), Some(&EIGHT));
+        assert!(mm.seat(10).is_some());
+        assert!(mm.seat(1).is_none());
+        mm.poll_with(1, after(now, 689), Some(&EIGHT));
+        assert!(mm.seat(1).is_none());
+        mm.poll_with(1, after(now, 690), Some(&EIGHT));
+        assert!(mm.seat(1).is_some());
+        assert_eq!(mm.match_count(), 2);
+    }
+
+    #[test]
+    fn appending_a_party_checks_the_queue_again_and_commits_only_after_host_success() {
+        let mm = Matchmaking::new(Duration::ZERO).with_start_rules(
+            2,
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        );
+        let now = Instant::now();
+        mm.queue_in_pool(
+            &[player(1), player(2)],
+            &[at(0); 2],
+            false,
+            now,
+            QueuePool::GrowingRoster,
+        );
+        mm.poll_with(1, now, Some(&EIGHT));
+        let id = mm.seat(1).unwrap().0;
+        mm.queue_in_pool(
+            &[player(3), player(4)],
+            &[at(0); 2],
+            true,
+            now,
+            QueuePool::GrowingRoster,
+        );
+        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
+        assert!(!mm.append_group(id, &group, 0, now, |_, _| false));
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 2);
+        assert_eq!(mm.queued_players(), 2);
+        mm.leave_queue(3);
+        assert!(!mm.append_group(id, &group, 0, now, |_, _| panic!(
+            "stale party reached host"
+        )));
+        mm.queue_in_pool(
+            &[player(3), player(4)],
+            &[at(0); 2],
+            true,
+            after(now, 1),
+            QueuePool::GrowingRoster,
+        );
+        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
+        assert!(mm.append_group(id, &group, 0, now, |first, seats| {
+            assert_eq!(first, 2);
+            assert_eq!(seats.len(), 2);
+            assert_ne!(seats[0].squad, 0);
+            assert_eq!(seats[0].squad, seats[1].squad);
+            true
+        }));
+        assert_eq!(mm.seat(3), Some((id, 2)));
+        assert_eq!(mm.seat(4), Some((id, 3)));
+        assert_eq!(mm.queued_players(), 0);
+        mm.give_up_seat(player(3).account_id);
+        mm.queue_in_pool(
+            &[player(3)],
+            &[at(0)],
+            false,
+            after(now, 2),
+            QueuePool::GrowingRoster,
+        );
+        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
+        assert!(!mm.append_group(id, &group, 0, now, |_, _| panic!(
+            "duplicate account reached host"
+        )));
     }
 
     #[test]

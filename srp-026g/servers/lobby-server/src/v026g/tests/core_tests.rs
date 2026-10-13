@@ -24,6 +24,7 @@ use super::{TestHost, denial, find, sent_to_match, signed_in};
 use crate::v026g::core::Core;
 use crate::v026g::{Inbox, MatchFinished, Settings};
 
+mod late_join;
 mod making_matches;
 
 const ROUND: Duration = Duration::from_millis(10);

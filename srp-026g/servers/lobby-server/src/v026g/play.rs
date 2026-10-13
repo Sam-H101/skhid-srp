@@ -40,7 +40,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use session::v026g::{Account, matchmaking, quests, rules, wire};
-use session::{Level, LevelRules, LockExt, QueueState};
+use session::{Level, LevelRules, LockExt, QueuePool, QueueState};
 use survarium::v026g::lobby::requests::id;
 use survarium::v026g::lobby::{self, ClientState, limits};
 use survarium::v026g::maps;
@@ -64,6 +64,10 @@ pub trait MatchHost: Send + Sync {
     /// Make a match for this roster. The error is for the log; the players
     /// go back to the lobby.
     fn create(&self, setup: MatchSetup) -> Result<MatchTicket, String>;
+    /// Atomically reserve an entire party; false leaves it in the lobby queue.
+    fn join_running(&self, _match_id: u32, _players: Vec<MatchPlayer>) -> bool {
+        false
+    }
     /// Whether the match is made and not over. The lobby asks about its
     /// matches every second and frees the seats of one that is over, also
     /// when nobody called [`super::Inbox::match_finished`].
@@ -95,6 +99,7 @@ pub struct MatchPlayer {
 /// A match the lobby formed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchSetup {
+    pub pool: QueuePool,
     /// A playable `maps_dict` id: the map and the mode.
     pub map_id: u8,
     /// The row of `match_levels_dict` the match's rewards are multiplied
@@ -118,6 +123,9 @@ pub struct MatchTicket {
 
 /// A match made and not over.
 pub(super) struct Running {
+    pub pool: QueuePool,
+    pub fixed_teams: bool,
+    pub match_level: u16,
     pub ticket: MatchTicket,
     pub map_id: u8,
     /// Its roster's sessions and teams, by place.
@@ -224,6 +232,122 @@ fn ipv4_host(host: &str, port: u16) -> String {
 }
 
 impl Core<'_> {
+    pub(super) fn pool_for_sessions(
+        &self,
+        sessions: impl IntoIterator<Item = u32>,
+    ) -> Option<QueuePool> {
+        let mut pools = sessions.into_iter().map(|session| {
+            self.store.client_revision(session).map(|revision| {
+                if revision == survarium::v026g::match_msgs::late_join::PATCH_REVISION {
+                    QueuePool::GrowingRoster
+                } else {
+                    QueuePool::Standard
+                }
+            })
+        });
+        let first = pools.next()??;
+        pools.all(|pool| pool == Some(first)).then_some(first)
+    }
+
+    fn fill_running_matches(&mut self, now: Instant) {
+        let rules = self.level_rules();
+        let unix = quests::now();
+        let groups = self
+            .store
+            .matchmaking()
+            .queued_groups(QueuePool::GrowingRoster);
+        for group in groups {
+            if self.pool_for_sessions(group.players.iter().map(|player| player.session_id))
+                != Some(group.pool)
+            {
+                continue;
+            }
+            let mut candidates: Vec<_> = self
+                .matches
+                .iter()
+                .filter(|(_, running)| {
+                    running.pool == group.pool
+                        && !running.fixed_teams
+                        && group.accepts_level(
+                            running.match_level.min(u8::MAX as u16) as u8,
+                            now,
+                            &rules,
+                        )
+                })
+                .map(|(&id, _)| id)
+                .collect();
+            candidates.sort_unstable();
+            for id in candidates {
+                let running = &self.matches[&id];
+                let counts =
+                    [0, 1].map(|team| running.seats.iter().filter(|(_, t)| *t == team).count());
+                let team = [0, 1]
+                    .into_iter()
+                    .filter(|&team| counts[team] + group.players.len() <= rules.team_size)
+                    .min_by_key(|&team| counts[team]);
+                let Some(team) = team else {
+                    continue;
+                };
+                let profiles: Option<Vec<_>> = group
+                    .players
+                    .iter()
+                    .map(|player| {
+                        let account = self.accounts.get(player.account_id)?;
+                        let mut account = account.locked();
+                        account.settle_active_kit(unix);
+                        Some(MatchPlayer {
+                            session_id: player.session_id,
+                            account_id: player.account_id,
+                            profile: match_profile(&account, team as u8, 0, unix),
+                            bot: self.accounts.is_bot_name(&account.name),
+                        })
+                    })
+                    .collect();
+                let Some(mut profiles) = profiles else {
+                    continue;
+                };
+                let first = running.seats.len();
+                let ticket = running.ticket.match_id;
+                let admitted = self.store.matchmaking().append_group(
+                    id,
+                    &group,
+                    team as u8,
+                    now,
+                    |actual, seats| {
+                        if actual != first {
+                            return false;
+                        }
+                        for (profile, seat) in profiles.iter_mut().zip(seats) {
+                            profile.profile.squad = seat.squad;
+                        }
+                        self.host.join_running(ticket, profiles)
+                    },
+                );
+                if !admitted {
+                    continue;
+                }
+                let running = self
+                    .matches
+                    .get_mut(&id)
+                    .expect("running match observed above");
+                running.seats.extend(
+                    group
+                        .players
+                        .iter()
+                        .map(|player| (player.session_id, team as u8)),
+                );
+                let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
+                for player in &group.players {
+                    if let Some(account) = self.accounts.get(player.account_id) {
+                        matchmaking::count_map_play(&mut account.locked(), map);
+                        self.accounts.mark_dirty(player.account_id);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     /// How the queue forms matches ([`session::Matchmaking::poll_with`]).
     fn level_rules(&self) -> LevelRules {
         LevelRules {
@@ -244,6 +368,9 @@ impl Core<'_> {
     /// `2F <kit id>`: Play. In a squad, Play makes the player ready, and
     /// the squad queues once all are.
     pub(super) fn play(&mut self, who: &Who, kit_id: u32, now: Instant) {
+        let Some(pool) = self.pool_for_sessions([who.session_id]) else {
+            return;
+        };
         let unix = quests::now();
         let (checked, level) = {
             let mut account = who.account.locked();
@@ -265,6 +392,15 @@ impl Core<'_> {
         // A match that ended without a word frees its seats first: Play
         // would send the player back to it.
         self.check_matches(now);
+        if self
+            .store
+            .matchmaking()
+            .pool_of_account(who.account_id)
+            .is_some_and(|seated| seated != pool)
+        {
+            self.deny(who.addr, id::PLAY, PLAY_KIT);
+            return;
+        }
 
         let player = session::Player {
             session_id: who.session_id,
@@ -296,7 +432,7 @@ impl Core<'_> {
                 );
                 self.store
                     .matchmaking()
-                    .queue_leveled(&[player], &[level], false, now);
+                    .queue_in_pool(&[player], &[level], false, now, pool);
             }
             Some(squad) if squad.all_ready() => {
                 let players: Option<Vec<session::Player>> = squad
@@ -306,6 +442,17 @@ impl Core<'_> {
                     .collect();
                 match players {
                     Some(players) => {
+                        let Some(pool) =
+                            self.pool_for_sessions(players.iter().map(|player| player.session_id))
+                        else {
+                            self.store.squads().set_ready(who.account_id, false);
+                            if let Some(player) = self.player_mut(who.addr) {
+                                player.queued_since = None;
+                            }
+                            self.squads_dirty = true;
+                            self.deny(who.addr, id::PLAY, PLAY_KIT);
+                            return;
+                        };
                         let levels: Vec<Level> = players
                             .iter()
                             .map(|player| self.level_of(player.account_id, unix))
@@ -318,7 +465,7 @@ impl Core<'_> {
                         );
                         self.store
                             .matchmaking()
-                            .queue_leveled(&players, &levels, true, now);
+                            .queue_in_pool(&players, &levels, true, now, pool);
                         mates = squad.members;
                     }
                     None => log::warn!("Squad {}: a ready member has no Play", squad.id),
@@ -393,6 +540,7 @@ impl Core<'_> {
     /// - once its match is made, "match found" and where the match server
     ///   is (0x82), once.
     pub(super) fn queue_status(&mut self, addr: SocketAddr, now: Instant) {
+        self.fill_running_matches(now);
         let Some(player) = self.player(addr) else {
             return;
         };
@@ -581,13 +729,17 @@ impl Core<'_> {
         .or_else(|| maps::playable().next().map(|map| map.id))
         .unwrap_or(0);
         let match_level = matchmaking::match_level(&levels);
-        let made = match players {
+        let compatible = self
+            .pool_for_sessions(formed.seats.iter().map(|seat| seat.player.session_id))
+            == Some(formed.pool);
+        let made = match players.filter(|_| compatible) {
             Some(players) => self.host.create(MatchSetup {
+                pool: formed.pool,
                 map_id,
                 match_level,
                 players,
             }),
-            None => Err("a seated player has no 0.26g account".to_owned()),
+            None => Err("a seated player is unavailable or uses an incompatible client".to_owned()),
         };
         match made {
             Ok(ticket) => {
@@ -622,6 +774,9 @@ impl Core<'_> {
                 self.matches.insert(
                     match_id,
                     Running {
+                        pool: formed.pool,
+                        fixed_teams: formed.fixed_teams,
+                        match_level,
                         ticket,
                         map_id,
                         seats: formed

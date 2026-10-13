@@ -148,6 +148,16 @@ impl SignIn {
 /// the link's (nobody listening, a timeout); a refusal is a [`SignIn`]
 /// that is not [`SignIn::accepted`].
 pub fn sign_in(login: SocketAddr, user_name: &str, password: &str) -> io::Result<SignIn> {
+    sign_in_with_revision(login, user_name, password, 0)
+}
+
+/// Sign in with an explicit client dialect for integration clients.
+pub fn sign_in_with_revision(
+    login: SocketAddr,
+    user_name: &str,
+    password: &str,
+    revision: u8,
+) -> io::Result<SignIn> {
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
     let too_long = |what: &str| io::Error::other(format!("the {what} is longer than 255 bytes"));
     let name_len = u8::try_from(user_name.len()).map_err(|_| too_long("user name"))?;
@@ -159,6 +169,7 @@ pub fn sign_in(login: SocketAddr, user_name: &str, password: &str) -> io::Result
     message.extend(user_name.as_bytes());
     let mut version = [0_u8; 12];
     version[..VERSION.len()].copy_from_slice(VERSION);
+    version[7] = revision;
     message.extend(version);
     message.push(0); // not from the EULA window
     message.extend(u32::MAX.to_le_bytes()); // no online queue order
@@ -485,8 +496,7 @@ impl Bot {
             self.stage = Stage::SignedOut(now + RETRY);
             return;
         }
-        let (kit, money, in_lobby) =
-            (lobby.kit, lobby.money, lobby.in_lobby);
+        let (kit, money, in_lobby) = (lobby.kit, lobby.money, lobby.in_lobby);
 
         match &mut self.stage {
             Stage::SignedOut(_) | Stage::Done => {}

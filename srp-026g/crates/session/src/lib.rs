@@ -39,8 +39,8 @@ pub mod v026g;
 pub use bans::{Ban, IpBan, Net};
 pub use matchmaking::{
     DEFAULT_GATHER_WINDOW, FormedMatch, Level, LevelRules, MAX_PLAYERS_PER_MATCH, Matchmaking,
-    Player, QueueState, Seat, fill_from_env, gather_window_from_env, leveled_start_rules_from_env,
-    quiet_from_env,
+    Player, QueuePool, QueueState, QueuedGroup, Seat, fill_from_env, gather_window_from_env,
+    leveled_start_rules_from_env, quiet_from_env,
 };
 use persist::{AccountRecord, AccountRepository, PersistError, StoredSession};
 pub use reports::{MatchReport, Reports};
@@ -193,6 +193,7 @@ pub const SESSION_RESTORE_LIMIT: Duration = Duration::from_secs(3600);
 /// One sign-in.
 struct Session {
     account_id: u32,
+    client_revision: u8,
     /// When the client last showed it was there: a presence ping, or a lobby,
     /// chat or match connection.
     last_seen: Instant,
@@ -418,6 +419,7 @@ impl SessionStore {
                     stored.session_id,
                     Session {
                         account_id: stored.account_id,
+                        client_revision: stored.client_revision,
                         last_seen: now,
                         connections: 0,
                         gone: false,
@@ -812,7 +814,7 @@ impl SessionStore {
     /// fails is retried on the next pass. Returns how many were written.
     fn save_sessions(&self, persistence: &Persistence, writer: &mut Writer, now: Instant) -> usize {
         let made = std::mem::take(&mut *persistence.new_sessions.locked());
-        let live: Vec<(u32, u32, Instant)> = self
+        let live: Vec<(u32, u32, Instant, u8)> = self
             .sessions
             .locked()
             .iter()
@@ -823,14 +825,19 @@ impl SessionStore {
                 } else {
                     session.last_seen
                 };
-                (session_id, session.account_id, seen)
+                (
+                    session_id,
+                    session.account_id,
+                    seen,
+                    session.client_revision,
+                )
             })
             .collect();
         // The wall clock's now and the monotonic one, to convert sightings
         // (the pass's `now` may be a test's later time).
         let (now_unix, clock) = (unix_now(), Instant::now());
         let mut written = 0;
-        for (session_id, account_id, last_seen) in live {
+        for (session_id, account_id, last_seen, client_revision) in live {
             let due = made.contains(&session_id)
                 || writer.sessions.get(&session_id).is_some_and(|&at| {
                     now.saturating_duration_since(at) >= SESSION_SAVE_INTERVAL && last_seen > at
@@ -842,6 +849,7 @@ impl SessionStore {
             let stored = StoredSession {
                 session_id,
                 account_id,
+                client_revision,
                 last_seen_unix: now_unix
                     .saturating_sub(clock.saturating_duration_since(last_seen).as_secs()),
             };
@@ -971,6 +979,11 @@ impl SessionStore {
     /// Allocate a fresh `session_id` bound to `account_id`. The saver keeps
     /// it soon.
     pub fn create_session(&self, account_id: u32) -> u32 {
+        self.create_session_with_revision(account_id, 0)
+    }
+
+    /// Keep the advertised patch revision with this sign-in, including restarts.
+    pub fn create_session_with_revision(&self, account_id: u32, client_revision: u8) -> u32 {
         // A sign-in is a new game: a squad the account is in is one of the
         // game before, which quit or crashed without leaving it (Alt+F4 says
         // nothing), and a place in the queue is that game's too.
@@ -996,6 +1009,7 @@ impl SessionStore {
             session_id,
             Session {
                 account_id,
+                client_revision,
                 last_seen: Instant::now(),
                 connections: 0,
                 gone: false,
@@ -1005,6 +1019,15 @@ impl SessionStore {
         );
         self.sessions_made(&[session_id]);
         session_id
+    }
+
+    /// Revision advertised at login; absent for unknown or ended sessions.
+    pub fn client_revision(&self, session_id: u32) -> Option<u8> {
+        self.sessions
+            .locked()
+            .get(&session_id)
+            .filter(|session| !session.ended)
+            .map(|session| session.client_revision)
     }
 
     /// The shared account a `session_id` resolves to, if the session is known

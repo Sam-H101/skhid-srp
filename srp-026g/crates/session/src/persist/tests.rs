@@ -491,6 +491,7 @@ fn only_recent_sessions_of_known_accounts_are_restored() {
     drop(store);
     let limit = crate::SESSION_RESTORE_LIMIT.as_secs();
     let stored = |session_id, account_id, age: u64| StoredSession {
+        client_revision: 0,
         session_id,
         account_id,
         last_seen_unix: unix_now() - age,
@@ -520,6 +521,7 @@ fn a_restored_session_gets_a_whole_idle_window() {
     // Last seen 50 minutes ago: far past the idle limit, within the
     // restore limit.
     repository.put_session(StoredSession {
+        client_revision: 0,
         session_id: 0x2_0000,
         account_id,
         last_seen_unix: unix_now() - 3000,
@@ -542,6 +544,7 @@ fn a_restored_session_keeps_its_id_and_new_ones_never_take_it() {
     let (store, account_id) = store_with_account(&repository, "counter");
     drop(store);
     repository.put_session(StoredSession {
+        client_revision: 0,
         session_id: 0x7FFF_FFF0,
         account_id,
         last_seen_unix: unix_now(),
@@ -640,12 +643,13 @@ fn a_version_1_database_gains_the_sessions_and_keeps_its_accounts() {
     let dir = TempDir::new("v1-sessions");
     drop(version_1_fixture(&dir.db()));
     let mut repository = SqliteRepository::open(&dir.db()).unwrap();
-    assert_eq!(repository.version().unwrap(), 3);
+    assert_eq!(repository.version().unwrap(), MIGRATIONS.len() as i64);
     assert!(repository.load_sessions().unwrap().is_empty());
     let loaded = repository.load_all().unwrap();
     assert_eq!(loaded.accounts.len(), 1);
     assert_eq!(loaded.accounts[0].login, "old@test.invalid");
     let session = StoredSession {
+        client_revision: 0,
         session_id: 0x1_0000,
         account_id: 4,
         last_seen_unix: unix_now(),
@@ -664,4 +668,41 @@ fn sessions_are_not_kept_without_a_repository() {
     assert_eq!(store.flush(), 0);
     assert!(store.end_session(session));
     assert_eq!(store.flush(), 0);
+}
+
+#[test]
+fn client_revision_survives_restart_and_is_bound_to_one_sign_in() {
+    let dir = TempDir::new("session-revision");
+    let open = || {
+        SessionStore::with_repository(GATHER, Box::new(SqliteRepository::open(&dir.db()).unwrap()))
+            .unwrap()
+    };
+    let store = open();
+    let account = store.get_or_create_account([127, 0, 0, 1].into(), "revision");
+    let session = store.create_session_with_revision(account, 0x80);
+    store.flush();
+    drop(store);
+    let store = open();
+    assert_eq!(store.client_revision(session), Some(0x80));
+    let stock = store.create_session(account);
+    assert_eq!(store.client_revision(stock), Some(0));
+    assert_eq!(store.client_revision(session), Some(0x80));
+    store.end_session(session);
+    assert_eq!(store.client_revision(session), None);
+}
+
+#[test]
+fn old_sessions_migrate_to_the_stock_client_revision() {
+    let dir = TempDir::new("old-session-revision");
+    let connection = version_1_fixture(&dir.db());
+    migrate(&connection, 3).unwrap();
+    connection
+        .execute("INSERT INTO sessions VALUES (12345, 4, 1234567)", [])
+        .unwrap();
+    drop(connection);
+    let mut repository = SqliteRepository::open(&dir.db()).unwrap();
+    let sessions = repository.load_sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, 12345);
+    assert_eq!(sessions[0].client_revision, 0);
 }

@@ -56,6 +56,7 @@ impl web_server::MatchCounter for RegistryHost {
 
 impl MatchHost for RegistryHost {
     fn create(&self, setup: lobby::MatchSetup) -> Result<lobby::MatchTicket, String> {
+        let pool = setup.pool;
         let setup = matches::MatchSetup {
             map_id: setup.map_id,
             match_level: setup.match_level,
@@ -73,12 +74,29 @@ impl MatchHost for RegistryHost {
             // with (`rewards::Terms::at`).
             score_weights: None,
         };
-        let ticket = self.0.create(setup).map_err(|error| error.to_string())?;
+        let ticket = match pool {
+            session::QueuePool::Standard => self.0.create(setup),
+            session::QueuePool::GrowingRoster => self.0.create_growing(setup),
+        }
+        .map_err(|error| error.to_string())?;
         Ok(lobby::MatchTicket {
             match_id: ticket.match_id,
             host: ticket.host,
             port: ticket.port,
         })
+    }
+
+    fn join_running(&self, match_id: u32, players: Vec<lobby::MatchPlayer>) -> bool {
+        let players = players
+            .into_iter()
+            .map(|player| matches::MatchPlayer {
+                session_id: player.session_id,
+                account_id: player.account_id,
+                profile: player.profile,
+                bot: player.bot,
+            })
+            .collect();
+        self.0.join_running_group(match_id, players).is_ok()
     }
 
     fn is_open(&self, match_id: u32) -> bool {

@@ -23,6 +23,7 @@
 //! 0.26g match yet.
 
 pub mod client_model;
+pub mod late_join;
 pub mod players;
 pub mod rules;
 pub mod snapshot;

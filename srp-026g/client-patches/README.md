@@ -29,6 +29,74 @@ published.
 
 ## How to apply
 
+### Experimental new-player late join
+
+Experimental; excluded from release overlays. Client hooks and server admission
+and lobby routing are implemented. Native 2-to-3 and 2-to-4 starter-loadout joins
+stay in sync; a different-loadout 2-to-3 join also stays in sync. The experimental
+client signs in with patch revision `0x80`. The lobby keeps these sessions in a
+separate queue because their snapshot format differs from released clients.
+Play fills eligible running matches before forming another match. Squads reserve
+one team together and enter on the same tick; clan matches retain fixed teams.
+
+The patch reserves twenty histories/statistics slots and three-byte input masks.
+Each slot gets fixed callback and weapon ID ranges. Animation IDs append in
+roster/kit order, preserving existing IDs when equipment is added. Running E4
+loads an immutable profile asynchronously, installs inactive player resources,
+and acknowledges completion.
+Profiles remain allocated until their resources are destroyed, including after
+leaving a match.
+
+The server waits for resource acknowledgements, then sends a fresh hash-verified
+snapshot and subsequent inputs. A matching newcomer hash permits future E9
+entry. Existing players retain their clocks and histories. Failed preparation
+releases the newcomer’s seat but reserves its descriptor and closes further
+admission for that match.
+
+Build and check (NASM, x86 C compiler, GNU ld; optional `CC`/`LD` overrides):
+
+```sh
+python late_join_026g.py /path/to/survarium.exe /tmp/survarium-late-join.exe --nasm /path/to/nasm
+python check_late_join_026g.py /path/to/survarium.exe --nasm /path/to/nasm
+cc -std=c11 -g -O1 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined \
+  late_join_runtime_026g.c test_late_join_runtime_026g.c -o /tmp/srp-late-runtime-test
+/tmp/srp-late-runtime-test
+```
+
+Machine-code checks require Unicorn 2.1.4. They cover native profile decoding,
+query/callback ABI, slot/weapon binding, incremental animation indexing,
+preparation/acknowledgement/cleanup, fixed capacities, and PE integrity.
+Resource scheduling, physics/animation/UI setup,
+transport and player destruction are intercepted. Host tests cover cancellation,
+retries, failed loads and concurrent destruction. Under ptrace, run with
+`ASAN_OPTIONS=detect_leaks=0`; tests also check allocation/reference balance.
+These fixtures do not establish live client agreement.
+
+Server regressions cover preparation retries, packet loss, stale acknowledgements,
+failed catch-up, reconnects, departures, living/dead/respawned snapshot states,
+match ending, TDM tickets, duplicate seats, atomic squad admission, compatible
+queues, session persistence, and growth to twenty players. A full-stack test
+covers login, lobby routing, catch-up, entry, input relay, and results:
+
+```sh
+cargo test --locked -p session -p login-server -p lobby-server -p udp-transport -p survarium -p match-server --lib
+cargo test --locked -p srp --test v026g_end_to_end
+```
+
+The death/respawn cases use scripted snapshots, not native combat. The native
+mixed-equipment run entered at 53.4 s and matched snapshots through 133.3 s,
+including uploads from the newcomer, with no resync. Its driver stopped early
+when the local `xdotool` binary disappeared; native deaths and kit switching
+remain manual coverage.
+
+`--test-session 0x1000` builds a test-only executable that bypasses login and
+connects directly to its `-server=host:port` argument. Use separate sessions
+for each client with the `late_join_native` match-server example. For six initial
+players: `cargo run -p match-server --example late_join_native -- 2249 61 starter 6`.
+Sessions start at `0x1000`; enter `join` to reserve each additional player.
+
+### Released patch
+
 ```
 python patch_026g.py <game>/binaries/x86/survarium.exe <game>/binaries/x86/survarium_skhid.exe
 copy survarium_login_server.crt <game>/resources/ssl/survarium_login_server.crt

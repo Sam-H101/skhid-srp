@@ -30,6 +30,7 @@ pub(super) struct TestHost {
     pub made: Mutex<Vec<(u32, MatchSetup)>>,
     pub open: Mutex<HashSet<u32>>,
     pub fail: AtomicBool,
+    pub admitting: Mutex<HashSet<u32>>,
     /// Every place given to a new session: `(match, account, session)`.
     pub reseated: Mutex<Vec<(u32, u32, u32)>>,
 }
@@ -66,6 +67,21 @@ impl MatchHost for TestHost {
             host: "127.0.0.1".to_owned(),
             port: MATCH_PORT,
         })
+    }
+
+    fn join_running(&self, match_id: u32, players: Vec<super::MatchPlayer>) -> bool {
+        if !self.admitting.locked().contains(&match_id) {
+            return false;
+        }
+        let mut made = self.made.locked();
+        let Some((_, setup)) = made.iter_mut().find(|(id, _)| *id == match_id) else {
+            return false;
+        };
+        assert_eq!(setup.pool, session::QueuePool::GrowingRoster);
+        assert!(!players.is_empty());
+        setup.players.extend(players);
+        self.admitting.locked().remove(&match_id);
+        true
     }
 
     fn is_open(&self, match_id: u32) -> bool {

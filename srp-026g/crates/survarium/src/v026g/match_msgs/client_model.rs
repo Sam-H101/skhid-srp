@@ -311,6 +311,8 @@ pub enum State {
 pub struct ClientModel {
     /// Whether it has the srp upload patch (it acts on 0xF6).
     pub patched: bool,
+    /// Experimental fixed-capacity wire dialect; independent of upload support.
+    pub growing_roster: bool,
     pub state: State,
     /// The options it loaded, and its own roster place.
     pub options: Option<MatchOptions>,
@@ -331,6 +333,7 @@ impl ClientModel {
     pub fn new(patched: bool) -> Self {
         Self {
             patched,
+            growing_roster: false,
             state: State::Connecting,
             options: None,
             local_index: None,
@@ -402,7 +405,11 @@ impl ClientModel {
         // Before the static info the roster is not known; 0xED / 0xEE's
         // length is then read with a mask of no bytes, which the model
         // does not follow: they are skipped by state anyway.
-        let roster = self.roster().max(1).min(MAX_PLAYERS as u8);
+        let roster = if self.growing_roster {
+            MAX_PLAYERS as u8
+        } else {
+            self.roster().max(1).min(MAX_PLAYERS as u8)
+        };
         let message = decode_server(id, payload, roster)?;
         let wanted = match id {
             id::PORTS => State::Connecting,

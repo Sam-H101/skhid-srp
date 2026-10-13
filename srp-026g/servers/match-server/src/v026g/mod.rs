@@ -79,8 +79,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use registry::{
-    CreateError, DRAW, MatchEnd, MatchPlayer, MatchRegistry, MatchResult, MatchSetup, MatchTicket,
-    PlayerResult, ResultsSink, Seat, static_id,
+    CreateError, DRAW, JoinError, MatchEnd, MatchPlayer, MatchRegistry, MatchResult, MatchSetup,
+    MatchTicket, PlayerResult, ResultsSink, Seat, static_id,
 };
 pub use server::{run, run_on};
 pub use survarium::v026g::match_msgs::static_info::MatchProfile;

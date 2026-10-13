@@ -176,6 +176,8 @@ pub(super) const MIGRATIONS: &[&str] = &[
         reason TEXT NOT NULL
     );
     ",
+    // 4: preserve wire compatibility when a lobby session survives a restart.
+    "ALTER TABLE sessions ADD COLUMN client_revision INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// The child tables of an account, children of children first.
@@ -387,7 +389,7 @@ impl AccountRepository for SqliteRepository {
 
     fn load_sessions(&mut self) -> Result<Vec<StoredSession>, PersistError> {
         let mut statement = self.connection.prepare(
-            "SELECT session_id, account_id, last_seen FROM sessions ORDER BY session_id",
+            "SELECT session_id, account_id, last_seen, client_revision FROM sessions ORDER BY session_id",
         )?;
         let sessions = statement
             .query_map([], |row| {
@@ -395,6 +397,7 @@ impl AccountRepository for SqliteRepository {
                     session_id: row.get(0)?,
                     account_id: row.get(1)?,
                     last_seen_unix: row.get::<_, i64>(2)?.max(0) as u64,
+                    client_revision: row.get(3)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -403,13 +406,15 @@ impl AccountRepository for SqliteRepository {
 
     fn save_session(&mut self, session: &StoredSession) -> Result<(), PersistError> {
         self.connection.execute(
-            "INSERT INTO sessions (session_id, account_id, last_seen) VALUES (?1, ?2, ?3)
+            "INSERT INTO sessions (session_id, account_id, last_seen, client_revision) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (session_id) DO UPDATE SET
-                 account_id = excluded.account_id, last_seen = excluded.last_seen",
+                 account_id = excluded.account_id, last_seen = excluded.last_seen,
+                 client_revision = excluded.client_revision",
             params![
                 session.session_id,
                 session.account_id,
-                session.last_seen_unix as i64
+                session.last_seen_unix as i64,
+                session.client_revision
             ],
         )?;
         Ok(())
