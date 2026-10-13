@@ -121,6 +121,7 @@ fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
     // Two players are enough, and a press of Play adds nothing: the
     // scripted clients are two, not four (`SRP_MATCH_MIN_PLAYERS`).
     store.set_start_rules(2, Duration::ZERO, Duration::from_secs(3600));
+    store.matchmaking().set_growing_rules(gather, 1.0);
     let accounts = GameAccounts::with_repository(Box::new(
         SqliteGameRepository::open_in(dir).expect("the 0.26g tables"),
     ))
@@ -160,6 +161,7 @@ fn accepted(sign_in: &SignIn) -> (u32, SocketAddr) {
 /// One game: its lobby link, and its match link while it is in a match.
 struct Game {
     name: &'static str,
+    revision: u8,
     session: u32,
     lobby_addr: SocketAddr,
     lobby_socket: UdpSocket,
@@ -182,7 +184,13 @@ fn socket() -> UdpSocket {
 impl Game {
     /// Signed in at the login server; its lobby link is started.
     fn signed_in(stack: &Stack, name: &'static str, password: &str) -> Self {
-        let (session, lobby_addr) = accepted(&sign_in(stack.login_addr, name, password));
+        Self::signed_in_revision(stack, name, password, 0)
+    }
+
+    fn signed_in_revision(stack: &Stack, name: &'static str, password: &str, revision: u8) -> Self {
+        let reply =
+            srp::bot::sign_in_with_revision(stack.login_addr, name, password, revision).unwrap();
+        let (session, lobby_addr) = accepted(&reply);
         assert_eq!(
             lobby_addr, stack.lobby_addr,
             "the lobby the client is sent to"
@@ -191,6 +199,7 @@ impl Game {
         lobby.sign_in(session, true);
         Self {
             name,
+            revision,
             session,
             lobby_addr,
             lobby_socket: socket(),
@@ -224,7 +233,12 @@ impl Game {
             self.name,
             self.static_id
         );
-        let mut client = MatchClient::new(session, true, 2, MAP);
+        let mut client = if self.revision == survarium::v026g::match_msgs::late_join::PATCH_REVISION
+        {
+            MatchClient::growing(session, 2, MAP)
+        } else {
+            MatchClient::new(session, true, 2, MAP)
+        };
         // Every tick is reported here (see the top of the file).
         client.no_hashes = true;
         client.connect();
@@ -1166,6 +1180,7 @@ fn a_wrong_password_is_refused_and_a_player_alone_waits_in_the_queue() {
     // A lobby sign-in with a session nobody was given is disconnected.
     {
         let mut stranger = Game {
+            revision: 0,
             name: "stranger",
             session: 0x0BAD_5E55,
             lobby_addr: stack.lobby_addr,
@@ -1521,5 +1536,137 @@ fn without_the_setting_the_bot_is_a_player_as_any_other() {
     assert!(bot.said("the match is over").is_none());
     solo.assert_clean();
     drop(bot);
+    stack.stop();
+}
+
+#[test]
+fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
+    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
+    let dir = temp_dir("late-join");
+    let stack = start(&dir, Duration::from_secs(1));
+    let mut alice =
+        Game::signed_in_revision(&stack, "LateAlice", "test-password-1", PATCH_REVISION);
+    let mut bob = Game::signed_in_revision(&stack, "LateBob", "test-password-2", PATCH_REVISION);
+    let mut charlie =
+        Game::signed_in_revision(&stack, "LateCharlie", "test-password-3", PATCH_REVISION);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "login pushes",
+        |games| games.iter().all(|g| in_lobby(g)),
+    );
+    let ticket = |game: &Game| {
+        game.find(|message| match message {
+            Decoded::ConnectToMatch { match_id, .. } => Some(*match_id),
+            _ => None,
+        })
+    };
+    alice.ask(request::play(1));
+    bob.ask(request::play(1));
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "initial match",
+        |games| games[..2].iter().all(|g| ticket(g).is_some()),
+    );
+    let match_id = ticket(&alice).unwrap();
+    assert_eq!(ticket(&bob), Some(match_id));
+    alice.connect_to_match(stack.match_addr);
+    bob.connect_to_match(stack.match_addr);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "initial profiles",
+        |games| {
+            games[..2]
+                .iter()
+                .all(|g| g.of_match().model.options.is_some())
+        },
+    );
+    alice.of_match_mut().ready();
+    bob.of_match_mut().ready();
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "initial entry",
+        |games| games[..2].iter().all(|g| g.of_match().entered().len() == 2),
+    );
+    run_for(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        Duration::from_secs(22),
+    );
+    let syncs = [alice.of_match().model.syncs, bob.of_match().model.syncs];
+    charlie.ask(request::play(1));
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "newcomer ticket",
+        |games| ticket(games[2]).is_some(),
+    );
+    assert_eq!(ticket(&charlie), Some(match_id));
+    assert_eq!(stack.registry.match_count(), 1);
+    charlie.connect_to_match(stack.match_addr);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "newcomer profiles",
+        |games| games[2].of_match().model.options.is_some(),
+    );
+    assert_eq!(charlie.of_match().model.local_index, Some(2));
+    charlie.of_match_mut().ready();
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "newcomer caught up and entered",
+        |games| games.iter().all(|g| g.of_match().entered().contains(&2)),
+    );
+    assert_eq!(
+        [alice.of_match().model.syncs, bob.of_match().model.syncs],
+        syncs
+    );
+    let input = charlie.of_match_mut().input(100, 0x21);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        SOON,
+        "newcomer input",
+        |games| {
+            games[..2]
+                .iter()
+                .all(|g| g.of_match().relays_of(2).contains(&input))
+        },
+    );
+    let at = alice.of_match().clock() / 50 * 50 + 100;
+    let options = charlie.of_match().model.options.as_ref().unwrap();
+    let alive_players_mask = options
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.team == 1)
+        .fold(0, |mask, (place, _)| mask | (1 << place));
+    for game in [&mut alice, &mut bob, &mut charlie] {
+        game.of_match_mut().sim.tdm_from = Some((
+            at,
+            Tdm {
+                tickets: [0, 100],
+                alive_players_mask,
+                active_players_mask: 0b111,
+            },
+        ));
+    }
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie],
+        MATCH_END,
+        "match results",
+        |games| {
+            games
+                .iter()
+                .all(|g| g.has(|m| matches!(m, Decoded::MatchStats { .. })))
+        },
+    );
+    let report = stack.results.find(match_id).unwrap();
+    assert_eq!(report.players.len(), 3);
+    for game in [&alice, &bob, &charlie] {
+        game.assert_clean();
+    }
     stack.stop();
 }

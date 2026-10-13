@@ -7,7 +7,7 @@
 //! (`seat`, `formed_match`, `end_match`); this is its 0.26g counterpart, and
 //! it depends on no lobby code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -152,6 +152,7 @@ pub(crate) struct Place {
 }
 
 /// A made match, until it is over.
+#[derive(Clone)]
 pub(crate) struct Formed {
     pub match_id: u32,
     pub map: &'static MapMode,
@@ -163,6 +164,10 @@ pub(crate) struct Formed {
     pub score_weights: [f32; SCORE_EVENTS],
     pub info: StaticInfo,
     pub formed_at: Instant,
+    /// Experimental dialect: fixed twenty-slot histories/statistics/masks.
+    /// Every connecting client must advertise the matching capability.
+    pub growing_roster: bool,
+    pub initial_players: usize,
 }
 
 #[derive(Default)]
@@ -170,7 +175,34 @@ struct Inner {
     matches: HashMap<u32, std::sync::Arc<Formed>>,
     seats: HashMap<u32, Seat>,
     last_id: u32,
+    admitting: HashMap<u32, std::time::Instant>,
 }
+
+/// A new account could not be appended to a running match. Appended slots
+/// are never reused, including after failed preparation: some clients may
+/// already own resources for that immutable profile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinError {
+    EmptyGroup,
+    Unavailable,
+    Full,
+    AlreadyPlaying,
+    StaticInfo(StaticInfoError),
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyGroup => write!(f, "the joining group is empty"),
+            Self::Unavailable => write!(f, "the match is not accepting a new player"),
+            Self::Full => write!(f, "all twenty roster places have been assigned"),
+            Self::AlreadyPlaying => write!(f, "the account or session already has a match place"),
+            Self::StaticInfo(error) => write!(f, "the new player's profile: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
 
 /// The matches made and not yet over, shared by the lobby (which makes
 /// them) and the match server (which runs them).
@@ -221,10 +253,25 @@ impl MatchRegistry {
         self.create_at(setup, Instant::now())
     }
 
+    /// Opt into the experimental growing-roster dialect. Release clients
+    /// cannot play this match. The lobby does not select this mode yet.
+    pub fn create_growing(&self, setup: MatchSetup) -> Result<MatchTicket, CreateError> {
+        self.create_with_dialect(setup, Instant::now(), true)
+    }
+
     pub(crate) fn create_at(
         &self,
         setup: MatchSetup,
         now: Instant,
+    ) -> Result<MatchTicket, CreateError> {
+        self.create_with_dialect(setup, now, false)
+    }
+
+    pub(crate) fn create_with_dialect(
+        &self,
+        setup: MatchSetup,
+        now: Instant,
+        growing_roster: bool,
     ) -> Result<MatchTicket, CreateError> {
         if setup.players.is_empty() || setup.players.len() > MAX_PLAYERS {
             return Err(CreateError::Roster(setup.players.len()));
@@ -310,6 +357,8 @@ impl MatchRegistry {
                 score_weights,
                 info,
                 formed_at: now,
+                growing_roster,
+                initial_players: options.players.len(),
             }),
         );
         let bots = inner.matches[&match_id]
@@ -336,6 +385,142 @@ impl MatchRegistry {
         })
     }
 
+    /// Reserve a genuinely new player's append-only place. The game loop
+    /// opens admission only during play and closes it while a previous
+    /// addition is being prepared. Reserving does not emit a player-entry
+    /// event; the resource barrier and snapshot catch-up happen first.
+    pub fn join_running(
+        &self,
+        match_id: u32,
+        player: MatchPlayer,
+    ) -> Result<MatchTicket, JoinError> {
+        self.join_running_group(match_id, vec![player])
+    }
+
+    /// Reserve a whole party atomically. No profile or seat changes on failure.
+    pub fn join_running_group(
+        &self,
+        match_id: u32,
+        players: Vec<MatchPlayer>,
+    ) -> Result<MatchTicket, JoinError> {
+        if players.is_empty() {
+            return Err(JoinError::EmptyGroup);
+        }
+        let mut inner = self.inner();
+        let formed = inner.matches.get(&match_id).ok_or(JoinError::Unavailable)?;
+        if !formed.growing_roster {
+            return Err(JoinError::Unavailable);
+        }
+        if players.len() > MAX_PLAYERS - formed.places.len() {
+            return Err(JoinError::Full);
+        }
+        if !inner
+            .admitting
+            .get(&match_id)
+            .is_some_and(|deadline| std::time::Instant::now() < *deadline)
+        {
+            return Err(JoinError::Unavailable);
+        }
+        let mut sessions = HashSet::new();
+        let mut accounts = HashSet::new();
+        for player in &players {
+            if !sessions.insert(player.session_id)
+                || !accounts.insert(player.account_id)
+                || formed
+                    .places
+                    .iter()
+                    .any(|place| place.account_id == player.account_id)
+                || inner.seats.contains_key(&player.session_id)
+                || inner.seats.values().any(|seat| {
+                    inner
+                        .matches
+                        .get(&seat.match_id)
+                        .and_then(|formed| formed.places.get(usize::from(seat.place)))
+                        .is_some_and(|place| place.account_id == player.account_id)
+                })
+            {
+                return Err(JoinError::AlreadyPlaying);
+            }
+        }
+        let mut next = (**formed).clone();
+        let first = next.places.len();
+        next.profiles
+            .extend(players.iter().map(|player| player.profile.clone()));
+        next.info = StaticInfo::new(
+            &MatchOptions {
+                players: next.profiles.clone(),
+                map_id: next.map.id,
+                match_id: static_id(match_id),
+                match_level: next.match_level,
+                score_weights: next.score_weights,
+            },
+            Dictionary::shared(),
+        )
+        .map_err(JoinError::StaticInfo)?;
+        for (offset, player) in players.into_iter().enumerate() {
+            next.places.push(Place {
+                session_id: player.session_id,
+                account_id: player.account_id,
+                name: player.profile.name,
+                team: player.profile.team,
+                bot: player.bot,
+            });
+            inner.seats.insert(
+                player.session_id,
+                Seat {
+                    match_id,
+                    place: (first + offset) as u8,
+                },
+            );
+        }
+        let count = next.places.len() - first;
+        inner.matches.insert(match_id, std::sync::Arc::new(next));
+        inner.admitting.remove(&match_id);
+        log::info!(
+            "Match {match_id:#x}: reserved {count} new places from {first}; waiting for resource preparation"
+        );
+        Ok(MatchTicket {
+            match_id,
+            host: self.host.clone(),
+            port: self.port,
+        })
+    }
+
+    /// Do not let an observation of an older roster reopen admission after
+    /// the lobby has concurrently reserved the next place.
+    pub(crate) fn set_admitting(
+        &self,
+        match_id: u32,
+        roster: usize,
+        deadline: Option<std::time::Instant>,
+    ) {
+        let mut inner = self.inner();
+        if inner
+            .matches
+            .get(&match_id)
+            .is_some_and(|m| m.growing_roster && m.places.len() == roster)
+        {
+            if let Some(deadline) = deadline {
+                inner.admitting.insert(match_id, deadline);
+            } else {
+                inner.admitting.remove(&match_id);
+            }
+        }
+    }
+
+    /// Time remaining while new reservations are allowed. The absolute deadline
+    /// also closes admission if the match thread stops publishing updates.
+    pub fn admission_remaining(
+        &self,
+        match_id: u32,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let inner = self.inner();
+        let deadline = *inner.admitting.get(&match_id)?;
+        (now < deadline)
+            .then(|| deadline.duration_since(now) + session::matchmaking_policy::JOIN_CUTOFF)
+    }
+
     /// The place a session has in a match that is not over.
     pub fn seat(&self, session_id: u32) -> Option<Seat> {
         self.inner().seats.get(&session_id).copied()
@@ -346,6 +531,15 @@ impl MatchRegistry {
     /// connects is turned away.
     pub fn release(&self, session_id: u32) -> Option<Seat> {
         self.inner().seats.remove(&session_id)
+    }
+
+    pub(crate) fn release_place(&self, match_id: u32, place: usize) -> bool {
+        let mut inner = self.inner();
+        let before = inner.seats.len();
+        inner
+            .seats
+            .retain(|_, seat| seat.match_id != match_id || usize::from(seat.place) != place);
+        inner.seats.len() != before
     }
 
     /// The account's place in the match is now `session_id`'s: the player
@@ -381,9 +575,9 @@ impl MatchRegistry {
     /// The match has its result: its players are free for another match
     /// while it lingers for its clients to hear the end.
     pub(crate) fn free_seats(&self, match_id: u32) {
-        self.inner()
-            .seats
-            .retain(|_, seat| seat.match_id != match_id);
+        let mut inner = self.inner();
+        inner.admitting.remove(&match_id);
+        inner.seats.retain(|_, seat| seat.match_id != match_id);
     }
 
     /// Whether the match is made and not over.
@@ -412,6 +606,7 @@ impl MatchRegistry {
     /// The match is over: its seats are free.
     pub(crate) fn end(&self, match_id: u32) -> Option<std::sync::Arc<Formed>> {
         let mut inner = self.inner();
+        inner.admitting.remove(&match_id);
         inner.seats.retain(|_, seat| seat.match_id != match_id);
         inner.matches.remove(&match_id)
     }

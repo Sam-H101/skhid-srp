@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, VecDeque};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::{self, mode};
 use survarium::v026g::match_msgs::client_model::{ClientModel, Skip, Taken};
+use survarium::v026g::match_msgs::late_join::{CONNECT_CAPABILITY, Prepare, Prepared, Status};
 use survarium::v026g::match_msgs::players::{self, PlayerState};
 use survarium::v026g::match_msgs::rules::{self, TimelimitParams, TimelimitRule, state};
 use survarium::v026g::match_msgs::snapshot::{
@@ -36,6 +37,7 @@ pub const INITIAL_MS: u32 = 50;
 #[derive(Clone, Debug)]
 pub struct Sim {
     pub players: usize,
+    pub snapshot_players: usize,
     pub map_id: u8,
     /// The timelimit rule as the last snapshot gave it, or as the match
     /// was made ready.
@@ -73,6 +75,7 @@ impl Sim {
         base.on_match_ready(INITIAL_MS);
         Self {
             players,
+            snapshot_players: players,
             map_id,
             base,
             base_time: INITIAL_MS,
@@ -145,8 +148,8 @@ impl Sim {
     pub fn world(&self, time: u32) -> Vec<u8> {
         let since = |from: u32| from <= time;
         let rule = self.rule_at(time);
-        let mut players = vec![PlayerStatistics::default(); self.players];
-        let mut kills_deaths = vec![KillsDeaths::default(); self.players];
+        let mut players = vec![PlayerStatistics::default(); self.snapshot_players];
+        let mut kills_deaths = vec![KillsDeaths::default(); self.snapshot_players];
         if let Some((_, kills)) = self.kills_from.filter(|(from, _)| since(*from)) {
             players[0].events[snapshot::event::KILL][0] = kills;
             kills_deaths[0].kills = kills;
@@ -291,17 +294,20 @@ impl Sim {
     fn load(&mut self, time: u32, body: &[u8]) {
         self.salt_from = None;
         self.events.retain(|(at, _, _)| *at > time);
-        let decoded =
-            snapshot::decode(time, body, self.players, self.game_mode(), self.batteries());
+        let decoded = snapshot::decode(
+            time,
+            body,
+            self.snapshot_players,
+            self.game_mode(),
+            self.batteries(),
+        );
         let first = std::mem::replace(&mut self.first_world, false);
         let in_play = decoded
             .as_ref()
             .and_then(|decoded| decoded.rules.as_ref())
             .is_some_and(|rules| rules.timelimit.state == state::IN_PROCESS);
-        self.stale_tickets_from = (first
-            && in_play
-            && self.game_mode() == mode::TEAM_DEATHMATCH)
-            .then_some(time);
+        self.stale_tickets_from =
+            (first && in_play && self.game_mode() == mode::TEAM_DEATHMATCH).then_some(time);
         if let Some(read) = decoded.and_then(|decoded| decoded.rules) {
             self.base.state = read.timelimit.state;
             self.base.start = read.timelimit.start;
@@ -352,6 +358,10 @@ pub struct Client {
     pub skipped: Vec<(u8, Skip)>,
     /// What a correct server never causes.
     pub faults: Vec<String>,
+    /// The scripted resource loader can be held pending while transport ACKs
+    /// and normal simulation continue, independently of resource readiness.
+    pub auto_prepare: bool,
+    pub prepares: Vec<Prepare>,
     /// The server disconnected it (FA or FD).
     pub disconnected: bool,
     last_words: Option<Vec<u8>>,
@@ -416,6 +426,8 @@ impl Client {
             taken: Vec::new(),
             skipped: Vec::new(),
             faults: Vec::new(),
+            auto_prepare: true,
+            prepares: Vec::new(),
             disconnected: false,
             last_words: None,
             told_to_leave: false,
@@ -451,6 +463,35 @@ impl Client {
         }
     }
 
+    pub fn growing(session: u32, players: usize, map_id: u8) -> Self {
+        let mut client = Self::new(session, true, players, map_id);
+        client.model.growing_roster = true;
+        client.sim.snapshot_players = 20;
+        client
+    }
+
+    pub fn prepared(&mut self, prepare: &Prepare, status: Status) {
+        if status == Status::Installed {
+            let options = self.model.options.as_mut().expect("static info first");
+            assert_eq!(options.match_id, prepare.proposal.match_id);
+            let place = usize::from(prepare.proposal.place);
+            if place == options.players.len() {
+                options.players.push(prepare.profile.clone());
+                self.sim.players = options.players.len();
+                self.sim.player_states.resize(self.sim.players, None);
+            } else {
+                assert_eq!(options.players.get(place), Some(&prepare.profile));
+            }
+        }
+        let bytes = Prepared {
+            proposal: prepare.proposal,
+            status,
+        }
+        .encode()
+        .unwrap();
+        self.send(id::LEAVE, &bytes, true);
+    }
+
     pub fn clock(&self) -> u32 {
         self.model.clock.unwrap_or(0)
     }
@@ -477,7 +518,11 @@ impl Client {
     /// 0xD8: the first message.
     pub fn connect(&mut self) {
         let mut payload = self.session.to_le_bytes().to_vec();
-        payload.push(0);
+        payload.push(if self.model.growing_roster {
+            CONNECT_CAPABILITY
+        } else {
+            0
+        });
         self.send(id::CONNECT, &payload, true);
     }
 
@@ -654,7 +699,11 @@ impl Client {
             return;
         }
         self.datagrams_received += 1;
-        let mask_bytes = udp_transport::table::mask_bytes(self.model.roster());
+        let mask_bytes = udp_transport::table::mask_bytes(if self.model.growing_roster {
+            20
+        } else {
+            self.model.roster()
+        });
         let parsed = match wire::parse(Table::Match, Direction::ToClient, datagram, mask_bytes) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -735,6 +784,20 @@ impl Client {
     }
 
     fn deliver(&mut self, id: u8, payload: &[u8]) {
+        if self.model.growing_roster && id == id::STATIC_INFO && payload.first() == Some(&0xff) {
+            match Prepare::decode(payload, Dictionary::shared()) {
+                Ok(prepare) => {
+                    if self.auto_prepare {
+                        self.prepared(&prepare, Status::Installed);
+                    }
+                    if !self.prepares.iter().any(|p| p.proposal == prepare.proposal) {
+                        self.prepares.push(prepare);
+                    }
+                }
+                Err(error) => self.faults.push(format!("prepare: {error:?}")),
+            }
+            return;
+        }
         let taken = match self.model.receive(id, payload, Dictionary::shared()) {
             Ok(Taken::Applied(applied)) => applied,
             Ok(Taken::Skipped(skip)) => {

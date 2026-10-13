@@ -1066,7 +1066,8 @@ impl Core<'_> {
     /// lobby.
     fn clan_team_players(&self, clan_id: u32) -> Option<Vec<session::Player>> {
         let team = self.clans().team(clan_id).filter(Team::is_queued)?;
-        team.battle()
+        let players: Vec<_> = team
+            .battle()
             .map(|member| {
                 let who = self.who_is(member.account_id)?;
                 Some(session::Player {
@@ -1075,7 +1076,9 @@ impl Core<'_> {
                     profile_id: member.kit_id,
                 })
             })
-            .collect()
+            .collect::<Option<_>>()?;
+        self.pool_for_sessions(players.iter().map(|player| player.session_id))?;
+        Some(players)
     }
 
     /// Two clan teams that wait play each other: one match, a side each.
@@ -1096,12 +1099,33 @@ impl Core<'_> {
             self.clan_push_team(clan_id);
         }
         while self.clan.waiting.len() >= 2 {
-            let clans = [self.clan.waiting[0].clan_id, self.clan.waiting[1].clan_id];
-            let players = clans.map(|clan_id| self.clan_team_players(clan_id).unwrap_or_default());
-            let made = self
-                .store
-                .matchmaking()
-                .seat_teams([&players[0], &players[1]], now);
+            let candidates: Vec<_> = self
+                .clan
+                .waiting
+                .iter()
+                .filter_map(|waiting| {
+                    let players = self.clan_team_players(waiting.clan_id)?;
+                    let pool =
+                        self.pool_for_sessions(players.iter().map(|player| player.session_id))?;
+                    Some((waiting.clan_id, pool, players))
+                })
+                .collect();
+            let pair = candidates.iter().enumerate().find_map(|(index, first)| {
+                candidates[index + 1..]
+                    .iter()
+                    .find(|other| other.1 == first.1)
+                    .map(|second| (first, second))
+            });
+            let Some((first, second)) = pair else {
+                break;
+            };
+            let clans = [first.0, second.0];
+            let pool = first.1;
+            let players = [&first.2, &second.2];
+            let made =
+                self.store
+                    .matchmaking()
+                    .seat_teams_in_pool([players[0], players[1]], now, pool);
             match made {
                 Some(match_id) => {
                     log::info!(
@@ -1111,13 +1135,15 @@ impl Core<'_> {
                         clans[1],
                         players[1].len()
                     );
-                    self.clan.waiting.drain(..2);
+                    self.clan
+                        .waiting
+                        .retain(|waiting| !clans.contains(&waiting.clan_id));
                     for clan_id in clans {
                         self.clans().team_unready(clan_id);
                         self.clan_push_team(clan_id);
                     }
                     // "Match found" and where it is, as for any match.
-                    for player in players.iter().flatten() {
+                    for player in players.iter().flat_map(|players| players.iter()) {
                         if let Some(addr) = self.by_account.get(&player.account_id).copied() {
                             self.queue_status(addr, now);
                         }

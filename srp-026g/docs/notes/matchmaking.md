@@ -79,7 +79,7 @@ min, max }`. A new account (TT-33, Mosin carbine) is level 0, range 0..=1.
   (`money_k`, `experience_k`, `reputation_k`), shown in the lobby. So the client tells a player
   the multipliers of **its own** level.
 
-## 3. The queue's rules in srp
+## 3. Standard queue rules in srp
 
 When a match starts: the rules below (0.21d's, the owner's "no blocking on player counts", was
 replaced for 0.26g on 2026-10-13 by a minimum of 4 players, at the owner's word: "keep 4 minimum").
@@ -202,3 +202,100 @@ nothing). Tested from version 4.
 ## Correction (2026-10-12): a seat is kept for a game that broke, not for a player who left
 
 Where this note says a seat is kept for the whole match and Play sends a player back to it, read: for a player whose game or link broke. A player who left by its own will (0xE0 on the match link, match.md §25) has given the seat up and is queued like anybody (`Matchmaking::give_up_seat`).
+
+
+## Experimental growing-roster policy
+
+This policy applies only to the patched `GrowingRoster` pool (draft PR #22's
+protocol). Standard clients and arranged clan matches retain their existing
+placement rules. The team capacity is the standard queue's setting
+(`SRP_MATCH_TEAM_SIZE`, default 10). Departed players
+remain in population counts and level sums for now;
+reconnection expiry and replacement of departed slots are separate work.
+
+For a running match, let `A,B` be its retained team populations, `S_A,S_B`
+their matchmaking-level sums, and `T` its remaining play time in minutes.
+For queued group `i`, `s_i` is its size and `H_i` its level sum. A solo is a
+group of one. Binary `x_i,y_i` assign the whole group to A or B:
+
+```text
+A' = A + sum(s_i * x_i)       B' = B + sum(s_i * y_i)
+x_i + y_i <= 1               sum(x_i + y_i) >= 1
+abs(A' - B') <= 1            1 <= A', B' <= team capacity
+T > 2
+
+score = (A' + B')^p * T
+level_gap = abs((S_A + sum(H_i*x_i))/A' - (S_B + sum(H_i*y_i))/B')
+```
+
+For each match, select the largest eligible batch, then the assignment with
+the smallest resulting average-level gap. Across matches choose the highest
+score, then the smallest level gap, then the oldest queue match id. This is a
+local shared-player-minutes heuristic, not a prediction of future arrivals or
+permanent departures. With `p=1`, eight resulting players with four minutes
+left score 32; two with twelve minutes left score 24. At `p=0.5` the second
+match wins. A match with exactly two minutes remaining is always excluded.
+
+Examples:
+
+- Existing 2v3 plus squads of three and two: assign three to A and two to B,
+  yielding 5v5. Neither squad needs to qualify independently.
+- Existing 3v3 plus a squad of three alone: wait. Add two opposing solos or
+  a squad of two and 6v5 becomes eligible.
+- Existing 2v4 plus a squad of three: 5v4 is eligible.
+- Three players per team, average levels 10 and 20; a level-25 solo joins
+  the first team, producing averages 13.75 and 20 rather than 10 and 21.25.
+  Population balance takes precedence; levels are a preference, never a
+  hard limit. A placement may worsen the gap when no better option exists.
+
+The solver (`crates/session/src/matchmaking_policy.rs`) uses dynamic
+programming over integer counts and level differences. For fixed final
+sizes, minimizing `abs(S'_A * B' - S'_B * A')` minimizes the average gap.
+Equivalent partial states share a predecessor path, avoiding enumeration of
+every skip/A/B assignment. A target stops searching when it reaches a proven
+integer lower bound (the nearest attainable residue modulo the level-increment
+gcd); zero gap also rules out improvement by any other target. There are at
+most ten slots per side and twenty
+historical descriptors. Original matchmaking levels currently range 0..15.
+An exhaustive small-queue oracle checks the solver independently.
+
+The lobby commits the selected batch through `Matchmaking::append_batch`.
+It revalidates every queued group while holding the queue lock, reserves
+all profiles at the match host once, and only then removes the groups from
+the queue. Distinct squads retain distinct nonzero ids. A stale observation
+or rejected reservation leaves the entire batch queued. The existing
+resource barrier and snapshot catch-up then admit the batch together.
+
+The match server publishes an absolute admission deadline derived from its
+simulation time limit, minus 120 seconds. Both selection and the registry
+reservation check that deadline. Stale publications expire even if the
+match thread stops polling. The cutoff applies to **new reservations**;
+a player already admitted may finish loading afterwards. Score-based mode
+endings may still finish a match before its scheduled time limit.
+
+When no running match can accept a batch, a new match can start at 1v1:
+
+- The gathering timer starts with the second queued player, defaults to
+  120 seconds, and is not extended by later arrivals.
+- Fewer than two queued players cancels it. A lone squad still needs
+  opponents satisfying population balance.
+- A full balanced match starts early. Expiry never overrides balance:
+  a squad of three plus one solo keeps waiting; three plus two may start.
+- Players left after forming a new match start a fresh gathering window.
+
+`SRP_GROWING_GATHER_SECONDS` configures this window independently of the
+standard queue (default 120). `SRP_GROWING_POPULATION_EXPONENT` configures
+`p` (default 1; finite positive values up to 8). Invalid values fall back
+to defaults. `SRP_MATCH_TEAM_SIZE` sets capacity (default ten per team, which
+is also the most the experimental descriptor limit allows; set 5, 6 or 7 to
+compare smaller matches). The end cutoff stays fixed at
+120 seconds. Tests configure gathering and exponent directly without
+changing process-global environment variables.
+
+Queued matchmaking levels are refreshed after equipment or rating changes,
+before choosing a running match or forming a new one. Refreshing a party
+invalidates older batch observations without extending the gathering timer.
+Team level sums use these refreshed levels (the `min` field) for newcomers
+and launch-time levels for the initial roster. They stay fixed after admission
+if equipment or rating later changes. The original reward `match_level` remains fixed at
+creation; admissions do not change reward multipliers.

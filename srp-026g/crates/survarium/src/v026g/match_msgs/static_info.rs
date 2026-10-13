@@ -482,6 +482,33 @@ fn write_profile(profile: &MatchProfile, dictionary: &Dictionary, out: &mut Vec<
     }
 }
 
+/// A single validated native profile body, without its squad byte.
+/// Used by the experimental growing-roster protocol as well as static info.
+pub(super) fn profile_bytes(
+    player: usize,
+    profile: &MatchProfile,
+    dictionary: &Dictionary,
+) -> Result<Vec<u8>, StaticInfoError> {
+    check_profile(player, profile, dictionary)?;
+    let mut bytes = Vec::new();
+    write_profile(profile, dictionary, &mut bytes);
+    Ok(bytes)
+}
+
+pub(super) fn parse_profile(
+    bytes: &[u8],
+    player: usize,
+    dictionary: &Dictionary,
+) -> Result<MatchProfile, StaticInfoError> {
+    let mut reader = Reader { bytes };
+    let profile = read_profile(&mut reader, player, dictionary)?;
+    if !reader.bytes.is_empty() {
+        return Err(StaticInfoError::Trailing(reader.bytes.len()));
+    }
+    check_profile(player, &profile, dictionary)?;
+    Ok(profile)
+}
+
 /// The options' bytes, before LZMA2. `dictionary` must be the client's:
 /// its `is_stack` shapes each item.
 pub fn options_bytes(

@@ -554,7 +554,7 @@ fn handle_sign_in(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut stre
             }
         };
     store.signed_in_from(account_id, peer.ip());
-    let session_id = store.create_session(account_id);
+    let session_id = store.create_session_with_revision(account_id, sign_in.patch_revision);
     let (lobby_ip, lobby_port) = lobby.address_for(peer.ip(), reached);
     log::info!(
         "Sign-in: account={account_id:#x} session={session_id:#x}, \
@@ -704,6 +704,21 @@ mod tests {
         assert_eq!(reply.len(), 11, "{reply:02X?}");
         assert_eq!(reply[0], 0x08);
         u32::from_le_bytes(reply[1..5].try_into().unwrap())
+    }
+
+    #[test]
+    fn late_join_revision_is_retained_for_the_lobby() {
+        let store = Arc::new(SessionStore::new());
+        let addr = start(store.clone(), local_lobby());
+        let (_, reply) = sign_in_as(
+            addr,
+            b"0.26g0\0\x80",
+            b"revision-user",
+            &typed(b"test-password-1"),
+        );
+        assert_eq!(store.client_revision(session_of(&reply)), Some(0x80));
+        let (_, reply) = sign_in(addr, b"stock-revision-user", &typed(b"test-password-1"));
+        assert_eq!(store.client_revision(session_of(&reply)), Some(0));
     }
 
     #[test]

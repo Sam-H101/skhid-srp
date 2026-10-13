@@ -167,6 +167,7 @@ pub struct Loaded {
 /// client shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoredSession {
+    pub client_revision: u8,
     pub session_id: u32,
     pub account_id: u32,
     /// Its last sighting, Unix seconds (wall clock: it has to mean the same

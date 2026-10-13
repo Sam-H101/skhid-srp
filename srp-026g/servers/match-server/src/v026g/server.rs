@@ -326,7 +326,8 @@ impl Server {
                 Game::new(formed, self.port, self.settings.clone(), now),
             );
         }
-        if debug != 0 {
+        let growing = survarium::v026g::match_msgs::late_join::has_connect_capability(debug);
+        if (growing && debug == 0x81) || (!growing && debug != 0) {
             log::info!(
                 "{addr} (session {session_id:#x}) runs with -debug_hash_mismatch: a stock client \
                  like it would read an upload request (0xF6) as a world to compare"
@@ -336,6 +337,14 @@ impl Server {
         let Some(game) = self.games.get_mut(&seat.match_id) else {
             return;
         };
+        if game.growing_roster() != growing {
+            transport.disconnect(now);
+            self.pending.insert(addr, transport);
+            return;
+        }
+        if let Some(formed) = self.registry.formed(seat.match_id) {
+            game.sync_roster(formed, now);
+        }
         game.attach(index, addr, session_id, transport, now);
         self.routes.insert(addr, (seat.match_id, index));
         self.store.seen_in_match(session_id);
@@ -345,7 +354,17 @@ impl Server {
         let mut datagrams = Vec::new();
         let mut results = Vec::new();
         for game in self.games.values_mut() {
+            if let Some(formed) = self.registry.formed(game.id) {
+                game.sync_roster(formed, now);
+            }
             datagrams.extend(game.poll(now));
+            for (place, account_id) in game.take_rejected_joins() {
+                if self.registry.release_place(game.id, place) {
+                    self.store.matchmaking().give_up_seat(account_id);
+                }
+            }
+            self.registry
+                .set_admitting(game.id, game.roster_size(), game.admission_deadline(now));
             results.extend(game.take_result());
         }
         // Before the clients hear the end: back in the lobby, they ask.

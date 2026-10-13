@@ -98,6 +98,9 @@ use udp_transport::{Event, SendError, Transport};
 use super::registry::{Formed, MatchEnd, MatchResult, PlayerResult};
 use super::{LateInputs, Settings};
 
+mod late_join;
+use late_join::{Admission, LoadingProfile};
+
 /// A tick is final this long after it: the server's event horizon.
 const HORIZON_MS: u32 = 250;
 /// Inputs further ahead than this are dropped (the client moves them back).
@@ -385,6 +388,9 @@ struct Peer {
     next_ping: Instant,
     /// It uploaded a snapshot, so it answers 0xF6.
     patched: bool,
+    resources_loaded: bool,
+    installed_roster: usize,
+    preparing: Option<LoadingProfile>,
     /// When it was last asked for an upload and has not given one since:
     /// the only time its upload is taken, but for the initial world.
     asked: Option<Instant>,
@@ -525,6 +531,8 @@ pub(crate) struct Game {
     settings: Settings,
     created: Instant,
     peers: Vec<Option<Peer>>,
+    admissions: Vec<Option<Admission>>,
+    next_proposal: u32,
     /// Set when the first snapshot comes: the match clock runs from there.
     clock_start: Option<(Instant, u32)>,
     snapshot: Option<Snapshot>,
@@ -582,6 +590,8 @@ impl Game {
             settings,
             created: now,
             peers: (0..players).map(|_| None).collect(),
+            admissions: (0..players).map(|_| None).collect(),
+            next_proposal: 0,
             clock_start: None,
             snapshot: None,
             recent: None,
@@ -723,12 +733,13 @@ impl Game {
         if self.peers[index].is_some() {
             self.leave(index, now);
         }
+        self.reset_catchup(index, true);
         log::info!(
             "Match {:#x}: player {index} (session {session_id:#x}) connected from {addr}",
             self.id
         );
         // Known from here on: the client learns it from the static info.
-        transport.set_roster_size(self.formed.info.roster());
+        transport.set_roster_size(self.snapshot_players() as u8);
         let mut peer = Peer {
             addr,
             session_id,
@@ -741,6 +752,9 @@ impl Game {
             ping: None,
             next_ping: now,
             patched: false,
+            resources_loaded: false,
+            installed_roster: 0,
+            preparing: None,
             asked: None,
             asked_clock: None,
             ask_at: None,
@@ -817,6 +831,9 @@ impl Game {
     }
 
     fn message(&mut self, index: usize, id: u8, payload: &[u8], now: Instant) {
+        if self.accept_prepared(index, id, payload) {
+            return;
+        }
         let message = match parse_client(id, payload) {
             Ok(message) => message,
             Err(error) => {
@@ -852,11 +869,13 @@ impl Game {
                     && let Some(info) = self.formed.info.message(index as u8)
                 {
                     send(peer, &info);
+                    peer.installed_roster = self.formed.places.len();
                     peer.stage = Stage::Loading;
                 }
             }
             ClientMessage::Ready => {
                 if peer.stage == Stage::Loading {
+                    peer.resources_loaded = true;
                     // The client set its own generation to 0xFF with it.
                     peer.generation = Generation::AT_READY;
                     log::info!("Match {:#x}: player {index} has loaded", self.id);
@@ -967,6 +986,10 @@ impl Game {
         // Only ticks still to be checked, and none from the future: they
         // would pile up, or vouch for a forgery ahead of time.
         if time >= self.hashes_checked_until && time <= clock + HASH_MAX_AHEAD_MS {
+            if self.waiting_entry(index) {
+                self.catchup_hash(index, time, crc);
+                return;
+            }
             self.hashes.entry(time).or_default().insert(index, crc);
             // A tick two clients sent a hash for ends a run of ticks nobody
             // shared (`check_hash_phases`). Uploads do not count there: one
@@ -1055,6 +1078,7 @@ impl Game {
         self.peers.iter().enumerate().any(|(other, peer)| {
             other != index
                 && !self.is_bot(other)
+                && !self.waiting_entry(other)
                 && peer.as_ref().is_some_and(|peer| peer.stage == Stage::Live)
         })
     }
@@ -1066,7 +1090,7 @@ impl Game {
         self.peers
             .iter()
             .enumerate()
-            .filter(|(index, _)| !self.is_bot(*index))
+            .filter(|(index, _)| !self.is_bot(*index) && !self.waiting_entry(*index))
             .filter_map(|(_, peer)| peer.as_ref())
             .filter(|peer| {
                 matches!(
@@ -1096,7 +1120,9 @@ impl Game {
             .iter()
             .enumerate()
             .filter(|(index, peer)| {
-                !self.is_bot(*index) && peer.as_ref().is_some_and(|peer| peer.stage == Stage::Live)
+                !self.is_bot(*index)
+                    && !self.waiting_entry(*index)
+                    && peer.as_ref().is_some_and(|peer| peer.stage == Stage::Live)
             })
             .count()
     }
@@ -1106,6 +1132,9 @@ impl Game {
     /// enough (`max_age` ms behind the match clock), of a final tick, and
     /// with its clock starting past every input of its own the others have.
     fn usable_snapshot(&self, index: usize, clock: u32, max_age: u32) -> Option<Snapshot> {
+        if !self.join_ready(index) {
+            return None;
+        }
         let own_last = self
             .events
             .iter()
@@ -1116,9 +1145,15 @@ impl Game {
         let relayed_last = self.own_relayed_last(index, clock);
         // The initial world's time: the clock started on it.
         let first_time = self.clock_start.map(|(_, at)| at);
-        [self.snapshot.as_ref(), self.recent.as_ref()]
+        let recent = self.recent.as_ref().filter(|_| {
+            self.admissions[index]
+                .as_ref()
+                .is_none_or(Admission::entered)
+        });
+        [self.snapshot.as_ref(), recent]
             .into_iter()
             .flatten()
+            .filter(|snapshot| self.after_preparation(index, snapshot.time))
             .filter(|snapshot| own_last.is_none_or(|at| snapshot.time > at))
             .filter(|snapshot| alone || clock.saturating_sub(snapshot.time) <= max_age)
             // Its tick is final: no input for it or before it can be
@@ -1188,7 +1223,7 @@ impl Game {
         snapshot::decode(
             snapshot.time,
             &snapshot.body,
-            self.players(),
+            self.snapshot_players(),
             self.game_mode(),
             self.batteries(),
         )
@@ -1242,6 +1277,9 @@ impl Game {
     /// A roster change happens: everyone simulating but `except` hears it,
     /// and the server's copy of the timelimit rule follows.
     fn roster_change(&mut self, except: Option<usize>, index: usize, entered: bool, at: u32) {
+        if entered && let Some(admission) = &mut self.admissions[index] {
+            admission.enter();
+        }
         let tick = tick_byte(at);
         let player = index as u8;
         let message = if entered {
@@ -1319,13 +1357,14 @@ impl Game {
     /// Start the client at `index` from a snapshot: at once if there is a
     /// fresh one, else once a patched client has uploaded one.
     fn start_sync(&mut self, index: usize, entering: bool, now: Instant) {
+        self.reset_catchup(index, false);
         let clock = self.clock(now);
         let max_age = Self::snapshot_max_age(Duration::ZERO);
         if let Some(peer) = self.peers[index].as_mut() {
             peer.time_confirmed = false;
             peer.set_times.clear();
         }
-        if self.bot_waits(index) {
+        if self.bot_waits(index) || !self.join_ready(index) {
             if let Some(peer) = self.peers[index].as_mut() {
                 peer.stage = Stage::WaitingSnapshot {
                     since: now,
@@ -1333,7 +1372,7 @@ impl Game {
                 };
             }
             log::info!(
-                "Match {:#x}: player {index} (a test bot) waits for a real client to be in",
+                "Match {:#x}: player {index} waits for admission and a live snapshot source",
                 self.id
             );
             return;
@@ -1387,11 +1426,11 @@ impl Game {
             .enumerate()
             .filter_map(|(index, peer)| {
                 let peer = peer.as_ref()?;
-                (index != except && peer.patched && peer.stage == Stage::Live).then_some((
-                    peer.late_share,
-                    peer.round_trip,
-                    index,
-                ))
+                (index != except
+                    && !self.waiting_entry(index)
+                    && peer.patched
+                    && peer.stage == Stage::Live)
+                    .then_some((peer.late_share, peer.round_trip, index))
             })
             .collect();
         sources.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
@@ -1656,9 +1695,10 @@ impl Game {
         // others have already: its second start needs no world newer than
         // the first.
         let reload_due = entering
-            && self.peers[index]
-                .as_ref()
-                .is_some_and(|peer| peer.entered_early.is_some())
+            && (self.waiting_entry(index)
+                || self.peers[index]
+                    .as_ref()
+                    .is_some_and(|peer| peer.entered_early.is_some()))
             && self.first_load_loses_the_standing(&snapshot);
         let Some(peer) = self.peers[index].as_mut() else {
             return;
@@ -1760,6 +1800,7 @@ impl Game {
     /// A sync that did not arrive whole goes again from the start, as the
     /// next generation.
     fn redo_sync(&mut self, index: usize, entering: bool, why: &str, now: Instant) {
+        self.reset_catchup(index, false);
         log::warn!(
             "Match {:#x}: player {index}'s sync is done again: {why}",
             self.id
@@ -1779,6 +1820,12 @@ impl Game {
     /// snapshot (`send_sync`) and to the loading client as they came
     /// (`relay_to_others`): none are replayed here.
     fn finish_sync(&mut self, index: usize, time: u32, entering: bool, now: Instant) {
+        // A connection can change while E8 is in flight. Do not activate a
+        // new slot against an existing client that is still loading it.
+        if entering && !self.join_ready(index) {
+            self.redo_sync(index, entering, "roster preparation changed", now);
+            return;
+        }
         let early = self.peers[index]
             .as_ref()
             .and_then(|peer| peer.entered_early);
@@ -1866,6 +1913,12 @@ impl Game {
             if reload {
                 self.reload(index, now);
             }
+        } else if entering && self.waiting_entry(index) {
+            if reload {
+                self.reload(index, now);
+            }
+            // poll_roster schedules entry only after a matching catch-up
+            // hash, independently of this snapshot's transport ACK.
         } else if entering {
             let at = grid_up(clock.max(time + 1) + ROSTER_LEAD_MS);
             self.roster_change(None, index, true, at);
@@ -1878,6 +1931,9 @@ impl Game {
     }
 
     fn input(&mut self, index: usize, input: PlayerInput, now: Instant) {
+        if self.waiting_entry(index) {
+            return;
+        }
         let clock = self.clock(now);
         let id = self.id;
         let late_inputs = self.settings.late_inputs;
@@ -1981,7 +2037,13 @@ impl Game {
             run.worst_ms = run.worst_ms.max(late);
         }
         forget_placed(&mut peer.placed, clock);
-        match place(late_inputs, clock, time, &peer.placed, clock.saturating_sub(behind)) {
+        match place(
+            late_inputs,
+            clock,
+            time,
+            &peer.placed,
+            clock.saturating_sub(behind),
+        ) {
             Placing::Keep => {}
             Placing::Discard => {
                 peer.inputs_discarded += 1;
@@ -2025,6 +2087,9 @@ impl Game {
     /// 0xDE: LIKELY the kit the player picks for its next respawn. Relayed
     /// as an input is.
     fn profile_input(&mut self, index: usize, tick: u8, value: u8, now: Instant) {
+        if self.waiting_entry(index) {
+            return;
+        }
         let clock = self.clock(now);
         let late_inputs = self.settings.late_inputs;
         let Some(peer) = self.peers[index].as_mut() else {
@@ -2248,7 +2313,7 @@ impl Game {
         let decoded = snapshot::decode(
             snapshot.time,
             &snapshot.body,
-            self.players(),
+            self.snapshot_players(),
             self.game_mode(),
             self.batteries(),
         )?;
@@ -2273,7 +2338,7 @@ impl Game {
         let Some(decoded) = snapshot::decode(
             snapshot.time,
             &snapshot.body,
-            self.players(),
+            self.snapshot_players(),
             self.game_mode(),
             self.batteries(),
         ) else {
@@ -2831,6 +2896,7 @@ impl Game {
     /// The player left: 0xE0, a disconnect, a timeout, or a new connection
     /// for its place. The others see it go.
     fn leave(&mut self, index: usize, now: Instant) {
+        let waiting_entry = self.waiting_entry(index);
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
@@ -2838,21 +2904,22 @@ impl Game {
             return;
         }
         // Entered early, or being resynced, it is in the others' world.
-        let was_in = matches!(peer.stage, Stage::Live)
-            || peer.entered_early.is_some()
-            || matches!(
-                peer.stage,
-                Stage::Syncing {
-                    entering: false,
-                    ..
-                } | Stage::Timing {
-                    entering: false,
-                    ..
-                } | Stage::WaitingSnapshot {
-                    entering: false,
-                    ..
-                }
-            );
+        let was_in = !waiting_entry
+            && (matches!(peer.stage, Stage::Live)
+                || peer.entered_early.is_some()
+                || matches!(
+                    peer.stage,
+                    Stage::Syncing {
+                        entering: false,
+                        ..
+                    } | Stage::Timing {
+                        entering: false,
+                        ..
+                    } | Stage::WaitingSnapshot {
+                        entering: false,
+                        ..
+                    }
+                ));
         peer.stage = Stage::Gone;
         peer.reassembler.clear();
         log::info!(
@@ -3031,7 +3098,11 @@ impl Game {
     fn present(&self) -> Vec<bool> {
         self.peers
             .iter()
-            .map(|peer| peer.as_ref().is_some_and(|peer| peer.stage == Stage::Live))
+            .enumerate()
+            .map(|(index, peer)| {
+                !self.waiting_entry(index)
+                    && peer.as_ref().is_some_and(|peer| peer.stage == Stage::Live)
+            })
             .collect()
     }
 
@@ -3179,6 +3250,7 @@ impl Game {
 
     /// Advance the match, and return the datagrams to send.
     pub fn poll(&mut self, now: Instant) -> Vec<(SocketAddr, Vec<u8>)> {
+        self.poll_roster(now);
         let clock = self.clock(now);
         let mono16 = self.mono(now) as u16;
         let timing = self.settings.timing.clone();
@@ -3194,6 +3266,7 @@ impl Game {
 
         for index in 0..self.peers.len() {
             self.check_in_flight(index);
+            let join_ready = self.join_ready(index);
             let Some(peer) = self.peers[index].as_mut() else {
                 continue;
             };
@@ -3210,6 +3283,9 @@ impl Game {
             let early = peer.entered_early;
             match peer.stage {
                 Stage::WaitingSnapshot { since, entering } => {
+                    if !join_ready {
+                        continue;
+                    }
                     let waited = now.saturating_duration_since(since);
                     let max_age = Self::snapshot_max_age(waited);
                     let confirmed = peer.time_confirmed;
@@ -3229,8 +3305,12 @@ impl Game {
                             self.begin_timing(index, &snapshot, entering, now);
                         }
                     } else if waited >= SNAPSHOT_GIVE_UP
+                        && self.admissions[index]
+                            .as_ref()
+                            .is_none_or(Admission::entered)
                         && let Some(snapshot) = self
                             .newest_snapshot()
+                            .filter(|snapshot| self.after_preparation(index, snapshot.time))
                             .filter(|snapshot| snapshot.time + TICK_REACH_MS >= clock)
                     {
                         log::warn!(
@@ -3617,7 +3697,11 @@ fn place(
 ) -> Placing {
     let late = time + HORIZON_MS <= clock;
     if late_inputs == LateInputs::Discard {
-        return if late { Placing::Discard } else { Placing::Keep };
+        return if late {
+            Placing::Discard
+        } else {
+            Placing::Keep
+        };
     }
     let taken = |at: u32| placed.iter().any(|(_, each)| *each == at);
     // The last of its earlier inputs, and the first of its later ones.
@@ -3905,7 +3989,9 @@ impl Game {
 
     /// The bounds known on a client's upload offset.
     pub fn upload_offset(&self, index: usize) -> Option<(i64, i64)> {
-        self.peers[index].as_ref().and_then(|peer| peer.upload_offset)
+        self.peers[index]
+            .as_ref()
+            .and_then(|peer| peer.upload_offset)
     }
 
     /// How many clients vouched for the newest trusted snapshot.
@@ -4027,7 +4113,10 @@ mod tests {
         // ending in 50: the tick asked for is one of those.
         let times = aim_at(10_000, &[-510], Some((100, 8_950))).unwrap();
         assert_eq!(times, [10_082]);
-        assert_eq!(aim_at(10_000, &[-510], Some((100, 8_900))).unwrap(), [10_032]);
+        assert_eq!(
+            aim_at(10_000, &[-510], Some((100, 8_900))).unwrap(),
+            [10_032]
+        );
         // A client that reports every tick has no phase to aim at.
         assert_eq!(aim_at(10_000, &[-510], Some((50, 8_900))), None);
         // Bounds that would mean a wait of seconds are not used.
