@@ -33,6 +33,12 @@ const BOARD_AGE: Duration = Duration::from_secs(15);
 /// its end.
 const LAUNCHER_NAME: &[u8] = b"game/binaries/x86/launcher_skhid.exe";
 
+/// The name by which an archive is known to install the original game
+/// itself: the extractor its updater unpacks that game with
+/// (`client/updater`). An archive from before it has an updater that
+/// only keeps our files current.
+const EXTRACTOR_NAME: &[u8] = b"game/binaries/x86/7zr.exe";
+
 /// What was read of the download file the last time: it is read again only
 /// when the file's size or time changes (a new archive is put in its place
 /// without a restart).
@@ -44,30 +50,33 @@ struct Checked {
     /// The archive holds the launcher, so the site's page tells players to
     /// start that.
     launcher: bool,
+    /// It holds the extractor too: its updater brings the original game,
+    /// so the page tells players to unpack into an empty folder.
+    extractor: bool,
 }
 
 static CHECKED: Mutex<Option<Checked>> = Mutex::new(None);
 static BOARD: Mutex<Option<(Instant, Board)>> = Mutex::new(None);
 
-/// The file's SHA-256, and whether [`LAUNCHER_NAME`] is in it, in one read.
-fn read_through(file: &PathBuf) -> Option<(String, bool)> {
+/// The file's SHA-256, and whether [`LAUNCHER_NAME`] and [`EXTRACTOR_NAME`]
+/// are in it, in one read.
+fn read_through(file: &PathBuf) -> Option<(String, bool, bool)> {
     let mut open = File::open(file).ok()?;
     let mut hash = openssl::sha::Sha256::new();
     // The end of what was read before stays in front of each new piece, so
     // a name that lies across two pieces is found too.
-    let keep = LAUNCHER_NAME.len() - 1;
+    let keep = LAUNCHER_NAME.len().max(EXTRACTOR_NAME.len()) - 1;
     let mut buffer = vec![0_u8; keep + 64 * 1024];
-    let (mut kept, mut launcher) = (0, false);
+    let (mut kept, mut launcher, mut extractor) = (0, false, false);
+    let holds = |read: &[u8], name: &[u8]| read.windows(name.len()).any(|part| part == name);
     loop {
         match open.read(&mut buffer[kept..]) {
             Ok(0) => break,
             Ok(read) => {
                 hash.update(&buffer[kept..kept + read]);
                 let filled = kept + read;
-                launcher = launcher
-                    || buffer[..filled]
-                        .windows(LAUNCHER_NAME.len())
-                        .any(|part| part == LAUNCHER_NAME);
+                launcher = launcher || holds(&buffer[..filled], LAUNCHER_NAME);
+                extractor = extractor || holds(&buffer[..filled], EXTRACTOR_NAME);
                 kept = filled.min(keep);
                 buffer.copy_within(filled - kept..filled, 0);
             }
@@ -79,7 +88,7 @@ fn read_through(file: &PathBuf) -> Option<(String, bool)> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Some((sha256, launcher))
+    Some((sha256, launcher, extractor))
 }
 
 /// What the download file is, if there is one.
@@ -87,6 +96,7 @@ struct Offered {
     sha256: String,
     size: u64,
     launcher: bool,
+    extractor: bool,
 }
 
 fn offered(file: &PathBuf) -> Option<Offered> {
@@ -99,10 +109,11 @@ fn offered(file: &PathBuf) -> Option<Offered> {
                 sha256: known.sha256.clone(),
                 size,
                 launcher: known.launcher,
+                extractor: known.extractor,
             });
         }
     }
-    let (sha256, launcher) = read_through(file)?;
+    let (sha256, launcher, extractor) = read_through(file)?;
     // The file may have been replaced while it was read: what is said must
     // be of one file.
     let after = std::fs::metadata(file).ok()?;
@@ -115,11 +126,13 @@ fn offered(file: &PathBuf) -> Option<Offered> {
         modified,
         sha256: sha256.clone(),
         launcher,
+        extractor,
     });
     Some(Offered {
         sha256,
         size,
         launcher,
+        extractor,
     })
 }
 
@@ -130,6 +143,16 @@ pub(super) fn offers_launcher() -> bool {
     available_download()
         .and_then(offered)
         .is_some_and(|offered| offered.launcher)
+}
+
+/// Whether the archive `/download` hands out brings the original game
+/// itself: it holds the launcher, whose updater does that, and the
+/// extractor the updater needs for it. The home page then tells players to
+/// unpack into an empty folder, and else to get the game first.
+pub(super) fn offers_game_install() -> bool {
+    available_download()
+        .and_then(offered)
+        .is_some_and(|offered| offered.launcher && offered.extractor)
 }
 
 fn text(status: &'static str, body: String) -> Response {
@@ -655,8 +678,9 @@ mod tests {
                 bytes.resize(200_000, b'x');
             }
             std::fs::write(&file, &bytes).unwrap();
-            let (sha256, launcher) = read_through(&file).unwrap();
+            let (sha256, launcher, extractor) = read_through(&file).unwrap();
             assert!(launcher, "{before}");
+            assert!(!extractor, "{before}");
             let whole: String = openssl::sha::sha256(&bytes)
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -666,6 +690,19 @@ mod tests {
         // The game exe's name is not the launcher's.
         std::fs::write(&file, b"game/binaries/x86/survarium_skhid.exe").unwrap();
         assert!(!read_through(&file).unwrap().1);
+        // The extractor is known by its own name, alone or with the
+        // launcher, also across the border of two pieces of the read.
+        for before in [0, 64 * 1024 - 5, 64 * 1024 + 20, 199_000] {
+            let mut bytes = vec![b'x'; before];
+            bytes.extend_from_slice(EXTRACTOR_NAME);
+            std::fs::write(&file, &bytes).unwrap();
+            let (_, launcher, extractor) = read_through(&file).unwrap();
+            assert!(extractor && !launcher, "{before}");
+            bytes.extend_from_slice(LAUNCHER_NAME);
+            std::fs::write(&file, &bytes).unwrap();
+            let found = offered(&file).unwrap();
+            assert!(found.extractor && found.launcher, "{before}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

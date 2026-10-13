@@ -67,7 +67,10 @@ excluded.
 Without that option it adds the launcher (`launcher/README.md`), made from the
 game folder's own `survarium_launcher.exe`: `game/binaries/x86/launcher_skhid.exe`,
 `updater_skhid.exe` (build it first with `../../client/updater/build.sh`, or pass
-`--updater=<path>`), `updater_skhid.url`, the ten pages of
+`--updater=<path>`), `7zr.exe` (7-Zip's standalone extractor, the copy of
+`../../client/updater/extractor/`: the updater unpacks the original game with it when
+a player has none; `--extractor=<path>` names another copy, which must be the same file),
+`updater_skhid.url`, the ten pages of
 `game/binaries/x86/launcher_skhid/`, and `Skhid.bat` and `Skhid.sh` at the top, beside `game/`
 (`Skhid.sh` is the file of that name here: on Linux, `bash Skhid.sh` in the game's folder runs
 `play_skhid.sh` from there).

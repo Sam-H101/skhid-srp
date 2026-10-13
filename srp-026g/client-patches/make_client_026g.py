@@ -12,6 +12,8 @@ USAGE
         [--pack-zip]                 write the output as a ZIP instead of a folder
         [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
         [--updater=<updater_skhid.exe>]  defaults to the release build in this repo
+        [--extractor=<7zr.exe>]      defaults to the copy in this repo; it must be
+                                     the file the updater is built to run
         [--site=https://<host>]      the server's web page; https://<host of --server>
                                      when not given
         [--no-launcher]              without the launcher and its updater
@@ -66,6 +68,11 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/game/binaries/x86/updater_skhid.exe
         the updater (../../client/updater): asks the server which archive
         it offers and installs it when it is another one than the last.
+    <output>/game/binaries/x86/7zr.exe
+        7-Zip's standalone extractor, unchanged (../../client/updater/extractor):
+        the updater unpacks the original game with it when that is missing,
+        and runs it only when it is the file whose size and sha256 are
+        compiled into the updater. This tool refuses another file.
     <output>/game/binaries/x86/updater_skhid.url
         the server it asks: --site.
     <output>/game/binaries/x86/launcher_skhid/index-*.html
@@ -80,14 +87,14 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/README.txt
         what to do with it, and where the original game is had.
 
-A player unpacks the overlay into the game's folder (the one that holds
-`game`) and starts Skhid.bat (or play_skhid.bat: the game alone, no
+A player unpacks the overlay into an empty folder, or into the game's folder
+(the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
 download the web page offers (SRP_DOWNLOAD_FILE), which is also what the
 updater installs from then on. Only the player files are included: no
 source, PDBs, tests or development tools. Build the Rust programs first
 with ../../client/bugtrap/build.sh and ../../client/updater/build.sh. The
-game itself is had from SRP_GAME_URL.
+updater downloads the original game from its pinned mirror when it is missing.
 """
 
 import hashlib
@@ -105,13 +112,19 @@ import patch_launcher_026g as L  # noqa: E402
 
 UPDATER_EXE = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "updater", "exe", "target", "i686-pc-windows-msvc", "release", L.UPDATER_NAME))
+# The extractor the updater runs, and the size and sha256 the updater is
+# built with (EXTRACTOR in client/updater/logic/src/game.rs; a test here
+# reads them from that file and compares).
+EXTRACTOR_NAME = "7zr.exe"
+EXTRACTOR_EXE = os.path.abspath(os.path.join(HERE, "..", "..", "client", "updater", "extractor", EXTRACTOR_NAME))
+EXTRACTOR_SIZE = 602624
+EXTRACTOR_SHA256 = "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282"
 BUGTRAP_DLL = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "bugtrap", "target", "i686-pc-windows-msvc", "release", "BugTrap.dll"))
-# Where the original game is had: the web archive's copy of build 2777.
+# The same build-2777 mirror pinned in client/updater/logic/src/game.rs.
 GAME_URL = (
-    "https://archive.org/download/"
-    "vostok_engine_v0.26g0_build_2777_internal_id_1104_jan_14_2015/"
-    "survarium_full_026g0.7z"
+    "https://drive.usercontent.google.com/download?"
+    "id=1LTK2rzJPELLXxtTavZwdzr247NFwT_GK&export=download&confirm=t"
 )
 SRP_CERT = os.path.join(HERE, "survarium_login_server.crt")
 EXE_DIR = os.path.join("binaries", "x86")
@@ -167,6 +180,20 @@ def read_updater(path):
     # for an installer and asks for administrator rights at every start.
     if not any(b"requestedExecutionLevel level=" + quote + b"asInvoker" + quote in data for quote in (b"'", b'"')):
         sys.exit(f"{path}: the updater has no asInvoker manifest")
+    return data
+
+
+def read_extractor(path):
+    try:
+        with open(path, "rb") as exe:
+            data = exe.read()
+    except OSError as e:
+        sys.exit(f"{path}: cannot read the extractor ({e}). Pass --extractor=<path to the pinned 7zr.exe>, "
+                 "or leave the launcher out with --no-launcher.")
+    # The updater runs no other file than this one, so no other is shipped.
+    if len(data) != EXTRACTOR_SIZE or sha256(data) != EXTRACTOR_SHA256:
+        sys.exit(f"{path}: not the extractor the updater is built to run "
+                 f"({EXTRACTOR_SIZE} bytes, sha256 {EXTRACTOR_SHA256})")
     return data
 
 
@@ -271,27 +298,29 @@ def readme(server, localization, description, files, embedded=False, site=None):
         "server may be stopped at any time. By playing you accept this.",
         "",
         "HOW TO PLAY",
-        "1. Get the original Survarium 0.26g (build 2777), a .7z archive of about",
-        "   2.9 GB (7-Zip opens it), and unpack it:",
-        f"   {GAME_URL}",
-        "   The game is in its Survarium\\game folder.",
     ]
     if site:
         lines += [
-            "2. Unpack this archive into that Survarium folder, the one that holds",
-            "   the `game` folder, and say yes when asked to replace files. Two of the",
-            "   game's files are replaced: game\\binaries\\x86\\bugtrap.dll and",
+            "1. Unpack this archive into a new folder (or into an existing Survarium",
+            "   folder, beside its `game` folder). Allow about 10 GB of free space",
+            "   for a new installation. In an existing game, two files are replaced:",
+            "   game\\binaries\\x86\\bugtrap.dll and",
             "   game\\resources\\ssl\\survarium_login_server.crt. Back them up first if",
             "   you want the originals. The game's own survarium.exe is not changed.",
-            f"3. Windows: double-click {STARTER} in that folder (Windows may show it as",
+            f"2. Windows: double-click {STARTER} in that folder (Windows may show it as",
             f"   \"{STARTER.rsplit('.', 1)[0]}\"). The launcher opens: choose your language at its top and",
-            "   press PLAY. If Windows warns about an unknown publisher, let it run:",
+            "   press PLAY. Missing original game files are downloaded automatically",
+            "   from Google Drive (2.9 GB), verified with a pinned SHA-256, and installed.",
+            "   No Google sign-in is needed. The download is unpacked with 7zr.exe,",
+            "   which is in this archive.",
+            "   If Windows warns about an unknown publisher, let it run:",
             "   these files are not signed.",
             "   Linux: install Wine and Winetricks, open a terminal in that folder and",
             f"   run bash {LINUX_STARTER} (the game) or bash {LINUX_STARTER} launcher (the launcher,",
-            "   which looks for updates first). See LINUX.txt for setup and",
+            "   which downloads a missing game and looks for updates first). For a new",
+            "   installation, use the launcher first. See LINUX.txt for setup and",
             "   troubleshooting.",
-            "4. Sign in with any user name and password. A new name is registered on its",
+            "3. Sign in with any user name and password. A new name is registered on its",
             "   first sign-in; remember the password.",
             "",
             "You download this archive once: each time the launcher starts, it looks",
@@ -304,6 +333,12 @@ def readme(server, localization, description, files, embedded=False, site=None):
             "launcher_skhid.exe, updater_skhid.exe with updater_skhid.url, the folder",
             "launcher_skhid (the launcher's own pages), and play_skhid.bat and",
             "play_skhid.sh, which start the game alone, without looking for updates.",
+            "7zr.exe is the standalone extractor of 7-Zip, unchanged: the updater",
+            "unpacks the original game with it, and runs it only if it is exactly that",
+            "file. 7-Zip Copyright (C) 1999-2025 Igor Pavlov. It is free software under",
+            "the GNU Lesser General Public License, version 2.1 or later, and comes",
+            "WITHOUT ANY WARRANTY: https://www.7-zip.org/license.txt (the licence),",
+            "https://www.7-zip.org (the source code), http://www.gnu.org/ (the LGPL).",
             "",
             "THE LAUNCHER AND ITS UPDATES",
             "launcher_skhid.exe is the game's own launcher, changed to work without an",
@@ -311,7 +346,8 @@ def readme(server, localization, description, files, embedded=False, site=None):
             f"asks {site} whether the files of this archive are still the",
             "current ones. If not, it downloads the current archive, checks it and",
             "replaces the files, the launcher and itself included; nothing else of the",
-            "game is touched. It needs no administrator rights. What it did is in",
+            "existing game is touched. A missing game is installed from the verified",
+            "original archive first. It needs no administrator rights. What it did is in",
             "game\\binaries\\x86\\updater_skhid.log. If it cannot reach the server but the",
             "files are complete, PLAY still works.",
             "The language is chosen in the launcher. A changed play_skhid.bat or",
@@ -320,6 +356,10 @@ def readme(server, localization, description, files, embedded=False, site=None):
         ]
     else:
         lines += [
+            "1. Get the original Survarium 0.26g (build 2777), a .7z archive of about",
+            "   2.9 GB (7-Zip opens it), and unpack it:",
+            f"   {GAME_URL}",
+            "   The game is in its Survarium\\game folder.",
             "2. Copy the `game` folder of this archive over the game's own `game`",
             "   folder. It adds survarium_skhid.exe, play_skhid.bat and play_skhid.sh to",
             "   game\\binaries\\x86 and replaces bugtrap.dll there, plus",
@@ -372,6 +412,7 @@ def main():
     bugtrap_path = BUGTRAP_DLL
     archive = False
     launcher, updater_path, site = True, UPDATER_EXE, None
+    extractor_path = EXTRACTOR_EXE
     for option in options:
         if option == "--check":
             check = True
@@ -389,6 +430,8 @@ def main():
             bugtrap_path = option[len("--bugtrap="):]
         elif option.startswith("--updater="):
             updater_path = option[len("--updater="):]
+        elif option.startswith("--extractor="):
+            extractor_path = option[len("--extractor="):]
         elif option.startswith("--site="):
             site = L.parse_site(option[len("--site="):])
         elif option == "--no-launcher":
@@ -446,6 +489,7 @@ def main():
         files += [
             (os.path.join("game", EXE_DIR, L.LAUNCHER_NAME), bytes(launcher_exe)),
             (os.path.join("game", EXE_DIR, L.UPDATER_NAME), read_updater(updater_path)),
+            (os.path.join("game", EXE_DIR, EXTRACTOR_NAME), read_extractor(extractor_path)),
             (os.path.join("game", EXE_DIR, "updater_skhid.url"), (site + "\r\n").encode("ascii")),
             (STARTER, starter()),
             # Windows checkouts may use CRLF; Bash needs LF.

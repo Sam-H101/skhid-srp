@@ -189,6 +189,18 @@ The server (`servers/web-server`, the 0.26g page):
 
 The updater (`client/updater`):
 
+On a new installation, unpack the Skhid ZIP into an empty folder and start
+`Skhid.bat`. After contacting the update server, the updater downloads the
+original 0.26g game from the Google Drive mirror if `survarium.exe` or
+`resources.db` is missing. It unpacks it with `7zr.exe`, 7-Zip's standalone
+extractor, which is a file of the Skhid ZIP beside the updater and is not
+downloaded. The archive and the extractor both have
+compiled-in SHA-256 pins; neither is used until verified. Extraction happens
+in a fresh staging folder, and the extracted original exe is checked against
+its known SHA-256 too. The updater adds missing original files and then runs
+the overlay update below. Allow about 10 GB free. Mirror configuration and
+verification details: [updater README](../../../client/updater/README.md#original-game-download-and-verification).
+
 1. Reads `updater_skhid.url` beside it (else the address it was built with)
    and asks `/api/client-files`. HTTPS only, through Windows' own WinHTTP;
    plain HTTP is taken for `127.0.0.1` and `localhost` alone.
@@ -233,7 +245,8 @@ to `game\binaries\x86\updater_skhid.log`. Nothing is half installed.
 
 | What happened | What the player gets |
 |---|---|
-| The server cannot be reached (no internet, server down, firewall), three tries | The reason ("Cannot connect to skhid.link. The server may be down, or a firewall blocks updater_skhid.exe"), then PLAY is enabled if the installed files are complete, or were never checked (first start) |
+| The server cannot be reached (no internet, server down, firewall), three tries | The reason ("Cannot connect to skhid.link. The server may be down, or a firewall blocks updater_skhid.exe"), then PLAY is enabled if the original game is present and the installed Skhid files are complete, or were never checked (first start) |
+| The original game is missing and Drive returns an error, a sign-in page, a redirect or bytes that do not match the pinned SHA-256 | Installation stops, PLAY stays off, and no files from that download are extracted or run. Retry or configure another mirror; verification cannot be skipped |
 | ...and a file the updater installed is missing or damaged | "x86/survarium_skhid.exe is missing or damaged and cannot be repaired now: <reason>", status "Error", PLAY stays off |
 | The answer is not the server's (a Wi-Fi sign-in page, a proxy) | "The answer from <host> is not the update server's ..." |
 | The server has no ZIP to offer | "<host> offers no client files now" |

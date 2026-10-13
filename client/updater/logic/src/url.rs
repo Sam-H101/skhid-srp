@@ -71,9 +71,57 @@ pub fn parse(text: &str) -> Option<Url> {
     })
 }
 
+/// An absolute download URL, including a query (Drive's direct download uses one).
+/// It cannot carry credentials, fragments, controls, or a non-HTTPS remote host.
+pub fn download(text: &str) -> Option<Url> {
+    if text.len() > 4096
+        || text
+            .bytes()
+            .any(|c| !c.is_ascii_graphic() || matches!(c, b'\\' | b'#'))
+    {
+        return None;
+    }
+    let scheme_end = text.find("://")? + 3;
+    let at = text[scheme_end..]
+        .find(['/', '?'])
+        .map(|at| scheme_end + at)
+        .unwrap_or(text.len());
+    let mut url = parse(&text[..at])?;
+    let path = &text[at..];
+    url.prefix = if path.starts_with('?') {
+        alloc::format!("/{path}")
+    } else {
+        path.into()
+    };
+    Some(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_queries_preserve_the_exact_request() {
+        let u = download(
+            "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t",
+        )
+        .unwrap();
+        assert_eq!(u.host, "drive.usercontent.google.com");
+        assert_eq!(u.prefix, "/download?id=abc&export=download&confirm=t");
+        assert_eq!(download("https://host?x=1").unwrap().prefix, "/?x=1");
+        for bad in [
+            "http://example.com/file",
+            "https://user@host/file",
+            "https://host/a#b",
+            "https://host/a\\b",
+            "https://host/a\r\nX:bad",
+            "https://host/a b",
+            "ftp://host/file",
+        ] {
+            assert!(download(bad).is_none(), "{bad}");
+        }
+        assert!(download("http://127.0.0.1:1234/file?test=1").is_some());
+    }
 
     #[test]
     fn the_forms_that_are_taken() {

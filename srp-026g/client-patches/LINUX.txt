@@ -28,6 +28,14 @@ Python are needed to play.
 
 THE SKHID LAUNCHER (UPDATES)
 
+For a new installation, unpack the Skhid archive into an empty folder with
+about 10 GB free and run bash Skhid.sh launcher there. The updater downloads
+the original game from Google Drive (2.9 GB), verifies its pinned SHA-256,
+and installs it before applying the Skhid files. No Google sign-in is needed.
+It is unpacked with 7zr.exe, a file of the Skhid archive, which is checked
+before it runs. A failed check stops installation; starting the launcher
+again retries it.
+
     bash play_skhid.sh launcher
 
 starts launcher_skhid.exe in the same Wine prefix instead of the game. It asks

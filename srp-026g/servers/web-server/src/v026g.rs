@@ -113,6 +113,7 @@ impl Web {
                     registrations_open: self.store.registrations_open(),
                     v026g: true,
                     launcher: crate::launcher::offers_launcher(),
+                    installs_game: crate::launcher::offers_game_install(),
                 }),
                 "",
             ),
