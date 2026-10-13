@@ -193,6 +193,10 @@ pub(crate) struct Live {
     /// Each team's players who have not left: before the countdown the
     /// ones still to come count too.
     pub players: [u8; 2],
+    /// The same by roster place: bit `i` is place `i`.
+    pub present: u32,
+    /// Each team's kills in the newest trusted snapshot.
+    pub kills: [u16; 2],
     /// Since play began.
     pub played: Option<Duration>,
     /// Until the time limit, known from the countdown on.
@@ -222,6 +226,10 @@ pub struct LiveMatch {
     /// Each team's players who have not left: before the countdown the
     /// ones still to come count too.
     pub players: [u8; 2],
+    /// The same by roster place: bit `i` is place `i`.
+    pub present: u32,
+    /// Each team's kills in the newest trusted snapshot.
+    pub kills: [u16; 2],
     /// Since play began.
     pub played: Option<Duration>,
     /// Until the time limit ends it, known from the countdown on. The
@@ -672,36 +680,49 @@ impl MatchRegistry {
         formed.sort_by_key(|formed| (formed.formed_at, formed.match_id));
         formed
             .into_iter()
-            .map(|formed| {
-                let Some(live) = inner.live.get(&formed.match_id) else {
-                    let mut players = [0; 2];
-                    for place in &formed.places {
-                        players[usize::from(place.team.min(1))] += 1;
-                    }
-                    return LiveMatch {
-                        map_id: formed.map.id,
-                        phase: LivePhase::Gathering,
-                        players,
-                        played: None,
-                        time_left: None,
-                        standing: None,
-                    };
-                };
-                let since = now.saturating_duration_since(live.at);
-                LiveMatch {
-                    map_id: formed.map.id,
-                    phase: live.phase,
-                    players: live.players,
-                    played: live.played.map(|played| played + since),
-                    time_left: live.time_left.map(|left| left.saturating_sub(since)),
-                    standing: live.standing.map(|(standing, age)| LiveStanding {
-                        points: standing.points,
-                        winner: standing.winner,
-                        age: age + since,
-                    }),
-                }
-            })
+            .map(|formed| Self::live_of(formed, inner.live.get(&formed.match_id), now))
             .collect()
+    }
+
+    /// One match of [`Self::live_matches`]; `None` once it is over.
+    pub fn live_match(&self, match_id: u32, now: Instant) -> Option<LiveMatch> {
+        let inner = self.inner();
+        let formed = inner.matches.get(&match_id)?;
+        Some(Self::live_of(formed, inner.live.get(&match_id), now))
+    }
+
+    fn live_of(formed: &Formed, live: Option<&Live>, now: Instant) -> LiveMatch {
+        let Some(live) = live else {
+            let mut players = [0; 2];
+            for place in &formed.places {
+                players[usize::from(place.team.min(1))] += 1;
+            }
+            return LiveMatch {
+                map_id: formed.map.id,
+                phase: LivePhase::Gathering,
+                players,
+                present: (1_u32 << formed.places.len().min(31)) - 1,
+                kills: [0; 2],
+                played: None,
+                time_left: None,
+                standing: None,
+            };
+        };
+        let since = now.saturating_duration_since(live.at);
+        LiveMatch {
+            map_id: formed.map.id,
+            phase: live.phase,
+            players: live.players,
+            present: live.present,
+            kills: live.kills,
+            played: live.played.map(|played| played + since),
+            time_left: live.time_left.map(|left| left.saturating_sub(since)),
+            standing: live.standing.map(|(standing, age)| LiveStanding {
+                points: standing.points,
+                winner: standing.winner,
+                age: age + since,
+            }),
+        }
     }
 
     /// Every open match and when it was made.

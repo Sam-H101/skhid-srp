@@ -157,6 +157,15 @@ impl Game {
         })
     }
 
+    /// A place taken into the match being played whose player is still
+    /// to enter, and has not failed to.
+    pub(super) fn coming(&self, index: usize) -> bool {
+        self.admissions
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(|admission| !admission.entered() && !admission.failed())
+    }
+
     pub(super) fn waiting_entry(&self, index: usize) -> bool {
         self.admissions[index]
             .as_ref()

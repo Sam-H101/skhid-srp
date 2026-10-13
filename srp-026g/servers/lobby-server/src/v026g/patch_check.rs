@@ -22,9 +22,10 @@
 //!   (`SRP_UPDATE_HINT`): at the refusal, and when the game opens the
 //!   general chat. It is a line as `queue_chat` sends them.
 //!
-//! `warn` sends the line and refuses nothing. The experimental late-join exe
-//! (revision 0x80) is over any least revision. A test bot (`SRP_BOT_ACCOUNTS`)
-//! signs in as revision 0 and is never checked.
+//! `warn` sends the line and refuses nothing. From revision 5 on a game plays
+//! in a queue of its own (`play.rs`), so a server whose players should all
+//! meet asks for 5. A test bot (`SRP_BOT_ACCOUNTS`) signs in as revision 0
+//! and is never checked.
 
 use std::time::{Duration, Instant};
 

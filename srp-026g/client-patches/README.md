@@ -8,7 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 895 352 bytes, sha256 `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd` (patch revision 4); embedding a server changes the hash and may increase the size. With `--server=skhid.link:1234`, as the players' download is made: sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25` |
+| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `8a38bb811e2f5bce8806d711f6bad108d559c7f3da4dab2e2bccf94f53ef8d7f` (patch revision 5); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `d0466da177098a629d39ce4e27e5277dfd523e8e3833f540353d3c7c64dce380`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 | Revision 4 with patch 11: the late join (a player enters a match that is being played). **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -28,86 +29,115 @@ published.
 | `patch_026g.py` | Builds the patched exe from the original. Python 3, nothing else |
 | `snapshot_upload_026g.asm` | The source of the upload code (nasm) |
 | `snapshot_upload_026g.section.bin`, `.hash-mismatch.bin` | That code assembled, for the two places it can go; `patch_026g.py` reads them. Assembling the source again gives the same bytes |
+| `late_join_026g.asm`, `late_join_validate_026g.c`, `late_join_runtime_026g.c`, `late_join_install_026g.c`, `late_join_runtime_026g.h` | The source of the late-join code (patch 11): the hooks and the game's calling conventions in assembly, the checks of what the server sends and the bookkeeping in C |
+| `late_join_026g.section.bin`, `late_join_026g.section.json` | That code built, which `patch_026g.py` reads, and beside it where the C functions are that the assembly calls and what built it (gcc 13.2.0, GNU ld 2.41.90, NASM 2.16.01). The same tools give the same bytes; another C compiler gives other bytes that do the same, so the file is kept, not rebuilt for a release |
+| `late_join_026g.py` | Builds those two files (`--write-bin`), says whether they are what the sources give on this machine (`--check-bin`), or builds an exe straight from the sources for work on the code. Needs nasm, a C compiler for x86 and GNU ld |
+| `check_late_join_026g.py`, `test_late_join_runtime_026g.c` | Checks of the late-join code: the first runs the patched machine code on made-up objects (needs Unicorn 2.1.4), the second the C bookkeeping under the sanitizers |
 | `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
-| `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature); needs the original exe and nasm |
+| `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
 | `launcher/` | The game's launcher made to work again, and to keep these files current: its patch tool, the one piece of new code, the self-test and its own README. Its updater is `../../client/updater` |
 
 ## How to apply
 
-### Experimental new-player late join
+### The late join (patch 11, patch revision 5)
 
-Experimental; excluded from release overlays. Client hooks and server admission
-and lobby routing are implemented. Native 2-to-3 and 2-to-4 starter-loadout joins
-stay in sync; a different-loadout 2-to-3 join also stays in sync. The experimental
-client signs in with patch revision `0x80`. The lobby keeps these sessions in a
-separate queue because their snapshot format differs from released clients.
-Play fills eligible running matches before forming another match. Squads reserve
-one team together and enter on the same tick; clan matches retain fixed teams.
+A player who presses Play goes into a match that is being played, if one
+takes players. It is part of the default build since revision 5;
+`patch_026g.py --no-late-join` and every `--cave=hash-mismatch` build are
+without it and say revision 4.
 
-The patch reserves twenty histories/statistics slots and three-byte input masks.
-Each slot gets fixed callback and weapon ID ranges. Animation IDs append in
-roster/kit order, preserving existing IDs when equipment is added. Running E4
-loads an immutable profile asynchronously, installs inactive player resources,
-and acknowledges completion.
-Profiles remain allocated until their resources are destroyed, including after
-leaving a match.
+What the game does differently, from its first connection to a match:
 
-The server waits for resource acknowledgements, then sends a fresh hash-verified
-snapshot and subsequent inputs. A matching newcomer hash permits future E9
-entry. Existing players retain their clocks and histories. Failed preparation
-releases the newcomer’s seat but reserves its descriptor and closes further
-admission for that match.
+- it keeps twenty histories and twenty statistics records whatever the
+  roster, and its input masks (0xED, 0xEE) have three bytes;
+- it says so in its match connection: 0xD8's debug byte is `80` (`81` with
+  `-debug_hash_mismatch`), where a game without the patch sends `00` or `FF`;
+- each roster place has its own ranges of callback and weapon ids, so a
+  place added later does not move the ids of the others; animation ids are
+  appended in roster and kit order;
+- on the server's 0xE4 during play it checks the newcomer's profile, loads
+  its kits in the background, installs the player without making it enter,
+  and answers (0xE0 with a marker no snapshot upload can have) "installed",
+  "failed" or "busy". The profile stays allocated until its players are
+  destroyed.
 
-Build and check (NASM, x86 C compiler, GNU ld; optional `CC`/`LD` overrides):
+The server waits for every game's "installed", then gives the newcomer a
+fresh world and the inputs since, checks that it computes the same, and
+lets it enter at a tick all are told. The players already in the match keep
+their clocks and histories. A join that fails frees the newcomer's place in
+the lobby, keeps its roster place taken, and closes that match to later
+joins.
+
+**A game with this patch and one without never play one match**: the worlds
+they keep differ. The server tells them apart by the patch revision (5 or
+later) and has a queue for each (`docs/notes/matchmaking.md` section 9).
+
+Build the code and check it (nasm, a C compiler for x86 and GNU ld; `CC` and
+`LD` name others than `cc` and `ld`):
 
 ```sh
-python late_join_026g.py /path/to/survarium.exe /tmp/survarium-late-join.exe --nasm /path/to/nasm
+python late_join_026g.py --write-bin          # late_join_026g.section.bin and .json
+python late_join_026g.py --check-bin          # are they what the sources give here?
 python check_late_join_026g.py /path/to/survarium.exe --nasm /path/to/nasm
 cc -std=c11 -g -O1 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined \
   late_join_runtime_026g.c test_late_join_runtime_026g.c -o /tmp/srp-late-runtime-test
 /tmp/srp-late-runtime-test
 ```
 
-Machine-code checks require Unicorn 2.1.4. They cover native profile decoding,
-query/callback ABI, slot/weapon binding, incremental animation indexing,
-preparation/acknowledgement/cleanup, fixed capacities, and PE integrity.
-Resource scheduling, physics/animation/UI setup,
-transport and player destruction are intercepted. Host tests cover cancellation,
-retries, failed loads and concurrent destruction. Under ptrace, run with
-`ASAN_OPTIONS=detect_leaks=0`; tests also check allocation/reference balance.
-These fixtures do not establish live client agreement.
+`patch_026g.py` and `selftest_026g.py` need none of that: they read the
+checked-in `.bin`. The self-test (check 15) assembles the 4096 bytes of
+assembly again and compares, and checks the build with the late join
+against the build without it.
 
-Server regressions cover preparation retries, packet loss, stale acknowledgements,
-failed catch-up, reconnects, departures, living/dead/respawned snapshot states,
-match ending, TDM tickets, duplicate seats, atomic squad admission, compatible
-queues, session persistence, and growth to twenty players. A full-stack test
-covers login, lobby routing, catch-up, entry, input relay, and results:
+The machine-code checks need Unicorn 2.1.4. They cover native profile
+decoding, the query and callback conventions, slot and weapon binding,
+animation indexing, preparation, acknowledgement and cleanup, the fixed
+capacities and the PE file. Resource scheduling, physics, animation and UI
+set-up, transport and player destruction are intercepted there. The C tests
+cover cancellation, retries, failed loads and concurrent destruction, and
+count allocations and references (where AddressSanitizer loops at start,
+run the test with `setarch -R`). Neither shows that games agree in a match.
+
+Server tests cover preparation retries, packet loss, stale
+acknowledgements, failed catch-up, reconnects, departures, living, dead and
+respawned players in the snapshot, the match's end, Team Deathmatch
+tickets, duplicate seats, squads entering together, the two queues, session
+persistence and growth to twenty players, and a test through the whole
+stack covers login, the lobby, catch-up, entry, input relay and results:
 
 ```sh
 cargo test --locked -p session -p login-server -p lobby-server -p udp-transport -p survarium -p match-server --lib
 cargo test --locked -p srp --test v026g_end_to_end
 ```
 
-The death/respawn cases use scripted snapshots, not native combat. The native
-mixed-equipment run entered at 53.4 s and matched snapshots through 133.3 s,
-including uploads from the newcomer, with no resync. Its driver stopped early
-when the local `xdotool` binary disappeared; native deaths and kit switching
-remain manual coverage.
+**What was run in the game, and what was not** (2026-10-13). The author of
+the code ran the exe built by hand before it had a revision (it signed in
+as revision `0x80`, with the code 0xE5C bytes lower in the section): joins
+of two games into three and four on map 61, a battery mode, with the
+starter kit and with other equipment, in step from 53.4 s to 133.3 s with
+no resync. The revision 5 exe has the same code at another address; its
+build passes the self-test, the machine-code checks and the C tests
+(2026-10-14). **Not run with the revision 5 exe: any match.** Never run with either: a join into a Team
+Deathmatch, a fight, a death and a respawn after a join, a change of kit,
+a roster over four, a match that nobody joins played to its end.
 
-`--test-session 0x1000` builds a test-only executable that bypasses login and
-connects directly to its `-server=host:port` argument. Use separate sessions
-for each client with the `late_join_native` match-server example. For six initial
-players: `cargo run -p match-server --example late_join_native -- 2249 61 starter 6`.
-Sessions start at `0x1000`; enter `join` to reserve each additional player.
+`late_join_026g.py ORIGINAL OUTPUT --test-session 0x1000` builds an exe for
+tests only, which passes the login by and connects straight to its
+`-server=host:port` as that session. Use a session for each game with the
+`late_join_native` example of the match server; for six players at the
+start: `cargo run -p match-server --example late_join_native -- 2249 61 starter 6`.
+Sessions start at `0x1000`; `join` on its input reserves each further
+player.
 
 ### Released patch
 
 ```
 python patch_026g.py <game>/binaries/x86/survarium.exe <game>/binaries/x86/survarium_skhid.exe
+    (add --no-late-join for the revision 4 exe, for a server that does not ask for 5)
 copy survarium_login_server.crt <game>/resources/ssl/survarium_login_server.crt
 ```
 

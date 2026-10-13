@@ -12,6 +12,9 @@ USAGE (this script never touches the source exe):
         (the fallback if a client with one more section misbehaves)
     python patch_026g.py <survarium.exe> <survarium_srp.exe> --cert-only
         only the certificate patch (what step 0 installed)
+    python patch_026g.py <survarium.exe> <survarium_srp.exe> --no-late-join
+        the full patch without the late join: patch revision 4, the exe of
+        the players' download before revision 5
     python patch_026g.py <survarium.exe> <survarium_srp.exe> --server=<host>:<port>
         full patch with an embedded default login server; -server= at
         game launch still overrides it, and -replay keeps its original path
@@ -27,6 +30,9 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425000 snapshot_upload_026g.asm -o snapshot_upload_026g.section.bin
         nasm -f bin -DCAVE=0x325A60  snapshot_upload_026g.asm -o snapshot_upload_026g.hash-mismatch.bin
     (both .bin files are checked in; --bin=<file> names another one).
+    The late-join code is late_join_026g.section.bin, checked in too; it is
+    made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
+    for x86 and GNU ld (--late-join-bin=<file> names another one).
 
 Port of ../srp-021d/client-patches/patch.py; the evidence for every address
 is in docs/notes/client_patch.md.
@@ -95,6 +101,17 @@ Patches:
   to the option object 0xA9D628 by its initializer at 0x851CC7
   (`mov eax,9DB51Ch`), becomes the exe's own "0" at 0x9DBF0C: no journal
   is made unless -record_journal=1 asks for one;
+- the late join (patch revision 5; the default build only, not
+  --cave=hash-mismatch): a player enters a match that is being played.
+  The game keeps room for twenty players from the first connection (three
+  bytes of input masks, twenty histories and statistics records), says so
+  in its match connection (0xD8), and on the server's 0xE4 loads the
+  newcomer's profile and kits while the match goes on. Seven sites of the
+  game's code are rewritten and nine calls or jumps lead into new code on
+  the second page of `.srp` (late_join_026g.asm and three C files, built
+  into late_join_026g.section.bin); a writable page `.srpd` holds its
+  state. Such a game computes a match unlike every game without it: the
+  server never puts the two in one match (client_patch.md section 3.11);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -170,8 +187,21 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # computes: a game of revision 3 and an older one part at a team's last
 # battery (match.md section 26). 4: adds the two start-up patches below
 # (a Documents folder the game may not write to); a match is not affected.
-REVISION = 4
-REVISION_SITE = (0x380862, bytes.fromhex("8a0d9eae9d00"), bytes([0xC6, 0x44, 0x24, 0x27, REVISION, 0x90]))
+# 5: adds the late join below. A game with it and one without never play
+# together: the world they keep and the packets they send differ.
+REVISION = 5
+# What a full build without the late join says (--no-late-join, and every
+# --cave=hash-mismatch build): the players' download before revision 5.
+REVISION_WITHOUT_LATE_JOIN = 4
+REVISION_VA, REVISION_ORIGINAL = 0x380862, bytes.fromhex("8a0d9eae9d00")
+
+
+def revision_site(revision):
+    """(address, the original's bytes, `mov byte [esp+27h],revision` / `nop`)"""
+    return REVISION_VA, REVISION_ORIGINAL, bytes([0xC6, 0x44, 0x24, 0x27, revision, 0x90])
+
+
+REVISION_SITE = revision_site(REVISION)
 
 # gather_victory_items_rule_core's container event handler 0x313A50:
 # `cmp dword [ecx+15Ch],-1` / `jnz 313B3Bh` (an event after the completion
@@ -219,6 +249,71 @@ SECTION_VA = IMAGE_BASE + SECTION_RVA         # 0xA425000, the CAVE of the .sect
 SECTION_CHARACTERISTICS = 0x60000020          # code, execute, read (as .text)
 
 CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
+
+# The late join (client_patch.md section 3.11). Its code is the second page
+# of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
+# entries are at fixed offsets, then the C code. The first page stays what
+# it is without the late join (the upload code, the default-server stub and
+# the address), so no address in the code depends on the server given at
+# patch time. Its state is one zeroed, writable page of its own, `.srpd`,
+# on the page after the code.
+LATE_JOIN_OFFSET = 0x1000
+LATE_JOIN_VA = SECTION_VA + LATE_JOIN_OFFSET
+LATE_JOIN_ASM_SIZE = 0x1000
+LATE_JOIN_STATE_NAME = b".srpd\0\0\0"
+LATE_JOIN_STATE_SIZE = 0x1000
+LATE_JOIN_STATE_CHARACTERISTICS = 0xC0000080   # uninitialized data, read, write
+
+# Rewritten in place: (address, the original's bytes, the new ones). The
+# actual roster count stays what resources and the countdown read; only
+# what must survive a growing roster takes the fixed capacity.
+LATE_JOIN_PATCHES = (
+    # base_match_client::set_players_count, both implementations (the
+    # journaling vtable 0xA083D8+34h and the live match_client's
+    # 0xA08864+34h): the ED/EE input masks have three bytes from the first
+    # connection, whatever the count. `mov eax,3` and nops.
+    (0x279610, bytes.fromhex("0fb6442404489983e20703c2c1f803fec0"), bytes.fromhex("b803000000") + b"\x90" * 12),
+    (0x27A2E0, bytes.fromhex("0fb6442404489983e20703c2c1f803fec0"), bytes.fromhex("b803000000") + b"\x90" * 12),
+    # kd_stats_rule: all twenty entries of its array, which the constructor
+    # zeroes. `mov dl,[ecx+577B5h]` -> `mov dl,14h`.
+    (0x3237B4, bytes.fromhex("8a91b5770500"), b"\xb2\x14" + b"\x90" * 4),
+    # shared_statistics::serialize and deserialize: twenty records, not the
+    # live count (which rewards and event handlers go on reading).
+    # `cmp [esi+31E0h],bl` / `cmp bl,[esi+31E0h]` -> `cmp bl,14h`.
+    (0x2F5ACF, bytes.fromhex("389ee0310000"), b"\x80\xfb\x14" + b"\x90" * 3),
+    (0x2F5AF4, bytes.fromhex("3a9ee0310000"), b"\x80\xfb\x14" + b"\x90" * 3),
+    (0x2F5BE6, bytes.fromhex("389ee0310000"), b"\x80\xfb\x14" + b"\x90" * 3),
+    (0x2F5C03, bytes.fromhex("3a9ee0310000"), b"\x80\xfb\x14" + b"\x90" * 3),
+)
+# Calls and jumps into the new code: (address, the original's bytes, the
+# entry's offset in the code, 0xE8 call or 0xE9 jmp); the rest of the
+# original's bytes become nops.
+LATE_JOIN_HOOKS = (
+    (0x2CBF9B, bytes.fromhex("e860c10000"), 3072, 0xE8),         # a player's animations: register_animations
+    (0x2D3880, bytes.fromhex("e89bdf0400"), 0, 0xE8),            # a slot's ids: bind_slot
+    (0x2D3906, bytes.fromhex("03f28d8de4e30000"), 96, 0xE9),     # twenty histories: history_capacity
+    (0x27A23D, bytes.fromhex("881c388b44241c"), 128, 0xE9),      # 0xD8's capability byte: connect_capability
+    (0x27A378, bytes.fromhex("83be641c1f0001"), 1856, 0xE9),     # the 0xE4 case: prepare_hook
+    (0x1F2013, bytes.fromhex("e8e8000000"), 2048, 0xE8),         # player's destructor: player_destroyed_hook
+    (0x27B517, bytes.fromhex("8b8f401c1f00"), 2336, 0xE9),       # on_match_disconnected: disconnect_hook
+    (0x219E60, bytes.fromhex("558bec83e4f8"), 2432, 0xE9),       # network_client's destructor: client_destroyed_hook
+)
+# on_match_ready's jump (HOOKS[0], which goes to the upload code without
+# the late join) goes to ready_hook, which goes on to the upload code.
+LATE_JOIN_READY_VA = 0x27AEA1
+LATE_JOIN_READY_OFFSET = 1664
+
+
+def late_join_state_va(code):
+    """Where the state page of this late-join code is: the page after it."""
+    end = LATE_JOIN_VA + len(code)
+    return (end + 0xFFF) // 0x1000 * 0x1000
+
+
+def late_join_hook(va, expected, offset, opcode):
+    """The bytes a hook site gets: the call or jump and nops."""
+    target = LATE_JOIN_VA + offset
+    return bytes([opcode]) + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
 
 HOOKS = [
     # network_client::on_match_ready, ebx = network_client: mov ebx,[ebx+1F1C48h]
@@ -324,6 +419,28 @@ def split_code(code):
     return code[:-sum(sizes)], code[-sum(sizes):], sizes
 
 
+def add_state_section(data, state_va):
+    """Adds `.srpd`, the late join's zeroed, writable page at `state_va`,
+    after `.srp`. It has no bytes in the file."""
+    headers = Headers(data)
+    sections = headers.sections(data)
+    name, rva, vsize, _, _, _ = sections[-1]
+    align = lambda value, to: (value + to - 1) // to * to
+    slot = headers.table + 40 * len(sections)
+    if slot + 40 > headers.size_of_headers or any(data[slot:slot + 40]):
+        sys.exit("no free section table entry for the late join's state")
+    state_rva = state_va - IMAGE_BASE
+    if name != SECTION_NAME or state_rva != align(rva + vsize, headers.section_alignment):
+        sys.exit("the late join's state does not follow the code")
+    data[slot:slot + 40] = LATE_JOIN_STATE_NAME + struct.pack(
+        "<IIIIIIHHI", LATE_JOIN_STATE_SIZE, state_rva, 0, 0, 0, 0, 0, 0, LATE_JOIN_STATE_CHARACTERISTICS)
+    struct.pack_into("<H", data, headers.count_at, len(sections) + 1)
+    struct.pack_into("<I", data, headers.size_of_image_at, state_rva + LATE_JOIN_STATE_SIZE)
+    uninitialized_at = headers.optional + 12
+    struct.pack_into("<I", data, uninitialized_at,
+                     struct.unpack_from("<I", data, uninitialized_at)[0] + LATE_JOIN_STATE_SIZE)
+
+
 def add_section(data, cave):
     """Appends the .srp section holding `cave` and moves the Authenticode
     blob behind it. Returns the new file contents."""
@@ -371,16 +488,25 @@ def add_section(data, cave):
     return out
 
 
-def build(original, mode, code=None, server=None):
+def build(original, mode, code=None, server=None, late_join=None):
     """Returns (patched file, description). mode: "cert-only", "section" or
     "hash-mismatch"; code = the assembled .bin for that cave. An optional
-    server embeds a default host:port in full builds only."""
+    server embeds a default host:port in full builds only. late_join = the
+    late-join code (late_join_026g.section.bin), in "section" builds only:
+    with it the build is patch revision REVISION, without it
+    REVISION_WITHOUT_LATE_JOIN."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
         server = parse_server(server)
         if mode == "cert-only":
             sys.exit("embedding a server requires a full patch, not --cert-only")
+    if late_join is not None:
+        if mode != "section":
+            sys.exit("the late join needs the default build: its code and its state are sections of their own")
+        if len(late_join) <= LATE_JOIN_ASM_SIZE:
+            sys.exit("the late-join code is the 4096 bytes of late_join_026g.asm and the C code after them")
+    revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -393,8 +519,8 @@ def build(original, mode, code=None, server=None):
     patch(data, *HASH_INTERVAL)
     rewritten = [(HASH_INTERVAL_BYTE_VA, HASH_INTERVAL_BYTE_VA + 1),
                  (MEMORY_CHECK[0], MEMORY_CHECK[0] + 1)]
-    patch(data, *REVISION_SITE)
-    rewritten.append((REVISION_SITE[0], REVISION_SITE[0] + len(REVISION_SITE[1])))
+    patch(data, *revision_site(revision))
+    rewritten.append((REVISION_VA, REVISION_VA + len(REVISION_ORIGINAL)))
     upload_size = len(cave)
     if server is not None:
         if upload_size != DEFAULT_SERVER_OFFSET:
@@ -428,7 +554,7 @@ def build(original, mode, code=None, server=None):
         rewritten.append((HASH_MISMATCH_VA, HASH_MISMATCH_VA + HASH_MISMATCH_REGION))
         where = "over on_hash_mismatch"
     else:
-        if len(cave) > Headers(data).section_alignment:
+        if len(cave) > LATE_JOIN_OFFSET:
             sys.exit(f"the cave code is {len(cave)} bytes; one page fits")
         where = f"in the new section .srp at {SECTION_VA:#x}"
 
@@ -442,19 +568,43 @@ def build(original, mode, code=None, server=None):
         if not cave_va <= target_va < cave_va + len(cave):
             sys.exit(f"{va:#x}: the hook jumps to {target_va:#x}, outside the cave "
                      f"(was the .bin assembled with -DCAVE={cave_va:#x}?)")
+        if late_join is not None and va == LATE_JOIN_READY_VA:
+            # The late join's ready_hook first; it jumps on to `target_va`.
+            if target_va != SECTION_VA:
+                sys.exit(f"{va:#x}: the late join expects the upload's ready hook at the cave's start")
+            hook = late_join_hook(va, original_bytes, LATE_JOIN_READY_OFFSET, 0xE9)
         patch(data, va, original_bytes, hook)
         rewritten.append((va, va + size))
     rewritten += [(CERT[0], CERT[0] + len(CERT[1])), (MUTEX[0], MUTEX[0] + len(MUTEX[1]))]
     relocs = neutralize_relocs(data, rewritten)
+    if late_join is not None:
+        sites = []
+        for va, expected, new in LATE_JOIN_PATCHES:
+            patch(data, va, expected, new)
+            sites.append((va, va + len(expected)))
+        for va, expected, offset, opcode in LATE_JOIN_HOOKS:
+            patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        # None of these instructions holds an address: a relocation under
+        # one would mean another exe than the one they were read in.
+        if neutralize_relocs(data, sites):
+            sys.exit("a base relocation under a late-join site")
 
     if mode == "section":
+        if late_join is not None:
+            cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
+        if late_join is not None:
+            add_state_section(data, late_join_state_va(late_join))
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
     return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, "
-                  f"patch revision {REVISION}, battery rule, mount without a root, no journal by default, "
+                  f"patch revision {revision}, battery rule, mount without a root, no journal by default, "
                   f"{upload_size} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
+                  + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
+                     f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks)"
+                     if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
 
@@ -466,13 +616,22 @@ def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
 
 
+def late_join_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "late_join_026g.section.bin")
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--") or a == "--check"]
     options = [a for a in sys.argv[1:] if a.startswith("--") and a != "--check"]
     mode, bin_path, server = "section", None, None
+    late_join, late_join_path = True, None
     for option in options:
         if option == "--cert-only":
             mode = "cert-only"
+        elif option == "--no-late-join":
+            late_join = False
+        elif option.startswith("--late-join-bin="):
+            late_join_path = option[16:]
         elif option.startswith("--cave=") and option[7:] in CAVES:
             mode = option[7:]
         elif option.startswith("--bin="):
@@ -491,7 +650,12 @@ def main():
     code = None
     if mode != "cert-only":
         code = open(bin_path or default_bin(mode), "rb").read()
-    data, description = build(open(source, "rb").read(), mode, code, server)
+    late_join_code = None
+    if mode == "section" and late_join:
+        late_join_code = open(late_join_path or late_join_bin(), "rb").read()
+    elif late_join_path:
+        sys.exit("--late-join-bin goes with the default build only")
+    data, description = build(open(source, "rb").read(), mode, code, server, late_join_code)
     if target != "--check":
         with open(target, "wb") as out:
             out.write(data)

@@ -8,6 +8,8 @@ USAGE
     python make_client_026g.py <game folder> <output> --server=<host>:<port>
         [--localization=ukrainian]   english, russian, ukrainian, german, polish
         [--cert-only | --cave=hash-mismatch]   another build of the exe (see patch_026g.py)
+        [--no-late-join]             the exe without the late join: patch revision 4,
+                                     for a server that asks for no later one
         [--check]                    every check, nothing written
         [--pack-zip]                 write the output as a ZIP instead of a folder
         [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
@@ -34,8 +36,9 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/game/binaries/x86/survarium_skhid.exe
         the patched client (patch_026g.py: the certificate check, and in
         the full builds the single-instance check, minimum VRAM bypass,
-        50 ms hash interval, snapshot upload, default login server and
-        the battery rule).
+        50 ms hash interval, snapshot upload, default login server, the
+        battery rule and, in the default build, the late join: patch
+        revision 5, which plays only with its own kind).
         The original survarium.exe is not in the
         overlay and stays as it is.
     <output>/game/binaries/x86/play_skhid.bat
@@ -413,9 +416,12 @@ def main():
     archive = False
     launcher, updater_path, site = True, UPDATER_EXE, None
     extractor_path = EXTRACTOR_EXE
+    late_join = True
     for option in options:
         if option == "--check":
             check = True
+        elif option == "--no-late-join":
+            late_join = False
         elif option == "--pack-zip":
             archive = True
         elif option == "--cert-only":
@@ -454,7 +460,9 @@ def main():
     original = Path(source, EXE_DIR, "survarium.exe").read_bytes()
     code = None if mode == "cert-only" else Path(P.default_bin(mode)).read_bytes()
     embedded = mode != "cert-only"
-    exe, description = P.build(original, mode, code, server if embedded else None)
+    # The late join is of the default build alone (patch revision 5).
+    late_join_code = Path(P.late_join_bin()).read_bytes() if mode == "section" and late_join else None
+    exe, description = P.build(original, mode, code, server if embedded else None, late_join_code)
     exe = bytes(exe)
 
     # The certificates.

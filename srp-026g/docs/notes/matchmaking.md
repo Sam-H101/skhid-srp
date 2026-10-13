@@ -324,8 +324,7 @@ the rule above works around it.
 
 ### 8.6 Not done
 
-- Late joins (the growing-roster pool below) are placed by the sides' sizes
-  and their mean gear level, as before: not by this number.
+- (Done 2026-10-13: late joins are placed by this number too, §9.)
 - No draw among splits that count alike: the same players in the same order
   get the same sides until a rating moves.
 - Not seen live. The numbers above are fits on the matches the old rule
@@ -336,7 +335,136 @@ the rule above works around it.
 Where this note says a seat is kept for the whole match and Play sends a player back to it, read: for a player whose game or link broke. A player who left by its own will (0xE0 on the match link, match.md §25) has given the seat up and is queued like anybody (`Matchmaking::give_up_seat`).
 
 
-## Experimental growing-roster policy
+## 9. The late-join queue: games of patch revision 5 or later — choice (2026-10-13)
+
+A game with the late-join patch (`client_patch.md` §3.11) and one without
+never play one match, so the server has two queues: `QueuePool::GrowingRoster`
+for a session whose game signed in with patch revision 5 or later
+(`late_join::spoken_by`), `Standard` for every other. Sections 3 to 8 above
+are the standard queue. A squad of both kinds is refused at Play; arranged
+clan matches keep their own teams and take nobody late. A server whose
+players should all meet asks for revision 5 (`SRP_MIN_PATCH_REVISION`).
+
+### 9.1 A new match
+
+- It starts with `SRP_GROWING_MIN_PLAYERS` players (default 2: one against
+  one), `SRP_GROWING_GATHER_SECONDS` (120) after the second one pressed
+  Play; players who come meanwhile do not start that wait again. A match
+  that is full starts at once. Fewer than two waiting: no countdown.
+- Levels exclude nobody here: the queue is small, and who waits can join
+  what is being played.
+- Who plays is as many as fit with the sides at most one player apart
+  (`matchmaking_policy::place`); a squad alone has no opponents and waits.
+  **The sides are made as the standard queue makes them** (§8.2,
+  `seat_balanced`): by what each player counts for.
+- Players left over wait a new window, or join the match just made.
+
+### 9.2 A match being played: who joins, and where
+
+Play first looks at the matches being played (`play.rs`,
+`fill_running_matches`; `matchmaking_policy::place_late`). A match takes
+players while it is in play, has more than two minutes left
+(`JOIN_CUTOFF`), has roster places left (twenty in all, and a place once
+given is never given again) and is not busy taking somebody in.
+
+**A side counts** what the balance rule counts (§8.2) for **the players who
+are in the match now** (the match server says who has left, once a second),
+and **its lead**: a battery of lead is `SRP_BALANCE_BATTERY_LEAD` (0.55) of
+a player to the side that has it, a ticket `SRP_BALANCE_TICKET_LEAD` (0.2).
+Of the ways to put the waiting groups on a side or leave them out, the one
+that takes the most players, and of those the one after which the sides
+count most alike. Allowed:
+
+- no side over `SRP_MATCH_TEAM_SIZE` players in the match;
+- the sides at most one player apart. **Two, when the side with more is the
+  one that trails and the lead is dramatic**: `SRP_BALANCE_DRAMATIC_LEAD`
+  (2.5) players, which is five batteries or thirteen tickets. Sides that
+  are further apart already (players left) take players on the smaller one;
+- **a batch that would make the sides count less alike by more than half a
+  player waits** until each of its players has waited
+  `SRP_LATE_JOIN_PATIENCE_SECONDS` (60), unless it brings the sides nearer
+  in players. So one player alone does not go into a match that is even:
+  two go in together, one to each side, or it goes in after its minute.
+
+Of several matches, the one with the highest (players with the batch)^p ×
+minutes left (`SRP_GROWING_POPULATION_EXPONENT`, 1), then the one whose
+sides end nearest. The batch is taken whole or not at all
+(`Matchmaking::append_batch`, the match server's reservation); squads keep
+their ids. The reward level of the match stays what it was at the start.
+
+Not counted: a player who left. Its roster place stays taken (the games
+have its resources), so a match that many left can run out of places before
+it runs out of time.
+
+### 9.3 Why: what the saved worlds say (2026-10-13)
+
+The players' server keeps the worlds its matches agreed on. Of the matches
+of 2026-10-12 and 13, 66 had four players or more, a winner, and worlds
+through the match (51 in the battery modes, 15 Team Deathmatch; about
+24,000 worlds read with `match-server/examples/standings_dir.rs`). At each
+of six moments from minute 2 to 12:
+
+| | |
+|---|---|
+| The side with more players in the match at that moment | won 84 to 89 % (31 to 37 matches had such a side) |
+| The sides, a minute in | level in 35 of 66, one apart in 28, two in 3; at minute 12: 30, 27, 7 and two matches three apart |
+| The side with more batteries home | won 77 to 89 %; by one battery 37 of 59 over the six moments, by five or more 72 of 72 from minute 6 (7 of 8 at minute 4) |
+| The side that first led by five batteries, with two minutes or more left | won 28 of 30; such a lead came in 30 of 51 matches, at 6 minutes in the middle one. By four: 35 of 39. By three: 38 of 44 |
+| A side that led by two to four batteries with a player fewer in the match | lost, at all 7 of the moments where that was so |
+| Tickets | a lead of eleven or more was not lost (9 of 15 matches had one, at 11 minutes in the middle one) |
+
+A fit of who won against the players apart and the lead, at five moments of
+each match, the matches left out in turn: in the battery modes a player
+more 0.86 and a battery of lead 0.49, so a battery is 0.57 of a player (log
+loss 0.449; the players alone 0.568, the lead alone 0.457). In Team
+Deathmatch ten tickets came out at 2.2 players; 15 matches are few, and the
+default is lower (0.2 a ticket).
+
+So: who is in the match now decides more than who was seated; a lead is
+worth players, and a dramatic one is still the likelier winner against two
+players more (five batteries count 2.75 players); and one player more in a
+match that is even is the largest thing a late join can do to it, which is
+why it waits.
+
+### 9.4 The balance rating of players who were not there for all of it
+
+`balance::changes_by_share`: each player counts for the share of the match
+it was in, its time in the match against the longest anybody's was. A side
+is its players by their shares (one who came at half time is half a player
+and half its rating), and a player is moved by its share of a whole step.
+A side that got a player late and won is not taken for a side that won
+alone, a player who came into a lost match does not carry the loss, and a
+side whose player left early is the short side it was. A match that nobody
+joined or left is rated as before. The rating does not know the lead a
+player joined at.
+
+### 9.5 The log
+
+- `Match 0x… sides: …` when a match is made (§8.4), in both queues.
+- `Match 0x… late join: <name> <what it counts for> to team <n>, …; with
+  them team 0 counts X (n in, lead L), team 1 counts Y (m in, lead L); the
+  sides were Z apart`.
+- **Each minute of every match being played**, in both queues: `Match 0x…
+  at <s> s: team 0 counts X (n in, lead L), team 1 counts Y (m in, lead
+  L); points [a, b], kills [k0, k1]; team 0 expected at P %`. P is
+  `Weights::expected` of what the sides count apart, a player more being
+  the rating's nine to one. The parts are there so that the numbers can be
+  fitted again from these lines and the results; the line changes nothing.
+
+### 9.6 Not done, not known
+
+- Not seen live: no match of this queue was played on a server.
+- One failed join closes that match to later joins.
+- The numbers are fits on matches the old rules made, from two days.
+- A player who joins does not choose: it goes where the count says.
+- The queue numbers a searching player is shown count both queues.
+
+## The growing-roster placement before 2026-10-13 (kept for the record)
+
+Until 2026-10-13 a late join was placed by the sides' sizes with the players
+who had left still counted, and by the mean gear level; the text below
+describes that solver, which still chooses who plays a new match (§9.1).
+
 
 This policy applies only to the patched `GrowingRoster` pool (draft PR #22's
 protocol). Standard clients and arranged clan matches retain their existing

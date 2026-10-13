@@ -217,12 +217,22 @@ class ReleaseTests(unittest.TestCase):
     def test_certificate_only_launcher_has_an_explicit_server(self):
         archive = self.root / 'certificate.zip'
         call, _ = self.build(archive, '--pack-zip', '--cert-only')
-        self.assertEqual(call.args[1:], ('cert-only', None, None))
+        self.assertEqual(call.args[1:], ('cert-only', None, None, None))
         # The game's launcher passes the address too: this exe has none inside.
         self.assertEqual(self.launcher.call_args.kwargs['arguments'],
                          '-server=release.example:2234 -mt_allocator=768 -minimum_resources_memory_size=768')
         with zipfile.ZipFile(archive) as z:
             self.assertIn(b'server=release.example:2234\n', z.read('game/binaries/x86/play_skhid.sh'))
+
+    def test_the_default_exe_has_the_late_join_and_can_be_built_without(self):
+        code = Path(overlay.P.late_join_bin()).read_bytes()
+        call, _ = self.build(self.root / 'with')
+        self.assertEqual(call.args[1:], ('section', mock.ANY, 'release.example:2234', code))
+        call, _ = self.build(self.root / 'without', '--no-late-join')
+        self.assertEqual(call.args[1:], ('section', mock.ANY, 'release.example:2234', None))
+        # The other cave has no room for it.
+        call, _ = self.build(self.root / 'cave', '--cave=hash-mismatch')
+        self.assertEqual(call.args[1:], ('hash-mismatch', mock.ANY, 'release.example:2234', None))
 
     def test_windows_checkout_produces_a_unix_launcher(self):
         # Git's core.autocrlf can give the release builder a CRLF template.

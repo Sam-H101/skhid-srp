@@ -91,14 +91,21 @@ fn an_older_game_is_refused_in_the_games_words_and_told_what_to_do() {
 fn a_game_that_is_new_enough_plays_and_is_told_nothing() {
     let mut world = checking(PatchCheck::Refuse);
     let current = game_of(&mut world, "Current", 4, true);
-    let newer = game_of(&mut world, "Newer", 5, true);
-    for client in [current, newer] {
+    let other = game_of(&mut world, "Other", 4, true);
+    for client in [current, other] {
         assert!(hints(&world.take(client)).is_empty());
         world.ask(client, request::play(1));
         assert_eq!(denial(&world.take(client), id::PLAY), None);
     }
     // The two of them are a match.
     assert_eq!(world.store.matchmaking().match_count(), 1);
+
+    // A newer one plays too, in the queue of its kind.
+    let newer = game_of(&mut world, "Newer", 5, true);
+    assert!(hints(&world.take(newer)).is_empty());
+    world.ask(newer, request::play(1));
+    assert_eq!(denial(&world.take(newer), id::PLAY), None);
+    assert_eq!(world.store.matchmaking().queued_players(), 1);
 
     // The experimental late-join exe is over any least revision.
     let late = game_of(&mut world, "Late", LATE_JOIN_REVISION, true);

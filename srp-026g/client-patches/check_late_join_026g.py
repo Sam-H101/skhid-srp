@@ -238,7 +238,7 @@ def native_profile(data):
             uc.reg_write(UC_X86_REG_ESP, esp + 4)
 
     uc.hook_add(UC_HOOK_CODE, visit)
-    cave = patch.base.SECTION_VA + patch.base.DEFAULT_SERVER_OFFSET
+    cave = patch.base.LATE_JOIN_VA
     sentinel = b"\xa5" * 0x45FC
 
     def run(wire, valid):
@@ -345,7 +345,7 @@ def native_profile(data):
     section = next(s for s in patch.base.Headers(data).sections(data)
                    if patch.base.IMAGE_BASE + s[1] == patch.base.SECTION_VA)
     _, _, _, raw, raw_size, _ = section
-    offset = patch.base.DEFAULT_SERVER_OFFSET + patch.ASM_SIZE
+    offset = patch.base.LATE_JOIN_OFFSET + patch.ASM_SIZE
     code = bytes(data[raw + offset:raw + raw_size])
     uc.mem_map(moved, (len(code) + 4095) & ~4095)
     uc.mem_write(moved, code)
@@ -362,7 +362,7 @@ def native_query(data):
     Query scheduling and C completion are intercepted at their ABI boundary;
     this checks marshaling, not that the resource engine loads real assets.
     """
-    cave = patch.base.SECTION_VA + patch.base.DEFAULT_SERVER_OFFSET
+    cave = patch.base.LATE_JOIN_VA
     for mask in range(1, 8):
         m = Machine(data)
         uc = m.uc
@@ -489,7 +489,7 @@ def native_animations(data):
                 m.write(node, head if i == 0 else nodes[i - 1])
                 m.write(node + 4, 0)
                 m.write(node + 8, nodes[i + 1] if i + 1 < count else 0)
-            cave = patch.base.SECTION_VA + patch.base.DEFAULT_SERVER_OFFSET
+            cave = patch.base.LATE_JOIN_VA
             m.start(cave + 3072, args=(BASE,), count=100000)
             assert uc.reg_read(UC_X86_REG_ESP) == STACK + 8
             assert m.read(BASE + 0xE048) == BASE + 0xE050 + count * 4
@@ -507,7 +507,7 @@ def native_preparation(data):
     """
     m = Machine(data)
     uc = m.uc
-    cave = patch.base.SECTION_VA + patch.base.DEFAULT_SERVER_OFFSET
+    cave = patch.base.LATE_JOIN_VA
     state = patch.base.IMAGE_BASE + patch.base.Headers(data).sections(data)[-1][1]
     nc, game, mc, options = 0x7000000, 0x8000000, 0x9000000, 0x6000000
     for address, size in ((nc, 0x1F3000), (game, 0x6000), (mc, 0x59000), (options, 0x60000),

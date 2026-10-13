@@ -41,7 +41,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::LockExt;
-use crate::matchmaking_policy::{self as policy, Team};
+use crate::matchmaking_policy::{self as policy, Team, Worth};
 
 /// `player_profile[20]` in the client's `match_options`.
 pub const MAX_PLAYERS_PER_MATCH: usize = 20;
@@ -180,6 +180,17 @@ impl QueuedGroup {
         }
     }
 
+    /// The group as a match being played counts it: its players and what
+    /// they count for together ([`Self::player_strength`]).
+    pub fn worth(&self) -> Worth {
+        Worth {
+            players: self.players.len(),
+            strength: (0..self.players.len())
+                .map(|index| i64::from(self.player_strength(index)))
+                .sum(),
+        }
+    }
+
     /// The group is looked for a match by its highest player [LIKELY: the
     /// client takes the highest of an account's kits the same way].
     fn level(&self) -> Level {
@@ -229,6 +240,10 @@ struct Countdown {
 
 struct Inner {
     growing_gather: Duration,
+    /// The fewest players a new match of the growing queue starts with
+    /// (`SRP_GROWING_MIN_PLAYERS`, 2 to a whole match; default 2: one
+    /// against one, and whoever comes later joins them).
+    growing_min_players: usize,
     population_exponent: f64,
     gather: Duration,
     fill_players: usize,
@@ -274,6 +289,9 @@ impl Matchmaking {
             inner: Mutex::new(Inner {
                 growing_gather: env_number("SRP_GROWING_GATHER_SECONDS")
                     .map_or(policy::GATHER_WINDOW, Duration::from_secs),
+                growing_min_players: env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
+                    .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
+                    .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
                 population_exponent: env_number::<f64>("SRP_GROWING_POPULATION_EXPONENT")
                     .filter(|p| p.is_finite() && *p > 0.0 && *p <= 8.0)
                     .unwrap_or(1.0),
@@ -316,6 +334,12 @@ impl Matchmaking {
 
     pub fn population_exponent(&self) -> f64 {
         self.inner.locked().population_exponent
+    }
+
+    /// The fewest players a new match of the growing queue starts with, in
+    /// place of the environment's; 2 at least.
+    pub fn set_growing_min_players(&self, players: usize) {
+        self.inner.locked().growing_min_players = players.clamp(2, MAX_PLAYERS_PER_MATCH);
     }
 
     /// The start rules of the leveled queue ([`Self::poll_with`]) in place
@@ -892,7 +916,7 @@ impl Inner {
                 .map(|group| group.players.len())
                 .sum();
             let minimum = if pool == QueuePool::GrowingRoster {
-                2
+                self.growing_min_players
             } else {
                 self.min_players
             };
@@ -1099,35 +1123,37 @@ impl Inner {
             let Some(placement) = policy::place([Team::default(); 2], &groups, capacity) else {
                 return;
             };
-            if placement.population() < capacity.min(MAX_PLAYERS_PER_MATCH / 2) * 2
-                && now.saturating_duration_since(countdown.since) < self.growing_gather
+            if placement.population() < self.growing_min_players
+                || (placement.population() < capacity.min(MAX_PLAYERS_PER_MATCH / 2) * 2
+                    && now.saturating_duration_since(countdown.since) < self.growing_gather)
             {
                 return;
             }
-            let mut seats = Vec::new();
-            let mut squad = 0;
-            let mut chosen = Vec::new();
-            for (index, team) in placement.assignments {
-                let index = order[index];
-                let group = &self.queue[index];
-                let squad_id = if group.squad {
-                    squad += 1;
-                    squad
-                } else {
-                    0
-                };
-                seats.extend(group.players.iter().map(|&player| Seat {
-                    player,
-                    team,
-                    squad: squad_id,
-                }));
-                chosen.push(index);
-            }
-            for index in chosen.into_iter().rev() {
-                self.queue.remove(index);
-            }
+            // The placement says who plays; the sides are made as the
+            // standard queue makes them, by what each counts for.
+            let mut chosen: Vec<usize> = placement
+                .assignments
+                .iter()
+                .map(|&(index, _)| order[index])
+                .collect();
+            chosen.sort_unstable();
+            let mut taken: Vec<QueuedGroup> = chosen
+                .iter()
+                .rev()
+                .map(|&index| self.queue.remove(index))
+                .collect();
+            taken.reverse();
+            let seats = seat_balanced(taken, capacity, self.player_value);
             let id = self.next_match_id;
             self.next_match_id += 1;
+            log::info!(
+                "Match {id:#x} formed for {} players: {:?}",
+                seats.len(),
+                seats
+                    .iter()
+                    .map(|seat| (seat.player.session_id, seat.team))
+                    .collect::<Vec<_>>()
+            );
             self.matches.insert(id, seats);
             self.match_pools.insert(id, QueuePool::GrowingRoster);
             self.formed_at.insert(id, now);
@@ -1318,6 +1344,9 @@ pub fn leveled_start_rules_from_env() -> (usize, Duration, Duration) {
 }
 
 /// A number from the environment; `None` if it is unset or bad.
+/// `SRP_GROWING_MIN_PLAYERS` when unset.
+pub const DEFAULT_GROWING_MIN_PLAYERS: usize = 2;
+
 fn env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name)
         .ok()
@@ -1401,6 +1430,44 @@ mod tests {
         assert_eq!(formed.pool, QueuePool::GrowingRoster);
         assert!(!formed.fixed_teams);
         assert_eq!(formed.seats.len(), 2);
+    }
+
+    #[test]
+    fn the_growing_queue_starts_no_match_with_fewer_players_than_it_is_told() {
+        let now = Instant::now();
+        let mm = Matchmaking::new(Duration::from_secs(60));
+        mm.set_growing_rules(Duration::ZERO, 1.0);
+        mm.set_growing_min_players(4);
+        let players: Vec<_> = (1..4).map(player).collect();
+        for &one in &players {
+            mm.queue_in_pool(&[one], &[at(0)], false, now, QueuePool::GrowingRoster);
+        }
+        let later = now + Duration::from_secs(300);
+        assert!(matches!(
+            mm.poll_with(players[0].session_id, later, Some(&TEN)),
+            Some(QueueState::Waiting { .. })
+        ));
+        mm.queue_in_pool(
+            &[player(4)],
+            &[at(0)],
+            false,
+            later,
+            QueuePool::GrowingRoster,
+        );
+        assert!(matches!(
+            mm.poll_with(players[0].session_id, later, Some(&TEN)),
+            Some(QueueState::Placed { .. })
+        ));
+        // Told nothing, it starts with two.
+        let mm = Matchmaking::new(Duration::from_secs(60));
+        mm.set_growing_rules(Duration::ZERO, 1.0);
+        for &one in &players[..2] {
+            mm.queue_in_pool(&[one], &[at(0)], false, now, QueuePool::GrowingRoster);
+        }
+        assert!(matches!(
+            mm.poll_with(players[0].session_id, now, Some(&TEN)),
+            Some(QueueState::Placed { .. })
+        ));
     }
 
     #[test]

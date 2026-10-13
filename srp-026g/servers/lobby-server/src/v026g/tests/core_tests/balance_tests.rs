@@ -112,7 +112,7 @@ fn a_waiting_player_counts_for_its_gear_its_level_and_its_trusted_rating() {
         player: 0.0,
         player_level: 0.0,
         rating: 0.0,
-        trust_matches: 5.0,
+        ..Weights::default()
     };
     world.advance(Duration::from_secs(2));
     assert_eq!(strengths(&world), [0, 0]);

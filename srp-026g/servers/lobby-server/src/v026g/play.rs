@@ -1,19 +1,29 @@
 //! Play: the queue, making a match, and coming back from it.
 //!
-//! Experimental growing rosters first try running matches with more than two
-//! minutes remaining. Whole squads are selected as an atomic batch, keeping
-//! team sizes within one and minimizing the resulting team-average level gap.
-//! Candidates are ranked by resulting population^p * remaining minutes.
-//! Departed players still count; historical roster slots are never reused.
+//! Growing rosters (a game of patch revision 5 or later) first try running
+//! matches with more than two minutes remaining. Whole squads are selected
+//! as an atomic batch. A side of a running match counts what the balance
+//! rule counts (`session::v026g::balance`) for the players who are in it
+//! now, and its lead; the batch goes where the sides then count most alike
+//! (`session::matchmaking_policy::place_late`): at most a player apart, two
+//! for the side that trails by a dramatic lead, and a player who would make
+//! an even match uneven waits for another for a while
+//! ([`Settings::late_join_patience`]). Candidates are ranked by resulting
+//! population^p * remaining minutes. A player who left is not counted, but
+//! its roster slot is never reused.
 //!
 //! When no running match qualifies, the growing queue waits two minutes from
-//! its second player, or starts a full balanced match sooner. Levels guide
-//! placement; they do not exclude opponents. Standard clients retain the
-//! existing level-range and gathering rules (`docs/notes/matchmaking.md`).
+//! its second player, or starts a full balanced match sooner; its sides are
+//! made as the standard queue's are. Levels do not exclude opponents.
+//! Standard clients retain the existing level-range and gathering rules
+//! (`docs/notes/matchmaking.md`).
 //!
-//! The reward match level is fixed at formation. Team averages are independent
-//! admission-time values, updated as each batch joins. Map selection still
-//! favors maps played least by the initial roster.
+//! The reward match level is fixed at formation. Map selection still favors
+//! maps played least by the initial roster.
+//!
+//! Each minute of a match being played the log has what its sides count for
+//! and the chance that gives team 0 ([`Core::log_predictions`]): what the
+//! numbers of the rule are fitted from.
 //!
 //! The match itself is the match server's: the lobby hands it the roster
 //! through [`MatchHost`] and sends each player where the ticket says
@@ -28,9 +38,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use session::matchmaking_policy::{self as policy, Team};
+use session::matchmaking_policy::{self as policy, Joiner, LateRule, Worth};
 use session::v026g::{Account, matchmaking, quests, rules, wire};
-use session::{Level, LevelRules, LockExt, QueuePool, QueueState};
+use session::{Level, LevelRules, LockExt, MAX_PLAYERS_PER_MATCH, QueuePool, QueueState};
 use survarium::v026g::lobby::requests::id;
 use survarium::v026g::lobby::{self, ClientState, limits};
 use survarium::v026g::maps;
@@ -43,6 +53,9 @@ use super::core::{Core, Who};
 /// A match the queue formed is made at the match server by the first of
 /// its players the lobby looks at; one not made after this long has none.
 const UNMADE_MATCH: Duration = Duration::from_secs(10);
+
+/// How often the log has what the sides of a match being played count for.
+const PREDICTION_EVERY: Duration = Duration::from_secs(60);
 
 /// The game's text for a Play with a kit that is none of the account's, or
 /// the premium account's without one.
@@ -62,6 +75,11 @@ pub trait MatchHost: Send + Sync {
     fn admission_remaining(&self, _match_id: u32, _now: Instant) -> Option<Duration> {
         None
     }
+    /// How the match stands now. `None`: it is over, or the host does not
+    /// say; its whole roster is then taken to be in it, with no lead.
+    fn live(&self, _match_id: u32, _now: Instant) -> Option<LiveView> {
+        None
+    }
     /// Whether the match is made and not over. The lobby asks about its
     /// matches every second and frees the seats of one that is over, also
     /// when nobody called [`super::Inbox::match_finished`].
@@ -71,6 +89,21 @@ pub trait MatchHost: Send + Sync {
     /// connection with the session, 0xD8). `false` when the match is over
     /// or the account has no place in it.
     fn reseat(&self, match_id: u32, account_id: u32, session_id: u32) -> bool;
+}
+
+/// A match as the match server has it now ([`MatchHost::live`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LiveView {
+    /// Bit `i`: roster place `i` is in the match. A player who left is
+    /// not; one on its way in is.
+    pub present: u32,
+    /// Batteries home (modes 2, 3) or tickets left (mode 4), by team.
+    /// `None` until the match server trusted a world.
+    pub points: Option<[u16; 2]>,
+    /// Each team's kills in that world.
+    pub kills: [u16; 2],
+    /// Since play began. `None` before it has, and after the end.
+    pub played: Option<Duration>,
 }
 
 /// One roster place: the index in [`MatchSetup::players`] is the player's
@@ -119,12 +152,15 @@ pub struct MatchTicket {
 pub(super) struct Running {
     pub pool: QueuePool,
     pub fixed_teams: bool,
-    /// Admission-time level sums and counts, including departed players.
-    pub teams: [Team; 2],
     pub ticket: MatchTicket,
     pub map_id: u8,
     /// Its roster's sessions and teams, by place.
     pub seats: Vec<(u32, u8)>,
+    /// By place: what its player counted for when it was seated, beside
+    /// being there (`Weights::strength`).
+    pub strengths: Vec<i32>,
+    /// When the log last had what the sides count for.
+    pub predicted_at: Option<Instant>,
 }
 
 /// The account as a match shows it: every kit with what it wears, the
@@ -233,7 +269,7 @@ impl Core<'_> {
     ) -> Option<QueuePool> {
         let mut pools = sessions.into_iter().map(|session| {
             self.store.client_revision(session).map(|revision| {
-                if revision == survarium::v026g::match_msgs::late_join::PATCH_REVISION {
+                if survarium::v026g::match_msgs::late_join::spoken_by(revision) {
                     QueuePool::GrowingRoster
                 } else {
                     QueuePool::Standard
@@ -244,9 +280,106 @@ impl Core<'_> {
         pools.all(|pool| pool == Some(first)).then_some(first)
     }
 
+    /// The sides of a running match as they are now: the players the
+    /// match server says are in it (the whole roster when it says
+    /// nothing), and what they count for together.
+    fn sides_now(running: &Running, live: Option<&LiveView>) -> [Worth; 2] {
+        let mut sides = [Worth::default(); 2];
+        for (place, &(_, team)) in running.seats.iter().enumerate() {
+            if live.is_some_and(|live| live.present >> place & 1 == 0) {
+                continue;
+            }
+            let side = &mut sides[usize::from(team.min(1))];
+            side.players += 1;
+            side.strength += i64::from(running.strengths.get(place).copied().unwrap_or(0));
+        }
+        sides
+    }
+
+    /// What each side's lead counts for in a running match
+    /// (`Weights::lead`), and whether it is a dramatic one.
+    fn lead_now(&self, running: &Running, live: Option<&LiveView>) -> ([i64; 2], bool) {
+        let mode = maps::map_mode(running.map_id).map_or(0, |map| map.mode);
+        let lead = live
+            .and_then(|live| live.points)
+            .map_or([0; 2], |points| self.settings.balance.lead(mode, points));
+        let dramatic = lead
+            .iter()
+            .any(|&lead| self.settings.balance.dramatic(lead));
+        (lead.map(i64::from), dramatic)
+    }
+
+    /// `(what a side counts for, the players in it, its lead)`, in gear
+    /// levels, for the log.
+    fn counted(&self, sides: [Worth; 2], lead: [i64; 2]) -> [(f64, usize, f64); 2] {
+        let scale = f64::from(session::STRENGTH_SCALE);
+        let player = i64::from(self.settings.balance.player_value());
+        std::array::from_fn(|side| {
+            let all = player * sides[side].players as i64 + sides[side].strength + lead[side];
+            (
+                all as f64 / scale,
+                sides[side].players,
+                lead[side] as f64 / scale,
+            )
+        })
+    }
+
+    /// Each minute of a match being played: what its sides count for now
+    /// (the players in it, their strengths, the lead), the score, and the
+    /// chance that count gives team 0. For the log alone: the numbers of
+    /// the balance rule are fitted from these lines and the results.
+    pub(super) fn log_predictions(&mut self, now: Instant) {
+        let due: Vec<u32> = self
+            .matches
+            .iter()
+            .filter(|(_, running)| {
+                running
+                    .predicted_at
+                    .is_none_or(|at| now.saturating_duration_since(at) >= PREDICTION_EVERY)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            let running = &self.matches[&id];
+            let Some(live) = self.host.live(running.ticket.match_id, now) else {
+                continue;
+            };
+            let Some(played) = live.played else {
+                continue;
+            };
+            let sides = Self::sides_now(running, Some(&live));
+            let (lead, dramatic) = self.lead_now(running, Some(&live));
+            let counted = self.counted(sides, lead);
+            let scale = f64::from(session::STRENGTH_SCALE);
+            let apart = ((counted[0].0 - counted[1].0) * scale).round() as i64;
+            log::info!(
+                "Match {:#x} at {} s: team 0 counts {:.1} ({} in, lead {:.1}), team 1 counts {:.1} \
+                 ({} in, lead {:.1}); points {}, kills {:?}{}; team 0 expected at {:.0} %",
+                running.ticket.match_id,
+                played.as_secs(),
+                counted[0].0,
+                counted[0].1,
+                counted[0].2,
+                counted[1].0,
+                counted[1].1,
+                counted[1].2,
+                live.points
+                    .map_or("unknown".to_owned(), |points| format!("{points:?}")),
+                live.kills,
+                if dramatic { ", a dramatic lead" } else { "" },
+                100.0 * self.settings.balance.expected(apart)
+            );
+            if let Some(running) = self.matches.get_mut(&id) {
+                running.predicted_at = Some(now);
+            }
+        }
+    }
+
     fn fill_running_matches(&mut self, now: Instant) {
         let unix = quests::now();
         let exponent = self.store.matchmaking().population_exponent();
+        let player_value = i64::from(self.settings.balance.player_value());
+        let patience = self.settings.late_join_patience;
         // One successful batch changes both queue and roster; recompute after each.
         let mut attempted = std::collections::HashSet::new();
         loop {
@@ -298,13 +431,24 @@ impl Core<'_> {
                         })
                     })
                     .collect();
-                let populations: Vec<_> = available
+                let live = self.host.live(running.ticket.match_id, now);
+                let sides = Self::sides_now(running, live.as_ref());
+                let (lead, dramatic) = self.lead_now(running, live.as_ref());
+                let joiners: Vec<Joiner> = available
                     .iter()
-                    .map(|(_, group)| group.population())
+                    .map(|(_, group)| Joiner {
+                        worth: group.worth(),
+                        waited_out: now.saturating_duration_since(group.since) >= patience,
+                    })
                     .collect();
-                let Some(mut placement) =
-                    policy::place(running.teams, &populations, self.settings.team_size)
-                else {
+                let rule = LateRule {
+                    capacity: self.settings.team_size.min(MAX_PLAYERS_PER_MATCH / 2),
+                    room: MAX_PLAYERS_PER_MATCH.saturating_sub(running.seats.len()),
+                    player_value,
+                    lead,
+                    dramatic,
+                };
+                let Some(mut placement) = policy::place_late(sides, &joiners, &rule) else {
                     continue;
                 };
                 for (index, _) in &mut placement.assignments {
@@ -313,14 +457,14 @@ impl Core<'_> {
                 let Some(score) = placement.score(remaining, exponent) else {
                     continue;
                 };
-                candidates.push((id, score, placement));
+                candidates.push((id, score, placement, lead, dramatic));
             }
             candidates.sort_by(|a, b| {
                 b.1.total_cmp(&a.1)
-                    .then_with(|| a.2.level_gap().total_cmp(&b.2.level_gap()))
+                    .then_with(|| a.2.apart_after.abs().cmp(&b.2.apart_after.abs()))
                     .then_with(|| a.0.cmp(&b.0))
             });
-            let Some((id, _, placement)) = candidates.into_iter().next() else {
+            let Some((id, _, placement, lead, dramatic)) = candidates.into_iter().next() else {
                 break;
             };
             attempted.insert(id);
@@ -365,21 +509,45 @@ impl Core<'_> {
             if !admitted {
                 continue;
             }
+            let counted = self.counted(placement.sides, lead);
+            let weights = self.settings.balance;
+            let scale = f64::from(session::STRENGTH_SCALE);
             let running = self
                 .matches
                 .get_mut(&id)
                 .expect("running match observed above");
-            running.teams = placement.teams;
             let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
+            let mut joined = Vec::new();
             for (group, team) in batch {
-                for player in group.players {
+                for (index, player) in group.players.iter().enumerate() {
+                    let strength = group.player_strength(index);
                     running.seats.push((player.session_id, team));
+                    running.strengths.push(strength);
                     if let Some(account) = self.accounts.get(player.account_id) {
-                        matchmaking::count_map_play(&mut account.locked(), map);
+                        let mut account = account.locked();
+                        joined.push(format!(
+                            "{} {:.1} to team {team}",
+                            account.name,
+                            weights.player + f64::from(strength) / scale
+                        ));
+                        matchmaking::count_map_play(&mut account, map);
                         self.accounts.mark_dirty(player.account_id);
                     }
                 }
             }
+            log::info!(
+                "Match {ticket:#x} late join: {}; with them team 0 counts {:.1} ({} in, lead \
+                 {:.1}), team 1 counts {:.1} ({} in, lead {:.1}){}; the sides were {:.1} apart",
+                joined.join(", "),
+                counted[0].0,
+                counted[0].1,
+                counted[0].2,
+                counted[1].0,
+                counted[1].1,
+                counted[1].2,
+                if dramatic { ", a dramatic lead" } else { "" },
+                placement.apart_before as f64 / scale
+            );
         }
     }
 
@@ -805,6 +973,7 @@ impl Core<'_> {
         // Why the sides are as they are, for the log.
         let weights = self.settings.balance;
         let mut sides: [(f64, Vec<String>); 2] = Default::default();
+        let mut strengths = Vec::with_capacity(formed.seats.len());
         let players: Option<Vec<MatchPlayer>> = formed
             .seats
             .iter()
@@ -815,8 +984,9 @@ impl Core<'_> {
                 let level = matchmaking::level(&account, unix).min;
                 levels.push(level);
                 let scale = f64::from(session::STRENGTH_SCALE);
-                let counts = weights.player
-                    + f64::from(weights.strength(level, account.level(), account.balance)) / scale;
+                let strength = weights.strength(level, account.level(), account.balance);
+                strengths.push(strength);
+                let counts = weights.player + f64::from(strength) / scale;
                 let side = &mut sides[usize::from(seat.team.min(1))];
                 side.0 += counts;
                 side.1.push(format!(
@@ -901,20 +1071,6 @@ impl Core<'_> {
                     Running {
                         pool: formed.pool,
                         fixed_teams: formed.fixed_teams,
-                        teams: std::array::from_fn(|team| Team {
-                            players: formed
-                                .seats
-                                .iter()
-                                .filter(|seat| usize::from(seat.team) == team)
-                                .count(),
-                            level_sum: formed
-                                .seats
-                                .iter()
-                                .zip(&levels)
-                                .filter(|(seat, _)| usize::from(seat.team) == team)
-                                .map(|(_, &level)| u32::from(level))
-                                .sum(),
-                        }),
                         ticket,
                         map_id,
                         seats: formed
@@ -922,6 +1078,8 @@ impl Core<'_> {
                             .iter()
                             .map(|seat| (seat.player.session_id, seat.team))
                             .collect(),
+                        strengths,
+                        predicted_at: None,
                     },
                 );
                 true

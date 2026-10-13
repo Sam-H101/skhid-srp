@@ -14,8 +14,18 @@ pub const PREPARED_SIZE: usize = 20;
 /// The stock writer sends 0 or 0xff: testing bit 7 alone is insufficient.
 /// Released snapshot-upload patches do not support this dialect.
 pub const CONNECT_CAPABILITY: u8 = 0x80;
-/// Login revision reserved for this incompatible experimental dialect.
+/// The login revision of an exe built by hand from these sources before
+/// the dialect had a released revision.
 pub const PATCH_REVISION: u8 = 0x80;
+/// The first released patch revision whose exe speaks this dialect
+/// (`client-patches/patch_026g.py`'s `REVISION`): every later one does.
+pub const FIRST_REVISION: u8 = 5;
+
+/// Whether a game that signed in with this patch revision speaks the
+/// dialect. Such a game and one that does not never play one match.
+pub fn spoken_by(revision: u8) -> bool {
+    revision >= FIRST_REVISION
+}
 
 pub fn has_connect_capability(debug: u8) -> bool {
     matches!(debug, CONNECT_CAPABILITY | 0x81)

@@ -477,6 +477,32 @@ fn the_money_rate_scales_the_rows_silver_and_premiums_half_of_it() {
 }
 
 #[test]
+fn one_who_came_late_moves_the_balance_rating_by_its_share_of_the_match() {
+    // Three against two for the whole match, team 0 the winner.
+    let whole = |players: Vec<PlayerResult>| {
+        let store = accounts(&players);
+        Results::new()
+            .settle(&result(players), &store, &terms(), &mut Rng::new(1))
+            .unwrap();
+        store
+    };
+    let from_the_start = whole(three_and_two());
+    // The same, but Erin (team 0) came for the last tenth of it: two
+    // against two for most of it, so the win says more of Alice, and
+    // little of Erin.
+    let mut players = three_and_two();
+    players[4].time_in_match_ms /= 10;
+    let late = whole(players);
+    let alice = |store: &GameAccounts| account(store, 10).balance.rating;
+    let erin = |store: &GameAccounts| account(store, 14).balance.rating;
+    assert!(alice(&late) > alice(&from_the_start));
+    assert!(erin(&late) > 0 && erin(&late) * 5 < alice(&late));
+    assert_eq!(erin(&from_the_start), alice(&from_the_start));
+    // The match is one more of hers all the same.
+    assert_eq!(account(&late, 14).balance.matches, 1);
+}
+
+#[test]
 fn one_who_left_gets_no_finish_bonus_and_no_drop_and_loses_rating() {
     // Carol left the winning team early; Dave's game never got in.
     let mut players = alice_and_bob();

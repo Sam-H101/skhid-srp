@@ -18,14 +18,24 @@ impl Game {
             }
         };
         let mut players = [0; 2];
-        for (place, peer) in self.formed.places.iter().zip(&self.peers) {
+        let mut present = 0_u32;
+        for (index, (place, peer)) in self.formed.places.iter().zip(&self.peers).enumerate() {
             let here = match peer {
                 Some(peer) => peer.stage != Stage::Gone,
-                // Not connected yet: still to come until the countdown.
-                None => phase == LivePhase::Gathering,
+                // Not connected yet: still to come until the countdown,
+                // and one taken into the match being played until it is in.
+                None => phase == LivePhase::Gathering || self.coming(index),
             };
             if here {
                 players[usize::from(place.team.min(1))] += 1;
+                present |= 1 << index;
+            }
+        }
+        let mut kills = [0_u16; 2];
+        if let Some(rules) = self.state.as_ref().and_then(|state| state.rules.as_ref()) {
+            for (place, record) in self.formed.places.iter().zip(&rules.kills_deaths) {
+                let team = &mut kills[usize::from(place.team.min(1))];
+                *team = team.saturating_add(record.kills);
             }
         }
         let clock = self.clock(now);
@@ -34,6 +44,8 @@ impl Game {
             at: now,
             phase,
             players,
+            present,
+            kills,
             played: self
                 .rule
                 .match_started_at()

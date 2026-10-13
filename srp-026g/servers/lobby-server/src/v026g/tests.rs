@@ -33,6 +33,8 @@ pub(super) struct TestHost {
     pub admitting: Mutex<HashSet<u32>>,
     pub remaining: Mutex<std::collections::HashMap<u32, std::time::Duration>>,
     pub rejecting: Mutex<HashSet<u32>>,
+    /// How a match stands, when the test says: who is in it and the score.
+    pub live: Mutex<std::collections::HashMap<u32, super::LiveView>>,
     /// Every place given to a new session: `(match, account, session)`.
     pub reseated: Mutex<Vec<(u32, u32, u32)>>,
 }
@@ -86,6 +88,10 @@ impl MatchHost for TestHost {
         setup.players.extend(players);
         self.admitting.locked().remove(&match_id);
         true
+    }
+
+    fn live(&self, match_id: u32, _: std::time::Instant) -> Option<super::LiveView> {
+        self.live.locked().get(&match_id).copied()
     }
 
     fn admission_remaining(
