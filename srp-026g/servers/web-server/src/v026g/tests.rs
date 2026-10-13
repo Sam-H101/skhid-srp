@@ -19,11 +19,15 @@ struct Told {
     text: Mutex<Option<(String, String)>>,
     cleared: AtomicU32,
     matches: AtomicU32,
+    live: Mutex<Vec<super::LiveMatch>>,
 }
 
 impl super::MatchCounter for Told {
     fn active_matches(&self) -> usize {
         self.matches.load(std::sync::atomic::Ordering::Relaxed) as usize
+    }
+    fn live_matches(&self) -> Vec<super::LiveMatch> {
+        self.live.locked().clone()
     }
 }
 
@@ -664,13 +668,27 @@ fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
         .told
         .matches
         .store(3, std::sync::atomic::Ordering::Relaxed);
+    // A Team Deathmatch on Rudnya in play.
+    *world.told.live.locked() = vec![crate::LiveMatch {
+        map_id: 117,
+        phase: crate::LivePhase::Playing,
+        players: [4, 3],
+        played: Some(Duration::from_secs(130)),
+        time_left: Some(Duration::from_secs(770)),
+        standing: Some(crate::LiveStanding {
+            points: [96, 91],
+            leader: Some(0),
+            age: Duration::from_secs(3),
+        }),
+    }];
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let targets = [
         "/launcher/v2/survarium/?lang=ua",
-        "/launcher/fresh/uk",
-        "/launcher/fresh/en",
+        "/launcher/places/uk",
+        "/launcher/places/en",
         "/",
+        "/launcher/fresh/uk",
     ];
     let server = std::thread::spawn(move || {
         for _ in targets {
@@ -708,7 +726,10 @@ fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
     assert!(page.0.contains(&launchers));
     assert!(page.1.contains("<script type=\"text/javascript\">"));
     assert!(page.1.contains("<b>3</b><span>матчів зараз</span>"));
-    // The fresh numbers are the three places of that page and nothing more.
+    let score = "<td class=e>&le; 13 хв</td><td class=c><b>96</b> : 91</td>";
+    assert!(page.1.contains(score));
+    // The fresh numbers are the four places of that page, each behind its
+    // name, and nothing more.
     for (fresh, matches) in [(fresh_uk, "матчів зараз"), (fresh_en, "matches now")] {
         assert!(fresh.0.contains(&launchers));
         assert!(
@@ -717,15 +738,29 @@ fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
                 .contains("\r\nContent-Type: text/html; charset=utf-8\r\n")
         );
         let parts: Vec<&str> = fresh.1.split("<hr>").collect();
-        assert_eq!(parts.len(), 3);
-        assert!(parts[1].contains(&format!("<b>3</b><span>{matches}</span>")));
+        assert_eq!(parts.len(), 8);
+        assert_eq!(
+            [parts[0], parts[2], parts[4], parts[6]],
+            ["board", "live", "now", "totals"]
+        );
+        assert!(parts[5].contains(&format!("<b>3</b><span>{matches}</span>")));
         for banned in ["<script", "<style", "<html", "<body"] {
             assert!(!fresh.1.contains(banned), "{banned}");
         }
     }
-    for part in fresh_uk.1.split("<hr>") {
+    let parts: Vec<&str> = fresh_uk.1.split("<hr>").collect();
+    assert!(parts[3].contains(score));
+    for part in &parts {
         assert!(page.1.contains(part));
     }
+    // A page opened before the matches' tab asks where it always did, and
+    // is given its three places in its order.
+    let before = &answers[4];
+    assert!(before.0.contains(&launchers));
+    assert_eq!(
+        before.1.split("<hr>").collect::<Vec<_>>(),
+        [parts[1], parts[5], parts[7]]
+    );
     // Every other page keeps the site's policy: no script at all.
     assert!(home.0.contains(&format!(
         "\r\nContent-Security-Policy: {}\r\n",

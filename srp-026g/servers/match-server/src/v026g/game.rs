@@ -99,6 +99,7 @@ use super::registry::{Formed, MatchEnd, MatchResult, PlayerResult};
 use super::{LateInputs, Settings};
 
 mod late_join;
+mod live;
 use late_join::{Admission, LoadingProfile};
 
 /// A tick is final this long after it: the server's event horizon.

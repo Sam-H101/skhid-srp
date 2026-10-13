@@ -18,6 +18,7 @@
 //!   server and lobby read: they are the same code as for 0.21d.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use session::v026g::account::{self, Account, MAX_LEVEL};
 use session::v026g::{GameAccounts, rules};
@@ -44,9 +45,48 @@ pub trait LobbyLink: Send + Sync {
     fn admin_text(&self) -> Option<(String, String)>;
 }
 
-/// The match server's count of matches created and not yet ended.
+/// The match server's matches created and not yet ended.
 pub trait MatchCounter: Send + Sync {
     fn active_matches(&self) -> usize;
+    /// Each of them as it is now, the oldest first.
+    fn live_matches(&self) -> Vec<LiveMatch>;
+}
+
+/// How far a match is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LivePhase {
+    /// Its players load the level; the countdown has not begun.
+    Gathering,
+    Countdown,
+    Playing,
+    /// It has its result and is about to go.
+    Over,
+}
+
+/// A match as the launcher's page shows it: no player is named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveMatch {
+    /// The `maps_dict` id: the map and the mode.
+    pub map_id: u8,
+    pub phase: LivePhase,
+    /// Each team's players who have not left.
+    pub players: [u8; 2],
+    /// Since play began.
+    pub played: Option<Duration>,
+    /// Until the time limit; the match can end sooner.
+    pub time_left: Option<Duration>,
+    pub standing: Option<LiveStanding>,
+}
+
+/// The score the match server last trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveStanding {
+    /// Batteries brought, or tickets left in a Team Deathmatch, by team.
+    pub points: [u16; 2],
+    /// The team that leads; `None` for a draw.
+    pub leader: Option<usize>,
+    /// How old the world is that said so.
+    pub age: Duration,
 }
 
 /// What makes the page a 0.26g one.

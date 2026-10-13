@@ -4,13 +4,17 @@
 //! - `GET /api/client-files`: which archive `/download` hands out now, as its
 //!   SHA-256 and size. The updater compares it with what it installed last.
 //! - `GET /launcher/…`: the page the launcher shows in its window, in the
-//!   place of the original game's news page: the best players, what the
-//!   server counts, and the legal notice. It is made for the launcher's
-//!   embedded browser (Internet Explorer's engine, 899 by 335 pixels): fixed
-//!   sizes, old CSS only, and embedded original background artwork. Its one
-//!   script keeps the board and the numbers current while the window is open.
-//! - `GET /launcher/fresh/<language>`: the board and the numbers alone, which
-//!   that script asks for.
+//!   place of the original game's news page: the best players and the
+//!   matches being played, as two tabs, what the server counts, and the
+//!   legal notice. It is made for the launcher's embedded browser (Internet
+//!   Explorer's engine, 899 by 335 pixels): fixed sizes, old CSS only, and
+//!   embedded original background artwork. Its one script shows the tab that
+//!   is clicked, and keeps the board, the matches and the numbers current
+//!   while the window is open.
+//! - `GET /launcher/places/<language>`: what changes on that page, each part
+//!   behind the name of its place, which that script asks for.
+//! - `GET /launcher/fresh/<language>`: the same for a page opened before the
+//!   matches' tab was there, in that page's own form.
 
 use std::fs::File;
 use std::io::Read;
@@ -20,11 +24,22 @@ use std::time::{Duration, Instant, SystemTime};
 
 use session::SessionStore;
 use session::v026g::Board;
+use survarium::v026g::maps;
 
-use crate::{CONNECT, ContentType, Game, Lang, Response, available_download, escape, locked};
+use crate::{
+    CONNECT, ContentType, Game, Lang, LiveMatch, LivePhase, Response, available_download, escape,
+    locked,
+};
 
 /// The players the page lists.
 const TOP_PLAYERS: usize = 10;
+/// The lines the matches' tab has room for: with more matches than that,
+/// the last line counts the rest.
+const MOST_MATCHES: usize = 10;
+/// A score older than this is not shown. The match server takes a score
+/// from a world its clients agree on, every few seconds; while they do not
+/// agree it has none newer, and the page would name a leader from memory.
+const SCORE_AGE: Duration = Duration::from_secs(60);
 /// The same invite as the crash reporter; opened externally only on click.
 const DISCORD_LINK: &str = include_str!("../launcher-skin/discord-link.html");
 /// How long the page's numbers are kept before they are counted again, so
@@ -59,36 +74,56 @@ struct Checked {
 }
 
 /// Where the page's script asks for what changes on the page, with the
-/// page's language behind it.
-pub(super) const FRESH: &str = "/launcher/fresh/";
-/// The places on the page that are filled again, by their `id`, in the order
-/// [`FRESH`] answers them.
-const PLACES: [&str; 3] = ["board", "now", "totals"];
-/// What stands between two places in that answer. No place holds it: their
-/// markup has no such tag, and a name is text ([`escape`]).
+/// page's language behind it. The answer names each place before what it
+/// holds, so a page that is open while the server gets another one takes
+/// the places it has and passes over the rest.
+pub(super) const FRESH: &str = "/launcher/places/";
+/// Where the script of a page from before the matches' tab asks. A launcher
+/// can stay open for hours, and that script takes nothing but its three
+/// places in its own order ([`BEFORE`]), with no names: answered here, such
+/// a page still learns of a planned maintenance.
+pub(super) const FRESH_BEFORE: &str = "/launcher/fresh/";
+/// The places on the page that are filled again, by their `id`: the two
+/// tabs of the left side, then the two tiles of numbers.
+const PLACES: [&str; 4] = ["board", "live", "now", "totals"];
+/// The places of [`FRESH_BEFORE`], as that page's script has them.
+const BEFORE: [usize; 3] = [0, 2, 3];
+/// What stands between a place's name and what it holds, and between two
+/// places, in those answers. No place holds it: their markup has no such
+/// tag, and a name is text ([`escape`]).
 const BETWEEN: &str = "<hr>";
-/// The page's one script: every ten seconds it asks for [`FRESH`] and puts
-/// what changed into its place, so nothing else is drawn again and a link is
-/// never taken from under the pointer. A request that fails leaves the page
-/// as it is, and the next one is made all the same. It is written for the
-/// oldest engine the launcher's browser can be, and names no other host.
+/// The page's one script. A click on a tab's label shows that tab: it sets
+/// the left side's class and nothing else. Every ten seconds it asks for
+/// [`FRESH`] and puts what changed into its place, so nothing else is drawn
+/// again: the tab that was chosen stays, and a link is never taken from
+/// under the pointer. A request that fails leaves the page as it is, and the
+/// next one is made all the same. It is written for the oldest engine the
+/// launcher's browser can be, and names no other host.
 const SCRIPT: &str = r#"(function(){
-var places=["board","now","totals"],shown=[],asking=false;
+var shown={},asking=false,left=document.getElementById("left");
+function tab(id,name){
+var label=document.getElementById(id);
+if(label)label.onclick=function(){left.className=name;};
+}
+tab("tab-board","");
+tab("tab-live","live");
 function fresh(){
 if(asking)return;
 try{
 var ask=new XMLHttpRequest();
-ask.open("GET","/launcher/fresh/"+document.documentElement.lang,true);
+ask.open("GET","/launcher/places/"+document.documentElement.lang,true);
 ask.onreadystatechange=function(){
 if(ask.readyState!=4)return;
 asking=false;
 try{
 if(ask.status!=200)return;
-var parts=ask.responseText.split("<hr>"),at;
-if(parts.length!=places.length)return;
-for(at=0;at<places.length;at++)if(parts[at]!=shown[at]){
-document.getElementById(places[at]).innerHTML=parts[at];
-shown[at]=parts[at];
+var parts=ask.responseText.split("<hr>"),at,place;
+for(at=0;at+1<parts.length;at+=2){
+place=document.getElementById(parts[at]);
+if(place&&parts[at+1]!==shown[parts[at]]){
+place.innerHTML=parts[at+1];
+shown[parts[at]]=parts[at+1];
+}
 }
 }catch(e){}
 };
@@ -259,7 +294,8 @@ pub(super) struct Counts {
     pub maintenance: Option<u32>,
 }
 
-/// Whether the path is the launcher's: its page, or [`FRESH`].
+/// Whether the path is the launcher's: its page, [`FRESH`] or
+/// [`FRESH_BEFORE`].
 pub(super) fn serves(path: &str) -> bool {
     path == "/launcher" || path.starts_with("/launcher/")
 }
@@ -279,8 +315,8 @@ pub(super) fn policy() -> &'static str {
     })
 }
 
-/// The board and the counts as they are now.
-fn current(store: &SessionStore, game: &Game) -> (Board, Counts) {
+/// The board, the matches and the counts as they are now.
+fn current(store: &SessionStore, game: &Game) -> (Board, Vec<LiveMatch>, Counts) {
     let board = {
         let mut kept = locked(&BOARD);
         match kept.as_ref() {
@@ -300,28 +336,48 @@ fn current(store: &SessionStore, game: &Game) -> (Board, Counts) {
         clans: game.accounts.clans().len(),
         maintenance: store.minutes_to_maintenance(),
     };
-    (board, counts)
+    (board, game.matches.live_matches(), counts)
 }
 
 /// `GET /launcher/…`.
 pub(super) fn page(lang: Lang, store: &SessionStore, game: &Game) -> Response {
-    let (board, counts) = current(store, game);
+    let (board, live, counts) = current(store, game);
     let test = CONNECT.get().is_some_and(|connect| connect.test_server);
     Response {
         status: "200 OK",
         content_type: ContentType::Html,
-        body: render(lang, &board, counts, test),
+        body: render(lang, &board, &live, counts, test),
     }
 }
 
-/// `GET /launcher/fresh/<language>`: what [`PLACES`] hold now, with
-/// [`BETWEEN`] between them.
+/// `GET /launcher/places/<language>`: each of [`PLACES`] and what it holds
+/// now, with [`BETWEEN`] between them all.
 pub(super) fn fresh(lang: Lang, store: &SessionStore, game: &Game) -> Response {
-    let (board, counts) = current(store, game);
+    let (board, live, counts) = current(store, game);
     Response {
         status: "200 OK",
         content_type: ContentType::Html,
-        body: places(lang, &board, counts).join(BETWEEN),
+        body: named(&places(lang, &board, &live, counts)),
+    }
+}
+
+fn named(parts: &[String; 4]) -> String {
+    let mut answer = Vec::new();
+    for (place, part) in PLACES.iter().zip(parts) {
+        answer.extend([*place, part.as_str()]);
+    }
+    answer.join(BETWEEN)
+}
+
+/// `GET /launcher/fresh/<language>`: what the [`BEFORE`] places hold now,
+/// with [`BETWEEN`] between them.
+pub(super) fn fresh_before(lang: Lang, store: &SessionStore, game: &Game) -> Response {
+    let (board, live, counts) = current(store, game);
+    let parts = places(lang, &board, &live, counts);
+    Response {
+        status: "200 OK",
+        content_type: ContentType::Html,
+        body: BEFORE.map(|place| parts[place].as_str()).join(BETWEEN),
     }
 }
 
@@ -338,10 +394,128 @@ fn grouped(value: u64) -> String {
     out
 }
 
-/// What each of [`PLACES`] holds: the board, the server's numbers of this
-/// moment with the line under them, and the numbers since it opened with
-/// theirs.
-fn places(lang: Lang, board: &Board, counts: Counts) -> [String; 3] {
+/// The game's own name of a map (`st_level_0N_name` of its localization).
+fn map_name(lang: Lang, level: u8) -> String {
+    match level {
+        1 => lang.tr("Rudnya", "Рудня"),
+        2 => lang.tr("School", "Школа"),
+        3 => lang.tr("Vostok Radar Station", "РЛС \"Восток\""),
+        4 => lang.tr("Chemical Plant", "Хімзавод"),
+        5 => lang.tr("Tarakanovsky Fort", "Тараканівський форт"),
+        6 => lang.tr("Mamayev Kurgan", "Мамаїв курган"),
+        7 => lang.tr("Vector Laboratory", "Лабораторія \"Вектор\""),
+        8 => lang.tr("Cologne", "Кельн"),
+        _ => "?".to_owned(),
+    }
+}
+
+/// The game's own name of a mode (`st_mode_0N_name`): it has one name for
+/// both modes with batteries.
+fn mode_name(lang: Lang, mode: u8) -> String {
+    match mode {
+        maps::mode::TEAM_DEATHMATCH => lang.tr("Team Deathmatch", "Командний бій"),
+        _ => lang.tr("Protective device", "Захисний пристрій"),
+    }
+}
+
+/// The matches' tab: a line for each match that is not over, the oldest
+/// first. No player is named: the page is open to everyone.
+///
+/// - Players: each team's, of those who have not left.
+/// - Started: how long ago play began; before that, what the match waits for.
+/// - Time left: to the time limit, in whole minutes rounded up. A match can
+///   end sooner (the tickets or the batteries, or everyone leaving), so it
+///   is "at most".
+/// - Score: tickets left in a Team Deathmatch, batteries brought otherwise,
+///   the leader's in bold; only of a match in play, and only as fresh as
+///   [`SCORE_AGE`].
+fn matches(lang: Lang, live: &[LiveMatch]) -> String {
+    const NONE: &str = "&mdash;";
+    let open: Vec<&LiveMatch> = live
+        .iter()
+        .filter(|each| each.phase != LivePhase::Over)
+        .collect();
+    if open.is_empty() {
+        return format!(
+            "<p class=none>{}</p>",
+            lang.tr(
+                "No match is being played now.",
+                "Зараз не грається жодного матчу."
+            )
+        );
+    }
+    let listed = if open.len() > MOST_MATCHES {
+        MOST_MATCHES - 1
+    } else {
+        open.len()
+    };
+    let mut rows = String::new();
+    for each in &open[..listed] {
+        let (map, mode) = match maps::map_mode(each.map_id) {
+            Some(map) => (map_name(lang, map.level), mode_name(lang, map.mode)),
+            None => ("?".to_owned(), "?".to_owned()),
+        };
+        let started = match (each.phase, each.played) {
+            (LivePhase::Gathering, _) => lang.tr("waiting", "очікування"),
+            (LivePhase::Countdown, _) => lang.tr("starting", "старт"),
+            (_, Some(played)) => match played.as_secs() / 60 {
+                0 => lang.tr("just now", "щойно"),
+                minutes => lang.tr(&format!("{minutes} min ago"), &format!("{minutes} хв тому")),
+            },
+            (_, None) => NONE.to_owned(),
+        };
+        let left = each.time_left.map_or(NONE.to_owned(), |left| {
+            let minutes = left.as_secs().div_ceil(60).max(1);
+            lang.tr(
+                &format!("&le; {minutes} min"),
+                &format!("&le; {minutes} хв"),
+            )
+        });
+        let score = each
+            .standing
+            .filter(|standing| each.phase == LivePhase::Playing && standing.age <= SCORE_AGE)
+            .map_or(NONE.to_owned(), |standing| {
+                let [first, second] = standing.points;
+                match standing.leader {
+                    Some(0) => format!("<b>{first}</b> : {second}"),
+                    Some(_) => format!("{first} : <b>{second}</b>"),
+                    None => format!("{first} : {second}"),
+                }
+            });
+        rows += &format!(
+            "<tr><td class=m title=\"{}\">{} <i>&middot; {}</i></td><td class=s>{}</td>\
+             <td class=a>{started}</td><td class=e>{left}</td><td class=c>{score}</td></tr>",
+            escape(&format!("{map} · {mode}")),
+            escape(&map),
+            escape(&mode),
+            lang.tr(
+                &format!("{} v {}", each.players[0], each.players[1]),
+                &format!("{} на {}", each.players[0], each.players[1]),
+            ),
+        );
+    }
+    if listed < open.len() {
+        let more = open.len() - listed;
+        rows += &format!(
+            "<tr><td class=m colspan=5><i>{}</i></td></tr>",
+            lang.tr(&format!("and {more} more"), &format!("і ще {more}"))
+        );
+    }
+    format!(
+        "<table cellspacing=0 cellpadding=0><tr><th class=m>{}</th><th class=s>{}</th>\
+         <th class=a>{}</th><th class=e>{}</th><th class=c>{}</th></tr>{rows}</table>",
+        lang.tr("Match", "Матч"),
+        lang.tr("Players", "Гравці"),
+        lang.tr("Started", "Початок"),
+        lang.tr("Time left", "До кінця"),
+        lang.tr("Score", "Рахунок"),
+    )
+}
+
+/// What each of [`PLACES`] holds: the board, the matches, the server's
+/// numbers of this moment with the line under them, and the numbers since
+/// it opened with theirs.
+fn places(lang: Lang, board: &Board, live: &[LiveMatch], counts: Counts) -> [String; 4] {
     let mut rows = String::new();
     for (index, row) in board.top.iter().enumerate() {
         let clan = if row.clan_tag.is_empty() {
@@ -411,6 +585,7 @@ fn places(lang: Lang, board: &Board, counts: Counts) -> [String; 3] {
     };
     [
         table,
+        matches(lang, live),
         format!("{now}<div class=\"{status_class}\">{status}</div>"),
         format!(
             "{totals}<div class=cap>{}</div>",
@@ -419,8 +594,8 @@ fn places(lang: Lang, board: &Board, counts: Counts) -> [String; 3] {
     ]
 }
 
-fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
-    let [table, now, totals] = places(lang, board, counts);
+fn render(lang: Lang, board: &Board, live: &[LiveMatch], counts: Counts, test: bool) -> String {
+    let [table, matches, now, totals] = places(lang, board, live, counts);
     let badge = if test {
         format!(" <em>{}</em>", lang.tr("TEST SERVER", "ТЕСТОВИЙ СЕРВЕР"))
     } else {
@@ -439,7 +614,8 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
          <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\">\
          <title>Skhid</title><style type=\"text/css\">{style}</style></head><body>\
          <div id=container>\
-         <div id=left><h1>{top}{badge}</h1><div id={board}>{table}</div>\
+         <div id=left><h1><span id=tab-{board}>{top}</span><span id=tab-{live}>{playing}</span>\
+         {badge}</h1><div id={board}>{table}</div><div id={live}>{matches}</div>\
          <div class=cap>{server}</div></div>\
          <div id=right>\
          <div class=\"tile first\" id={first}>{now}</div>\
@@ -448,11 +624,13 @@ fn render(lang: Lang, board: &Board, counts: Counts, test: bool) -> String {
          </div></div><script type=\"text/javascript\">{SCRIPT}</script></body></html>",
         style = style(),
         board = PLACES[0],
-        first = PLACES[1],
-        second = PLACES[2],
+        live = PLACES[1],
+        first = PLACES[2],
+        second = PLACES[3],
         discord = DISCORD_LINK.trim(),
         code = lang.code(),
         top = lang.tr("Top 10 players", "Топ-10 гравців"),
+        playing = lang.tr("Matches now", "Матчі зараз"),
         server = lang.tr(
             "Skhid &middot; Survarium <i>0.26g</i> community server",
             "Схід &middot; ком'юніті сервер Survarium <i>0.26g</i>"
@@ -488,7 +666,55 @@ fn style() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LiveStanding;
     use session::v026g::BoardRow;
+
+    /// Team Deathmatch and batteries on Rudnya, Team Deathmatch on School.
+    const RUDNYA_TDM: u8 = 117;
+    const RUDNYA_BATTERIES: u8 = 61;
+
+    fn playing(map_id: u8, points: [u16; 2], leader: Option<usize>) -> LiveMatch {
+        LiveMatch {
+            map_id,
+            phase: LivePhase::Playing,
+            players: [4, 3],
+            played: Some(Duration::from_secs(6 * 60 + 20)),
+            time_left: Some(Duration::from_secs(8 * 60 + 40)),
+            standing: Some(LiveStanding {
+                points,
+                leader,
+                age: Duration::from_secs(4),
+            }),
+        }
+    }
+
+    /// A match in play, one whose countdown runs and one still gathering.
+    fn live() -> Vec<LiveMatch> {
+        vec![
+            playing(RUDNYA_TDM, [88, 78], Some(0)),
+            LiveMatch {
+                map_id: RUDNYA_BATTERIES,
+                phase: LivePhase::Countdown,
+                players: [2, 2],
+                played: None,
+                time_left: Some(Duration::from_secs(15 * 60 + 12)),
+                // Full tickets, or no battery yet: nothing to show.
+                standing: Some(LiveStanding {
+                    points: [0, 0],
+                    leader: None,
+                    age: Duration::ZERO,
+                }),
+            },
+            LiveMatch {
+                map_id: RUDNYA_TDM,
+                phase: LivePhase::Gathering,
+                players: [5, 5],
+                played: None,
+                time_left: None,
+                standing: None,
+            },
+        ]
+    }
 
     fn counts() -> Counts {
         Counts {
@@ -540,18 +766,43 @@ mod tests {
                 .collect(),
             battles: 1_234_567,
         };
+        // Every map there is, in each mode's name, with the widest numbers.
+        let many: Vec<LiveMatch> = (0..12)
+            .map(|i| LiveMatch {
+                players: [10, 10],
+                played: Some(Duration::from_secs(14 * 60)),
+                ..playing(
+                    maps::playable()
+                        .filter(|map| map.level == i % 8 + 1)
+                        .nth(usize::from(i % 3))
+                        .unwrap()
+                        .id,
+                    [150, 149],
+                    Some(0),
+                )
+            })
+            .collect();
         for lang in [Lang::En, Lang::Uk] {
-            for (state, board, maintenance, test) in [
-                ("full", &full, None, false),
-                ("empty", &Board::default(), None, false),
-                ("maintenance", &full, Some(25), true),
-                ("down", &full, Some(0), true),
+            for (state, board, live, maintenance, test) in [
+                ("full", &full, live(), None, false),
+                ("empty", &Board::default(), live(), None, false),
+                ("maintenance", &full, live(), Some(25), true),
+                ("down", &full, live(), Some(0), true),
+                ("matches", &full, live(), None, true),
+                ("matches-many", &full, many.clone(), None, false),
+                ("matches-none", &full, Vec::new(), None, false),
             ] {
                 let mut counts = counts();
                 counts.maintenance = maintenance;
+                let mut page = render(lang, board, &live, counts, test);
+                // As after a click on the matches' label.
+                if state.starts_with("matches") {
+                    assert_eq!(page.matches("<div id=left>").count(), 1);
+                    page = page.replace("<div id=left>", "<div id=left class=live>");
+                }
                 std::fs::write(
                     dir.join(format!("online-{}-{state}.html", lang.code())),
-                    render(lang, board, counts, test),
+                    page,
                 )
                 .unwrap();
             }
@@ -560,7 +811,7 @@ mod tests {
 
     #[test]
     fn the_page_lists_the_board_and_the_counts() {
-        let page = render(Lang::En, &board(), counts(), false);
+        let page = render(Lang::En, &board(), &live(), counts(), false);
         assert!(page.contains("<td class=n>1</td><td class=p><i>[TAG]</i> Sasha</td><td class=l>31</td><td class=r>1420</td>"));
         // A name is text, never markup.
         assert!(page.contains("&lt;b&gt;x&lt;/b&gt;"));
@@ -573,7 +824,89 @@ mod tests {
         assert!(page.contains("<b>7</b><span>clans</span>"));
         assert!(page.contains("Not affiliated with or endorsed by Vostok Games"));
         assert!(!page.contains("TEST SERVER"));
-        assert!(render(Lang::En, &board(), counts(), true).contains("<em>TEST SERVER</em>"));
+        assert!(
+            render(Lang::En, &board(), &live(), counts(), true).contains("<em>TEST SERVER</em>")
+        );
+    }
+
+    #[test]
+    fn the_matches_tab_says_how_each_match_stands_and_names_nobody() {
+        let tab = matches(Lang::En, &live());
+        assert!(tab.contains(
+            "<tr><th class=m>Match</th><th class=s>Players</th><th class=a>Started</th>\
+             <th class=e>Time left</th><th class=c>Score</th></tr>"
+        ));
+        // In play: the game's own names, minutes since play began, minutes
+        // to the time limit rounded up, and the leader's points in bold.
+        assert!(tab.contains(
+            "<tr><td class=m title=\"Rudnya · Team Deathmatch\">Rudnya <i>&middot; Team \
+             Deathmatch</i></td><td class=s>4 v 3</td><td class=a>6 min ago</td>\
+             <td class=e>&le; 9 min</td><td class=c><b>88</b> : 78</td></tr>"
+        ));
+        // Before play there is no score to tell, whatever the world says.
+        assert!(tab.contains(
+            "Rudnya <i>&middot; Protective device</i></td><td class=s>2 v 2</td>\
+             <td class=a>starting</td><td class=e>&le; 16 min</td><td class=c>&mdash;</td></tr>"
+        ));
+        assert!(tab.contains(
+            "<td class=s>5 v 5</td><td class=a>waiting</td><td class=e>&mdash;</td>\
+             <td class=c>&mdash;</td></tr>"
+        ));
+        assert_eq!(tab.matches("<tr>").count(), 4);
+
+        let row = |each: LiveMatch| matches(Lang::En, &[each]);
+        // The other team leads; a draw has no leader.
+        assert!(row(playing(RUDNYA_TDM, [40, 71], Some(1))).contains("40 : <b>71</b>"));
+        assert!(row(playing(RUDNYA_BATTERIES, [3, 3], None)).contains("<td class=c>3 : 3</td>"));
+        // A score the match server could not renew is not shown.
+        let mut stale = playing(RUDNYA_TDM, [88, 78], Some(0));
+        stale.standing.as_mut().unwrap().age = SCORE_AGE + Duration::from_secs(1);
+        assert!(row(stale.clone()).contains("<td class=c>&mdash;</td>"));
+        stale.standing.as_mut().unwrap().age = SCORE_AGE;
+        assert!(row(stale).contains("<b>88</b> : 78"));
+        // The first minute of play, and the last one.
+        let mut edge = playing(RUDNYA_TDM, [100, 100], None);
+        edge.played = Some(Duration::from_secs(59));
+        edge.time_left = Some(Duration::from_secs(1));
+        let edge = row(edge);
+        assert!(edge.contains("<td class=a>just now</td><td class=e>&le; 1 min</td>"));
+
+        // A match that has its result is not listed; with none left the
+        // tab says so.
+        let mut over = playing(RUDNYA_TDM, [0, 12], Some(1));
+        over.phase = LivePhase::Over;
+        let none = row(over.clone());
+        assert_eq!(none, "<p class=none>No match is being played now.</p>");
+        assert_eq!(matches(Lang::En, &[]), none);
+        let mut two = live();
+        two.insert(0, over);
+        assert_eq!(matches(Lang::En, &two), tab);
+
+        // Ten lines: with more matches the last one counts the rest.
+        let ten = vec![playing(RUDNYA_TDM, [9, 8], Some(0)); MOST_MATCHES];
+        let tab = matches(Lang::En, &ten);
+        assert_eq!(tab.matches("<tr>").count(), 1 + MOST_MATCHES);
+        assert!(!tab.contains("more"));
+        let tab = matches(Lang::En, &vec![playing(RUDNYA_TDM, [9, 8], Some(0)); 13]);
+        assert_eq!(tab.matches("<tr>").count(), 1 + MOST_MATCHES);
+        assert_eq!(tab.matches("<b>9</b> : 8").count(), MOST_MATCHES - 1);
+        assert!(tab.ends_with("<tr><td class=m colspan=5><i>and 4 more</i></td></tr></table>"));
+
+        let tab = matches(Lang::Uk, &live());
+        assert!(tab.contains(
+            "<td class=m title=\"Рудня · Командний бій\">Рудня <i>&middot; Командний бій</i></td>\
+             <td class=s>4 на 3</td><td class=a>6 хв тому</td><td class=e>&le; 9 хв</td>"
+        ));
+        assert!(
+            tab.contains("<td class=a>старт</td>") && tab.contains("<td class=a>очікування</td>")
+        );
+        // A name of the game's with quotes in it stays inside its attribute.
+        let radar = maps::playable().find(|map| map.level == 3).unwrap().id;
+        assert!(row_uk(radar).contains("title=\"РЛС &quot;Восток&quot; · "));
+    }
+
+    fn row_uk(map_id: u8) -> String {
+        matches(Lang::Uk, &[playing(map_id, [1, 0], Some(0))])
     }
 
     #[test]
@@ -626,7 +959,7 @@ mod tests {
             assert!(!SCRIPT.contains(banned), "{banned} in the script");
         }
         for lang in [Lang::En, Lang::Uk] {
-            let page = render(lang, &board(), counts(), true);
+            let page = render(lang, &board(), &live(), counts(), true);
             assert!(page.contains(style()));
             assert_eq!(page.matches(&script).count(), 1);
             // The only external destination is an explicit user-clicked link,
@@ -661,12 +994,45 @@ mod tests {
     }
 
     #[test]
+    fn a_click_shows_a_tab_and_no_fresh_answer_takes_it_back() {
+        // The script is plain text of its own: the labels it listens to and
+        // the class it sets are the page's and the skin's.
+        assert!(SCRIPT.contains("left=document.getElementById(\"left\")"));
+        assert!(SCRIPT.contains("label.onclick=function(){left.className=name;}"));
+        assert!(SCRIPT.contains(&format!("tab(\"tab-{}\",\"\");", PLACES[0])));
+        assert!(SCRIPT.contains(&format!("tab(\"tab-{0}\",\"{0}\");", PLACES[1])));
+        // Nothing else of the script touches the class, and the only thing
+        // it writes into the page is what a place holds.
+        assert_eq!(SCRIPT.matches("className").count(), 1);
+        assert_eq!(SCRIPT.matches("innerHTML").count(), 1);
+        let skin = style();
+        // The board shows until the left side is given the matches' class.
+        assert!(skin.contains("#live,#left.live #board{display:none}"));
+        assert!(skin.contains("#left.live #live{display:block}"));
+        for lang in [Lang::En, Lang::Uk] {
+            let page = render(lang, &board(), &live(), counts(), false);
+            assert_eq!(page.matches("<div id=left>").count(), 1);
+            for place in &PLACES[..2] {
+                assert_eq!(page.matches(&format!("<span id=tab-{place}>")).count(), 1);
+            }
+            // What says which tab shows is outside every place, so filling
+            // the places again leaves the chosen tab as it is.
+            for part in places(lang, &board(), &live(), counts()) {
+                assert!(!part.contains("id=") && !part.contains("<h1"), "{part}");
+            }
+            let before = page.split_once("<div id=board>").unwrap().0;
+            assert!(before.contains("<div id=left><h1><span id=tab-board>"));
+            assert!(before.ends_with("</h1>"));
+        }
+    }
+
+    #[test]
     fn the_script_fills_the_places_the_fresh_answer_names() {
         // The script is plain text of its own: what it asks for, what it
         // splits by and where it puts the pieces are the server's.
         assert!(SCRIPT.contains(&format!("\"{FRESH}\"+document.documentElement.lang")));
         assert!(SCRIPT.contains(&format!("split(\"{BETWEEN}\")")));
-        assert!(SCRIPT.contains(&format!("places=[\"{}\"]", PLACES.join("\",\""))));
+        assert!(SCRIPT.contains("place=document.getElementById(parts[at]);"));
         assert!(SCRIPT.contains("setInterval(fresh,10000)"));
         for lang in [Lang::En, Lang::Uk] {
             // The page's own language is one the path of the answer reads.
@@ -674,10 +1040,13 @@ mod tests {
             assert_eq!(language(&format!("{FRESH}{}", lang.code()), Lang::Uk), lang);
             let mut soon = counts();
             soon.maintenance = Some(25);
-            for (board, counts) in [(board(), counts()), (Board::default(), soon)] {
-                let page = render(lang, &board, counts, false);
+            for (board, live, counts) in [
+                (board(), live(), counts()),
+                (Board::default(), Vec::new(), soon),
+            ] {
+                let page = render(lang, &board, &live, counts, false);
                 assert!(page.contains(&format!("lang={}>", lang.code())));
-                let parts = places(lang, &board, counts);
+                let parts = places(lang, &board, &live, counts);
                 // Each place is on the page once, holding what the answer
                 // gives for it, so the first answer changes nothing seen.
                 for (place, part) in PLACES.iter().zip(&parts) {
@@ -687,16 +1056,29 @@ mod tests {
                         "{place}"
                     );
                 }
-                let answer = parts.join(BETWEEN);
-                assert_eq!(answer.split(BETWEEN).count(), PLACES.len());
+                // The answer: each place's name, then what it holds.
+                let answer = named(&parts);
+                let answer: Vec<&str> = answer.split(BETWEEN).collect();
+                assert_eq!(answer.len(), 2 * PLACES.len());
+                for (at, (place, part)) in PLACES.iter().zip(&parts).enumerate() {
+                    assert_eq!(
+                        (answer[2 * at], answer[2 * at + 1]),
+                        (*place, part.as_str())
+                    );
+                }
             }
         }
         // A name cannot stand for the border between two places.
-        let mut named = board();
-        named.top[0].name = BETWEEN.into();
-        named.top[0].clan_tag = BETWEEN.into();
-        let answer = places(Lang::En, &named, counts()).join(BETWEEN);
-        assert_eq!(answer.split(BETWEEN).count(), PLACES.len());
+        let mut forged = board();
+        forged.top[0].name = BETWEEN.into();
+        forged.top[0].clan_tag = BETWEEN.into();
+        let answer = named(&places(Lang::En, &forged, &live(), counts()));
+        assert_eq!(answer.split(BETWEEN).count(), 2 * PLACES.len());
+        // The page from before the tabs has the first, third and fourth.
+        assert_eq!(
+            BEFORE.map(|place| PLACES[place]),
+            ["board", "now", "totals"]
+        );
     }
 
     #[test]
@@ -710,17 +1092,20 @@ mod tests {
         assert!(!policy.contains("unsafe-inline' 'sha256") && !policy.contains("unsafe-eval"));
         assert!(!crate::POLICY.contains("script-src"));
         assert!(serves("/launcher") && serves("/launcher/v2/survarium/") && serves(FRESH));
+        assert!(serves(FRESH_BEFORE));
         assert!(!serves("/launchers") && !serves("/") && !serves("/api/stats"));
     }
 
     #[test]
     fn the_page_is_ukrainian_for_the_ukrainian_launcher() {
-        let page = render(Lang::Uk, &board(), counts(), false);
+        let page = render(Lang::Uk, &board(), &live(), counts(), false);
         assert!(page.contains("Топ-10 гравців"));
         assert!(page.contains("<span>проведено боїв</span>"));
         assert!(page.contains("lang=uk"));
-        let empty = render(Lang::Uk, &Board::default(), counts(), false);
+        assert!(page.contains("<span id=tab-live>Матчі зараз</span>"));
+        let empty = render(Lang::Uk, &Board::default(), &[], counts(), false);
         assert!(empty.contains("Ще не відбулося жодного бою"));
+        assert!(empty.contains("Зараз не грається жодного матчу."));
         assert!(!empty.contains("<th"));
     }
 
@@ -728,14 +1113,15 @@ mod tests {
     fn a_planned_maintenance_is_said_on_the_page() {
         let mut soon = counts();
         soon.maintenance = Some(25);
-        let page = render(Lang::En, &board(), soon, false);
+        let page = render(Lang::En, &board(), &live(), soon, false);
         assert!(page.contains("<div class=\"cap warn\">Maintenance in 25 min</div>"));
         soon.maintenance = Some(0);
         assert!(
-            render(Lang::En, &board(), soon, false).contains("Maintenance: the server is down")
+            render(Lang::En, &board(), &live(), soon, false)
+                .contains("Maintenance: the server is down")
         );
         assert!(
-            render(Lang::En, &board(), counts(), false)
+            render(Lang::En, &board(), &live(), counts(), false)
                 .contains("<div class=\"cap\">On the server now</div>")
         );
     }

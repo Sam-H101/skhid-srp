@@ -52,6 +52,31 @@ impl web_server::MatchCounter for RegistryHost {
     fn active_matches(&self) -> usize {
         self.0.match_count()
     }
+
+    fn live_matches(&self) -> Vec<web_server::LiveMatch> {
+        self.0
+            .live_matches(std::time::Instant::now())
+            .into_iter()
+            .map(|live| web_server::LiveMatch {
+                map_id: live.map_id,
+                phase: match live.phase {
+                    matches::LivePhase::Gathering => web_server::LivePhase::Gathering,
+                    matches::LivePhase::Countdown => web_server::LivePhase::Countdown,
+                    matches::LivePhase::Playing => web_server::LivePhase::Playing,
+                    matches::LivePhase::Over => web_server::LivePhase::Over,
+                },
+                players: live.players,
+                played: live.played,
+                time_left: live.time_left,
+                standing: live.standing.map(|standing| web_server::LiveStanding {
+                    points: standing.points,
+                    leader: (standing.winner != matches::DRAW)
+                        .then_some(usize::from(standing.winner)),
+                    age: standing.age,
+                }),
+            })
+            .collect()
+    }
 }
 
 impl MatchHost for RegistryHost {

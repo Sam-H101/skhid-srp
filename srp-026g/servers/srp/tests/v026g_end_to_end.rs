@@ -679,6 +679,27 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     }
     assert!(stack.results.find(match_id).is_none());
     let before_match = (held(&stack, "E2eAlice"), held(&stack, "E2eBob"));
+    // What the launcher's page lists (`web_server::MatchCounter` over the
+    // registry): this match, a player a team, its countdown running, and
+    // the standing of the world the two vouch for.
+    let page = stack.web_game();
+    until(
+        &mut [&mut alice, &mut bob],
+        SOON,
+        "the page's word on the match",
+        |_| {
+            let live = page.matches.live_matches();
+            live.len() == 1 && live[0].standing.is_some()
+        },
+    );
+    let live = page.matches.live_matches().remove(0);
+    assert_eq!((live.map_id, live.players), (MAP, [1, 1]));
+    assert_eq!(live.phase, web_server::LivePhase::Countdown);
+    assert_eq!(live.played, None);
+    assert!(
+        live.time_left
+            .is_some_and(|left| left > Duration::from_secs(900))
+    );
 
     // ---- 9. The match ends by its mode's rule: Bob's team has no tickets
     // and nobody alive. (The rule is set to "in play" on both clients at
@@ -807,6 +828,7 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
         |_| !stack.registry.is_open(match_id) && stack.store.match_count() == 0,
     );
     assert_eq!(stack.registry.seat(alice.session), None);
+    assert!(page.matches.live_matches().is_empty());
     alice.in_match = None;
     bob.in_match = None;
 

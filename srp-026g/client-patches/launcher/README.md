@@ -6,8 +6,9 @@ The game's own launcher (`survarium_launcher.exe`), patched so that it
   values, no service and no administrator rights;
 - asks **one server only** (the Skhid one, or the one it is built for): no
   request to any of the game's old sites can leave it;
-- shows that server's own page in its window (the best players, what the
-  server counts, the legal notice);
+- shows that server's own page in its window (the best players and the
+  matches being played, as two tabs, what the server counts, the legal
+  notice);
 - starts a **new updater** (`updater_skhid.exe`, `../../../client/updater`)
   that keeps the Skhid files of the game current from the same ZIP the
   server's page offers, the launcher and the updater themselves included;
@@ -129,15 +130,36 @@ ellipsis, keeping level/rating columns within the panel. Caption strips use
 the original white, bold, uppercase Arial/Tahoma text, padding, and image.
 Amber remains reserved for the Skhid headings/numbers and maintenance text.
 
-Verification, 2026-10-13: all 18 rendered page states matched the original
+The left panel of the online page has two tabs: the rankings and the
+matches being played. Their labels share the panel's heading; the one that
+shows is amber, the other the grey of the column headings (white under the
+pointer). The matches' table is the rankings table's: the same row and
+heading heights, a white name with the mode in grey behind it (cut with an
+ellipsis, whole in the tooltip), and the leader's score in the rating's
+amber. The rules are in the shared `style.css`, so the ten local pages
+carry them too (they have no tabs, and look as before).
+
+Verification, 2026-10-13: all 24 rendered page states matched the original
 panel/caption rectangles and skin pixels in Firefox at 899 × 335. For the
 pixel comparison only, news and Skhid content are removed and all three
 captions receive the same text; the original artwork, CSS geometry, and
 caption typography remain. The actual pages are also captured and checked
 for content overlapping captions or escaping the viewport. This covers all
 ten local pages plus English/Ukrainian online pages with ten long names,
-an empty board, upcoming maintenance, and downtime with the test badge.
+an empty board, upcoming maintenance, and downtime with the test badge,
+and the matches' tab with three matches, with twelve (every map's name,
+the widest numbers) and with none.
 It is a browser comparison, not a new Windows/MSHTML runtime test.
+
+The tabs were run in that engine apart from it, the same day: the
+exported English page in a Windows `WebBrowser` control (Trident/7.0, off
+screen, 899 × 335) behind a stand-in HTTP server sending the page's own
+`Content-Security-Policy` and another `/launcher/places/en` answer each
+time. A click on "Matches now" showed the matches and hid the rankings;
+two refreshes changed the lines and the maintenance caption and left the
+tab as chosen; a click on "Top 10 players" went back, and the next refresh
+left that too. The heading stayed 30 px and the table 456 px wide. Not
+done: a click in the launcher's own window.
 
 The page uses CSS supported by the original embedded browser. Both data URLs
 are below the [IE8 limit of 32,768 characters](https://learn.microsoft.com/en-us/previous-versions/cc848897(v=vs.85));
@@ -157,7 +179,7 @@ node client-patches/launcher/check_visual.mjs /path/to/game/launcher /tmp/launch
 ```
 
 The comparison writes `comparison.json`, the original and normalized skin
-screenshots, and screenshots of all eighteen real pages into the fixture
+screenshots, and screenshots of all twenty-four real pages into the fixture
 folder. The optional final argument selects a different Firefox debug port.
 
 Captured comparison (899 × 335 Firefox page renders, not native window captures):
@@ -186,10 +208,14 @@ The server (`servers/web-server`, the 0.26g page):
   It reads the file again when its size or time changes, so putting a new
   ZIP in its place is all a release needs: no restart, no setting.
 - `GET /launcher/v2/<product>/?lang=<en|ru|ua|de|pl>` is the page.
-- `GET /launcher/fresh/<uk|en>` is what changes on that page (the board,
-  the numbers, the maintenance line). The page's one script asks for it
-  every 10 seconds and puts in place what changed, so the numbers move
-  while the window is open and the page is never loaded again. Seen in the
+- `GET /launcher/places/<uk|en>` is what changes on that page (the board,
+  the matches, the numbers, the maintenance line), each part behind the
+  name of its place. The page's one script asks for it every 10 seconds
+  and puts in place what changed, so the numbers move while the window is
+  open, the page is never loaded again and the tab that was chosen stays.
+  (`GET /launcher/fresh/<uk|en>`, the address of the page from before the
+  tabs, still answers that page's three parts: a launcher can stay open
+  over a deploy.) Of the page before the tabs, seen in the
   real launcher on Windows 11 (its browser calls itself Trident/7.0)
   against a local server, 2026-10-13: a request every 10 seconds, a planned
   and a cancelled maintenance shown within that time, and the server
