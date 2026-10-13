@@ -81,6 +81,20 @@ Patches:
   section 26). Without the two instructions every event is counted and
   the containers stay usable, so the replay ends as the first run did.
   The match's end is the server's (it reads the points);
+- a start with a Documents folder the game may not write to (two sites,
+  eight bytes, client_patch.md section 3.10). The user folder is the
+  folder Survarium in Documents, mounted as `user_data`. When it does not exist
+  and cannot be made, the mount fails and has no root; mounter::finish
+  0x469F0 still called the "mounted" callback, resources_manager::on_mounted
+  0xF9A80, with a null node (access violation at 0xF9A8F). `xor ecx,ecx` /
+  `jmp short 46B12h` at 0x46B0B becomes `jmp short 46B36h` / two nops: a
+  mount without a root is not announced. When the folder exists but a
+  file cannot be made in it, the journal `Survarium_<user>.journal`, made
+  at every start with create_always, stopped the game with a fatal
+  assertion (0x40141). The default of -record_journal, the text "1" given
+  to the option object 0xA9D628 by its initializer at 0x851CC7
+  (`mov eax,9DB51Ch`), becomes the exe's own "0" at 0x9DBF0C: no journal
+  is made unless -record_journal=1 asks for one;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -154,8 +168,9 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # above and the revision field. 2: adds the optional embedded-server patch.
 # 3: adds the battery rule patch below, the first that changes what a match
 # computes: a game of revision 3 and an older one part at a team's last
-# battery (match.md section 26).
-REVISION = 3
+# battery (match.md section 26). 4: adds the two start-up patches below
+# (a Documents folder the game may not write to); a match is not affected.
+REVISION = 4
 REVISION_SITE = (0x380862, bytes.fromhex("8a0d9eae9d00"), bytes([0xC6, 0x44, 0x24, 0x27, REVISION, 0x90]))
 
 # gather_victory_items_rule_core's container event handler 0x313A50:
@@ -166,6 +181,32 @@ GATHER_EVENTS = (0x313A62, bytes.fromhex("0f85d3000000"), b"\x90" * 6)
 # completion no container can be used any more) -> the mov byte becomes nops.
 GATHER_LOCK = (0x313B34, bytes.fromhex("c6816001000000"), b"\x90" * 7)
 GATHER = (GATHER_EVENTS, GATHER_LOCK)
+
+# vfs::mounter::finish 0x469F0, the last step of every mount: `mov
+# eax,[eax+34h]` (the mount's root) / `test eax,eax` / `jnz 46B0Fh`, then
+# for a mount without a root `xor ecx,ecx` / `jmp short 46B12h`, which goes
+# on to call file_system.on_mounted(NULL) -> `jmp short 46B36h` (the
+# function's end) / two nops. A mount has no root when it failed, as the
+# user folder's does when <Documents>\Survarium is not there and cannot be
+# made; resources_manager::on_mounted 0xF9A80 reads the node's flags at
+# +30h without looking (client_patch.md section 3.10).
+MOUNT_NO_ROOT = (0x46B0B, bytes.fromhex("33c9eb03"), bytes.fromhex("eb299090"))
+MOUNT_NO_ROOT_END = 0x46B36
+
+# The initializer of the option object -record_journal (0xA9D628):
+# `push 0A9D628h` / `mov eax,9DB51Ch` ("1") / `call 0DDFF0h`. The imm32
+# becomes the address of the exe's own "0" literal, the one the initializers
+# of other options give in the same three instructions (0x84CF92, 0x84E4F2,
+# 0x853B02). The journal is made by journaling 0xEB310 when
+# the option reads as set (game start, 0x1F69B2); with "0" it does not, and
+# -record_journal=1 still makes one. Only the imm32 is checked and
+# changed, and its base relocation stays as it is: the new value is an
+# address of the image too.
+JOURNAL_DEFAULT_VA = 0x851CC7                 # the `mov eax,imm32`
+JOURNAL_DEFAULT_ON, JOURNAL_DEFAULT_OFF = 0x9DB51C, 0x9DBF0C
+JOURNAL_DEFAULT = (JOURNAL_DEFAULT_VA, b"\xB8" + struct.pack("<I", JOURNAL_DEFAULT_ON),
+                   b"\xB8" + struct.pack("<I", JOURNAL_DEFAULT_OFF))
+JOURNAL_OPTION = 0xA9D628
 
 # game_world_core::on_hash_mismatch, 0x47B bytes of code + 5 int3 of padding
 HASH_MISMATCH_VA, HASH_MISMATCH_SIZE, HASH_MISMATCH_REGION = 0x325A60, 0x47B, 0x480
@@ -373,6 +414,10 @@ def build(original, mode, code=None, server=None):
     for site in GATHER:
         patch(data, *site)
         rewritten.append((site[0], site[0] + len(site[1])))
+    patch(data, *MOUNT_NO_ROOT)
+    rewritten.append((MOUNT_NO_ROOT[0], MOUNT_NO_ROOT[0] + len(MOUNT_NO_ROOT[1])))
+    # Not in `rewritten`: the relocation of this address must stay active.
+    patch(data, *JOURNAL_DEFAULT)
     if mode == "hash-mismatch":
         if len(cave) > HASH_MISMATCH_SIZE:
             sys.exit(f"the cave code is {len(cave)} bytes; {HASH_MISMATCH_SIZE} fit")
@@ -407,7 +452,7 @@ def build(original, mode, code=None, server=None):
     headers = Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, pe_checksum(data, headers.checksum_at))
     return data, (f"certificate check, mutex, minimum VRAM check, hash interval {HASH_INTERVAL_MS} ms, "
-                  f"patch revision {REVISION}, battery rule, "
+                  f"patch revision {REVISION}, battery rule, mount without a root, no journal by default, "
                   f"{upload_size} bytes of upload code {where} "
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", default login server {server}" if server is not None else ""))
