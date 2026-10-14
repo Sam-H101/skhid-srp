@@ -1866,9 +1866,13 @@ fn on_opposite_hash_phases_two_clients_are_asked_for_the_world_of_one_tick() {
         // What the server knows of each client's ticks is true: asked at
         // match clock c, the client uploads the tick of c + offset.
         let (low, high) = bench.game().upload_offset(place).expect("bounds");
-        let truth =
-            i64::from(bench.clients[place].clock()) - i64::from(bench.clock()) - i64::from(HORIZON_MS);
-        assert!(low <= truth && truth < high, "{place}: {truth} in {low}..{high}");
+        let truth = i64::from(bench.clients[place].clock())
+            - i64::from(bench.clock())
+            - i64::from(HORIZON_MS);
+        assert!(
+            low <= truth && truth < high,
+            "{place}: {truth} in {low}..{high}"
+        );
     }
     // Still starved of hashes, and said so; nobody resynced over it.
     assert!(bench.game().hash_starved());
@@ -1907,7 +1911,10 @@ fn on_opposite_hash_phases_one_patched_client_is_asked_for_the_others_ticks() {
     // Every world asked for now falls on a tick player 1 sends a hash
     // for (the ones ending in 50), and is trusted by the two of them.
     assert!(new.len() >= 9, "{new:?}");
-    assert!(new.iter().all(|time| *time > switched && time % 100 == 50), "{new:?}");
+    assert!(
+        new.iter().all(|time| *time > switched && time % 100 == 50),
+        "{new:?}"
+    );
     assert_eq!(bench.game().trusted_by(), 2);
     assert_eq!(bench.clients[1].uploads, 0);
     bench.assert_no_faults();
@@ -1945,12 +1952,21 @@ fn what_each_player_has_left_comes_with_the_result() {
     let result = bench.results.try_recv().expect("a result");
     assert_eq!(result.end, MatchEnd::ModeRule);
     assert_eq!(result.team_points, [10, 3]);
-    let supplies = result.players[0].supplies.as_ref().expect("player 0's block");
+    let supplies = result.players[0]
+        .supplies
+        .as_ref()
+        .expect("player 0's block");
     assert!(supplies.alive);
     assert_eq!(supplies.kit, 0);
     assert_eq!(supplies.items.len(), 1);
-    assert_eq!((supplies.items[0].stack, supplies.items[0].stored), (false, 990_000));
-    let supplies = result.players[1].supplies.as_ref().expect("player 1's block");
+    assert_eq!(
+        (supplies.items[0].stack, supplies.items[0].stored),
+        (false, 990_000)
+    );
+    let supplies = result.players[1]
+        .supplies
+        .as_ref()
+        .expect("player 1's block");
     assert!(!supplies.alive);
     assert_eq!(supplies.items[0].stored, 1_000_000);
     bench.assert_no_faults();
@@ -1979,10 +1995,18 @@ fn the_inputs_since_a_snapshot_go_between_the_time_and_the_world() {
     }
     assert_eq!(bench.stages(), "LL");
     let joiner = &bench.clients[1];
-    let time = first(joiner, |message| matches!(message, ServerMessage::SetTime { .. })).unwrap();
-    let relay =
-        first(joiner, |message| matches!(message, ServerMessage::InputRelay { .. })).unwrap();
-    let world = first(joiner, |message| matches!(message, ServerMessage::Snapshot { .. })).unwrap();
+    let time = first(joiner, |message| {
+        matches!(message, ServerMessage::SetTime { .. })
+    })
+    .unwrap();
+    let relay = first(joiner, |message| {
+        matches!(message, ServerMessage::InputRelay { .. })
+    })
+    .unwrap();
+    let world = first(joiner, |message| {
+        matches!(message, ServerMessage::Snapshot { .. })
+    })
+    .unwrap();
     assert!(time < relay && relay < world, "{time} {relay} {world}");
     // Its own entry is for a tick about 300 ms ahead of the clock.
     let entered = joiner
@@ -2038,7 +2062,9 @@ fn a_resynced_client_gets_the_others_inputs_ahead_of_its_world_and_never_its_own
                 *time,
                 since
                     .iter()
-                    .filter(|message| matches!(message, ServerMessage::SetTime { generation: 1, .. }))
+                    .filter(|message| {
+                        matches!(message, ServerMessage::SetTime { generation: 1, .. })
+                    })
                     .count(),
             ),
             _ => unreachable!(),
@@ -2050,9 +2076,10 @@ fn a_resynced_client_gets_the_others_inputs_ahead_of_its_world_and_never_its_own
         let ahead = since[..world]
             .iter()
             .filter(|message| match message {
-                ServerMessage::InputRelay { input, .. } => {
-                    input.time.resolve(bench.clock()).is_some_and(|at| at > world_time)
-                }
+                ServerMessage::InputRelay { input, .. } => input
+                    .time
+                    .resolve(bench.clock())
+                    .is_some_and(|at| at > world_time),
                 _ => false,
             })
             .count();
@@ -2359,17 +2386,20 @@ fn a_resynced_clients_world_waits_for_its_replay_and_is_never_old() {
     holding.store(false, Ordering::Relaxed);
     until_playing(&mut bench, 500, |_| false);
     assert_eq!(bench.clients[2].snapshots().len(), 1);
-    assert_eq!(bench.stages(), "LLw");
-    // ... until a fresh one comes, with a time and a replay of its own.
+    // ... and its generation and replay are kept ...
+    assert_eq!(bench.stages(), "LLt");
+    assert_eq!(bench.game().generation(2), Some(1));
+    // ... until a fresh one comes.
     release(&mut bench, &holding);
     assert!(until_playing(&mut bench, 5_000, |bench| {
         bench.clients[2].snapshots().len() == 2
     }));
     let snapshots = bench.clients[2].snapshots();
-    assert_eq!(snapshots[1].0, 2);
+    assert_eq!(snapshots[1].0, 1);
     let age = bench.clock() - snapshots[1].1;
     assert!(age <= 1_000, "{snapshots:?}, {age} ms old");
-    let (time, world) = sync_span(&bench.clients[2], 2);
+    assert_eq!(generations(&bench.clients[2]), [0, 1]);
+    let (time, world) = sync_span(&bench.clients[2], 1);
     let replayed = bench.clients[2].taken[time..world]
         .iter()
         .filter(|message| matches!(message, ServerMessage::InputRelay { .. }))
@@ -2539,6 +2569,150 @@ fn a_relay_that_reached_a_game_past_its_history_keeps_its_resync_past_it() {
     let snapshots = bench.clients[2].snapshots();
     assert_eq!(snapshots.len(), 2, "{snapshots:?}");
     assert!(snapshots[1].1 >= floor, "{snapshots:?} {floor}");
+    bench.assert_no_faults();
+}
+
+/// The third client, on a line of `round_trip` ms both ways, goes its own
+/// way and is resynced while the first two play and give worlds as they
+/// are asked. Returns the generations of the 0xE5s of its resync.
+fn far_resync(round_trip: u64) -> BTreeSet<u8> {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    bench.one_way = vec![0, 0, round_trip / 2];
+    // Its round trip is measured, and its clock put right.
+    until_playing(&mut bench, 12_000, |_| false);
+    let before = set_times(&bench.clients[2]).len();
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    assert!(until_playing(&mut bench, 20_000, |bench| {
+        bench.game().resyncs(2) == 1
+    }));
+    let begun = bench.ms;
+    assert!(
+        until_playing(&mut bench, 10_000, |bench| {
+            bench.stages() == "LLL" && bench.clients[2].model.syncs == 2
+        }),
+        "{}",
+        bench.stages()
+    );
+    // In some round trips and a wait for a fresh world, never 20 s.
+    assert!(bench.ms - begun < 5_000, "{} ms", bench.ms - begun);
+    let generations = set_times(&bench.clients[2])[before..]
+        .iter()
+        .copied()
+        .collect();
+    // And it stays in step.
+    until_playing(&mut bench, 5_000, |_| false);
+    assert_eq!(bench.game().resyncs(2), 1);
+    assert_eq!(bench.game().slow_loads(2), 0);
+    assert_eq!(bench.stages(), "LLL");
+    bench.assert_no_faults();
+    generations
+}
+
+#[test]
+fn a_resync_on_a_line_of_300_ms_takes_one_generation() {
+    let generations = far_resync(300);
+    assert_eq!(generations.len(), 1, "{generations:?}");
+}
+
+#[test]
+fn a_resync_on_a_line_of_500_ms_takes_one_generation() {
+    let generations = far_resync(500);
+    assert_eq!(generations.len(), 1, "{generations:?}");
+}
+
+#[test]
+fn a_clock_correction_still_running_is_ended_ahead_of_every_0xe5() {
+    use std::sync::Mutex;
+    use survarium::v026g::match_msgs::clock::{FAST_FROM_REVISION, STOCK_FACTOR};
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench
+        .server
+        .revisions
+        .insert(session_of(2), FAST_FROM_REVISION - 1);
+    bench.clients[2].model.clock_factor = Some(STOCK_FACTOR);
+    // The messages (id, payload) of each datagram to the third client
+    // with a 0xE5.
+    type Datagram = Vec<(u8, Vec<u8>)>;
+    let seen: Arc<Mutex<Vec<Datagram>>> = Arc::default();
+    let record = seen.clone();
+    bench.clients[2].lose = Some(Box::new(move |datagram| {
+        if let Ok(parsed) = wire::parse(Table::Match, Direction::ToClient, datagram, 1)
+            && parsed
+                .messages
+                .iter()
+                .any(|message| message.id == id::SET_TIME)
+        {
+            record.lock().unwrap().push(
+                parsed
+                    .messages
+                    .iter()
+                    .map(|message| (message.id, message.payload.to_vec()))
+                    .collect(),
+            );
+        }
+        false
+    }));
+    bench.join_all();
+    let off = |bench: &Bench| i64::from(bench.clock()) - i64::from(bench.clients[2].clock());
+    assert!(bench.until(60_000, |bench| {
+        off(bench).abs() <= 10 && bench.clients[2].model.correction_left() == 0.0
+    }));
+    bench.run(3_000);
+    seen.lock().unwrap().clear();
+    let offsets = |bench: &Bench| {
+        bench.clients[2].got(|message| match message {
+            ServerMessage::ClockOffset(offset) => Some(*offset),
+            _ => None,
+        })
+    };
+    let before = offsets(&bench).len();
+    // Its clock falls 1.2 s behind: a correction of 24 s at 5 % ...
+    let clock = bench.clients[2].model.clock.unwrap();
+    bench.clients[2].model.clock = Some(clock - 1_200);
+    assert!(until_playing(&mut bench, 5_000, |bench| {
+        offsets(bench).len() > before
+    }));
+    assert_ne!(offsets(&bench)[before], 0);
+    // ... during which its world goes its own way: it is resynced once the
+    // resync was put off for as long as it may be (20 s).
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    assert!(until_playing(&mut bench, 30_000, |bench| bench
+        .game()
+        .resyncs(2)
+        == 1));
+    assert!(bench.clients[2].model.correction_left() != 0.0);
+    assert!(until_playing(&mut bench, 10_000, |bench| {
+        bench.stages() == "LLL" && bench.clients[2].model.syncs == 2
+    }));
+    // Every 0xE5 until the game answered one went behind a 0xE7 of offset
+    // 0, in its datagram (the last, with the world, needs none: the game
+    // took one) ...
+    let seen = seen.lock().unwrap().clone();
+    assert!(seen.len() >= 2, "{seen:?}");
+    let stop = (id::CLOCK_OFFSET, vec![0, 0]);
+    let mut stops = 0;
+    for (n, messages) in seen.iter().enumerate() {
+        let at = messages
+            .iter()
+            .position(|(id, _)| *id == id::SET_TIME)
+            .unwrap();
+        if at > 0 && messages[at - 1] == stop {
+            stops += 1;
+        } else {
+            assert!(n > 0 && n + 1 == seen.len(), "{n}: {messages:?}");
+        }
+    }
+    assert!(stops >= 1);
+    // ... and no 0xE7 of offset 0 went by itself.
+    let sent = offsets(&bench)
+        .into_iter()
+        .filter(|offset| *offset == 0)
+        .count();
+    assert_eq!(sent, stops);
     bench.assert_no_faults();
 }
 

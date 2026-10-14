@@ -888,6 +888,44 @@ fn a_group_member_whose_game_never_comes_is_left_out_and_the_rest_enter() {
 }
 
 #[test]
+fn a_member_started_once_more_gives_its_caught_up_group_its_extra_time() {
+    let mut bench = running();
+    let reserved = bench.ms;
+    let places = reserve_group(&mut bench, 2);
+    bench.join(places[0]);
+    // The second's world is not the others' from its first report on: it
+    // is started once more, with 30 s more to catch up in.
+    bench.clients[places[1]].no_hashes = true;
+    bench.join(places[1]);
+    bench.clients[places[1]].sim.salt_from = Some((0, 7));
+    bench.clients[places[1]].no_hashes = false;
+    assert!(bench.until(10_000, |b| b.clients[places[1]].upload_requests == 1));
+    // From then on it reports nothing for a while.
+    bench.clients[places[1]].no_hashes = true;
+    assert!(bench.until(5_000, |b| b.clients[places[1]].snapshots().len() == 2));
+    // The first caught up long ago; it waits past its own 60 s, for as
+    // long as the second may take.
+    while bench.ms < reserved + 65_000 {
+        bench.step(25);
+    }
+    for place in &places {
+        assert!(!bench.clients[*place].disconnected, "{place}");
+        assert!(bench.registry.seat(session_of(*place)).is_some(), "{place}");
+    }
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    // The second catches up: both enter.
+    bench.clients[places[1]].no_hashes = false;
+    assert!(bench.until(10_000, |b| {
+        b.clients[..2].iter().all(|c| {
+            places
+                .iter()
+                .all(|place| c.entered().contains(&(*place as u8)))
+        })
+    }));
+    bench.assert_no_faults();
+}
+
+#[test]
 fn a_group_member_that_leaves_is_left_out_and_the_rest_enter() {
     let mut bench = running();
     let places = reserve_group(&mut bench, 2);

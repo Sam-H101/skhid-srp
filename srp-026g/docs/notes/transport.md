@@ -715,7 +715,11 @@ together, as many to a datagram as fit (an EB is 11 bytes: some 44 to a
 datagram). It goes at once, and takes the waiting ones along, when:
 
 - anything else is queued: E5, E6 and E7 (a wait would skew the round
-  trip and clock samples taken with them), E8, F3 to F6, E3, E4;
+  trip and clock samples taken with them), E8, F3 to F6, E3, E4, and a
+  short-lived id kept until acked (`send_kept`, `send_kept_every`: a
+  resync's replay and the relays to a loading game). Until 2026-10-14 a
+  kept relay was packed as a short-lived one (the test looked at the
+  table's lifetime, not the sender's), against what this list said;
 - a part of a split message may go;
 - the queue fills a datagram;
 - a client datagram has waited `ack_delay` (20 ms) for its ack: the ack
@@ -728,6 +732,23 @@ drops the whole datagram, so every message still passes the table checks
 before it is queued. With a server that looks every 5 ms a relay waits
 15 to 20 ms at most; a link then carries some 50 to 70 datagrams a second
 plus the pings, clock messages and acks, whatever the number of players.
+
+### 11.4 Two messages in one datagram; acks of copies (added 2026-10-14)
+
+`send_joined(first, second)` queues two whole messages that go in one
+datagram, `first` right ahead of `second`: the packer takes them together
+or not at all (a datagram that has no room for both closes before the
+first). The client handles the messages of a datagram in order (§2.3 step
+7), and a datagram lost loses both. The match server sends a 0xE7 of
+offset 0 ahead of a 0xE5 so while a clock correction may still run
+(match.md §29): alone after the 0xE5 it would be wrong. Both are send-once
+ids, so neither goes again by itself.
+
+A message is acked by an ack of any datagram it went in; the server
+remembers the newest 32 of them (`SEQS_PER_MESSAGE`; 8, the client's own
+ring for its messages, until 2026-10-14). A kept relay goes again every
+50 ms, so with 8 a round trip of 400 ms and more left every ack naming a
+copy already forgotten, and the message was never acked. 32 cover 1.6 s.
 
 ### 11.2 A late datagram of ours from the lap before (added 2026-10-14)
 

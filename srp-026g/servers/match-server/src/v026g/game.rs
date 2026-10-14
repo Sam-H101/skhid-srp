@@ -138,13 +138,29 @@ const RESYNC_REQUEST_GAP: Duration = Duration::from_secs(1);
 /// A player back in a match enters for the others first; an upload is asked
 /// for once the match clock is this far past its entry.
 const REJOIN_UPLOAD_AFTER_MS: u32 = 600;
-/// A resynced client's world goes only while its snapshot is at most this
-/// far behind the match clock. The client keeps the last 27 inputs, times
-/// and events of each player (rings, the oldest dropped), its own and the
-/// others', and its catch-up plays from the snapshot: a player who made
-/// more than about 26 inputs between the snapshot and the load is played
-/// wrong (PROVEN, match.md section 30).
+/// A resynced client's world goes only while its snapshot will be at most
+/// this far behind the match clock when it reaches the game: its age now
+/// and the way there (`resync_world_max_age`). The client keeps the last
+/// 27 inputs, times and events of each player (rings, the oldest dropped),
+/// its own and the others', and its catch-up plays from the snapshot: a
+/// player who made more than about 26 inputs between the snapshot and the
+/// load is played wrong (PROVEN, match.md section 30). The 200 ms to
+/// [`RESYNC_LOAD_BY_MS`] are for the world's parts.
 const RESYNC_WORLD_MAX_AGE_MS: u32 = 1_000;
+/// ... but a snapshot this old is always taken: an asked-for one is about
+/// as old when it is here. A line whose way leaves less than this gets the
+/// freshest there is rather than none (the load is then late by the rest).
+const RESYNC_WORLD_MIN_AGE_MS: u32 = 500;
+/// A resync whose only snapshot is too old keeps its generation and its
+/// acked replay and asks for a newer one; after this long without one
+/// it asks again ...
+const RESYNC_WORLD_WAIT: Duration = Duration::from_secs(1);
+/// ... this many times at most: then its world goes from the newest
+/// snapshot there is, however old (within [`TICK_REACH_MS`]).
+const RESYNC_WORLD_WAITS: u32 = 3;
+/// A resync's replay lost or not acked has the sync done again this many
+/// times at most; past that its world goes all the same.
+const REPLAY_REDONE: u32 = 3;
 /// For the same reason a resynced client's world that was not loaded (acked,
 /// less its way back) this long after its snapshot's time is sent again from
 /// a fresh snapshot, as the next generation ...
@@ -365,6 +381,9 @@ struct InFlight {
     flight: Flight,
     /// The match time it is for.
     time: u32,
+    /// A relay's first send (queued then; the transport sends it within
+    /// `Config::gather`).
+    sent: Option<Instant>,
 }
 
 /// A 0xE5 of the sync under way.
@@ -374,6 +393,9 @@ struct SetTimeSent {
     at: Instant,
     /// The clock it gave.
     start: u32,
+    /// A 0xE7 of offset 0 went ahead of it in its datagram: a game that
+    /// took it has no correction running (`Game::send_set_time`).
+    ends_correction: bool,
 }
 
 /// The 0xE5s of one sync remembered, to know their answers.
@@ -505,7 +527,17 @@ struct Peer {
     /// The snapshot time the replay of its resync was sent for, and when;
     /// what was sent of it and since, until acked.
     replayed: Option<(u32, Instant)>,
-    sync_pending: Vec<u64>,
+    /// The serials of that replay and of what was sent since, with when
+    /// each went and the tick of a relay sent since (none: a part of the
+    /// replay or a roster change, which its world always waits for).
+    sync_pending: Vec<(u64, Instant, Option<u32>)>,
+    /// Its resync's replay done again for being lost or not acked
+    /// ([`REPLAY_REDONE`] at most).
+    replay_redos: u32,
+    /// Waits for a newer snapshot with the replay acked, in this resync
+    /// ([`RESYNC_WORLD_WAITS`] at most), and when the last began.
+    world_waits: u32,
+    world_wait_since: Option<Instant>,
     /// Answers to its own inputs held while it is resynced.
     held_answers: Vec<Answer>,
     /// Answers sent to it, until acked: one that had not arrived when its
@@ -580,9 +612,15 @@ struct Peer {
     /// none once a 0xE7 moved its clock.
     clock_given: Option<(u32, Instant)>,
     /// Its hash reports for ticks past the snapshot of the world on its
-    /// way (`Stage::Syncing`): one the majority agrees with shows that the
+    /// way (`Stage::Syncing`), with when each came: one the majority
+    /// agrees with, made after the world could be there, shows that the
     /// world is loaded (`load_proven`).
-    load_reports: Vec<(u32, u32)>,
+    load_reports: Vec<(u32, u32, Instant)>,
+    /// Until when a 0xE7 it was sent may still be running in its game
+    /// (the time it takes, from its last possible start, and a round
+    /// trip): every 0xE5 until then goes behind a 0xE7 of offset 0, which
+    /// ends it (a 0xE5 does not, match.md section 29).
+    correction_ends: Option<Instant>,
     /// The last 0xE7, until acked: its serial, when it went, the offset and
     /// how long the game takes for it.
     clock_offset_pending: Option<(u64, Instant, i16, Duration)>,
@@ -988,6 +1026,9 @@ impl Game {
             resync_from: None,
             replayed: None,
             sync_pending: Vec::new(),
+            replay_redos: 0,
+            world_waits: 0,
+            world_wait_since: None,
             held_answers: Vec::new(),
             sent_answers: VecDeque::new(),
             resync_floor: 0,
@@ -1032,6 +1073,7 @@ impl Game {
             clock_offset_pending: None,
             clock_given: None,
             load_reports: Vec::new(),
+            correction_ends: None,
             missed: VecDeque::new(),
             in_flight: VecDeque::new(),
             relays_acked: 0,
@@ -1178,6 +1220,10 @@ impl Game {
             peer.time_confirmed = true;
             peer.clock_set = true;
             peer.clock_given = Some((sent.start, sent.at));
+            if sent.ends_correction {
+                // Its game took the 0xE7 of offset 0 ahead of that 0xE5.
+                peer.correction_ends = None;
+            }
             peer.round_trip = now.saturating_duration_since(sent.at).as_millis() as u32;
             log::debug!(
                 "Match {id:#x}: player {index} took its time (generation {}), round trip {} ms",
@@ -1224,7 +1270,7 @@ impl Game {
                 && time > from
                 && peer.load_reports.len() < LOAD_REPORTS_KEPT
             {
-                peer.load_reports.push((time, crc));
+                peer.load_reports.push((time, crc, now));
             }
             return;
         }
@@ -1556,7 +1602,14 @@ impl Game {
 
     /// A roster change happens: everyone simulating but `except` hears it,
     /// and the server's copy of the timelimit rule follows.
-    fn roster_change(&mut self, except: Option<usize>, index: usize, entered: bool, at: u32) {
+    fn roster_change(
+        &mut self,
+        except: Option<usize>,
+        index: usize,
+        entered: bool,
+        at: u32,
+        now: Instant,
+    ) {
         if entered && let Some(admission) = &mut self.admissions[index] {
             admission.enter();
         }
@@ -1597,7 +1650,7 @@ impl Game {
             {
                 track(peer, serial, Flight::Roster(message.clone()), at);
                 if timed {
-                    peer.sync_pending.push(serial);
+                    peer.sync_pending.push((serial, now, None));
                 }
             }
         }
@@ -1652,7 +1705,7 @@ impl Game {
             .max()
             .unwrap_or(0);
         let at = grid_up(self.clock(now).max(left + 1) + ROSTER_LEAD_MS);
-        self.roster_change(Some(index), index, true, at);
+        self.roster_change(Some(index), index, true, at, now);
         if let Some(peer) = self.peers[index].as_mut() {
             peer.entered_early = Some(at);
         }
@@ -1894,6 +1947,10 @@ impl Game {
     /// margin is for inputs on their way, newer than the newest seen. By
     /// the world alone (`SRP_RESYNC_WORLD_ONLY`) the clock stays where it
     /// is.
+    ///
+    /// Its clock once it took a 0xE5 of this sync: the latest clock any
+    /// copy of the generation gives (`given_clock`), not the last copy
+    /// sent: copies whose clocks disagree may arrive in any order.
     fn sync_start(&self, index: usize, time: u32, entering: bool, clock: u32, now: Instant) -> u32 {
         let others = self.others_live(index);
         if !entering {
@@ -1910,21 +1967,22 @@ impl Game {
                 .chain(peer.profiles_seen.iter().map(|(at, _)| *at))
                 .max()
                 .map_or(0, |at| at + RESYNC_CLOCK_MARGIN_MS);
+            // The game follows the last copy of the generation it took:
+            // the latest any copy gives (`given_clock`).
             let given = peer
-                .set_times
-                .back()
-                .filter(|_| peer.time_confirmed)
-                .map(|sent| (sent.start, sent.at))
-                .or(peer.clock_given);
+                .time_confirmed
+                .then(|| given_clock(&peer.set_times, now))
+                .flatten()
+                .or(peer.clock_given.map(|(start, at)| {
+                    start + now.saturating_duration_since(at).as_millis() as u32
+                }));
             let lag = estimated_lag(peer, now)
                 .unwrap_or(0)
                 .clamp(-MAX_SANE_LAG_MS, MAX_SANE_LAG_MS);
             let measured = (i64::from(clock + one_way(peer)) - lag).max(0) as u32;
             let own = match given {
                 // Known: no margin but the pings' own error, ahead only.
-                Some((start, at)) => {
-                    (start + now.saturating_duration_since(at).as_millis() as u32).max(measured)
-                }
+                Some(given) => given.max(measured),
                 None => measured + RESYNC_CLOCK_MARGIN_MS,
             };
             return own.max(newest);
@@ -1944,25 +2002,45 @@ impl Game {
         let clock = self.clock(now);
         let echo = self.mono(now) as u16;
         let start = self.sync_start(index, time, entering, clock, now);
+        let id = self.id;
         let Some(peer) = self.peers[index].as_mut() else {
             return start;
         };
         if peer.set_times.len() == SET_TIMES_KEPT {
             peer.set_times.pop_front();
         }
+        let set_time = ServerMessage::SetTime {
+            generation: peer.generation.0,
+            echo,
+            match_time: start,
+        };
+        // A 0xE5 sets the base of the game's clock and leaves a running
+        // 0xE7 correction in (match.md section 29): one that may still run
+        // is ended by a 0xE7 of offset 0 ahead of the 0xE5, in its
+        // datagram. Never alone after it: the drift until then would go
+        // into the base.
+        let ends_correction = peer.clock_offset_pending.is_some()
+            || peer.correction_ends.is_some_and(|end| now < end);
+        if ends_correction {
+            let stop = ServerMessage::ClockOffset(0);
+            match peer.transport.send_joined(
+                (stop.id(), &stop.payload()),
+                (set_time.id(), &set_time.payload()),
+            ) {
+                Ok(_) | Err(SendError::NotConnected) => {}
+                Err(error) => {
+                    log::warn!("Match {id:#x}: 0xE7 and 0xE5 to player {index} not sent: {error:?}")
+                }
+            }
+        } else {
+            send(peer, &set_time);
+        }
         peer.set_times.push_back(SetTimeSent {
             echo,
             at: now,
             start,
+            ends_correction,
         });
-        send(
-            peer,
-            &ServerMessage::SetTime {
-                generation: peer.generation.0,
-                echo,
-                match_time: start,
-            },
-        );
         start
     }
 
@@ -1979,9 +2057,13 @@ impl Game {
         // A clock correction not taken yet would move the clock this sync
         // gives: it goes no more.
         if let Some(peer) = self.peers[index].as_mut()
-            && let Some((serial, ..)) = peer.clock_offset_pending.take()
+            && let Some((serial, _, _, takes)) = peer.clock_offset_pending.take()
         {
             peer.transport.forget(serial, now);
+            // A copy on its way may still start it: the 0xE5s of this
+            // sync end it (`send_set_time`).
+            let runs = now + takes + Duration::from_millis(u64::from(peer.round_trip));
+            peer.correction_ends = Some(peer.correction_ends.map_or(runs, |end| end.max(runs)));
         }
         if self.settings.resync_world_only && !entering && self.others_live(index) {
             // `SRP_RESYNC_WORLD_ONLY`: no 0xE5, the world of the next
@@ -2006,6 +2088,7 @@ impl Game {
         peer.time_confirmed = false;
         peer.replayed = None;
         peer.sync_pending.clear();
+        peer.world_wait_since = None;
         if !entering && peer.resync_from.is_none() {
             peer.resync_from = Some(now);
             // An answer sent to an own input that may not have arrived
@@ -2090,13 +2173,13 @@ impl Game {
         peer.sync_pending.clear();
         for message in &replay {
             if let Some(serial) = send_kept(peer, message) {
-                peer.sync_pending.push(serial);
+                peer.sync_pending.push((serial, now, None));
             }
         }
         for (at, message) in &events {
             if let Some(serial) = send(peer, message) {
                 track(peer, serial, Flight::Roster(message.clone()), *at);
-                peer.sync_pending.push(serial);
+                peer.sync_pending.push((serial, now, None));
             }
         }
         log::debug!(
@@ -2108,72 +2191,124 @@ impl Game {
     }
 
     /// The resync of the client at `index`, which took its time, begun at
-    /// `since`: its replay (`send_replay`), then, once every part of
-    /// it and every relay and roster change sent since is acked, its
-    /// world. The world is the newest snapshot from `time` on that is at
-    /// most [`RESYNC_WORLD_MAX_AGE_MS`] old: the replay sent for `time`
-    /// holds whatever a newer one needs. With none such it waits for one
-    /// (a new 0xE5 and replay follow); after [`SNAPSHOT_GIVE_UP`] it takes
-    /// what there is.
+    /// `since`: its replay (`send_replay`), then, once every part of it and
+    /// every relay and roster change sent since is acked, its world. The
+    /// world is the newest snapshot from `time` on that is young enough to
+    /// be loaded in time (`resync_world_max_age`): the replay sent for
+    /// `time` holds whatever a newer one needs, and the inputs before a
+    /// newer one's time are the oldest in the game's rings, the first to
+    /// go. With none such, the generation and its acked replay are kept,
+    /// a newer snapshot is asked for at once, and the world goes when one
+    /// comes: a new 0xE5 and replay would take two more round trips, and on
+    /// a line of about 250 ms and more a snapshot is never young enough
+    /// after them (live, 2026-10-14: 20 s of new generations). After
+    /// [`RESYNC_WORLD_WAITS`] such waits, or [`SNAPSHOT_GIVE_UP`], the
+    /// newest snapshot there is goes.
+    ///
+    /// A replay lost, or not acked in [`REPLAY_ACK_WAIT`], has the sync
+    /// done again, [`REPLAY_REDONE`] times at most; then the world goes
+    /// all the same.
     fn resync_timed(&mut self, index: usize, time: u32, since: Instant, now: Instant) {
         let clock = self.clock(now);
-        let Some(peer) = self.peers[index].as_ref() else {
+        let id = self.id;
+        let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
-        let Some((replayed_for, replayed_at)) = peer.replayed else {
+        let Some((replayed_for, _)) = peer.replayed else {
             self.send_replay(index, time, now);
             return;
         };
-        if peer
+        let lost = peer
             .sync_pending
             .iter()
-            .any(|serial| peer.transport.is_lost(*serial))
-        {
-            self.redo_sync(index, false, "a roster change of its replay was lost", now);
-            return;
-        }
-        if !peer
+            .any(|(serial, ..)| peer.transport.is_lost(*serial));
+        let unacked = peer
             .sync_pending
             .iter()
-            .all(|serial| peer.transport.is_delivered(*serial))
-        {
-            if now.saturating_duration_since(replayed_at) >= REPLAY_ACK_WAIT {
-                let why = format!(
+            .filter(|(serial, ..)| !peer.transport.is_delivered(*serial))
+            .map(|(_, at, _)| *at)
+            .min();
+        let overdue =
+            unacked.is_some_and(|at| now.saturating_duration_since(at) >= REPLAY_ACK_WAIT);
+        if lost || overdue {
+            let why = if lost {
+                "a roster change of its replay was lost".to_owned()
+            } else {
+                format!(
                     "its replay was not acked in {} s",
                     REPLAY_ACK_WAIT.as_secs()
-                );
+                )
+            };
+            if peer.replay_redos < REPLAY_REDONE {
+                peer.replay_redos += 1;
+                let why = format!("{why} ({} of {REPLAY_REDONE} times)", peer.replay_redos);
                 self.redo_sync(index, false, &why, now);
+                return;
             }
-            return;
+            // A line that loses it again and again: the world goes, and the
+            // game may be out of step (its hashes will say).
+            log::warn!(
+                "Match {id:#x}: player {index}: {why}, after {REPLAY_REDONE} syncs done again for \
+                 that; its world goes all the same"
+            );
+            peer.sync_pending.clear();
         }
-        let given_up = now.saturating_duration_since(since) >= SNAPSHOT_GIVE_UP;
+        let given_up = peer.world_waits >= RESYNC_WORLD_WAITS
+            || now.saturating_duration_since(since) >= SNAPSHOT_GIVE_UP;
         let max_age = if given_up {
             TICK_REACH_MS
         } else {
-            RESYNC_WORLD_MAX_AGE_MS
+            resync_world_max_age(one_way(peer))
         };
         let snapshot = self
             .usable_snapshot(index, clock, max_age, false)
             .filter(|snapshot| snapshot.time >= replayed_for);
+        let Some(peer) = self.peers[index].as_mut() else {
+            return;
+        };
         if let Some(snapshot) = snapshot {
-            self.send_sync(index, snapshot, false, now);
+            // The replay, every roster change and every relay up to the
+            // world's time are in the game's lists first: one older than
+            // the world that came after it would be moved by the game
+            // (match.md section 5.1). So is every relay that should have
+            // been acked by now (a copy lost: the next would come after
+            // the world, perhaps past the game's history). A later relay
+            // still on its way, sent ahead of the world, may be acked
+            // after it: on a long line some always are, and the world
+            // would never go.
+            let acked_by = Duration::from_millis(u64::from(
+                peer.round_trip + RESYNC_WORLD_RESEND_MARGIN_MS * 2,
+            ));
+            let waits = peer.sync_pending.iter().any(|(serial, sent, tick)| {
+                (tick.is_none_or(|tick| tick <= snapshot.time)
+                    || now.saturating_duration_since(*sent) >= acked_by)
+                    && !peer.transport.is_delivered(*serial)
+            });
+            if !waits {
+                self.send_sync(index, snapshot, false, now);
+            }
             return;
         }
-        log::info!(
-            "Match {:#x}: player {index} has its replay since {replayed_for} ms; no snapshot from \
-             then on is {RESYNC_WORLD_MAX_AGE_MS} ms fresh, it waits for a newer one",
-            self.id
-        );
-        if let Some(peer) = self.peers[index].as_mut() {
-            peer.stage = Stage::WaitingSnapshot {
-                since: now,
-                entering: false,
-            };
-            // A new 0xE5 and replay go with the next snapshot.
-            peer.time_confirmed = false;
-            peer.set_times.clear();
-            peer.replayed = None;
-            peer.sync_pending.clear();
+        let newest = self.newest_snapshot().map(|snapshot| snapshot.time);
+        let Some(peer) = self.peers[index].as_mut() else {
+            return;
+        };
+        let due = peer
+            .world_wait_since
+            .is_none_or(|at| now.saturating_duration_since(at) >= RESYNC_WORLD_WAIT);
+        if due {
+            peer.world_waits += 1;
+            peer.world_wait_since = Some(now);
+            log::info!(
+                "Match {id:#x}: player {index} has its replay since {replayed_for} ms; no snapshot \
+                 from then on is {max_age} ms fresh, a newer one is asked for (generation {} \
+                 kept; {} of {RESYNC_WORLD_WAITS} waits; the newest at {:?} ms, its floor {} ms, \
+                 clock {clock} ms)",
+                peer.generation.0,
+                peer.world_waits,
+                newest,
+                peer.resync_floor
+            );
         }
         self.request_upload(index, now, RESYNC_REQUEST_GAP);
     }
@@ -2344,12 +2479,23 @@ impl Game {
     /// of them never acked, though loaded (live, 2026-10-14: the right hash
     /// 230 to 290 ms after the burst, in 45 of 47 syncs, and the sync done
     /// again all the same). A report that does not agree proves nothing: a
-    /// game goes on reporting while its world is on the way.
+    /// game goes on reporting while its world is on the way, from the old
+    /// world. So only a report that came at least the line's shortest
+    /// round trip after the world first went counts (sooner, it was made
+    /// before the world could be there), of a tick past the world's time,
+    /// with the CRC the majority has for that tick.
     fn load_proven(&self, index: usize) -> bool {
         self.peers[index].as_ref().is_some_and(|peer| {
-            peer.load_reports
-                .iter()
-                .any(|&(time, crc)| self.majority(time) == Some(crc))
+            let Stage::Syncing { time: from, .. } = peer.stage else {
+                return false;
+            };
+            let Some(sent) = peer.sync_sent_at else {
+                return false;
+            };
+            let earliest = sent + Duration::from_millis(u64::from(shortest_round_trip(peer)));
+            peer.load_reports.iter().any(|&(time, crc, at)| {
+                time > from && at >= earliest && self.majority(time) == Some(crc)
+            })
         })
     }
 
@@ -2368,6 +2514,7 @@ impl Game {
             peer.held.clear();
             peer.replayed = None;
             peer.sync_pending.clear();
+            peer.world_wait_since = None;
             peer.stage = Stage::WaitingSnapshot {
                 since: now,
                 entering,
@@ -2437,6 +2584,9 @@ impl Game {
                 peer.slow_loads.min(SLOW_LOADS_REDONE)
             );
             peer.slow_loads = 0;
+            peer.replay_redos = 0;
+            peer.world_waits = 0;
+            peer.world_wait_since = None;
         } else {
             log::info!("Match {id:#x}: player {index} is in sync");
         }
@@ -2458,7 +2608,7 @@ impl Game {
             // hash, independently of this snapshot's transport ACK.
         } else if entering {
             let at = grid_up(clock.max(time + 1) + ROSTER_LEAD_MS);
-            self.roster_change(None, index, true, at);
+            self.roster_change(None, index, true, at, now);
             log::info!("Match {id:#x}: player {index} entered at {at} ms");
         } else if !self.send_held_answers(index, time, now) {
             // Its clock was put at the match clock, or ahead of it by its
@@ -2489,9 +2639,7 @@ impl Game {
         if held.is_empty() {
             return false;
         }
-        let client_clock = peer.set_times.back().map_or(clock, |sent| {
-            sent.start + now.saturating_duration_since(sent.at).as_millis() as u32
-        });
+        let client_clock = given_clock(&peer.set_times, now).unwrap_or(clock);
         let past =
             |answer: &Answer| answer.time > time || answer.moved_to.is_some_and(|to| to > time);
         let lost = held
@@ -2760,7 +2908,7 @@ impl Game {
                     let round_trip = usual_round_trip(&peer.round_trips, peer.round_trip);
                     let until = relay_deadline(round_trip, clock, time, now);
                     if let Some(serial) = send_until(peer, &message, until) {
-                        track(peer, serial, Flight::Relay, time);
+                        track_sent(peer, serial, Flight::Relay, time, Some(now));
                     }
                 }
                 // A game with no world yet: in no hurry, and it acks ten
@@ -2781,7 +2929,7 @@ impl Game {
                     ..
                 } if time > from && peer.replayed.is_some() => {
                     if let Some(serial) = send_kept(peer, &message) {
-                        peer.sync_pending.push(serial);
+                        peer.sync_pending.push((serial, now, Some(time)));
                     }
                 }
                 _ => {}
@@ -3576,7 +3724,7 @@ impl Game {
             .find(|(_, who, _)| *who == index)
             .map_or(0, |(at, _, _)| *at);
         let at = grid_up(self.clock(now).max(entered_at + 1) + ROSTER_LEAD_MS);
-        self.roster_change(Some(index), index, false, at);
+        self.roster_change(Some(index), index, false, at, now);
     }
 
     /// Bring a client's clock to the match clock: 0xE7 with the whole
@@ -3626,6 +3774,8 @@ impl Game {
         {
             peer.clock_offset_pending = Some((serial, now, offset, takes));
             peer.clock_given = None;
+            peer.correction_ends =
+                Some(now + takes + Duration::from_millis(u64::from(peer.round_trip)));
         }
         peer.correcting_until = Some(now + takes + CORRECTION_SETTLE);
         // Its clock moves against the match clock: so do its ticks.
@@ -3696,15 +3846,18 @@ impl Game {
     /// others have: out of step from that tick. A lost roster change goes
     /// once more, so that the client at least has the player.
     ///
-    /// A relay acked so late that it reached the game past its history
-    /// (its tick 500 ms or more behind the game's clock then: the ack's
-    /// time less the way back, on the game's clock) was moved by the game
-    /// to about its clock less 50 ms (match.md section 5.1). It is a tick
-    /// the client is out of step from, and the node stays in its lists
-    /// through a resync, where the replay's copy at the right tick is then
-    /// ignored as a duplicate (by time, recorded before the move): a
-    /// resync of it starts from a snapshot past the moved tick
-    /// (`resync_floor`; LIKELY, live 2026-10-14).
+    /// A relay that reached the game past its history (its tick 500 ms or
+    /// more behind the game's clock then) was moved by the game to about
+    /// its clock less 50 ms (match.md section 5.1). It is a tick the client
+    /// is out of step from, and the node stays in its lists through a
+    /// resync, where the replay's copy at the right tick is then ignored
+    /// as a duplicate (by time, recorded before the move): a resync of it
+    /// starts from a snapshot past the moved tick (`resync_floor`; LIKELY,
+    /// live 2026-10-14). The ack may name a copy sent again while an
+    /// earlier one had arrived in time, so a relay counts as moved only
+    /// when even its first copy, on the line's shortest way, came past the
+    /// game's history; the floor is put past the latest it can have come
+    /// (the ack's time less the way back, on the game's clock).
     fn check_in_flight(&mut self, index: usize, now: Instant) {
         let clock = self.clock(now);
         let Some(peer) = self.peers[index].as_mut() else {
@@ -3729,8 +3882,21 @@ impl Game {
                 let lag = estimated_lag(peer, now)
                     .unwrap_or(0)
                     .clamp(-MAX_SANE_LAG_MS, MAX_SANE_LAG_MS);
+                // The game's clock when it acked: the latest it can have
+                // had the relay.
                 let game = i64::from(clock) - i64::from(one_way(peer)) - lag;
-                if each.flight == Flight::Relay && i64::from(each.time) + 500 <= game {
+                // The earliest: its first copy, on the shortest way the
+                // line has shown. The ack may name a copy sent again, and
+                // an earlier copy may have arrived all the same (a game
+                // acks only its newest few seqs).
+                let earliest = each.sent.map(|sent| {
+                    let ago = now.saturating_duration_since(sent).as_millis() as i64;
+                    let way = i64::from(shortest_round_trip(peer) / 2);
+                    (i64::from(clock) - ago + way - lag).min(game)
+                });
+                let moved_for_sure = each.flight == Flight::Relay
+                    && earliest.is_some_and(|earliest| i64::from(each.time) + 500 <= earliest);
+                if moved_for_sure {
                     let moved = (game - 50).max(0) as u32;
                     peer.resync_floor = peer.resync_floor.max(moved + TICK_MS);
                     if peer.missed.len() == MISSED_KEPT {
@@ -4142,6 +4308,10 @@ impl Game {
                         && peer.transport.is_delivered(serial)
                     {
                         peer.clock_offset_pending = None;
+                        // Taken a way before this ack at the latest.
+                        let runs = now + takes;
+                        peer.correction_ends =
+                            Some(peer.correction_ends.map_or(runs, |end| end.max(runs)));
                         // It went again: the game took it about a way
                         // before this ack, not when it first went.
                         let took = now
@@ -4731,6 +4901,15 @@ fn one_way(peer: &Peer) -> u32 {
     (peer.round_trip / 2).min(RESYNC_ONE_WAY_MAX_MS)
 }
 
+/// How old a resynced client's snapshot may be when its world goes, the
+/// way to it being `one_way`: [`RESYNC_WORLD_MAX_AGE_MS`] at the load,
+/// and never less than [`RESYNC_WORLD_MIN_AGE_MS`] now.
+fn resync_world_max_age(one_way: u32) -> u32 {
+    RESYNC_WORLD_MAX_AGE_MS
+        .saturating_sub(one_way)
+        .max(RESYNC_WORLD_MIN_AGE_MS)
+}
+
 impl Answer {
     /// To a player input at `time` (0xF1/0xF2, or 0xEF/0xF0 to `moved_to`).
     fn input(message: ServerMessage, time: u32, moved_to: Option<u32>) -> Self {
@@ -4792,6 +4971,11 @@ fn answer_owner(peer: &mut Peer, mut answer: Answer, now: Instant) {
 
 /// Remember a message sent to the client, to see what becomes of it.
 fn track(peer: &mut Peer, serial: u64, flight: Flight, time: u32) {
+    track_sent(peer, serial, flight, time, None);
+}
+
+/// As [`track`], with when it was first sent (queued).
+fn track_sent(peer: &mut Peer, serial: u64, flight: Flight, time: u32, sent: Option<Instant>) {
     if peer.in_flight.len() == IN_FLIGHT_KEPT {
         peer.in_flight.pop_front();
     }
@@ -4799,7 +4983,29 @@ fn track(peer: &mut Peer, serial: u64, flight: Flight, time: u32) {
         serial,
         flight,
         time,
+        sent,
     });
+}
+
+/// The shortest round trip the client's line has shown lately: no copy of
+/// a message reaches it sooner than half of it.
+fn shortest_round_trip(peer: &Peer) -> u32 {
+    peer.round_trips
+        .iter()
+        .copied()
+        .min()
+        .map_or(peer.round_trip, |least| least.min(peer.round_trip))
+}
+
+/// The clock of a game that took a 0xE5 of its sync, now. It follows the
+/// last copy it received, which is not known here: the latest clock any
+/// copy of the generation gives, so that what is put past it is never
+/// behind it.
+fn given_clock(set_times: &VecDeque<SetTimeSent>, now: Instant) -> Option<u32> {
+    set_times
+        .iter()
+        .map(|sent| sent.start + now.saturating_duration_since(sent.at).as_millis() as u32)
+        .max()
 }
 
 fn input_summary(peer: &Peer) -> String {
@@ -5346,5 +5552,48 @@ mod tests {
             }
             assert!(misses <= 1, "{truth}: {misses} misses");
         }
+    }
+
+    #[test]
+    fn a_resynced_clock_is_the_latest_any_copy_of_the_0xe5_gives() {
+        // Two copies of one generation whose clocks disagree: the first
+        // went at 10 000 ms, the second 150 ms on with a clock 50 ms
+        // behind the first's. The game follows whichever it took last,
+        // and the server cannot tell which: 150 ms after the second, the
+        // first gives 10 300 ms and the second 10 250 ms.
+        let at = Instant::now();
+        let copies: VecDeque<SetTimeSent> = [
+            SetTimeSent {
+                echo: 1,
+                at,
+                start: 10_000,
+                ends_correction: false,
+            },
+            SetTimeSent {
+                echo: 2,
+                at: at + Duration::from_millis(150),
+                start: 10_100,
+                ends_correction: false,
+            },
+        ]
+        .into();
+        let now = at + Duration::from_millis(300);
+        // Not the last copy sent (it would put the clock behind the game's
+        // if the game took the first one last) ...
+        assert_eq!(given_clock(&copies, now), Some(10_300));
+        // ... and either way round.
+        let reversed: VecDeque<SetTimeSent> = copies.iter().rev().copied().collect();
+        assert_eq!(given_clock(&reversed, now), Some(10_300));
+        assert_eq!(given_clock(&VecDeque::new(), now), None);
+    }
+
+    #[test]
+    fn a_resync_worlds_age_limit_leaves_room_for_the_way_to_the_game() {
+        assert_eq!(resync_world_max_age(0), 1_000);
+        assert_eq!(resync_world_max_age(150), 850);
+        assert_eq!(resync_world_max_age(250), 750);
+        // A line too long for any snapshot to be loaded in time: the
+        // freshest one there is still goes.
+        assert_eq!(resync_world_max_age(700), RESYNC_WORLD_MIN_AGE_MS);
     }
 }

@@ -405,6 +405,17 @@ impl Game {
             }
         }
         let clock = self.clock(now);
+        // The group's latest deadline: a member started once more has
+        // more time (`check_joiner_worlds`), and the members that caught
+        // up wait for it that long, not their own (one pending group at a
+        // time).
+        let group_deadline = self
+            .admissions
+            .iter()
+            .flatten()
+            .filter(|a| !a.entered() && !a.failed())
+            .map(|a| a.since + PREPARE_TIMEOUT + a.extra_time)
+            .max();
         let mut caught_up = Vec::new();
         for index in self.formed.initial_players..count {
             let ready = self.peers[index]
@@ -419,6 +430,7 @@ impl Game {
             let connected = self.peers[index]
                 .as_ref()
                 .is_some_and(|p| p.stage != Stage::Gone);
+            let caught_up_now = self.caught_up(index, ready, clock);
             let admission = self.admissions[index].as_mut().unwrap();
             if admission.entered() {
                 continue;
@@ -442,10 +454,13 @@ impl Game {
                 admission.phase = AdmissionPhase::Failed;
                 admission.failed_alone = true;
             }
-            if !admission.failed()
-                && now.saturating_duration_since(admission.since)
-                    >= PREPARE_TIMEOUT + admission.extra_time
-            {
+            let own_deadline = admission.since + PREPARE_TIMEOUT + admission.extra_time;
+            let deadline = if caught_up_now || admission.waits_for_balance {
+                group_deadline.map_or(own_deadline, |group| group.max(own_deadline))
+            } else {
+                own_deadline
+            };
+            if !admission.failed() && now >= deadline {
                 log::warn!(
                     "Match {:#x}: new place {index} timed out during preparation or catch-up; the \
                      rest of its group goes on without it",
@@ -476,22 +491,7 @@ impl Game {
                 );
                 self.request_upload(index, now, Duration::ZERO);
             }
-            let ready_to_enter = ready
-                && self.peers[index]
-                    .as_ref()
-                    .is_some_and(|p| p.stage == Stage::Live)
-                && self.admissions[index]
-                    .as_ref()
-                    .unwrap()
-                    .catchup_hashes
-                    .iter()
-                    .any(|&(time, crc)| {
-                        time <= clock
-                            && clock - time <= FRESH_SNAPSHOT_MS
-                            && self.after_preparation(index, time)
-                            && self.majority(time) == Some(crc)
-                    });
-            if ready_to_enter {
+            if self.caught_up(index, ready, clock) {
                 caught_up.push(index);
             }
         }
@@ -551,9 +551,27 @@ impl Game {
                     "Match {:#x}: new place {index} caught up; entry scheduled for {at} ms",
                     self.id
                 );
-                self.roster_change(None, index, true, at);
+                self.roster_change(None, index, true, at, now);
             }
         }
+    }
+
+    /// Whether the newcomer at `index` (`ready`: every game installed its
+    /// place) plays the others' world: live, with a recent report of a tick
+    /// after its preparation that the majority agrees with.
+    fn caught_up(&self, index: usize, ready: bool, clock: u32) -> bool {
+        ready
+            && self.peers[index]
+                .as_ref()
+                .is_some_and(|p| p.stage == Stage::Live)
+            && self.admissions[index].as_ref().is_some_and(|admission| {
+                admission.catchup_hashes.iter().any(|&(time, crc)| {
+                    time <= clock
+                        && clock - time <= FRESH_SNAPSHOT_MS
+                        && self.after_preparation(index, time)
+                        && self.majority(time) == Some(crc)
+                })
+            })
     }
 
     /// Whether `entering` may enter without the members of their group that

@@ -40,7 +40,10 @@
 //! - Short-lived messages (the table's 250 ms ids: relays, roster changes,
 //!   drop orders) wait up to `Config::gather` after the last datagram with
 //!   messages, so that what comes meanwhile shares one datagram; anything
-//!   else that is queued takes them along at once (§11.1).
+//!   else that is queued takes them along at once (§11.1). One of those ids
+//!   kept until acked (`send_kept`) is not short-lived and does not wait.
+//! - Two messages sent joined (`send_joined`) go in one datagram, in their
+//!   order: a 0xE7 that ends a clock correction ahead of a 0xE5.
 //! - A client that took a late datagram of ours from the lap before as its
 //!   newest acks that seq from then on, which reads here as one we have
 //!   not sent yet. Our seq then skips ahead to it, and the client takes the
@@ -74,9 +77,13 @@ const PART_DATA: usize = MAX_BODY - 4;
 const MAX_AHEAD: u64 = 100;
 /// How far a unique or order id may run ahead of the oldest unacked one.
 const CHANNEL_WINDOW: u64 = 100;
-/// The client acks a message through the last 8 seqs it went under
-/// (pkt+0x5C ring); the server keeps as many.
-const SEQS_PER_MESSAGE: usize = 8;
+/// The datagrams a message went in that are remembered, the newest: an ack
+/// of any of them acks it. The client keeps the last 8 for its own messages
+/// (pkt+0x5C ring), but here a message sent again at the table's 50 ms
+/// over a round trip of 400 ms and more was never acked with 8: the acks
+/// that came named copies already forgotten (a resync's replay to a game
+/// 500 ms away was redone for ever). 32 cover 1.6 s of such copies.
+const SEQS_PER_MESSAGE: usize = 32;
 /// A message whose datagram is unacked while one sent this many later was
 /// acked is taken as lost and goes again at once.
 const FAST_RESEND_GAP: u64 = 3;
@@ -244,6 +251,9 @@ struct Outgoing {
     expires: Option<Instant>,
     /// It may wait for others to share its datagram (`Config::gather`).
     gathers: bool,
+    /// It goes in one datagram with the message queued right after it
+    /// ([`Transport::send_joined`]).
+    joined: bool,
     /// The datagrams it went out in (their running numbers), newest last.
     sent_in: VecDeque<u64>,
 }
@@ -882,6 +892,44 @@ impl Transport {
         }
     }
 
+    /// Two whole messages that go in one datagram, `first` ahead of
+    /// `second`: the client handles the messages of a datagram in order,
+    /// and a datagram lost loses both. For a 0xE7 that ends a clock
+    /// correction ahead of a 0xE5 (match.md section 29): alone after the
+    /// 0xE5 it would be wrong. Neither may be split; if either cannot be
+    /// sent, neither is.
+    pub fn send_joined(
+        &mut self,
+        first: (u8, &[u8]),
+        second: (u8, &[u8]),
+    ) -> Result<(u64, u64), SendError> {
+        for (id, payload) in [first, second] {
+            if 2 + payload.len() > MAX_BODY {
+                return Err(SendError::TooLarge(payload.len()));
+            }
+            if self.table.info(Direction::ToClient, id).is_none() {
+                return Err(SendError::UnknownId(id));
+            }
+        }
+        let a = self.send_for(first.0, first.1, None, None, None)?;
+        let b = match self.send_for(second.0, second.1, None, None, None) {
+            Ok(serial) => serial,
+            Err(error) => {
+                self.pending.retain(|message| message.serial != a);
+                return Err(error);
+            }
+        };
+        if let Some(message) = self
+            .pending
+            .iter_mut()
+            .rev()
+            .find(|message| message.serial == a)
+        {
+            message.joined = true;
+        }
+        Ok((a, b))
+    }
+
     fn send_for(
         &mut self,
         id: u8,
@@ -957,22 +1005,26 @@ impl Transport {
         };
         let serial = self.next_serial;
         self.next_serial += 1;
+        let lifetime = match (info.lifetime, kept) {
+            (Lifetime::For(_), Some(kept)) => kept,
+            (lifetime, _) => lifetime,
+        };
         let outgoing = |head: Vec<u8>, payload: &[u8]| Outgoing {
             serial,
             head,
             payload: payload.to_vec(),
             variable,
             channel,
-            lifetime: match (info.lifetime, kept) {
-                (Lifetime::For(_), Some(kept)) => kept,
-                (lifetime, _) => lifetime,
-            },
+            lifetime,
             resend: resend.unwrap_or(info.resend),
             expires: match info.lifetime {
                 Lifetime::For(_) => deadline,
                 Lifetime::Once | Lifetime::Forever => None,
             },
-            gathers: info.class == Class::Plain && matches!(info.lifetime, Lifetime::For(_)),
+            // Only what still has its short lifetime: one kept until acked
+            // (`send_kept`, a resync's replay) goes at once (`flush_due`).
+            gathers: info.class == Class::Plain && matches!(lifetime, Lifetime::For(_)),
+            joined: false,
             sent_in: VecDeque::new(),
         };
         if whole {
@@ -1290,8 +1342,19 @@ impl Transport {
         let mut taken = Vec::new();
         let mut used = 0;
         let mut bulk = self.bulk_budget;
+        // The second of a joined pair goes with the first, whatever else.
+        let mut with_first = false;
         for (index, message) in self.pending.iter().enumerate() {
-            if !may_go(message.channel) {
+            if std::mem::take(&mut with_first) {
+                used += message.multi_len();
+                taken.push(index);
+                continue;
+            }
+            let next = message
+                .joined
+                .then(|| self.pending.get(index + 1))
+                .flatten();
+            if !may_go(message.channel) || next.is_some_and(|next| !may_go(next.channel)) {
                 continue;
             }
             if message.is_part() && bulk == 0 {
@@ -1304,11 +1367,16 @@ impl Transport {
                 continue;
             }
             let cost = message.multi_len();
-            if !taken.is_empty() && (used + cost > room || taken.len() == MAX_MESSAGES) {
+            let pair = next.map_or(0, Outgoing::multi_len);
+            let count = 1 + usize::from(next.is_some());
+            if !taken.is_empty()
+                && (used + cost + pair > room || taken.len() + count > MAX_MESSAGES)
+            {
                 break;
             }
             used += cost;
             taken.push(index);
+            with_first = next.is_some();
             if message.is_part() {
                 bulk -= 1;
             }

@@ -656,6 +656,49 @@ fn a_message_that_may_not_wait_takes_the_relays_along() {
 }
 
 #[test]
+fn a_relay_kept_until_acked_does_not_wait_to_be_packed() {
+    let (mut transport, now) = connect_match();
+    transport.send(0xEB, &[1; 10]).unwrap();
+    assert_eq!(transport.poll(now).len(), 1);
+    // Within the gather time of the last datagram, a kept relay (a resync's
+    // replay) goes at once, as `flush_due` says.
+    transport.send_kept(0xEB, &[2; 10]).unwrap();
+    let datagrams = transport.poll(now + ms(2));
+    assert_eq!(datagrams.len(), 1);
+    assert_eq!(holding(&datagrams, &[2; 10]), 1);
+}
+
+#[test]
+fn two_messages_sent_joined_go_in_one_datagram_in_their_order() {
+    let (mut transport, now) = connect_match();
+    transport.send(0xEB, &[1; 10]).unwrap();
+    transport.poll(now);
+    // 45 relays nearly fill a datagram: the pair does not fit behind them
+    // and goes whole in the next one, 0xE7 ahead of 0xE5.
+    for n in 0..45u8 {
+        transport.send(0xEB, &[n; 10]).unwrap();
+    }
+    transport
+        .send_joined((0xE7, &[0, 0]), (0xE5, &[1; 7]))
+        .unwrap();
+    let datagrams = transport.poll(now + ms(1));
+    assert_eq!(datagrams.len(), 2);
+    let first = messages(Table::Match, &datagrams[0]);
+    assert!(first.iter().all(|(id, ..)| *id == 0xEB), "{first:?}");
+    let second: Vec<u8> = messages(Table::Match, &datagrams[1])
+        .iter()
+        .map(|(id, ..)| *id)
+        .collect();
+    let at = second.iter().position(|id| *id == 0xE7).unwrap();
+    assert_eq!(second[at + 1], 0xE5, "{second:?}");
+    // Sent once each, as the table has them.
+    assert!(transport.poll(now + ms(1_000)).iter().all(|datagram| {
+        carrying(std::slice::from_ref(datagram), 0xE5) == 0
+            && carrying(std::slice::from_ref(datagram), 0xE7) == 0
+    }));
+}
+
+#[test]
 fn a_full_datagram_of_relays_goes_without_waiting() {
     let (mut transport, now) = connect_match();
     transport.send(0xEB, &[1; 10]).unwrap();
