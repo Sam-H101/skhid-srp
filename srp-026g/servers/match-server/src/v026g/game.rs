@@ -158,6 +158,26 @@ const RESYNC_WORLD_WAIT: Duration = Duration::from_secs(1);
 /// ... this many times at most: then its world goes from the newest
 /// snapshot there is, however old (within [`TICK_REACH_MS`]).
 const RESYNC_WORLD_WAITS: u32 = 3;
+/// A resynced client's world, with a snapshot for it there, waits for what
+/// it needs (`Peer::sync_pending`) this long in all at most: then it goes
+/// without the rest, said in the log (a busy match on a lossy line acks
+/// some relay late all the time) ...
+const RESYNC_GATE_MAX: Duration = Duration::from_millis(1_000);
+/// ... and that gate is looked at this often at most, not on every poll
+/// (some 500 a second at 20 players).
+const RESYNC_GATE_EVERY: Duration = Duration::from_millis(15);
+/// Relays sent to a resynced client while its world waits, tracked for its
+/// gate at most (the replay and the roster changes always are): the acked
+/// ones go at every look, so this holds a round trip of relays and their
+/// lost copies. Past it the newest relays are not waited for: they are
+/// the least likely to be older than the world.
+const SYNC_PENDING_RELAYS: usize = 256;
+/// Generations of one resync at most: past them nothing more is done again
+/// for a replay lost or not acked, and the world goes by its gate's limit.
+const RESYNC_GENERATIONS_MAX: u32 = 8;
+/// The longest round trip that counts for a resynced world's age limit
+/// (`trip_one_way`): a line longer than this is no use anyway.
+const RESYNC_TRIP_MAX_MS: u32 = 1_500;
 /// A resync's replay lost or not acked has the sync done again this many
 /// times at most; past that its world goes all the same.
 const REPLAY_REDONE: u32 = 3;
@@ -375,6 +395,36 @@ enum Flight {
     Roster(ServerMessage),
 }
 
+/// What kind of message a resynced client's world waits for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateKind {
+    /// An input of the others in its replay (`send_replay`).
+    Replay,
+    /// A roster change, in its replay or since: kept until acked.
+    Roster,
+    /// An input of the others relayed since its replay: waited for only
+    /// if its tick is not past the world's.
+    Relay,
+}
+
+/// A message a resynced client's world waits for, until acked.
+#[derive(Clone, Copy, Debug)]
+struct Gated {
+    serial: u64,
+    sent: Instant,
+    tick: u32,
+    kind: GateKind,
+}
+
+impl Gated {
+    /// Whether a world of `time` waits for it: the replay and the roster
+    /// changes always, a relay only up to the world's time (a later one
+    /// that came after the world is no older than it, and never moved).
+    fn holds(&self, time: u32) -> bool {
+        self.kind != GateKind::Relay || self.tick <= time
+    }
+}
+
 /// A message sent to a client, waiting for its ack.
 struct InFlight {
     serial: u64,
@@ -527,15 +577,29 @@ struct Peer {
     /// The snapshot time the replay of its resync was sent for, and when;
     /// what was sent of it and since, until acked.
     replayed: Option<(u32, Instant)>,
-    /// The serials of that replay and of what was sent since, with when
-    /// each went and the tick of a relay sent since (none: a part of the
-    /// replay or a roster change, which its world always waits for).
-    sync_pending: Vec<(u64, Instant, Option<u32>)>,
+    /// What its world waits for, not acked yet: that replay and the roster
+    /// changes (`sync_pending`), and the relays sent since (`sync_relays`,
+    /// [`SYNC_PENDING_RELAYS`] at most). Acked entries go at every look at
+    /// the gate. Emptied at every new generation, when the world goes, and
+    /// at the end of the resync.
+    sync_pending: Vec<Gated>,
+    sync_relays: Vec<Gated>,
+    /// The most entries `sync_pending` had in this match (for the tests).
+    sync_pending_most: usize,
+    /// When its world first had a snapshot and waited for its gate, in
+    /// this generation ([`RESYNC_GATE_MAX`]); when the gate was last looked
+    /// at ([`RESYNC_GATE_EVERY`]) and how often in this match.
+    gate_since: Option<Instant>,
+    gate_checked: Option<Instant>,
+    gate_checks: u64,
     /// Its resync's replay done again for being lost or not acked
     /// ([`REPLAY_REDONE`] at most).
     replay_redos: u32,
-    /// Waits for a newer snapshot with the replay acked, in this resync
-    /// ([`RESYNC_WORLD_WAITS`] at most), and when the last began.
+    /// The generations of this resync ([`RESYNC_GENERATIONS_MAX`]).
+    resync_generations: u32,
+    /// Waits for a newer snapshot with the replay acked, in this
+    /// generation ([`RESYNC_WORLD_WAITS`] at most), and when the last
+    /// began.
     world_waits: u32,
     world_wait_since: Option<Instant>,
     /// Answers to its own inputs held while it is resynced.
@@ -1026,7 +1090,13 @@ impl Game {
             resync_from: None,
             replayed: None,
             sync_pending: Vec::new(),
+            sync_relays: Vec::new(),
+            sync_pending_most: 0,
+            gate_since: None,
+            gate_checked: None,
+            gate_checks: 0,
             replay_redos: 0,
+            resync_generations: 0,
             world_waits: 0,
             world_wait_since: None,
             held_answers: Vec::new(),
@@ -1629,15 +1699,19 @@ impl Game {
             };
             // A client in a resync had the roster changes up to its replay
             // with it (`send_replay`); before that, this one will be in it.
-            // Its world waits for those sent while it is timed.
-            let (to_resyncing, timed) = match peer.stage {
+            // Its world waits for those sent while it is timed. To it a
+            // roster change is kept until acked, whatever becomes of its
+            // `in_flight` (`send_sync` empties that), and forgotten only
+            // when a next generation's replay or world holds it
+            // (`clear_gate`).
+            let to_resyncing = match peer.stage {
                 Stage::Timing {
                     entering: false, ..
-                } => (peer.replayed.is_some(), true),
+                } => peer.replayed.is_some(),
                 Stage::Syncing {
                     entering: false, ..
-                } => (peer.resync_from.is_some(), false),
-                _ => (false, false),
+                } => peer.resync_from.is_some(),
+                _ => false,
             };
             // A game that enters and has its world on the way gets it as
             // its sync's inputs, kept: it must have it before its load.
@@ -1645,13 +1719,15 @@ impl Game {
                 send_waiting(peer, &message);
                 continue;
             }
-            if (peer.stage == Stage::Live || to_resyncing)
+            if to_resyncing {
+                if let Some(serial) = send_kept(peer, &message) {
+                    track(peer, serial, Flight::Roster(message.clone()), at);
+                    gate(peer, serial, now, at, GateKind::Roster);
+                }
+            } else if peer.stage == Stage::Live
                 && let Some(serial) = send(peer, &message)
             {
                 track(peer, serial, Flight::Roster(message.clone()), at);
-                if timed {
-                    peer.sync_pending.push((serial, now, None));
-                }
             }
         }
         self.events.push((at, index, entered));
@@ -2087,7 +2163,8 @@ impl Game {
         peer.set_times.clear();
         peer.time_confirmed = false;
         peer.replayed = None;
-        peer.sync_pending.clear();
+        clear_gate(peer, None, now);
+        peer.world_waits = 0;
         peer.world_wait_since = None;
         if !entering && peer.resync_from.is_none() {
             peer.resync_from = Some(now);
@@ -2109,6 +2186,9 @@ impl Game {
                 })
                 .collect();
             peer.held_answers.extend(unsure);
+        }
+        if !entering && peer.resync_from.is_some() {
+            peer.resync_generations += 1;
         }
         peer.stage = Stage::Timing {
             time: snapshot.time,
@@ -2158,11 +2238,11 @@ impl Game {
     /// it, to a game that still plays, would be moved by that game to a
     /// tick of its own if older than its horizon.
     fn send_replay(&mut self, index: usize, time: u32, now: Instant) {
-        let replay: Vec<ServerMessage> = self
+        let replay: Vec<(u32, ServerMessage)> = self
             .inputs
             .iter()
             .filter(|(at, from, _)| *at > time && *from != index)
-            .map(|(_, from, what)| relay(*from, what))
+            .map(|(at, from, what)| (*at, relay(*from, what)))
             .collect();
         let events = self.roster_since(index, time);
         let id = self.id;
@@ -2170,16 +2250,18 @@ impl Game {
             return;
         };
         peer.replayed = Some((time, now));
-        peer.sync_pending.clear();
-        for message in &replay {
+        clear_gate(peer, None, now);
+        // Kept until acked, and packed: the transport puts as many in a
+        // datagram as fit (transport.md section 11.1).
+        for (at, message) in &replay {
             if let Some(serial) = send_kept(peer, message) {
-                peer.sync_pending.push((serial, now, None));
+                gate(peer, serial, now, *at, GateKind::Replay);
             }
         }
         for (at, message) in &events {
-            if let Some(serial) = send(peer, message) {
+            if let Some(serial) = send_kept(peer, message) {
                 track(peer, serial, Flight::Roster(message.clone()), *at);
-                peer.sync_pending.push((serial, now, None));
+                gate(peer, serial, now, *at, GateKind::Roster);
             }
         }
         log::debug!(
@@ -2218,19 +2300,35 @@ impl Game {
             self.send_replay(index, time, now);
             return;
         };
+        // Looked at every RESYNC_GATE_EVERY at most; each look is one O(1)
+        // test per entry not acked yet.
+        if peer
+            .gate_checked
+            .is_some_and(|at| now.saturating_duration_since(at) < RESYNC_GATE_EVERY)
+        {
+            return;
+        }
+        peer.gate_checked = Some(now);
+        peer.gate_checks += 1;
+        prune_gate(peer);
+        // Roster changes are kept until acked now, never lost; this is
+        // for a transport that drops one all the same.
         let lost = peer
             .sync_pending
             .iter()
-            .any(|(serial, ..)| peer.transport.is_lost(*serial));
-        let unacked = peer
+            .any(|entry| peer.transport.is_lost(entry.serial));
+        let overdue = peer
             .sync_pending
             .iter()
-            .filter(|(serial, ..)| !peer.transport.is_delivered(*serial))
-            .map(|(_, at, _)| *at)
-            .min();
-        let overdue =
-            unacked.is_some_and(|at| now.saturating_duration_since(at) >= REPLAY_ACK_WAIT);
-        if lost || overdue {
+            .map(|entry| entry.sent)
+            .min()
+            .is_some_and(|at| now.saturating_duration_since(at) >= REPLAY_ACK_WAIT);
+        // A bad line is not taken through new generations for ever: the
+        // redos of this resync are capped, and so are its generations
+        // whatever made them.
+        let exhausted = peer.replay_redos >= REPLAY_REDONE
+            || peer.resync_generations >= RESYNC_GENERATIONS_MAX;
+        if (lost || overdue) && !exhausted {
             let why = if lost {
                 "a roster change of its replay was lost".to_owned()
             } else {
@@ -2239,30 +2337,49 @@ impl Game {
                     REPLAY_ACK_WAIT.as_secs()
                 )
             };
-            if peer.replay_redos < REPLAY_REDONE {
-                peer.replay_redos += 1;
-                let why = format!("{why} ({} of {REPLAY_REDONE} times)", peer.replay_redos);
-                self.redo_sync(index, false, &why, now);
-                return;
-            }
-            // A line that loses it again and again: the world goes, and the
-            // game may be out of step (its hashes will say).
-            log::warn!(
-                "Match {id:#x}: player {index}: {why}, after {REPLAY_REDONE} syncs done again for \
-                 that; its world goes all the same"
-            );
-            peer.sync_pending.clear();
+            peer.replay_redos += 1;
+            let why = format!("{why} ({} of {REPLAY_REDONE} times)", peer.replay_redos);
+            self.redo_sync(index, false, &why, now);
+            return;
         }
-        let given_up = peer.world_waits >= RESYNC_WORLD_WAITS
-            || now.saturating_duration_since(since) >= SNAPSHOT_GIVE_UP;
+        // Past the caps the replay stays kept and the world goes at once,
+        // without what is missing up to its time.
+        let stuck = lost || overdue;
+        let timed_out = now.saturating_duration_since(since) >= SNAPSHOT_GIVE_UP;
+        // Three waits of RESYNC_WORLD_WAIT each, the third one too.
+        let given_up = timed_out
+            || (peer.world_waits >= RESYNC_WORLD_WAITS
+                && peer
+                    .world_wait_since
+                    .is_some_and(|at| now.saturating_duration_since(at) >= RESYNC_WORLD_WAIT));
         let max_age = if given_up {
             TICK_REACH_MS
         } else {
-            resync_world_max_age(one_way(peer))
+            resync_world_max_age(trip_one_way(peer))
         };
-        let snapshot = self
+        let mut snapshot = self
             .usable_snapshot(index, clock, max_age, false)
             .filter(|snapshot| snapshot.time >= replayed_for);
+        if snapshot.is_none() && timed_out {
+            // No snapshot past its floor came in SNAPSHOT_GIVE_UP: the
+            // newest there is goes, floor or not, rather than none ever.
+            // Its replay is for `replayed_for`, so none older; and the
+            // wire's ticks must reach it. A held answer its game can no
+            // longer take is then done with as ever (`send_held_answers`).
+            snapshot = self.newest_snapshot().filter(|snapshot| {
+                snapshot.time >= replayed_for
+                    && snapshot.time + TICK_REACH_MS >= clock
+                    && self.after_preparation(index, snapshot.time)
+            });
+            if let Some(snapshot) = &snapshot {
+                log::warn!(
+                    "Match {id:#x}: player {index} had no snapshot past its floor in {} s; its \
+                     world goes from the newest, at {} ms",
+                    SNAPSHOT_GIVE_UP.as_secs(),
+                    snapshot.time
+                );
+            }
+        }
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
@@ -2270,21 +2387,43 @@ impl Game {
             // The replay, every roster change and every relay up to the
             // world's time are in the game's lists first: one older than
             // the world that came after it would be moved by the game
-            // (match.md section 5.1). So is every relay that should have
-            // been acked by now (a copy lost: the next would come after
-            // the world, perhaps past the game's history). A later relay
-            // still on its way, sent ahead of the world, may be acked
-            // after it: on a long line some always are, and the world
-            // would never go.
-            let acked_by = Duration::from_millis(u64::from(
-                peer.round_trip + RESYNC_WORLD_RESEND_MARGIN_MS * 2,
-            ));
-            let waits = peer.sync_pending.iter().any(|(serial, sent, tick)| {
-                (tick.is_none_or(|tick| tick <= snapshot.time)
-                    || now.saturating_duration_since(*sent) >= acked_by)
-                    && !peer.transport.is_delivered(*serial)
-            });
-            if !waits {
+            // (match.md section 5.1). A relay past the world's time is
+            // never waited for: on a busy match some always are on their
+            // way, and the world would never go. And the wait is capped:
+            // RESYNC_GATE_MAX in all, or as long as the snapshot stays
+            // young enough to be loaded in time.
+            let missing = peer
+                .sync_pending
+                .iter()
+                .chain(peer.sync_relays.iter())
+                .filter(|entry| entry.holds(snapshot.time))
+                .count();
+            if missing == 0 {
+                self.send_sync(index, snapshot, false, now);
+                return;
+            }
+            let gate_since = *peer.gate_since.get_or_insert(now);
+            let waited = now.saturating_duration_since(gate_since);
+            let edge = clock + 2 * RESYNC_GATE_EVERY.as_millis() as u32
+                >= snapshot.time + max_age;
+            if given_up || stuck || waited >= RESYNC_GATE_MAX || edge {
+                log::warn!(
+                    "Match {id:#x}: player {index}'s world of {} ms goes without {missing} \
+                     messages up to its time not acked yet, after {} ms of waiting for them \
+                     ({}; generation {})",
+                    snapshot.time,
+                    waited.as_millis(),
+                    if given_up {
+                        "given up"
+                    } else if stuck {
+                        "redos used up"
+                    } else if edge {
+                        "the snapshot would be too old"
+                    } else {
+                        "the gate's limit"
+                    },
+                    peer.generation.0
+                );
                 self.send_sync(index, snapshot, false, now);
             }
             return;
@@ -2380,6 +2519,17 @@ impl Game {
             return;
         };
         peer.reload_due = reload_due;
+        // What its world waited for and did not get acked: up to the
+        // world's time it is in the world, and a copy that came after it
+        // would be moved by the game; past it, it stays kept until acked.
+        let forgotten = clear_gate(peer, Some(snapshot.time), now);
+        if forgotten > 0 {
+            log::info!(
+                "Match {id:#x}: player {index}'s world of {} ms holds {forgotten} messages not \
+                 acked yet: no more copies of them go",
+                snapshot.time
+            );
+        }
         peer.missed.clear();
         peer.in_flight.clear();
         // Its reports up to now are of the world it leaves.
@@ -2513,7 +2663,9 @@ impl Game {
             // The next sync replays every input since its own snapshot.
             peer.held.clear();
             peer.replayed = None;
-            peer.sync_pending.clear();
+            // The next generation's replay or world holds all of it.
+            clear_gate(peer, None, now);
+            peer.world_waits = 0;
             peer.world_wait_since = None;
             peer.stage = Stage::WaitingSnapshot {
                 since: now,
@@ -2585,8 +2737,15 @@ impl Game {
             );
             peer.slow_loads = 0;
             peer.replay_redos = 0;
+            peer.resync_generations = 0;
             peer.world_waits = 0;
             peer.world_wait_since = None;
+            // What was kept of it since its world went stays kept until
+            // acked; only the tracking ends.
+            peer.sync_pending.clear();
+            peer.sync_relays.clear();
+            peer.gate_since = None;
+            peer.gate_checked = None;
         } else {
             log::info!("Match {id:#x}: player {index} is in sync");
         }
@@ -2929,7 +3088,7 @@ impl Game {
                     ..
                 } if time > from && peer.replayed.is_some() => {
                     if let Some(serial) = send_kept(peer, &message) {
-                        peer.sync_pending.push((serial, now, Some(time)));
+                        gate(peer, serial, now, time, GateKind::Relay);
                     }
                 }
                 _ => {}
@@ -4901,6 +5060,18 @@ fn one_way(peer: &Peer) -> u32 {
     (peer.round_trip / 2).min(RESYNC_ONE_WAY_MAX_MS)
 }
 
+/// The way to the client for a resynced world's age limit: half its usual
+/// (median) round trip, not capped at [`RESYNC_ONE_WAY_MAX_MS`] as the
+/// clock's [`one_way`] is (with that cap the limit's floor never applied),
+/// with round trips over [`RESYNC_TRIP_MAX_MS`] taken as that.
+fn trip_one_way(peer: &Peer) -> u32 {
+    age_limit_way(&peer.round_trips, peer.round_trip)
+}
+
+fn age_limit_way(round_trips: &VecDeque<u32>, last: u32) -> u32 {
+    usual_round_trip(round_trips, last).min(RESYNC_TRIP_MAX_MS) / 2
+}
+
 /// How old a resynced client's snapshot may be when its world goes, the
 /// way to it being `one_way`: [`RESYNC_WORLD_MAX_AGE_MS`] at the load,
 /// and never less than [`RESYNC_WORLD_MIN_AGE_MS`] now.
@@ -4967,6 +5138,57 @@ fn answer_owner(peer: &mut Peer, mut answer: Answer, now: Instant) {
         peer.sent_answers.pop_front();
     }
     peer.sent_answers.push_back(answer);
+}
+
+/// A message the world of the client's resync waits for (`Peer::sync_pending`).
+/// A relay past [`SYNC_PENDING_RELAYS`] is not tracked.
+fn gate(peer: &mut Peer, serial: u64, now: Instant, tick: u32, kind: GateKind) {
+    let entry = Gated {
+        serial,
+        sent: now,
+        tick,
+        kind,
+    };
+    if kind == GateKind::Relay {
+        if peer.sync_relays.len() >= SYNC_PENDING_RELAYS {
+            return;
+        }
+        peer.sync_relays.push(entry);
+    } else {
+        peer.sync_pending.push(entry);
+    }
+    let size = peer.sync_pending.len() + peer.sync_relays.len();
+    peer.sync_pending_most = peer.sync_pending_most.max(size);
+}
+
+/// The acked entries of the client's gate go: each is one O(1) look.
+fn prune_gate(peer: &mut Peer) {
+    let transport = &peer.transport;
+    peer.sync_pending
+        .retain(|entry| !transport.is_delivered(entry.serial));
+    peer.sync_relays
+        .retain(|entry| !transport.is_delivered(entry.serial));
+}
+
+/// The gate of the client's resync is emptied, for a new generation or
+/// with its world gone: what was not acked of it and is for a tick up to
+/// `upto` (all, if none) is forgotten by the transport (in the world, or
+/// in the next generation's replay: a copy that came after would be moved
+/// by the game). What is past `upto` stays kept until acked. Returns how
+/// many were forgotten.
+fn clear_gate(peer: &mut Peer, upto: Option<u32>, now: Instant) -> usize {
+    let mut forgotten = 0;
+    for entry in peer.sync_pending.drain(..).chain(peer.sync_relays.drain(..)) {
+        if upto.is_none_or(|time| entry.tick <= time)
+            && !peer.transport.is_delivered(entry.serial)
+        {
+            peer.transport.forget(entry.serial, now);
+            forgotten += 1;
+        }
+    }
+    peer.gate_since = None;
+    peer.gate_checked = None;
+    forgotten
 }
 
 /// Remember a message sent to the client, to see what becomes of it.
@@ -5265,6 +5487,32 @@ impl Game {
         match self.peers[index].as_ref()?.stage {
             Stage::Timing { time, .. } | Stage::Syncing { time, .. } => Some(time),
             _ => None,
+        }
+    }
+
+    /// The gate of the client's resync: the entries it holds now, the most
+    /// it held in this match, and how often it was looked at.
+    pub fn gate_stats(&self, index: usize) -> (usize, usize, u64) {
+        self.peers[index].as_ref().map_or((0, 0, 0), |peer| {
+            (
+                peer.sync_pending.len() + peer.sync_relays.len(),
+                peer.sync_pending_most,
+                peer.gate_checks,
+            )
+        })
+    }
+
+    /// Syncs of the client's resync done again for its replay.
+    pub fn replay_redos(&self, index: usize) -> u32 {
+        self.peers[index].as_ref().map_or(0, |peer| peer.replay_redos)
+    }
+
+    /// As if the client's resync had been done again for its replay
+    /// `redos` times.
+    #[cfg(test)]
+    pub fn set_replay_redos(&mut self, index: usize, redos: u32) {
+        if let Some(peer) = self.peers[index].as_mut() {
+            peer.replay_redos = redos;
         }
     }
 
@@ -5595,5 +5843,25 @@ mod tests {
         // A line too long for any snapshot to be loaded in time: the
         // freshest one there is still goes.
         assert_eq!(resync_world_max_age(700), RESYNC_WORLD_MIN_AGE_MS);
+    }
+
+    #[test]
+    fn the_age_limit_counts_the_whole_way_of_a_long_line() {
+        let trips = |ms: &[u32]| ms.iter().copied().collect::<VecDeque<u32>>();
+        // 600 ms of round trip: 300 ms of way, not the clock's 250.
+        let way = age_limit_way(&trips(&[600; 8]), 600);
+        assert_eq!(way, 300);
+        assert_eq!(resync_world_max_age(way), 700);
+        // The median: one spike does not count.
+        assert_eq!(age_limit_way(&trips(&[600, 600, 3_000]), 3_000), 300);
+        // Over 1000 ms of round trip the 500 ms floor applies, which it
+        // never did with the way capped at 250 ms.
+        let way = age_limit_way(&trips(&[1_200; 4]), 1_200);
+        assert_eq!(way, 600);
+        assert_eq!(resync_world_max_age(way), RESYNC_WORLD_MIN_AGE_MS);
+        // A line beyond reason counts as RESYNC_TRIP_MAX_MS.
+        assert_eq!(age_limit_way(&trips(&[9_000; 4]), 9_000), RESYNC_TRIP_MAX_MS / 2);
+        // No samples yet: the last round trip.
+        assert_eq!(age_limit_way(&VecDeque::new(), 640), 320);
     }
 }

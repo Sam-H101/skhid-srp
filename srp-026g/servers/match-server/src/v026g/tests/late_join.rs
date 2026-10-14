@@ -998,17 +998,21 @@ fn group_reservation_validates_every_member_before_changing_any_seat() {
 }
 
 #[test]
-fn one_group_member_failing_catchup_rejects_the_whole_group() {
+fn a_group_member_failing_catchup_is_left_out_and_the_rest_get_their_entry_check() {
     let mut bench = running();
     reserve_pair(&mut bench);
     bench.clients[3].no_hashes = true;
     bench.run_long(61_000);
-    for place in 2..4 {
-        assert!(bench.clients[place].disconnected);
-        assert!(bench.registry.seat(session_of(place)).is_none());
-        assert!(!bench.clients[0].entered().contains(&(place as u8)));
-    }
-    assert_eq!(&bench.stages()[..2], "LL");
+    // The member that never caught up is let go at the group's deadline ...
+    assert!(bench.clients[3].disconnected);
+    assert!(bench.registry.seat(session_of(3)).is_none());
+    assert!(!bench.clients[0].entered().contains(&3));
+    // ... and the one that did is not let go with it unchecked: the group
+    // is smaller, and the sides 2 v 1 are no further apart than one
+    // player, so it enters (`entry_keeps_balance`).
+    assert!(!bench.clients[2].disconnected);
+    assert!(bench.clients[0].entered().contains(&2));
+    assert_eq!(&bench.stages()[..3], "LLL");
     assert_eq!(bench.clients[0].model.syncs, 1);
     bench.assert_no_faults();
 }

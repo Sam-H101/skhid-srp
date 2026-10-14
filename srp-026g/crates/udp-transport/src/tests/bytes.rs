@@ -656,16 +656,73 @@ fn a_message_that_may_not_wait_takes_the_relays_along() {
 }
 
 #[test]
-fn a_relay_kept_until_acked_does_not_wait_to_be_packed() {
+fn relays_kept_until_acked_are_packed_as_any_relay() {
     let (mut transport, now) = connect_match();
     transport.send(0xEB, &[1; 10]).unwrap();
     assert_eq!(transport.poll(now).len(), 1);
-    // Within the gather time of the last datagram, a kept relay (a resync's
-    // replay) goes at once, as `flush_due` says.
+    // Within the gather time of the last datagram, kept relays (a resync's
+    // replay, the relays to a resynced game) wait to share a datagram ...
     transport.send_kept(0xEB, &[2; 10]).unwrap();
-    let datagrams = transport.poll(now + ms(2));
+    assert!(transport.poll(now + ms(2)).is_empty());
+    transport.send_kept(0xEB, &[3; 10]).unwrap();
+    assert!(transport.poll(now + ms(5)).is_empty());
+    // ... and go together at its end.
+    let datagrams = transport.poll(now + ms(15));
     assert_eq!(datagrams.len(), 1);
     assert_eq!(holding(&datagrams, &[2; 10]), 1);
+    assert_eq!(holding(&datagrams, &[3; 10]), 1);
+    // A 0xE5 queued behind kept relays takes them along at once.
+    transport.send_kept(0xEB, &[4; 10]).unwrap();
+    transport.send(0xE5, &[1; 7]).unwrap();
+    let datagrams = transport.poll(now + ms(16));
+    assert_eq!(datagrams.len(), 1);
+    assert_eq!(holding(&datagrams, &[4; 10]), 1);
+    assert_eq!(carrying(&datagrams, 0xE5), 1);
+}
+
+#[test]
+fn whether_a_message_is_delivered_is_known_without_a_walk_of_the_queue() {
+    let (mut transport, now) = connect_match();
+    let mut serials = Vec::new();
+    for n in 0..40u8 {
+        serials.push(transport.send_kept(0xEB, &[n; 10]).unwrap());
+    }
+    let world = transport.send(0xE8, &vec![7; 3_000]).unwrap();
+    let once = transport.send(0xE6, &[1; 4]).unwrap();
+    assert!(transport.outstanding_agrees());
+    let mut at = now;
+    let mut sent = Vec::new();
+    for _ in 0..20 {
+        at += ms(20);
+        sent.extend(transport.poll(at));
+        assert!(transport.outstanding_agrees());
+    }
+    assert!(!transport.is_delivered(serials[0]));
+    // The client acks every other datagram it was sent, then all.
+    let mut own = 0u8;
+    let count = sent.len() as u8;
+    for seq in (0..count).step_by(2) {
+        own += 1;
+        transport.receive(&flow(own, seq, &[]), at);
+        assert!(transport.outstanding_agrees());
+    }
+    for _ in 0..40 {
+        at += ms(20);
+        sent.extend(transport.poll(at));
+        let newest = (sent.len() - 1) as u8;
+        own += 1;
+        transport.receive(&flow(own, newest, &[]), at);
+        assert!(transport.outstanding_agrees());
+    }
+    assert!(serials.iter().all(|serial| transport.is_delivered(*serial)));
+    assert!(transport.is_delivered(world));
+    assert!(transport.is_delivered(once));
+    // A forgotten one counts as delivered at once.
+    let forgotten = transport.send_kept(0xEB, &[99; 10]).unwrap();
+    assert!(!transport.is_delivered(forgotten));
+    transport.forget(forgotten, at);
+    assert!(transport.is_delivered(forgotten));
+    assert!(transport.outstanding_agrees());
 }
 
 #[test]

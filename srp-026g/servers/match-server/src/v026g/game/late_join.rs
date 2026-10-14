@@ -417,6 +417,7 @@ impl Game {
             .map(|a| a.since + PREPARE_TIMEOUT + a.extra_time)
             .max();
         let mut caught_up = Vec::new();
+        let mut overdue = Vec::new();
         for index in self.formed.initial_players..count {
             let ready = self.peers[index]
                 .as_ref()
@@ -455,12 +456,16 @@ impl Game {
                 admission.failed_alone = true;
             }
             let own_deadline = admission.since + PREPARE_TIMEOUT + admission.extra_time;
-            let deadline = if caught_up_now || admission.waits_for_balance {
+            let waits_for_group = caught_up_now || admission.waits_for_balance;
+            let deadline = if waits_for_group {
                 group_deadline.map_or(own_deadline, |group| group.max(own_deadline))
             } else {
                 own_deadline
             };
-            if !admission.failed() && now >= deadline {
+            if !admission.failed() && now >= deadline && waits_for_group {
+                // Its entry check comes first (`enter_group`).
+                overdue.push(index);
+            } else if !admission.failed() && now >= deadline {
                 log::warn!(
                     "Match {:#x}: new place {index} timed out during preparation or catch-up; the \
                      rest of its group goes on without it",
@@ -496,6 +501,37 @@ impl Game {
             }
         }
         self.check_joiner_worlds(&caught_up, now);
+        self.enter_group(caught_up, clock, now);
+        // A member that caught up, or waits for the balance, and is past
+        // its deadline had its entry check above first: when its group
+        // shrank (its last slow member failed, by a timeout here or by its
+        // game's own word), it may enter now rather than be let go.
+        for index in overdue {
+            let Some(admission) = self.admissions[index].as_mut() else {
+                continue;
+            };
+            if admission.entered() || admission.failed() {
+                continue;
+            }
+            log::warn!(
+                "Match {:#x}: new place {index} timed out during preparation or catch-up; the \
+                 rest of its group goes on without it",
+                self.id
+            );
+            admission.phase = AdmissionPhase::Failed;
+            admission.failed_alone = true;
+            if let Some(peer) = self.peers[index].as_mut()
+                && peer.stage != Stage::Gone
+            {
+                peer.transport.disconnect(now);
+                self.leave(index, now);
+            }
+        }
+    }
+
+    /// The members of the pending group that caught up enter together, if
+    /// the whole group (less those left out) did.
+    fn enter_group(&mut self, caught_up: Vec<usize>, clock: u32, now: Instant) {
         // One reservation group is pending at a time. Its members enter
         // together, on one tick, even when their resources and snapshots
         // finish apart: the lobby placed them together, to even the sides
