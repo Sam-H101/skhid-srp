@@ -5,6 +5,8 @@
 //!   model (`kin`), kept on the walk grid;
 //! - a shot hits the first enemy whose chest lies within 0.45 m of the
 //!   view's ray, with a clear line on the bullet mesh; five hits kill;
+//! - the trigger held lifts the shot over the view: the kick of the game's
+//!   automatic weapons as the recorded matches show it ([`KICK_DEG_S`]);
 //! - the dead respawn at their side's spawns after 6.4 s (the radio);
 //! - a use takes a battery within reach, puts it in at one's own
 //!   container, or steals from the other's; a drop drops it;
@@ -13,7 +15,8 @@
 //! - a world of every body, the statistics and the batteries comes every
 //!   second, 300 ms behind the clock, as the match gives the bots.
 //!
-//! The stand-in is much simpler than the game (no recoil, no armour, no
+//! The stand-in is much simpler than the game (one kick for every weapon, no
+//! spread, no armour, no
 //! stamina, no jumps): the runs check that bots of two teams find each
 //! other, fight, die, come back, take and bring batteries and end a
 //! match, with no input out of the rules; not how well.
@@ -34,9 +37,28 @@ use super::view::{BatteryState, Clock, WorldFacts};
 use super::*;
 use crate::v026g::drive::{half_value, key};
 
+/// The kick: with the trigger held `held_ms`, a shot leaves this far over
+/// the view, radians. From the recorded matches (private research,
+/// `player_bots_behaviour.md` §5): the attacker's view at 1,427 hits of
+/// automatic fire sat under the victim's chest by 1.6° (median, over the
+/// one-round weapons' hits) after 0.1-0.2 s of trigger, 2.7° at 0.3-0.4 s,
+/// 4.2° at 0.4-0.6 s, 4.8° at 0.6-0.8 s, 5.1° at 0.8-1 s, 7.9° at 1-1.4 s
+/// (7.4° a second through the origin). A one-round press fires as it goes
+/// down, with no kick.
+const KICK_DEG_S: f32 = 7.0;
+const KICK_MAX_DEG: f32 = 5.5;
+
+fn kick(held_ms: u32) -> f32 {
+    (KICK_DEG_S * held_ms as f32 / 1000.0)
+        .min(KICK_MAX_DEG)
+        .to_radians()
+}
+
 /// A body of the stand-in game.
 #[derive(Clone, Debug)]
 struct Body {
+    /// The tick the trigger went down, while it is held.
+    fire_since: Option<u32>,
     team: u8,
     feet: Vec3,
     node: Option<NodeId>,
@@ -137,6 +159,7 @@ impl Game {
                 .collect()
         };
         let body = |team| Body {
+            fire_since: None,
             team,
             feet: Vec3::ZERO,
             node: None,
@@ -207,6 +230,7 @@ impl Game {
         body.alive = true;
         body.spawned = tick;
         body.carrying = None;
+        body.fire_since = None;
     }
 
     fn eye(body: &Body) -> Vec3 {
@@ -248,6 +272,13 @@ impl Game {
                 body.yaw += turn.0;
                 body.pitch = (body.pitch + turn.1).clamp(-1.0, 1.0);
             }
+        }
+        for body in &mut self.bodies {
+            body.fire_since = if body.keys & key::FIRE == 0 {
+                None
+            } else {
+                body.fire_since.or(Some(tick))
+            };
         }
         self.record();
         for place in 0..n {
@@ -308,7 +339,8 @@ impl Game {
             let body = &self.bodies[shooter];
             let eye = Self::eye(body);
             let [fx, fz] = forward(body.yaw);
-            let (c, s) = (body.pitch.cos(), body.pitch.sin());
+            let pitch = body.pitch + kick(body.fire_since.map_or(0, |since| tick - since));
+            let (c, s) = (pitch.cos(), pitch.sin());
             let dir = Vec3::new(fx * c, s, fz * c);
             let mut best: Option<(Place, f32)> = None;
             for (target, other) in self.bodies.iter().enumerate() {

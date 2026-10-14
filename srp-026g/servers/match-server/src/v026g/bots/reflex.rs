@@ -199,8 +199,9 @@ pub struct CombatTuning {
     pub press_gap_ms: u32,
     /// An automatic weapon's kick: while its trigger is held the aim is
     /// pulled this many degrees a second below the target, up to
-    /// `recoil_pull_max_deg`, as the best players pull the mouse down (the
-    /// kick is not in the look pitch, `player_bots_behaviour.md` §3).
+    /// `recoil_pull_max_deg`, as the best players pull the mouse down: the
+    /// kick is not in the look pitch, and the recorded hits show it lifts
+    /// the shot (`player_bots_behaviour.md` §5).
     pub recoil_pull_deg_s: f32,
     pub recoil_pull_max_deg: f32,
     /// Aiming down the sights at a seen target: always from `ads_near_m`
