@@ -323,6 +323,15 @@ pub struct ClientModel {
     pub generation: Generation,
     /// Its game clock, once a 0xE5 set it.
     pub clock: Option<u32>,
+    /// How its clock takes a correction (0xE7). `None`: all of it at once,
+    /// which no game does and most tests want (they are not about the
+    /// clock). `Some(factor)`: as the game, at that share of the time that
+    /// passes ([`super::clock`]).
+    pub clock_factor: Option<f32>,
+    /// What is left of the correction it is taking (ms, either way), and
+    /// the part of a ms made up and not yet on the clock.
+    correction_left: f64,
+    correction_carried: f64,
     /// The time of the last snapshot it loaded; `None` while its world is
     /// frozen (before "THE VERY FIRST SYNCHRONIZATION").
     pub last_resync: Option<u32>,
@@ -341,6 +350,9 @@ impl ClientModel {
             ready: false,
             generation: Generation::AT_READY,
             clock: None,
+            clock_factor: None,
+            correction_left: 0.0,
+            correction_carried: 0.0,
             last_resync: None,
             syncs: 0,
         }
@@ -364,11 +376,29 @@ impl ClientModel {
         true
     }
 
-    /// Time passes on the client's clock.
+    /// Time passes on the client's clock. While it takes a correction the
+    /// clock goes by `1 + factor` of that time, or `1 - factor` (the
+    /// timer's 0x147110).
     pub fn advance(&mut self, ms: u32) {
-        if let Some(clock) = &mut self.clock {
-            *clock = clock.saturating_add(ms);
-        }
+        let Some(clock) = &mut self.clock else {
+            return;
+        };
+        *clock = clock.saturating_add(ms);
+        let Some(factor) = self.clock_factor else {
+            return;
+        };
+        let step = (f64::from(ms) * f64::from(factor)).min(self.correction_left.abs());
+        let step = step.copysign(self.correction_left);
+        self.correction_left -= step;
+        self.correction_carried += step;
+        let whole = self.correction_carried.trunc();
+        self.correction_carried -= whole;
+        *clock = clock.saturating_add_signed(whole as i32);
+    }
+
+    /// What is left of the correction its clock is taking, in ms.
+    pub fn correction_left(&self) -> f64 {
+        self.correction_left
     }
 
     /// Whether its simulation runs: it has loaded a snapshot.
@@ -449,7 +479,12 @@ impl ClientModel {
                 reply = Some(TimeReply::to_ping(*a, *b, 0, self.clock.unwrap_or(0)));
             }
             ServerMessage::ClockOffset(offset) => {
-                if let Some(clock) = &mut self.clock {
+                if self.clock_factor.is_some() {
+                    // In place of the one it was taking: what was left of
+                    // that is not made up (`set_offset` 0x1EE9E0 puts a
+                    // new end, from now, for the new offset alone).
+                    self.correction_left = f64::from(*offset);
+                } else if let Some(clock) = &mut self.clock {
                     *clock = clock.saturating_add_signed((*offset).into());
                 }
             }
@@ -937,6 +972,55 @@ mod tests {
         assert_eq!(client.clock, Some(370));
         // The patched client takes the upload request.
         applied(&mut client, &ServerMessage::UploadRequest);
+    }
+
+    #[test]
+    fn a_clock_with_a_factor_takes_a_correction_over_time() {
+        use super::super::clock::{FAST_FACTOR, STOCK_FACTOR, correction_ms};
+        for factor in [STOCK_FACTOR, FAST_FACTOR] {
+            let mut client = synced(2, 50);
+            client.clock_factor = Some(factor);
+            assert_eq!(client.clock, Some(400));
+            applied(&mut client, &ServerMessage::ClockOffset(300));
+            // Nothing at once; then the clock's own time and the factor's
+            // share of it.
+            assert_eq!(client.clock, Some(400));
+            let takes = correction_ms(300, factor) as u32;
+            let mut passed = 0;
+            while passed + 50 <= takes / 2 {
+                client.advance(50);
+                passed += 50;
+            }
+            let made_up = i64::from(client.clock.unwrap()) - 400 - i64::from(passed);
+            let expected = (f64::from(passed) * f64::from(factor)) as i64;
+            assert!(
+                (made_up - expected).abs() <= 1,
+                "{factor}: {made_up} of {expected}"
+            );
+            client.advance(takes - passed);
+            assert_eq!(client.clock, Some(400 + takes + 300), "{factor}");
+            // Done: the clock goes on as time does.
+            client.advance(1_000);
+            assert_eq!(client.clock, Some(400 + takes + 300 + 1_000));
+            assert_eq!(client.correction_left(), 0.0);
+        }
+        // Backwards the clock is slowed, and a correction that comes while
+        // one runs takes its place.
+        let mut client = synced(2, 50);
+        client.clock_factor = Some(FAST_FACTOR);
+        applied(&mut client, &ServerMessage::ClockOffset(-300));
+        client.advance(500);
+        assert_eq!(client.clock, Some(400 + 500 - 150));
+        applied(&mut client, &ServerMessage::ClockOffset(30));
+        client.advance(1_000);
+        // (To a ms: a part of one was made up of the first and not yet on
+        // the clock.)
+        let clock = i64::from(client.clock.unwrap());
+        assert!(
+            (clock - (400 + 500 - 150 + 1_000 + 30)).abs() <= 1,
+            "{clock}"
+        );
+        assert_eq!(client.correction_left(), 0.0);
     }
 
     #[test]

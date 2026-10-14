@@ -457,6 +457,152 @@ fn a_late_joiner_starts_from_a_fresh_snapshot_and_gets_what_came_since() {
     bench.assert_no_faults();
 }
 
+/// What becomes of player 1's clock when it is put `behind` ms behind the
+/// match clock in a match of two. Its game makes a correction up at
+/// `factor` of real time, and the server has `revision` as its patch
+/// revision. `(how long after the first correction the clock was right,
+/// the corrections it was sent, the most its clock was ever ahead)`, ms.
+fn clock_brought_up(revision: u8, factor: f32, behind: u32) -> (u64, Vec<i16>, i64) {
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    bench.server.revisions.insert(session_of(1), revision);
+    bench.clients[1].model.clock_factor = Some(factor);
+    bench.join_all();
+    let off = |bench: &Bench| i64::from(bench.clock()) - i64::from(bench.clients[1].clock());
+    let offsets = |bench: &Bench| {
+        bench.clients[1].got(|message| match message {
+            ServerMessage::ClockOffset(offset) => Some(*offset),
+            _ => None,
+        })
+    };
+    // What its first world left it behind by is made up first.
+    assert!(bench.until(60_000, |bench| {
+        off(bench).abs() <= 10 && bench.clients[1].model.correction_left() == 0.0
+    }));
+    bench.run(3_000);
+    let before = offsets(&bench).len();
+    let clock = bench.clients[1].model.clock.unwrap();
+    bench.clients[1].model.clock = Some(clock - behind);
+
+    let (mut told_at, mut right_at, mut ahead) = (None, None, 0);
+    let start = bench.ms;
+    while bench.ms < start + 60_000 && right_at.is_none() {
+        bench.step(5);
+        ahead = ahead.max(-off(&bench));
+        if told_at.is_none() && offsets(&bench).len() > before {
+            told_at = Some(bench.ms);
+        }
+        if told_at.is_some() && off(&bench).abs() <= 10 {
+            right_at = Some(bench.ms);
+        }
+    }
+    // And it stays right: nothing more is sent, nothing is overshot.
+    let sent = offsets(&bench).len();
+    for _ in 0..2_000 {
+        bench.step(5);
+        ahead = ahead.max(-off(&bench));
+    }
+    assert_eq!(
+        offsets(&bench).len(),
+        sent,
+        "a correction after the clock was right"
+    );
+    assert!(off(&bench).abs() <= 10);
+    bench.assert_no_faults();
+    let took = right_at.expect("its clock was brought up") - told_at.unwrap();
+    (took, offsets(&bench)[before..].to_vec(), ahead)
+}
+
+#[test]
+fn a_clock_is_brought_up_as_fast_as_the_games_build_does_it() {
+    use survarium::v026g::match_msgs::clock::{FAST_FACTOR, FAST_FROM_REVISION, STOCK_FACTOR};
+    // The original's 5 %: 400 ms take 8 s, in one correction.
+    let (took, sent, ahead) = clock_brought_up(FAST_FROM_REVISION - 1, STOCK_FACTOR, 400);
+    assert!((7_700..=8_100).contains(&took), "{took} ms");
+    assert!(
+        sent.len() == 1 && (390..=410).contains(&sent[0]),
+        "{sent:?}"
+    );
+    assert!(ahead <= 10, "{ahead} ms ahead");
+    // From revision 8 the game's 30 %: 1.3 s.
+    let (took, sent, ahead) = clock_brought_up(FAST_FROM_REVISION, FAST_FACTOR, 400);
+    assert!((1_200..=1_400).contains(&took), "{took} ms");
+    assert!(
+        sent.len() == 1 && (390..=410).contains(&sent[0]),
+        "{sent:?}"
+    );
+    assert!(ahead <= 10, "{ahead} ms ahead");
+}
+
+/// Player 1's clock is brought up by 400 ms and, the moment it is right,
+/// is 200 ms behind once more: how long until the server sends the next
+/// correction, ms. Its game is of the fast factor; the server has
+/// `revision` for it.
+fn next_correction_after(revision: u8) -> u64 {
+    use survarium::v026g::match_msgs::clock::FAST_FACTOR;
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    bench.server.revisions.insert(session_of(1), revision);
+    bench.clients[1].model.clock_factor = Some(FAST_FACTOR);
+    bench.join_all();
+    let off = |bench: &Bench| i64::from(bench.clock()) - i64::from(bench.clients[1].clock());
+    let offsets = |bench: &Bench| {
+        bench.clients[1]
+            .got(|message| matches!(message, ServerMessage::ClockOffset(_)).then_some(()))
+            .len()
+    };
+    assert!(bench.until(60_000, |bench| {
+        off(bench).abs() <= 10 && bench.clients[1].model.correction_left() == 0.0
+    }));
+    bench.run(3_000);
+    let put_behind = |bench: &mut Bench, by: u32| {
+        let clock = bench.clients[1].model.clock.unwrap();
+        bench.clients[1].model.clock = Some(clock - by);
+    };
+    let before = offsets(&bench);
+    put_behind(&mut bench, 400);
+    assert!(bench.until(10_000, |bench| offsets(bench) == before + 1));
+    assert!(bench.until(10_000, |bench| off(bench).abs() <= 10));
+    put_behind(&mut bench, 200);
+    let since = bench.ms;
+    assert!(bench.until(30_000, |bench| offsets(bench) == before + 2));
+    bench.ms - since
+}
+
+#[test]
+fn a_fast_games_clock_is_looked_at_again_as_soon_as_it_is_done() {
+    use survarium::v026g::match_msgs::clock::FAST_FROM_REVISION;
+    // Known for what it is: the 1.3 s it takes, the second after, and the
+    // two samples that a correction wants.
+    let known = next_correction_after(FAST_FROM_REVISION);
+    assert!(known <= 2_500, "{known} ms");
+    // Taken for the original, its clock is left alone for the 8 s the
+    // original would take: 200 ms behind for all that time, and a resync
+    // it needed meanwhile would be put off as long.
+    let unknown = next_correction_after(FAST_FROM_REVISION - 1);
+    assert!(unknown >= 7_000, "{unknown} ms");
+}
+
+#[test]
+fn a_game_whose_build_the_server_has_wrong_is_brought_up_all_the_same() {
+    use survarium::v026g::match_msgs::clock::{FAST_FACTOR, FAST_FROM_REVISION, STOCK_FACTOR};
+    // Taken for the original, and faster: done in its own 1.3 s; the
+    // server only waits longer than it need before it looks again.
+    let (took, sent, ahead) = clock_brought_up(0, FAST_FACTOR, 400);
+    assert!((1_200..=1_400).contains(&took), "{took} ms");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(ahead <= 10, "{ahead} ms ahead");
+    // Taken for the fast one, and the original: the server looks again
+    // while the game is still at it, and what it sends then (the lag that
+    // is left, in place of the correction that runs) changes nothing: the
+    // game's own 8 s, and never a ms too far.
+    let (took, sent, ahead) = clock_brought_up(FAST_FROM_REVISION, STOCK_FACTOR, 400);
+    assert!((7_700..=8_300).contains(&took), "{took} ms");
+    assert!(
+        sent.len() >= 2 && sent.windows(2).all(|pair| pair[1] < pair[0]),
+        "{sent:?}"
+    );
+    assert!(ahead <= 10, "{ahead} ms ahead");
+}
+
 #[test]
 fn a_client_out_of_step_is_resynced_as_the_next_generation() {
     let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());

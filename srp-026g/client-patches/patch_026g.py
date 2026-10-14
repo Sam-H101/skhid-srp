@@ -227,7 +227,10 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # objects is another one than 5 and 6 keep: a game of 7 and an older one
 # part as soon as two players' grenades are not as they began, so a server
 # asks for 7.
-REVISION = 7
+# 8: the game's clock is brought to the match clock at 30 % instead of 5 %
+# (CLOCK_FACTOR below). Nothing a match computes: 7 and 8 play together,
+# and the match server times its corrections by the revision a game says.
+REVISION = 8
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -373,6 +376,33 @@ REMOVE_MODEL_VA, REMOVE_MODEL_END = 0x14FF9B, 0x1501F2
 REMOVE_MODEL = (REMOVE_MODEL_VA, bytes.fromhex("391d0cd6f101"),
                 b"\xE9" + struct.pack("<i", REMOVE_MODEL_END - REMOVE_MODEL_VA - 5) + b"\x90")
 
+# The game's own setting `time_floating_factor`: a console variable (the
+# object at 0xA9D0D0, registered by 0x851330: its value is the float at
+# 0xA799C8 in .data, from 0.001 to 0.5, the two floats the registration
+# reads at 0x91A8F0 and 0x927A44). The `game` constructor copies the value
+# into the game clock's timer once (0x1E9848: `movss xmm0,[0A799C8h]`, then
+# timer+28h at 0x1E986D); nothing else reads it, and it is not among the
+# settings the game keeps in user.cfg. When the server tells a game how far
+# its clock is off (0xE7 -> floating_timer::set_offset 0x1EE9E0), the clock
+# runs at 1 + the factor, or 1 - it, until the whole is made up: `offset /
+# factor` long. With the original's 0.05 a game that starts from a world
+# 465 ms behind (a round trip of 200 ms) needs 9.3 s, and the server drops
+# every input that is more than 250 ms late: for 6 to 9 s after every
+# start, late join and resync the player's keys do nothing (live,
+# 2026-10-14; 13 to 15 s at a round trip of 300 ms). The default becomes
+# 0.3, which the game's own range allows: 1.6 s. Four bytes of data, no
+# code and no address (no base relocation is under them). Nothing that a
+# match computes reads the factor, so games of either play one match.
+CLOCK_FACTOR_VA = 0xA799C8
+CLOCK_FACTOR_ORIGINAL, CLOCK_FACTOR = 0.05, 0.3
+CLOCK_FACTOR_READ_VA = 0x1E9848               # the constructor's `movss`
+CLOCK_FACTOR_REGISTER_VA = 0x851369           # `mov dword [0A9D110h],0A799C8h`
+CLOCK_FACTOR_OPTION = 0xA9D0D0                # the console variable; its name at +10h
+CLOCK_FACTOR_MIN_VA, CLOCK_FACTOR_MAX_VA = 0x91A8F0, 0x927A44
+# .data: the only section but .text that a patch writes into.
+DATA_VA, DATA_FILE, DATA_FILE_SIZE = 0xA5E000, 0xA4C400, 0x92200
+CLOCK_FACTOR_PATCH = (CLOCK_FACTOR_VA, struct.pack("<f", CLOCK_FACTOR_ORIGINAL), struct.pack("<f", CLOCK_FACTOR))
+
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
 RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
@@ -409,6 +439,20 @@ def parse_server(text):
 def file_offset(va):
     assert TEXT_VA <= va < TEXT_VA + TEXT_VSIZE
     return va - TEXT_VA + TEXT_FILE
+
+
+def data_file_offset(va):
+    assert DATA_VA <= va < DATA_VA + DATA_FILE_SIZE
+    return va - DATA_VA + DATA_FILE
+
+
+def patch_value(data, va, expected, new):
+    """As `patch`, for a value in .data."""
+    at = data_file_offset(va)
+    found = bytes(data[at:at + len(expected)])
+    if found != expected or len(new) != len(expected):
+        sys.exit(f"{va:#x}: expected {expected.hex()}, found {found.hex()}")
+    data[at:at + len(new)] = new
 
 
 def patch(data, va, expected, new):
@@ -670,6 +714,10 @@ def build(original, mode, code=None, server=None, late_join=None):
         # one would mean another exe than the one they were read in.
         if neutralize_relocs(data, sites):
             sys.exit("a base relocation under a late-join site")
+        patch_value(data, *CLOCK_FACTOR_PATCH)
+        # A number, not an address.
+        if neutralize_relocs(data, [(CLOCK_FACTOR_VA, CLOCK_FACTOR_VA + 4)]):
+            sys.exit("a base relocation under time_floating_factor's value")
 
     if mode == "section":
         if late_join is not None:
@@ -685,7 +733,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
                      f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
-                     "goes on without the focus, a model not in the scene stays out of it"
+                     "goes on without the focus, a model not in the scene stays out of it, "
+                     f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor)"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

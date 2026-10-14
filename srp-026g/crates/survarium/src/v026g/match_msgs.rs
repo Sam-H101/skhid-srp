@@ -16,6 +16,7 @@
 //!   and rules blobs;
 //! - [`upload`]: the patched client's snapshot upload (0xE0 chunks, 0xF6);
 //! - [`rules`]: when a match starts, ends and who wins;
+//! - [`clock`]: how fast a game's clock takes a correction, by its build;
 //! - [`client_model`]: what a client accepts, for the server's tests.
 //!
 //! Everything is PROVEN in the notes (read in the 0.26g exe) unless a
@@ -23,6 +24,7 @@
 //! 0.26g match yet.
 
 pub mod client_model;
+pub mod clock;
 pub mod late_join;
 pub mod players;
 pub mod rules;
