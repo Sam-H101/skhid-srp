@@ -47,6 +47,7 @@ use session::matchmaking_policy::{self as policy, Joiner, LateRule, Worth};
 use session::v026g::matches_now::Phase;
 use session::v026g::{Account, matchmaking, quests, rules, wire};
 use session::{Level, LevelRules, LockExt, MAX_PLAYERS_PER_MATCH, QueuePool, QueueState};
+use survarium::v026g::loadouts::BotRole;
 use survarium::v026g::lobby::requests::id;
 use survarium::v026g::lobby::{self, ClientState, limits};
 use survarium::v026g::maps;
@@ -163,15 +164,19 @@ fn server_bot_name(n: usize) -> String {
     format!("Bot-{n}")
 }
 
-/// The match server's own bot on `team`, number `n` of its match (1 on): a
-/// place with no account, its player in the starter kit (`loadouts::starter`:
-/// the TT-33 in slot 7 with its ammunition, the kit a new account wears), so
-/// never a spawn with nothing in the weapon slots (`match_profile`).
-pub fn server_bot(n: usize, team: u8) -> MatchPlayer {
+/// The match server's own bot of `role` on `team`, number `n` of its match
+/// (1 on): a place with no account, its player in the role's kit
+/// (`loadouts::bot_kit`): the role's weapon in slot 7 with a clip, the
+/// starter's TT-33 in slot 10 with a clip (so never a spawn with nothing
+/// in the weapon slots, `match_profile`), the role's armour, a backpack
+/// and trousers that open three pockets (four for a support), and in them
+/// medkits, the radio and two RGD-5 grenades. The match server reads the
+/// role back from the profile (`loadouts::bot_role_of`).
+pub fn server_bot(n: usize, team: u8, role: BotRole) -> MatchPlayer {
     let mut profile = MatchProfile::from_loadout(
         &server_bot_name(n),
         team,
-        survarium::v026g::loadouts::starter(),
+        survarium::v026g::loadouts::bot_kit(role),
         [0.0; survarium::v026g::skills::MODIFIERS],
         survarium::v026g::dictionary::Dictionary::shared(),
         1,
@@ -184,6 +189,23 @@ pub fn server_bot(n: usize, team: u8) -> MatchPlayer {
         bot: false,
         driven: true,
     }
+}
+
+/// The roles of bots on `teams`, in order: each team's `k`-th bot gets
+/// `BotRole::nth(k)` (the shares by smooth weighted round robin: a
+/// flanker, a rusher, a support, a camper, ...), so it depends only on the
+/// bots' places and the same roster gets the same roles.
+fn server_bot_roles(teams: &[u8]) -> Vec<BotRole> {
+    let mut on_team = [0_usize; 2];
+    teams
+        .iter()
+        .map(|&team| {
+            let k = &mut on_team[usize::from(team.min(1))];
+            let role = BotRole::nth(*k);
+            *k += 1;
+            role
+        })
+        .collect()
 }
 
 /// The teams of `count` bots added to a roster whose teams are `teams`:
@@ -1185,12 +1207,14 @@ impl Core<'_> {
             [sides[0].0, sides[1].0],
             usize::from(self.settings.server_bots),
         );
+        let bot_roles = server_bot_roles(&bot_teams);
         let players = players.map(|mut players| {
             players.extend(
                 bot_teams
                     .iter()
+                    .zip(&bot_roles)
                     .enumerate()
-                    .map(|(n, &team)| server_bot(n + 1, team)),
+                    .map(|(n, (&team, &role))| server_bot(n + 1, team, role)),
             );
             players
         });
@@ -1241,6 +1265,19 @@ impl Core<'_> {
                         "Match {:#x}: {} of the server's bots (SRP_SERVER_BOTS) after the                          players, on teams {bot_teams:?}",
                         ticket.match_id,
                         bot_teams.len()
+                    );
+                    let roles: Vec<String> = bot_roles
+                        .iter()
+                        .zip(&bot_teams)
+                        .enumerate()
+                        .map(|(n, (role, team))| {
+                            format!("{} {role} (team {team})", server_bot_name(n + 1))
+                        })
+                        .collect();
+                    log::info!(
+                        "Match {:#x} bots' roles: {}",
+                        ticket.match_id,
+                        roles.join(", ")
                     );
                     self.store.matchmaking().add_bots(match_id, &bot_teams);
                 }
@@ -1508,5 +1545,84 @@ mod tests {
         assert!(local("127.0.0.1") && local("192.168.1.20") && local("10.0.0.5"));
         assert!(local("::1") && local("::ffff:192.168.1.20"));
         assert!(!local("203.0.113.7") && !local("100.64.0.1"));
+    }
+
+    #[test]
+    fn a_server_bot_wears_its_roles_kit_and_a_client_reads_it() {
+        use survarium::v026g::dictionary::Dictionary;
+        use survarium::v026g::loadouts::{self, bot_kit_items, bot_role_of};
+        use survarium::v026g::match_msgs::static_info::{
+            KIT_USABLE, MatchOptions, SCORE_WEIGHTS, StaticInfo, parse_payload,
+        };
+
+        let dictionary = Dictionary::shared();
+        let bots: Vec<MatchPlayer> = BotRole::ALL
+            .iter()
+            .enumerate()
+            .map(|(n, &role)| server_bot(n + 1, (n % 2) as u8, role))
+            .collect();
+        for (bot, role) in bots.iter().zip(BotRole::ALL) {
+            let profile = &bot.profile;
+            assert_eq!(profile.kits.len(), 1);
+            let kit = &profile.kits[0];
+            assert_eq!(kit.state, KIT_USABLE);
+            // Every piece of the role's kit in its slot, the count as
+            // given; nothing else.
+            assert_eq!(
+                kit.slots.iter().filter(|slot| slot.is_some()).count(),
+                bot_kit_items(role).count()
+            );
+            for wanted in bot_kit_items(role) {
+                let (index, count) = kit.slots[usize::from(wanted.slot)]
+                    .unwrap_or_else(|| panic!("{role}: nothing in slot {}", wanted.slot));
+                let item = &profile.items[usize::from(index)];
+                assert_eq!(
+                    dictionary.item(item.dict_id).unwrap().name,
+                    wanted.name,
+                    "{role}: slot {}",
+                    wanted.slot
+                );
+                assert_eq!(u32::from(count), wanted.count, "{}", wanted.name);
+            }
+            // The medkits, the radio and the grenades in the open pockets.
+            let (pockets, _) = loadouts::pockets(loadouts::bot_kit(role));
+            for item in [
+                loadouts::BOT_MEDKIT,
+                loadouts::BOT_RADIO,
+                loadouts::BOT_GRENADE,
+            ] {
+                assert!(loadouts::POCKET_SLOTS[..pockets as usize].contains(&item.slot));
+            }
+        }
+        // The client's reader takes the profiles as they are, and the role
+        // reads back from what it read.
+        let options = MatchOptions {
+            players: bots.iter().map(|bot| bot.profile.clone()).collect(),
+            map_id: maps::playable().next().unwrap().id,
+            match_id: 0x1234,
+            match_level: 1,
+            score_weights: SCORE_WEIGHTS,
+        };
+        let info = StaticInfo::new(&options, dictionary).expect("a client can hold it");
+        let (index, read) = parse_payload(&info.payload(1).unwrap(), dictionary).unwrap();
+        assert_eq!(index, 1);
+        for ((read, bot), role) in read.players.iter().zip(&bots).zip(BotRole::ALL) {
+            assert_eq!(read.kits, bot.profile.kits);
+            assert_eq!(read.items, bot.profile.items);
+            assert_eq!(bot_role_of(read), Some(role));
+        }
+    }
+
+    #[test]
+    fn each_teams_bots_take_the_roles_by_the_shares() {
+        use BotRole::*;
+        assert_eq!(
+            server_bot_roles(&[0, 1, 0, 1, 0, 1, 0, 1]),
+            [
+                Flanker, Flanker, Rusher, Rusher, Support, Support, Camper, Camper
+            ]
+        );
+        assert_eq!(server_bot_roles(&[1, 1, 1]), [Flanker, Rusher, Support]);
+        assert!(server_bot_roles(&[]).is_empty());
     }
 }
