@@ -317,6 +317,8 @@ pub struct BotFacts<'a> {
     pub last_ran: &'a [(PlayKind, u32)],
     /// Its partner (play 21), if it has one.
     pub partner: Option<Place>,
+    /// Medkits it used this life (quick use 1 pressed).
+    pub medkits_used: u8,
 }
 
 /// What a play sees: the match, the bot, its knowledge, the team's, the

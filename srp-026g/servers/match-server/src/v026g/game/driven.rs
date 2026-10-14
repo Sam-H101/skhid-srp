@@ -42,6 +42,7 @@ use survarium::v026g::match_msgs::snapshot::{Battery, Decoded};
 use super::*;
 use crate::v026g::bots::body::Fix;
 use crate::v026g::bots::maps::{MapState, Maps};
+use crate::v026g::bots::reflex::WeaponKind;
 use crate::v026g::bots::trace::Trace;
 use crate::v026g::bots::tuning::Tuning;
 use crate::v026g::bots::view::{BatteryState, Clock, WorldFacts};
@@ -102,6 +103,7 @@ impl Walkers {
             .map(|profile| survarium::v026g::loadouts::bot_role_of(profile).map(|role| role.name()))
             .collect();
         log::info!("Match {id:#x}: the bots' roles by place {roles:?}");
+        let weapons = formed.profiles.iter().map(weapon_of).collect();
         Some(Self {
             bots: Bots::new(
                 id,
@@ -118,6 +120,10 @@ impl Walkers {
             world: None,
             absent: false,
             events_seen: 0,
+        })
+        .map(|mut walkers| {
+            walkers.bots.set_weapons(weapons);
+            walkers
         })
     }
 
@@ -148,6 +154,24 @@ impl Walkers {
         }
         self.world.clone()
     }
+}
+
+/// A place's weapon 1 kind from its profile: a bot's by its role, a
+/// player's by the item in slot 7 (its dictionary category and kind).
+fn weapon_of(
+    profile: &survarium::v026g::match_msgs::static_info::MatchProfile,
+) -> Option<WeaponKind> {
+    if let Some(role) = survarium::v026g::loadouts::bot_role_of(profile) {
+        return WeaponKind::of_role(role.name());
+    }
+    let kit = profile.kits.first()?;
+    let (index, _) = kit.slots[7]?;
+    let item = profile.items.get(usize::from(index))?;
+    let kind = survarium::v026g::item_params::item_params(item.dict_id)?.kind;
+    let category = survarium::v026g::dictionary::Dictionary::shared()
+        .item(item.dict_id)?
+        .category;
+    WeaponKind::of_item(kind, category)
 }
 
 fn log_notes(id: u32, notes: Vec<Note>) {

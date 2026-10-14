@@ -109,7 +109,11 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             } else {
                 cx.pace_toward(at)
             };
-            Step::Continue(Intent::to(at, pace).within(num("reach_m") * 0.7).into_base())
+            Step::Continue(
+                Intent::to(at, pace)
+                    .within(num("reach_m") * 0.7)
+                    .into_base(),
+            )
         }
         State::Steal { .. } if cx.me.carrying.is_some() => {
             *state = State::Drop;

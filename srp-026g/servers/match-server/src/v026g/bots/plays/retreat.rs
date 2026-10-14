@@ -345,8 +345,8 @@ mod tests {
         with_zones(&mut s);
         s.bot(0, 0, Vec3::new(45.0, 0.0, 32.0)).health = 0.3;
         assert!(s.candidates(0).iter().all(|c| c.kind != PlayKind::Retreat));
-        // The medkit used this life: it falls back.
-        s.last_ran.push((PlayKind::Heal, s.view.clock - 1_000));
+        // Both medkits used this life: it falls back.
+        s.medkits_used = 2;
         assert!(s.candidates(0).iter().any(|c| c.kind == PlayKind::Retreat));
         // Healthy enough: not.
         s.view.places[0].health = 0.5;

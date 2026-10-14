@@ -141,6 +141,8 @@ pub struct Bot {
     entered: Option<u32>,
     last_trace: u32,
     partner: Option<Place>,
+    /// Medkits used this life.
+    medkits_used: u8,
 }
 
 impl Bot {
@@ -188,6 +190,7 @@ impl Bot {
             entered: None,
             last_trace: 0,
             partner: None,
+            medkits_used: 0,
         }
     }
 
@@ -230,6 +233,7 @@ impl Bot {
         self.reflex = Reflex::default();
         self.memory = Memory::default();
         self.skill = skill;
+        self.medkits_used = 0;
         if self.side.is_none() {
             self.side = tactics.and_then(|tactics| tactics.side_at(feet));
         }
@@ -245,6 +249,8 @@ pub struct Bots {
     teams: [TeamState; 2],
     bots: Vec<Option<Bot>>,
     trace: Trace,
+    /// Every place's weapon 1 kind, where known (play 11).
+    weapons: Vec<Option<reflex::WeaponKind>>,
     /// Votes on the frame of a lying battery's position in the worlds: as
     /// written, or with z mirrored (physics); settled against the map's
     /// battery places.
@@ -291,7 +297,13 @@ impl Bots {
             trace,
             tuning,
             battery_votes: (0, 0),
+            weapons: Vec::new(),
         }
+    }
+
+    /// Every place's weapon 1 kind (the matchup, play 11).
+    pub fn set_weapons(&mut self, weapons: Vec<Option<reflex::WeaponKind>>) {
+        self.weapons = weapons;
     }
 
     /// A lying battery's position from a world, in the map's frame: its
@@ -678,6 +690,7 @@ impl Bots {
                     current: bot.assignment.as_ref().map(|a| (a.kind, a.target, a.since)),
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
+                    medkits_used: bot.medkits_used,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -725,6 +738,7 @@ impl Bots {
                     current: Some((assignment.kind, assignment.target, now)),
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
+                    medkits_used: bot.medkits_used,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -862,8 +876,17 @@ impl Bots {
             tuning.cheats.forget_ms.max(tuning.sense.forget_ms),
             tuning.sense.drop_ms,
         );
+        let sit = reflex::Situation {
+            view,
+            tactics: Some(tactics),
+            team: Some(&self.teams[team].knowledge),
+            side: bot.side,
+            partner: bot.partner,
+            weapon: reflex::WeaponKind::of_role(&bot.personality(&tuning).name),
+            weapons: &self.weapons,
+        };
         bot.reflex
-            .think(me, &bot.memory, now, &tuning.aim, skill, &mut bot.rng);
+            .think_with(me, &sit, &bot.memory, now, &tuning.aim, skill, &mut bot.rng);
         if now < bot.pause_until {
             bot.intent = Intent::stay();
             return;
@@ -888,6 +911,7 @@ impl Bots {
                 current: bot.assignment.as_ref().map(|a| (a.kind, a.target, a.since)),
                 last_ran: &bot.last_ran,
                 partner: bot.partner,
+                medkits_used: bot.medkits_used,
             },
             memory: &bot.memory,
             team: &state.knowledge,
@@ -1022,7 +1046,18 @@ fn drive_tick(
             Look::At(p) => Some(aim_at(p + Vec3::new(0.0, 1.0, 0.0))),
             _ => None,
         });
-    // The legs.
+    // The legs: the reflex's when it takes them (a push, breaking sight,
+    // a re-peek, the weapon's range, in after a grenade), else the play's.
+    let mut intent = intent;
+    if let Some(legs) = over.legs {
+        intent.go = Go::To {
+            at: legs.at,
+            within_m: legs.within_m,
+        };
+        intent.crouch = legs.crouch;
+        intent.pace = if legs.run { Pace::Run } else { Pace::Walk };
+        intent.objective = false;
+    }
     let goal = match intent.go {
         Go::To { at, within_m } if me.feet.distance_xz(at) > within_m => Some(at),
         _ => None,
@@ -1091,7 +1126,14 @@ fn drive_tick(
         decision.keys |= key::FIRE;
         decision.keys &= !key::SPRINT;
     }
+    decision.keys |= over.keys;
+    if over.keys & (key::GRENADE | key::RELOAD) != 0 {
+        decision.keys &= !key::SPRINT;
+    }
     decision.keys |= intent.hold | std::mem::take(&mut bot.press);
+    if decision.keys & key::QUICK[0] != 0 {
+        bot.medkits_used = bot.medkits_used.saturating_add(1);
+    }
     decision
 }
 

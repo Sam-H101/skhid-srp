@@ -590,7 +590,24 @@ fn soak(per_team: usize, win: u32, tdm_tickets: u32, limit_s: u32, seed: u64) ->
     out
 }
 
+/// A short run every build: two minutes of 4 against 4, fights and no
+/// input out of the rules.
 #[test]
+fn a_short_soak_has_fights_and_keeps_the_input_rules() {
+    let out = soak(4, 3, 0, 120, 3);
+    assert!(
+        out.kills[0] + out.kills[1] >= 2,
+        "{:?} ({} hits of {} shots)",
+        out.kills,
+        out.hits,
+        out.shots
+    );
+    assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
+}
+
+/// The whole match (minutes of play: `cargo test --release -- --ignored`).
+#[test]
+#[ignore = "a whole match; run in release"]
 fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
     let out = soak(4, 3, 0, 900, 1);
     let total = out.kills[0] + out.kills[1];
@@ -615,6 +632,7 @@ fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
 }
 
 #[test]
+#[ignore = "a whole match; run in release"]
 fn a_team_deathmatch_of_bots_is_fought_to_the_last_ticket() {
     // 25 tickets a side: the endgame (no respawns, the hunt) comes.
     let out = soak(4, 0, 25, 900, 2);

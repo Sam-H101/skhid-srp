@@ -48,25 +48,14 @@ pub fn tuning() -> PlayTuning {
     }
 }
 
-/// Medkits used this life as far as the bot's facts tell: 1 if a heal
-/// ended since its spawn, else 0 (see the module's note).
+/// Medkits used this life (the drive counts each quick use 1 it sends).
 pub fn medkits_used(cx: &Ctx) -> u32 {
-    let healed = cx
-        .bot
-        .last_ran
-        .iter()
-        .any(|(kind, at)| *kind == PlayKind::Heal && *at >= cx.me.spawned);
-    u32::from(healed)
+    u32::from(cx.bot.medkits_used)
 }
 
-/// Medkits it may still use this life: none once one was used, until the
-/// count is kept (the module's note).
+/// Medkits it may still use this life.
 pub fn medkits_left(cx: &Ctx) -> u32 {
-    if medkits_used(cx) > 0 {
-        0
-    } else {
-        cx.num(PlayKind::Heal, "medkits").max(0.0) as u32
-    }
+    (cx.num(PlayKind::Heal, "medkits").max(0.0) as u32).saturating_sub(medkits_used(cx))
 }
 
 /// Whether an enemy it knows of has a clear line to it (crouched), or is

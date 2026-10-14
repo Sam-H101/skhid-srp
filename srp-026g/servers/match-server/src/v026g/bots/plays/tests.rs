@@ -38,6 +38,7 @@ pub struct Scenario {
     pub last_ran: Vec<(PlayKind, u32)>,
     pub partner: Option<Place>,
     pub personality: usize,
+    pub medkits_used: u8,
 }
 
 impl Scenario {
@@ -87,6 +88,7 @@ impl Scenario {
             last_ran: Vec::new(),
             partner: None,
             personality: 0,
+            medkits_used: 0,
         };
         s.signals();
         s
@@ -224,6 +226,7 @@ impl Scenario {
                 current: self.current,
                 last_ran: &self.last_ran,
                 partner: self.partner,
+                medkits_used: self.medkits_used,
             },
             memory: &self.memory,
             team: &self.team,
