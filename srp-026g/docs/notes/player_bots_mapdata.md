@@ -21,7 +21,8 @@ cargo run --release -p mapdata --bin mapdata-dump -- --db <resources.db> --out <
   `survarium::v026g::maps`). `--map <id>` takes a `maps_dict` id,
   `--project level_01/day_4` a project.
 - Output: `<dir>/level_01_day_4.mapdata` etc. 7.1-16.3 MB a project,
-  817 MB for all 72. All 72 in 6.4 s with a warm disk cache.
+  817 MB for all 72. All 72 in 6.4 s with a warm disk cache (format 2:
+  7.2 s, the same size within 0.1 %).
 - `--stats <cell>` also builds the grid and the sight tree and prints
   counts and timings (§5).
 
@@ -78,7 +79,7 @@ their own space (scale suffix applied), the placements separately; placing
 all triangles at load takes about 10 ms.
 
 ```text
-magic "SRPMAPD\0", u32 version (1)
+magic "SRPMAPD\0", u32 version (2)
 string project
 vec3 levelmap_min, vec3 levelmap_max          (zero when the project has none)
 list spawns:      vec3 position, vec3 rotation, i32 team, i32 priority,
@@ -88,17 +89,42 @@ list spawners:    vec3 position, vec3 item, string layer
 list stations:    vec3
 list zones:       u8 kind (0 resupply, 1 damage, 2 effect, 3 artefact
                   container), string name, i32 team (-1 none), vec3 position,
-                  string damage_type, list shapes
-list anomalies:   string name, vec3 position, list string zones
+                  string damage_type, u8 has_damage, [damage], list shapes
+list anomalies:   string name, vec3 position, list string zones,
+                  energy, artefacts, list states
 list libraries:   string name, u32 primitives, list vec3 vertices,
                   list [u32; 3] triangles, then one u8 walker behaviour
                   per triangle
 list placements:  u32 library, vec3 position, vec3 rotation,
                   u16 cgroup, u16 cmask
 magic "END\0"
-shape:            u8 kind (0 sphere, 1 box), vec3 center, 3 × vec3 rotation
-                  rows, vec3 half (a sphere's radius is half.x)
+shape:            u8 kind (0 sphere, 1 box, 2 cylinder), vec3 center,
+                  3 × vec3 rotation rows, vec3 half (a sphere's radius is
+                  half.x; a cylinder's radius half.x, half height half.y,
+                  round about its local y)
+damage:           f32 max_hit, f32 armor_piercing, u32 interval_ms,
+                  u8 continuous, u8 parts, list (f32 d, f32 value) hit_curve
+energy:           u8 enabled, f32 initial, decrease_speed, maximum, on_walk,
+                  on_run, on_sprint, on_jump, on_shoot, on_explosion,
+                  on_character_hit, on_character_kill, on_af_container_use
+artefacts:        u8 enabled, f32 first_spawn_s, respawn_s, variation_s,
+                  chance, u32 max_count, u32 containers
+state:            u8 enabled, f32 threshold, u32 active_time_s,
+                  f32 energy_on_exit, i32 select_priority, u8 shoot_trigger,
+                  u8 zone_activity_trigger, list groups
+group:            u8 enabled, u8 keep_all, u8 sequential, u32 min_active_s,
+                  u32 max_active_s, u32 max_charged, u32 recharge_s,
+                  list string zones (config order = the worlds' mask bits)
 ```
+
+**Version 2** (2026-10-14) added cylinders (version 1 dropped them: 2 of 3
+shapes of each level_03 electric zone, the moss, acid, stalactite, fruit
+and level_07 zones), each damage zone's hit and each anomaly core's states,
+groups, energy and artefact settings (config order; the client sorts the
+states by threshold, highest first). A server refuses a version 1 file
+("map data version 1, this build reads 2 only: write the file again with
+this build's mapdata-dump"): read with defaults, its zones would have no
+hit and no cylinders, and bots would walk into anomalies. Dump again.
 
 A shape is placed as: the mesh's rotation and position, then the
 object's scale, rotation and position (LIKELY; every shape of the shipped
@@ -118,11 +144,16 @@ let sees = world.sight.visible(eye_a, chest_b);       // bullet mesh
 ```
 
 - `MapData`: `spawns`, `containers` (with use boxes), `battery_spawners`,
-  `stations`, `zones`, `anomalies`; `walker_triangles()`,
-  `bullet_triangles()`, `play_area(margin)`.
+  `stations`, `zones` (a damage zone's `damage`: `max_hit`,
+  `armor_piercing`, `interval_ms`, `continuous`, `parts`, `hit_curve`;
+  `harmful()` is false for the zones that only show or sound),
+  `anomalies` (`states` → `groups` → zone names, `energy`, `artefacts`);
+  `walker_triangles()`, `bullet_triangles()`, `play_area(margin)`.
+- `Shape`: `contains(p)`, `distance(p)` (0 inside), `bounds()`.
 - `WalkGrid`: `locate`, `position`, `headroom` / `can_stand` (crouch-only
   floors), `links` / `incoming`, `path`, `distances_to` (cost from every
-  floor to the targets) and `distances_from` (where a team gets).
+  floor to the targets) and `distances_from` (where a team gets),
+  `floors_in(area)` (the floors under an x/z box).
 - `RayTree`: `visible(a, b)`, `ray_cast(origin, dir, max)`.
 
 ### The walk grid
@@ -236,7 +267,64 @@ volume only, never in an image or this repository. A file added for a
 project no match has asked for yet is used; one whose project was already
 found missing or broken needs a restart.
 
-## 7. Not done, not proven
+## 7. Anomalies on the match server
+
+`match-server` `v026g::bots::anomalies` runs every anomaly core of the map
+on the match clock with the client's rules, and `bots::hazards` turns that
+into which floors a bot may walk on when. The facts (client 0.26g, PROVEN
+unless marked; the research of 2026-10-14 is private):
+
+- Only two kinds switch. level_03: three electric cores, two zones each,
+  strictly alternating, each on 40-60 s (drawn), about lethal per hit
+  (0.6 × 2 feet). level_02: the fruit cloud, five levels by an energy that
+  bodies moving in it raise (35-70 a second, LIKELY) and that falls 25 a
+  second. Every other zone is on all match. Zones with `max_hit` 0 (sound,
+  sight) are no hazard.
+- Each core has its own LCG `x = x·0x08088405 + 1`, seeded with
+  `static_seed ^ crc32(full_name)`; `static_seed` is the static info's id,
+  `registry::static_id(match_id)` = `match_id | 0x80000000`. Ticks on the
+  50 ms grid: energy, state, groups (a sequential group switches when its
+  time comes and draws the next: `t + min + (x·(max−min))>>32` ms), then
+  artefact spawns (four draws each, from the same stream).
+- Each checked world holds every core's state in its objects section:
+  `[u8 artefact pending, u32 next] f32 energy, u8 state, u32 finish, per
+  group (u32 next, mask bytes), 5 bytes per active zone (u32 last hit, u8
+  someone inside: 0 or 0xFF), u8 events, u32 random`. A core is found by
+  its random value (the last known one stepped until it appears), then
+  read backwards.
+
+Checked against the saved worlds of 36 matches (17 on level_03, 19 on
+level_02, every world; `real_worlds_agree_with_the_simulation`): the first
+artefact times of one match come out as the research found them; every
+core is found in every world (25,809 reads); the simulation from one world
+to the next has the same zones and switch times (within 50 ms) in
+99.86-99.92 % of the electric cores' worlds and in all of the static
+ones'; the fruit's state differs in 3 % (players raised it). Never synced,
+the two electric cores without artefacts keep the same zones on for whole
+matches in 99.9 % of the worlds, the one with artefacts in 90.7 % (a
+pickup draws unseen): hence the sync.
+
+On real maps (`real_hazards`, 0.5 m margin): 1-11 harmful zones a map,
+4,700-46,000 floors marked (level_08's river 520,000), 1-98 ms.
+
+The match server must (not wired yet):
+- keep `static_id(match_id)` with the bots, and after `Tactics::new`
+  call `tactics.hazards.attach(Anomalies::new(&tactics.world.map,
+  static_seed))`;
+- on each poll, `tactics.hazards.advance(clock.clock)` (the match clock,
+  the worlds' time);
+- on each trusted world, `tactics.hazards.sync_from_world(
+  decoded.sections.objects, snapshot.time)`.
+
+Rules for bots (`hazards`): a zone of a timer group is active by the
+simulation, its on spans widened by 1 s on each side; a route may cross it
+only while it stays off for `pass_ms` (4 s). A zone of an energy core that
+a body moving inside would switch on within 10 s (the fruit's lvl1 at 20
+and lvl2 at 400) is always active; its higher states' zones (1000 and up)
+follow the energy the worlds give, falling between worlds. Every other
+zone is always active, as is every zone before `attach`.
+
+## 8. Not done, not proven
 
 - The match server loads the files (§6), but no bot moves by them yet.
 - The grid against the client's real movement (step, slope, jump height,
@@ -250,3 +338,11 @@ found missing or broken needs a restart.
 - The yaw of a spawn (`math::forward`, `math::heading`) follows the
   engine's `create_rotation_y`; how a client's input yaw maps to it is not
   checked.
+- Anomalies: the cylinder's axis and half height are LIKELY (the editor's
+  drawing); a zone counts for a body when it comes within the margin of a
+  standing body's axis (GUESS: the client's contact test is not read); the
+  fruit's energy rises (per tick or per second, explosions) are not
+  simulated; artefact pickups are not seen (their draws come back with the
+  next world); a hit curve is read as straight lines between its keys (the
+  game's are Hermite); the receiver's armour is not read, so the damages
+  are raw.

@@ -12,8 +12,11 @@
 //! - `client_objects[]` by `game_object_type`: `resupply_zone`,
 //!   `damage_zone`, `effect_zone`, `artefact_container` with their
 //!   `collision_geometries`, which name `collision_geometry` objects whose
-//!   `meshes[]` are spheres (type 0) and boxes (type 1, half sizes);
-//!   `generic_anomaly_core` names the damage zones it drives;
+//!   `meshes[]` are spheres (type 0), boxes (type 1, half sizes) and
+//!   cylinders (type 2, radius and half height); a damage zone's hit
+//!   (`max_hit`, `interval_in_msec`, ...);
+//! - `generic_anomaly_core`: the damage zones it drives, its states and
+//!   groups (which zones are on, when), energy and artefact settings;
 //! - `collision_objects[]`: `lib_name`, `position`, `rotation`, `scale`,
 //!   `cgroup`, `cmask`;
 //! - `levelmap_min` / `levelmap_max`: the play area's x/z box (its y means
@@ -125,14 +128,165 @@ pub struct Zone {
     pub position: Vec3,
     /// `damage_type` of a damage zone (`toxic`, ...), else empty.
     pub damage_type: String,
+    /// What a damage zone does to a body in it; `None` for other kinds.
+    pub damage: Option<Damage>,
     pub shapes: Vec<Shape>,
 }
 
-/// A `generic_anomaly_core`: its centre and the damage zones it drives.
-#[derive(Clone, Debug, PartialEq)]
+/// A damage zone's hit (`damage_zone` config; the zone side of the hit is
+/// read in the client, 0x319AF0 / 0x31A410, PROVEN):
+/// - `continuous`: every tick `max_hit × intensity × dt / interval` to each
+///   of the `parts`;
+/// - else one hit of `max_hit × intensity` to each part, at most once per
+///   `interval_ms` per zone, the first on entry;
+/// - `intensity = hit_curve(d)`, `d` 0 at the centre and 1 at the edge
+///   (LIKELY); every shipped speed curve is 1.
+///
+/// Raw values before armour; health is 1.0.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Damage {
+    /// `max_hit`; 0 for a zone that only shows or sounds (harmless).
+    pub max_hit: f32,
+    /// `max_armor_piercing`.
+    pub armor_piercing: f32,
+    /// `interval_in_msec`.
+    pub interval_ms: u32,
+    /// `continuous_hit`.
+    pub continuous: bool,
+    /// How many body parts each hit goes to (`hit_parts_filter`).
+    pub parts: u8,
+    /// `hit_curve` keys as `(d, value)`, sorted by `d`.
+    pub hit_curve: Vec<(f32, f32)>,
+}
+
+impl Damage {
+    /// Whether the zone hurts at all.
+    pub fn harmful(&self) -> bool {
+        self.max_hit > 0.0 && self.parts > 0
+    }
+
+    /// Raw damage a body takes in a second inside at full intensity
+    /// (continuous zones), or from one hit (the others).
+    pub fn raw(&self) -> f32 {
+        self.max_hit * f32::from(self.parts)
+    }
+
+    /// The hit curve at `d` (0 centre, 1 edge): linear between keys,
+    /// clamped to [0, 1]. Keys are Hermite in the game (GUESS: close
+    /// enough for a cost); no keys is 1.
+    pub fn intensity(&self, d: f32) -> f32 {
+        let d = d.clamp(0.0, 1.0);
+        let curve = &self.hit_curve;
+        let value = match curve.iter().position(|&(x, _)| x >= d) {
+            None => curve.last().map_or(1.0, |&(_, v)| v),
+            Some(0) => curve[0].1,
+            Some(i) => {
+                let ((x0, v0), (x1, v1)) = (curve[i - 1], curve[i]);
+                if x1 > x0 {
+                    v0 + (v1 - v0) * (d - x0) / (x1 - x0)
+                } else {
+                    v1
+                }
+            }
+        };
+        value.clamp(0.0, 1.0)
+    }
+}
+
+/// A `generic_anomaly_core`: its centre, the damage zones it drives and the
+/// settings that decide which of them are on (`ANOMALIES` research of
+/// 2026-10-14; the client's `generic_anomaly_core::tick` 0x31B5B0).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Anomaly {
+    /// `full_name`: also what seeds its random stream (the CRC-32 of it).
     pub name: String,
     pub position: Vec3,
+    /// Every zone its states' groups name, once each, in config order.
+    pub zones: Vec<String>,
+    pub energy: AnomalyEnergy,
+    pub artefacts: AnomalyArtefacts,
+    /// In config order (the client tries them by threshold, highest first).
+    pub states: Vec<AnomalyState>,
+}
+
+/// An anomaly core's energy: it falls `decrease_speed` a second and rises
+/// with what players do in its zones.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AnomalyEnergy {
+    /// `energy_enabled`.
+    pub enabled: bool,
+    /// `energy_initial`.
+    pub initial: f32,
+    /// `energy_decrease_speed`, a second.
+    pub decrease_speed: f32,
+    /// `energy_maximum` (0 in every shipped core).
+    pub maximum: f32,
+    /// `energy_on_walk`, `_run`, `_sprint` (a second, LIKELY), `_jump`.
+    pub on_walk: f32,
+    pub on_run: f32,
+    pub on_sprint: f32,
+    pub on_jump: f32,
+    /// `energy_on_shoot`, `_explosion`, `_character_hit`,
+    /// `_character_kill`, `energy_af_container_use`.
+    pub on_shoot: f32,
+    pub on_explosion: f32,
+    pub on_character_hit: f32,
+    pub on_character_kill: f32,
+    pub on_af_container_use: f32,
+}
+
+/// An anomaly core's artefacts: their spawns draw from the core's random
+/// stream too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AnomalyArtefacts {
+    /// `artefacts_enabled`.
+    pub enabled: bool,
+    /// `artefacts_first_spawn_time_sec`, `_respawn_time_sec`,
+    /// `_respawn_variation_sec`.
+    pub first_spawn_s: f32,
+    pub respawn_s: f32,
+    pub variation_s: f32,
+    /// `artefacts_respawn_chance`.
+    pub chance: f32,
+    /// `max_artefacts_count`.
+    pub max_count: u32,
+    /// How many `artefact_containers` it names.
+    pub containers: u32,
+}
+
+/// One state of an anomaly core.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnomalyState {
+    pub enabled: bool,
+    /// `energy_threshold`: the state is on when the energy reaches it.
+    pub threshold: f32,
+    /// `active_time_sec`: 0 = while the energy holds; else the state
+    /// lasts this long and then sets the energy to `energy_on_exit`.
+    pub active_time_s: u32,
+    pub energy_on_exit: f32,
+    pub select_priority: i32,
+    pub shoot_trigger: bool,
+    pub zone_activity_trigger: bool,
+    pub groups: Vec<ZoneGroup>,
+}
+
+/// A group of zones in a state.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ZoneGroup {
+    pub enabled: bool,
+    /// `keep_all_zones_active`: every zone on while the state is.
+    pub keep_all: bool,
+    /// `sequential_activation`: one zone after another, each on for
+    /// `min_active_s..max_active_s` (drawn).
+    pub sequential: bool,
+    pub min_active_s: u32,
+    pub max_active_s: u32,
+    /// `max_charged_count`.
+    pub max_charged: u32,
+    /// `recharge_time_sec`.
+    pub recharge_s: u32,
+    /// Zone `full_name`s, in config order (the order of the world's mask
+    /// bits).
     pub zones: Vec<String>,
 }
 
@@ -141,6 +295,21 @@ pub struct Anomaly {
 pub enum ShapeKind {
     Sphere = 0,
     Box = 1,
+    /// Round about the local y axis: radius `half.x`, half height `half.y`
+    /// (mesh type 2; axis and half height LIKELY: the editor draws
+    /// `radius, half_length, radius`).
+    Cylinder = 2,
+}
+
+impl ShapeKind {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Sphere,
+            1 => Self::Box,
+            2 => Self::Cylinder,
+            _ => return None,
+        })
+    }
 }
 
 /// A trigger shape of a `collision_geometry`, placed in the map frame:
@@ -153,22 +322,61 @@ pub struct Shape {
     pub center: Vec3,
     /// Local x, y, z axes in the map frame.
     pub rotation: Rotation,
-    /// A box's half sizes; a sphere's radius is `half.x`.
+    /// A box's half sizes; a sphere's radius is `half.x`; a cylinder's
+    /// radius `half.x` and half height `half.y`.
     pub half: Vec3,
 }
 
 impl Shape {
     pub fn contains(&self, point: Vec3) -> bool {
+        self.distance(point) <= 0.0
+    }
+
+    /// Metres from `point` to the shape, 0 inside.
+    pub fn distance(&self, point: Vec3) -> f32 {
         let d = point - self.center;
         match self.kind {
-            ShapeKind::Sphere => d.length() <= self.half.x,
+            ShapeKind::Sphere => (d.length() - self.half.x).max(0.0),
             ShapeKind::Box => {
                 let local = self.rotation.transposed().apply(d);
-                local.x.abs() <= self.half.x
-                    && local.y.abs() <= self.half.y
-                    && local.z.abs() <= self.half.z
+                Vec3::new(
+                    (local.x.abs() - self.half.x).max(0.0),
+                    (local.y.abs() - self.half.y).max(0.0),
+                    (local.z.abs() - self.half.z).max(0.0),
+                )
+                .length()
+            }
+            ShapeKind::Cylinder => {
+                let local = self.rotation.transposed().apply(d);
+                let radial =
+                    ((local.x * local.x + local.z * local.z).sqrt() - self.half.x).max(0.0);
+                let vertical = (local.y.abs() - self.half.y).max(0.0);
+                (radial * radial + vertical * vertical).sqrt()
             }
         }
+    }
+
+    /// The axis-aligned box round the shape, `(min, max)`.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        let r = &self.rotation;
+        // Each map axis's reach: the sum over the local axes of
+        // |that axis' map component| × the local extent.
+        let reach = |extent: Vec3| {
+            let axis = |a: Vec3| a.x.abs() * extent.x + a.y.abs() * extent.y + a.z.abs() * extent.z;
+            // The local axes are the rows i, j, k; a map axis gathers the
+            // same component of each.
+            Vec3::new(
+                axis(Vec3::new(r.i.x, r.j.x, r.k.x)),
+                axis(Vec3::new(r.i.y, r.j.y, r.k.y)),
+                axis(Vec3::new(r.i.z, r.j.z, r.k.z)),
+            )
+        };
+        let reach = match self.kind {
+            ShapeKind::Sphere => Vec3::new(self.half.x, self.half.x, self.half.x),
+            ShapeKind::Box => reach(self.half),
+            ShapeKind::Cylinder => reach(Vec3::new(self.half.x, self.half.y, self.half.x)),
+        };
+        (self.center - reach, self.center + reach)
     }
 }
 
@@ -341,24 +549,11 @@ impl MapData {
                     team: i32_or(object, "team", -1),
                     position: point_at(object, "position"),
                     damage_type: str_or(object, "damage_type").to_owned(),
+                    damage: (kind == ZoneKind::Damage).then(|| damage_of(object)),
                     shapes: shapes_of(object),
                 });
             } else if kind == "generic_anomaly_core" {
-                let mut zones = Vec::new();
-                for state in children(object, "states") {
-                    for group in children(state, "groups") {
-                        for zone in children(group, "zones") {
-                            if let Some(name) = zone.as_str() {
-                                zones.push(name.to_owned());
-                            }
-                        }
-                    }
-                }
-                map.anomalies.push(Anomaly {
-                    name: str_or(object, "full_name").to_owned(),
-                    position: point_at(object, "position"),
-                    zones,
-                });
+                map.anomalies.push(anomaly_of(object));
             }
         }
         Ok(map)
@@ -451,10 +646,12 @@ fn geometry_shapes(geometry: &ConfigValue) -> Vec<Shape> {
     );
     let mut shapes = Vec::new();
     for mesh in children(geometry, "meshes") {
-        let kind = match i32_or(mesh, "type", -1) {
-            0 => ShapeKind::Sphere,
-            1 => ShapeKind::Box,
-            _ => continue,
+        // Type 3 (capsule, `primitive_type`) is in no shipped trigger.
+        let Some(kind) = u8::try_from(i32_or(mesh, "type", -1))
+            .ok()
+            .and_then(ShapeKind::from_u8)
+        else {
+            continue;
         };
         let local = Rotation::from_angles(point_at(mesh, "rotation"));
         shapes.push(Shape {
@@ -470,6 +667,125 @@ fn geometry_shapes(geometry: &ConfigValue) -> Vec<Shape> {
 /// A position or angles, zero when missing.
 fn point_at(value: &ConfigValue, key: &str) -> Vec3 {
     float3_or(value, key, Vec3::ZERO)
+}
+
+fn f32_or(value: &ConfigValue, key: &str, default: f32) -> f32 {
+    value
+        .get(key)
+        .and_then(ConfigValue::as_f32)
+        .unwrap_or(default)
+}
+
+fn bool_or(value: &ConfigValue, key: &str, default: bool) -> bool {
+    value
+        .get(key)
+        .and_then(ConfigValue::as_bool)
+        .unwrap_or(default)
+}
+
+/// A whole number of seconds or a count, 0 when missing or negative.
+fn u32_or_0(value: &ConfigValue, key: &str) -> u32 {
+    u32::try_from(i32_or(value, key, 0)).unwrap_or(0)
+}
+
+fn damage_of(object: &ConfigValue) -> Damage {
+    let mut hit_curve: Vec<(f32, f32)> = object
+        .get("hit_curve")
+        .map(|curve| {
+            curve
+                .children()
+                .into_iter()
+                .filter_map(|key| match key.get("position")? {
+                    ConfigValue::Float2([d, v]) => Some((*d, *v)),
+                    ConfigValue::Indexed(items) if items.len() == 2 => {
+                        Some((items[0].as_f32()?, items[1].as_f32()?))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    hit_curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Damage {
+        max_hit: f32_or(object, "max_hit", 0.0),
+        armor_piercing: f32_or(object, "max_armor_piercing", 0.0),
+        interval_ms: u32_or_0(object, "interval_in_msec"),
+        continuous: bool_or(object, "continuous_hit", false),
+        parts: u8::try_from(children(object, "hit_parts_filter").len()).unwrap_or(u8::MAX),
+        hit_curve,
+    }
+}
+
+fn anomaly_of(object: &ConfigValue) -> Anomaly {
+    let mut zones: Vec<String> = Vec::new();
+    let states: Vec<AnomalyState> = children(object, "states")
+        .into_iter()
+        .map(|state| AnomalyState {
+            enabled: bool_or(state, "enabled", true),
+            threshold: f32_or(state, "energy_threshold", 0.0),
+            active_time_s: u32_or_0(state, "active_time_sec"),
+            energy_on_exit: f32_or(state, "energy_on_exit", 0.0),
+            select_priority: i32_or(state, "select_priority", 0),
+            shoot_trigger: bool_or(state, "shoot_trigger", false),
+            zone_activity_trigger: bool_or(state, "zone_activity_trigger", false),
+            groups: children(state, "groups")
+                .into_iter()
+                .map(|group| {
+                    let names: Vec<String> = children(group, "zones")
+                        .into_iter()
+                        .filter_map(|zone| zone.as_str().map(str::to_owned))
+                        .collect();
+                    for name in &names {
+                        if !zones.contains(name) {
+                            zones.push(name.clone());
+                        }
+                    }
+                    ZoneGroup {
+                        enabled: bool_or(group, "enabled", true),
+                        keep_all: bool_or(group, "keep_all_zones_active", false),
+                        sequential: bool_or(group, "sequential_activation", false),
+                        min_active_s: u32_or_0(group, "min_active_time_sec"),
+                        max_active_s: u32_or_0(group, "max_active_time_sec"),
+                        max_charged: u32_or_0(group, "max_charged_count"),
+                        recharge_s: u32_or_0(group, "recharge_time_sec"),
+                        zones: names,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    let num = |key: &str| f32_or(object, key, 0.0);
+    Anomaly {
+        name: str_or(object, "full_name").to_owned(),
+        position: point_at(object, "position"),
+        zones,
+        energy: AnomalyEnergy {
+            enabled: bool_or(object, "energy_enabled", false),
+            initial: num("energy_initial"),
+            decrease_speed: num("energy_decrease_speed"),
+            maximum: num("energy_maximum"),
+            on_walk: num("energy_on_walk"),
+            on_run: num("energy_on_run"),
+            on_sprint: num("energy_on_sprint"),
+            on_jump: num("energy_on_jump"),
+            on_shoot: num("energy_on_shoot"),
+            on_explosion: num("energy_on_explosion"),
+            on_character_hit: num("energy_on_character_hit"),
+            on_character_kill: num("energy_on_character_kill"),
+            on_af_container_use: num("energy_af_container_use"),
+        },
+        artefacts: AnomalyArtefacts {
+            enabled: bool_or(object, "artefacts_enabled", false),
+            first_spawn_s: num("artefacts_first_spawn_time_sec"),
+            respawn_s: num("artefacts_respawn_time_sec"),
+            variation_s: num("artefacts_respawn_variation_sec"),
+            chance: num("artefacts_respawn_chance"),
+            max_count: u32_or_0(object, "max_artefacts_count"),
+            containers: u32::try_from(children(object, "artefact_containers").len())
+                .unwrap_or(u32::MAX),
+        },
+        states,
+    }
 }
 
 #[cfg(test)]
@@ -508,11 +824,21 @@ mod tests {
                   "meshes": [ { "type": 1, "position": [0.0, 0.0, 1.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 0.5, 1.0] } ] },
                 { "game_object_type": "collision_geometry", "full_name": "pool", "position": [-5.0, 0.0, -5.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0],
                   "meshes": [ { "type": 0, "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [2.0, 2.0, 2.0] } ] },
+                { "game_object_type": "collision_geometry", "full_name": "pillar", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0],
+                  "meshes": [ { "type": 2, "position": [2.0, 1.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 0.5, 1.0] } ] },
                 { "game_object_type": "damage_zone", "full_name": "logic/pool_zone", "damage_type": "toxic", "position": [-5.0, 0.0, -5.0],
-                  "collision_geometries": [ { "name": "pool" } ] },
+                  "max_hit": 0.07, "max_armor_piercing": 0, "interval_in_msec": 1000, "continuous_hit": true,
+                  "hit_parts_filter": ["head", "left_foot"],
+                  "hit_curve": { "key1": { "position": [1.0, 0.5] }, "key0": { "position": [0.8, 1.0] } },
+                  "collision_geometries": [ { "name": "pool" }, { "name": "pillar" } ] },
                 { "game_object_type": "resupply_zone", "full_name": "resupply", "team": 1, "position": [8.0, 0.0, 8.0], "collision_geometries": [] },
                 { "game_object_type": "generic_anomaly_core", "full_name": "core", "position": [-5.0, 0.0, -5.0],
-                  "states": [ { "groups": [ { "zones": ["logic/pool_zone"] } ] } ] },
+                  "energy_enabled": true, "energy_initial": 1, "energy_decrease_speed": 25,
+                  "artefacts_enabled": true, "artefacts_first_spawn_time_sec": 60, "max_artefacts_count": 1,
+                  "artefact_containers": ["a", "b"],
+                  "states": [ { "energy_threshold": 1, "groups": [ { "zones": ["logic/pool_zone", "logic/other"],
+                    "sequential_activation": true, "keep_all_zones_active": false,
+                    "min_active_time_sec": 40, "max_active_time_sec": 60, "max_charged_count": 255 } ] } ] },
                 { "game_object_type": "ambient_light", "full_name": "light", "position": [0.0, 0.0, 0.0] },
             ],
         })
@@ -539,9 +865,90 @@ mod tests {
         );
         assert!(pool.shapes[0].contains(Vec3::new(-6.5, 0.0, -5.0)));
         assert!(!pool.shapes[0].contains(Vec3::new(-7.5, 0.0, -5.0)));
+        // The cylinder: radius 1 round x = 2, z = 0, y 0.5..1.5.
+        let pillar = pool.shapes[1];
+        assert_eq!(pillar.kind, ShapeKind::Cylinder);
+        assert!(pillar.contains(Vec3::new(2.7, 1.4, 0.7)));
+        assert!(
+            !pillar.contains(Vec3::new(2.8, 1.0, 0.8)),
+            "outside the radius"
+        );
+        assert!(!pillar.contains(Vec3::new(2.0, 1.6, 0.0)), "above it");
+        let damage = pool.damage.as_ref().unwrap();
+        assert_eq!(
+            (
+                damage.max_hit,
+                damage.interval_ms,
+                damage.continuous,
+                damage.parts
+            ),
+            (0.07, 1000, true, 2)
+        );
+        assert_eq!(damage.hit_curve, [(0.8, 1.0), (1.0, 0.5)]);
+        assert!((damage.intensity(0.9) - 0.75).abs() < 1e-6);
+        assert_eq!(damage.intensity(0.2), 1.0);
         assert_eq!(map.zones[1].team, 1);
-        assert_eq!(map.anomalies[0].zones, ["logic/pool_zone"]);
+        assert_eq!(map.zones[1].damage, None);
+        let core = &map.anomalies[0];
+        assert_eq!(core.zones, ["logic/pool_zone", "logic/other"]);
+        assert_eq!(
+            (
+                core.energy.enabled,
+                core.energy.initial,
+                core.energy.decrease_speed
+            ),
+            (true, 1.0, 25.0)
+        );
+        assert_eq!(
+            (core.artefacts.enabled, core.artefacts.first_spawn_s),
+            (true, 60.0)
+        );
+        assert_eq!(
+            (core.artefacts.max_count, core.artefacts.containers),
+            (1, 2)
+        );
+        let group = &core.states[0].groups[0];
+        assert_eq!(core.states[0].threshold, 1.0);
+        assert!(group.sequential && !group.keep_all && group.enabled);
+        assert_eq!(
+            (group.min_active_s, group.max_active_s, group.max_charged),
+            (40, 60, 255)
+        );
         assert_eq!(map.play_area(5.0), [-15.0, -15.0, 15.0, 15.0]);
+    }
+
+    #[test]
+    fn shapes_measure_distances_and_bounds() {
+        let turned = Rotation::from_angles(Vec3::new(0.0, std::f32::consts::FRAC_PI_4, 0.0));
+        let shape = |kind, half| Shape {
+            kind,
+            center: Vec3::new(1.0, 2.0, 3.0),
+            rotation: turned,
+            half,
+        };
+        let sphere = shape(ShapeKind::Sphere, Vec3::new(2.0, 2.0, 2.0));
+        assert_eq!(sphere.distance(Vec3::new(1.0, 2.0, 3.0)), 0.0);
+        assert!((sphere.distance(Vec3::new(1.0, 5.0, 3.0)) - 1.0).abs() < 1e-6);
+        let cylinder = shape(ShapeKind::Cylinder, Vec3::new(1.0, 0.25, 1.0));
+        // Round about y: turning it changes nothing.
+        assert!((cylinder.distance(Vec3::new(3.0, 2.0, 3.0)) - 1.0).abs() < 1e-5);
+        assert!((cylinder.distance(Vec3::new(1.0, 3.25, 3.0)) - 1.0).abs() < 1e-5);
+        let corner = cylinder.distance(Vec3::new(3.0, 3.25, 3.0));
+        assert!((corner - 2.0_f32.sqrt()).abs() < 1e-5, "{corner}");
+        let (lo, hi) = cylinder.bounds();
+        assert!((hi.y - lo.y - 0.5).abs() < 1e-5);
+        assert!((hi.x - 1.0 - 2.0_f32.sqrt()).abs() < 1e-5, "{hi:?}");
+        // A turned box's bounds hold its corners.
+        let block = shape(ShapeKind::Box, Vec3::new(2.0, 0.5, 1.0));
+        let (lo, hi) = block.bounds();
+        for sx in [-1.0, 1.0] {
+            for sz in [-1.0, 1.0] {
+                let corner = block.center + turned.apply(Vec3::new(2.0 * sx, 0.5, 1.0 * sz));
+                assert_eq!(block.distance(corner).round(), 0.0);
+                assert!(corner.x >= lo.x - 1e-5 && corner.x <= hi.x + 1e-5);
+                assert!(corner.z >= lo.z - 1e-5 && corner.z <= hi.z + 1e-5);
+            }
+        }
     }
 
     #[test]

@@ -47,8 +47,9 @@ pub use grid::{Body, BuildStats, DistanceMap, LinkKind, NodeId, Path, WalkGrid};
 pub use library::{Library, Materials, WalkerBehaviour};
 pub use math::{PhysicsPoint, Rotation, Transform, Vec3};
 pub use project::{
-    Anomaly, BatterySpawner, CollisionFilter, Container, MapData, Placement, Shape, ShapeKind,
-    Spawn, Triangle, Zone, ZoneKind,
+    Anomaly, AnomalyArtefacts, AnomalyEnergy, AnomalyState, BatterySpawner, CollisionFilter,
+    Container, Damage, MapData, Placement, Shape, ShapeKind, Spawn, Triangle, Zone, ZoneGroup,
+    ZoneKind,
 };
 pub use resources::{Error, Resources};
 pub use sight::RayTree;

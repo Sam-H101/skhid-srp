@@ -25,6 +25,7 @@
 //! on bodies and statistics, the map once its grid is built; and the
 //! inputs the bots make.
 
+pub mod anomalies;
 pub mod body;
 pub mod cheats;
 pub mod curve;
