@@ -141,6 +141,7 @@ impl MatchHost for RegistryHost {
         let live = self.0.live_match(match_id, now)?;
         Some(lobby::LiveView {
             present: live.present,
+            giving_way: live.giving_way,
             points: live.standing.map(|standing| standing.points),
             kills: live.kills,
             played: live

@@ -410,13 +410,16 @@ impl Game {
             .count();
         if waiting > 0 && caught_up.len() == waiting {
             let at = grid_up(clock + ROSTER_LEAD_MS);
-            for index in caught_up {
+            for &index in &caught_up {
                 log::info!(
                     "Match {:#x}: new place {index} caught up; entry scheduled for {at} ms",
                     self.id
                 );
                 self.roster_change(None, index, true, at);
             }
+            // The server's bots make room for them where it is needed
+            // (`driven.rs`).
+            self.give_way(&caught_up, at, now);
         }
     }
 }

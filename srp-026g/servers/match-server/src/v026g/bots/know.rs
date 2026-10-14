@@ -237,6 +237,18 @@ impl TeamKnowledge {
         self.danger.iter().filter(move |spot| spot.time + ms >= now)
     }
 
+    /// The player at `who` left the match: no callout about it is heard,
+    /// and no theft names it. The battery it took is still where it was
+    /// last known.
+    pub fn forget(&mut self, who: Place) {
+        self.callouts.retain(|(_, percept)| percept.who != who);
+        for theft in &mut self.thefts {
+            if theft.thief == Some(who) {
+                theft.thief = None;
+            }
+        }
+    }
+
     pub fn forget_old(&mut self, now: u32) {
         self.danger.retain(|spot| spot.time + 30_000 >= now);
         self.thefts.retain(|theft| theft.time + 60_000 >= now);

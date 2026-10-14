@@ -205,6 +205,8 @@ pub(crate) struct Live {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
+    /// [`LiveMatch::giving_way`].
+    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -241,6 +243,12 @@ pub struct LiveMatch {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
+    /// By roster place: the server's own bots in the match that give their
+    /// place up to a late joiner whose side needs the room
+    /// (`session::matchmaking_policy::bot_gives_way`, `game/driven.rs`);
+    /// none with `SRP_BOTS_GIVE_WAY=off`. One that owes its place already
+    /// and has not left yet is not among them.
+    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -739,6 +747,7 @@ impl MatchRegistry {
                 phase: LivePhase::Gathering,
                 players,
                 present: (1_u32 << formed.places.len().min(31)) - 1,
+                giving_way: 0,
                 kills: [0; 2],
                 played: None,
                 time_left: None,
@@ -752,6 +761,7 @@ impl MatchRegistry {
             phase: live.phase,
             players: live.players,
             present: live.present,
+            giving_way: live.giving_way,
             kills: live.kills,
             played: live.played.map(|played| played + since),
             time_left: live.time_left.map(|left| left.saturating_sub(since)),

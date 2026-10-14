@@ -2085,6 +2085,7 @@ fn the_registry_says_how_a_match_stands_while_it_runs() {
             phase: LivePhase::Gathering,
             players: [2, 1],
             present: 0b111,
+            giving_way: 0,
             kills: [0, 0],
             played: None,
             time_left: None,

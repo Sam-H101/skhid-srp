@@ -125,6 +125,38 @@ impl Bench {
         Self::with_dialect(players, map_id, settings, &[], &[], true)
     }
 
+    /// A match of growing rosters with the server's own bots at `driven`.
+    pub fn growing_with_driven(
+        players: usize,
+        map_id: u8,
+        settings: Settings,
+        driven: &[usize],
+    ) -> Self {
+        Self::with_dialect(players, map_id, settings, &[], driven, true)
+    }
+
+    /// A late joiner on `team` is taken into the running match: its client
+    /// is the bench's next one, not connected yet. Its place.
+    pub fn reserve_on(&mut self, team: u8) -> usize {
+        let place = self.clients.len();
+        let mut player = setup(place + 1, self.clients[0].sim.map_id)
+            .players
+            .remove(place);
+        player.profile.team = team;
+        player.profile.name = format!("late-player-{place}");
+        let ticket = self
+            .registry
+            .join_running(self.match_id, player)
+            .expect("the match takes the player");
+        assert_eq!(ticket.match_id, self.match_id);
+        let map_id = self.clients[0].sim.map_id;
+        self.clients
+            .push(Client::growing(session_of(place), place + 1, map_id));
+        self.addrs
+            .push(SocketAddr::from(([127, 0, 0, 1], 40_000 + place as u16)));
+        place
+    }
+
     fn with_dialect(
         players: usize,
         map_id: u8,

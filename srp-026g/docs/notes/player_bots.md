@@ -261,9 +261,10 @@ the archive's index: a loader must follow them.
      `a_server_bot_wears_its_roles_kit_and_a_client_reads_it` and
      `each_teams_bots_take_the_roles_by_the_shares`, rewards
      `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
-   - Not yet: a bot leaving to make room for a late joiner; any choice of
-     what to do (the script is fixed); pressing the kit's keys (nothing
-     sends bits 14 or 23 yet); a real game with the kit.
+   - Not yet: any choice of what to do (the script is fixed); pressing the
+     kit's keys (nothing sends bits 14 or 23 yet); a real game with the kit.
+     (A bot leaving to make room for a late joiner: built later, see the
+     end of this section.)
 2. **Bots that walk the map.** Built 2026-10-14, not run with a real game:
    - `SRP_MAPDATA_DIR` (match server): the folder of `mapdata-dump`'s files
      (`player_bots_mapdata.md`). With it, the server's bots
@@ -372,13 +373,53 @@ the archive's index: a loader must follow them.
      `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
      `SRP_MAPDATA_DIR` set.
    - Not yet: a real game; the human routes per map (play 17's data);
-     per-weapon clip sizes; a bot giving its place up to a late joiner.
-4. Bots fill short queues and give their place up to late joiners.
+     per-weapon clip sizes.
+4. Bots fill short queues and give their place up to late joiners. The
+   giving way is built (2026-10-14, not run with a real game); filling
+   short queues is not.
 
 Bots and late joiners: a roster place is never reused, so a joiner cannot
 take the bot's own place; the bot leaves (0xEA) and the joiner comes on a
 new place. Every place ever used counts toward the 20 of a match, so bots
-should fill a match to a modest size.
+should fill a match to a modest size: with 20 places used, a bot leaving
+lets nobody in.
+
+**Giving way** (built 2026-10-14; `SRP_BOTS_GIVE_WAY`, match server,
+default on; the rules in `game/driven.rs`):
+- Who makes room: when late joiners are let in (their 0xE9 scheduled),
+  each in the order of its place takes the place of a server's bot of its
+  side if the side has one in the match and, with the joiner, would have
+  more players than the other side (`session::matchmaking_policy::
+  bot_gives_way`); else the side grows. The lobby places late joiners by
+  the same rule (`place_late`, `LiveView::giving_way`), so a side full of
+  bots takes humans and a side short of players is filled first.
+- Which bot: dead or waiting to see its body first, else the living one
+  farthest from any fight (an enemy, a shot, a death of the last 10 s);
+  never one carrying a battery (as the bots' view guesses the carrier),
+  never a living one of a side that can no longer respawn (a Team
+  Deathmatch side out of tickets ends the match when its last life goes).
+  Without `SRP_MAPDATA_DIR` the bots have no view: the side's last bot by
+  place leaves, unless the side can no longer respawn. A side none of
+  whose bots may leave now owes one: it leaves at the first poll one may,
+  unless the joiner has gone by then.
+- When and how: an ordinary roster change, 0xEA a tick after the joiner's
+  0xE9, 300 ms ahead of the clock (`ROSTER_LEAD_MS`). The bot stops making
+  inputs at once and is forgotten by the others (memory, callouts,
+  partner). Its result row says it left.
+- What it never does: end the match. The timelimit rule never goes back to
+  waiting, the gather modes end by points only, a match ends for want of
+  players only when no real client is left.
+- PROVEN (tests): `match-server` `tests/driven.rs` (`a_servers_bot_gives_
+  its_place_up_...`, `with_giving_way_off_...`, `a_bot_of_a_side_out_of_
+  respawns_...`), `bots/tests.rs` `the_bot_that_gives_way_is_...`,
+  `session` `bot_gives_way` and `place_late` tests, lobby
+  `a_full_side_takes_a_late_player_in_the_place_of_a_server_bot_...`.
+  LIKELY only: that a real client takes the 0xEA of a server's bot as any
+  player's leave (it cannot tell the place from a player's, §1, and
+  players leave matches every day); not seen with a real game. What the
+  game does with a battery its carrier takes out of the match is the
+  game's, as when a human carrier quits; a carrier is not chosen, but the
+  carrier is the bots' guess.
 
 ## 7. Behaviour
 

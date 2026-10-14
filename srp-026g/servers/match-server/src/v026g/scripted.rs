@@ -50,6 +50,9 @@ pub struct Sim {
     pub points_from: Option<(u32, [u16; 2])>,
     /// From a tick on: Team Deathmatch's rule.
     pub tdm_from: Option<(u32, Tdm)>,
+    /// From a tick on: whether each team may still respawn (the rules'
+    /// `team_respawn`; both may otherwise).
+    pub team_respawn_from: Option<(u32, [bool; 2])>,
     /// From a tick on: kills of player 0 and deaths of player 1.
     pub kills_from: Option<(u32, u16)>,
     /// From a tick on the world differs from the others' by this byte.
@@ -92,6 +95,7 @@ impl Sim {
             events: Vec::new(),
             points_from: None,
             tdm_from: None,
+            team_respawn_from: None,
             kills_from: None,
             salt_from: None,
             ballast: 0,
@@ -264,7 +268,10 @@ impl Sim {
             gather,
             tdm,
             kills_deaths,
-            team_respawn: [true, true],
+            team_respawn: self
+                .team_respawn_from
+                .filter(|(from, _)| since(*from))
+                .map_or([true, true], |(_, teams)| teams),
         }
         .to_bytes();
         let mut bullets = vec![0xB0; self.ballast];

@@ -15,8 +15,47 @@
 //!   on);
 //! - it is no witness of the world (`Game::is_bot`): no reports, no
 //!   uploads, never counted among the clients that agree;
-//! - it never leaves by itself and never times out: a match with only
-//!   bots in it is over after [`BOTS_ALONE`] (`check_bots_alone`).
+//! - it never times out, and leaves only to give its place up to a human
+//!   who joins the match late and needs the room ([`Game::give_way`],
+//!   below); a match with only bots in it is over after [`BOTS_ALONE`]
+//!   (`check_bots_alone`).
+//!
+//! Giving way (`SRP_BOTS_GIVE_WAY`, on by default). When late joiners are
+//! let in (their 0xE9 is scheduled, `poll_roster`), each in the order of
+//! its place takes the place of one of the server's bots of its side if
+//! that side has one in the match and, with the joiner, would have more
+//! players than the other side (`session::matchmaking_policy::
+//! bot_gives_way`, the rule the lobby places late joiners by, so its
+//! capacity check does not keep a joiner out of a side full of bots); else
+//! the side grows. The sides are the places in the match as the lobby sees
+//! them (`live_now`), the joiners left out.
+//! - Which bot: one that is dead or waits to see its body first, else the
+//!   living one farthest from any fight (an enemy, a shot heard, a death of
+//!   the last 10 s); never one the bots take to carry a battery (a carrier
+//!   is the bots' guess, `view.rs`), and never a living one of a side that
+//!   can no longer respawn (Team Deathmatch out of tickets: its leaving
+//!   could be its side's last life, and the mode's rule ends the match on
+//!   that, `rules::tdm_finished`). Without the bots' view (no
+//!   `SRP_MAPDATA_DIR`) nothing is known of lives or carriers: the side's
+//!   last bot by place leaves, unless the side can no longer respawn.
+//! - When: its 0xEA goes as any leave does ([`Game::roster_change`],
+//!   [`ROSTER_LEAD_MS`] ahead), a tick after the joiner's 0xE9, so the side
+//!   is never a player short. A side whose bots may not leave now owes one
+//!   ([`Owed`]): it leaves at the first poll one may, unless the joiner has
+//!   left by then or the side has no bot left.
+//! - What it frees: a side's size, never a roster place. A place is never
+//!   used twice, so the joiner comes on a new one, and every place ever
+//!   used counts toward the 20 of a match: with 20 used, a bot leaving lets
+//!   nobody in.
+//! - What it does not touch: the match goes on. The timelimit rule never
+//!   goes back to waiting for a leave (`TimelimitRule::on_player_left`),
+//!   the gather modes end by points only, a match ends for want of players
+//!   only when no real client is left (`check_bots_alone`, `everyone_left`),
+//!   and Team Deathmatch's end is kept off as above.
+//! - What a client sees: a player leaving, as when a human quits. The
+//!   client cannot tell a server's bot from a player (`player_bots.md` §1),
+//!   so its 0xEA is handled as any player's: LIKELY, by that alone; not
+//!   yet seen with a real game.
 //!
 //! Where its inputs come from:
 //! - with `SRP_MAPDATA_DIR` ([`Walkers`]): `super::super::bots`, bots that
@@ -39,6 +78,8 @@ use survarium::v026g::match_msgs::motion::Motion;
 use survarium::v026g::match_msgs::players;
 use survarium::v026g::match_msgs::snapshot::{Battery, Decoded};
 
+use session::matchmaking_policy::bot_gives_way;
+
 use super::*;
 use crate::v026g::bots::body::Fix;
 use crate::v026g::bots::maps::{MapState, Maps};
@@ -54,6 +95,18 @@ use crate::v026g::drive::{self, Drive};
 const PLAYING_REFRESH: Duration = Duration::from_secs(2);
 /// While a bot waits to see its body, sooner.
 const WAITING_REFRESH: Duration = Duration::from_secs(1);
+
+/// A bot of `team` owes its place to the late joiner at `joiner`: none of
+/// the side's bots could leave when the joiner was let in
+/// ([`Game::give_way`]).
+pub(super) struct Owed {
+    joiner: usize,
+    team: u8,
+    /// The joiner's entry tick: the bot leaves after it.
+    after: u32,
+    /// Whether the log has said that it waits.
+    logged: bool,
+}
 
 /// The bots of a match and their map.
 pub(super) struct Walkers {
@@ -271,6 +324,168 @@ impl Game {
         }
     }
 
+    /// Whether the place's last roster change was its leave.
+    pub(super) fn has_left(&self, index: usize) -> bool {
+        self.events
+            .iter()
+            .rev()
+            .find(|(_, who, _)| *who == index)
+            .is_some_and(|(_, _, entered)| !entered)
+    }
+
+    /// Whether the place is a server's bot in the match: entered, and not
+    /// left. Only such a bot can leave (0xEA).
+    pub(super) fn bot_in_match(&self, index: usize) -> bool {
+        self.formed
+            .places
+            .get(index)
+            .is_some_and(|place| place.driven)
+            && !self.has_left(index)
+            && self
+                .events
+                .iter()
+                .any(|(_, who, entered)| *who == index && *entered)
+    }
+
+    /// The server's bots of `team` in the match, by place.
+    fn bots_of(&self, team: u8) -> Vec<usize> {
+        (0..self.players())
+            .filter(|&index| self.formed.places[index].team.min(1) == team)
+            .filter(|&index| self.bot_in_match(index))
+            .collect()
+    }
+
+    /// The bots that give way to a late joiner who needs the room, by
+    /// place ([`super::super::LiveMatch::giving_way`]): the bots in the
+    /// match, less the ones that owe their place already (a side's last
+    /// ones by place, as they are counted).
+    pub(super) fn giving_way(&self) -> u32 {
+        if !self.settings.bots_give_way || self.result_made {
+            return 0;
+        }
+        let mut mask = 0_u32;
+        for team in 0..2_u8 {
+            let bots = self.bots_of(team);
+            let owed = self.owed.iter().filter(|owed| owed.team == team).count();
+            for &index in &bots[..bots.len().saturating_sub(owed)] {
+                mask |= 1 << index;
+            }
+        }
+        mask
+    }
+
+    /// The late joiners at `joined` (in the order of their places) are let
+    /// in, their 0xE9 at `at`: each whose side needs the room takes the
+    /// place of one of the server's bots there, which leaves (the top of
+    /// this file, "Giving way").
+    pub(super) fn give_way(&mut self, joined: &[usize], at: u32, now: Instant) {
+        if !self.settings.bots_give_way {
+            return;
+        }
+        let present = self.live_now(now).present;
+        let mut sizes = [0_usize; 2];
+        let mut bots = [0_usize; 2];
+        for (index, place) in self.formed.places.iter().enumerate() {
+            let team = usize::from(place.team.min(1));
+            if present >> index & 1 == 1 && !joined.contains(&index) {
+                sizes[team] += 1;
+            }
+            if self.bot_in_match(index) {
+                bots[team] += 1;
+            }
+        }
+        // A bot that owes its place is as good as gone.
+        for owed in &self.owed {
+            let team = usize::from(owed.team);
+            sizes[team] = sizes[team].saturating_sub(1);
+            bots[team] = bots[team].saturating_sub(1);
+        }
+        for &joiner in joined {
+            let team = usize::from(self.formed.places[joiner].team.min(1));
+            if !bot_gives_way(sizes, bots, team) {
+                sizes[team] += 1;
+                continue;
+            }
+            bots[team] -= 1;
+            self.owed.push(Owed {
+                joiner,
+                team: team as u8,
+                after: at,
+                logged: false,
+            });
+        }
+        self.pay_owed(now);
+    }
+
+    /// Each bot owed leaves if one of its side may now: the joiner's place
+    /// is still in the match, the side has a bot, and one may go
+    /// ([`Self::leaver`]). The rest wait for the next poll.
+    pub(super) fn pay_owed(&mut self, now: Instant) {
+        if self.owed.is_empty() {
+            return;
+        }
+        let clock = self.clock(now);
+        for mut owed in std::mem::take(&mut self.owed) {
+            let (joiner, team) = (owed.joiner, owed.team);
+            if self.has_left(joiner) {
+                log::info!(
+                    "Match {:#x}: player {joiner} left before a bot of team {team} made room for \
+                     it; the bots stay",
+                    self.id
+                );
+                continue;
+            }
+            let bots = self.bots_of(team);
+            if bots.is_empty() {
+                continue;
+            }
+            let Some(bot) = self.leaver(team, &bots, clock) else {
+                if !owed.logged {
+                    owed.logged = true;
+                    log::info!(
+                        "Match {:#x}: no bot of team {team} ({bots:?}) may leave now for player \
+                         {joiner} (a battery carried, or alive with no respawn left); one \
+                         leaves once it may",
+                        self.id
+                    );
+                }
+                self.owed.push(owed);
+                continue;
+            };
+            let at = grid_up(clock + ROSTER_LEAD_MS).max(owed.after + TICK_MS);
+            self.roster_change(None, bot, false, at);
+            self.drives[bot] = None;
+            log::info!(
+                "Match {:#x}: player {bot} (the server's bot) gives its place up to player \
+                 {joiner}, who joined late: it leaves at {at} ms",
+                self.id
+            );
+            let note = serde_json::json!({
+                "note": "gave way",
+                "place": bot,
+                "to": joiner,
+                "match_ms": at,
+            });
+            self.record_note(note, now);
+        }
+    }
+
+    /// Which of `bots` (of `team`, in the match) leaves now, if one may:
+    /// the bots' own choice ([`Bots::to_give_way`]) where they have a view
+    /// of the match, else the last by place, unless the side can no longer
+    /// respawn (whose bots' lives are not known without that view).
+    fn leaver(&self, team: u8, bots: &[usize], clock: u32) -> Option<usize> {
+        if let Some(walkers) = self.walkers.as_ref() {
+            return walkers.bots.to_give_way(bots, clock);
+        }
+        let out = self
+            .state
+            .as_ref()
+            .and_then(|state| state.rules.as_ref())
+            .is_some_and(|rules| !rules.team_respawn[usize::from(team.min(1))]);
+        if out { None } else { bots.last().copied() }
+    }
+
     /// How often to ask for a world, `every` being what the match asks:
     /// sooner while the server's bots play.
     pub(super) fn driven_refresh(&self, every: Duration) -> Duration {
@@ -374,6 +589,9 @@ impl Game {
         {
             return;
         }
+        // Before the bots hear the roster changes: one that leaves now is
+        // forgotten by them in this poll.
+        self.pay_owed(now);
         let clock = self.clock(now);
         let mut due = Vec::new();
         for index in 0..self.drives.len() {
