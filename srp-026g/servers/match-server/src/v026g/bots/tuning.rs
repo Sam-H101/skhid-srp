@@ -415,8 +415,8 @@ impl Tuning {
             "aim.combat.strafe_still_ms",
         )?;
         check(
-            c.recoil_pull_deg_s >= 0.0 && c.recoil_pull_max_deg >= 0.0,
-            "aim.combat.recoil_pull_*",
+            (0.0..=1.0).contains(&c.recoil_pull),
+            "aim.combat.recoil_pull",
         )?;
         check(self.hazard_margin >= 0.0, "hazard_margin")?;
         let shares: f32 = self.personalities.iter().map(|p| p.share).sum();

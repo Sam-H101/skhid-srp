@@ -15,6 +15,13 @@
 //! What the model does not know: other bodies in the way, being hit
 //! (`stopping speed`), slides off steep ground, a jump's arc. Each is put
 //! right by the next world.
+//!
+//! The pitch is the base pitch (`m_look_pitch`), which a world saves; the
+//! view is that plus the weapon's kick ([`super::recoil`]: PROVEN,
+//! 0x2E0F60). For a bot the kick is the bot's own prediction, kept with
+//! each tick, and its turns as decided already carry the part of a
+//! downward turn the kick took (0x2E0FB0), so the base pitch is the
+//! world's. A human's kick is not known: 0.
 
 use std::collections::VecDeque;
 
@@ -53,7 +60,10 @@ pub struct Estimate {
     pub blend: Blend,
     /// In `(-π, π]`.
     pub yaw: f32,
+    /// The base pitch (the world's).
     pub pitch: f32,
+    /// The weapon's kick over it after the tick (a bot's own prediction).
+    pub kick: f32,
     /// The keys held: they move the body from the next tick on (a world
     /// does not show its own tick's keys yet, `kin`).
     pub keys: u32,
@@ -61,12 +71,21 @@ pub struct Estimate {
     pub node: Option<NodeId>,
 }
 
-/// A decided tick: the keys held and the turn made.
+impl Estimate {
+    /// The view's pitch: the base pitch and the kick (0x2E0F60).
+    pub fn view_pitch(&self) -> f32 {
+        (self.pitch + self.kick).clamp(-MAX_PITCH, MAX_PITCH)
+    }
+}
+
+/// A decided tick: the keys held, the turn made to the base pitch, and the
+/// kick after it.
 #[derive(Clone, Copy, Debug)]
 struct Tick {
     time: u32,
     keys: u32,
     turn: (f32, f32),
+    kick: f32,
 }
 
 /// Ticks kept to be played again from a world: worlds come at most a few
@@ -121,6 +140,7 @@ impl BodyTrack {
             time: estimate.time + ticks * TICK_MS,
             keys: estimate.keys,
             turn: (0.0, 0.0),
+            kick: estimate.kick,
         };
         Some(advance(
             estimate,
@@ -136,16 +156,24 @@ impl BodyTrack {
         self.fix.as_ref().is_some_and(|fix| !fix.alive)
     }
 
-    /// The bot decided the tick at `time`: its keys and the turn as sent.
+    /// The bot decided the tick at `time`: its keys, the turn as sent (the
+    /// pitch's with the part the kick took) and the kick after it.
     pub fn decided(
         &mut self,
         time: u32,
         keys: u32,
         turn: (f32, f32),
+        kick: f32,
         kin: &Kinematics,
         grid: Option<&WalkGrid>,
     ) {
-        self.ticks.push_back(Tick { time, keys, turn });
+        let tick = Tick {
+            time,
+            keys,
+            turn,
+            kick,
+        };
+        self.ticks.push_back(tick);
         while self
             .ticks
             .front()
@@ -155,7 +183,7 @@ impl BodyTrack {
         }
         if let Some(estimate) = self.estimate.as_mut() {
             let level = self.level.unwrap_or(1.0);
-            *estimate = advance(*estimate, Tick { time, keys, turn }, kin, level, grid);
+            *estimate = advance(*estimate, tick, kin, level, grid);
             self.trail.push_back((time, estimate.feet));
             while self
                 .trail
@@ -229,6 +257,12 @@ impl BodyTrack {
             blend: Blend::at(local),
             yaw: wrap(fix.yaw),
             pitch: fix.pitch,
+            // The world has no kick; the bot's own for that tick.
+            kick: self
+                .ticks
+                .iter()
+                .find(|tick| tick.time == fix.time)
+                .map_or(0.0, |tick| tick.kick),
             keys: held,
             node,
         };
@@ -279,6 +313,7 @@ fn advance(
     }
     at.yaw = wrap(at.yaw + tick.turn.0);
     at.pitch = (at.pitch + tick.turn.1).clamp(-MAX_PITCH, MAX_PITCH);
+    at.kick = tick.kick;
     at.keys = tick.keys;
     at.time = tick.time;
     at
@@ -411,7 +446,7 @@ pub(super) mod tests {
         assert!(track.estimate().is_none());
         // Inputs before any world are kept for when one comes.
         for time in (1_050..=2_000).step_by(50) {
-            track.decided(time, key::FORWARD, (0.0, 0.0), &kin, None);
+            track.decided(time, key::FORWARD, (0.0, 0.0), 0.0, &kin, None);
         }
         assert!(track.fixed(fix(1_000, Vec3::new(5.0, 0.0, 5.0), 0.0), &kin, None));
         let at = *track.estimate().unwrap();
@@ -426,7 +461,7 @@ pub(super) mod tests {
         // A world of a later tick: the body is put where it shows, the
         // ticks after it played again, and how far off the reckoning was is
         // kept.
-        track.decided(2_050, key::FORWARD, (0.0, 0.0), &kin, None);
+        track.decided(2_050, key::FORWARD, (0.0, 0.0), 0.0, &kin, None);
         // The world has its tick's keys: forward.
         let walking = Fix {
             keys: key::FORWARD,
@@ -447,15 +482,22 @@ pub(super) mod tests {
         assert!(!track.fixed(fix(1_400, Vec3::new(0.0, 0.0, 0.0), 0.0), &kin, None));
         // A turn is applied at its tick: a quarter turn, then forward goes
         // to -x.
-        track.decided(2_100, 0, (std::f32::consts::FRAC_PI_2, 0.0), &kin, None);
+        track.decided(
+            2_100,
+            0,
+            (std::f32::consts::FRAC_PI_2, 0.0),
+            0.0,
+            &kin,
+            None,
+        );
         let before = track.estimate().unwrap().feet;
-        track.decided(2_150, key::FORWARD, (0.0, 0.0), &kin, None);
+        track.decided(2_150, key::FORWARD, (0.0, 0.0), 0.0, &kin, None);
         assert_eq!(
             track.estimate().unwrap().feet,
             before,
             "the keys move it a tick later"
         );
-        track.decided(2_200, key::FORWARD, (0.0, 0.0), &kin, None);
+        track.decided(2_200, key::FORWARD, (0.0, 0.0), 0.0, &kin, None);
         let after = track.estimate().unwrap().feet;
         assert!(after.x < before.x - 0.1 && (after.z - before.z).abs() < 1e-3);
         // Dead: nothing reckoned; alive again with a new spawn time is a
@@ -495,7 +537,7 @@ pub(super) mod tests {
         track.fixed(fix(0, Vec3::new(17.0, 0.0, 10.0), yaw), &kin, Some(&grid));
         assert!(track.estimate().unwrap().node.is_some());
         for time in (50..=2_000).step_by(50) {
-            track.decided(time, key::FORWARD, (0.0, 0.0), &kin, Some(&grid));
+            track.decided(time, key::FORWARD, (0.0, 0.0), 0.0, &kin, Some(&grid));
         }
         let at = track.estimate().unwrap();
         // The body's radius keeps it short of the wall.
@@ -506,9 +548,35 @@ pub(super) mod tests {
         let mut track = BodyTrack::default();
         track.fixed(fix(0, Vec3::new(18.5, 0.0, 10.0), yaw), &kin, Some(&grid));
         for time in (50..=2_000).step_by(50) {
-            track.decided(time, key::FORWARD, (0.0, 0.0), &kin, Some(&grid));
+            track.decided(time, key::FORWARD, (0.0, 0.0), 0.0, &kin, Some(&grid));
         }
         let at = track.estimate().unwrap();
         assert!(at.feet.x < 19.8 && at.feet.z > 13.0, "{at:?}");
+    }
+
+    #[test]
+    fn the_view_is_the_base_pitch_and_the_kick_of_the_last_tick() {
+        let kin = Kinematics::default();
+        let mut track = BodyTrack::default();
+        track.fixed(fix(0, Vec3::ZERO, 0.0), &kin, None);
+        // Up 0.02 with no kick; then the kick at 0.03 and a pull of 0.01
+        // all taken off it (the base turn 0).
+        track.decided(50, 0, (0.0, 0.02), 0.0, &kin, None);
+        track.decided(100, key::FIRE, (0.0, 0.0), 0.03, &kin, None);
+        track.decided(150, key::FIRE, (0.0, 0.0), 0.02, &kin, None);
+        let at = track.estimate().unwrap();
+        assert!((at.pitch - 0.02).abs() < 1e-6 && (at.view_pitch() - 0.04).abs() < 1e-6);
+        // A world of tick 100: its base pitch, the bot's kick of that tick,
+        // the ticks after played again.
+        let world = Fix {
+            pitch: 0.025,
+            ..fix(100, Vec3::ZERO, 0.0)
+        };
+        track.fixed(world, &kin, None);
+        let at = track.estimate().unwrap();
+        assert!((at.view_pitch() - 0.045).abs() < 1e-6, "{at:?}");
+        // The view is clamped as the client clamps it.
+        track.decided(200, 0, (0.0, 0.97), 0.1, &kin, None);
+        assert_eq!(track.estimate().unwrap().view_pitch(), 1.0);
     }
 }

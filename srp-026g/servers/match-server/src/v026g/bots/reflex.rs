@@ -18,10 +18,18 @@
 //!
 //! How it fires and stands, from the best players of the recorded matches
 //! (`player_bots_behaviour.md` §5): an automatic weapon in bursts of
-//! 0.5-1 s with the aim pulled down as the kick climbs, a one-round weapon
-//! at every cycle of its own; down the sights at a seen target (always
-//! from 10 m on); standing to aim it steps side to side, and a hit turns
-//! the step; with a bolt action it stands (or crouches) instead.
+//! 0.5-1 s, a one-round weapon at every cycle of its own; down the sights
+//! at a seen target (always from 10 m on); standing to aim it steps side
+//! to side, and a hit turns the step; with a bolt action it stands (or
+//! crouches) instead.
+//!
+//! The kick: every weapon's shots lift the view itself, and the bullet
+//! with it ([`super::recoil`], as the client does it). The reflex keeps
+//! its weapon's kick ([`Reflex::weapon_tick`], [`Reflex::sent`]): the view
+//! it aims from is the base pitch and the kick, and while it aims at a
+//! target its turn takes back the rise the kick will give the view that
+//! tick (`recoil_pull`), as a player pulls the mouse down; the skill's
+//! error and wander stay on top.
 //!
 //! What it does besides aiming and firing (`player_bots_behaviour.md` §3):
 //! - **play 5, punish a reload:** an enemy seen within `punish_m` or heard
@@ -46,9 +54,10 @@
 use mapdata::Vec3;
 use serde::{Deserialize, Serialize};
 
-use super::guns::{Arms, Hands};
+use super::guns::{Arms, Gun, Hands};
 use super::kin::{wrap, yaw_of};
 use super::know::{Memory, SeenTrack, Source, TeamKnowledge};
+use super::recoil::{Cadence, Recoil, kick_of};
 use super::rng::Rng;
 use super::signals::mix;
 use super::tactics::{SpotQuery, Tactics};
@@ -197,13 +206,12 @@ pub struct CombatTuning {
     /// and `press_gap_ms` more.
     pub press_ms: u32,
     pub press_gap_ms: u32,
-    /// An automatic weapon's kick: while its trigger is held the aim is
-    /// pulled this many degrees a second below the target, up to
-    /// `recoil_pull_max_deg`, as the best players pull the mouse down: the
-    /// kick is not in the look pitch, and the recorded hits show it lifts
-    /// the shot (`player_bots_behaviour.md` §5).
-    pub recoil_pull_deg_s: f32,
-    pub recoil_pull_max_deg: f32,
+    /// The kick ([`super::recoil`]): while it aims at a target, this share
+    /// of the view's rise its weapon's kick will give it this tick (or of
+    /// the fall as the kick comes back) is taken back by the tick's turn,
+    /// as the best players pull the mouse down against it; any weapon.
+    /// 1: the view stays where the turn takes it; 0: the kick lifts it.
+    pub recoil_pull: f32,
     /// Aiming down the sights at a seen target: always from `ads_near_m`
     /// on, nearer with this chance (drawn per target).
     pub ads_near_m: f32,
@@ -270,8 +278,7 @@ impl Default for CombatTuning {
             reload_some_share: 0.3,
             press_ms: 100,
             press_gap_ms: 50,
-            recoil_pull_deg_s: 7.0,
-            recoil_pull_max_deg: 5.5,
+            recoil_pull: 1.0,
             ads_near_m: 10.0,
             ads_near_chance: 0.85,
             strafe_run_ms: (250, 700),
@@ -385,6 +392,9 @@ pub struct Override {
     pub look_at: Option<Vec3>,
     /// The yaw and pitch error added to the aim, radians.
     pub error: (f32, f32),
+    /// Added to the tick's pitch turn as it is: the predicted rise of the
+    /// view by the kick taken back (`recoil_pull`), radians.
+    pub pull: f32,
     /// Hold fire this tick.
     pub fire: bool,
     /// The turn's time constant while aiming, seconds.
@@ -523,6 +533,11 @@ pub struct Reflex {
     /// [aimpoint] The target's parts that show, the view's line
     /// ([`Self::look`]).
     sight: super::aimpoint::Sight,
+    /// [recoil] The kick of the weapon in hand, when its trigger fires,
+    /// and how much the kick moved the view at this tick's weapon update.
+    recoil: Recoil,
+    cadence: Cadence,
+    kick_step: f32,
 }
 
 /// The bearing of `to` from `from`, radians.
@@ -567,6 +582,14 @@ impl Reflex {
 
     pub fn arms(&self) -> Option<&'static Arms> {
         self.arms
+    }
+
+    /// The weapon in hand (weapon 1 before the life's first use).
+    pub fn held_gun(&self) -> &'static Gun {
+        match &self.hands {
+            Some(hands) => hands.held().gun,
+            None => self.arms.unwrap_or_else(Arms::fallback).primary.0,
+        }
     }
 
     /// This life's weapons, from its arms at the first use.
@@ -660,6 +683,52 @@ impl Reflex {
     ) {
         self.new_life(me);
         self.sight.update(me, self.target, view, world, now);
+    }
+
+    /// [recoil] At each tick, before [`Self::tick`]: the weapon's update to
+    /// `now` (the client's comes before the tick's turn and shots). Returns
+    /// the kick as the last tick left it, pitch units: the view the bot
+    /// aims from is its base pitch and that; this tick's rise is taken
+    /// back by [`Override::pull`].
+    pub fn weapon_tick(&mut self, me: &PlaceView, now: u32) -> f32 {
+        self.new_life(me);
+        self.in_hand();
+        let before = self.recoil.y();
+        self.recoil.update(now);
+        self.kick_step = self.recoil.y() - before;
+        before
+    }
+
+    /// [recoil] The weapon's kick now, pitch units.
+    pub fn kick(&self) -> f32 {
+        self.recoil.y()
+    }
+
+    /// [recoil] The tick's input as sent (`pitch`: its pitch turn as the
+    /// halves say it): returns the part of a downward turn the kick takes
+    /// (the base pitch moves by `pitch` and that); then the tick's shots by
+    /// its `keys`.
+    pub fn sent(&mut self, now: u32, keys: u32, pitch: f32) -> f32 {
+        self.in_hand();
+        self.recoil.update(now);
+        let taken = self.recoil.turn(pitch);
+        let auto = self.hands().held().gun.auto;
+        let interval_ms = self.recoil.kick().interval_s() * 1000.0;
+        let recoil = &mut self.recoil;
+        let fire = keys & key::FIRE != 0;
+        self.cadence
+            .tick(now, fire, auto, interval_ms, |at| recoil.mean_shot(at));
+        taken
+    }
+
+    /// The kick of the weapon in hand: another weapon taken (the pistol)
+    /// starts with none (0x2E2C21).
+    fn in_hand(&mut self) {
+        let item = self.hands().held().gun.item;
+        if self.recoil.kick().item != item {
+            self.recoil = Recoil::new(kick_of(item));
+            self.cadence = Cadence::default();
+        }
     }
 
     /// A new life: the per-life counts start again (the rounds with a full
@@ -1096,6 +1165,8 @@ impl Reflex {
         self.held_ms = 0;
         self.press_until = 0;
         self.reload_here = false;
+        // A reload resets the kick (0x310E52; when in it: not traced).
+        self.recoil.reset();
         key::RELOAD
     }
 
@@ -1269,6 +1340,7 @@ impl Reflex {
             return Override {
                 look_at: Some(point),
                 error,
+                pull: 0.0,
                 fire: false,
                 turn_time_s: Some(settle_s * 0.5),
                 keys,
@@ -1324,19 +1396,16 @@ impl Reflex {
         let t = now.saturating_sub(self.since) as f32 / 1000.0;
         let fade = (-t / settle_s).exp();
         self.wander_step(aim, skill, rng);
-        // An automatic weapon's kick, pulled down while the trigger is held.
         let gun = self.hands().held().gun;
-        let pull = if gun.auto {
-            (c.recoil_pull_deg_s * self.held_ms as f32 / 1000.0)
-                .min(c.recoil_pull_max_deg)
-                .to_radians()
-        } else {
-            0.0
-        };
         let error = (
             self.error.0 * fade + self.wander.0 + floor * (rng.unit() - 0.5),
-            self.error.1 * fade + self.wander.1 - pull + floor * 0.5 * (rng.unit() - 0.5),
+            self.error.1 * fade + self.wander.1 + floor * 0.5 * (rng.unit() - 0.5),
         );
+        // [recoil] The kick's rise of the view this tick, taken back by the
+        // turn (any weapon); what is not taken back lifts the view and the
+        // shot with it.
+        let pull = -c.recoil_pull * self.kick_step;
+        let lift = self.kick_step + pull;
         let off = off_by(me, point, error);
         // Play 19: spot him once he is in the crosshair, the cooldown kept.
         let mut keys = reload;
@@ -1366,9 +1435,10 @@ impl Reflex {
             && now >= self.busy_until
             && self.hands().held().rounds > 0
             && distance <= aim.range_m
-            // The shot leaves along the view lifted by the kick, which the
-            // pull only cancels: the wall test is on the line without it.
-            && self.sight.clear_shot(me, &aimed, (error.0, error.1 + pull))
+            // The shot leaves along the view (kick and all): the wall test is
+            // on the view now and the one it turns to, each with the kick's
+            // lift not taken back.
+            && self.clear_shot(me, &aimed, error, lift)
         {
             if !gun.auto || now < self.burst_until {
                 wants = true;
@@ -1400,6 +1470,7 @@ impl Reflex {
         Override {
             look_at: Some(point),
             error,
+            pull,
             fire,
             turn_time_s: Some(settle_s * 0.5),
             keys,
@@ -1407,6 +1478,26 @@ impl Reflex {
             band_m: self.band,
             strafe,
         }
+    }
+
+    /// [aimpoint] [`super::aimpoint::Sight::clear_shot`] with the view (and
+    /// the view it turns to) `lift` higher.
+    fn clear_shot(
+        &self,
+        me: &PlaceView,
+        aimed: &super::aimpoint::Aim,
+        error: (f32, f32),
+        lift: f32,
+    ) -> bool {
+        if lift == 0.0 {
+            return self.sight.clear_shot(me, aimed, error);
+        }
+        let lifted = PlaceView {
+            pitch: (me.pitch + lift).clamp(-1.0, 1.0),
+            ..me.clone()
+        };
+        self.sight
+            .clear_shot(&lifted, aimed, (error.0, error.1 + lift))
     }
 
     /// The aim's wander, one tick on: a mean-reverting walk whose spread is
@@ -1918,42 +2009,114 @@ mod tests {
         }
     }
 
+    /// A bot of `role` facing an enemy `distance` ahead from 1 s for
+    /// `ticks` ticks at skill 1, standing, its view turned by the motor and
+    /// kicked as the client kicks it ([`super::super::recoil`]: the view is
+    /// the base pitch and the kick, a downward turn taken off the kick
+    /// first). The client's kick here is the bot's own model with the
+    /// ranges' middles. Returns, for each tick it fired, how far the view
+    /// was over the chest, degrees; and the shots.
+    fn kicked_fight(role: &str, distance: f32, aim: &AimTuning, ticks: u32) -> (Vec<f32>, u32) {
+        use super::super::motor::{Feel, Motor, Pose};
+        let mut rng = Rng::new(11);
+        let mut motor = Motor::new(Feel::default(), &mut rng);
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        let at = Vec3::new(0.0, 0.0, distance);
+        let enemy = body(1, 1, at, 0.0);
+        facing(&mut me, enemy.chest());
+        let chest = me.pitch;
+        let view = view_of(vec![me.clone(), enemy]);
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::armed(Arms::of_role(role));
+        // The client's side: the base pitch and the weapon's kick.
+        let mut base = me.pitch;
+        let mut client = Recoil::new(kick_of(reflex.hands().held().gun.item));
+        let mut cadence = Cadence::default();
+        let (mut over, mut shots) = (Vec::new(), 0);
+        for k in 0..ticks {
+            let now = 1_000 + k * 50;
+            sense(&mut memory, &[percept(1, at, now, Source::Seen)], now);
+            if k % 5 == 0 {
+                reflex.think_with(&me, &Situation::of(&view), &memory, now, aim, 1.0, &mut rng);
+            }
+            // The bot's own reckoning: its base pitch and its kick.
+            let kick = reflex.weapon_tick(&me, now);
+            let seen = PlaceView {
+                pitch: base + kick,
+                ..me.clone()
+            };
+            let o = reflex.tick(&seen, &view, &memory, now, true, aim, 1.0, &mut rng);
+            // Before he is noticed it looks nowhere: the view stays.
+            let eye = me.eye();
+            let want = o.look_at.map_or(seen.pitch, |p| {
+                (p.y - eye.y).atan2((p.z - eye.z).abs()) + o.error.1
+            });
+            motor.turn_time = o.turn_time_s;
+            let pose = Pose {
+                feet: me.feet,
+                yaw: me.yaw,
+                pitch: seen.pitch,
+                speed: 0.0,
+            };
+            let turn = motor.aim_still(&pose, (me.yaw, want)).turn.1 + o.pull;
+            let keys = o.keys | if o.fire { key::FIRE } else { 0 };
+            // The bot's books and the client's, each the same rule; the
+            // client's kick is reset by a reload, and starts afresh with the
+            // pistol.
+            let taken = reflex.sent(now, keys, turn);
+            let item = reflex.held_gun().item;
+            if item != client.kick().item {
+                client = Recoil::new(kick_of(item));
+                cadence = Cadence::default();
+            } else if keys & key::RELOAD != 0 {
+                client.reset();
+            }
+            client.update(now);
+            let client_taken = client.turn(turn);
+            assert!((taken - client_taken).abs() < 1e-6);
+            base += turn + client_taken;
+            let auto = reflex.hands().held().gun.auto;
+            let interval_ms = client.kick().interval_s() * 1000.0;
+            cadence.tick(now, o.fire, auto, interval_ms, |t| {
+                client.mean_shot(t);
+                shots += 1;
+            });
+            if o.fire {
+                over.push((client.view(base) - chest).to_degrees());
+            }
+        }
+        (over, shots)
+    }
+
     #[test]
-    fn the_aim_is_pulled_down_while_an_automatic_trigger_is_held() {
-        // No wander and next to no floor: the pitch error is the pull.
+    fn the_turns_take_back_the_kick_so_the_view_stays_on_the_target() {
+        // No wander and next to no floor: the view is on the chest while it
+        // fires, kick or no kick, for an automatic weapon, a bolt action and
+        // the SMG.
         let aim = AimTuning {
             fire_within_deg: 180.0,
             error_deg: (0.01, 0.01),
             wander_deg: (0.0, 0.0),
             ..AimTuning::default()
         };
-        let c = &aim.combat;
-        let ticks = facing_fight("support", 20.0, &aim, 200);
-        // The trigger held so far (the tick's own press counts from the
-        // next tick on).
-        let mut held = 0u32;
-        let mut deepest: f32 = 0.0;
-        for (now, o) in &ticks {
-            let want = (c.recoil_pull_deg_s * held as f32 / 1000.0).min(c.recoil_pull_max_deg);
-            if *now >= 2_000 {
-                assert!(
-                    (o.error.1.to_degrees() + want).abs() < 0.05,
-                    "{} vs {want} after {held} ms",
-                    o.error.1.to_degrees()
-                );
-            }
-            deepest = deepest.min(o.error.1.to_degrees());
-            held = if o.fire { held + 50 } else { 0 };
+        for (role, distance) in [("support", 20.0), ("camper", 40.0), ("flanker", 15.0)] {
+            let (over, shots) = kicked_fight(role, distance, &aim, 200);
+            assert!(shots >= 3, "{role}: {shots} shots");
+            let worst = over.iter().fold(0f32, |m, o| m.max(o.abs()));
+            assert!(worst < 0.1, "{role}: {worst}° off the chest");
         }
-        assert!(deepest <= -3.0, "{deepest}");
-        assert!(deepest >= -c.recoil_pull_max_deg - 0.05, "{deepest}");
-        // A one-round weapon: no pull.
-        let ticks = facing_fight("camper", 40.0, &aim, 200);
-        assert!(
-            ticks
-                .iter()
-                .all(|(_, o)| o.error.1.abs() < 0.01_f32.to_radians())
-        );
+        // With none of the kick taken back, the view climbs off him while
+        // the trigger is held (the turns follow it down a tick late).
+        let lifted = AimTuning {
+            combat: CombatTuning {
+                recoil_pull: 0.0,
+                ..CombatTuning::default()
+            },
+            ..aim.clone()
+        };
+        let (over, _) = kicked_fight("support", 20.0, &lifted, 200);
+        let highest = over.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(highest > 0.8, "{highest}");
     }
 
     #[test]

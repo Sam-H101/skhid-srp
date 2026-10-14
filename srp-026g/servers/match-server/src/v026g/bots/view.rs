@@ -106,6 +106,8 @@ pub struct PlaceView {
     pub alive: bool,
     pub feet: Vec3,
     pub yaw: f32,
+    /// The view's pitch: the base pitch and, for a bot, its weapon's kick
+    /// (`body::Estimate::view_pitch`).
     pub pitch: f32,
     pub velocity: [f32; 2],
     /// The keys held now.
@@ -342,13 +344,17 @@ impl Tracker {
     }
 
     /// An input of `place` for the tick `time` (a human's as relayed, a
-    /// bot's as made): its body moves on, and its sounds are heard.
+    /// bot's as made, its pitch turn with the part its kick took and the
+    /// kick after it: `body::BodyTrack::decided`): its body moves on, and
+    /// its sounds are heard.
+    #[allow(clippy::too_many_arguments)]
     pub fn input(
         &mut self,
         place: Place,
         time: u32,
         keys: u32,
         turn: (f32, f32),
+        kick: f32,
         kin: &Kinematics,
         world: Option<&World>,
     ) {
@@ -363,7 +369,7 @@ impl Tracker {
         state.keys = keys;
         state
             .body
-            .decided(time, keys, turn, kin, world.map(|world| &world.grid));
+            .decided(time, keys, turn, kick, kin, world.map(|world| &world.grid));
         let at = state.body.estimate().map(|e| e.feet);
         let Some(at) = at else {
             return;
@@ -583,7 +589,7 @@ impl Tracker {
                     alive: state.alive && estimate.is_some(),
                     feet: estimate.map_or(Vec3::ZERO, |e| e.feet),
                     yaw: estimate.map_or(0.0, |e| e.yaw),
-                    pitch: estimate.map_or(0.0, |e| e.pitch),
+                    pitch: estimate.map_or(0.0, |e| e.view_pitch()),
                     velocity: estimate.map_or([0.0, 0.0], |e| e.velocity),
                     keys: state.keys,
                     health: state.health,
@@ -663,7 +669,15 @@ mod tests {
             &kin,
             None
         ));
-        tracker.input(1, 1_050, key::FORWARD | key::FIRE, (0.0, 0.0), &kin, None);
+        tracker.input(
+            1,
+            1_050,
+            key::FORWARD | key::FIRE,
+            (0.0, 0.0),
+            0.0,
+            &kin,
+            None,
+        );
         tracker.held_sounds(1_100);
         let clock = Clock {
             clock: 3_000,
@@ -706,7 +720,7 @@ mod tests {
             stats: vec![(0, 0, 0), (0, 0, 0)],
             ..WorldFacts::default()
         });
-        tracker.input(1, 1_100, key::USE, (0.0, 0.0), &kin, None);
+        tracker.input(1, 1_100, key::USE, (0.0, 0.0), 0.0, &kin, None);
         tracker.facts(WorldFacts {
             time: 2_000,
             batteries: vec![BatteryState::Carried(None)],

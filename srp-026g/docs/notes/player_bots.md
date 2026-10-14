@@ -373,6 +373,28 @@ the archive's index: a loader must follow them.
      empty with the weapon's time (the Mosin round by round), and takes the
      TT-33 when weapon 1's kit ammo is gone (the AK-74U's 30 are one
      magazine).
+   - The kick (`recoil.rs`, 2026-10-14, from the client's code): a shot
+     lifts the **view** itself, camera and bullet together; the view's
+     pitch is the base pitch (`m_look_pitch`, what a world saves) plus the
+     weapon's kick (0x2E0F60, PROVEN); a downward turn is taken off the kick
+     before the base pitch (0x2E0FB0, PROVEN), so while firing a world's
+     pitch is above the sum of the turns; each shot's kick is reached
+     linearly over the shot interval and a PID controller brings it back,
+     also inside a burst (0x331C50, 0x331A50, 0x3321E0; PROVEN), per weapon
+     from its config (the five bot weapons and the AK-74M as the default).
+     Each bot keeps its own weapon's kick with the ranges' middles, aims
+     from the view (base pitch and kick: `body::Estimate::view_pitch`) and
+     turns so the view stays on its aim: each tick's turn takes back the
+     rise the kick will give the view that tick (`recoil_pull`, 1), any
+     weapon, one-round ones too; the wall test is on the view. The tracked
+     body keeps the base pitch the world has (the part of each turn the
+     kick took added) and the kick of each tick. LIKELY: the shot cadence
+     (60/rpm from the tick the trigger goes down). Not traced: where the
+     input's turn falls against the tick's weapon update and shots (the
+     model: update, turn, shots). UNKNOWN: the pitch's unit (LIKELY 60-64°
+     a unit; the bots take it for a radian, so their elevations are ~5-11 %
+     high, not changed), how far the side kick turns the view (not used),
+     when in a reload the kick is reset (the bot resets as it starts one).
    - Sight and aim by body part (`aimpoint.rs`, owner 2026-10-14): an enemy
      is seen when some part of him shows on the bullet mesh (chest, head,
      belly, thighs, the chest's edges, shins; heights of the game's hit
@@ -398,6 +420,13 @@ the archive's index: a loader must follow them.
    - Tests: each layer and play; soak runs of whole matches of bots
      against a stand-in game (`bots/tests.rs`: 4 against 4 in each mode to
      a winner; the long ones with `cargo test --release -- --ignored`).
+     The stand-in fires each bot's weapon at its rate (it fired every
+     150 ms before) and kicks the view by the client's rule, each shot's
+     kick drawn in the config's range. 4 against 4 for 900 s: hits 1,299 of
+     7,746 shots (16.8 %), 41 into a wall short of the target, 19 at a
+     hidden one; with the kick switched off in both the bots and the
+     stand-in 17.5 %, 35 and 14 (before, with the old lift and the 150 ms
+     rate: 19.9 %, 25 and 13 of 6,419).
    - A local test with one game and 7 bots: `SRP_SERVER_BOTS=7`,
      `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
      `SRP_MAPDATA_DIR` set (and `SRP_BOT_ROUTES` for play 17's routes).
