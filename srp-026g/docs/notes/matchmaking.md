@@ -492,14 +492,32 @@ with fewer than four it moves no rating (§8.3).
 - `scripts/balance-refit/refit.py` reads these lines and the "settled"
   one: the weights of §8 fitted on who was in each match, minute by
   minute. It does not fit the numbers of the lead.
+- `<name>: JOIN match 0x… (key k): ok|full|gone|busy (…); sides …` and
+  `<name>: Play with a place held in match 0x… …`: the JOIN button (§9.7).
+  A JOIN that puts a player in writes the "late join" line too.
 
 ### 9.6 Not done, not known
 
 - Not seen live: no match of this queue was played on a server.
 - One failed join closes that match to later joins.
 - The numbers are fits on matches the old rules made, from two days.
-- A player who joins does not choose: it goes where the count says.
+- A player who joins does not choose its side: it goes where the count
+  says (with JOIN, §9.7, it chooses the match).
 - The queue numbers a searching player is shown count both queues.
+
+### 9.7 JOIN from the lobby's list of the matches
+
+srp's changed lobby movie lists the matches being played with a JOIN
+button (`lobby.md` §2.16.1). It is on for a player and a match only where
+the rule of §9.2 puts that player alone in at once **with no patience
+waited out**, and the sides then count strictly more alike than without
+it: a join only ever makes a match that is uneven by value more even (the
+owner's rule of 2026-10-14). A JOIN that is granted holds the place for
+10 s; the player's Play then goes into that match by the steps of §9.2
+(`Matchmaking::append_player`, the match server's reservation) or is
+refused, never queued. While a place is held, nobody else gets one in that
+match, the queue's late joins included: the match server takes one joiner
+at a time. A player who waits in the queue does not see JOIN on.
 
 ## The growing-roster placement before 2026-10-13 (kept for the record)
 

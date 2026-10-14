@@ -18,6 +18,11 @@
 //! Standard clients retain the existing level-range and gathering rules
 //! (`docs/notes/matchmaking.md`).
 //!
+//! A player whose JOIN in the lobby's list of the matches was granted has
+//! a place held in that match (`join`): its Play goes into that match at
+//! once or nowhere, and the late joins of the queue pass a match with a
+//! place held in it by.
+//!
 //! The reward match level is fixed at formation. Map selection still favors
 //! maps played least by the initial roster.
 //!
@@ -364,7 +369,7 @@ impl Core<'_> {
     /// of growing rosters whose teams are not fixed, to which the match
     /// server admits (in play, and no earlier joiner still on its way in),
     /// with more left to play than [`policy::JOIN_CUTOFF`].
-    fn late_admission(&self, running: &Running, now: Instant) -> Option<Duration> {
+    pub(super) fn late_admission(&self, running: &Running, now: Instant) -> Option<Duration> {
         if running.pool != QueuePool::GrowingRoster || running.fixed_teams {
             return None;
         }
@@ -375,7 +380,11 @@ impl Core<'_> {
 
     /// The sides of a running match as they are now, and the rule players
     /// are put into it by ([`policy::place_late`]).
-    fn late_rule(&self, running: &Running, live: Option<&LiveView>) -> ([Worth; 2], LateRule) {
+    pub(super) fn late_rule(
+        &self,
+        running: &Running,
+        live: Option<&LiveView>,
+    ) -> ([Worth; 2], LateRule) {
         let (lead, dramatic) = self.lead_now(running, live);
         let rule = LateRule {
             capacity: self.settings.team_size.min(MAX_PLAYERS_PER_MATCH / 2),
@@ -387,37 +396,9 @@ impl Core<'_> {
         (Self::sides_now(running, live), rule)
     }
 
-    /// Whether a running match would take one more player now, by the
-    /// rules [`Self::fill_running_matches`] puts the queue's players into
-    /// it by: it admits ([`Self::late_admission`]), and the placement finds
-    /// a side for a player alone ([`policy::place_late`]: a roster place
-    /// left, a side under its most, the sides not too far apart after).
-    ///
-    /// The player is no one in particular: one who has waited out its
-    /// patience (an even match takes nobody alone before that,
-    /// [`super::Settings::late_join_patience`]), so what it counts for
-    /// decides nothing. Whether a certain account may is not asked here:
-    /// not one that has a roster place of the match already, and not a
-    /// game too old for growing rosters.
-    pub(super) fn takes_one_more(&self, running: &Running, now: Instant) -> bool {
-        if self.late_admission(running, now).is_none() {
-            return false;
-        }
-        let live = self.host.live(running.ticket.match_id, now);
-        let (sides, rule) = self.late_rule(running, live.as_ref());
-        let one = Joiner {
-            worth: Worth {
-                players: 1,
-                strength: 0,
-            },
-            waited_out: true,
-        };
-        policy::place_late(sides, &[one], &rule).is_some()
-    }
-
     /// `(what a side counts for, the players in it, its lead)`, in gear
     /// levels, for the log.
-    fn counted(&self, sides: [Worth; 2], lead: [i64; 2]) -> [(f64, usize, f64); 2] {
+    pub(super) fn counted(&self, sides: [Worth; 2], lead: [i64; 2]) -> [(f64, usize, f64); 2] {
         let scale = f64::from(session::STRENGTH_SCALE);
         let player = i64::from(self.settings.balance.player_value());
         std::array::from_fn(|side| {
@@ -514,7 +495,9 @@ impl Core<'_> {
             }
             let mut candidates = Vec::new();
             for (&id, running) in &self.matches {
-                if attempted.contains(&id) {
+                // A place held for a JOIN is that player's: the match server
+                // admits one batch at a time, and any other would take it.
+                if attempted.contains(&id) || self.is_held(running.ticket.match_id, None, now) {
                     continue;
                 }
                 let Some(remaining) = self.late_admission(running, now) else {
@@ -606,52 +589,76 @@ impl Core<'_> {
             if !admitted {
                 continue;
             }
-            let counted = self.counted(placement.sides, lead);
-            let weights = self.settings.balance;
-            let scale = f64::from(session::STRENGTH_SCALE);
-            let running = self
-                .matches
-                .get_mut(&id)
-                .expect("running match observed above");
-            let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
-            let mut joined = Vec::new();
-            for (group, team) in batch {
-                for (index, player) in group.players.iter().enumerate() {
-                    let strength = group.player_strength(index);
-                    running.seats.push((player.session_id, team));
-                    running.strengths.push(strength);
-                    let mut name = String::new();
-                    if let Some(account) = self.accounts.get(player.account_id) {
-                        let mut account = account.locked();
-                        name.clone_from(&account.name);
-                        joined.push(format!(
-                            "{} to team {team}",
-                            counted_player(
-                                &account,
-                                weights.player + f64::from(strength) / scale,
-                                matchmaking::level(&account, unix).min
-                            )
-                        ));
-                        matchmaking::count_map_play(&mut account, map);
-                        self.accounts.mark_dirty(player.account_id);
-                    }
-                    running.names.push(name);
-                }
-            }
-            log::info!(
-                "Match {ticket:#x} late join: {}; with them team 0 counts {:.1} ({} in, lead \
-                 {:.1}), team 1 counts {:.1} ({} in, lead {:.1}){}; the sides were {:.1} apart",
-                joined.join(", "),
-                counted[0].0,
-                counted[0].1,
-                counted[0].2,
-                counted[1].0,
-                counted[1].1,
-                counted[1].2,
-                if dramatic { ", a dramatic lead" } else { "" },
-                placement.apart_before as f64 / scale
-            );
+            let joined: Vec<(session::Player, u8, i32)> = batch
+                .iter()
+                .flat_map(|(group, team)| {
+                    group
+                        .players
+                        .iter()
+                        .enumerate()
+                        .map(move |(index, player)| (*player, *team, group.player_strength(index)))
+                })
+                .collect();
+            self.seated_late(id, &joined, &placement, lead, dramatic);
         }
+    }
+
+    /// Players the match server took into a running match (`joined`: each
+    /// with its team and what it counted for): the lobby's roster of the
+    /// match grows by them, the map is one more each has played, and the
+    /// log has the "late join" line (`scripts/balance-refit` reads it) with
+    /// the sides as `placement` has them.
+    pub(super) fn seated_late(
+        &mut self,
+        id: u32,
+        joined: &[(session::Player, u8, i32)],
+        placement: &policy::LatePlacement,
+        lead: [i64; 2],
+        dramatic: bool,
+    ) {
+        let unix = quests::now();
+        let counted = self.counted(placement.sides, lead);
+        let weights = self.settings.balance;
+        let scale = f64::from(session::STRENGTH_SCALE);
+        let Some(running) = self.matches.get_mut(&id) else {
+            return;
+        };
+        let ticket = running.ticket.match_id;
+        let map = maps::map_mode(running.map_id).map_or(0, |map| map.level);
+        let mut said = Vec::new();
+        for &(player, team, strength) in joined {
+            running.seats.push((player.session_id, team));
+            running.strengths.push(strength);
+            let mut name = String::new();
+            if let Some(account) = self.accounts.get(player.account_id) {
+                let mut account = account.locked();
+                name.clone_from(&account.name);
+                said.push(format!(
+                    "{} to team {team}",
+                    counted_player(
+                        &account,
+                        weights.player + f64::from(strength) / scale,
+                        matchmaking::level(&account, unix).min
+                    )
+                ));
+                matchmaking::count_map_play(&mut account, map);
+                self.accounts.mark_dirty(player.account_id);
+            }
+            running.names.push(name);
+        }
+        log::info!(
+            "Match {ticket:#x} late join: {}; with them team 0 counts {:.1} ({} in, lead \
+             {:.1}), team 1 counts {:.1} ({} in, lead {:.1}){}; the sides were {:.1} apart",
+            said.join(", "),
+            counted[0].0,
+            counted[0].1,
+            counted[0].2,
+            counted[1].0,
+            counted[1].1,
+            counted[1].2,
+            if dramatic { ", a dramatic lead" } else { "" },
+            placement.apart_before as f64 / scale
+        );
     }
 
     /// How the queue forms matches ([`session::Matchmaking::poll_with`]).
@@ -664,7 +671,7 @@ impl Core<'_> {
 
     /// The level the account is looked for a match at; the lowest for an
     /// account the lobby does not have.
-    fn level_of(&self, account_id: u32, unix: u64) -> Level {
+    pub(super) fn level_of(&self, account_id: u32, unix: u64) -> Level {
         match self.accounts.get(account_id) {
             Some(account) => matchmaking::level(&account.locked(), unix),
             None => Level::default(),
@@ -675,7 +682,7 @@ impl Core<'_> {
     /// top of what every player does (`session::v026g::balance`): its gear
     /// level (`level`), its own level and its balance rating as far as
     /// that is trusted.
-    fn strength_of(&self, account_id: u32, level: Level) -> i32 {
+    pub(super) fn strength_of(&self, account_id: u32, level: Level) -> i32 {
         let (player_level, balance) = match self.accounts.get(account_id) {
             Some(account) => {
                 let account = account.locked();
@@ -689,8 +696,14 @@ impl Core<'_> {
     }
 
     /// `2F <kit id>`: Play. In a squad, Play makes the player ready, and
-    /// the squad queues once all are.
+    /// the squad queues once all are. A player with a place held for its
+    /// JOIN goes into that match at once, or not at all (`join`): the hold
+    /// is used up by its Play, whatever comes of it.
     pub(super) fn play(&mut self, who: &Who, kit_id: u32, now: Instant) {
+        let hold = self
+            .holds
+            .remove(&who.account_id)
+            .filter(|hold| hold.until > now);
         let Some(pool) = self.pool_for_sessions([who.session_id]) else {
             return;
         };
@@ -718,6 +731,10 @@ impl Core<'_> {
         // A match that ended without a word frees its seats first: Play
         // would send the player back to it.
         self.check_matches(now);
+        if let Some(hold) = hold {
+            self.play_held(who, kit_id, hold, now);
+            return;
+        }
         if self
             .store
             .matchmaking()
@@ -1165,6 +1182,8 @@ impl Core<'_> {
                     }
                 }
                 self.announce_match(&accounts, teams);
+                // Its key in the players' list of the matches, from now on.
+                self.listing.key(ticket.match_id);
                 self.matches.insert(
                     match_id,
                     Running {
@@ -1256,6 +1275,9 @@ impl Core<'_> {
             return;
         };
         self.store.matchmaking().end_match(match_id);
+        // A place held in it stays until it runs out: the Play of its
+        // player is refused, never queued (`join`).
+        self.listing.forget(running.ticket.match_id);
         log::info!(
             "Match {:#x} (map {}) is over: {} seats freed",
             running.ticket.match_id,

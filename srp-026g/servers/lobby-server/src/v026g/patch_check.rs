@@ -83,6 +83,13 @@ impl Core<'_> {
             .filter(|_| !self.accounts.is_bot_name(&who.name))
     }
 
+    /// Whether [`Self::refuse_outdated`] would refuse `who`'s Play now. It
+    /// answers nothing and says nothing in the chat (the JOIN button asks
+    /// it of every match it lists, `join`).
+    pub(super) fn would_refuse_outdated(&self, who: &Who) -> bool {
+        self.settings.patch_check == PatchCheck::Refuse && self.outdated(who).is_some()
+    }
+
     /// Whether `who`'s Play (`op`: `2F` or `30`) is refused for its game's
     /// revision: then it was answered, with the message box and the hint.
     pub(super) fn refuse_outdated(&mut self, who: &Who, op: u8, now: Instant) -> bool {

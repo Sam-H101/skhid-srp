@@ -2276,6 +2276,7 @@ mod balance_tests;
 mod reconnect_tests;
 mod items_tests;
 mod clan_tests;
+mod join_tests;
 mod feedback_tests;
 mod matches_now_tests;
 mod patch_check_tests;

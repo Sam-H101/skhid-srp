@@ -706,7 +706,8 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     // ranking's request and the start no ranking page has: the header with
     // the count, then the match: Rudnya (level 1), Team Deathmatch (mode
     // 4), its countdown running (phase 1), a player a team, no score and no
-    // time played before play, and nobody taken into it.
+    // time played before play, the asker not taken into it (it is in it),
+    // and the match's listing key.
     alice.take();
     alice.ask(request::ranking(survarium::v026g::lobby::MATCHES_START, 32));
     until(
@@ -721,13 +722,15 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(
-        list,
-        [
-            ("M1;1".to_owned(), 2_000_000_000, 0, 0),
-            ("1;4;1;1;1;-;-;-;0".to_owned(), 2_000_000_001, 0, 0),
-        ]
-    );
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[0], ("M2;1".to_owned(), 2_000_000_000, 0, 0));
+    assert_eq!((list[1].1, list[1].2, list[1].3), (2_000_000_001, 0, 0));
+    let key = list[1]
+        .0
+        .strip_prefix("1;4;1;1;1;-;-;-;0;")
+        .and_then(|key| key.parse::<u32>().ok())
+        .unwrap_or_else(|| panic!("{}", list[1].0));
+    assert!((1..=survarium::v026g::lobby::JOIN_KEY_MAX).contains(&key));
 
     // ---- 9. The match ends by its mode's rule: Bob's team has no tickets
     // and nobody alive. (The rule is set to "in play" on both clients at
@@ -1716,6 +1719,221 @@ fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
     let report = stack.results.find(match_id).unwrap();
     assert_eq!(report.players.len(), 3);
     for game in [&alice, &bob, &charlie] {
+        game.assert_clean();
+    }
+    stack.stop();
+}
+
+/// The rows of the last `91` whose first row is at or past `place`: the
+/// lobby's list of the matches (2 000 000 000) or a JOIN answer
+/// (2 100 000 000), never a ranking page.
+fn reserved_rows(game: &Game, place: u32) -> Option<Vec<(String, u32, u16, i16)>> {
+    game.find(|message| match message {
+        Decoded::EloList(rows) if rows.first().is_some_and(|row| row.1 == place) => {
+            Some(rows.clone())
+        }
+        _ => None,
+    })
+}
+
+/// The JOIN button of the "matches now" window against the real servers:
+/// a match one side of which counts for far more is listed with JOIN on
+/// for a new player; of two who press it, one has the place held and the
+/// other is told the match is full; the first one's Play puts it into
+/// that match at once (the match server reserves its place and admits
+/// nobody else until it is in), and it enters the match as a late joiner.
+#[test]
+fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
+    use survarium::v026g::lobby::{JOIN_START, MATCHES_START};
+    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
+    let dir = temp_dir("join");
+    let stack = start(&dir, Duration::from_secs(1));
+    let mut alice =
+        Game::signed_in_revision(&stack, "JoinAlice", "test-password-1", PATCH_REVISION);
+    let mut bob = Game::signed_in_revision(&stack, "JoinBob", "test-password-2", PATCH_REVISION);
+    let mut charlie =
+        Game::signed_in_revision(&stack, "JoinCharlie", "test-password-3", PATCH_REVISION);
+    let mut dave = Game::signed_in_revision(&stack, "JoinDave", "test-password-4", PATCH_REVISION);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "login pushes",
+        |games| games.iter().all(|g| in_lobby(g)),
+    );
+    // Alice's balance rating is high and trusted: her side counts for far
+    // more than Bob's, a player alone.
+    stack
+        .accounts
+        .get(account_id(&stack, "JoinAlice"))
+        .unwrap()
+        .locked()
+        .balance = session::v026g::balance::Balance {
+        rating: 50_000,
+        matches: 1_000,
+    };
+    let ticket = |game: &Game| {
+        game.find(|message| match message {
+            Decoded::ConnectToMatch { match_id, .. } => Some(*match_id),
+            _ => None,
+        })
+    };
+    alice.ask(request::play(1));
+    bob.ask(request::play(1));
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "the match",
+        |games| games[..2].iter().all(|g| ticket(g).is_some()),
+    );
+    let match_id = ticket(&alice).unwrap();
+    alice.connect_to_match(stack.match_addr);
+    bob.connect_to_match(stack.match_addr);
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "the profiles",
+        |games| {
+            games[..2]
+                .iter()
+                .all(|g| g.of_match().model.options.is_some())
+        },
+    );
+    alice.of_match_mut().ready();
+    bob.of_match_mut().ready();
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "the entry",
+        |games| games[..2].iter().all(|g| g.of_match().entered().len() == 2),
+    );
+    // Past the countdown: the match server admits late joiners in play.
+    run_for(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        Duration::from_secs(22),
+    );
+
+    // Charlie and Dave open the window: JOIN is on for each.
+    for game in [&mut charlie, &mut dave] {
+        game.take();
+        game.ask(request::ranking(MATCHES_START, 32));
+    }
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "the lists of the matches",
+        |games| {
+            games[2..]
+                .iter()
+                .all(|g| reserved_rows(g, MATCHES_START).is_some())
+        },
+    );
+    let list = reserved_rows(&charlie, MATCHES_START).unwrap();
+    assert_eq!(reserved_rows(&dave, MATCHES_START).unwrap(), list);
+    assert_eq!(list[0].0, "M2;1");
+    let fields: Vec<&str> = list[1].0.split(';').collect();
+    assert_eq!(&fields[..5], ["1", "4", "2", "1", "1"], "{}", list[1].0);
+    assert_eq!(fields[8], "1", "JOIN is on: {}", list[1].0);
+    let key: u32 = fields[9].parse().unwrap();
+
+    // Both press it at once: Charlie's place is held, Dave's is not.
+    let join_answer = |game: &Game| {
+        reserved_rows(game, JOIN_START).map(|rows| {
+            assert_eq!(rows.len(), 1);
+            rows[0].0.clone()
+        })
+    };
+    for game in [&mut charlie, &mut dave] {
+        game.take();
+        game.ask(request::ranking(JOIN_START + key, 1));
+    }
+    until(
+        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
+        SOON,
+        "the JOIN answers",
+        |games| games[2..].iter().all(|g| join_answer(g).is_some()),
+    );
+    let answers = [join_answer(&charlie).unwrap(), join_answer(&dave).unwrap()];
+    let ok = format!("J1;ok;{key}");
+    let full = format!("J1;full;{key}");
+    // The lobby reads one message at a time; either may come first.
+    assert!(
+        answers == [ok.clone(), full.clone()] || answers == [full.clone(), ok.clone()],
+        "{answers:?}"
+    );
+    let (mut first, mut second) = if answers[0] == ok {
+        (charlie, dave)
+    } else {
+        (dave, charlie)
+    };
+
+    // The one with the place presses Play: sent to that match at once.
+    first.take();
+    first.ask(request::play(1));
+    until(
+        &mut [&mut alice, &mut bob, &mut first, &mut second],
+        SOON,
+        "the joiner's ticket",
+        |games| ticket(games[2]).is_some(),
+    );
+    assert_eq!(ticket(&first), Some(match_id));
+    assert_eq!(stack.registry.match_count(), 1);
+    assert_eq!(stack.store.matchmaking().queued_players(), 0);
+    // While it is on its way in the match server admits nobody.
+    second.take();
+    second.ask(request::ranking(JOIN_START + key, 1));
+    until(
+        &mut [&mut alice, &mut bob, &mut first, &mut second],
+        SOON,
+        "the second JOIN answer",
+        |games| join_answer(games[3]).is_some(),
+    );
+    assert_eq!(join_answer(&second).unwrap(), format!("J1;gone;{key}"));
+
+    // It enters the match as any late joiner.
+    first.connect_to_match(stack.match_addr);
+    until(
+        &mut [&mut alice, &mut bob, &mut first, &mut second],
+        SOON,
+        "the joiner's profiles",
+        |games| games[2].of_match().model.options.is_some(),
+    );
+    assert_eq!(first.of_match().model.local_index, Some(2));
+    first.of_match_mut().ready();
+    until(
+        &mut [&mut alice, &mut bob, &mut first, &mut second],
+        SOON,
+        "the joiner entered",
+        |games| {
+            games[..3]
+                .iter()
+                .all(|g| g.of_match().entered().contains(&2))
+        },
+    );
+    // Once it is in, the match admits again; with the joiner on Bob's side
+    // a fourth player would make the sides two against two, or one against
+    // three: neither, and the second is told the match is full.
+    let deadline = Instant::now() + SOON;
+    loop {
+        second.take();
+        second.ask(request::ranking(JOIN_START + key, 1));
+        until(
+            &mut [&mut alice, &mut bob, &mut first, &mut second],
+            SOON,
+            "a later JOIN answer",
+            |games| join_answer(games[3]).is_some(),
+        );
+        let answer = join_answer(&second).unwrap();
+        if answer != format!("J1;gone;{key}") {
+            assert_eq!(answer, full);
+            break;
+        }
+        assert!(Instant::now() < deadline, "the match never admitted again");
+        run_for(
+            &mut [&mut alice, &mut bob, &mut first, &mut second],
+            Duration::from_millis(200),
+        );
+    }
+    for game in [&alice, &bob, &first, &second] {
         game.assert_clean();
     }
     stack.stop();

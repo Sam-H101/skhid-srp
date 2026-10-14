@@ -539,47 +539,68 @@ impl Core<'_> {
     /// `3B 00 <start> <count>` with a start of [`lobby::RESERVED_START`] or
     /// more: srp's own requests, which only its changed lobby movie makes
     /// (the stock ranking page asks for no index past the count of ranked
-    /// players). The one there is, [`lobby::MATCHES_START`], is answered
-    /// with the matches being played now (`matches_now`); any other gets
-    /// no answer. Nothing of the ranking is read, sent or kept for either.
+    /// players). [`lobby::MATCHES_START`] is answered with the matches being
+    /// played now (`matches_now`), `JOIN_START + key` with what came of the
+    /// JOIN button of that match (`join`); any other gets no answer.
+    /// Nothing of the ranking is read, sent or kept for them.
     fn reserved_ranking(&mut self, who: &Who, start: u32, count: u8, now: Instant) {
-        if start != lobby::MATCHES_START {
-            log::debug!(
-                "{} asked for the reserved ranking start {start}: not answered",
-                who.name
-            );
+        if start == lobby::MATCHES_START {
+            let list = self.matches_now(who, count, now);
+            self.send_made(who.addr, list);
             return;
         }
-        let list = self.matches_now(count, now);
-        self.send_made(who.addr, list);
+        let key = start.wrapping_sub(lobby::JOIN_START);
+        if (1..=lobby::JOIN_KEY_MAX).contains(&key) {
+            self.join_request(who, key, now);
+            return;
+        }
+        log::debug!(
+            "{} asked for the reserved ranking start {start}: not answered",
+            who.name
+        );
     }
 
     /// The matches being played now, for the "matches now" window of the
     /// changed lobby movie ([`lobby::matches_now`]): the ones the
     /// launcher's page lists, with the score it shows
-    /// (`session::v026g::matches_now`), the oldest first. `count` is the
-    /// most the window wants; the header counts them all.
+    /// (`session::v026g::matches_now`), the oldest first, each with its
+    /// listing key (given here to a match the lobby did not make itself).
+    /// `count` is the most the window wants; the header counts them all.
     ///
-    /// The same for whoever asks, and cheap enough to be asked by every
-    /// open window every few seconds: one look at the match server's
-    /// registry, and for a match that takes players its admission and its
-    /// sides ([`Core::takes_one_more`]). No account is locked.
+    /// `join` is the asker's own: whether its JOIN would put it into the
+    /// match at once (`join`, [`Core::join_fit`]). Cheap enough to be asked
+    /// by every open window every few seconds: one look at the match
+    /// server's registry, and for a match that takes players its admission,
+    /// its sides and what the asker counts for.
     fn matches_now(
-        &self,
+        &mut self,
+        who: &Who,
         count: u8,
         now: Instant,
     ) -> Result<lobby::ServerMessage, lobby::WireError> {
-        let open: Vec<_> = self
-            .host
-            .open_matches(now)
+        let all = self.host.open_matches(now);
+        // The keys of matches that are over go.
+        let matches = &self.matches;
+        self.listing.retain(|match_id| {
+            all.iter().any(|each| each.match_id == match_id)
+                || matches
+                    .values()
+                    .any(|running| running.ticket.match_id == match_id)
+        });
+        let open: Vec<_> = all
             .into_iter()
             .filter(|each| each.phase.is_listed())
+            .collect();
+        let keys: Vec<u32> = open
+            .iter()
+            .map(|each| self.listing.key(each.match_id))
             .collect();
         let most = usize::from(count).min(lobby::MATCHES_NOW_ROWS);
         let rows: Vec<lobby::MatchNow> = open
             .iter()
+            .zip(keys)
             .take(most)
-            .map(|each| {
+            .map(|(each, key)| {
                 // No match is made of a map the dictionary lacks.
                 let (level, mode) =
                     maps::map_mode(each.map_id).map_or((0, 0), |map| (map.level, map.mode));
@@ -587,8 +608,8 @@ impl Core<'_> {
                 // again while the match went on) takes nobody from it.
                 let running = self
                     .matches
-                    .values()
-                    .find(|running| running.ticket.match_id == each.match_id);
+                    .iter()
+                    .find(|(_, running)| running.ticket.match_id == each.match_id);
                 lobby::MatchNow {
                     level,
                     mode,
@@ -607,7 +628,9 @@ impl Core<'_> {
                         .played
                         .filter(|_| each.phase == Phase::Playing)
                         .map(|played| played.as_secs().min(u32::MAX.into()) as u32),
-                    join: running.is_some_and(|running| self.takes_one_more(running, now)),
+                    join: running
+                        .is_some_and(|(&id, running)| self.join_fit(who, id, running, now).is_ok()),
+                    key,
                 }
             })
             .collect();
