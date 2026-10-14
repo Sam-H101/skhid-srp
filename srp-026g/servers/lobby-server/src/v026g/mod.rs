@@ -134,6 +134,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE;
 use session::v026g::GameAccounts;
 use session::v026g::balance::Weights;
 use session::v026g::rewards::Results;
@@ -489,9 +490,6 @@ impl Settings {
 pub const DEFAULT_SQUADS_OFF_TEXT: &str = "Squads are switched off on this server.";
 
 /// A `SRP_BALANCE_*` number: 0 to 1000.
-/// `SRP_LATE_JOIN_PATIENCE_SECONDS` when unset.
-pub const DEFAULT_LATE_JOIN_PATIENCE: Duration = Duration::from_secs(60);
-
 fn parse_weight(value: &str) -> Option<f64> {
     value
         .trim()

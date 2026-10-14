@@ -285,13 +285,11 @@ pub struct Matchmaking {
 
 impl Matchmaking {
     pub fn new(gather: Duration) -> Self {
+        let (growing_min_players, growing_gather) = growing_start_rules_from_env();
         Self {
             inner: Mutex::new(Inner {
-                growing_gather: env_number("SRP_GROWING_GATHER_SECONDS")
-                    .map_or(policy::GATHER_WINDOW, Duration::from_secs),
-                growing_min_players: env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
-                    .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
-                    .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
+                growing_gather,
+                growing_min_players,
                 population_exponent: env_number::<f64>("SRP_GROWING_POPULATION_EXPONENT")
                     .filter(|p| p.is_finite() && *p > 0.0 && *p <= 8.0)
                     .unwrap_or(1.0),
@@ -1397,10 +1395,23 @@ pub fn leveled_start_rules_from_env() -> (usize, Duration, Duration) {
     )
 }
 
-/// A number from the environment; `None` if it is unset or bad.
 /// `SRP_GROWING_MIN_PLAYERS` when unset.
 pub const DEFAULT_GROWING_MIN_PLAYERS: usize = 2;
 
+/// What the growing queue (the games of patch revision 5 or later) is set
+/// to, for the pages that tell the players: the fewest players a new match
+/// starts with (`SRP_GROWING_MIN_PLAYERS`), and how long after that many
+/// wait it starts (`SRP_GROWING_GATHER_SECONDS`). A full match starts at once.
+pub fn growing_start_rules_from_env() -> (usize, Duration) {
+    (
+        env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
+            .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
+            .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
+        env_number("SRP_GROWING_GATHER_SECONDS").map_or(policy::GATHER_WINDOW, Duration::from_secs),
+    )
+}
+
+/// A number from the environment; `None` if it is unset or bad.
 fn env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name)
         .ok()

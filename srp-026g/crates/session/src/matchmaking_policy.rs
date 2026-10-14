@@ -10,6 +10,9 @@ use crate::MAX_PLAYERS_PER_MATCH;
 
 pub const GATHER_WINDOW: Duration = Duration::from_secs(120);
 pub const JOIN_CUTOFF: Duration = Duration::from_secs(120);
+/// How long a player who would make an even running match uneven waits for
+/// somebody to go in with it (`SRP_LATE_JOIN_PATIENCE_SECONDS` when unset).
+pub const DEFAULT_LATE_JOIN_PATIENCE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Team {
