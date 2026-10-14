@@ -297,3 +297,23 @@ them. `notes/match.md` §28 has the evidence and the choices,
   `bring_x_items`) for the wrong player. No game falls out of step by it.
   The fix is the same patch's (0xFF to both bytes at the reset) and plays
   with revision 7.
+
+## 0.26g, added 2026-10-14: the statistics writer's event masks
+
+- **Open, not done: `snapshot.rs` writes a player's event masks otherwise
+  than a game does.** A game does not start the mask again for each kit:
+  the second kit's mask has the first's bits too, the third's has all
+  three, and each such bit is followed by that kit's count, a zero when it
+  has none (`notes/snapshot_rules.md` §3.1; PROVEN in the exe,
+  0x33575D..0x3357CD, and seen in every record of the worlds of match
+  0x69f8c0ba). `PlayerStatistics::write` makes each kit's own mask.
+  - Nothing read from a real game is wrong: the reader takes either form,
+    so results, quests and the standing are as before.
+  - Only the scripted test client (`match-server/src/v026g/scripted.rs`)
+    and the tests write statistics. Their worlds are not, byte for byte,
+    what a game writes for a player who has an event, and a test that
+    reads a real game's statistics and writes them back does not get the
+    same bytes.
+  - The fix is in the server's code alone (the mask kept across the kits
+    in `write`, a test with a made-up record): no client patch, no
+    revision, nothing for a player to install.
