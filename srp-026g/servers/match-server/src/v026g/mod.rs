@@ -64,8 +64,16 @@
 //!   and out, one file per match, kept when `SRP_RECORD_MIN_PLAYERS`
 //!   (default 6, late joiners counted) have entered it; kept files over
 //!   `SRP_RECORD_MAX_MB` (default 5000) together go oldest first
-//!   ([`record`]).
+//!   ([`record`]);
+//! - `SRP_MAPDATA_DIR=<dir>` (default off): the `<project>.mapdata` files
+//!   (`mapdata-dump`) the server's own bots path on ([`bots::maps`]); a
+//!   map is built on a thread of its own the first time a match asks for
+//!   it, and `SRP_MAPDATA_KEEP` (default 1) built maps are kept besides
+//!   those running matches hold. Without it, or without the map's file,
+//!   bots keep their script.
 
+/// The server's own bots (`MatchPlayer::driven`): their maps.
+pub mod bots;
 /// The input script of a bot: the test bot's (`srp-bot --drive`) and the
 /// server's own bot places' (`MatchPlayer::driven`).
 pub mod drive;
@@ -86,6 +94,7 @@ pub mod scripted;
 pub use scripted as test_client;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use registry::{
@@ -182,6 +191,8 @@ pub(crate) struct Settings {
     pub snapshot_dir: Option<PathBuf>,
     /// `SRP_RECORD_DIR`: the match recordings, if any.
     pub record: Option<record::RecordSettings>,
+    /// `SRP_MAPDATA_DIR`: the bots' maps, shared by every match.
+    pub maps: Option<Arc<bots::maps::Maps>>,
     pub timing: Timing,
 }
 
@@ -196,6 +207,7 @@ impl Default for Settings {
             compress_state: true,
             snapshot_dir: None,
             record: None,
+            maps: None,
             timing: Timing::default(),
         }
     }
@@ -237,6 +249,14 @@ impl Settings {
             ),
             snapshot_dir: parse_snapshot_dir(var("SRP_SNAPSHOT_DIR").as_deref()),
             record: record::RecordSettings::from_env(),
+            maps: parse_mapdata_dir(
+                var("SRP_MAPDATA_DIR").as_deref(),
+                parse_number(
+                    "SRP_MAPDATA_KEEP",
+                    var("SRP_MAPDATA_KEEP").as_deref(),
+                    bots::maps::KEEP as u32,
+                ),
+            ),
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(
                     parse_number(
@@ -318,4 +338,18 @@ fn parse_snapshot_dir(value: Option<&str>) -> Option<PathBuf> {
         Some(value) => Some(value.into()),
         None => Some(SNAPSHOT_DIR.into()),
     }
+}
+
+/// `SRP_MAPDATA_DIR`: unset, empty or `off` for none; `keep` built worlds
+/// kept (`SRP_MAPDATA_KEEP`).
+fn parse_mapdata_dir(value: Option<&str>, keep: u32) -> Option<Arc<bots::maps::Maps>> {
+    let dir = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("off"))?;
+    if std::path::Path::new(dir).is_dir() {
+        log::info!("Bot maps from {dir}, {} kept built", keep.max(1));
+    } else {
+        log::warn!("SRP_MAPDATA_DIR is `{dir}`, which is no directory; bots will have no maps");
+    }
+    Some(bots::maps::Maps::with_keep(Some(dir.into()), keep as usize))
 }

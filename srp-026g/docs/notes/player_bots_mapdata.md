@@ -3,8 +3,8 @@
 The map knowledge server-driven bots need (`player_bots.md` §5), built as
 the crate `crates/mapdata`: spawns and objectives, a walk grid with paths,
 and line of sight, from the map projects in the game's `resources.db`. Tags
-as elsewhere: PROVEN, LIKELY, GUESS. Nothing in the match server uses it
-yet.
+as elsewhere: PROVEN, LIKELY, GUESS. The match server loads the files
+(`SRP_MAPDATA_DIR`, §6); no bot moves by them yet.
 
 ## 1. Dumping
 
@@ -181,9 +181,64 @@ battery map:
 Tests on the game data: `SRP_RESOURCES_DB=<resources.db> cargo test -p
 mapdata --release -- --nocapture` (skipped without the variable).
 
-## 6. Not done, not proven
+## 6. On the match server
 
-- Nothing in the match server loads these files yet; no bot moves by them.
+`match-server` `v026g::bots::maps`: a store of built worlds shared by
+every match.
+
+- `SRP_MAPDATA_DIR=<dir>` (default off): the `<project>.mapdata` files,
+  e.g. `level_01_day_4.mapdata`, written by the dump command of §1 (no
+  `--map`: all 72 projects, 817 MB). Unset, or a project with no file or a
+  file that fails to load: bots keep the stage 0/1 script (a warning once
+  per project, until a restart).
+- `SRP_MAPDATA_KEEP=<n>` (default 1): built worlds kept besides those
+  running matches hold.
+- `Maps::request(project)` at match creation starts the build on a thread
+  of its own; `Maps::get(project)` is `Absent(reason)`, `Loading` or
+  `Ready(Arc<World>)` and never waits. Builds run one at a time. A world
+  dropped from the store while a match still holds it comes back without
+  a build. One info line per build (time, MB), one warning per failure.
+
+Measured 2026-10-14 through the store (release, file read + grid + tree;
+`real_map_sizes` in `maps.rs`); MB is the grid's, the tree's and the
+meshes' vectors summed:
+
+| project | ready in | grid | tree | world |
+|---|---|---|---|---|
+| level_01/day_4 | 0.53 s | 46 MB | 23 MB | 79 MB |
+| level_02/day_4 | 0.71 s | 116 MB | 23 MB | 149 MB |
+| level_03/day_4 | 0.43 s | 36 MB | 29 MB | 74 MB |
+| level_04/day_4 | 0.69 s | 66 MB | 43 MB | 124 MB |
+| level_05/day_4 | 0.43 s | 14 MB | 39 MB | 63 MB |
+| level_06/day_4 | 0.76 s | 76 MB | 43 MB | 135 MB |
+| level_07/day_4 | 0.47 s | 18 MB | 51 MB | 81 MB |
+| level_08/day_4 | 0.69 s | 67 MB | 25 MB | 99 MB |
+
+- Process working set (Windows): loading level_01/day_4 alone peaks at
+  145 MB and ends at 111 MB (the summed 79 MB plus the test process, the
+  file and the placed triangles while the build runs). The eight above in
+  turn with one kept: 326 MB at the peak.
+- **Cache policy.** All 72 kept would be about 7 GB (100 MB a world on
+  average over the eight above); the 0.26g host has
+  955 MB. So the store keeps the last used world only (`KEEP` = 1), builds
+  one at a time, and a match's own `Arc` keeps its world while it runs.
+  With 72 projects the next match is rarely on the last map, and a
+  rebuild costs 0.3-0.8 s off the match thread. Several matches at once
+  on big maps still need 150 MB each: GUESS that a small host holds two.
+- The build shares the host's one core with the match loop for up to
+  0.8 s; how much a running match feels it is not measured.
+
+Deploying (described only; nothing deployed): dump on a PC with the game
+(§1), copy the directory to the server's data volume (e.g. a `mapdata/`
+beside `logs/` and `recordings/`), and set `SRP_MAPDATA_DIR` to it as the
+container sees it. The files are the game's data: in the private data
+volume only, never in an image or this repository. A file added for a
+project no match has asked for yet is used; one whose project was already
+found missing or broken needs a restart.
+
+## 7. Not done, not proven
+
+- The match server loads the files (§6), but no bot moves by them yet.
 - The grid against the client's real movement (step, slope, jump height,
   narrow doors, the one-way bases) is not checked in a game.
 - Grid memory is high at 0.25 m (up to 122 MB); links could shrink to a
