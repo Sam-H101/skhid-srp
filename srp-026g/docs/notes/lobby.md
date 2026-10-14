@@ -253,6 +253,38 @@ UI `fill_char_info` 0x224420: `points_available = level − Σpoints`, `points_u
 - 0x91 (0x271EB0): `u8 n`, n × {`str name (≤63)`, `u32`, `u16`, `u16`} (0x48-byte `player_elo_stats`) → `root.ranking_set_data` (0.21d 0x36 0C).
 - 0x92 (0x271DF0): `u32 n`, n × 20-byte `quest_instance` memcpy → sort 0x277250 → `clear_quests` / `add_quest` 0x28DDD0 (0.21d 0x36 0D). Field meanings LIKELY unchanged (not re-traced), except the byte at +0x10: `add_quest` passes `proposal = (byte != 1)` (`cmp byte [q+0x10], 1; setnz`: PROVEN), and the quest window lists a proposal apart (`QuestWindow.addQuest`). So 1 = a quest the player has.
 
+#### 2.16.1 The matches now, on `3B` / 0x91: srp's own, not the original server's
+
+**An extension of srp. It needs srp's changed lobby movie (`lobby_menu.swf`) and no change of the exe; a stock game never asks and is never sent it.** The movie's "matches now" window lists the matches being played, as the launcher's page does. It asks with the ranking page's own request and reads the ranking's own reply, so the exe carries both as it is.
+
+Request: the movie calls `ExternalInterface.call("request_players_range", 2000000000, 32)`, which the game sends as `3B 00 <start u32> <count u8>` (`lobby_requests.md`).
+
+- `start == 2 000 000 000` (`MATCHES_START`): the list of the matches now. `count` is the most match rows wanted (the header row is not counted); the server lists at most `min(count, 32)`.
+- Every `start >= 2 000 000 000` is reserved and never a ranking page. The ones above `MATCHES_START` are kept for later; the server answers none of them, with nothing at all.
+- The stock page asks only for indexes below the count of ranked players (`PlayerRanking.request_players`), so no stock game sends such a start. Nothing of the ranking is read, sent or kept for a reserved start: not the `8F` / `9D` / `90` of a first page, not the count the server keeps of what the page has.
+
+Reply: one ordinary `91`, rating and change 0 in every row. The movie tells it from a ranking page by the first row's place (`PlayerRanking.fillPlayers`: `rows[0].place >= 2000000000` goes to the window and leaves `_requestList` and the page's cache alone).
+
+- Row 0, the header, always there (an empty list is not no answer): `name = "M1;<total>"`, `place = 2 000 000 000`. `total` is the matches open now, which may be more than the rows that follow.
+- Row `i` from 1, a match, the oldest first: `place = 2 000 000 000 + i`, `name = "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>"`. ASCII decimal numbers with `;` between them; 42 bytes at the most, within the 63 of the name. The movie ignores fields after the ones it knows, so a later version may append.
+
+| field | meaning |
+|---|---|
+| level, mode | of the match's `maps_dict` entry (`modes_maps.md`): level 1..8, mode 2, 3 or 4 |
+| phase | 0 gathering (made; the countdown has not begun), 1 countdown, 2 playing. A match that has its result is not listed |
+| team0, team1 | each team's players who have not left; before the countdown the ones still to come count too |
+| score0, score1 | batteries home (modes 2, 3) or tickets left (mode 4), of a match in play and from a world no older than 60 s; `-` for both otherwise |
+| played | whole seconds since play began; `-` before it has |
+| join | 1 when the match would take one more player now, else 0 |
+
+No player name, account id or match id is in it: the same for whoever asks.
+
+Where it comes from: the match server's registry (`MatchRegistry::live_matches`), the source of the launcher's page too. Which match is listed and which score is told is one rule for both (`session::v026g::matches_now`). `join` is the lobby's late-join rule (`matchmaking.md` §9; `play.rs` `takes_one_more`) asked for a player alone whose wait for a better moment is over: a match of growing rosters with no fixed teams, admission open at the match server, more than 120 s left to play, a roster place left of the 20, a side under its most. It is about nobody in particular: an account that had a place in the match, or a game too old for growing rosters, is still not taken. A match the lobby did not make itself (the lobby was started again while it went on) has 0.
+
+An srp from before this answers the reserved start as a ranking page past the last row: an empty `91` (`91 00`), with no header. The window takes no header within about 6 s as "no matches".
+
+Code: `push.rs` `matches_now`, `dispatch.rs` `reserved_ranking` / `matches_now`. Tests: `lobby/tests/writers.rs` `the_matches_now_are_ranking_rows_with_reserved_places`, `core_tests/matches_now_tests.rs`, and a step of `v026g_end_to_end.rs`.
+
 ### 2.17 0x94 account services (old 0x36 0F) — PROVEN 0x2714D0 (0.21d 0x19E358)
 `u8 n`, n × 10 bytes {`u8 type`, `u8 skipped`, `u32 a`, `u32 b` (skipped)}. Only type 0 is used: premium = true, hours = a → `root.set_premium_state` 0x227D80 (`st_less_then_hour`, `%d %s` hours/days). **Types 1..4 (faction loyalty bonuses → `set_faction_bonus`) are no longer read: the loyalty display is gone.** The 0.21d 8-entry stack overflow hazard is gone with it.
 
