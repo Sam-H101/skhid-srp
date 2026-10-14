@@ -83,7 +83,8 @@
 //!
 //! Not carried over from 0.21d: the diagnostic uploads and the per-input
 //! trail (log aids), the estimate of when a relay reached a client (a relay
-//! now either is acked within 250 ms or is lost).
+//! now either is acked while the game can still use it or is lost:
+//! [`RELAY_USEFUL_MS`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -357,6 +358,21 @@ const WAITING_RELAY_RESEND: Duration = Duration::from_millis(150);
 const WAITING_REACH_MS: u32 = 5_500;
 /// 0xE8's own lifetime in the client's table (`udp_transport::Table`).
 const WORLD_LIFETIME: Duration = Duration::from_millis(1750);
+
+/// A relay is of use to a game until its world time is this far past the
+/// relay's tick: its history is 500 ms, and one that comes later is moved
+/// to a tick of the game's own choosing (match.md section 5.1). It is sent
+/// again until its last copy can still arrive by then (`relay_deadline`),
+/// not for the table's 250 ms from its first send: a relay that waited in
+/// a stall is lost there, not sent late, and one whose copies were all
+/// lost in 250 ms still had a few hundred ms of use (live, 2026-10-14).
+const RELAY_USEFUL_MS: u32 = 500;
+/// A drop order (0xF1/0xF2, 0xEF/0xF0) is sent again for this long after
+/// it is queued. Its owner's world time is not known here (its inputs are
+/// late because its clock or its line is), and one that comes after the
+/// owner's history passed the tick is refused quietly (match.md section
+/// 5.2).
+const DROP_ORDER_LIFE: Duration = Duration::from_millis(450);
 
 /// The last 0xE6 sent.
 #[derive(Clone, Copy)]
@@ -982,7 +998,16 @@ impl Game {
         let Some(peer) = self.peers.get_mut(index).and_then(Option::as_mut) else {
             return;
         };
+        let skips = peer.transport.skips();
         let events = peer.transport.receive(datagram, now);
+        if peer.transport.skips() != skips {
+            log::info!(
+                "Match {:#x}: player {index}'s game took a datagram of ours from a lap before as \
+                 its newest; our seq skipped ahead to it ({} times so far)",
+                self.id,
+                peer.transport.skips()
+            );
+        }
         self.check_in_flight(index);
         for event in events {
             match event {
@@ -2170,7 +2195,9 @@ impl Game {
             // new.
             peer.inputs_seen.remove(&time);
             peer.inputs_before_resync += 1;
-            if let Some(serial) = send(peer, &ServerMessage::DiscardInput { time: input.time }) {
+            if let Some(serial) =
+                send_drop_order(peer, &ServerMessage::DiscardInput { time: input.time }, now)
+            {
                 track(peer, serial, Flight::Discard, time);
             }
             log::debug!(
@@ -2191,7 +2218,9 @@ impl Game {
             // drops a late one; a copy of it is known by its time and goes
             // nowhere.
             peer.inputs_refused += 1;
-            if let Some(serial) = send(peer, &ServerMessage::DiscardInput { time: input.time }) {
+            if let Some(serial) =
+                send_drop_order(peer, &ServerMessage::DiscardInput { time: input.time }, now)
+            {
                 track(peer, serial, Flight::Discard, time);
             }
             if peer.inputs_refused <= REFUSED_LOGGED {
@@ -2241,7 +2270,8 @@ impl Game {
             Placing::Keep => {}
             Placing::Discard => {
                 peer.inputs_discarded += 1;
-                if let Some(serial) = send(peer, &ServerMessage::DiscardInput { time: input.time })
+                if let Some(serial) =
+                    send_drop_order(peer, &ServerMessage::DiscardInput { time: input.time }, now)
                 {
                     track(peer, serial, Flight::Discard, time);
                 }
@@ -2263,7 +2293,7 @@ impl Game {
                     from: input.time,
                     to: relayed.time,
                 };
-                if let Some(serial) = send(peer, &message) {
+                if let Some(serial) = send_drop_order(peer, &message, now) {
                     track(peer, serial, Flight::Discard, to);
                 }
                 log::debug!(
@@ -2274,7 +2304,7 @@ impl Game {
         }
         peer.placed.push_back((time, relayed_time));
         let what = Relayed::Input(relayed);
-        self.relay_to_others(index, &what, relayed_time);
+        self.relay_to_others(index, &what, relayed_time, now);
         self.inputs.push((relayed_time, index, what));
     }
 
@@ -2347,7 +2377,7 @@ impl Game {
             tick: relayed_tick,
             value,
         };
-        self.relay_to_others(index, &what, relayed_time);
+        self.relay_to_others(index, &what, relayed_time, now);
         self.inputs.push((relayed_time, index, what));
     }
 
@@ -2355,8 +2385,9 @@ impl Game {
     /// the simulation, and to those loading a snapshot (their sync's
     /// inputs went out with it, `send_sync`; what comes since goes as it
     /// comes, kept until acked).
-    fn relay_to_others(&mut self, index: usize, what: &Relayed, time: u32) {
+    fn relay_to_others(&mut self, index: usize, what: &Relayed, time: u32, now: Instant) {
         let message = relay(index, what);
+        let clock = self.clock(now);
         for (other, peer) in self.peers.iter_mut().enumerate() {
             if other == index {
                 continue;
@@ -2366,7 +2397,8 @@ impl Game {
             };
             match peer.stage {
                 Stage::Live => {
-                    if let Some(serial) = send(peer, &message) {
+                    let until = relay_deadline(peer.round_trip, clock, time, now);
+                    if let Some(serial) = send_until(peer, &message, until) {
                         track(peer, serial, Flight::Relay, time);
                     }
                 }
@@ -3256,9 +3288,10 @@ impl Game {
 
     /// What became of the relays, discards and roster changes sent to the
     /// client at `index`: acked, or dropped unacked at the end of their
-    /// 250 ms. One that was lost leaves the client without something the
-    /// others have: out of step from that tick. A lost roster change goes
-    /// once more, so that the client at least has the player.
+    /// life (250 ms, or a relay's or drop order's deadline). One that was
+    /// lost leaves the client without something the others have: out of
+    /// step from that tick. A lost roster change goes once more, so that
+    /// the client at least has the player.
     fn check_in_flight(&mut self, index: usize) {
         let Some(peer) = self.peers[index].as_mut() else {
             return;
@@ -4174,8 +4207,8 @@ fn input_summary(peer: &Peer) -> String {
         "{} inputs, {} first seen over {LATE_INPUT_MS} ms late on the way, {} too late to relay \
          and discarded, {} moved, {} refused for their rotation, {} made before a resync and come \
          after it, the latest {} ms, resynced {} times, started once more after its first world \
-         {} times, round trip {} ms, {} messages to it sent again, {} of {} relays and roster \
-         changes never acked",
+         {} times, round trip {} ms, {} messages to it sent again, our seq skipped ahead {} \
+         times, {} of {} relays and roster changes never acked",
         peer.inputs_received,
         peer.inputs_late,
         peer.inputs_discarded,
@@ -4187,9 +4220,46 @@ fn input_summary(peer: &Peer) -> String {
         peer.reloads,
         peer.round_trip,
         peer.transport.resent(),
+        peer.transport.skips(),
         peer.relays_lost,
         peer.relays_lost + peer.relays_acked
     )
+}
+
+/// When a relay for the match time `time`, queued at match clock `clock`,
+/// stops going to a game whose round trip is `round_trip` ms: its last
+/// copy must reach the game before the game's world is
+/// [`RELAY_USEFUL_MS`] past the tick, so half a round trip (50 ms at the
+/// least) before that on the match clock, which a live game's clock
+/// keeps to. One copy goes in any case.
+fn relay_deadline(round_trip: u32, clock: u32, time: u32, now: Instant) -> Instant {
+    let way = (round_trip / 2).max(50);
+    let left = (time + RELAY_USEFUL_MS).saturating_sub(clock + way).max(50);
+    now + Duration::from_millis(u64::from(left))
+}
+
+/// As [`send`], given up at `until` (`Transport::send_until`).
+fn send_until(peer: &mut Peer, message: &ServerMessage, until: Instant) -> Option<u64> {
+    match peer
+        .transport
+        .send_until(message.id(), &message.payload(), until)
+    {
+        Ok(serial) => Some(serial),
+        Err(SendError::NotConnected) => None,
+        Err(error) => {
+            log::warn!(
+                "Can't send {:#04x} to {}: {error:?}",
+                message.id(),
+                peer.addr
+            );
+            None
+        }
+    }
+}
+
+/// A drop order for the player's own input, for [`DROP_ORDER_LIFE`].
+fn send_drop_order(peer: &mut Peer, message: &ServerMessage, now: Instant) -> Option<u64> {
+    send_until(peer, message, now + DROP_ORDER_LIFE)
 }
 
 /// As [`send`], resent until acked whatever the message's own lifetime.

@@ -156,7 +156,7 @@ fn inputs_are_relayed_both_ways_while_their_tick_is_open() {
     // Each saw both enter. The second started from the initial world too
     // (it was fresh still), so the first one's entry came to it after it.
     assert!(bench.until(500, |bench| bench.clients[0].entered() == [0, 1]));
-    assert_eq!(bench.clients[1].entered(), [0, 1]);
+    assert!(bench.until(50, |bench| bench.clients[1].entered() == [0, 1]));
     assert_eq!(bench.clients[1].snapshots(), [(0, INITIAL_MS)]);
     settle(&mut bench);
 
@@ -682,7 +682,7 @@ fn a_snapshot_that_does_not_arrive_goes_again_as_the_next_generation() {
     assert_eq!(bench.clients[0].snapshots().len(), 1);
     assert_eq!(bench.clients[0].snapshots()[0].0, 1);
     assert_eq!(bench.clients[0].model.syncs, 1);
-    assert_eq!(bench.clients[0].entered(), [0]);
+    assert!(bench.until(50, |bench| bench.clients[0].entered() == [0]));
     bench.assert_no_faults();
 }
 
@@ -766,7 +766,7 @@ fn a_first_world_gets_through_a_line_that_carries_a_little_at_a_time() {
     assert_eq!(bench.stages(), "LL", "after {} ms", bench.ms - started);
     assert_eq!(bench.game().generation(1), Some(0));
     assert_eq!(bench.clients[1].snapshots().len(), 1);
-    assert_eq!(bench.clients[1].entered(), [1]);
+    assert!(bench.until(50, |bench| bench.clients[1].entered() == [1]));
     for _ in 0..2_000 {
         thin_step(&mut bench, &line);
     }
@@ -1591,8 +1591,9 @@ fn with_no_majority_the_client_that_never_got_a_relay_is_the_one_resynced() {
     bench.run(3_000);
 
     // The first player's link drops every datagram with a relay in it for
-    // a moment: the second player's input never reaches it (a relay lives
-    // 250 ms), and its world goes on without that input.
+    // a moment: the second player's input never reaches it (a relay goes
+    // until its game's history has passed its tick, some 450 ms), and its
+    // world goes on without that input.
     let losing = Arc::new(AtomicBool::new(true));
     let lost = losing.clone();
     bench.clients[0].lose = Some(Box::new(move |datagram| {
@@ -1606,7 +1607,7 @@ fn with_no_majority_the_client_that_never_got_a_relay_is_the_one_resynced() {
     }));
     let from = bench.clients[0].clock();
     bench.clients[1].input(50, 0x21);
-    bench.run(400);
+    bench.run(600);
     losing.store(false, Ordering::Relaxed);
     assert!(bench.clients[0].relays_of(1).is_empty());
     bench.clients[0].sim.salt_from = Some((from, 3));

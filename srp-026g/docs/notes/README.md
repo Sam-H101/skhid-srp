@@ -165,6 +165,8 @@ Every setting has a default; none is needed on a dev PC.
     (match.md §27);
   - `SRP_ENTRY_STATE_SECONDS` (default 4, 2 to 5): how long a game's first
     world is kept on its way;
+  - `SRP_RELAY_PACK_MS` (default 15, at most 50, 0 = off): how long relays
+    and drop orders wait to share a datagram (transport.md §11.1);
   - `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10): raise it (60–120)
     when two clients run on one PC, a window out of focus can stall.
 

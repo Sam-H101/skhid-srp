@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use session::SessionStore;
 use survarium::v026g::match_msgs::{ClientMessage, id, parse_client};
-use udp_transport::{Event, PacketLog, Table, Transport};
+use udp_transport::{Config, Event, PacketLog, Table, Transport};
 
 use super::Settings;
 use super::game::Game;
@@ -70,11 +70,12 @@ pub fn run(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}",
+         check: {}, relays packed for {} ms",
         config.match_server.bind_addr(),
         settings.late_inputs,
         switch(settings.clock_correction),
-        switch(settings.check_initial_world)
+        switch(settings.check_initial_world),
+        settings.pack.as_millis()
     );
     serve(
         &socket,
@@ -102,11 +103,12 @@ pub fn run_on(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on UDP {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}",
+         check: {}, relays packed for {} ms",
         socket.local_addr()?,
         settings.late_inputs,
         switch(settings.clock_correction),
-        switch(settings.check_initial_world)
+        switch(settings.check_initial_world),
+        settings.pack.as_millis()
     );
     let port = registry.port();
     serve(
@@ -259,8 +261,12 @@ impl Server {
             self.routes.remove(&addr);
         }
         let packet_log = &self.packet_log;
+        let config = Config {
+            gather: self.settings.pack,
+            ..Config::for_table(Table::Match)
+        };
         let transport = self.pending.entry(addr).or_insert_with(|| {
-            let mut transport = Transport::new(Table::Match, now);
+            let mut transport = Transport::with_config(Table::Match, config, now);
             if let Some(Ok(log)) = packet_log
                 .as_ref()
                 .map(|log| log.connection(Table::Match, addr))

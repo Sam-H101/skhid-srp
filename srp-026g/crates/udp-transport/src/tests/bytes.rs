@@ -6,7 +6,7 @@ use super::client_model::ClientModel;
 use super::{client, connect_lobby, connect_match, flow};
 use crate::ack;
 use crate::wire::{self, Part};
-use crate::{Direction, Event, PacketLog, SendError, State, Table, Transport};
+use crate::{Config, Direction, Event, PacketLog, SendError, State, Table, Transport};
 
 fn ms(ms: u64) -> Duration {
     Duration::from_millis(ms)
@@ -482,6 +482,165 @@ fn a_kept_message_goes_again_at_the_pace_its_sender_says() {
     assert!(!transport.is_lost(relay));
     transport.receive(&flow(1, late[0][0], &[]), now + ms(2000));
     assert!(transport.is_delivered(relay));
+}
+
+/// How many of `datagrams` carry `bytes` somewhere.
+fn holding(datagrams: &[Vec<u8>], bytes: &[u8]) -> usize {
+    datagrams
+        .iter()
+        .filter(|datagram| datagram.windows(bytes.len()).any(|window| window == bytes))
+        .count()
+}
+
+#[test]
+fn a_deadline_ends_a_message_however_often_it_went() {
+    let (mut transport, now) = connect_match();
+    // A relay with 450 ms from now: again every 50 ms, past the table's
+    // 250 ms, until then.
+    let relay = transport.send_until(0xEB, &[7; 10], now + ms(450)).unwrap();
+    for step in 0..9 {
+        let datagrams = transport.poll(now + ms(50) * step);
+        assert_eq!(carrying(&datagrams, 0xEB), 1, "send {step}");
+    }
+    assert!(!transport.is_lost(relay));
+    assert_eq!(carrying(&transport.poll(now + ms(450)), 0xEB), 0);
+    assert!(transport.is_lost(relay) && !transport.is_delivered(relay));
+
+    // The deadline counts from the send, not from the first time out.
+    let at = now + ms(1000);
+    let late = transport.send_until(0xEB, &[8; 10], at + ms(100)).unwrap();
+    assert_eq!(carrying(&transport.poll(at + ms(60)), 0xEB), 1);
+    assert_eq!(carrying(&transport.poll(at + ms(100)), 0xEB), 0);
+    assert!(transport.is_lost(late));
+
+    // What the table keeps or sends once is not cut short.
+    let at = now + ms(2000);
+    let kept = transport.send_until(0xF3, &[1, 2, 3], at).unwrap();
+    assert_eq!(carrying(&transport.poll(at + ms(500)), 0xF3), 1);
+    assert!(!transport.is_lost(kept));
+}
+
+#[test]
+fn a_message_held_back_past_its_deadline_is_lost_unsent() {
+    let (mut transport, now) = connect_match();
+    // 100 datagrams the client does not ack: data waits.
+    for step in 0..100u8 {
+        transport.send(0xF4, &[step, step]).unwrap();
+        assert_eq!(transport.poll(now + ms(u64::from(step))).len(), 1);
+    }
+    let at = now + ms(100);
+    let relay = transport.send_until(0xEB, &[2; 10], at + ms(450)).unwrap();
+    // Without a deadline a short-lived message's life starts at its first
+    // send: it would go out whenever the link moves again, however old.
+    let old = transport.send(0xEB, &[1; 10]).unwrap();
+    for wait in [0, 100, 300, 449] {
+        assert_eq!(carrying(&transport.poll(at + ms(wait)), 0xEB), 0);
+    }
+    assert!(!transport.is_lost(relay));
+    transport.poll(at + ms(450));
+    assert!(transport.is_lost(relay) && !transport.is_lost(old));
+    // The client acks everything: only the one without a deadline goes.
+    let also: Vec<u8> = (0..99).collect();
+    transport.receive(&flow(1, 99, &also), at + ms(600));
+    let after = transport.poll(at + ms(600));
+    assert_eq!(holding(&after, &[1; 10]), 1);
+    assert_eq!(holding(&after, &[2; 10]), 0);
+}
+
+// ------------------------------------------------------- gathering relays
+
+#[test]
+fn relays_queued_within_the_gather_time_share_one_datagram() {
+    let (mut transport, now) = connect_match();
+    // After a quiet time a lone relay goes at once.
+    transport.send(0xEB, &[1; 10]).unwrap();
+    assert_eq!(holding(&transport.poll(now), &[1; 10]), 1);
+    // What comes within 15 ms of it waits for more.
+    transport.send(0xEB, &[2; 10]).unwrap();
+    assert!(transport.poll(now + ms(5)).is_empty());
+    transport.send(0xEC, &[3; 11]).unwrap();
+    transport.send(0xF1, &[4]).unwrap();
+    assert!(transport.poll(now + ms(10)).is_empty());
+    let together = transport.poll(now + ms(15));
+    assert_eq!(together.len(), 1);
+    assert_eq!(
+        messages(Table::Match, &together[0]),
+        [(0xEB, None, 10), (0xEC, None, 11), (0xF1, None, 1)]
+    );
+    // Resends ride along with the next flush.
+    transport.send(0xEB, &[5; 10]).unwrap();
+    let next = transport.poll(now + ms(50));
+    assert_eq!(next.len(), 1);
+    assert_eq!(holding(&next, &[1; 10]) + holding(&next, &[5; 10]), 2);
+}
+
+#[test]
+fn a_message_that_may_not_wait_takes_the_relays_along() {
+    // The clock messages and the ping (E5, E6, E7) and anything kept
+    // until acked go at once, and what waits goes with them.
+    let messages_for = [
+        (0xE5, vec![1; 7]),
+        (0xE6, vec![1; 4]),
+        (0xE7, vec![1; 2]),
+        (0xF3, vec![1; 3]),
+    ];
+    for (id, payload) in messages_for {
+        let (mut transport, now) = connect_match();
+        transport.send(0xEB, &[1; 10]).unwrap();
+        assert_eq!(transport.poll(now).len(), 1);
+        transport.send(0xEB, &[2; 10]).unwrap();
+        assert!(transport.poll(now + ms(2)).is_empty());
+        transport.send(id, &payload).unwrap();
+        let datagrams = transport.poll(now + ms(3));
+        assert_eq!(datagrams.len(), 1, "{id:#04x}");
+        assert_eq!(holding(&datagrams, &[2; 10]), 1, "{id:#04x}");
+        assert_eq!(carrying(&datagrams, id), 1, "{id:#04x}");
+    }
+}
+
+#[test]
+fn a_full_datagram_of_relays_goes_without_waiting() {
+    let (mut transport, now) = connect_match();
+    transport.send(0xEB, &[1; 10]).unwrap();
+    transport.poll(now);
+    // 11 bytes each: 46 do not fit in one datagram.
+    for n in 0..45u8 {
+        transport.send(0xEB, &[n; 10]).unwrap();
+    }
+    assert!(transport.poll(now + ms(1)).is_empty());
+    transport.send(0xEB, &[99; 10]).unwrap();
+    let full = transport.poll(now + ms(2));
+    assert_eq!(full.len(), 2);
+    assert!(full[0].len() > 480);
+}
+
+#[test]
+fn an_ack_is_never_held_longer_than_the_ack_delay() {
+    let now = Instant::now();
+    // A long gather time, to tell the two apart.
+    let config = Config {
+        gather: ms(100),
+        ..Config::for_table(Table::Match)
+    };
+    let mut transport = Transport::with_config(Table::Match, config, now);
+    transport.receive(&[0x00, 0xFF, 0x00, 0xD8, 1, 2, 3, 4, 0x00], now);
+    transport.send(0xEB, &[1; 10]).unwrap();
+    assert_eq!(transport.poll(now).len(), 1);
+    transport.send(0xEB, &[2; 10]).unwrap();
+    assert!(transport.poll(now + ms(10)).is_empty());
+    // A client datagram: its ack goes 20 ms after the last send, on the
+    // waiting relay rather than on a keep-alive.
+    transport.receive(&flow(1, 0, &[]), now + ms(12));
+    assert!(transport.poll(now + ms(15)).is_empty());
+    let ack = transport.poll(now + ms(20));
+    assert_eq!(ack.len(), 1);
+    assert_eq!(ack[0][1], 1);
+    assert_eq!(holding(&ack, &[2; 10]), 1);
+    // With nothing waiting, a keep-alive carries it, as before.
+    transport.receive(&flow(2, 1, &[]), now + ms(25));
+    let alive = transport.poll(now + ms(40));
+    assert_eq!(alive.len(), 1);
+    assert_eq!(alive[0][3], 0xFC);
 }
 
 /// The parts of a split message in `datagrams`: `(unique id, index)`.
