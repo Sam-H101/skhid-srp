@@ -212,9 +212,11 @@ pub const POCKET_SLOTS: [u8; 6] = [13, 14, 15, 16, 17, 18];
 /// the other armour. PROVEN. Quick use `n` (1 on) is the `n`-th of these
 /// that holds an item the client lets be used: every item class it was
 /// read for (the base item, the grenade, the medkit, the oxygen tank)
-/// passes the class test (`vtable+0x58` is `xor eax, eax`), the other test
-/// (`item+0x24C`, a constructor argument) was not read, so which items
-/// count is LIKELY all of them.
+/// passes the class test (`vtable+0x58` is `xor eax, eax`; the item that
+/// fails it is LIKELY an artefact: the inventory fill 0x2FD1C8 starts the
+/// artefacts at the first pocket that does), the other test (`item+0x24C`,
+/// a constructor argument) was not read, so which items count is LIKELY
+/// all but artefacts.
 pub const QUICK_USE_ORDER: [u8; 13] = [13, 14, 15, 16, 17, 18, 3, 0, 1, 2, 4, 5, 6];
 
 /// The input bit (`actions_mask`) of quick use 1; quick use `n` is this
@@ -296,19 +298,31 @@ pub const BOT_MEDKIT: BotKitItem = BotKitItem {
 /// The radio (`respawn_booster`, "Radio", `st_respawn_booster_name`; a
 /// `booster` of item level 0, 1,500 silver, `fills_whole_pocket`): its
 /// default modification 1220 is `respawn_time_modifier` -0.2 (type 1).
-/// The second pocket: quick use 2. How it takes effect (carried, or once
-/// used) is not proven.
+/// In the second pocket. **It works by being carried; no key.** PROVEN in
+/// the client: a `survarium::booster` (vtable 0xA1CA34, constructor
+/// 0x33F690) makes a modifier entry for each non-zero one of its 68
+/// parameters; at every spawn the player's modifier lists are cleared
+/// (`base_player::respawn` 0x2DACE4) and the inventory fill (0x2FCB70,
+/// called at 0x2DADBB) calls slot 14 of each item in the 23 slots
+/// (0x2FD1A5), which for a booster (0x33F960 → 0x33F990) adds those
+/// entries to the kit's lists. At a death the respawn rule (0x316AA0)
+/// sets the delay to `respawn_time × max(0, 1 + modifier 60)` through the
+/// getter 0x2D5AE0, which sums the lists: 8 s × 0.8 = 6.4 s, then up to
+/// the 50 ms grid. That the -0.2 of the default modification reaches the
+/// booster's parameters is LIKELY (the client applies modifications to
+/// an item's config, `item_config_cook`; the defaults' path there was not
+/// traced).
 pub const BOT_RADIO: BotKitItem = BotKitItem {
     name: "respawn_booster",
     slot: 14,
     count: 1,
-    input_bit: Some(QUICK_USE_FIRST_BIT + 1),
+    input_bit: None,
 };
 
 /// Two RGD-5 frag grenades (`rgd-5`, `grenade`, item level 3, 30 silver;
 /// the other grenade, `rdg-m`, is smoke at level 6) in the third pocket,
-/// thrown with [`GRENADE_BIT`]. Last of the pockets, so the quick-use keys
-/// of the medkit and the radio do not depend on whether a grenade counts
+/// thrown with [`GRENADE_BIT`]. Last of the pockets, so the medkit's
+/// quick-use key does not depend on whether a grenade or the radio counts
 /// for quick use.
 pub const BOT_GRENADE: BotKitItem = BotKitItem {
     name: "rgd-5",
@@ -596,18 +610,19 @@ mod tests {
         assert_eq!(grenades, [("rgd-5", 3), ("rdg-m", 6)]);
 
         // The keys: quick use n is the n-th filled slot of the client's
-        // order; the medkit and the radio are the first two whether or not
-        // the grenade counts. The grenade is the first one in the pockets.
+        // order; the medkit is the first. The radio works carried and has
+        // no key. The grenade is the first one in the pockets.
         let filled: Vec<u8> = QUICK_USE_ORDER
             .iter()
             .copied()
             .filter(|&slot| kit.slot(slot).is_some())
             .collect();
-        for item in [BOT_MEDKIT, BOT_RADIO] {
-            let bit = item.input_bit.unwrap();
-            assert!((QUICK_USE_FIRST_BIT..QUICK_USE_FIRST_BIT + 6).contains(&bit));
-            assert_eq!(filled[usize::from(bit - QUICK_USE_FIRST_BIT)], item.slot);
-        }
+        let bit = BOT_MEDKIT.input_bit.unwrap();
+        assert_eq!(
+            filled[usize::from(bit - QUICK_USE_FIRST_BIT)],
+            BOT_MEDKIT.slot
+        );
+        assert_eq!(BOT_RADIO.input_bit, None);
         let first_grenade = POCKET_SLOTS.iter().copied().find(|&slot| {
             kit.slot(slot)
                 .is_some_and(|item| params(item.dict_id).kind == "grenade")

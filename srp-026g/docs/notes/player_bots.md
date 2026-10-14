@@ -191,16 +191,18 @@ the archive's index: a loader must follow them.
      count, input bit; `bot_kit()`, `pockets()`): the starter kit (TT-33
      in slot 7, bit 12, and a clip in slot 8), `bm_back_1` (slot 3) and
      `bm_legs_5` (slot 4), and in the pockets two `medkit` (slot 13, quick
-     use 1, bit 14), the radio `respawn_booster` (slot 14, quick use 2,
-     bit 15; default modification 1220, `respawn_time_modifier` -0.2) and
+     use 1, bit 14), the radio `respawn_booster` (slot 14, no key: it
+     works carried; default modification 1220, `respawn_time_modifier`
+     -0.2) and
      two `rgd-5` (slot 15, bit 23).
      - Pockets: drugs, boosters, traps and grenades go only in slots
        13..18 (the dictionary's `slots_restrictions`), and the client
        throws from the first of them holding a grenade set (0x2FE8B0,
        `grenade_set_core` alone answers `vtable+0x64`). PROVEN. Quick use
        `n` is the `n`-th filled slot of 13..18, 3, 0, 1, 2, 4, 5, 6
-       (0x925FD8). PROVEN; that every item there counts is LIKELY (the
-       item's `+0x24C` was not read), so the grenade is the last pocket.
+       (0x925FD8). PROVEN; that every item but an artefact counts is
+       LIKELY (the item's `+0x24C` was not read), so the grenade is the
+       last pocket.
      - A player has 1 pocket of 1 unit (`default.player`); gear adds them
        (modification 1030: a pocket, 1170: a unit more in each). The
        lobby opens that many of 13..18 and empties the rest
@@ -210,11 +212,24 @@ the archive's index: a loader must follow them.
        trousers (+1 pocket, level 4, 6,830) are the cheapest pair of
        non-premium pieces that open three: 3 pockets of 2. Tested
        (`loadouts` test `the_bots_kit_has_a_pocket_for_each_thing_it_uses`).
-     - The radio: 8 s respawn × (1 − 0.2) = LIKELY 6.4 s (index 60 is a
-       multiplied modifier, 0x2D5AE0). Whether it works carried or must
-       be used is not proven: the only item code that adds modifiers to a
-       player is the medkit class's (0x33DDC1, while active), so press its
-       key after a spawn.
+     - The radio works **by being carried**; a bot need not press
+       anything. PROVEN (client, 2026-10-14): a `survarium::booster`
+       (vtable 0xA1CA34, constructor 0x33F690) makes a modifier entry for
+       each non-zero one of its 68 parameters. At every spawn
+       `base_player::respawn` clears the player's 68 modifier lists
+       (0x2DACE4) and the inventory fill 0x2FCB70 (called at 0x2DADBB)
+       calls slot 14 of every item in the 23 slots, pockets included
+       (0x2FD1A5); a booster's (0x33F960 → 0x33F990) adds its entries to
+       the kit's lists. At a death the respawn rule (0x316AA0) sets the
+       delay through the getter 0x2D5AE0 (index 0x3C, which sums the
+       lists): `respawn_time × max(0, 1 + modifier)`, rounded up to the
+       50 ms grid; 8 s × 0.8 = 6.4 s. No use, no count check. LIKELY only:
+       that the -0.2 of default modification 1220 is in the booster's
+       parameters (the client applies modifications to an item's config,
+       `item_config_cook`; the defaults' path there was not traced). Other
+       passive adders of the same kind: `armor` (0x33F3A0) and the
+       artefacts (0x311AD0..); the medkit's adds (0x33D892, 0x33DDC1) run
+       only while it is active.
    - `MatchPlayer::driven` (match server): `game/driven.rs` enters the
      place once a real client simulates (0xE9 300 ms ahead) and relays the
      stage 0 script's inputs (`v026g::drive`, moved there from `srp`) as a
@@ -230,7 +245,7 @@ the archive's index: a loader must follow them.
      `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
    - Not yet: a bot leaving to make room for a late joiner; any choice of
      what to do (the script is fixed); pressing the kit's keys (nothing
-     sends bits 14, 15 or 23 yet); a real game with the kit.
+     sends bits 14 or 23 yet); a real game with the kit.
 2. **Bots that walk the map.** Built 2026-10-14, not run with a real game:
    - `SRP_MAPDATA_DIR` (match server): the folder of `mapdata-dump`'s files
      (`player_bots_mapdata.md`). With it, the server's bots
