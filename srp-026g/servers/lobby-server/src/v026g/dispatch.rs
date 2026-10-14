@@ -16,9 +16,11 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use session::LockExt;
+use session::v026g::matches_now::Phase;
 use session::v026g::{quests, rewards, rules, tutorial, wire};
 use survarium::v026g::lobby::requests::{ClientMessage, id};
 use survarium::v026g::lobby::{self, NameRefusal, Ranked, important};
+use survarium::v026g::maps;
 
 use super::core::{Core, Who};
 
@@ -88,6 +90,11 @@ impl Core<'_> {
             M::QueryReputations => {
                 let reputations = wire::reputations(&who.account.locked());
                 self.send_made(addr, reputations);
+            }
+            // A start no ranking page asks for is srp's own request, and
+            // none of the ranking's.
+            M::QueryRanking { start, count } if start >= lobby::RESERVED_START => {
+                self.reserved_ranking(who, start, count, now);
             }
             M::QueryRanking { start, count } => self.ranking(who, start, count),
             M::QueryQuests => {
@@ -527,6 +534,84 @@ impl Core<'_> {
             })
             .collect();
         self.send_made(who.addr, lobby::elo_list(from as u32, &rows));
+    }
+
+    /// `3B 00 <start> <count>` with a start of [`lobby::RESERVED_START`] or
+    /// more: srp's own requests, which only its changed lobby movie makes
+    /// (the stock ranking page asks for no index past the count of ranked
+    /// players). The one there is, [`lobby::MATCHES_START`], is answered
+    /// with the matches being played now (`matches_now`); any other gets
+    /// no answer. Nothing of the ranking is read, sent or kept for either.
+    fn reserved_ranking(&mut self, who: &Who, start: u32, count: u8, now: Instant) {
+        if start != lobby::MATCHES_START {
+            log::debug!(
+                "{} asked for the reserved ranking start {start}: not answered",
+                who.name
+            );
+            return;
+        }
+        let list = self.matches_now(count, now);
+        self.send_made(who.addr, list);
+    }
+
+    /// The matches being played now, for the "matches now" window of the
+    /// changed lobby movie ([`lobby::matches_now`]): the ones the
+    /// launcher's page lists, with the score it shows
+    /// (`session::v026g::matches_now`), the oldest first. `count` is the
+    /// most the window wants; the header counts them all.
+    ///
+    /// The same for whoever asks, and cheap enough to be asked by every
+    /// open window every few seconds: one look at the match server's
+    /// registry, and for a match that takes players its admission and its
+    /// sides ([`Core::takes_one_more`]). No account is locked.
+    fn matches_now(
+        &self,
+        count: u8,
+        now: Instant,
+    ) -> Result<lobby::ServerMessage, lobby::WireError> {
+        let open: Vec<_> = self
+            .host
+            .open_matches(now)
+            .into_iter()
+            .filter(|each| each.phase.is_listed())
+            .collect();
+        let most = usize::from(count).min(lobby::MATCHES_NOW_ROWS);
+        let rows: Vec<lobby::MatchNow> = open
+            .iter()
+            .take(most)
+            .map(|each| {
+                // No match is made of a map the dictionary lacks.
+                let (level, mode) =
+                    maps::map_mode(each.map_id).map_or((0, 0), |map| (map.level, map.mode));
+                // A match the lobby did not make itself (it was started
+                // again while the match went on) takes nobody from it.
+                let running = self
+                    .matches
+                    .values()
+                    .find(|running| running.ticket.match_id == each.match_id);
+                lobby::MatchNow {
+                    level,
+                    mode,
+                    phase: match each.phase {
+                        Phase::Gathering => lobby::MatchPhase::Gathering,
+                        Phase::Countdown => lobby::MatchPhase::Countdown,
+                        // One that is over is not listed.
+                        Phase::Playing | Phase::Over => lobby::MatchPhase::Playing,
+                    },
+                    players: each.players,
+                    score: each
+                        .standing
+                        .filter(|(_, age)| each.phase.shows_score(*age))
+                        .map(|(points, _)| points),
+                    played: each
+                        .played
+                        .filter(|_| each.phase == Phase::Playing)
+                        .map(|played| played.as_secs().min(u32::MAX.into()) as u32),
+                    join: running.is_some_and(|running| self.takes_one_more(running, now)),
+                }
+            })
+            .collect();
+        lobby::matches_now(open.len() as u32, &rows)
     }
 }
 

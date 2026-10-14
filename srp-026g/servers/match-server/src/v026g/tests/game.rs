@@ -1934,6 +1934,7 @@ fn the_registry_says_how_a_match_stands_while_it_runs() {
     assert_eq!(
         live(&bench),
         LiveMatch {
+            match_id: bench.match_id,
             map_id: MAP_TDM,
             phase: LivePhase::Gathering,
             players: [2, 1],

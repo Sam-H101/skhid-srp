@@ -139,8 +139,9 @@ use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
 pub use patch_check::PatchCheck;
-pub use play::{LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, match_profile};
-
+pub use play::{
+    LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, OpenMatch, match_profile,
+};
 /// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
 /// wiki of February 2015; `progression_sources.md` §9).
 const DEFAULT_TEAM_SIZE: usize = 10;

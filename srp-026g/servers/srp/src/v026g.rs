@@ -48,6 +48,18 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 /// moved over field for field.
 pub struct RegistryHost(pub Arc<MatchRegistry>);
 
+/// How far a match is, as the page and the lobby's list of the matches
+/// have it: both go by `session::v026g::matches_now`.
+fn phase(phase: matches::LivePhase) -> session::v026g::matches_now::Phase {
+    use session::v026g::matches_now::Phase;
+    match phase {
+        matches::LivePhase::Gathering => Phase::Gathering,
+        matches::LivePhase::Countdown => Phase::Countdown,
+        matches::LivePhase::Playing => Phase::Playing,
+        matches::LivePhase::Over => Phase::Over,
+    }
+}
+
 impl web_server::MatchCounter for RegistryHost {
     fn active_matches(&self) -> usize {
         self.0.match_count()
@@ -59,12 +71,7 @@ impl web_server::MatchCounter for RegistryHost {
             .into_iter()
             .map(|live| web_server::LiveMatch {
                 map_id: live.map_id,
-                phase: match live.phase {
-                    matches::LivePhase::Gathering => web_server::LivePhase::Gathering,
-                    matches::LivePhase::Countdown => web_server::LivePhase::Countdown,
-                    matches::LivePhase::Playing => web_server::LivePhase::Playing,
-                    matches::LivePhase::Over => web_server::LivePhase::Over,
-                },
+                phase: phase(live.phase),
                 players: live.players,
                 played: live.played,
                 time_left: live.time_left,
@@ -138,6 +145,23 @@ impl MatchHost for RegistryHost {
                 .played
                 .filter(|_| live.phase == matches::LivePhase::Playing),
         })
+    }
+
+    fn open_matches(&self, now: std::time::Instant) -> Vec<lobby::OpenMatch> {
+        self.0
+            .live_matches(now)
+            .into_iter()
+            .map(|live| lobby::OpenMatch {
+                match_id: live.match_id,
+                map_id: live.map_id,
+                phase: phase(live.phase),
+                players: live.players,
+                standing: live
+                    .standing
+                    .map(|standing| (standing.points, standing.age)),
+                played: live.played,
+            })
+            .collect()
     }
 
     fn is_open(&self, match_id: u32) -> bool {

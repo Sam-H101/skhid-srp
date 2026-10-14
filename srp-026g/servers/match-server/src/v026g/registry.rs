@@ -220,6 +220,9 @@ pub struct LiveStanding {
 /// A match made and not over, as it is now: for whoever shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveMatch {
+    /// What the lobby knows the match by ([`MatchTicket::match_id`]). Not
+    /// for the players' eyes.
+    pub match_id: u32,
     /// The `maps_dict` id: the map and the mode.
     pub map_id: u8,
     pub phase: LivePhase,
@@ -698,6 +701,7 @@ impl MatchRegistry {
                 players[usize::from(place.team.min(1))] += 1;
             }
             return LiveMatch {
+                match_id: formed.match_id,
                 map_id: formed.map.id,
                 phase: LivePhase::Gathering,
                 players,
@@ -710,6 +714,7 @@ impl MatchRegistry {
         };
         let since = now.saturating_duration_since(live.at);
         LiveMatch {
+            match_id: formed.match_id,
             map_id: formed.map.id,
             phase: live.phase,
             players: live.players,
