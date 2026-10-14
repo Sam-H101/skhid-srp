@@ -50,19 +50,19 @@ pub struct Manifest {
     pub size: u64,
 }
 
-fn lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
     text.split(|&byte| byte == b'\n')
         .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
 }
 
-fn word(line: &[u8]) -> (&[u8], &[u8]) {
+pub(crate) fn word(line: &[u8]) -> (&[u8], &[u8]) {
     match line.iter().position(|&byte| byte == b' ') {
         Some(at) => (&line[..at], &line[at + 1..]),
         None => (line, &[]),
     }
 }
 
-fn number(text: &[u8]) -> Option<u64> {
+pub(crate) fn number(text: &[u8]) -> Option<u64> {
     if text.is_empty() || text.len() > 18 || !text.iter().all(u8::is_ascii_digit) {
         return None;
     }

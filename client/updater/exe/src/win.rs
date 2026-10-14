@@ -443,6 +443,69 @@ impl DownloadFile {
     }
 }
 
+/// An open file of the resource step, read and written at 64-bit offsets.
+pub struct File(Handle);
+
+impl File {
+    /// For reading and writing by this program alone. While another program
+    /// has the file open (the game its `resources.db`), this fails with
+    /// `ERROR_SHARING_VIOLATION`; while this is open, no other program can
+    /// open it.
+    pub fn exclusive(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_READ | GENERIC_WRITE, 0, OPEN_EXISTING).map(Self)
+    }
+
+    /// For reading, whoever else has it open (the game too).
+    pub fn shared(path: &str) -> Result<Self, Code> {
+        open_read(path).map(Self)
+    }
+
+    /// For reading; others may read it too, but no one may change it while
+    /// it is open.
+    pub fn locked(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING).map(Self)
+    }
+
+    /// A new file (over one of the same name), to write and read back, by
+    /// this program alone.
+    pub fn create(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_READ | GENERIC_WRITE, 0, CREATE_ALWAYS).map(Self)
+    }
+
+    pub fn size(&self) -> Result<u64, Code> {
+        let mut size = 0_i64;
+        if unsafe { GetFileSizeEx(self.0.0, &mut size) } == 0 {
+            return Err(last_error());
+        }
+        Ok(size as u64)
+    }
+
+    /// Moves to byte `at` from the start: a 64-bit offset, past 4 GB too.
+    pub fn seek(&self, at: u64) -> Result<(), Code> {
+        // 0 = FILE_BEGIN.
+        if unsafe { SetFilePointerEx(self.0.0, at as i64, null_mut(), 0) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+
+    pub fn read(&self, buffer: &mut [u8]) -> Result<usize, Code> {
+        read_some(&self.0, buffer)
+    }
+
+    pub fn write(&self, data: &[u8]) -> Result<(), Code> {
+        write_all(&self.0, data)
+    }
+
+    /// Has Windows put what was written on the disk.
+    pub fn flush(&self) -> Result<(), Code> {
+        if unsafe { FlushFileBuffers(self.0.0) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+}
+
 /// Serializes installers in the same game folder, including while downloading.
 pub struct InstallLock(#[allow(dead_code)] Handle);
 pub fn install_lock(folder: &str) -> Result<InstallLock, Code> {

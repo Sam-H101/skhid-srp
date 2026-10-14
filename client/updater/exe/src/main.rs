@@ -24,6 +24,7 @@ mod http;
 mod install;
 mod log;
 mod pipe;
+mod resources;
 mod rt;
 mod text;
 mod win;
@@ -99,6 +100,9 @@ struct Session {
     stopped: bool,
     last_progress: u64,
     started: u64,
+    /// The launcher's line names a file ("Extracting file <name>") that the
+    /// next state message must clear.
+    named_file: bool,
 }
 
 impl Session {
@@ -395,6 +399,8 @@ enum Done {
     Failed(String),
 }
 
+/// The update: the overlay, then the resource step, both under the
+/// installation lock.
 fn update(session: &mut Session, layout: &Layout) -> Done {
     let _lock = match win::install_lock(&layout.exe_dir) {
         Ok(lock) => lock,
@@ -409,6 +415,29 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Ok(server) => server,
         Err(message) => return Done::Failed(message),
     };
+    let done = overlay(session, layout, &server);
+    // The resource step is best effort: whatever it does, the overlay's
+    // result stands. It runs at every start the game may be played after,
+    // and with the server only when the server answered. When this updater
+    // or the launcher was replaced, the new ones start at once and do it.
+    let server = match &done {
+        Done::UpToDate | Done::Installed { restart: false } => Some(&server),
+        Done::Offline(_) => None,
+        Done::Installed { restart: true } => {
+            log!(
+                "resources: the updater or the launcher was replaced: the resource step is done by the new one"
+            );
+            return done;
+        }
+        Done::Stopped | Done::Failed(_) => return done,
+    };
+    resources::run(session, layout, server, read_installed(layout).as_ref());
+    done
+}
+
+/// The overlay: the Skhid files of the server's archive (and the original
+/// game first, when it is missing).
+fn overlay(session: &mut Session, layout: &Layout, server: &Url) -> Done {
     game::sweep(layout);
     let installed = read_installed(layout);
     install::clean_up(
@@ -417,7 +446,7 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
             .iter()
             .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str())),
     );
-    let mut manifest = match ask(session, &server) {
+    let mut manifest = match ask(session, server) {
         Ok(manifest) => manifest,
         Err(None) => return Done::Stopped,
         Err(Some(message)) => {
@@ -481,7 +510,7 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         log!("{}", text::repairing(name));
     }
 
-    let archive = match download(session, &server, &mut manifest) {
+    let archive = match download(session, server, &mut manifest) {
         Ok(archive) => archive,
         Err(None) => return Done::Stopped,
         Err(Some(message)) => return Done::Failed(message),
@@ -683,6 +712,7 @@ fn run() -> u32 {
         stopped: false,
         last_progress: 0,
         started: 0,
+        named_file: false,
     };
 
     if options.copy {
@@ -696,6 +726,11 @@ fn run() -> u32 {
 
     let code = match update(&mut session, &layout) {
         Done::UpToDate => {
+            // "Checking" clears a file name the resource step left in the
+            // launcher's line.
+            if session.named_file {
+                session.state(state::CHECKING);
+            }
             session.state(state::LATEST);
             exit::OK
         }
@@ -722,6 +757,9 @@ fn run() -> u32 {
         }
         Done::Offline(message) => {
             log!("the server could not be asked: {message}");
+            if session.named_file {
+                session.state(state::CHECKING);
+            }
             session.tell(&message);
             session.state(state::LATEST);
             exit::OK

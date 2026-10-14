@@ -19,6 +19,7 @@ import hashlib
 import http.server
 import io
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -27,9 +28,16 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The release builder makes the resource plans here, as for the players'
+# archive, so its plan is read by the real updater.
+sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "srp-026g", "client-patches"))
+import make_client_026g as builder  # noqa: E402
+from test_release_overlay import forged  # noqa: E402
+
 RELEASE = os.path.join("target", "i686-pc-windows-msvc", "release")
 UPDATER = os.path.join(HERE, "..", "exe", RELEASE, "updater_skhid.exe")
 FAKE_EXE = os.path.join(HERE, "fake_exe", RELEASE, "fake-exe.exe")
@@ -70,6 +78,9 @@ class Site:
         self.download_statuses = []     # statuses for the next downloads, then 200
         self.cut_downloads = 0          # the next N downloads end half way
         self.slow = 0.0                 # seconds between pieces of a download
+        self.blobs = {}                 # /resources/<sha256>: sha256 -> bytes
+        self.blob_statuses = {}         # sha256 -> another status than 200
+        self.blob_bodies = {}           # sha256 -> other bytes than the blob's
         self.requests = []
         site = self
 
@@ -110,6 +121,13 @@ class Site:
                                 time.sleep(site.slow)
                     except OSError:
                         pass
+                elif self.path.startswith("/resources/"):
+                    name = self.path[len("/resources/"):]
+                    status = site.blob_statuses.get(name, 200 if name in site.blobs else 404)
+                    if status != 200:
+                        self.answer(status, b"")
+                    else:
+                        self.answer(200, site.blob_bodies.get(name, site.blobs[name]), "application/octet-stream")
                 else:
                     self.answer(404, b"not found\n")
 
@@ -596,6 +614,315 @@ class UpdaterTest(unittest.TestCase):
         _winapi.CloseHandle(launcher.pipe)      # no abort: the process was killed
         launcher.open = False
         self.assertEqual(launcher.process.wait(20), 0)
+
+    # --- the resource step -----------------------------------------------
+
+    # Two entries of a small stand-in for resources.db: offset and size.
+    DB_SIZE = 4 << 20
+    REGIONS = {"lobby_menu": (1_000_000, 1_500_000), "login_menu": (3_000_000, 300_000)}
+    PLAN = f"{X86}/updater_skhid.resources"
+
+    def make_db(self, size=None, regions=None):
+        """The game's resources.db as shipped (the same bytes in every test)."""
+        self.regions = regions or self.REGIONS
+        self.db = random.Random(2777).randbytes(size or self.DB_SIZE)
+        self.write("game/resources.db", self.db)
+        # The release builder reads the game as shipped, not the player's.
+        self.source = os.path.join(self.root, "source", "game")
+        os.makedirs(self.source)
+        with open(os.path.join(self.source, "resources.db"), "wb") as file:
+            file.write(self.db)
+
+    def target(self, name, version=1):
+        offset, size = self.regions[name]
+        return forged(self.db[offset:offset + size], f"{name} target {version} ".encode())
+
+    def plan(self, version=1, names=None):
+        """The plan as make_client_026g.py writes it for these regions; their
+        blobs (targets and originals) are put on the site."""
+        table = {name: (offset, size, sha256(self.db[offset:offset + size]))
+                 for name, (offset, size) in self.regions.items()}
+        chosen = []
+        for name in names or self.regions:
+            path = os.path.join(self.root, f"{name}-{version}.bin")
+            with open(path, "wb") as file:
+                file.write(self.target(name, version))
+            chosen.append((name, path))
+        with mock.patch.dict(builder.RESOURCE_REGIONS, table, clear=True):
+            lines, blobs = builder.resource_regions(self.source, chosen)
+        self.site.blobs.update(blobs)
+        return builder.resources_plan(lines)
+
+    def with_plan(self, plan, **changes):
+        return self.bundle(**{self.PLAN.replace("/", "__"): plan}, **changes)
+
+    def region(self, name):
+        offset, size = self.regions[name]
+        with open(self.path("game/resources.db"), "rb") as file:
+            file.seek(offset)
+            return file.read(size)
+
+    def outside_regions_unchanged(self):
+        data = self.read("game/resources.db")
+        self.assertEqual(len(data), len(self.db))
+        at = 0
+        for offset, size in sorted(self.regions.values()):
+            self.assertEqual(data[at:offset], self.db[at:offset])
+            at = offset + size
+        self.assertEqual(data[at:], self.db[at:])
+
+    def blob_requests(self):
+        return [path for path in self.site.requests if path.startswith("/resources/")]
+
+    def assert_original(self):
+        self.assertEqual(self.read("game/resources.db"), self.db)
+
+    def assert_applied(self, version=1):
+        for name in self.regions:
+            self.assertEqual(self.region(name), self.target(name, version), name)
+        self.outside_regions_unchanged()
+
+    def test_resources_are_written_once_and_found_done_after(self):
+        self.make_db()
+        files = self.offer(self.with_plan(self.plan()))
+        launcher = self.launcher()
+        launcher.wait_for_state(LATEST)
+        # The handle on the db is closed before the launcher may start the
+        # game: the game's own open (share mode read and write) works.
+        held = _winapi.CreateFile(self.path("game/resources.db"), _winapi.GENERIC_READ, 0,
+                                  _winapi.NULL, _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        _winapi.CloseHandle(held)
+        self.assertEqual(launcher.states(), [CHECKING, DOWNLOADING, DOWNLOADED, INSTALLING,
+                                             DOWNLOADING, INSTALLING, DOWNLOADING, INSTALLING, CHECKING, LATEST])
+        self.assertEqual([text for text in launcher.texts(0x07) if text.endswith("_menu")],
+                         ["lobby_menu", "login_menu"])
+        self.assertEqual(launcher.texts(), [], "nothing for the player to read")
+        self.assertEqual(launcher.finish(), 0)
+        self.assert_applied()
+        self.assertEqual(self.read(self.PLAN), files[self.PLAN])
+        # Each target fetched once; the originals are kept beside the updater.
+        self.assertEqual(sorted(self.blob_requests()),
+                         sorted(f"/resources/{sha256(self.target(name))}" for name in self.regions))
+        for name, (offset, size) in self.regions.items():
+            original = self.db[offset:offset + size]
+            self.assertEqual(self.read(f"{X86}/updater_skhid.backup/{sha256(original)}"), original)
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.cache"), "the cache goes once used")
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.resources.journal"))
+        record = self.read(f"{X86}/updater_skhid.resources.state").decode()
+        self.assertTrue(record.startswith("skhid-resources-state 1\r\nregion game/resources.db ") and
+                        record.endswith("\r\nend\r\n"), record)
+        # The overlay's own state knows nothing of it.
+        self.assertNotIn("resources.db", self.read(f"{X86}/updater_skhid.state").decode())
+
+        # The next start: the regions are hashed, nothing else.
+        self.site.requests.clear()
+        launcher = self.install(files)
+        self.assertEqual(launcher.said, [CHECKING, LATEST])
+        self.assertEqual(self.site.requests, ["/api/client-files"])
+        self.assert_applied()
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_damaged_region_is_written_again(self):
+        self.make_db()
+        files = self.with_plan(self.plan())
+        self.install(files)
+        offset, _ = self.regions["lobby_menu"]
+        with open(self.path("game/resources.db"), "r+b") as file:
+            file.seek(offset + 1000)
+            file.write(b"damaged by a disk or a program")
+        self.site.requests.clear()
+        launcher = self.install(files)
+        self.assertEqual(launcher.said, [CHECKING, DOWNLOADING, INSTALLING, CHECKING, LATEST])
+        self.assert_applied()
+        self.assertEqual(self.blob_requests(), [f"/resources/{sha256(self.target('lobby_menu'))}"])
+        self.assertIn("lobby_menu: holds neither its original nor its target: the target is written over it",
+                      self.log())
+
+    def test_a_write_that_was_cut_short_is_repaired(self):
+        self.make_db()
+        files = self.with_plan(self.plan())
+        self.install(files)
+        record = self.read(f"{X86}/updater_skhid.resources.state").decode()
+        lobby_line = next(line for line in record.split("\r\n") if line.endswith(" lobby_menu"))
+        # The PC went off half way through the write: half target, half
+        # original, and the journal of it.
+        offset, size = self.regions["lobby_menu"]
+        with open(self.path("game/resources.db"), "r+b") as file:
+            file.seek(offset + size // 2)
+            file.write(self.db[offset + size // 2:offset + size])
+        self.write(f"{X86}/updater_skhid.resources.journal",
+                   f"skhid-resources-state 1\r\n{lobby_line}\r\nend\r\n".encode())
+        launcher = self.install(files)
+        self.assertIn(INSTALLING, launcher.said)
+        self.assert_applied()
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.resources.journal"))
+        log = self.log()
+        self.assertIn("a write of lobby_menu was cut short", log)
+        self.assertIn("(a write of it was cut short)", log)
+
+    def test_a_running_game_holds_the_db_and_the_regions_wait(self):
+        self.make_db()
+        files = self.with_plan(self.plan())
+        # The game opens resources.db for reading with share mode read and
+        # write, and keeps it open while it runs.
+        held = _winapi.CreateFile(self.path("game/resources.db"), _winapi.GENERIC_READ, 3,
+                                  _winapi.NULL, _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        try:
+            launcher = self.install(files)
+        finally:
+            _winapi.CloseHandle(held)
+        # The overlay is installed; no region is changed, nothing fetched.
+        self.assertEqual(launcher.said, [CHECKING, DOWNLOADING, DOWNLOADED, INSTALLING, CHECKING, LATEST])
+        self.assertEqual(self.read("README.txt"), files["README.txt"])
+        self.assert_original()
+        self.assertEqual(self.blob_requests(), [])
+        self.assertIn("the game is running", self.log())
+        # The game has ended: the next start does it.
+        launcher = self.install(files)
+        self.assertEqual(launcher.said, [CHECKING, DOWNLOADING, INSTALLING, DOWNLOADING, INSTALLING, CHECKING, LATEST])
+        self.assert_applied()
+
+    def test_a_region_the_plan_drops_gets_its_original_back(self):
+        self.make_db()
+        self.install(self.with_plan(self.plan()))
+        self.site.requests.clear()
+        # The next archive has no plan: its file is removed with the
+        # overlay, and the originals come back from the copies kept.
+        launcher = self.install(self.bundle(README__txt=b"no plan"))
+        self.assertIn(INSTALLING, launcher.said)
+        self.assertFalse(self.exists(self.PLAN))
+        self.assert_original()
+        self.assertEqual(self.blob_requests(), [])
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.resources.state"))
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.backup"))
+        self.assertIn("lobby_menu: its original is back (from the copy kept)", self.log())
+        # Nothing more to do after.
+        self.assertEqual(self.install(self.bundle(README__txt=b"no plan")).said, [CHECKING, LATEST])
+
+    def test_without_the_copy_kept_the_original_comes_from_the_site(self):
+        self.make_db()
+        self.install(self.with_plan(self.plan()))
+        shutil.rmtree(self.path(f"{X86}/updater_skhid.backup"))
+        self.site.requests.clear()
+        self.install(self.bundle(README__txt=b"no plan"))
+        self.assert_original()
+        self.assertEqual(sorted(self.blob_requests()), sorted(
+            f"/resources/{sha256(self.db[offset:offset + size])}" for offset, size in self.regions.values()))
+        self.assertIn("login_menu: its original is back (from the server)", self.log())
+        self.assertFalse(self.exists(f"{X86}/updater_skhid.cache"))
+
+    def test_a_new_target_replaces_the_old_and_the_original_stays_kept(self):
+        self.make_db()
+        self.install(self.with_plan(self.plan(1)))
+        launcher = self.install(self.with_plan(self.plan(2)))
+        self.assertIn(INSTALLING, launcher.said)
+        self.assert_applied(2)
+        self.assertIn("lobby_menu: the plan has a new target for it", self.log())
+        # The copy of the original made before the first write is still the
+        # way back.
+        self.site.requests.clear()
+        self.install(self.bundle(README__txt=b"no plan"))
+        self.assert_original()
+        self.assertEqual(self.blob_requests(), [])
+
+    def test_a_file_of_another_build_or_none_is_left_alone(self):
+        self.make_db()
+        plan = self.plan()
+        # Another build of the game: one byte more.
+        with open(self.path("game/resources.db"), "ab") as file:
+            file.write(b"!")
+        # And a region in a file that is not there.
+        missing = plan.replace(b"end\r\n", b"region game/resources/extra.db 100 0 10 " + sha256(b"a").encode()
+                               + b" " + sha256(b"b").encode() + b" extra\r\nend\r\n")
+        launcher = self.install(self.with_plan(missing))
+        self.assertEqual(launcher.said, [CHECKING, DOWNLOADING, DOWNLOADED, INSTALLING, CHECKING, LATEST])
+        self.assertEqual(self.read("game/resources.db"), self.db + b"!")
+        self.assertEqual(self.blob_requests(), [])
+        log = self.log()
+        self.assertIn(f"has {self.DB_SIZE + 1} bytes, not {self.DB_SIZE} (another build of the game): skipped", log)
+        self.assertIn("extra.db is not there: skipped", log)
+
+    def test_a_blob_the_site_lacks_or_spoils_changes_nothing(self):
+        self.make_db()
+        files = self.with_plan(self.plan())
+        lobby, login = (sha256(self.target(name)) for name in ("lobby_menu", "login_menu"))
+        self.site.blob_statuses[lobby] = 404
+        self.site.blob_bodies[login] = self.target("login_menu")[:-1] + b"?"
+        launcher = self.install(files)
+        # The overlay's result stands: installed, "latest", no box, exit 0.
+        self.assertEqual(launcher.said[:4], [CHECKING, DOWNLOADING, DOWNLOADED, INSTALLING])
+        self.assertEqual(launcher.said[-2:], [CHECKING, LATEST])
+        self.assertEqual(launcher.texts(), [])
+        self.assertEqual(self.read("README.txt"), files["README.txt"])
+        self.assert_original()
+        self.assertEqual(self.blob_requests(), [f"/resources/{lobby}"] * 2 + [f"/resources/{login}"] * 2)
+        log = self.log()
+        self.assertIn(f"answered /resources/{lobby} with error 404", log)
+        self.assertIn("the server's blob is not 300000 bytes with that SHA-256", log)
+        cache = self.path(f"{X86}/updater_skhid.cache")
+        self.assertEqual(os.listdir(cache) if os.path.exists(cache) else [], [])
+        self.assertEqual(self.leftovers(), [])
+        # Once the site has them, the next start writes them.
+        self.site.blob_statuses.clear()
+        self.site.blob_bodies.clear()
+        self.install(files)
+        self.assert_applied()
+
+    def test_a_plan_of_a_newer_format_or_cut_short_changes_nothing(self):
+        self.make_db()
+        plan = self.plan()
+        for spoilt, said in [(plan.replace(b"skhid-resources 1", b"skhid-resources 2"), "of a newer format"),
+                             (plan[:-5], "cannot be used (CutShort)"),
+                             (plan.replace(b"game/resources.db", b"game/../resources.db", 1), "cannot be used (BadLine(2))")]:
+            with self.subTest(said=said):
+                launcher = self.install(self.with_plan(spoilt))
+                self.assertEqual(launcher.said[-2:], [CHECKING, LATEST])
+                self.assert_original()
+                self.assertIn(said, self.log())
+        self.assertEqual(self.blob_requests(), [])
+
+    def test_the_updater_that_replaced_itself_leaves_the_step_to_the_new_one(self):
+        self.make_db()
+        self.install(self.bundle())
+        new_updater = self.updater_bytes + b"\0new build"
+        self.offer(self.with_plan(self.plan(), **{
+            f"{X86}/updater_skhid.exe".replace("/", "__"): new_updater,
+            f"{X86}/launcher_skhid.exe".replace("/", "__"): self.fake,
+        }))
+        launcher = self.launcher()
+        mutex = kernel32.CreateMutexW(None, False, f"{launcher.product}_or_its_installer_is_already_running")
+        try:
+            launcher.wait_for_state(ABORTED)
+            self.assertEqual(launcher.states(), [CHECKING, DOWNLOADING, DOWNLOADED, INSTALLING, ABORTED])
+        finally:
+            kernel32.CloseHandle(mutex)
+        self.assertEqual(launcher.process.wait(20), 0)
+        _winapi.CloseHandle(launcher.pipe)
+        self.assert_original()
+        self.assertIn("the resource step is done by the new one", self.log())
+        # The new updater, which the new launcher starts at once.
+        launcher = self.launcher()
+        launcher.wait_for_state(LATEST)
+        self.assertEqual(launcher.states(), [CHECKING, DOWNLOADING, INSTALLING, DOWNLOADING, INSTALLING,
+                                             CHECKING, LATEST])
+        self.assertEqual(launcher.finish(), 0)
+        self.assert_applied()
+
+    def test_hashing_a_region_of_the_lobby_movies_size_is_fast(self):
+        # The size of build 2777's lobby_menu.swf, hashed at every start.
+        size = 38_985_769
+        self.make_db(size + (2 << 20), {"lobby_menu": (1 << 20, size)})
+        files = self.with_plan(self.plan())
+        self.install(files)
+        self.assert_applied()
+        started = time.time()
+        launcher = self.install(files)
+        whole = time.time() - started
+        self.assertEqual(launcher.said, [CHECKING, LATEST])
+        hashed = [int(line.rsplit(" in ", 1)[1].split()[0]) for line in self.log().splitlines()
+                  if "resources: lobby_menu hashed in" in line]
+        print(f"\n  39 MB region hashed in {hashed[-1]} ms; the whole start took {whole:.2f} s", file=sys.stderr)
+        self.assertLess(hashed[-1], 3000)
 
     # --- the other ways it is started -----------------------------------
 
