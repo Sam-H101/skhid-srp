@@ -202,3 +202,8 @@ should fill a match to a modest size.
 What bots should do in a match, built on this data (senses, plays such as
 battery ambushes, carrier interception and sneaking into an empty base,
 reactions to events such as a stolen battery): `player_bots_behaviour.md`.
+
+How to build them (what shipped games did, and a module layout for this
+server: layers, utility scoring with rank bands, runtime modifiers from the
+match state, self-balancing, tuning files, decision traces and tests), from
+web research with its sources: `player_bots_research.md`.
