@@ -201,6 +201,195 @@ pub fn starter_stash() -> &'static [(u16, u32)] {
     })
 }
 
+/// The pockets: profile slots 13..=18, the only slots that take drugs,
+/// boosters, traps and grenades (`slots_restrictions` of the dictionary:
+/// categories 10, 11 and 24), and the six the client searches for a
+/// grenade (its table at 0x925FC0). PROVEN.
+pub const POCKET_SLOTS: [u8; 6] = [13, 14, 15, 16, 17, 18];
+
+/// The order in which the client counts the slots for the quick-use keys
+/// (its table at 0x925FD8, read by 0x2FE7F0): the pockets, the back, then
+/// the other armour. PROVEN. Quick use `n` (1 on) is the `n`-th of these
+/// that holds an item the client lets be used: every item class it was
+/// read for (the base item, the grenade, the medkit, the oxygen tank)
+/// passes the class test (`vtable+0x58` is `xor eax, eax`), the other test
+/// (`item+0x24C`, a constructor argument) was not read, so which items
+/// count is LIKELY all of them.
+pub const QUICK_USE_ORDER: [u8; 13] = [13, 14, 15, 16, 17, 18, 3, 0, 1, 2, 4, 5, 6];
+
+/// The input bit (`actions_mask`) of quick use 1; quick use `n` is this
+/// bit + `n` - 1, up to quick use 6 at bit 19 (`docs/notes/player_bots.md`
+/// §2; consumer 0x2D8D80..0x2D8DFF). PROVEN.
+pub const QUICK_USE_FIRST_BIT: u8 = 14;
+
+/// The input bit that throws a grenade, held until the throw starts: the
+/// client throws from the first pocket ([`POCKET_SLOTS`] in order) with a
+/// count above 0 whose item is a grenade set (0x2FE8B0: `vtable+0x64` is
+/// `mov eax, ecx` only in `grenade_set_core`'s table 0xA14824). PROVEN.
+pub const GRENADE_BIT: u8 = 23;
+
+/// The input bit that takes weapon 1 (slot 7) in hand. PROVEN
+/// (`player_bots.md` §2).
+pub const WEAPON_1_BIT: u8 = 12;
+
+/// One thing the server's bots wear ([`BOT_KIT`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BotKitItem {
+    /// The dictionary name (`items_dict`).
+    pub name: &'static str,
+    /// The profile slot.
+    pub slot: u8,
+    /// Units of a stack; 1 for an item that is no stack.
+    pub count: u32,
+    /// The bit of the input's `actions_mask` that uses it, if a key does.
+    pub input_bit: Option<u8>,
+}
+
+/// The starter pistol, the TT-33, in weapon slot 1 ([`STARTER`]).
+pub const BOT_PISTOL: BotKitItem = BotKitItem {
+    name: "tt_33",
+    slot: 7,
+    count: 1,
+    input_bit: Some(WEAPON_1_BIT),
+};
+
+/// A clip of the TT-33's free ammo, 50 rounds (its `clip_size`), in the
+/// weapon's first ammo slot ([`STARTER`]).
+pub const BOT_PISTOL_AMMO: BotKitItem = BotKitItem {
+    name: "ammo_7.62x25",
+    slot: 8,
+    count: 50,
+    input_bit: None,
+};
+
+/// The back: Black Market's backpack `bm_back_1` (item level 3, 6,650
+/// silver), the cheapest piece that adds a pocket: its default
+/// modifications 1030 (`pocket_slots_modifier` +1) and 1170
+/// (`pocket_slot_size_modifier` +1). See [`pockets`].
+pub const BOT_BACK: BotKitItem = BotKitItem {
+    name: "bm_back_1",
+    slot: 3,
+    count: 1,
+    input_bit: None,
+};
+
+/// The legs: Black Market's trousers `bm_legs_5` (item level 4, 6,830
+/// silver), the cheapest piece for another slot that adds a pocket
+/// (default modification 1030, `pocket_slots_modifier` +1).
+pub const BOT_LEGS: BotKitItem = BotKitItem {
+    name: "bm_legs_5",
+    slot: 4,
+    count: 1,
+    input_bit: None,
+};
+
+/// Two medkits ("Medikit", `st_base_medkit_name`; `drugs`, heals 1, item
+/// level 3, 20 silver) in the first pocket: quick use 1, as the first
+/// filled slot of [`QUICK_USE_ORDER`].
+pub const BOT_MEDKIT: BotKitItem = BotKitItem {
+    name: "medkit",
+    slot: 13,
+    count: 2,
+    input_bit: Some(QUICK_USE_FIRST_BIT),
+};
+
+/// The radio (`respawn_booster`, "Radio", `st_respawn_booster_name`; a
+/// `booster` of item level 0, 1,500 silver, `fills_whole_pocket`): its
+/// default modification 1220 is `respawn_time_modifier` -0.2 (type 1).
+/// The second pocket: quick use 2. How it takes effect (carried, or once
+/// used) is not proven.
+pub const BOT_RADIO: BotKitItem = BotKitItem {
+    name: "respawn_booster",
+    slot: 14,
+    count: 1,
+    input_bit: Some(QUICK_USE_FIRST_BIT + 1),
+};
+
+/// Two RGD-5 frag grenades (`rgd-5`, `grenade`, item level 3, 30 silver;
+/// the other grenade, `rdg-m`, is smoke at level 6) in the third pocket,
+/// thrown with [`GRENADE_BIT`]. Last of the pockets, so the quick-use keys
+/// of the medkit and the radio do not depend on whether a grenade counts
+/// for quick use.
+pub const BOT_GRENADE: BotKitItem = BotKitItem {
+    name: "rgd-5",
+    slot: 15,
+    count: 2,
+    input_bit: Some(GRENADE_BIT),
+};
+
+/// What the match server's own bots wear (`lobby-server` `play::server_bot`):
+/// the starter kit ([`STARTER`]), and gear with three pockets of two for a
+/// medkit, the radio and a grenade. The match server can find a bot's key
+/// for each here.
+pub const BOT_KIT: [BotKitItem; 7] = [
+    BOT_PISTOL,
+    BOT_PISTOL_AMMO,
+    BOT_BACK,
+    BOT_LEGS,
+    BOT_MEDKIT,
+    BOT_RADIO,
+    BOT_GRENADE,
+];
+
+/// [`BOT_KIT`] as a loadout.
+pub fn bot_kit() -> &'static Loadout {
+    static SHARED: std::sync::OnceLock<Loadout> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        let mut loadout = Loadout::from_names(
+            Dictionary::shared(),
+            BOT_KIT.iter().map(|item| (item.slot, item.name)),
+        )
+        .expect("the bot kit's items exist and fit their slots");
+        for (slot, item) in loadout.items.iter_mut().zip(BOT_KIT) {
+            slot.count = item.count;
+        }
+        loadout
+    })
+}
+
+/// What the type 1 (added) modifiers of the default modifications of
+/// `dict_id` add to `parameter` (e.g. `pocket_slots_modifier`).
+fn default_modifier(dict_id: u16, parameter: &str) -> f32 {
+    let path = format!("parameters/{parameter}");
+    let modifications = super::modifications::Modifications::shared();
+    item_params::item_params(dict_id)
+        .map_or(&[][..], |params| params.default_modifications)
+        .iter()
+        .filter_map(|&id| modifications.modification(id))
+        .flat_map(|row| &row.modifiers)
+        .filter(|modifier| modifier.kind == 1 && modifier.path == path)
+        .map(|modifier| modifier.value)
+        .sum()
+}
+
+/// The pockets a loadout opens and how many units each holds, with no
+/// skills: the player's `pocket_slots_count` and `pocket_slot_size` (1 and
+/// 1, `default.player`) plus what the worn items' default modifications
+/// add, at most the six [`POCKET_SLOTS`].
+///
+/// LIKELY the client's rule: the lobby opens the first `item_slots` of
+/// slots 13..=18 and empties and locks the others
+/// (`PaperDollBase.handleQuickSlots`), a pocket takes `pocketSize` units
+/// of an item, or one of an item that `fills_whole_pocket`
+/// (`ItemRendererQSlot`, `MessageAsk`), and both numbers come from the
+/// exe; pockets (15) and pocket size (17) are among the modifiers the
+/// match's getter adds rather than multiplies (0x2D5AE0, table
+/// 0x927E08). How the exe sums them was not read.
+pub fn pockets(loadout: &Loadout) -> (u32, u32) {
+    let added = |parameter| {
+        loadout
+            .items
+            .iter()
+            .map(|item| default_modifier(item.dict_id, parameter))
+            .sum::<f32>()
+            .max(0.0) as u32
+    };
+    let count = (item_params::POCKET_SLOTS_COUNT + added("pocket_slots_modifier"))
+        .min(POCKET_SLOTS.len() as u32);
+    let size = item_params::POCKET_SLOT_SIZE + added("pocket_slot_size_modifier");
+    (count, size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,8 +522,131 @@ mod tests {
             free.iter().map(|&id| name(id)).collect::<Vec<_>>()
         );
         assert!(starter.fits_carry_limit());
+        // The bots' kit starts with the starter kit, as it is.
+        assert_eq!(&bot_kit().items[..2], &starter.items[..]);
         // Something that does not fit its slot is refused.
         assert!(Loadout::from_names(dictionary, [(0, "tt_33")]).is_err());
         assert!(Loadout::from_names(dictionary, [(7, "no_such_item")]).is_err());
+    }
+
+    #[test]
+    fn the_bots_kit_has_a_pocket_for_each_thing_it_uses() {
+        let dictionary = Dictionary::shared();
+        let kit = bot_kit();
+        let params = |dict_id: u16| item_params::item_params(dict_id).unwrap();
+        assert_eq!(kit.items.len(), BOT_KIT.len());
+        for (item, wanted) in kit.items.iter().zip(BOT_KIT) {
+            let entry = dictionary.item(item.dict_id).unwrap();
+            assert_eq!((entry.name.as_str(), item.slot), (wanted.name, wanted.slot));
+            assert!(dictionary.fits(item.dict_id, item.slot), "{}", wanted.name);
+            assert!(!entry.is_premium, "{}", wanted.name);
+            assert_eq!(item.count, wanted.count);
+            if !entry.is_stack {
+                assert_eq!(item.count, 1, "{}", wanted.name);
+            }
+        }
+        // One slot each.
+        let mut slots: Vec<u8> = BOT_KIT.iter().map(|item| item.slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), BOT_KIT.len());
+        // The ammo is the TT-33's, a clip of it.
+        let pistol = kit.slot(7).unwrap();
+        let ammo = kit.slot(8).unwrap();
+        assert!(dictionary.compatible(pistol.dict_id, ammo.dict_id));
+        assert_eq!(ammo.count, item_params::shop_unit(ammo.dict_id));
+        assert!(kit.fits_carry_limit(), "{}", kit.weight());
+
+        // The gear opens three pockets of two; a pocket item sits in an
+        // open pocket, at most a pocket's worth of it (one of an item that
+        // fills a whole pocket).
+        let (count, size) = pockets(kit);
+        assert_eq!((count, size), (3, 2));
+        assert_eq!(pockets(starter()), (1, 1));
+        let open = &POCKET_SLOTS[..count as usize];
+        for item in kit
+            .items
+            .iter()
+            .filter(|item| POCKET_SLOTS.contains(&item.slot))
+        {
+            assert!(open.contains(&item.slot), "slot {}", item.slot);
+            let limit = if params(item.dict_id).fills_whole_pocket {
+                1
+            } else {
+                size
+            };
+            assert!(item.count >= 1 && item.count <= limit, "slot {}", item.slot);
+        }
+
+        // What each is.
+        let kind = |item: BotKitItem| params(kit.slot(item.slot).unwrap().dict_id).kind;
+        assert_eq!(kind(BOT_MEDKIT), "drugs");
+        assert_eq!(kind(BOT_RADIO), "booster");
+        assert_eq!(kind(BOT_GRENADE), "grenade");
+        let radio = kit.slot(BOT_RADIO.slot).unwrap().dict_id;
+        assert_eq!(params(radio).default_modifications, [1220]);
+        assert!((default_modifier(radio, "respawn_time_modifier") + 0.2).abs() < 1e-6);
+        // The frag grenade is the lowest one; the other is smoke.
+        let grenades: Vec<(&str, u8)> = dictionary
+            .items
+            .iter()
+            .filter(|item| params(item.dict_id).kind == "grenade")
+            .map(|item| (item.name.as_str(), params(item.dict_id).item_level))
+            .collect();
+        assert_eq!(grenades, [("rgd-5", 3), ("rdg-m", 6)]);
+
+        // The keys: quick use n is the n-th filled slot of the client's
+        // order; the medkit and the radio are the first two whether or not
+        // the grenade counts. The grenade is the first one in the pockets.
+        let filled: Vec<u8> = QUICK_USE_ORDER
+            .iter()
+            .copied()
+            .filter(|&slot| kit.slot(slot).is_some())
+            .collect();
+        for item in [BOT_MEDKIT, BOT_RADIO] {
+            let bit = item.input_bit.unwrap();
+            assert!((QUICK_USE_FIRST_BIT..QUICK_USE_FIRST_BIT + 6).contains(&bit));
+            assert_eq!(filled[usize::from(bit - QUICK_USE_FIRST_BIT)], item.slot);
+        }
+        let first_grenade = POCKET_SLOTS.iter().copied().find(|&slot| {
+            kit.slot(slot)
+                .is_some_and(|item| params(item.dict_id).kind == "grenade")
+        });
+        assert_eq!(first_grenade, Some(BOT_GRENADE.slot));
+        assert_eq!(BOT_GRENADE.input_bit, Some(GRENADE_BIT));
+        assert_eq!(BOT_PISTOL.input_bit, Some(WEAPON_1_BIT));
+
+        // The gear is the cheapest that opens the two more pockets needed:
+        // of every pair of pieces for two slots (or one piece) that sold
+        // for silver.
+        let pocket_gear: Vec<(u8, u16, u32, f32)> = dictionary
+            .items
+            .iter()
+            .filter(|item| !item.is_premium)
+            .filter_map(|item| {
+                let slot = (0..7).find(|&slot| dictionary.fits(item.dict_id, slot))?;
+                let pockets = default_modifier(item.dict_id, "pocket_slots_modifier");
+                (pockets > 0.0).then_some((slot, item.dict_id, item.base_cost, pockets))
+            })
+            .collect();
+        let mut cheapest = u32::MAX;
+        for (i, a) in pocket_gear.iter().enumerate() {
+            if a.3 >= 2.0 {
+                cheapest = cheapest.min(a.2);
+            }
+            for b in &pocket_gear[i + 1..] {
+                if a.0 != b.0 && a.3 + b.3 >= 2.0 {
+                    cheapest = cheapest.min(a.2 + b.2);
+                }
+            }
+        }
+        let cost = |item: BotKitItem| {
+            dictionary
+                .item(kit.slot(item.slot).unwrap().dict_id)
+                .unwrap()
+                .base_cost
+        };
+        assert_eq!(cost(BOT_BACK) + cost(BOT_LEGS), cheapest);
+        assert_eq!((cost(BOT_BACK), cost(BOT_LEGS)), (6650, 6830));
     }
 }

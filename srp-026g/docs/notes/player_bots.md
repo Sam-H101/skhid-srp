@@ -186,7 +186,35 @@ the archive's index: a loader must follow them.
    - `SRP_SERVER_BOTS=<n>` (lobby, default 0, testing only) puts `n` bots
      into each match made, after its players, each on the side with fewer
      places (`play::server_bot`): name `Bot-<n>`, clan tag `BOT`, the
-     starter kit (TT-33 in slot 7), session and account 0, no seat.
+     bots' kit, session and account 0, no seat.
+   - **The bots' kit** (`survarium::v026g::loadouts::BOT_KIT`: item, slot,
+     count, input bit; `bot_kit()`, `pockets()`): the starter kit (TT-33
+     in slot 7, bit 12, and a clip in slot 8), `bm_back_1` (slot 3) and
+     `bm_legs_5` (slot 4), and in the pockets two `medkit` (slot 13, quick
+     use 1, bit 14), the radio `respawn_booster` (slot 14, quick use 2,
+     bit 15; default modification 1220, `respawn_time_modifier` -0.2) and
+     two `rgd-5` (slot 15, bit 23).
+     - Pockets: drugs, boosters, traps and grenades go only in slots
+       13..18 (the dictionary's `slots_restrictions`), and the client
+       throws from the first of them holding a grenade set (0x2FE8B0,
+       `grenade_set_core` alone answers `vtable+0x64`). PROVEN. Quick use
+       `n` is the `n`-th filled slot of 13..18, 3, 0, 1, 2, 4, 5, 6
+       (0x925FD8). PROVEN; that every item there counts is LIKELY (the
+       item's `+0x24C` was not read), so the grenade is the last pocket.
+     - A player has 1 pocket of 1 unit (`default.player`); gear adds them
+       (modification 1030: a pocket, 1170: a unit more in each). The
+       lobby opens that many of 13..18 and empties the rest
+       (`PaperDollBase.handleQuickSlots`); a `fills_whole_pocket` item
+       takes one. LIKELY the client's rule (the exe's sum was not read).
+       The backpack (+1 pocket, +1 unit, level 3, 6,650 silver) and the
+       trousers (+1 pocket, level 4, 6,830) are the cheapest pair of
+       non-premium pieces that open three: 3 pockets of 2. Tested
+       (`loadouts` test `the_bots_kit_has_a_pocket_for_each_thing_it_uses`).
+     - The radio: 8 s respawn × (1 − 0.2) = LIKELY 6.4 s (index 60 is a
+       multiplied modifier, 0x2D5AE0). Whether it works carried or must
+       be used is not proven: the only item code that adds modifiers to a
+       player is the medkit class's (0x33DDC1, while active), so press its
+       key after a spawn.
    - `MatchPlayer::driven` (match server): `game/driven.rs` enters the
      place once a real client simulates (0xE9 300 ms ahead) and relays the
      stage 0 script's inputs (`v026g::drive`, moved there from `srp`) as a
@@ -197,10 +225,12 @@ the archive's index: a loader must follow them.
      a late joiner's place counts from past them; the rewards move no
      rating in a match with one and keep nothing for account 0.
    - Tests: `match-server` `tests/driven.rs`, lobby
-     `the_servers_bots_take_the_places_after_the_players`, rewards
+     `the_servers_bots_take_the_places_after_the_players` and
+     `a_server_bot_wears_the_bots_kit_and_a_client_reads_it`, rewards
      `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
    - Not yet: a bot leaving to make room for a late joiner; any choice of
-     what to do (the script is fixed).
+     what to do (the script is fixed); pressing the kit's keys (nothing
+     sends bits 14, 15 or 23 yet); a real game with the kit.
 2. **Bots that walk the map.** Built 2026-10-14, not run with a real game:
    - `SRP_MAPDATA_DIR` (match server): the folder of `mapdata-dump`'s files
      (`player_bots_mapdata.md`). With it, the server's bots

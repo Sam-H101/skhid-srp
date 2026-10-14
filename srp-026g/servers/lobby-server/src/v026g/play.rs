@@ -164,14 +164,17 @@ fn server_bot_name(n: usize) -> String {
 }
 
 /// The match server's own bot on `team`, number `n` of its match (1 on): a
-/// place with no account, its player in the starter kit (`loadouts::starter`:
-/// the TT-33 in slot 7 with its ammunition, the kit a new account wears), so
-/// never a spawn with nothing in the weapon slots (`match_profile`).
+/// place with no account, its player in the bots' kit
+/// (`loadouts::BOT_KIT`): the starter kit (the TT-33 in slot 7 with its
+/// ammunition, the kit a new account wears, so never a spawn with nothing
+/// in the weapon slots, `match_profile`), a backpack and trousers that
+/// open three pockets, and in them two medkits, the radio and two RGD-5
+/// grenades, for the quick-use keys and the grenade key.
 pub fn server_bot(n: usize, team: u8) -> MatchPlayer {
     let mut profile = MatchProfile::from_loadout(
         &server_bot_name(n),
         team,
-        survarium::v026g::loadouts::starter(),
+        survarium::v026g::loadouts::bot_kit(),
         [0.0; survarium::v026g::skills::MODIFIERS],
         survarium::v026g::dictionary::Dictionary::shared(),
         1,
@@ -1508,5 +1511,61 @@ mod tests {
         assert!(local("127.0.0.1") && local("192.168.1.20") && local("10.0.0.5"));
         assert!(local("::1") && local("::ffff:192.168.1.20"));
         assert!(!local("203.0.113.7") && !local("100.64.0.1"));
+    }
+
+    #[test]
+    fn a_server_bot_wears_the_bots_kit_and_a_client_reads_it() {
+        use survarium::v026g::dictionary::Dictionary;
+        use survarium::v026g::loadouts::{self, BOT_KIT};
+        use survarium::v026g::match_msgs::static_info::{
+            KIT_USABLE, MatchOptions, SCORE_WEIGHTS, StaticInfo, parse_payload,
+        };
+
+        let dictionary = Dictionary::shared();
+        let bot = server_bot(1, 1);
+        let profile = &bot.profile;
+        assert_eq!(profile.kits.len(), 1);
+        let kit = &profile.kits[0];
+        assert_eq!(kit.state, KIT_USABLE);
+        // Every piece of the bots' kit in its slot, the count as given;
+        // nothing else.
+        assert_eq!(
+            kit.slots.iter().filter(|slot| slot.is_some()).count(),
+            BOT_KIT.len()
+        );
+        for wanted in BOT_KIT {
+            let (index, count) = kit.slots[usize::from(wanted.slot)]
+                .unwrap_or_else(|| panic!("nothing in slot {}", wanted.slot));
+            let item = &profile.items[usize::from(index)];
+            assert_eq!(
+                dictionary.item(item.dict_id).unwrap().name,
+                wanted.name,
+                "slot {}",
+                wanted.slot
+            );
+            assert_eq!(u32::from(count), wanted.count, "{}", wanted.name);
+        }
+        // The medkits, the radio and the grenades in the open pockets.
+        let (pockets, _) = loadouts::pockets(loadouts::bot_kit());
+        for item in [
+            loadouts::BOT_MEDKIT,
+            loadouts::BOT_RADIO,
+            loadouts::BOT_GRENADE,
+        ] {
+            assert!(loadouts::POCKET_SLOTS[..pockets as usize].contains(&item.slot));
+        }
+        // The client's reader takes the profile as it is.
+        let options = MatchOptions {
+            players: vec![server_bot(1, 0).profile, profile.clone()],
+            map_id: maps::playable().next().unwrap().id,
+            match_id: 0x1234,
+            match_level: 1,
+            score_weights: SCORE_WEIGHTS,
+        };
+        let info = StaticInfo::new(&options, dictionary).expect("a client can hold it");
+        let (index, read) = parse_payload(&info.payload(1).unwrap(), dictionary).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(read.players[1].kits, profile.kits);
+        assert_eq!(read.players[1].items, profile.items);
     }
 }
