@@ -320,3 +320,20 @@ them. `notes/match.md` §28 has the evidence and the choices,
   - The change is in the server's code alone: no client patch, no
     revision, nothing for a player to install, and nothing a server in use
     does otherwise.
+
+## 0.26g, added 2026-10-14: a newcomer's score on the scoreboard
+
+- **Done 2026-10-14, in the code (patch revision 9), not in a download:
+  the others' scoreboard (Tab) counted a newcomer's score again at every
+  rollback.** Seen on the players' server (match 0x57b21c79): every one of
+  five newcomers 2.7 to 4 times its score on the scoreboard of a player of
+  the start, and one with no kill at 953. The game's statistics handler
+  works a score out again after every state it loads only for the places
+  of the roster of the start, which the late join does not raise; it adds
+  each event as it comes for any place, so a rollback over a newcomer's
+  kill added the kill once more. PROVEN in the code (`notes/client_patch.md`
+  §3.16), the game's own code run with Unicorn before and after the patch.
+  - Only the scoreboard during a match: the results screen, the rewards and
+    the quests are the server's and were right.
+  - Revision 9 keeps all twenty places in that count (six bytes). It plays
+    with 7 and 8; a server need not ask for it. Not run in a game yet.

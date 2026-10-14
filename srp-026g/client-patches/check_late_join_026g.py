@@ -6,7 +6,9 @@ The original instructions run against small fixture objects. Per-player
 statistics codecs and the animation bind method are intercepted. Both a
 synthetic binder and the native binder with weapon inventories are exercised;
 the bounded profile wrapper executes the native constructor and decoder with
-only CRT memcpy intercepted. These tests establish profile decoding, capacity,
+only CRT memcpy intercepted. The statistics handler's start_match, on_event
+and deserialize run on a made-up handler: a newcomer's scoreboard score
+through rollbacks, in the original and in the build. These tests establish profile decoding, capacity,
 calling convention and ID allocation, not a playable late join.
 """
 import argparse
@@ -980,6 +982,133 @@ def native_direct_match(data, session):
             assert m.uc.reg_read(reg) == value
 
 
+HANDLER, CORE, OPTIONS, FUNCTION = 0x4000000, 0x4010000, 0x4040000, 0x40B0000
+HANDLER_VTABLE = 0xA0755C
+
+
+def map_constants(machine, data, addresses):
+    """Map, from the file, the pages of these addresses outside .text."""
+    sections = patch.base.Headers(data).sections(data)
+    for address in addresses:
+        page = address & ~4095
+        for _, rva, size, raw, raw_size, _ in sections:
+            start = patch.base.IMAGE_BASE + rva
+            if start <= page < start + max(size, raw_size):
+                try:
+                    machine.uc.mem_map(page, 4096)
+                except Exception:  # mapped already (an executable section)
+                    break
+                at = raw + page - start
+                machine.uc.mem_write(page, bytes(data[at:at + min(4096, max(0, raw_size - (page - start)))]))
+                break
+
+
+def scoreboard(data, roster, newcomer, rollbacks):
+    """The game's own base_game_statistics_handler (patch_026g.py,
+    STATISTICS_COUNT): start_match through its vtable slot +3Ch, a newcomer
+    the way lj_native_install adds it (the roster and the shared live count
+    raised), one tick in which a starting place and the newcomer each kill,
+    told through the shared statistics' callback (0x26DEA0, slot +44h, as
+    shared_statistics does after adding the kill to the record), then
+    `rollbacks` times: the state before that tick loaded through deserialize
+    (slot +34h; the shared statistics' reader intercepted, the records put
+    back) and the tick simulated again. The hud is a function that keeps
+    what it is told, its cells first holding a score of an earlier match.
+    Returns (scores kept, the handler's count, places told at the start,
+    the hud's cells)."""
+    machine = Machine(data)
+    uc = machine.uc
+    map_constants(machine, data, (HANDLER_VTABLE, 0xA70884, 0xA2D774, 0x927A44))
+    uc.mem_map(HANDLER, 0x4000)
+    uc.mem_map(CORE, 0x1A000)
+    uc.mem_map(OPTIONS, 0x58000)
+    uc.mem_map(FUNCTION, 0x2000)
+    invoker = FUNCTION + 0x1000
+    uc.mem_write(invoker, b"\xc3")                     # cdecl (functor, place, score): ret
+    machine.write(FUNCTION + 4, invoker)              # boost::function's invoker
+    machine.write(HANDLER, HANDLER_VTABLE)
+    machine.write(HANDLER + 0x3218, FUNCTION)          # the hud's score-changed callback
+    uc.mem_write(OPTIONS + 0x577B5, bytes([roster]))
+    weights = [0.0] * 28
+    weights[0], weights[15] = 10.0, 2.5                 # kill, headshot kill
+    uc.mem_write(OPTIONS + 0x577BC, struct.pack("<28f", *weights))
+    hud, told = {place: 953 for place in range(20)}, []
+
+    def visit(uc, address, size, _):
+        if address == invoker:
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            assert machine.read(esp + 4) == HANDLER + 0x3220
+            place, score = machine.read(esp + 8) & 0xFF, machine.read(esp + 12) & 0xFFFF
+            hud[place] = score
+            told.append(place)
+        elif address == 0x2F5BE0:                       # shared_statistics::deserialize
+            assert uc.reg_read(UC_X86_REG_ESI) == HANDLER + 8
+            uc.mem_write(HANDLER + 8, saved)
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            uc.reg_write(UC_X86_REG_EIP, machine.read(esp))
+            uc.reg_write(UC_X86_REG_ESP, esp + 4)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    slot = lambda offset: machine.read(HANDLER_VTABLE + offset)
+
+    def run(address, args):
+        uc.reg_write(UC_X86_REG_ECX, HANDLER)
+        machine.start(address, args=args, count=200000)
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 4 + 4 * len(args)
+
+    run(slot(0x3C), (CORE, OPTIONS))                   # start_match
+    assert machine.read(CORE + 0x18FA8) == HANDLER
+    assert uc.mem_read(HANDLER + 0x31E8, 1)[0] == roster   # the shared live count: the roster
+    at_start = list(told)
+    # The late join (late_join_install_026g.c): the roster and the shared
+    # statistics' live count take the newcomer.
+    uc.mem_write(OPTIONS + 0x577B5, bytes([newcomer + 1]))
+    uc.mem_write(HANDLER + 8 + 0x31E0, bytes([newcomer + 1]))
+    saved = bytes(uc.mem_read(HANDLER + 8, 20 * 0x1F8))
+
+    def tick():
+        for place, event in ((0, 0), (newcomer, 0), (newcomer, 15)):
+            record = HANDLER + 8 + place * 0x1F8 + event * 6
+            count = struct.unpack("<H", uc.mem_read(record, 2))[0]
+            uc.mem_write(record, struct.pack("<H", count + 1))
+            uc.reg_write(UC_X86_REG_ECX, HANDLER)
+            machine.start(0x26DEA0, args=(place, event, 1), count=200000)
+            assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16   # on_event: ret 0Ch
+
+    tick()
+    for _ in range(rollbacks):
+        run(slot(0x34), (0x12345678, 0))               # deserialize: the state before the tick
+        tick()
+    scores = list(struct.unpack("<20H", uc.mem_read(HANDLER + 0x31F0, 40)))
+    # Past the start the hud is told of the two places that score alone.
+    assert set(told[len(at_start):]) <= {0, newcomer}, told[len(at_start):]
+    return scores, uc.mem_read(HANDLER + 0x3240, 1)[0], at_start, hud
+
+
+def statistics_scores(original, changed):
+    """A newcomer's scoreboard score in the original and in the build."""
+    for roster, newcomer in ((5, 5), (1, 1), (8, 9), (19, 19)):
+        for rollbacks in (0, 1, 3):
+            # A kill (10) and a headshot (2.5) are 13 a tick, rounded by
+            # event or once.
+            scores, count, at_start, hud = scoreboard(original, roster, newcomer, rollbacks)
+            assert count == roster and at_start == list(range(roster)), (count, at_start)
+            # The fault: a starting place's score is worked out again at the
+            # state loaded, the newcomer's tick is added once more for every
+            # rollback, and the cells of places past the roster keep an
+            # earlier match's score until they are told one.
+            assert scores[0] == 10 and scores[newcomer] == 13 * (rollbacks + 1), (roster, newcomer, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13 * (rollbacks + 1)
+            assert all(hud[place] == 953 for place in range(roster, 20) if place != newcomer)
+            scores, count, at_start, hud = scoreboard(changed, roster, newcomer, rollbacks)
+            assert count == 20 and at_start == list(range(20)), (count, at_start)
+            # The build: every place worked out again at every state loaded,
+            # and every cell told a 0 at the start.
+            assert scores[0] == 10 and scores[newcomer] == 13, (roster, newcomer, rollbacks, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13
+            assert all(hud[place] == 0 and scores[place] == 0 for place in range(1, 20) if place != newcomer)
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -995,6 +1124,7 @@ def check(original, nasm):
     native_query(changed)
     native_profile(changed)
     native_histories(changed)
+    statistics_scores(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1036,7 +1166,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; ABI; PE checksum and certificate")
 
 
 def main():

@@ -230,7 +230,12 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # 8: the game's clock is brought to the match clock at 30 % instead of 5 %
 # (CLOCK_FACTOR below). Nothing a match computes: 7 and 8 play together,
 # and the match server times its corrections by the revision a game says.
-REVISION = 8
+# 9: the statistics handler keeps the scoreboard's score of all twenty
+# places (LATE_JOIN_PATCHES, start_match). In 5 to 8 a newcomer's score was
+# added again at every rollback over its events, and its row showed a
+# score of an earlier match until its first. The score is neither saved
+# in the world nor hashed: 7, 8 and 9 play together.
+REVISION = 9
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -305,6 +310,27 @@ LATE_JOIN_STATE_NAME = b".srpd\0\0\0"
 LATE_JOIN_STATE_SIZE = 0x1000
 LATE_JOIN_STATE_CHARACTERISTICS = 0xC0000080   # uninitialized data, read, write
 
+# base_game_statistics_handler (the network client's, +1EE8D8h; vtable
+# 0xA0755C) keeps the scoreboard's score of each place, `m_scores[20]` at
+# +31F0h, which the world does not save. on_event (0x26DB80, slot +44h, on
+# every statistics event) adds the event's points to any place's score;
+# recalculate_scores (0x26DC30), which deserialize (0x26DB60, slot +34h)
+# runs after every state a game loads, works them out again from the
+# statistics, and start_match (0x26D8D0, slot +3Ch) tells the hud all of
+# them, both for as many places as the handler's count, +3240h. start_match
+# copies that count from the roster of the start (options+577B5h); the late
+# join raises the roster and the shared statistics' live count (+31E8h) but
+# not this one. So a newcomer's score was never worked out again: every
+# rollback over its events added them once more (2.7 to 4 times its score
+# in a match of ten, seen live), and its hud cell kept the score a player
+# of an earlier match had had in that place until its first. With twenty, every
+# place is worked out again at every state loaded, and start_match tells
+# the hud a 0 for every place at a match's start. Places with no player
+# have zero statistics: a score of 0, told once. The live count beside it
+# stays the roster's. `mov al,[edx+577B5h]` -> `mov al,14h`.
+STATISTICS_START_MATCH_VA = 0x26D8D0
+STATISTICS_COUNT = (0x26D8F3, bytes.fromhex("8a82b5770500"), b"\xb0\x14" + b"\x90" * 4)
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -318,6 +344,9 @@ LATE_JOIN_PATCHES = (
     # kd_stats_rule: all twenty entries of its array, which the constructor
     # zeroes. `mov dl,[ecx+577B5h]` -> `mov dl,14h`.
     (0x3237B4, bytes.fromhex("8a91b5770500"), b"\xb2\x14" + b"\x90" * 4),
+    # base_game_statistics_handler::start_match: all twenty scores
+    # (STATISTICS_COUNT above).
+    STATISTICS_COUNT,
     # shared_statistics::serialize and deserialize: twenty records, not the
     # live count (which rewards and event handlers go on reading).
     # `cmp [esi+31E0h],bl` / `cmp bl,[esi+31E0h]` -> `cmp bl,14h`.

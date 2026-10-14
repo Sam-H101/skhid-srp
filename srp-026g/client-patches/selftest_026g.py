@@ -57,6 +57,16 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     field of the game clock's timer that set_offset multiplies the
     correction's sign by, and the console variable registered for it has
     that name. The build without the late join keeps the original's 0.05.
+17. the same build: the statistics handler's start_match (0x26D8D0)
+    keeps 20 as its count, `mov al,0x14` and four nops where the original
+    and the build without the late join copy the roster; in the original
+    that count goes into +3240h alone, start_match tells the hud the score
+    of each counted place, the roster still goes into the shared
+    statistics' live count (+31E8h) apart, deserialize runs
+    recalculate_scores over the counted places, the vtable's slots are
+    those functions, +3240h is in .text only in those loops and in stores
+    of a zeroed register, and no branch or address aims inside the six
+    bytes.
 """
 
 import ctypes
@@ -782,7 +792,7 @@ def test_no_branch_into_hooks(original):
 
 # What the late join's rewritten sites are meant to disassemble to.
 LATE_JOIN_TEXT = {
-    0x279610: "mov eax,0x3", 0x27A2E0: "mov eax,0x3", 0x3237B4: "mov dl,0x14",
+    0x279610: "mov eax,0x3", 0x27A2E0: "mov eax,0x3", 0x3237B4: "mov dl,0x14", 0x26D8F3: "mov al,0x14",
     0x2F5ACF: "cmp bl,0x14", 0x2F5AF4: "cmp bl,0x14", 0x2F5BE6: "cmp bl,0x14", 0x2F5C03: "cmp bl,0x14",
 }
 
@@ -871,6 +881,74 @@ def test_clock_factor(original, image, before):
     under = lambda relocations: [at for kind, at in relocations.values() if kind == 3 and at + 4 > va and at < va + 4]
     check(not under(source.relocations()) and not under(image.relocations()),
           "no base relocation is under the four bytes, in the original or in the build")
+
+
+def test_statistics_count(original, image, before):
+    """Check 17: the statistics handler keeps the score of all twenty places."""
+    source = Image(original)
+    va, old, new = P.STATISTICS_COUNT
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new,
+          f"{va:#x}: start_match's count is `mov al,0x14` + 4 nop; the original and the build without the late join "
+          "copy the roster's")
+    start = P.STATISTICS_START_MATCH_VA
+    texts = lambda blob, at: [text for _, _, text in ndisasm(blob.read(at, 0xE5), at)]
+    was, now = texts(source, start), texts(image, start)
+    wanted = ["mov [esi+0x3238],ecx", "mov [ecx+0x18fa8],esi", "mov [esi+0x323c],edx", "mov al,[edx+0x577b5]",
+              "push edi", "mov [esi+0x3240],al", "mov eax,[esi+0x3218]"]
+    patched = wanted[:3] + ["mov al,0x14"] + ["nop"] * 4 + wanted[4:]
+    at = was.index(wanted[0]) if wanted[0] in was else -1
+    loop = ["cmp bl,[esi+0x3240]", "movzx edx,word [esi+ecx*2+0x31f0]", "call 0x4d370"]
+    live = ["mov al,[edx+0x577b5]", "mov [esi+0x31e8],al"]
+    pairs = lambda rows: [i for i in range(len(rows) - 1) if rows[i:i + 2] == live]
+    check(at >= 0 and was[at:at + len(wanted)] == wanted and all(text in was for text in loop)
+          and len(pairs(was)) == 1 and len(pairs(now)) == 1 and pairs(was)[0] + 4 == pairs(now)[0]
+          and now[at:at + len(patched)] == patched and was[at + len(wanted):] == now[at + len(patched):],
+          f"start_match ({start:#x}) puts the loaded count in +3240h alone, tells the hud the score of every counted "
+          "place (+31F0h, through 0x4D370), and copies the roster into the shared statistics' live count (+31E8h) "
+          "apart; the build keeps that copy")
+    deserialize = texts(source, 0x26DB60)[:7]
+    recalculate = [text for _, _, text in ndisasm(source.read(0x26DC30, 0x190), 0x26DC30)]
+    slots = [struct.unpack("<I", image.read(0xA0755C + slot, 4))[0] for slot in (0x34, 0x3C, 0x44)]
+    check(deserialize[5:7] == ["call 0x2f5be0", "call 0x26dc30"] and "cmp al,[edi+0x3240]" in recalculate
+          and "mov [edi+eax*2+0x31f0],bx" in recalculate and slots == [0x26DB60, start, 0x26DB80],
+          "the handler's deserialize (slot +34h) reads the shared statistics and runs recalculate_scores (0x26DC30), "
+          "which works out every counted place's score into +31F0h; slot +3Ch is start_match, +44h on_event")
+    # Every instruction of .text with +3240h on a [register+disp32] operand.
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    sites, at = [], 0
+    while (at := text.find(b"\x40\x32\x00\x00", at)) >= 0:
+        if at >= 2 and text[at - 1] & 0xC0 == 0x80 and text[at - 1] & 7 != 4:
+            sites.append(P.TEXT_VA + at - 2)
+        at += 1
+    first = lambda address: ndisasm(source.read(address, 8), address)[0][2]
+    zeroing = {0x26D78E: (0x26D76A, "xor ebx,ebx"), 0x26D8C4: (0x26D89B, "xor edx,edx"),
+               0x26D9E0: (0x26D9DE, "xor eax,eax"), 0x278CD0: (0x278CCE, "xor eax,eax")}
+    readers = {0x26D91D: "cmp bl,[esi+0x3240]", 0x26DC54: "cmp al,[edi+0x3240]", 0x26D8FA: "mov [esi+0x3240],al"}
+    check(sorted(sites) == sorted([*zeroing, *readers])
+          and all(first(site) == text_ for site, text_ in readers.items())
+          and all(first(site).startswith("mov [esi+0x3240],") and first(zero) == text_
+                  for site, (zero, text_) in zeroing.items()),
+          f"+3240h is in .text {len(sites)} times: start_match's store and loop, recalculate_scores' loop, and four "
+          "stores of a register zeroed before them (the constructor, clear, and the two finish_match); on_event "
+          "(0x26DB80, any place) has none")
+    inside = lambda target: va < target < va + len(old)
+    found = []
+    for at in range(len(text) - 6):
+        op, here = text[at], P.TEXT_VA + at
+        if op in (0xE8, 0xE9) and inside(here + 5 + struct.unpack_from("<i", text, at + 1)[0]):
+            found.append(here)
+        elif op == 0x0F and 0x80 <= text[at + 1] <= 0x8F and inside(here + 6 + struct.unpack_from("<i", text, at + 2)[0]):
+            found.append(here)
+        elif (op == 0xEB or 0x70 <= op <= 0x7F or 0xE0 <= op <= 0xE3) and va - 0x82 <= here < va + len(old) \
+                and inside(here + 2 + struct.unpack_from("<b", text, at + 1)[0]):
+            found.append(here)
+    found += [va + 1 + i for i in range(len(old) - 1) if original.find(struct.pack("<I", va + 1 + i)) != -1]
+    # clear (0x26D880) and start_match, as the game runs them.
+    rows = ndisasm(source.read(0x26D880, start + 0xE5 - 0x26D880), 0x26D880)
+    check(not found and not any(inside(branch_target(text) or 0) for _, _, text in rows),
+          "no rel32 branch of .text, no rel8 branch byte near them, no branch of clear or start_match and no 4-byte "
+          "value aims inside the six bytes" + "".join(f"\n          {a:#x}" for a in found))
 
 
 def test_late_join(original, without, server, source):
@@ -1005,6 +1083,7 @@ def test_late_join(original, without, server, source):
           f"({P.REMOVE_MODEL_VA + 2:#x}), which is disabled; the rest of the table is the build's without it")
 
     test_clock_factor(original, image, before)
+    test_statistics_count(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

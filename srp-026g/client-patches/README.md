@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `9673dc5a9053b0901dbcb426cb05b665c2e204d812ed94a05cd148ed45094756` (patch revision 8); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `5701a96dd56920300d9a493c8160823f4c2dcf20b441c68d460cca2a56386aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 to 8 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC; 8 is not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `9b1fae817f4fab0c3161cb00d895bec6b5404c59534cb36254bb0c53ab0a9572` (patch revision 9); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `0b1a162611c399cc8892c77f3855da44ab7ca6b590ea0d7b38651c59383e6bda`. Revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 to 9 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16: a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first; it plays with 7 and 8 (the score is not in the world), and a server need not ask for it. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 is not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -738,6 +738,48 @@ after 8 s and after 1.3 s, in one correction, never a ms too far. **Not
 run: a game.** Not known: how a game looks and sounds while its clock
 runs at 130 % or at 70 % for a second or two; whether anything limits how
 many ticks one frame may play (the load after a sync plays seven at once).
+
+### 16. A newcomer's score on the scoreboard (patch revision 9)
+
+The score in a player's row of the scoreboard (Tab) is the game's own
+count, not the server's: the statistics handler adds each event's points
+to the place's score as it happens (`on_event`, 0x26DB80), and works every
+score out again from the statistics whenever the game loads a kept state
+(`recalculate_scores` 0x26DC30, from `deserialize` 0x26DB60), which it does
+whenever an input for a past tick comes. But it works out only as many
+places as the roster had when the match began: `start_match` (0x26D8D0)
+copies that count, and the late join raises the roster, not this copy.
+
+**Why it matters.** Seen on the players' server on 2026-10-14: on the
+scoreboard of a player who was there from the start, every newcomer had 2.7
+to 4 times its score (1088 for 327, 467 for 116), because every rollback
+over one of its kills added the kill once more; a newcomer with no kill had
+953, a score of an earlier match left in its row. The results screen, the
+rewards and the quests are the server's and were right; the starting
+players' scores, and every kill and death, were right too.
+
+**The patch.** The count `start_match` keeps becomes 20: `mov al,[edx+577B5h]`
+at 0x26D8F3 becomes `mov al,14h` and four nops. Every place's score is then
+worked out again at every state loaded, and at a match's start every row
+is told a 0. Places with no player have zero statistics, so a 0 that is
+never told again. The shared statistics' own count, which rewards and
+events read, stays the roster's. Only in the builds with the late join
+(revision 9).
+
+**Revisions.** The score is neither in the world nor in its hash: games of
+9, 8 and 7 play one match, and a server need not ask for 9.
+
+Checked: `selftest_026g.py`, 718 checks (check 17: the six bytes; how
+`start_match` uses the count, and the shared count's copy beside it; the
+handler's `deserialize` and `recalculate_scores`; its vtable; every reader
+of the count in the code; no branch or address into the six bytes).
+`check_late_join_026g.py` runs the game's own `start_match`, `on_event` and
+`deserialize` on a made-up handler: a newcomer that scores 13 in a tick has
+13, 26 and 52 after 0, 1 and 3 rollbacks in the original and 13 each time
+in the build, and every row starts at 0 in the build only. Against the
+revision 8 exe of the same server the build differs in the revision byte,
+the six bytes and the PE checksum (compared byte by byte). **Not run: a
+game.**
 
 ## Not ported, not done
 
