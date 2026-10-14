@@ -60,6 +60,9 @@
 //!   player, a level of its account and a point of its balance rating
 //!   count for when the sides are made, in gear levels, and the matches
 //!   after which the rating counts for half (`session::v026g::balance`);
+//! - `SRP_BALANCE_RATED_PLAYERS` (default 4): the fewest players a match
+//!   must have had in it to move the balance rating (read where a match
+//!   is settled: `session::v026g::balance::rated_players`);
 //! - `SRP_BALANCE_BATTERY_LEAD` (default 0.55), `SRP_BALANCE_TICKET_LEAD`
 //!   (0.2), `SRP_BALANCE_DRAMATIC_LEAD` (2.5): in a match being played,
 //!   what a battery and a ticket of lead count for, in players, and the
@@ -389,6 +392,11 @@ impl Settings {
             balance.player_level,
             balance.rating,
             balance.trust_matches
+        );
+        log::info!(
+            "The balance rating: a match moves it when {} players or more were in it for half \
+             of it",
+            session::v026g::balance::rated_players()
         );
         log::info!(
             "A match being played: a battery of lead counts for {} of a player, a ticket for \

@@ -119,6 +119,8 @@ Every setting has a default; none is needed on a dev PC.
 - `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
   `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a player
   counts for when the sides of a match are made (`matchmaking.md` §8).
+  `SRP_BALANCE_RATED_PLAYERS` (4): the fewest players a match must have
+  had in it to move the balance rating (§8.3).
   `SRP_BALANCE_BATTERY_LEAD` (0.55), `SRP_BALANCE_TICKET_LEAD` (0.2),
   `SRP_BALANCE_DRAMATIC_LEAD` (2.5), `SRP_LATE_JOIN_PATIENCE_SECONDS` (60),
   `SRP_GROWING_MIN_PLAYERS` (2), `SRP_GROWING_GATHER_SECONDS` (120): the

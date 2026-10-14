@@ -19,6 +19,9 @@
 //!   ([`PLAYER`]), so winning with it moves little.
 //! - **It is trusted by its matches** ([`Weights::trust`]): a rating of no
 //!   match counts for nothing, of [`Weights::trust_matches`] for half.
+//! - **A match of few players moves none** ([`RATED_PLAYERS`],
+//!   [`players_in`]): one against one and two against one say nothing of
+//!   how sides should be made.
 //! - **A match that is being played** counts a third thing for the side
 //!   that leads: its lead ([`Weights::lead`]), a battery or a ticket being
 //!   a part of a player. A player who joins such a match goes where the
@@ -53,6 +56,52 @@ pub const STEP: f64 = 0.8;
 /// matches))`. Its first match moves it four times as far as its
 /// hundredth.
 pub const NEW_PLAYER: f64 = 3.0;
+
+/// The fewest players a match must have had in it to move the balance
+/// rating ([`players_in`]): one against one and two against one move none.
+/// The owner's choice (2026-10-14), for three reasons. Two players can be
+/// split one way only, so such a match says nothing of how sides should be
+/// made. It is the easiest to play by agreement. And the shared step moves
+/// each of its ratings the furthest: a duel seven times as far as a match
+/// of fourteen (live, 2026-10-14: 0.75 and 0.81 of a point in one match,
+/// against 0.09 in a match of seven).
+pub const RATED_PLAYERS: u32 = 4;
+
+/// The part of a match a player must have been in to be one of its
+/// players for [`RATED_PLAYERS`]: half of the longest stay. So a match
+/// that began one against one and grew is as large as it was for most of
+/// its time.
+pub const RATED_SHARE: f64 = 0.5;
+
+/// `SRP_BALANCE_RATED_PLAYERS`: [`RATED_PLAYERS`] for this server, 1 to 20
+/// (default 4). 1: every match moves the ratings, as before 2026-10-14.
+/// Read once.
+pub fn rated_players() -> u32 {
+    static LEAST: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *LEAST.get_or_init(|| match std::env::var("SRP_BALANCE_RATED_PLAYERS") {
+        Ok(value) => match value.trim().parse::<u32>() {
+            Ok(least) if (1..=20).contains(&least) => least,
+            _ => {
+                log::error!(
+                    "SRP_BALANCE_RATED_PLAYERS is `{value}`; it must be 1 to 20. Using {RATED_PLAYERS}"
+                );
+                RATED_PLAYERS
+            }
+        },
+        Err(_) => RATED_PLAYERS,
+    })
+}
+
+/// How many players a match had, for [`RATED_PLAYERS`]: those of
+/// `players` (team, rating, share of the match as in [`changes_by_share`])
+/// who were in it for [`RATED_SHARE`] of it or more. A player of no team
+/// is not counted.
+pub fn players_in(players: &[(u8, Balance, f64)]) -> u32 {
+    players
+        .iter()
+        .filter(|player| player.0 < 2 && player.2.is_finite() && player.2 >= RATED_SHARE)
+        .count() as u32
+}
 
 /// An account's balance rating: thousandths of a point ([`UNIT`]), 0 the
 /// average, and the matches that moved it.
@@ -339,6 +388,31 @@ mod tests {
         // A player who was not in it is not moved and is nobody's side.
         let absent = [(0, new(), 1.0), (1, new(), 0.0)];
         assert_eq!(changes_by_share(&absent, 0), [0, 0]);
+    }
+
+    #[test]
+    fn a_match_is_as_large_as_the_players_who_were_in_it_for_half_of_it() {
+        let player = |team, share| (team, rated(0, 20), share);
+        // One against one, and a third player for the last third of it.
+        let duel = [player(0, 1.0), player(1, 1.0), player(0, 0.3)];
+        assert_eq!(players_in(&duel), 2);
+        // It began one against one and two more came early: four.
+        let grown = [
+            player(0, 1.0),
+            player(1, 1.0),
+            player(0, 0.8),
+            player(1, 0.5),
+        ];
+        assert_eq!(players_in(&grown), 4);
+        // Nobody's team, or no share to speak of: not a player of it.
+        let odd = [
+            player(0, 1.0),
+            player(2, 1.0),
+            player(1, f64::NAN),
+            player(1, 0.0),
+        ];
+        assert_eq!(players_in(&odd), 1);
+        assert_eq!(players_in(&[]), 0);
     }
 
     #[test]

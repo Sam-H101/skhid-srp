@@ -11,7 +11,9 @@ const MATCH: u32 = 0x77;
 
 /// The original's pay: the rates of a match's experience, silver and
 /// reputation at 1, 100 % and 100 %, with the game's wear and the play time
-/// bonus to the drop chance (both off in srp's own terms).
+/// bonus to the drop chance (both off in srp's own terms). Every match
+/// moves the balance rating, whatever its size (srp's own terms: from four
+/// players).
 fn terms() -> Terms {
     Terms {
         now: NOW,
@@ -21,6 +23,7 @@ fn terms() -> Terms {
         score_weights: SCORE_WEIGHTS,
         wear: true,
         playtime_bonus: true,
+        rated_players: 1,
     }
 }
 
@@ -2707,6 +2710,66 @@ fn the_balance_rating_is_not_moved_by_a_match_that_says_nothing() {
             matches: 1
         }
     );
+}
+
+#[test]
+fn a_match_of_few_players_moves_no_balance_rating() {
+    use crate::v026g::balance::{self, Balance};
+
+    // srp's own terms: a match moves the rating from four players.
+    assert_eq!(Terms::at(NOW).rated_players, balance::RATED_PLAYERS);
+    let own = Terms {
+        rated_players: balance::RATED_PLAYERS,
+        ..terms()
+    };
+    let settle = |players: Vec<PlayerResult>| {
+        let store = accounts(&players);
+        Results::new()
+            .settle(&result(players), &store, &own, &mut Rng::new(1))
+            .unwrap();
+        store
+    };
+    let untouched = |store: &GameAccounts, ids: std::ops::Range<u32>| {
+        ids.clone()
+            .all(|id| account(store, id).balance == Balance::default())
+    };
+
+    // One against one: no rating moves, and it is nobody's match more.
+    let duel = settle(alice_and_bob());
+    assert!(untouched(&duel, 10..12));
+    // The ranking's rating and the pay are as in any match.
+    assert_ne!(account(&duel, 10).rating, pay::START_RATING);
+    assert!(account(&duel, 10).exp_total > 0);
+
+    // Two against one.
+    let mut three = three_and_two();
+    three.truncate(3);
+    assert!(untouched(&settle(three), 10..13));
+
+    // Three against two, but two of them came for the last tenth of it:
+    // three players for most of it.
+    let mut late = three_and_two();
+    late[3].time_in_match_ms /= 10;
+    late[4].time_in_match_ms /= 10;
+    assert!(untouched(&settle(late), 10..15));
+
+    // One of the five came late: four were in it, so it counts, and the
+    // one who came late is moved too, by its share.
+    let mut grown = three_and_two();
+    grown[4].time_in_match_ms /= 10;
+    let grown = settle(grown);
+    let alice = account(&grown, 10).balance;
+    let erin = account(&grown, 14).balance;
+    assert!(alice.rating > 0 && alice.matches == 1, "{alice:?}");
+    assert!(
+        erin.rating > 0 && erin.rating < alice.rating && erin.matches == 1,
+        "{erin:?}"
+    );
+
+    // Two against two from the start.
+    let mut four = three_and_two();
+    four.truncate(4);
+    assert_eq!(account(&settle(four), 10).balance.matches, 1);
 }
 
 #[test]

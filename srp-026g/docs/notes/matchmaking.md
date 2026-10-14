@@ -301,8 +301,36 @@ and it was lost: live, 2026-10-13).
 Who is counted: the players who were in the match (the ranking's: one who
 left has its team's result and nothing more; one whose game never got in is
 not counted and not moved). No change: a match with a test bot, with no
-trusted result, with one side, or left by a whole side (its winner is who
-stayed).
+trusted result, with one side, left by a whole side (its winner is who
+stayed), or of few players (below).
+
+**A match of few players moves none (2026-10-14, the owner's choice).** A
+match has as many players as were in it for half of the longest stay or
+more (`balance::players_in`), so one that began one against one and grew is
+as large as it was for most of its time. With fewer than
+`SRP_BALANCE_RATED_PLAYERS` (4: one against one, two against one) nobody's
+rating moves, and it is nobody's match more: the trust does not grow. The
+log says so: `Match 0x… moves no balance rating: N players were in it for
+half of it or more, and it takes 4`. The ranking's rating, the pay and the
+quests are as in any match. 1: every match moves the ratings, as before.
+
+Why:
+
+- Two players can be split one way only, so the match says nothing of how
+  sides should be made.
+- So small a match is the easiest to play by agreement (for the quests),
+  and its winner then says nothing at all. The log cannot tell such a match
+  from another; the rule goes by size alone.
+- The shared step moves each rating the furthest there: a duel seven times
+  as far as a match of fourteen. Live, on the first night of the late-join
+  queue, whose matches start one against one (§9.1): all 8 matches made
+  began so, and one match moved single ratings by 0.75, 0.75 and 0.81 of a
+  point, against 0.09 in the first match of seven.
+
+Four keeps two against two: a choice, not a measured number. The refit
+script leaves small matches out by a count of its own (`--min-players`:
+the players in for at least half of the per-minute lines), which is not
+always this one.
 
 Variants tried on the same matches (a step for each player or shared, new
 players faster or not, draws counted or not, steps 0.2 to 3.2): all within
@@ -438,7 +466,8 @@ A side that got a player late and won is not taken for a side that won
 alone, a player who came into a lost match does not carry the loss, and a
 side whose player left early is the short side it was. A match that nobody
 joined or left is rated as before. The rating does not know the lead a
-player joined at.
+player joined at. The same shares say how many players the match had, and
+with fewer than four it moves no rating (§8.3).
 
 ### 9.5 The log
 
