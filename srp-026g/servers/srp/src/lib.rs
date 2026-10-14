@@ -2,4 +2,5 @@
 //! start the same servers in-process (`tests/v026g_end_to_end.rs`).
 
 pub mod bot;
+pub mod drive;
 pub mod v026g;

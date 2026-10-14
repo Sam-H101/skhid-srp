@@ -1308,6 +1308,11 @@ struct BotRun {
 
 impl BotRun {
     fn start(stack: &Stack, name: &str, once: bool) -> Self {
+        Self::start_with(stack, name, once, false)
+    }
+
+    /// With `drive`: the bot sends the inputs of its script (`srp::drive`).
+    fn start_with(stack: &Stack, name: &str, once: bool, drive: bool) -> Self {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let config = srp::bot::Config {
@@ -1316,6 +1321,7 @@ impl BotRun {
             password: "the-bots-password".to_owned(),
             once,
             kit: None,
+            drive,
         };
         let print: srp::bot::Print = {
             let lines = lines.clone();
@@ -1558,6 +1564,58 @@ fn one_player_and_the_test_bot_play_a_match_to_the_results() {
     until(&mut [&mut solo], SOON, "the match closed", |_| {
         !stack.registry.is_open(match_id) && stack.store.match_count() == 0
     });
+    drop(bot);
+    stack.stop();
+}
+
+#[test]
+fn a_driving_bot_s_inputs_reach_the_player_s_game_in_time() {
+    use srp::drive::key;
+    let dir = temp_dir("bot-drive");
+    let stack = start_with_bots(&dir, Duration::from_secs(1), &["bot-1"]);
+    let bot = BotRun::start_with(&stack, "bot-1", true, true);
+    let (mut solo, _match_id, places, _teams) = solo_and_bot_into_a_match(&stack, &bot);
+    let bot_place = places[1];
+    assert!(bot.said("drives: the script starts").is_some());
+
+    // 2 s after its entry it walks forward; 3 s later it turns a quarter
+    // and lets go; 1 s later it walks again.
+    until(
+        &mut [&mut solo],
+        Duration::from_secs(15),
+        "the bot's turn",
+        |games| {
+            games[0]
+                .of_match()
+                .relays_of(bot_place)
+                .iter()
+                .any(|input| input.rotation != [0; 4])
+        },
+    );
+    run_for(&mut [&mut solo], Duration::from_millis(1_300));
+    let relays = solo.of_match().relays_of(bot_place);
+    let actions: Vec<u32> = relays.iter().map(|input| input.actions).collect();
+    assert_eq!(actions[..3], [key::FORWARD, 0, key::FORWARD], "{relays:?}");
+    // The turn: +pi/2 as a half float, yaw first, with the keys let go.
+    assert_eq!(relays[1].rotation, [0x48, 0x3E, 0x00, 0x00]);
+    assert_eq!(relays[0].rotation, [0; 4]);
+    // 3 s apart, on the 50 ms grid of ticks.
+    let ticks = |input: &survarium::v026g::match_msgs::PlayerInput| input.time.tick;
+    assert_eq!(ticks(&relays[1]).wrapping_sub(ticks(&relays[0])), 60);
+    assert!(relays.iter().all(|input| input.time.ms.is_none()));
+
+    // Nothing of it was dropped or moved, and the player's game took
+    // every relay as a client would (in time, in order).
+    let lines = bot.lines();
+    assert!(
+        lines.iter().any(|line| line.contains("input for")),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("WARNING")),
+        "{lines:#?}"
+    );
+    solo.assert_clean();
     drop(bot);
     stack.stop();
 }

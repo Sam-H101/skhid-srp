@@ -21,7 +21,9 @@
 //!    acks everything, answers the pings, sends a keep-alive a second, and
 //!    stays until it is told the match is over (0xEA with its own place)
 //!    or the link is closed. It sends **no inputs**: its player stands
-//!    where the real client's own respawn rule puts it;
+//!    where the real client's own respawn rule puts it; with `drive` it
+//!    runs a fixed script of inputs instead (`srp::drive`): it walks,
+//!    turns, fires;
 //! 6. back in the lobby (`31 <order> FF`) takes the results screen, and
 //!    presses Play again (or stops, with `once`).
 //!
@@ -44,6 +46,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::drive::{self, Drive};
 use lobby_server::v026g::scripted::{CLIENT_IDLE, TestClient, request};
 use match_server::v026g::scripted::Client as MatchClient;
 use survarium::v026g::lobby::ClientState;
@@ -97,6 +100,8 @@ pub struct Config {
     pub once: bool,
     /// The kit to press Play with; `None` for the one the account plays.
     pub kit: Option<u32>,
+    /// In a match, send the inputs of the stage 0 script (`srp::drive`).
+    pub drive: bool,
 }
 
 /// SHA-1 as the client prints it: 40 lower-case hex characters.
@@ -226,6 +231,11 @@ struct MatchLink {
     faults_told: usize,
     relays: u64,
     status_at: Instant,
+    /// The input script, with `drive`.
+    drive: Option<Drive>,
+    /// Its inputs the server dropped (0xF1) or moved (0xEF).
+    dropped: u32,
+    moved: u32,
 }
 
 /// Where the bot is.
@@ -614,6 +624,7 @@ impl Bot {
                     }
                     let lobby_ip = self.lobby.as_ref().map(|lobby| lobby.addr.ip());
                     let ip = host.parse::<IpAddr>().ok().or(lobby_ip);
+                    let drive = self.config.drive;
                     let link = ip.zip(socket().ok()).map(|(ip, socket)| {
                         let mut client = MatchClient::idle(session);
                         client.connect();
@@ -629,6 +640,9 @@ impl Bot {
                             faults_told: 0,
                             relays: 0,
                             status_at: now + STATUS_EVERY,
+                            drive: drive.then(|| Drive::new(drive::stage_0())),
+                            dropped: 0,
+                            moved: 0,
                         }
                     });
                     match link {
@@ -720,6 +734,24 @@ impl Bot {
                 ServerMessage::InputRelay { .. } | ServerMessage::ProfileInputRelay { .. } => {
                     link.relays += 1;
                 }
+                ServerMessage::DiscardInput { time } if link.drive.is_some() => {
+                    link.dropped += 1;
+                    say(&format!(
+                        "WARNING: the server dropped its input of tick {} (0xF1); its clock at {} ms",
+                        time.tick,
+                        client.clock()
+                    ));
+                }
+                ServerMessage::MoveInput { from, to } if link.drive.is_some() => {
+                    link.moved += 1;
+                    say(&format!(
+                        "WARNING: the server moved its input of tick {} to tick {} (0xEF); its \
+                         clock at {} ms",
+                        from.tick,
+                        to.tick,
+                        client.clock()
+                    ));
+                }
                 ServerMessage::Snapshot {
                     generation,
                     time,
@@ -737,6 +769,13 @@ impl Bot {
         for place in entered {
             if Some(place) == own {
                 say("is in the match (0xE9 for its own place): the others see its player");
+                if let Some(drive) = link.drive.as_mut().filter(|drive| !drive.started()) {
+                    drive.entered(client.clock());
+                    say(&format!(
+                        "drives: the script starts 2 s after its entry at {} ms",
+                        client.clock()
+                    ));
+                }
             } else {
                 say(&format!("{} entered the match", player(place)));
             }
@@ -769,17 +808,53 @@ impl Bot {
             link.synced = true;
             say(&format!(
                 "has the time (0xE5, answered) and the world: its clock is at {} ms. It stays, \
-                 sends no inputs, no hashes and no world, to the match's end",
-                client.clock()
+                 sends {}no hashes and no world, to the match's end",
+                client.clock(),
+                if link.drive.is_some() {
+                    "its script's inputs, "
+                } else {
+                    "no inputs, "
+                }
             ));
+        }
+        if link.synced
+            && let Some(drive) = link.drive.as_mut()
+        {
+            let clock = client.clock();
+            for sent in drive.due(clock) {
+                client.send_input(sent.input);
+                say(&format!(
+                    "input for {} ms (tick {}, clock {clock} ms): keys {:#x}{}{}",
+                    sent.time,
+                    sent.input.time.tick,
+                    sent.input.actions,
+                    if sent.turn == (0.0, 0.0) {
+                        String::new()
+                    } else {
+                        format!(
+                            ", turn yaw {:+.7} pitch {:+.7} (halves {:02x?}), yaw sum {:+.7}",
+                            sent.turn.0, sent.turn.1, sent.input.rotation, sent.yaw_sum
+                        )
+                    },
+                    sent.what.map_or(String::new(), |what| format!(": {what}"))
+                ));
+            }
         }
         if link.synced && now >= link.status_at {
             link.status_at = now + STATUS_EVERY;
             say(&format!(
-                "still in match {:#x}: its clock at {} s, {} inputs of the others taken",
+                "still in match {:#x}: its clock at {} s, {} inputs of the others taken{}",
                 link.match_id,
                 client.clock() / 1000,
-                link.relays
+                link.relays,
+                if link.drive.is_some() {
+                    format!(
+                        "; of its own {} dropped, {} moved",
+                        link.dropped, link.moved
+                    )
+                } else {
+                    String::new()
+                }
             ));
         }
         let over = if client.told_to_leave {
