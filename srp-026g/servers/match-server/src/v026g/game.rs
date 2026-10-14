@@ -1713,12 +1713,10 @@ impl Game {
                 } => peer.resync_from.is_some(),
                 _ => false,
             };
-            // A game that enters and has its world on the way gets it as
-            // its sync's inputs, kept: it must have it before its load.
-            if matches!(peer.stage, Stage::Syncing { entering: true, .. }) {
-                send_waiting(peer, &message);
-                continue;
-            }
+            // A game that enters gets it after its load (`finish_sync`):
+            // the client's 0xEA handler reads the match's view, which a
+            // game has only once its world is loaded (0x27C776, [esi+4]),
+            // and crashed on a leave that came before (live, 2026-10-14).
             if to_resyncing {
                 if let Some(serial) = send_kept(peer, &message) {
                     track(peer, serial, Flight::Roster(message.clone()), at);
@@ -2489,20 +2487,6 @@ impl Game {
                 .map(|(_, from, what)| relay(*from, what))
                 .collect()
         };
-        // A game that enters has the others' roster changes since the
-        // snapshot ahead of its world as well, as the inputs: after its
-        // load it refuses one more than 500 ms past its tick as too old
-        // (live, 2026-10-14: a late joiner got a leave 906 ms after its
-        // tick and was wrong from that tick on). Its own entry goes as
-        // before (`finish_sync`).
-        let entering_events: Vec<(u32, ServerMessage)> = if entering {
-            self.roster_since(index, snapshot.time)
-                .into_iter()
-                .filter(|(_, message)| roster_player(message) != Some(index))
-                .collect()
-        } else {
-            Vec::new()
-        };
         let start = self.sync_start(index, snapshot.time, entering, clock, now);
         let id = self.id;
         // Only a game's first world: one that is in play takes a world as
@@ -2580,9 +2564,6 @@ impl Game {
             } else {
                 send_kept(peer, message);
             }
-        }
-        for (_, message) in &entering_events {
-            send_waiting(peer, message);
         }
         let payload = world.payload();
         // A world a game that plays waits for: its parts lost go again
@@ -2692,16 +2673,11 @@ impl Game {
             .as_ref()
             .and_then(|peer| peer.entered_early);
         let resync_from = self.peers[index].as_ref().and_then(|peer| peer.resync_from);
-        // A game that enters had the others' roster changes with its world
-        // and as they came (`send_sync`, `roster_change`): its own entry is
-        // left, if it entered early.
+        // A game that enters gets the roster changes since its world now,
+        // after its load: before it, the client's 0xEA handler crashes
+        // (`roster_change`).
         let events = if resync_from.is_some() {
             Vec::new()
-        } else if entering {
-            self.roster_since(index, time)
-                .into_iter()
-                .filter(|(_, message)| roster_player(message) == Some(index))
-                .collect()
         } else {
             self.roster_since(index, time)
         };
@@ -5032,16 +5008,6 @@ fn resyncing(stage: Stage) -> bool {
             ..
         }
     )
-}
-
-/// The player a roster change (0xE9, 0xEA) is of.
-fn roster_player(message: &ServerMessage) -> Option<usize> {
-    match message {
-        ServerMessage::PlayerEntered { player, .. } | ServerMessage::PlayerLeft { player, .. } => {
-            Some(usize::from(*player))
-        }
-        _ => None,
-    }
 }
 
 /// How soon a message kept for the client goes again when not acked: its

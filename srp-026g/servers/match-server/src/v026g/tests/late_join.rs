@@ -1084,7 +1084,7 @@ fn reserve_with_one_game_still_installing(bench: &mut Bench) -> (usize, Prepare)
 }
 
 #[test]
-fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_before_the_world() {
+fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_after_the_world() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use udp_transport::wire;
     use udp_transport::{Direction, Table};
@@ -1106,8 +1106,8 @@ fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_before_the_w
     assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
     bench.clients[place].ready();
     assert!(bench.until(8_000, |b| b.stages().ends_with('s')));
-    // A player leaves meanwhile (live, 2026-10-14: that 0xEA came after the
-    // newcomer's load, 906 ms past its tick, and was refused as too old).
+    // A player leaves meanwhile. The newcomer gets it after its world: the
+    // client's 0xEA handler crashes before its load (live, 2026-10-14).
     bench.clients[2].leave();
     bench.run(300);
     holding.store(false, Ordering::Relaxed);
@@ -1125,7 +1125,7 @@ fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_before_the_w
         .iter()
         .position(|message| matches!(message, ServerMessage::Snapshot { .. }))
         .unwrap();
-    assert!(left < world, "{left} {world}");
+    assert!(left > world, "{left} {world}");
     for index in 0..2 {
         assert_eq!(bench.game().resyncs(index), 0);
     }
