@@ -8,7 +8,13 @@ synthetic binder and the native binder with weapon inventories are exercised;
 the bounded profile wrapper executes the native constructor and decoder with
 only CRT memcpy intercepted. The statistics handler's start_match, on_event
 and deserialize run on a made-up handler: a newcomer's scoreboard score
-through rollbacks, in the original and in the build. These tests establish profile decoding, capacity,
+through rollbacks, in the original and in the build. The respawn rule's
+spawn runs on a made-up rule and place (its calls intercepted) for two
+games, one whose weapons of the new kit were drawn from and one whose are at
+the constructor's 1: the build gives both the same random states, the ones
+patch_026g.weapon_random_state names, after the player's initialize and
+before it is put into the world, and nothing else; the original leaves them
+apart; copies with one thing broken fail. These tests establish profile decoding, capacity,
 calling convention and ID allocation, not a playable late join.
 """
 import argparse
@@ -19,7 +25,7 @@ import struct
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
 from unicorn.x86_const import (
     UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDI,
-    UC_X86_REG_ESI, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_EBP,
+    UC_X86_REG_ESI, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_XMM0,
 )
 
 import late_join_026g as patch
@@ -1203,6 +1209,221 @@ def pregame_progress(original, changed):
             assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
 
 
+RULE, SPAWN_CORE, SPAWN_PLACES, SPAWN_PLAYERS, ARMS, STUBS = (
+    0x4400000, 0x4410000, 0x4430000, 0x4440000, 0x4460000, 0x4480000)
+# The vtables of the client's weapon and of weapon_core (at +0 and at the
+# item, +10h), of a plain inventory item, and a made-up one whose +70h is the
+# grenade item's bind.
+WEAPON_VTABLES = ((0xA04174, 0xA0422C), (0xA11094, 0xA1114C))
+PLAIN_ITEM_VTABLE, GRENADE_ITEM_BIND = 0xA1395C, 0x309EC0
+SPAWN_STUBS = {"kit_changed": 4, "statistics": 16, "initialize": 16, "damage_model": 0, "activate": 4}
+
+
+def spawn(data, place, old_kit, new_kit, time, states, protection=0):
+    """The respawn rule's spawn (0x316DA0, the game's own instructions, with
+    the hook of the build if it has one) on a made-up rule, world and place:
+    three kits, each with a weapon in slots 7 and 10 (the client's class
+    for kits 0 and 2, weapon_core's for kit 1) whose random states are
+    `states[kit]`, an ammunition item (a plain inventory item) in slot 8 and
+    a grenade item in slot 13. The functions it calls (the view's kit change,
+    the statistics, the player's initialize and activate, the damage model)
+    are written down and returned from. Returns (the weapons' states after
+    it, as they were at initialize and at activate, the calls, a check of
+    everything else)."""
+    m = Machine(data)
+    uc = m.uc
+    map_constants(m, data, (WEAPON_VTABLES[0][1], WEAPON_VTABLES[1][1], PLAIN_ITEM_VTABLE))
+    for base, size in ((RULE, 0x1000), (SPAWN_CORE, 0x1A000), (SPAWN_PLACES, 0x1000),
+                       (SPAWN_PLAYERS, 0x8000), (ARMS, 0x20000), (STUBS, 0x1000)):
+        uc.mem_map(base, size)
+    stub = {name: STUBS + 0x100 * i for i, name in enumerate(SPAWN_STUBS)}
+    for name, pops in SPAWN_STUBS.items():
+        if name == "damage_model":       # returns a pointer to the damage model's pointer
+            uc.mem_write(stub[name], b"\xb8" + struct.pack("<I", STUBS + 0x800) + b"\xc3")
+            m.write(STUBS + 0x800, STUBS + 0x900)
+        else:
+            uc.mem_write(stub[name], b"\xc2" + struct.pack("<H", pops))
+    rule_vtable, statistics, player_vtable, damage_vtable = STUBS + 0x600, STUBS + 0x680, STUBS + 0x700, STUBS + 0x780
+    m.write(rule_vtable + 0x60, stub["kit_changed"])
+    m.write(statistics, statistics + 0x10)
+    m.write(statistics + 0x10 + 0x2C, stub["statistics"])
+    m.write(player_vtable + 0x1C, stub["initialize"])
+    m.write(player_vtable + 0x20, stub["activate"])
+    m.write(damage_vtable + 8, stub["damage_model"])
+    m.write(RULE, rule_vtable)
+    m.write(RULE + 0x134, SPAWN_CORE)
+    m.write(RULE + 0x138 + place * 4, time)
+    m.write(SPAWN_CORE + 0x18458, SPAWN_PLACES)
+    m.write(SPAWN_CORE + 0x18FA8, statistics)
+    entry = SPAWN_PLACES + place * 0x30
+    weapons, others = {}, []
+    for kit in range(3):
+        player = SPAWN_PLAYERS + kit * 0x2000
+        inventory = player + 0x1000
+        m.write(entry + kit * 4, player)
+        m.write(player, player_vtable)
+        m.write(player + 0x108, damage_vtable)
+        m.write(player + 0x10C, inventory)
+        uc.mem_write(player + 0x114, bytes([place, kit]))
+        for index, slot in enumerate((7, 10)):
+            weapon = ARMS + kit * 0x4000 + index * 0x1000
+            primary, item = WEAPON_VTABLES[kit % 2]
+            m.write(weapon, primary)
+            m.write(weapon + 0x10, item)
+            m.write(weapon + 0x5BC, states[kit][index])
+            m.write(inventory + 0x10C + slot * 4, weapon + 0x10)
+            weapons[kit, slot] = weapon
+        ammunition, grenades = ARMS + 0xC000 + kit * 0x1000, ARMS + 0x18000 + kit * 0x1000
+        m.write(ammunition, PLAIN_ITEM_VTABLE)
+        m.write(grenades, grenades + 0x800)
+        m.write(grenades + 0x800 + 0x70, GRENADE_ITEM_BIND)
+        m.write(inventory + 0x10C + 8 * 4, ammunition)
+        m.write(inventory + 0x10C + 13 * 4, grenades)
+        others += [ammunition, grenades]
+    uc.mem_write(entry + 0xC, bytes([old_kit, new_kit]))
+    point = STUBS + 0xA00
+    uc.mem_write(point + 8, struct.pack("<4f", 1.5, -2.0, 3.25, 0.75))   # position, yaw
+    m.write(point + 0x20, protection)
+    random_state = lambda: {key: m.read(weapon + 0x5BC) for key, weapon in weapons.items()}
+    others_before = [bytes(uc.mem_read(item, 0x1000)) for item in others]
+    calls, at_initialize, at_activate = [], {}, {}
+
+    def visit(uc, address, size, _):
+        for name, at in stub.items():
+            if address == at:
+                esp = uc.reg_read(UC_X86_REG_ESP)
+                args = [m.read(esp + 4 + 4 * i) for i in range(SPAWN_STUBS[name] // 4)]
+                calls.append((name, uc.reg_read(UC_X86_REG_ECX), args))
+                if name == "initialize":
+                    at_initialize.update(random_state())
+                elif name == "activate":
+                    at_activate.update(random_state())
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    kept = {UC_X86_REG_EBX: 0x11111111, UC_X86_REG_ESI: 0x22222222, UC_X86_REG_EDI: 0x33333333,
+            UC_X86_REG_EBP: 0x44444444}
+    for register, value in kept.items():
+        uc.reg_write(register, value)
+    uc.reg_write(UC_X86_REG_ECX, RULE)
+    # The rule's tick passes the place as a byte in a register whose upper
+    # bytes are what they were (0x316994).
+    m.start(0x316DA0, args=(0xABCDEF00 | place, point, time), count=20000)
+    new_player = SPAWN_PLAYERS + new_kit * 0x2000
+    rest = (uc.reg_read(UC_X86_REG_ESP) == STACK + 16
+            and all(uc.reg_read(register) == value for register, value in kept.items())
+            and list(uc.mem_read(entry + 0xC, 2)) == [new_kit, new_kit]
+            and m.read(RULE + 0x138 + place * 4) == 0xFFFFFFFF
+            and (not protection or m.read(STUBS + 0x900 + 0x32C) == (time + protection) & 0xFFFFFFFF)
+            and [bytes(uc.mem_read(item, 0x1000)) for item in others] == others_before)
+    # (name, this, arguments); a byte argument is the low byte of its word.
+    byte, word = 0xFF, 0xFFFFFFFF
+    wanted = ([("kit_changed", RULE, [(place, byte)]),
+               ("statistics", statistics, [(time, word), (place, byte), (old_kit, byte), (new_kit, byte)])]
+              if old_kit != new_kit else [])
+    wanted.append(("initialize", new_player, [(time, word), (point + 8, word),
+                                              (struct.unpack("<I", struct.pack("<f", 0.75))[0], word), (0, word)]))
+    if protection:
+        wanted.append(("damage_model", new_player + 0x108, []))
+    wanted.append(("activate", new_player, [(1, word)]))
+    calls_right = len(calls) == len(wanted) and all(
+        name == w_name and this == w_this and len(args) == len(w_args)
+        and all(arg & mask == value for arg, (value, mask) in zip(args, w_args))
+        for (name, this, args), (w_name, w_this, w_args) in zip(calls, wanted))
+    return random_state(), at_initialize, at_activate, calls_right, rest
+
+
+def uniform_draws(data, state, count=4):
+    """The game's own uniform_01 on minstd_rand (0x2AB6E0, esi = the
+    engine, as the spread's normal distribution 0x2E4850 calls it): the
+    first `count` draws from `state`, as the bits of the floats."""
+    m = Machine(data)
+    map_constants(m, data, (0xA2D9E0, 0xA2D790))
+    m.uc.mem_map(STUBS, 0x1000)
+    m.write(STUBS, state)
+    draws = []
+    for _ in range(count):
+        m.uc.reg_write(UC_X86_REG_ESI, STUBS)
+        m.start(0x2AB6E0, count=2000)
+        draws.append(m.uc.reg_read(UC_X86_REG_XMM0) & 0xFFFFFFFF)
+    return draws, m.read(STUBS)
+
+
+def weapon_random(original, changed):
+    """patch_026g.py's WEAPON_RANDOM: what the respawn rule's spawn leaves
+    in the random states of the new kit's weapons, in the original and in
+    the build, for two games of one match: one that played the kit before
+    (its weapons drawn from), one that loaded a world since (its weapons at
+    the constructor's 1)."""
+    played = {0: (0x0BADF00D, 0x1234567), 1: (0x7FFFFFFE, 48271), 2: (0x3C6EF372, 0x2545F491)}
+    loaded = {kit: (1, 1) for kit in range(3)}
+    for place, old_kit, new_kit, time, protection in ((0, 0, 1, 21750, 0), (3, 1, 1, 148800, 3000),
+                                                      (8, 2, 0, 729200, 0), (19, 0, 2, 0xFFFFFFCE, 2000)):
+        for data in (original, changed):
+            game = {}
+            for name, states in (("played", played), ("loaded", loaded)):
+                after, at_initialize, at_activate, calls_right, rest = spawn(
+                    data, place, old_kit, new_kit, time, states, protection)
+                assert calls_right and rest, (name, place, old_kit, new_kit)
+                before = {(kit, slot): states[kit][index] for kit in range(3) for index, slot in enumerate((7, 10))}
+                # Nothing but the new kit's weapons, and nothing before the
+                # player's initialize returned.
+                assert at_initialize == before
+                assert all(after[key] == before[key] for key in before if key[0] != new_kit)
+                game[name] = after
+                if data is changed:
+                    for slot in (7, 10):
+                        state = patch.base.weapon_random_state(place, new_kit, slot, time)
+                        assert 1 <= state <= 0x7FFFFFFE
+                        assert after[new_kit, slot] == at_activate[new_kit, slot] == state, (name, slot, after)
+                else:
+                    assert after == before
+            mine = [game["played"][new_kit, slot] for slot in (7, 10)]
+            theirs = [game["loaded"][new_kit, slot] for slot in (7, 10)]
+            draws = [uniform_draws(data, state)[0] for state in mine + theirs]
+            if data is changed:
+                # The two games agree, and the game's own draws from it too.
+                assert mine == theirs and draws[:2] == draws[2:]
+                assert mine[0] != mine[1]
+            else:
+                assert mine != theirs and draws[:2] != draws[2:]
+    # The two weapons of a kit, the three kits, the places and the times of
+    # spawns give other states.
+    states = {patch.base.weapon_random_state(place, kit, slot, time)
+              for place in range(20) for kit in range(3) for slot in (7, 10) for time in (0, 50, 100, 21750, 900000)}
+    assert len(states) == 20 * 3 * 2 * 5
+    # The draws of the engine from a state it gets: minstd_rand's.
+    draws, state = uniform_draws(changed, 1, 3)
+    assert state == pow(48271, 3, 0x7FFFFFFF)
+
+
+def weapon_random_fails(original, changed):
+    """weapon_random given the original as the build, and given copies of
+    the build with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, rva, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.WEAPON_RANDOM_OFFSET
+    code = bytes(changed[cave:cave + 0x80])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "slot 10 left out (the slots end at 10)": broken(bytes.fromhex("83ff17"), bytes.fromhex("83ff0a")),
+        "the time left out": broken(bytes.fromhex("69d5b179379e"), bytes.fromhex("69d3b179379e")),
+        "every item taken for a weapon": broken(bytes.fromhex("395870753e"), bytes.fromhex("3958709090")),
+    }
+    for name, data in copies.items():
+        try:
+            weapon_random(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"weapon_random passes with {name}")
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -1220,6 +1441,8 @@ def check(original, nasm):
     native_histories(changed)
     statistics_scores(original, changed)
     pregame_progress(original, changed)
+    weapon_random(original, changed)
+    weapon_random_fails(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1261,7 +1484,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); ABI; PE checksum and certificate")
 
 
 def main():

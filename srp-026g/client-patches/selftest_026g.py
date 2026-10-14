@@ -76,6 +76,21 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     else; every call before both takes its arguments off the stack; the
     three are the hud movie's set_game_progress, set_last_players and
     set_respawn_time; no branch or address aims inside the jump.
+19. the same build: the respawn rule's spawn calls weapon_random_hook at
+    0x316EA0 (`call` where the original and the build without the late
+    join load the call that puts the player into the world); in the
+    original the spawn makes the target kit current, takes its player into
+    esi and initialises it with the time in ebp, neither register written
+    again before the hook and no flag read after it; the spawn is slot +5Ch
+    of every respawn rule and nothing calls it otherwise, the rules' tick
+    spawns through it; the player's initialize sets its inventory (23
+    slots at +10Ch) up and makes no object; weapon_core's constructor puts
+    1 into +5BCh, which .text names only there, in the two spreads (48271
+    mod 2^31-1), the serialize and the deserialize; weapon_core's bind is
+    in the file only in the item vtables of weapon_core and of the
+    client's weapon; the hook's code tests that bind, writes +5BCh alone,
+    and ends with the two instructions; no branch or address aims inside
+    the five bytes.
 """
 
 import ctypes
@@ -1029,6 +1044,149 @@ def test_pregame_progress(original, image, before):
           + "".join(f"\n          {a:#x}" for a in found))
 
 
+# The respawn rules' vtables: player_respawn_rule_base, _core, the client's
+# player_respawn_rule, single_player_respawn_rule.
+RESPAWN_RULE_VTABLES = (0xA16014, 0xA16084, 0xA06D1C, 0xA06D8C)
+
+
+def branches_to(original, target):
+    """Every rel32 call, jmp or jcc of .text whose target is `target`."""
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    found = []
+    for at in range(len(text) - 6):
+        op, here = text[at], P.TEXT_VA + at
+        if op in (0xE8, 0xE9) and here + 5 + struct.unpack_from("<i", text, at + 1)[0] == target:
+            found.append(here)
+        elif op == 0x0F and 0x80 <= text[at + 1] <= 0x8F and here + 6 + struct.unpack_from("<i", text, at + 2)[0] == target:
+            found.append(here)
+    return found
+
+
+def rtti_name(image, vtable):
+    """(the class name, the subobject's offset) of a vtable, from its
+    complete object locator at vtable-4."""
+    locator = struct.unpack("<I", image.read(vtable - 4, 4))[0]
+    offset, descriptor = struct.unpack("<I", image.read(locator + 4, 4))[0], struct.unpack("<I", image.read(locator + 12, 4))[0]
+    return image.read(descriptor + 8, 64).split(b"\0")[0].decode("latin1"), offset
+
+
+def test_weapon_random(original, image, before):
+    """Check 19: a spawn gives the new kit's weapons a random state of the
+    match's own."""
+    source = Image(original)
+    va, old, offset, _ = P.WEAPON_RANDOM_HOOK
+    entry = P.LATE_JOIN_VA + offset
+    rows = lambda blob, at, size: ndisasm(blob.read(at, size), at)
+    texts = lambda blob, at, size: [text for _, _, text in rows(blob, at, size)]
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and texts(source, va, len(old)) == ["mov edx,[esi]", "mov eax,[edx+0x20]"]
+          and texts(image, va, len(old)) == [f"call 0x{entry:x}"],
+          f"{va:#x}: `mov edx,[esi]` / `mov eax,[edx+0x20]` is `call 0x{entry:x}`; the original and the build without "
+          "the late join keep them")
+    # The spawn, 0x316DA0 to its `ret 0Ch`.
+    spawn = rows(source, P.WEAPON_SPAWN_VA, 0x316EB3 - P.WEAPON_SPAWN_VA)
+    at = {address: text for address, _, text in spawn}
+    order = [address for address, _, _ in spawn]
+    between = lambda lo, hi: [at[a] for a in order if lo <= a < hi]
+    writes = lambda register, lo, hi: [text for text in between(lo, hi)
+                                       if re.match(rf"(mov|lea|pop|xchg|add|sub|xor|or|and|inc|dec) {register}\b", text)]
+    check(at.get(0x316DC8) == "mov ebp,[esp+0x20]" and at.get(0x316DE3) == "mov [eax+0xc],dl"
+          and at.get(0x316E50) == "mov esi,[eax+ecx*4]" and at.get(0x316EB0) == "ret 0xc"
+          and between(0x316E57, 0x316E72) == ["mov edx,[esi]", "mov edx,[edx+0x1c]", "sub esp,byte +0x8",
+                                               "lea eax,[edi+0x8]", "mov ecx,esi", "fstp dword [esp+0x4]",
+                                               "fld dword [edi+0x14]", "fstp dword [esp]", "push eax", "push ebp",
+                                               "call edx"]
+          and at.get(0x316E76) == "jna 0x316ea0"
+          and between(0x316EA0, 0x316EB3) == ["mov edx,[esi]", "mov eax,[edx+0x20]", "push byte +0x1", "mov ecx,esi",
+                                               "call eax", "pop edi", "pop esi", "pop ebp", "pop ebx", "pop ecx",
+                                               "ret 0xc"]
+          and not writes("ebp", 0x316DCC, 0x316EAD) and not writes("esi", 0x316E52, 0x316EAC),
+          "the spawn (0x316DA0) makes the target kit current (0x316DE3), takes its player into esi (0x316E50), "
+          "initialises it (vtable+1Ch) with the time of its third argument (ebp), and at 0x316EA0, which the path "
+          "past the protection's timer also jumps to, loads the call that puts it into the world (vtable+20h); "
+          "esi and ebp are written nowhere between, and nothing after the hook reads a flag")
+    slot = lambda vtable, number: struct.unpack("<I", source.read(vtable + number, 4))[0]
+    holders = []
+    position = original.find(struct.pack("<I", P.WEAPON_SPAWN_VA))
+    while position != -1:
+        holders.append(position)
+        position = original.find(struct.pack("<I", P.WEAPON_SPAWN_VA), position + 1)
+    tick = texts(source, 0x316820, 0x316A24 - 0x316820)
+    check(all(slot(vtable, 0x5C) == P.WEAPON_SPAWN_VA and slot(vtable, 0x50) in (0x316820, 0x267980)
+              for vtable in RESPAWN_RULE_VTABLES)
+          and sorted(holders) == sorted(source.offset(vtable + 0x5C) for vtable in RESPAWN_RULE_VTABLES)
+          and not branches_to(original, P.WEAPON_SPAWN_VA)
+          and texts(source, 0x317D30, 5) == ["mov eax,[ecx]", "jmp [eax+0x50]"]
+          and "mov dword [esi+0x120],0x317d30" in texts(source, 0x316700, 0x60)
+          and all(text in tick for text in ("mov edx,[ebp+0xc]", "mov eax,[eax+0x5c]", "call eax")),
+          "the spawn is slot +5Ch of every respawn rule's vtable and nowhere else (no call aims at it); the rules "
+          "of a match tick through 0x317D30 (slot +50h, 0x316820), which spawns each place through slot +5Ch with "
+          "the time it was given")
+    player = struct.unpack("<I", source.read(0x9FB35C + 0x1C, 4))[0]
+    initialize = texts(source, 0x2DAC00, 0x350)
+    check(player == 0x1F2540 and "call 0x2dac00" in texts(source, player, 0x100)
+          and "mov edi,[esi+0x10c]" in initialize and "call 0x2fcb70" in initialize
+          and initialize.index("call 0x2fcb70") == initialize.index("mov edi,[esi+0x10c]") + 3
+          and all(text in texts(source, 0x2FD19A, 0x30) for text in ("lea esi,[edi+0x10c]", "mov ebp,0x17")),
+          "the player's initialize (vtable+1Ch, 0x1F2540) runs base_player's (0x2DAC00), which sets the inventory "
+          "(player+10Ch) up from the profile (0x2FCB70) and makes no object; the inventory's 23 slots are at +10Ch")
+    weapon_core = texts(source, 0x2DF0D0, 0x400)
+    weapon = texts(source, 0x243640, 0x30)
+    bound = []
+    position = original.find(struct.pack("<I", P.WEAPON_BIND_VA))
+    while position != -1:
+        bound.append(position)
+        position = original.find(struct.pack("<I", P.WEAPON_BIND_VA), position + 1)
+    names = {rtti_name(source, item_vtable) for item_vtable in (0xA0422C, 0xA1114C)}
+    check(all(text in weapon_core for text in ("lea edi,[ebp+0x10]", "mov dword [edi],0xa1114c",
+                                               "mov dword [ebp+0x0],0xa11094", "mov dword [ebp+0x5bc],0x1"))
+          and weapon[weapon.index("call 0x2df0d0"):][1:3] == ["mov dword [ebx],0xa04174", "mov dword [ebx+0x10],0xa0422c"]
+          and sorted(bound) == sorted(source.offset(item_vtable + 0x70) for item_vtable in (0xA0422C, 0xA1114C))
+          and names == {(".?AVweapon@survarium@@", 0x10), (".?AVweapon_core@survarium@@", 0x10)},
+          f"weapon_core's constructor puts its item at +10h and 1 into +5BCh; the client's weapon is one; "
+          f"{P.WEAPON_BIND_VA:#x} (weapon_core's bind) is in the file only as +70h of their two item vtables")
+    # Every [register+5BCh] of .text that is not on the stack.
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    sites, position = [], 0
+    while (position := text.find(struct.pack("<I", P.WEAPON_RANDOM_FIELD), position)) >= 0:
+        modrm, sib = text[position - 1], text[position - 2]
+        if modrm & 0xC0 == 0x80 and modrm & 7 != 4:
+            sites.append(P.TEXT_VA + position - 2)
+        elif sib & 0xC0 == 0x80 and sib & 7 == 4 and modrm & 7 != 4:
+            sites.append(P.TEXT_VA + position - 3)
+        position += 1
+    field = {0x2DF429: "mov dword [ebp+0x5bc],0x1", 0x2E1DCC: "lea esi,[ebx+0x5bc]", 0x2E2195: "lea eax,[esi+0x5bc]",
+             0x2E315D: "lea eax,[ebx+0x5bc]", 0x2E34C1: "mov [edi+0x5bc],ecx"}
+    check(sorted(sites) == sorted(field) and all(texts(source, site, 10)[0] == want for site, want in field.items())
+          and "call 0x2e4850" in texts(source, 0x2E1DD2, 0x30) and "mov [esp+0x78],eax" in texts(source, 0x2E219B, 0x30)
+          and all("mov ecx,0xbc8f" in texts(source, draw, 0x40) and "push dword 0x7fffffff" in texts(source, draw, 0x50)
+                  for draw in (0x2AB6E0, 0x2E49F0)),
+          "+5BCh of a register is in .text five times: the constructor's 1, the two spreads that draw from it "
+          "(minstd_rand: 48271 mod 2^31-1, 0x2AB6E0 and 0x2E49F0), the serialize and the deserialize's store")
+    hook = rows(image, entry, 0x80)
+    hook = hook[:next(i for i, (_, _, text) in enumerate(hook) if text == "ret") + 1]
+    hook_texts = [text for _, _, text in hook]
+    pc = next(i for i, (_, _, text) in enumerate(hook) if text.startswith("call"))
+    add = re.match(r"add ebx,0x([0-9a-f]+)$", hook_texts[pc + 2])
+    stores = [text for text in hook_texts if re.match(r"mov \[", text)]
+    inside = all(entry <= branch_target(text) < hook[-1][0] + 1 for text in hook_texts
+                 if branch_target(text) is not None)
+    check(hook_texts[0] == "pusha" and hook_texts[-4:] == ["popa", "mov edx,[esi]", "mov eax,[edx+0x20]", "ret"]
+          and hook_texts[pc + 1] == "pop ebx" and branch_target(hook_texts[pc]) == hook[pc + 1][0]
+          and add is not None and (hook[pc + 1][0] + int(add.group(1), 16)) & 0xFFFFFFFF == P.WEAPON_BIND_VA
+          and "cmp [eax+0x70],ebx" in hook_texts and "mov ecx,[esi+0x10c]" in hook_texts
+          and "cmp edi,byte +0x17" in hook_texts and "mov ecx,0x7ffffffe" in hook_texts
+          and stores == [f"mov [eax+0x{P.WEAPON_RANDOM_FIELD - 0x10:x}],edx"] and inside,
+          f"weapon_random_hook ({entry:#x}): pushad; for the 23 slots of the player's inventory, an item whose "
+          f"vtable+70h is {P.WEAPON_BIND_VA:#x} (taken relative to the code) gets a state at item+5ACh (weapon+5BCh) "
+          "and nothing else is written; popad, the two instructions, ret; no branch leaves it")
+    found = aimed_inside(original, va, len(old), 0x82)
+    check(not found, "no rel32 branch of .text, no rel8 branch byte near it and no 4-byte value aims inside the five "
+          "bytes (0x316E76 aims at their start)" + "".join(f"\n          {a:#x}" for a in found))
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -1163,6 +1321,7 @@ def test_late_join(original, without, server, source):
     test_clock_factor(original, image, before)
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
+    test_weapon_random(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

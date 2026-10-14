@@ -347,3 +347,32 @@ them. `notes/match.md` §28 has the evidence and the choices,
   so it was so before srp's patches too). Revision 9 draws them then as
   play does (one jump, five bytes; `notes/client_patch.md` §3.17). Not run
   in a game yet.
+
+## 0.26g, added 2026-10-14: a newcomer out of step after a respawn
+
+- **Done 2026-10-14, in the code (patch revision 10), not in a download: a
+  game that loaded a world during a match went out of step when a player
+  respawned into a kit he had used before that load.** Seen on the
+  players' server (match 0x1ce45cbe): six short desyncs of its four
+  newcomers, each at a respawn into such a kit. A weapon's random state
+  (the spread of its shots) was 1 from its constructor and changed only by
+  shots and by the load of a world, and a world holds the current kit's
+  player alone: the newcomer had the other kits' weapons at 1, the games
+  that had played them had them drawn from. The same happened in any game
+  after a rollback over a respawn into another kit. PROVEN in the code and
+  in the saved worlds (`notes/client_patch.md` §3.18).
+  - Revision 10 gives every weapon of the new kit, at every spawn (a
+    match's first too), a state worked out from its place, kit, slot and
+    the spawn's time: the same in every game. The game's own spawn run with
+    Unicorn on made-up objects; not run in a game yet.
+  - **It changes what a match computes from a match's first spawn: games of
+    10 and of 9 or before part there.** The release needs
+    `SRP_MIN_PATCH_REVISION=10` together with the ZIP (with
+    `SRP_PATCH_REVISION_CHECK=refuse`, as on the players' server). The
+    server needs no change: its clock factor takes 8 to 0x7F as fast and the
+    late join takes 5 and later. A late-join exe built by hand (`0x80`) is
+    not refused and does not have it.
+  - Not covered: the single-player respawn rule (the test mode
+    `loopback_client` alone) spawns another way and keeps the old state.
+  - The other cause of that match's desyncs (inputs made while a resync
+    world loads) is the server's and is not touched here.

@@ -137,6 +137,16 @@ Patches:
   there), lets go of the model and returns when the model is not in the
   scene (a jump at 0x14FF9B to the function's end): that killed a game
   whose join the server gave up (seen on the test server);
+- the weapons' random state at a spawn (patch revision 10, with the late
+  join, client_patch.md section 3.18). A weapon's random state (its shots'
+  spread) was 1 from its constructor and set by nothing but the load of a
+  world, which holds the current kit's player alone: a game that loaded one
+  during a match had the other kits' weapons at 1, the others had them
+  drawn from, and a respawn into such a kit put it out of step. The
+  respawn rule's spawn (0x316DA0) calls into the new code at 0x316EA0,
+  after the new kit's player is initialised and before it is put into the
+  world: each weapon of its inventory gets a state from its place, kit,
+  slot and the spawn's time, the same in every game;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -237,7 +247,13 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # points while a match counts down (PREGAME_PROGRESS); the original kept
 # the last match's until play began. Neither is saved in the world or
 # hashed: 7, 8 and 9 play together.
-REVISION = 9
+# 10: every spawn gives each weapon of the new kit a random state every game
+# works out alike (WEAPON_RANDOM below). In 9 and before a game that loaded
+# a world during a match kept the other kits' weapons at the constructor's
+# 1, and a respawn into such a kit put it out of step at once. What a match
+# computes changes from a match's first spawn: a game of 10 and an older one
+# part there, so a server asks for 10.
+REVISION = 10
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -333,6 +349,43 @@ LATE_JOIN_STATE_CHARACTERISTICS = 0xC0000080   # uninitialized data, read, write
 STATISTICS_START_MATCH_VA = 0x26D8D0
 STATISTICS_COUNT = (0x26D8F3, bytes.fromhex("8a82b5770500"), b"\xb0\x14" + b"\x90" * 4)
 
+# A weapon's random state (weapon_core+5BCh: boost's minstd_rand, x * 48271
+# mod 2^31-1, drawn from by its shots' spread alone, 0x2E1D50 and 0x2E2120)
+# is 1 from the constructor (0x2DF429), comes out of a world in deserialize
+# (0x2E34C1), and is set by nothing else: not at a respawn, which keeps the
+# kit's weapon objects. A place has a player object for each of its three
+# kits, and a world holds only the current one's (0x3218E0). So a game that
+# loaded a world during a match (a newcomer, a resynced game) had every other
+# kit's weapons at 1 where the games that played them had drawn from them,
+# and a respawn into such a kit put that game out of step at once (seen live:
+# match 0x1ce45cbe, six desyncs of its newcomers on the kit timeline); so
+# did a rollback over a respawn into another kit, which loads the current
+# kit's player alone. The respawn rule's spawn (0x316DA0, slot +5Ch of every
+# respawn rule; its tick 0x316820 spawns every player, a match's first spawn
+# too, in every game and in every replay of a tick) makes the new kit
+# current (0x316DE3), initialises its player (vtable+1Ch: the inventory from
+# the profile, a weapon in hand) and puts it into the world (vtable+20h).
+# Between the two, at 0x316EA0 (`mov edx,[esi]` / `mov eax,[edx+20h]`, the
+# load of that call; esi = the player, ebp = the spawn's time), a call into
+# weapon_random_hook (late_join_026g.asm) gives each weapon of the player's
+# inventory a state from its place, kit, slot and the spawn's time, in
+# 1..2^31-2, then does the two instructions. A weapon is an item whose
+# vtable+70h is weapon_core's bind 0x2E30F0, which only the vtables of
+# weapon_core and the client's weapon hold.
+WEAPON_RANDOM_VA, WEAPON_RANDOM_OFFSET = 0x316EA0, 3712
+WEAPON_RANDOM_HOOK = (WEAPON_RANDOM_VA, bytes.fromhex("8b168b4220"), WEAPON_RANDOM_OFFSET, 0xE8)
+WEAPON_SPAWN_VA = 0x316DA0                    # the respawn rule's spawn
+WEAPON_BIND_VA = 0x2E30F0                     # weapon_core's bind, vtable+70h of its item
+WEAPON_RANDOM_FIELD = 0x5BC                   # weapon_core's random state
+WEAPON_RANDOM_MODULUS = 0x7FFFFFFF
+
+
+def weapon_random_state(place, kit, slot, time):
+    """The state weapon_random_hook gives a weapon at a spawn."""
+    h = ((((place & 0xFF) << 16 | (kit & 0xFF) << 8 | slot) * 0x85EBCA6B)
+         ^ (time * 0x9E3779B1)) & 0xFFFFFFFF
+    return (h ^ h >> 15) % (WEAPON_RANDOM_MODULUS - 1) + 1
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -371,6 +424,7 @@ LATE_JOIN_HOOKS = (
     (0x219E60, bytes.fromhex("558bec83e4f8"), 2432, 0xE9),       # network_client's destructor: client_destroyed_hook
     (0x23572B, bytes.fromhex("8b8c2498000000"), 3456, 0xE9),     # the hud's lists of players, made again: lists_hook
     (0x39E52, bytes.fromhex("f30f7e00660fd64704"), 3520, 0xE9),  # a box that is no box, in the tree: box_hook
+    WEAPON_RANDOM_HOOK,                                          # a spawn's weapons' random state: weapon_random_hook
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -792,7 +846,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
                      "goes on without the focus, a model not in the scene stays out of it, "
                      f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor), "
-                     "the countdown shows the match's team points"
+                     "the countdown shows the match's team points, "
+                     "a spawn gives its weapons a random state of the match's own"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
