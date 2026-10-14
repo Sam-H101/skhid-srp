@@ -407,6 +407,8 @@ pub struct Client {
     /// horizon tick of that moment. With the stock 100 ms interval the two
     /// are the same about every second time; this is that case every time.
     pub uploads_hashed_tick: bool,
+    /// Does not answer 0xF6 (as if its pool guard skipped every request).
+    pub no_uploads: bool,
     /// Does not answer 0xE5 (as if the answer were lost).
     pub mute_time_replies: bool,
     /// Acks as the real game was seen to (live, 2026-10-13): a pure ack
@@ -463,6 +465,7 @@ impl Client {
             frozen_at: None,
             simulates: true,
             uploads_hashed_tick: false,
+            no_uploads: false,
             mute_time_replies: false,
             slow_acks: false,
             lose: None,
@@ -899,7 +902,7 @@ impl Client {
             ServerMessage::UploadRequest => {
                 self.upload_requests += 1;
                 // Silently not answered without an event-horizon world.
-                if let Some(horizon) = self.horizon() {
+                if let Some(horizon) = self.horizon().filter(|_| !self.no_uploads) {
                     let time = if self.uploads_hashed_tick {
                         self.last_hashed
                     } else {

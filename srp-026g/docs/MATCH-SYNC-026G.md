@@ -111,8 +111,14 @@ The danger: 0xE5 is sent once. A lost 0xE5(g) followed by a delivered
    at a time; and to a game that waits for its first world the others'
    inputs go every 50 ms, many in a datagram (match.md §27).
 
-Between the first 0xE5 and the 0xE8, a client being resynced runs its old
-world on the new clock for about a round trip (LIKELY harmless).
+Between the first 0xE5 and the 0xE8 a client being resynced **stands
+still**: no move, no new input of its own, no 0xDF, no 0xE1; it takes every
+relay and roster change, and refuses every 0xF1/0xF2/0xEF/0xF0 (no
+history). PROVEN (match.md §30). For a client resynced while it plays the
+server therefore sends, after the 0xDB, the others' inputs and the roster
+changes since the snapshot, and the world (0xE5 again and 0xE8) only once
+all of that is acked; the answers to the client's own inputs wait for the
+load. match.md §30.
 
 ## Snapshots
 
@@ -141,8 +147,9 @@ u16 len + game effect player   (new in 0.26g)
   item's time). snapshot_rules.md §2.2, §3.3.
 - The order of the rules inside the rules section is LIKELY, not proven;
   the reader does not depend on it.
-- The input lists survive a resync (0xE8 loads with mode 1): LIKELY.
-  match.md §5.2.
+- The input lists survive a resync (0xE8 loads with mode 1), and an own
+  input node at or before the snapshot's time is never played again:
+  PROVEN. match.md §17, §30.
 
 **Uploads** (the patch; client_patch.md §3.2, §3.4):
 
@@ -277,8 +284,20 @@ once.
   clients in the simulation (both fixed after tests resynced a healthy
   client).
 - A resync or a newcomer starts only from a **fresh** snapshot: ≤ 700 ms old
-  (`RESYNC_FRESH_MS`); after 3 s of waiting ≤ 1500 ms (`FRESH_SNAPSHOT_MS`);
-  after 20 s the newest there is, if the one-byte ticks still reach it.
+  (`RESYNC_FRESH_MS`); a newcomer after 3 s of waiting ≤ 1500 ms
+  (`FRESH_SNAPSHOT_MS`); after 20 s the newest there is, if the one-byte
+  ticks still reach it.
+- **A client resynced while it plays** (match.md §30): its own inputs are
+  relayed all the way, as any client's; its clock is put at the match clock
+  as the 0xE5 arrives and past its newest own input; after its 0xDB it gets
+  the replay, and its world goes only once that is acked and from a
+  snapshot at most 1000 ms old (`RESYNC_WORLD_MAX_AGE_MS`). An answer to an
+  own input (drop or move) waits from its first 0xE5 to its load; after it,
+  it goes if the input is still in the game's history, else the sync is done
+  again from a snapshot past it.
+- **A newcomer wrong from its first report** (match.md §31): after 1 s of
+  reports against the majority its world is asked for and saved (kind
+  `joiner`), and it is started once more, once, with 30 s more to catch up.
 - **Never from a world more than 5 s old while others play**
   (`TICK_REACH_MS`): the client's clock would be more than 127 ticks from
   the others' and every relay would be read at a wrong tick. (0.21d, with
@@ -329,13 +348,16 @@ a GUESS at the original server and was never tried on a client.
 | Constant (`v026g/game.rs`, `mod.rs`) | Value | Meaning |
 |---|---|---|
 | `HORIZON_MS` | 250 | A tick is final this long after it |
-| `SYNC_LEAD_MS` | 350 | A client starts its clock this far past its snapshot |
+| `SYNC_LEAD_MS` | 350 | A client that enters while others play starts its clock this far past its snapshot |
+| `RESYNC_ONE_WAY_MAX_MS` | 250 | A resynced client's clock is put this far past the match clock at most (half its round trip) |
+| `RESYNC_WORLD_MAX_AGE_MS` | 1000 | A resynced client's world goes only from a snapshot this fresh |
+| `REPLAY_ACK_WAIT` | 3 s | A resync's replay not acked in this is done again |
+| `ANSWER_REACH_MS` | 450 | An answer held while a client loaded goes after the load for an input this far behind its clock at most |
 | `SET_TIME_EVERY` / `MAX_SET_TIMES` | 150 ms / 5 | 0xE5 repeats until 0xDB; then the snapshot goes anyway |
 | `RESYNC_FRESH_MS` / `RESYNC_FRESH_WAIT` | 700 / 3 s | How fresh a start snapshot must be |
 | `FRESH_SNAPSHOT_MS` | 1500 | After the wait |
 | `TICK_REACH_MS` | 5000 | Never start from an older world while others play |
 | `RESYNC_REQUEST_GAP` | 1 s | Ask for an upload again this often |
-| `RESYNC_UPLOAD_AFTER_MS` | 350 | Ask a resync's upload this long after the client's last relayed input |
 | `REJOIN_UPLOAD_AFTER_MS` | 600 | After a returning player's entry |
 | `divergence_confirm_ms` / `_max` | 1000 / 3 s | Disagreement must last this long |
 | `resync_interval` | 15 s | At most one resync of a client |

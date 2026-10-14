@@ -141,6 +141,8 @@ fn a_genuinely_new_player_waits_for_resources_then_gets_a_post_barrier_snapshot(
     assert_eq!(bench.game().resyncs(0), 0);
     assert_eq!(bench.game().resyncs(1), 0);
     assert_eq!(bench.game().resyncs(2), 0);
+    // Right from its first report: its world was never asked for.
+    assert_eq!(bench.clients[place].upload_requests, 0);
     bench.assert_no_faults();
 }
 
@@ -312,16 +314,20 @@ fn snapshot_delivery_is_not_enough_the_newcomer_must_demonstrate_catchup() {
     // Its wrong world must not count as a vote against the existing world.
     bench.clients[place].no_hashes = false;
     bench.clients[place].sim.salt_from = Some((0, 7));
-    bench.run(3_000);
+    bench.run(1_000);
     assert!(!bench.clients[0].entered().contains(&(place as u8)));
     assert_eq!(bench.game().resyncs(0), 0);
     assert_eq!(bench.game().resyncs(1), 0);
-    bench.clients[place].sim.salt_from = None;
-    assert!(bench.until(2_000, |b| {
+    // Wrong for a second, it is started once more, and that world (the
+    // scripted game's salt goes with a load) is right.
+    assert!(bench.until(8_000, |b| {
         b.clients
             .iter()
             .all(|c| c.entered().contains(&(place as u8)))
     }));
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.game().resyncs(0), 0);
+    assert_eq!(bench.game().resyncs(1), 0);
     bench.assert_no_faults();
 }
 
@@ -549,9 +555,16 @@ fn failed_catchup_times_out_without_entering_or_voting_against_existing_players(
     let place = reserve(&mut bench);
     bench.clients[place].no_hashes = true;
     bench.join(place);
-    bench.clients[place].sim.salt_from = Some((0, 7));
+    // Its world has objects the others' have not, also after a load.
+    bench.clients[place].sim.late_objects_from = Some((0, 7));
     bench.clients[place].no_hashes = false;
+    // Started once more, once only, with 30 s more to catch up in.
     bench.run_long(61_000);
+    assert!(!bench.clients[place].disconnected);
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.clients[place].upload_requests, 1);
+    bench.run_long(30_000);
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
     assert!(bench.clients[place].disconnected);
     assert!(bench.registry.seat(session_of(place)).is_none());
     assert!(!bench.clients[0].entered().contains(&(place as u8)));
@@ -559,6 +572,56 @@ fn failed_catchup_times_out_without_entering_or_voting_against_existing_players(
         assert_eq!(bench.clients[index].model.syncs, 1);
         assert_eq!(bench.game().resyncs(index), 0);
     }
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_newcomer_wrong_from_its_world_on_is_saved_and_started_once_more() {
+    let dir = std::env::current_exe()
+        .unwrap()
+        .with_file_name(format!("joiner-worlds-{}", std::process::id()));
+    let settings = Settings {
+        snapshot_dir: Some(dir.clone()),
+        ..Settings::default()
+    };
+    let mut bench = Bench::growing(2, MAP_BATTERIES, settings);
+    bench.join_all();
+    bench.run_long(25_000);
+    let place = reserve(&mut bench);
+    bench.clients[place].no_hashes = true;
+    bench.join(place);
+    let uploads = bench.clients[place].uploads;
+    // Its world is not the others' from its first report on.
+    bench.clients[place].sim.salt_from = Some((0, 7));
+    bench.clients[place].no_hashes = false;
+    assert!(bench.until(5_000, |b| b.clients[place].upload_requests == 1));
+    assert!(!bench.clients[0].entered().contains(&(place as u8)));
+    assert_eq!(bench.clients[place].snapshots().len(), 1);
+    // Its world comes, and is saved, not counted: no report of it is kept
+    // to judge the others by.
+    assert!(bench.until(1_000, |b| b.clients[place].uploads == uploads + 1));
+    bench.run(50);
+    assert_eq!(bench.game().hash_reports_of(place), 0);
+    // Started once more from a world from then on (the scripted game's
+    // salt goes with a load), it is right and enters.
+    assert!(bench.until(10_000, |b| {
+        b.clients
+            .iter()
+            .all(|c| c.entered().contains(&(place as u8)))
+    }));
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.clients[place].upload_requests, 1);
+    for index in 0..2 {
+        assert_eq!(bench.clients[index].model.syncs, 1);
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    let saved: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(&format!("_p{place}_joiner_")))
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(saved.len(), 1, "{saved:?}");
     bench.assert_no_faults();
 }
 
