@@ -300,20 +300,23 @@ them. `notes/match.md` §28 has the evidence and the choices,
 
 ## 0.26g, added 2026-10-14: the statistics writer's event masks
 
-- **Open, not done: `snapshot.rs` writes a player's event masks otherwise
-  than a game does.** A game does not start the mask again for each kit:
-  the second kit's mask has the first's bits too, the third's has all
-  three, and each such bit is followed by that kit's count, a zero when it
-  has none (`notes/snapshot_rules.md` §3.1; PROVEN in the exe,
+- **Done 2026-10-14, in the code: `snapshot.rs` wrote a player's event
+  masks otherwise than a game does.** A game does not start the mask again
+  for each kit: the second kit's mask has the first's bits too, the third's
+  has all three, and each such bit is followed by that kit's count, a zero
+  when it has none (`notes/snapshot_rules.md` §3.1; PROVEN in the exe,
   0x33575D..0x3357CD, and seen in every record of the worlds of match
-  0x69f8c0ba). `PlayerStatistics::write` makes each kit's own mask.
-  - Nothing read from a real game is wrong: the reader takes either form,
-    so results, quests and the standing are as before.
+  0x69f8c0ba). `PlayerStatistics::write` made each kit's own mask; it keeps
+  the mask across the kits now (a test with made-up records).
+  - Nothing read from a real game was wrong: the reader takes either form
+    and is as it was, so results, quests and the standing are as before.
   - Only the scripted test client (`match-server/src/v026g/scripted.rs`)
-    and the tests write statistics. Their worlds are not, byte for byte,
-    what a game writes for a player who has an event, and a test that
-    reads a real game's statistics and writes them back does not get the
-    same bytes.
-  - The fix is in the server's code alone (the mask kept across the kits
-    in `write`, a test with a made-up record): no client patch, no
-    revision, nothing for a player to install.
+    and the tests write statistics: their worlds are now, for a player who
+    has an event, the bytes a game writes. The statistics of the four saved
+    worlds of match 0x69f8c0ba, read and written back, are the same bytes
+    (a check run once, not a test: the worlds are not in the repository);
+    in each of them four players have such zeros, which the old writer left
+    out.
+  - The change is in the server's code alone: no client patch, no
+    revision, nothing for a player to install, and nothing a server in use
+    does otherwise.
