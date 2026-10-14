@@ -370,10 +370,13 @@ never play one match, so the server has two queues: `QueuePool::GrowingRoster`
 for a session whose game signed in with patch revision 5 or later
 (`late_join::spoken_by`), `Standard` for every other. Sections 3 to 8 above
 are the standard queue. A squad of both kinds is refused at Play; arranged
-clan matches keep their own teams and take nobody late. A server whose
-players should all meet asks for revision 6 (`SRP_MIN_PATCH_REVISION`): 5 has the
-late join too and plays with 6, but a game of 5 can be killed when a player joins its
-match (`client_patch.md` §3.13).
+clan matches keep their own teams and take nobody late. A server asks for
+revision 7 (`SRP_MIN_PATCH_REVISION`): 5 and 6 have the late join too and
+are put into the same queue, but a game of 5 can be killed when a player
+joins its match (`client_patch.md` §3.13), neither lets in a newcomer who
+has a grenade or a trap in a kit, and a game of 7 keeps a world's game
+objects in another order than they do, so the two part when a grenade is
+thrown (§3.14).
 
 ### 9.1 A new match
 

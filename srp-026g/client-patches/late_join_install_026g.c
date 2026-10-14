@@ -51,6 +51,28 @@ void lj_native_animations(lj_u8 *table, void (*append)(void *, void *),
     table[0x10050] = 1;
 }
 
+/* The slot just bound put `added` nodes at the front of the list the world
+ * saves its game objects by (core+0x18914; bind_slot_reserved in the
+ * assembly). The states the game keeps to roll back to (core+0x2FBC the
+ * oldest, item+0xC0BAC the next) were saved without them: their game-objects
+ * bytes (the buffer at item+0xBDF30: +4 the bytes, +8 the room, +12 the
+ * size; made by 0x3246D0 with room for 0x2000 and nothing to grow by) get
+ * the new nodes' bytes in front, so a state loaded later reads in step.
+ * Such a node is a grenade or a trap that nobody has touched, and each
+ * saves itself as one zero byte (grenade_core::serialize 0x303DA0,
+ * booby_trap_core::serialize 0x3052E0). A state with no room for them is
+ * left as it is: the largest seen is 525 bytes of the 8192. */
+static void shift_saved_objects(lj_u8 *core, lj_u32 added) {
+    for (lj_u8 *item = PTR(core + 0x2fbc); item; item = PTR(item + 0xc0bac)) {
+        lj_u8 *buffer = item + 0xbdf30, *bytes = PTR(buffer + 4);
+        lj_u32 size = WORD(buffer + 12);
+        if (!bytes || size > WORD(buffer + 8) || added > WORD(buffer + 8) - size) continue;
+        for (lj_u32 i = size; i; --i) bytes[i - 1 + added] = bytes[i - 1];
+        for (lj_u32 i = 0; i < added; ++i) bytes[i] = 0;
+        WORD(buffer + 12) = size + added;
+    }
+}
+
 int lj_native_install(struct lj_context *c, const struct lj_bindings *bind) {
     lj_u8 *nc = c->client, *pvp = c->world;
     lj_u8 *core = pvp + 0x1f8;
@@ -92,7 +114,14 @@ int lj_native_install(struct lj_context *c, const struct lj_bindings *bind) {
     /* core stores statistics_handler; its shared_statistics subobject is +8
      * (native serialize thunk 0x26DB40), with the live count at +0x31E0. */
     statistics[8 + 0x31e0] = (lj_u8)(c->place + 1);
+    lj_u8 *listed = PTR(core + 0x18914);
     bind->core(core, end);
+    lj_u32 added = 0;
+    for (lj_u8 *node = PTR(core + 0x18914); node && node != listed && added < 0x2000;
+         node = PTR(node + 8))
+        ++added;
+    /* More nodes than a state has room for is no list of a slot's. */
+    if (added && added < 0x2000) shift_saved_objects(core, added);
     bind->physics(pvp + 0x138, end);
     bind->ready(PTR(end + end[12] * 4));
     return 1;

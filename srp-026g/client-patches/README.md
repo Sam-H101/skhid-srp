@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `c85026bb2224fdfad3f3219545e08615349c039a5e80c823abbc4f9083747bcc` (patch revision 6); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `82265418234cf12ad2cd410567608d84bc150cfb152e99fd79e34880f93551ba`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 and 6 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `a83aca6b1c281c0fa5563319308f28caa80e90787284ee37ab31cc6f3539f95c` (patch revision 7); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `8b79f306f1c99c6ddcda64420a124a56fa768a559b2da0c0fc28fa186423a11e`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5, 6 and 7 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC; 7 is not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -96,7 +96,8 @@ against the build without it.
 The machine-code checks need Unicorn 2.1.4. They cover native profile
 decoding, the query and callback conventions, slot and weapon binding,
 animation indexing, preparation, acknowledgement and cleanup, the fixed
-capacities and the PE file. Resource scheduling, physics, animation and UI
+capacities, where a slot's grenades and traps are among the saved objects
+(patch 14) and the PE file. Resource scheduling, physics, animation and UI
 set-up, transport and player destruction are intercepted there. The C tests
 cover cancellation, retries, failed loads and concurrent destruction, and
 count allocations and references (where AddressSanitizer loops at start,
@@ -558,6 +559,82 @@ calls 0x23BD60, `root.create_player_icon`). **Not run: a game.**
 A newcomer has its row from the moment its place is prepared, before it is
 let in; one whose join fails keeps the row, as a player of the first
 roster who never loaded does.
+
+### 14. A newcomer's grenades and traps (patch revision 7)
+
+Found on 2026-10-14, in the first hour of revision 6: a player with
+grenades in its kits was taken into matches being played four times and
+never let in, while six players without them were. In revision 5 the games
+already in such a match died as well.
+
+**The cause.** The world saves and loads its game objects in the order of
+one list (core+0x18914 the first, +0x18918 the last; `0x2D2699` saves into
+the state's "game objects" bytes, `0x2D2B74` loads, each object reading as
+many bytes as it wrote). The game appends to it: a slot's grenades and
+traps when the slot is bound (`grenade_core` 0x303820 and the trap item
+0x3067A0, one node for each of a stack, called from the inventory's bind
+0x2FC7D0), and then the map's objects (0x285750). So a match's start gives
+the slots' objects first and the map's after them. The late join binds a
+newcomer's slot when the map's objects are in the list already: the games
+in the match had the newcomer's grenades after them, and the newcomer's own
+game, which starts with its slot, before them. One game's world was read by
+the other's objects in another order, the hashes of the two never agreed,
+and the server never let the player in. Seen in the worlds the players'
+server kept: six zero bytes at the very end of the game objects after such
+a player's place was prepared (six grenades, one byte each untouched),
+where a match's start has its grenades in front. An object that reads a
+byte not its own can take it for a thrown grenade and read a place of
+numbers that are no numbers after it: LIKELY the crashes of patch 13's
+second fault. Medkits, oxygen, artefacts and weapons are saved inside
+their player's own block and were never part of this.
+
+**The order.** `bind_slot_reserved` (the code every slot is bound through,
+at a match's start and later) puts the list aside, lets the game bind the
+slot into an empty one, and puts what was aside behind the slot's nodes. A
+slot's grenades and traps are in front of everything the list held, so the
+list is the same in every game whenever a slot was bound: the newest
+slot's first, the map's objects last.
+
+**The states to roll back to.** A game keeps the states of the last half
+second and loads one whenever an input for a past tick arrives. Those
+saved before a slot was added have no bytes for its objects, and a load
+would read every object after them out of step. `lj_native_install` counts
+the nodes the slot added and puts as many zero bytes in front of the game
+objects of every kept state (core+0x2FBC, item+0xBDF30): a grenade or a
+trap nobody has touched saves itself as one zero byte
+(`grenade_core::serialize` 0x303DA0, `booby_trap_core::serialize`
+0x3052E0). A state with no room for them is left (the buffer is 8192
+bytes; the largest seen is 525).
+
+**Revisions.** The order is another one than revisions 5 and 6 keep when
+two slots have grenades, so a game of 7 and an older one part as soon as
+one of those is thrown: a server asks for 7. While the games of a match
+install a new place their worlds differ for a moment (a game with it, a
+game not yet); the match server does not judge hash reports then
+(`Game::installing`), where it resynced a game that was a second or more
+behind the others with a world of the other kind.
+
+Checked: `check_late_join_026g.py`, with Unicorn on made-up objects. The
+game's own binders (slot, kit, inventory, grenade item and grenade, trap
+item) run on kits with grenades and traps: slots bound at a start, the
+map's objects added, slots bound after them, and each time the list is the
+newest slot's objects, the older slots', the map's, every link there and
+back right and every id of its place's range. The whole install runs for
+newcomers with 2, 1, 9 and 2 such objects into a world with two saved
+objects and four kept states: each state has the zero bytes in front and
+its size, one that fits to the byte too, one with no room is untouched,
+and a newcomer with none changes nothing. Seven copies of the code with
+one thing broken each all fail that check. The one zero byte is the
+game's own word: a grenade and a trap as their constructors leave them,
+saved and loaded by their own code there, write that byte and read it
+back with no change (a thrown grenade and an armed trap fail it).
+`selftest_026g.py`: 682 checks.
+The match server's tests: two new ones (games that install a place five
+seconds apart are not resynced for it; a game really out of step meanwhile
+is resynced afterwards), both failing without the change. **Not run: a
+game.** Not known: whether anything else of a grenade or a trap differs
+between a slot bound at the start and one bound later (none was found in
+the code read); what a join does while a grenade is in the air.
 
 ## Not ported, not done
 

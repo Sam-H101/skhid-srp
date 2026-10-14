@@ -552,12 +552,26 @@ direct_match:
 %endif
 
 times 2816-($-$$) db 0xcc
+; The slot's ids, its weapons' places, and where its saved objects go.
+;
+; The world saves and loads its game objects in the order of one list
+; (core+18914h the first, +18918h the last; a node is vtable, +4 the one
+; before, +8 the next; 0x2D2699 saves, 0x2D2B74 loads): that order is the
+; layout of the world's "game objects" bytes, so every game of a match must
+; hold the same one. The game appends: a slot's grenades and traps when the
+; slot is bound (0x303820, 0x3067A0: one node for each of a stack), then
+; the map's objects (0x285750). A slot bound later, when the match takes a
+; player in, came after the map's objects, while that player's own game,
+; which starts with the slot, had it before them: the two never agreed.
+; So a slot's nodes always go in front of everything the list holds, in the
+; order the game binds them: the list is the same whenever a slot was
+; bound, the newest slot first.
 bind_slot_reserved:
     push ebp
     mov ebp, esp
     push ebx
     push esi
-    sub esp, 12
+    sub esp, 20
     mov ebx, eax
     mov esi, [ebp+8]
     movzx eax, byte [esi+0x2c]
@@ -579,14 +593,37 @@ bind_slot_reserved:
     imul edx, 24
     add eax, edx
     mov [ebx+0x18b50], eax
+    ; The list is put aside: the game binds the slot into an empty one.
+    mov eax, [ebx+0x18914]
+    mov [ebp-24], eax
+    mov eax, [ebx+0x18918]
+    mov [ebp-28], eax
+    xor eax, eax
+    mov [ebx+0x18914], eax
+    mov [ebx+0x18918], eax
     push esi
     mov eax, ebx
     call 0x321820
+    mov eax, [ebp-24]             ; the first of what was put aside
+    mov ecx, [ebx+0x18918]        ; the slot's last node
+    test ecx, ecx
+    jnz .has_nodes
+    mov [ebx+0x18914], eax        ; the slot has none: the list as it was
+    jmp .last
+.has_nodes:
+    test eax, eax
+    jz .listed                    ; nothing was put aside
+    mov [ecx+8], eax              ; ... and what was put aside follows it
+    mov [eax+4], ecx
+.last:
+    mov eax, [ebp-28]
+    mov [ebx+0x18918], eax
+.listed:
     mov eax, [ebp-20]
     mov [ebx+0x18b50], eax
     mov eax, [ebp-12]
     mov [ebx+0x18fb0], eax
-    add esp, 12
+    add esp, 20
     pop esi
     pop ebx
     pop ebp
