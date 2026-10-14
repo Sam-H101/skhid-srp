@@ -320,6 +320,12 @@ pub(super) mod tests {
     /// An 80 x 40 m field: side 0 spawns at x = 5, side 1 at x = 75, a
     /// wall across x = 40 from z = 0 to 25 (the way round is past z = 25).
     pub fn field() -> Arc<World> {
+        field_with(|_| {})
+    }
+
+    /// [`field`] with its map data changed by `edit` (containers,
+    /// batteries).
+    pub fn field_with(edit: impl FnOnce(&mut MapData)) -> Arc<World> {
         let mut triangles = floor(0.0, 0.0, 80.0, 40.0, 0.0).to_vec();
         triangles.extend(wall_x(40.0, 0.0, 25.0));
         let grid = WalkGrid::build(
@@ -336,7 +342,7 @@ pub(super) mod tests {
             point_id: 0,
             layer: "default".into(),
         };
-        let map = MapData {
+        let mut map = MapData {
             spawns: vec![
                 spawn(0, 5.0, 10.0),
                 spawn(0, 5.0, 20.0),
@@ -345,6 +351,7 @@ pub(super) mod tests {
             ],
             ..MapData::default()
         };
+        edit(&mut map);
         let sight = RayTree::build(&triangles);
         Arc::new(World { map, grid, sight })
     }
