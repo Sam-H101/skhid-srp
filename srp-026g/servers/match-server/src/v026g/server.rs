@@ -174,6 +174,9 @@ pub(crate) struct Server {
     stray_datagrams: HashMap<SocketAddr, Stray>,
     next_housekeeping: Instant,
     next_live: Instant,
+    /// For tests: the patch revision of a session the store does not hold.
+    #[cfg(test)]
+    pub(crate) revisions: HashMap<u32, u8>,
 }
 
 impl Server {
@@ -199,6 +202,8 @@ impl Server {
             stray_datagrams: HashMap::new(),
             next_housekeeping: now,
             next_live: now,
+            #[cfg(test)]
+            revisions: HashMap::new(),
         }
     }
 
@@ -339,6 +344,7 @@ impl Server {
             );
         }
         let index = usize::from(seat.place);
+        let revision = self.revision_of(session_id);
         let Some(game) = self.games.get_mut(&seat.match_id) else {
             return;
         };
@@ -350,9 +356,21 @@ impl Server {
         if let Some(formed) = self.registry.formed(seat.match_id) {
             game.sync_roster(formed, now);
         }
-        game.attach(index, addr, session_id, transport, now);
+        game.attach(index, addr, session_id, revision, transport, now);
         self.routes.insert(addr, (seat.match_id, index));
         self.store.seen_in_match(session_id);
+    }
+
+    /// The patch revision the game of this session signed in with; 0 for a
+    /// session the store does not know. How fast a game's clock takes a
+    /// correction goes by it (`match_msgs::clock`), so a game that comes
+    /// back to its place after an update is asked anew.
+    fn revision_of(&self, session_id: u32) -> u8 {
+        #[cfg(test)]
+        if let Some(revision) = self.revisions.get(&session_id) {
+            return *revision;
+        }
+        self.store.client_revision(session_id).unwrap_or(0)
     }
 
     pub fn poll(&mut self, now: Instant) -> Vec<(SocketAddr, Vec<u8>)> {

@@ -99,7 +99,7 @@ use survarium::v026g::match_msgs::snapshot::{self, Rules, Sections, Standing, St
 use survarium::v026g::match_msgs::upload::{Pushed, Reassembler, Upload};
 use survarium::v026g::match_msgs::{
     ClientMessage, FORCED_MISMATCH, Generation, PlayerInput, ServerMessage, TICK_MS, TimeReply,
-    WireTime, parse_client, tick_byte, tick_time,
+    WireTime, clock as game_clock, parse_client, tick_byte, tick_time,
 };
 use udp_transport::{Event, SendError, Transport};
 
@@ -205,14 +205,19 @@ const MISSED_KEPT: usize = 64;
 const MIN_MS_PER_KILL: u32 = 2_000;
 /// Plausibility: batteries home at most one per this long, plus one.
 const MIN_MS_PER_BATTERY: u32 = 10_000;
-/// Clock samples kept per client; the smallest lag of them counts.
+/// Clock samples kept per client; the one taken over the shortest round
+/// trip counts (`best_sample`).
 const CLOCK_SAMPLES: usize = 4;
+/// A client's latest round trips kept: the shortest of them is what its
+/// link can do, and a sample is off by half of what its own was longer, at
+/// most.
+const ROUND_TRIPS_KEPT: usize = 32;
 /// A client clock this far off is corrected (0xE7).
 const CLOCK_TOLERANCE_MS: i64 = 10;
-/// The client corrects its clock at 5 % speed (PROVEN: `floating_timer::
-/// set_offset` 0x1EE9E0 runs the timer at 1 +- the rate the `game`
-/// constructor sets at 0x1E9848, 0.05).
-const CORRECTION_MS_PER_MS: u64 = 20;
+/// A game makes a correction up at the share of real time that its build
+/// has for it (`game_clock::factor`: the original's 5 %, the client patch's
+/// 30 % from revision 8), and a sample taken meanwhile says where its
+/// clock was. This long after it is done the next samples are waited for.
 const CORRECTION_SETTLE: Duration = Duration::from_secs(1);
 /// A lag sample further off than this is not used: the 0xDB's clock field
 /// is the client's game clock (PROVEN: the timer 0xE5 sets and 0xE7
@@ -359,6 +364,15 @@ struct PingSent {
     b: u16,
 }
 
+/// One measure of how far a client's clock is behind the match clock (ms;
+/// negative: ahead), the round trip it was taken over and when.
+#[derive(Clone, Copy, Debug)]
+struct LagSample {
+    lag: i64,
+    round_trip: u32,
+    at: Instant,
+}
+
 /// A client whose hashes disagree with the right ones, in a row.
 struct Divergence {
     first: u32,
@@ -463,9 +477,14 @@ struct Peer {
     /// When it last started from a snapshot as a newcomer.
     synced_at: Option<Instant>,
     /// The latest estimates of how far its clock is behind the match clock.
-    lags: VecDeque<i64>,
+    lags: VecDeque<LagSample>,
     /// Its last round trip, in ms.
     round_trip: u32,
+    /// Its latest round trips ([`ROUND_TRIPS_KEPT`]).
+    round_trips: VecDeque<u32>,
+    /// The share of real time by which its game brings its clock up or
+    /// down (`game_clock::factor` of the patch revision it signed in with).
+    clock_factor: f32,
     correcting_until: Option<Instant>,
     inputs_received: u32,
     inputs_late: u32,
@@ -754,12 +773,15 @@ impl Game {
     }
 
     /// A client connected (0xD8) for roster place `index`. A client
-    /// already there is replaced: it left.
+    /// already there is replaced: it left. `revision` is the patch
+    /// revision its game signed in with (0 when that is not known): how
+    /// fast its clock takes a correction goes by it.
     pub fn attach(
         &mut self,
         index: usize,
         addr: SocketAddr,
         session_id: u32,
+        revision: u8,
         mut transport: Transport,
         now: Instant,
     ) {
@@ -813,6 +835,8 @@ impl Game {
             synced_at: None,
             lags: VecDeque::new(),
             round_trip: 0,
+            round_trips: VecDeque::new(),
+            clock_factor: game_clock::factor(revision),
             correcting_until: None,
             inputs_received: 0,
             inputs_late: 0,
@@ -975,7 +999,7 @@ impl Game {
                 peer.generation.0,
                 peer.round_trip
             );
-            sample_lag(peer, reply.client_clock(clock), clock);
+            sample_lag(peer, reply.client_clock(clock), clock, now);
             return;
         }
         let Some(ping) = peer.ping else {
@@ -992,7 +1016,7 @@ impl Game {
         peer.ping = None;
         peer.round_trip = u32::from(round_trip);
         if peer.stage == Stage::Live {
-            sample_lag(peer, reply.client_clock(clock), clock);
+            sample_lag(peer, reply.client_clock(clock), clock, now);
             self.correct_clock(index, now);
         }
     }
@@ -3022,6 +3046,17 @@ impl Game {
     /// Bring a client's clock to the match clock: 0xE7 with the whole
     /// remaining lag, once the last correction is done and fresh samples
     /// came in.
+    ///
+    /// Of the samples, the one taken over the shortest round trip counts
+    /// (`best_sample`), and only when the lag it shows is more than its
+    /// round trip leaves open. A sample halves its round trip, so a ping
+    /// held up on its way to the client reads as a clock that is ahead by
+    /// half the delay, and one held up on its way back as a clock that
+    /// much behind. The smallest lag of four, which counted before, was
+    /// the first kind whenever there was one: the game was told to slow
+    /// its clock by 183 to 365 ms after single round trips of 665 to
+    /// 924 ms on a link of 196 (live, 2026-10-14), and its inputs came
+    /// too late for the seconds that followed.
     fn correct_clock(&mut self, index: usize, now: Instant) {
         if !self.settings.clock_correction {
             return;
@@ -3030,21 +3065,19 @@ impl Game {
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
-        if peer.stage != Stage::Live
-            || peer.lags.len() < 2
-            || peer.correcting_until.is_some_and(|until| now < until)
-        {
+        if peer.stage != Stage::Live || peer.correcting_until.is_some_and(|until| now < until) {
             return;
         }
-        let Some(lag) = peer.lags.iter().min().copied() else {
+        let usual = peer.round_trips.iter().min().copied();
+        let Some(offset) = correction_for(peer.lags.iter(), corrected_at(peer), usual) else {
             return;
         };
-        if lag.abs() < CLOCK_TOLERANCE_MS {
-            return;
-        }
-        let offset = lag.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+        let lag = i64::from(offset);
         send(peer, &ServerMessage::ClockOffset(offset));
-        let takes = Duration::from_millis(u64::from(offset.unsigned_abs()) * CORRECTION_MS_PER_MS);
+        let takes = Duration::from_millis(game_clock::correction_ms(
+            u32::from(offset.unsigned_abs()),
+            peer.clock_factor,
+        ));
         peer.correcting_until = Some(now + takes + CORRECTION_SETTLE);
         // Its clock moves against the match clock: so do its ticks.
         peer.upload_offset = None;
@@ -3903,18 +3936,83 @@ fn relay(index: usize, what: &Relayed) -> ServerMessage {
 }
 
 /// How far the client's clock is behind the match clock, from a clock it
-/// sent: the match clock at arrival less the half round trip it travelled.
-fn sample_lag(peer: &mut Peer, client: u32, clock: u32) {
-    let lag = i64::from(clock) - i64::from(peer.round_trip / 2) - i64::from(client);
+/// sent over the round trip just measured (`peer.round_trip`): the match
+/// clock at arrival less the half round trip it travelled.
+fn sample_lag(peer: &mut Peer, client: u32, clock: u32, now: Instant) {
+    let round_trip = peer.round_trip;
+    if peer.round_trips.len() == ROUND_TRIPS_KEPT {
+        peer.round_trips.pop_front();
+    }
+    peer.round_trips.push_back(round_trip);
+    let lag = i64::from(clock) - i64::from(round_trip / 2) - i64::from(client);
     if lag.abs() > MAX_SANE_LAG_MS {
         return;
     }
     if peer.lags.len() == CLOCK_SAMPLES {
         peer.lags.pop_front();
     }
-    peer.lags.push_back(lag);
-    peer.lag_ms = peer.lags.iter().min().copied();
+    let sample = LagSample {
+        lag,
+        round_trip,
+        at: now,
+    };
+    peer.lags.push_back(sample);
+    // While its game is still making a correction up, the latest sample
+    // says best where its clock is; after, the best of the ones since.
+    let best = best_sample(fresh(peer.lags.iter(), corrected_at(peer)));
+    peer.lag_ms = Some(best.map_or(lag, |best| best.lag));
     peer.correction = None;
+}
+
+/// The samples taken since `since`: the ones before are of a clock that
+/// was still being brought up or down.
+fn fresh<'a>(
+    samples: impl Iterator<Item = &'a LagSample> + Clone,
+    since: Option<Instant>,
+) -> impl Iterator<Item = &'a LagSample> + Clone {
+    samples.filter(move |sample| since.is_none_or(|at| sample.at >= at))
+}
+
+/// When the client's game has made up the last correction it was sent:
+/// samples from before are of a clock that was still on its way.
+fn corrected_at(peer: &Peer) -> Option<Instant> {
+    peer.correcting_until
+        .map(|until| until.checked_sub(CORRECTION_SETTLE).unwrap_or(until))
+}
+
+/// The correction (0xE7) that the samples of a client's clock call for,
+/// if any: those taken since `since`, when its game had made up the
+/// correction before. `usual` is the shortest round trip its link has
+/// shown of late. Two samples at least; the best of them (`best_sample`)
+/// counts, and only for a lag beyond what it leaves open: its ping may
+/// have been held up on one way by all that its round trip was longer than
+/// the usual one, which puts the lag it shows off by half of that.
+fn correction_for<'a>(
+    samples: impl Iterator<Item = &'a LagSample> + Clone,
+    since: Option<Instant>,
+    usual: Option<u32>,
+) -> Option<i16> {
+    let samples = fresh(samples, since);
+    if samples.clone().count() < 2 {
+        return None;
+    }
+    let best = best_sample(samples)?;
+    let usual = usual.unwrap_or(best.round_trip).min(best.round_trip);
+    let unsure = i64::from((best.round_trip - usual) / 2);
+    if best.lag.abs() < CLOCK_TOLERANCE_MS + unsure {
+        return None;
+    }
+    Some(best.lag.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16)
+}
+
+/// Of some clock samples, the one taken over the shortest round trip, the
+/// latest of them where several were: a sample is wrong by half of what
+/// its ping was held up on one way more than on the other, and the
+/// shortest round trip was held up least.
+fn best_sample<'a>(samples: impl Iterator<Item = &'a LagSample>) -> Option<LagSample> {
+    samples
+        .min_by(|a, b| a.round_trip.cmp(&b.round_trip).then(b.at.cmp(&a.at)))
+        .copied()
 }
 
 /// How far the client's clock is behind the match clock now: as last
@@ -4137,6 +4235,77 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Clock samples a second apart: (the lag each shows, its round trip).
+    fn samples(taken: &[(i64, u32)]) -> Vec<LagSample> {
+        let start = Instant::now();
+        taken
+            .iter()
+            .enumerate()
+            .map(|(second, &(lag, round_trip))| LagSample {
+                lag,
+                round_trip,
+                at: start + Duration::from_secs(second as u64),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_clock_is_corrected_by_the_sample_of_the_shortest_round_trip() {
+        // A clock that is behind, on a steady link: the latest of the
+        // samples that tie counts.
+        let behind = samples(&[(465, 196), (470, 200), (460, 196)]);
+        assert_eq!(correction_for(behind.iter(), None, Some(195)), Some(460));
+        // Ahead as well.
+        let ahead = samples(&[(-98, 197), (-100, 196)]);
+        assert_eq!(correction_for(ahead.iter(), None, Some(196)), Some(-100));
+        // Within the tolerance, or one sample alone: nothing.
+        let right = samples(&[(4, 196), (-9, 197)]);
+        assert_eq!(correction_for(right.iter(), None, Some(196)), None);
+        assert_eq!(correction_for(behind[..1].iter(), None, Some(195)), None);
+        assert_eq!(correction_for([].iter(), None, None), None);
+        // More than a 0xE7 holds.
+        let far = samples(&[(40_000, 20), (40_000, 20)]);
+        assert_eq!(correction_for(far.iter(), None, Some(20)), Some(i16::MAX));
+        // A sample from before the game had made the last correction up is
+        // of a clock still on its way: it does not count, whatever its
+        // round trip, and neither does it make two of one.
+        let moving = samples(&[(240, 190), (130, 191), (20, 196), (22, 197)]);
+        assert_eq!(
+            correction_for(moving.iter(), Some(moving[2].at), Some(190)),
+            Some(20)
+        );
+        assert_eq!(
+            correction_for(moving.iter(), Some(moving[3].at), Some(190)),
+            None
+        );
+        assert_eq!(correction_for(moving.iter(), None, Some(190)), Some(240));
+    }
+
+    #[test]
+    fn a_ping_held_up_on_one_way_does_not_turn_a_clock_back() {
+        // Live, 2026-10-14: a link of 196 ms and one round trip of 665.
+        // The ping was 469 ms longer on its way there, the sample reads
+        // 234 ms ahead, and as the smallest lag of the four it had the
+        // game told to slow its clock by 238 ms.
+        let spike = samples(&[(12, 196), (8, 197), (-238, 665), (15, 198)]);
+        assert_eq!(correction_for(spike.iter(), None, Some(195)), Some(12));
+        let quiet = samples(&[(2, 196), (8, 197), (-238, 665), (5, 198)]);
+        assert_eq!(correction_for(quiet.iter(), None, Some(195)), None);
+        // Held up on its way back it reads as far behind: not that either.
+        let late = samples(&[(3, 196), (236, 665), (-4, 197)]);
+        assert_eq!(correction_for(late.iter(), None, Some(195)), None);
+        // Nothing but samples over long round trips (the link stalls):
+        // what they show is within what they leave open, and waits.
+        let stall = samples(&[(-238, 665), (-183, 560)]);
+        assert_eq!(correction_for(stall.iter(), None, Some(195)), None);
+        // A lag beyond that is real however long the round trip was.
+        let real = samples(&[(-600, 665), (-590, 560)]);
+        assert_eq!(correction_for(real.iter(), None, Some(195)), Some(-590));
+        // With no round trip known from before, the samples' shortest is
+        // the usual one.
+        assert_eq!(correction_for(stall.iter(), None, None), Some(-183));
+    }
 
     #[test]
     fn ticks_round_up_to_the_grid() {
