@@ -34,6 +34,10 @@
 ; The code never names an address of its own: it finds where it was loaded
 ; (call/pop) and adds that to the two image addresses it uses, so it also
 ; works when Windows or Wine loads the launcher at another base.
+;
+; `enter_key`, after it, makes Enter press PLAY: patch_launcher_026g.py
+; makes the first instruction of the message loop's body a jump to it (see
+; there).
 
 bits 32
 org CAVE
@@ -136,6 +140,53 @@ hook:
 .fail:  xor     al, al
 .done:  pop     ebx
         ret     8
+
+; Enter presses PLAY. launcher::execute (0x14DB1) runs the window's message
+; loop itself, with the launcher in edi and the MSG at [ebp-20h]: hwnd,
+; message, wParam, lParam. Its body starts at 0x14EF0 with
+; `cmp dword [ebp-1Ch], 113h` (WM_TIMER), which patch_launcher_026g.py makes
+; a jump here. The key is looked at before TranslateMessage, so it works
+; wherever the focus is in the window, the server's page included (the
+; embedded browser would otherwise take it).
+;
+; PLAY is the image button at form+620h; while it is enabled its click
+; callback (form+638h) is launch_survarium (0x1B893) with the form as its
+; context (form+63Ch), and while it is disabled both are 0
+; (launcher_form::set_play_button_active, 0x1B5E9). Enter calls that
+; callback as a click does (0x1275B), so it does exactly what PLAY does and
+; nothing while PLAY is off. A held Enter (lParam bit 30, the key was down
+; already) presses it once. Every other message, and Enter while PLAY is
+; off, goes on to the loop as before.
+
+LOOP_TIMER_JNE          equ 0x14EF7     ; `jne` after the replaced `cmp`
+LOOP_PROCESSED          equ 0x14F26     ; launcher::on_message_processed, then GetMessageW
+LAUNCHER_FORM           equ 0x2DC4      ; launcher: the form shown
+PLAY_CALLBACK           equ 0x638       ; form: PLAY's click callback, 0 while disabled
+PLAY_CONTEXT            equ 0x63C       ; form: its argument
+WM_KEYDOWN              equ 0x100
+VK_RETURN               equ 0x0D
+
+        align   16, db 0xCC
+enter_key:
+        cmp     dword [ebp-1Ch], WM_KEYDOWN
+        jne     .other
+        cmp     dword [ebp-18h], VK_RETURN
+        jne     .other
+        test    dword [ebp-14h], 1 << 30        ; a repeat of a held key
+        jnz     .other
+        mov     eax, [edi+LAUNCHER_FORM]
+        test    eax, eax
+        jz      .other
+        mov     ecx, [eax+PLAY_CALLBACK]
+        test    ecx, ecx
+        jz      .other
+        push    dword [eax+PLAY_CONTEXT]
+        call    ecx
+        pop     ecx
+        jmp     LOOP_PROCESSED                  ; the key is not handed on
+
+.other: cmp     dword [ebp-1Ch], 113h           ; the replaced instruction
+        jmp     LOOP_TIMER_JNE
 
         align   16, db 0xCC
 exe_name:
