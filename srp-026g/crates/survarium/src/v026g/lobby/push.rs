@@ -732,14 +732,25 @@ pub const MATCHES_START: u32 = 2_000_000_000;
 /// Every `start` of a `3B` from here on is srp's own and never a ranking
 /// page. The stock page asks only for indexes below the count of ranked
 /// players it was told (`PlayerRanking.request_players`), so a stock game
-/// never sends one. The ones above [`MATCHES_START`] are kept for later
-/// and get no answer.
+/// never sends one. Besides [`MATCHES_START`] only the JOIN requests
+/// ([`JOIN_START`]) are answered; every other one gets no answer.
 pub const RESERVED_START: u32 = MATCHES_START;
+/// The `start` of a `3B` that is the JOIN button of a match of
+/// [`matches_now`]: `JOIN_START + key`, `key` the match's listing key
+/// ([`MatchNow::key`]) from 1 to [`JOIN_KEY_MAX`]. `JOIN_START` itself is
+/// no request. Answered with [`join_answer`].
+pub const JOIN_START: u32 = 2_100_000_000;
+/// The largest listing key: `JOIN_START + JOIN_KEY_MAX` is 2 199 999 999,
+/// within a u32 and below every start nobody uses.
+pub const JOIN_KEY_MAX: u32 = 99_999_999;
 /// The most matches one [`matches_now`] lists, whatever the `3B` asks for.
 pub const MATCHES_NOW_ROWS: usize = 32;
 /// The first field of the header row of [`matches_now`]: the version of
-/// the rows' format.
-pub const MATCHES_NOW_VERSION: &str = "M1";
+/// the rows' format. M2 appended the listing key to M1's rows and made
+/// `join` the asker's own.
+pub const MATCHES_NOW_VERSION: &str = "M2";
+/// The first field of the row of [`join_answer`].
+pub const JOIN_ANSWER_VERSION: &str = "J1";
 
 /// How far a match of [`matches_now`] is: the row's `phase` field.
 #[repr(u8)]
@@ -768,8 +779,42 @@ pub struct MatchNow {
     pub score: Option<[u16; 2]>,
     /// Whole seconds since play began; `None` writes `-`: it has not.
     pub played: Option<u32>,
-    /// A late joiner could be admitted to it right now.
+    /// The player who asked would be put into it at once by its JOIN
+    /// button (the lobby's rule; the row is the asker's own).
     pub join: bool,
+    /// The lobby's listing number of the match, 1 to [`JOIN_KEY_MAX`]:
+    /// stable for the match's life and not its match id. What a JOIN
+    /// request names the match by ([`JOIN_START`]).
+    pub key: u32,
+}
+
+/// What a JOIN request ([`JOIN_START`]) came to: the second field of
+/// [`join_answer`]'s row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinResult {
+    /// A place is held for the asker for a few seconds: its Play now puts
+    /// it into the match.
+    Ok,
+    /// The match does not take the asker at once any more (another took
+    /// the place, the sides count alike now, a side is full).
+    Full,
+    /// The match is over, the key is no match's, or it stopped admitting.
+    Gone,
+    /// The asker cannot join now (in the queue, in a squad, an old game,
+    /// it had a place in the match).
+    Busy,
+}
+
+impl JoinResult {
+    /// The word the row carries.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Full => "full",
+            Self::Gone => "gone",
+            Self::Busy => "busy",
+        }
+    }
 }
 
 /// `91` as the answer to `3B 00 <MATCHES_START> <count>`: the matches being
@@ -783,13 +828,14 @@ pub struct MatchNow {
 /// the first row's place (`PlayerRanking.fillPlayers`):
 ///
 /// - row 0, the header, always there (an empty list is not no answer):
-///   `name = "M1;<total>"`, `place = MATCHES_START`. `total` is the matches
+///   `name = "M2;<total>"`, `place = MATCHES_START`. `total` is the matches
 ///   open now, which may be more than the rows that follow.
 /// - row `i` from 1, a match: `place = MATCHES_START + i`, `name =
-///   "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>"`
+///   "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>;<key>"`
 ///   ([`MatchNow`]): ASCII decimal numbers with `;` between them, `-` for a
 ///   score or a time there is none of, `join` 1 or 0. The movie ignores
-///   fields after the ones it knows, so a later version may append.
+///   fields after the ones it knows, so a later version may append (M1
+///   ended at `join`; a movie of M1 reads M2's rows as it read those).
 ///
 /// At most [`MATCHES_NOW_ROWS`] matches.
 ///
@@ -797,7 +843,7 @@ pub struct MatchNow {
 /// (0x271EB0) copies each name into a 64-byte field of its stack with no
 /// check of the length. Every name goes through `elo_rows`, which cuts it
 /// to [`limits::NAME`] as it does a player's; and with the widest number
-/// in every field a match's name is 42 bytes, so nothing is ever cut. The
+/// in every field a match's name is 53 bytes, so nothing is ever cut. The
 /// client hands the rows to the movie as they are (the place a whole u32)
 /// and looks at them nowhere else: it keeps none and compares no name.
 /// Its sender of the `3B` (0x270070) has no condition of the ranking
@@ -816,7 +862,7 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
             None => ["-".to_owned(), "-".to_owned()],
         };
         row(format!(
-            "{};{};{};{};{};{score0};{score1};{};{}",
+            "{};{};{};{};{};{score0};{score1};{};{};{}",
             each.level,
             each.mode,
             each.phase as u8,
@@ -824,7 +870,8 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
             each.players[1],
             each.played
                 .map_or("-".to_owned(), |seconds| seconds.to_string()),
-            u8::from(each.join)
+            u8::from(each.join),
+            each.key
         ))
     }));
     let placed: Vec<(u32, &Ranked)> = rows
@@ -833,6 +880,21 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
         .map(|(index, row)| (MATCHES_START + index as u32, row))
         .collect();
     elo_rows(&placed)
+}
+
+/// `91` as the answer to a JOIN request (`3B 00 <JOIN_START + key>
+/// <count>`): one row, `name = "J1;<result>;<key>"` ([`JoinResult::word`]),
+/// `place = JOIN_START`, rating and change 0. **srp's own**, like
+/// [`matches_now`], and as safe for the client: a name of 20 bytes at the
+/// most, the place a whole u32 the movie tells apart from a ranking row
+/// (at least [`MATCHES_START`]).
+pub fn join_answer(result: JoinResult, key: u32) -> Result<ServerMessage, WireError> {
+    let row = Ranked {
+        name: format!("{JOIN_ANSWER_VERSION};{};{key}", result.word()),
+        rating: 0,
+        rating_before: 0,
+    };
+    elo_rows(&[(JOIN_START, &row)])
 }
 
 /// One 20-byte `quest_instance` of 0x92.

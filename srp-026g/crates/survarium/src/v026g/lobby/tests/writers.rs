@@ -588,7 +588,7 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
     // No match: the header alone, so the window can tell it from no answer.
     assert_bytes(
         &matches_now(0, &[]).unwrap(),
-        "91 01 'M1;0' 00943577 0000 0000",
+        "91 01 'M2;0' 00943577 0000 0000",
     );
     let playing = MatchNow {
         level: 1,
@@ -598,6 +598,7 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
         score: Some([88, 78]),
         played: Some(380),
         join: true,
+        key: 7,
     };
     let gathering = MatchNow {
         level: 8,
@@ -607,31 +608,33 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
         score: None,
         played: None,
         join: false,
+        key: 12,
     };
     // The header counts the matches open, listed or not; the rows follow
     // in the order given, each a place further.
     let message = matches_now(5, &[playing, gathering]).unwrap();
     assert_bytes(
         &message,
-        "91 03 'M1;5' 00943577 0000 0000
-               '1;4;2;4;3;88;78;380;1' 01943577 0000 0000
-               '8;2;0;10;10;-;-;-;0' 02943577 0000 0000",
+        "91 03 'M2;5' 00943577 0000 0000
+               '1;4;2;4;3;88;78;380;1;7' 01943577 0000 0000
+               '8;2;0;10;10;-;-;-;0;12' 02943577 0000 0000",
     );
     // The client reads it as it reads a ranking page.
     let mut client = Client::signed_in();
     assert_eq!(
         client.receive(&message).unwrap(),
         Decoded::EloList(vec![
-            ("M1;5".into(), 2_000_000_000, 0, 0),
-            ("1;4;2;4;3;88;78;380;1".into(), 2_000_000_001, 0, 0),
-            ("8;2;0;10;10;-;-;-;0".into(), 2_000_000_002, 0, 0),
+            ("M2;5".into(), 2_000_000_000, 0, 0),
+            ("1;4;2;4;3;88;78;380;1;7".into(), 2_000_000_001, 0, 0),
+            ("8;2;0;10;10;-;-;-;0;12".into(), 2_000_000_002, 0, 0),
         ])
     );
     // The countdown's number, and the widest row there can be, every field
     // the largest number its type holds (three digits for the level, the
-    // mode and each team, five for each score, ten for the seconds). The
-    // client copies a name into 64 bytes without a check (0x271EB0): 63 is
-    // all it may be, and this one is 42, so nothing of it is cut.
+    // mode and each team, five for each score, ten for the seconds and the
+    // key). The client copies a name into 64 bytes without a check
+    // (0x271EB0): 63 is all it may be, and this one is 53, so nothing of it
+    // is cut.
     let widest = MatchNow {
         level: u8::MAX,
         mode: u8::MAX,
@@ -640,29 +643,31 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
         score: Some([u16::MAX, u16::MAX]),
         played: Some(u32::MAX),
         join: true,
+        key: u32::MAX,
     };
-    let name = "255;255;1;255;255;65535;65535;4294967295;1";
-    assert_eq!(name.len(), 42);
+    let name = "255;255;1;255;255;65535;65535;4294967295;1;4294967295";
+    assert_eq!(name.len(), 53);
     assert!(name.len() <= limits::NAME);
     let message = matches_now(u32::MAX, &[widest; MATCHES_NOW_ROWS]).unwrap();
     // On the wire: after the count and the header, the name's length byte
     // and the name whole.
-    let header = h("91 21 'M1;4294967295' 00943577 0000 0000");
+    let header = h("91 21 'M2;4294967295' 00943577 0000 0000");
     assert_eq!(bytes(&message)[..header.len()], header);
-    assert_eq!(bytes(&message)[header.len()], 42);
+    assert_eq!(bytes(&message)[header.len()], 53);
     assert_eq!(
-        bytes(&message)[header.len() + 1..header.len() + 43],
+        bytes(&message)[header.len() + 1..header.len() + 54],
         *name.as_bytes()
     );
     let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
         panic!("not a ranking list");
     };
     assert_eq!(rows.len(), 1 + MATCHES_NOW_ROWS);
-    assert_eq!(rows[0].0, "M1;4294967295");
+    assert_eq!(rows[0].0, "M2;4294967295");
     assert!(rows[1..].iter().all(|row| row.0 == name));
     assert!(rows.iter().all(|row| row.0.len() <= limits::NAME));
     // What a real match has at the most: one-digit level and mode, two
-    // digits a team, five a score, four for the seconds of a match.
+    // digits a team, five a score, four for the seconds of a match, eight
+    // for the key.
     let full = MatchNow {
         level: 8,
         mode: 4,
@@ -671,16 +676,45 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
         score: Some([u16::MAX, u16::MAX]),
         played: Some(9999),
         join: true,
+        key: JOIN_KEY_MAX,
     };
     let message = matches_now(1, &[full]).unwrap();
     let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
         panic!("not a ranking list");
     };
-    assert_eq!(rows[1].0, "8;4;2;10;10;65535;65535;9999;1");
-    assert_eq!(rows[1].0.len(), 30);
+    assert_eq!(rows[1].0, "8;4;2;10;10;65535;65535;9999;1;99999999");
+    assert_eq!(rows[1].0.len(), 39);
     // No more matches than the answer lists.
     assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS]).is_ok());
     assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS + 1]).is_err());
+}
+
+/// The answer to a JOIN button's request: one ranking row at the JOIN
+/// start (2 100 000 000 is 0x7D2B7500) whose name says what came of it.
+#[test]
+fn a_join_is_answered_with_one_row_at_the_join_start() {
+    assert_eq!(JOIN_START, 2_100_000_000);
+    assert_eq!(JOIN_KEY_MAX, 99_999_999);
+    // The last JOIN start, past every place of the list and within a u32.
+    assert_eq!(JOIN_START.checked_add(JOIN_KEY_MAX), Some(2_199_999_999));
+    assert_bytes(
+        &join_answer(JoinResult::Ok, 7).unwrap(),
+        "91 01 'J1;ok;7' 00752B7D 0000 0000",
+    );
+    let mut client = Client::signed_in();
+    for (result, name) in [
+        (JoinResult::Ok, "J1;ok;99999999"),
+        (JoinResult::Full, "J1;full;99999999"),
+        (JoinResult::Gone, "J1;gone;99999999"),
+        (JoinResult::Busy, "J1;busy;99999999"),
+    ] {
+        let message = join_answer(result, JOIN_KEY_MAX).unwrap();
+        assert_eq!(
+            client.receive(&message).unwrap(),
+            Decoded::EloList(vec![(name.into(), 2_100_000_000, 0, 0)])
+        );
+        assert!(name.len() <= limits::NAME);
+    }
 }
 
 #[test]

@@ -10,6 +10,9 @@
 //! - `core`: the links: sign-in, the session's hold, timeouts, sign-out;
 //! - `dispatch`: every client request and its answer;
 //! - `play`: Play, the queue, making a match and coming back from it;
+//! - `join`: the JOIN button of the "matches now" window of srp's changed
+//!   lobby movie: a held place in a match being played, and the Play that
+//!   takes it;
 //! - `social`: chat, friends, important messages, squads;
 //! - `clans`: clans, clan chat and clan-team Play.
 //!
@@ -107,6 +110,7 @@ mod clans;
 mod core;
 mod dispatch;
 mod items;
+mod join;
 mod patch_check;
 mod play;
 mod queue_chat;

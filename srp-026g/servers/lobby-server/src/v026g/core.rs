@@ -207,6 +207,12 @@ pub(super) struct Core<'a> {
     /// die of one (`show_results`). A lobby started anew knows of none, so
     /// a game that outlived it is shown no screen until its next match.
     pub sent_to_match: HashSet<u32>,
+    /// The places held for the players whose JOIN was granted, by account:
+    /// their Play puts them into that match (`join`).
+    pub holds: HashMap<u32, super::join::Hold>,
+    /// The listing keys of the matches, which JOIN names a match by
+    /// (`join`).
+    pub listing: super::join::Listing,
 }
 
 impl<'a> Core<'a> {
@@ -246,6 +252,11 @@ impl<'a> Core<'a> {
             clan: Default::default(),
             away: HashMap::new(),
             sent_to_match: HashSet::new(),
+            holds: HashMap::new(),
+            // A key is not one a match of the lobby before a restart had,
+            // which a window still open may name: the keys start at the
+            // time.
+            listing: super::join::Listing::new(quests::now() as u32),
         }
     }
 
@@ -689,6 +700,8 @@ impl<'a> Core<'a> {
         if self.by_account.get(&player.account_id) == Some(&addr) {
             self.by_account.remove(&player.account_id);
         }
+        // A place held for its JOIN is free again.
+        self.holds.remove(&player.account_id);
         self.leave_queue_said(player.session_id, &player.name, player.queue_announced);
         self.store.squads().set_ready(player.account_id, false);
         // Nor in its clan team, which it leaves with its session.
@@ -840,6 +853,7 @@ impl<'a> Core<'a> {
         }
 
         self.check_matches(now);
+        self.holds.retain(|_, hold| hold.until > now);
         self.log_predictions(now);
         self.collect_away(now);
         self.clan_matches(now);

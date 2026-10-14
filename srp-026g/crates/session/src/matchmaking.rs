@@ -517,60 +517,24 @@ impl Matchmaking {
         reserve: impl FnOnce(usize, &[Seat]) -> bool,
     ) -> bool {
         let mut inner = self.inner.locked();
-        if groups.is_empty()
-            || inner.fixed_teams.contains(&match_id)
-            || inner.match_pools.get(&match_id) != Some(&QueuePool::GrowingRoster)
-        {
-            return false;
-        }
-        let Some(roster) = inner.matches.get(&match_id) else {
-            return false;
-        };
-        let first = roster.len();
         let mut positions = Vec::new();
-        let mut seats = Vec::new();
-        let mut accounts = HashSet::new();
-        let mut sessions = HashSet::new();
-        let mut squad = roster.iter().map(|seat| seat.squad).max().unwrap_or(0);
-        for (group, team) in groups {
+        for (group, _) in groups {
             let Some(position) = inner.queue.iter().position(|waiting| waiting == group) else {
                 return false;
             };
-            if group.pool != QueuePool::GrowingRoster
-                || *team > 1
-                || group.players.is_empty()
-                || positions.contains(&position)
-            {
+            if group.pool != QueuePool::GrowingRoster || positions.contains(&position) {
                 return false;
             }
             positions.push(position);
-            let squad_id = if group.squad {
-                let Some(next) = squad.checked_add(1) else {
-                    return false;
-                };
-                squad = next;
-                squad
-            } else {
-                0
-            };
-            for &player in &group.players {
-                if !accounts.insert(player.account_id)
-                    || !sessions.insert(player.session_id)
-                    || inner.live_seat_of_account(player.account_id).is_some()
-                    || roster
-                        .iter()
-                        .any(|seat| seat.player.account_id == player.account_id)
-                {
-                    return false;
-                }
-                seats.push(Seat {
-                    player,
-                    team: *team,
-                    squad: squad_id,
-                });
-            }
         }
-        if seats.len() > MAX_PLAYERS_PER_MATCH - first || !reserve(first, &seats) {
+        let parties: Vec<(&[Player], bool, u8)> = groups
+            .iter()
+            .map(|(group, team)| (&group.players[..], group.squad, *team))
+            .collect();
+        let Some((first, seats)) = inner.late_seats(match_id, &parties) else {
+            return false;
+        };
+        if !reserve(first, &seats) {
             return false;
         }
         inner
@@ -583,6 +547,42 @@ impl Matchmaking {
             inner.queue.remove(position);
         }
         inner.track(now);
+        true
+    }
+
+    /// Seat one player who is not in the queue straight into a match being
+    /// played, on `team`: the lobby's JOIN, for a place it held for that
+    /// player. The same rules as [`Self::append_batch`] (a match of growing
+    /// rosters with no fixed teams, a place left, nobody with a place
+    /// anywhere or a former one in it), and the player must not wait in
+    /// the queue either. `reserve` runs under the queue lock as there.
+    pub fn append_player(
+        &self,
+        match_id: u32,
+        player: Player,
+        team: u8,
+        reserve: impl FnOnce(usize, &[Seat]) -> bool,
+    ) -> bool {
+        let mut inner = self.inner.locked();
+        let queued = inner.queue.iter().any(|group| {
+            group.players.iter().any(|waiting| {
+                waiting.account_id == player.account_id || waiting.session_id == player.session_id
+            })
+        });
+        if queued {
+            return false;
+        }
+        let Some((first, seats)) = inner.late_seats(match_id, &[(&[player], false, team)]) else {
+            return false;
+        };
+        if !reserve(first, &seats) {
+            return false;
+        }
+        inner
+            .matches
+            .get_mut(&match_id)
+            .expect("match checked under lock")
+            .extend(seats);
         true
     }
 
@@ -862,6 +862,60 @@ impl Inner {
     /// The players waiting.
     fn waiting(&self) -> usize {
         self.queue.iter().map(|group| group.players.len()).sum()
+    }
+
+    /// The roster places `parties` (their players, whether they are a
+    /// squad, their team) would take in a match being played, and the
+    /// first of them; `None` when the match takes none of them: it is no
+    /// match of growing rosters, its teams are fixed, a party is empty or
+    /// has a team over 1, a player comes twice, has a place in a match
+    /// (one it gave up aside) or had one in this match, or there is not
+    /// room for them all. A squad gets the next squad id of the match.
+    fn late_seats(
+        &self,
+        match_id: u32,
+        parties: &[(&[Player], bool, u8)],
+    ) -> Option<(usize, Vec<Seat>)> {
+        if parties.is_empty()
+            || self.fixed_teams.contains(&match_id)
+            || self.match_pools.get(&match_id) != Some(&QueuePool::GrowingRoster)
+        {
+            return None;
+        }
+        let roster = self.matches.get(&match_id)?;
+        let first = roster.len();
+        let mut seats = Vec::new();
+        let mut accounts = HashSet::new();
+        let mut sessions = HashSet::new();
+        let mut squad = roster.iter().map(|seat| seat.squad).max().unwrap_or(0);
+        for &(players, is_squad, team) in parties {
+            if team > 1 || players.is_empty() {
+                return None;
+            }
+            let squad_id = if is_squad {
+                squad = squad.checked_add(1)?;
+                squad
+            } else {
+                0
+            };
+            for &player in players {
+                if !accounts.insert(player.account_id)
+                    || !sessions.insert(player.session_id)
+                    || self.live_seat_of_account(player.account_id).is_some()
+                    || roster
+                        .iter()
+                        .any(|seat| seat.player.account_id == player.account_id)
+                {
+                    return None;
+                }
+                seats.push(Seat {
+                    player,
+                    team,
+                    squad: squad_id,
+                });
+            }
+        }
+        (seats.len() <= MAX_PLAYERS_PER_MATCH - first).then_some((first, seats))
     }
 
     /// The account's seat, unless it was given up.
@@ -1716,6 +1770,59 @@ mod tests {
         assert_eq!(mm.queued_players(), 0);
         assert_eq!(mm.formed_match(id).unwrap().seats.len(), 10);
         assert!(!mm.append_batch(id, &batch, now, |_, _| panic!("stale batch reserved")));
+    }
+
+    /// The lobby's JOIN seats a player who is in no queue, by the rules of
+    /// a batch: only once the host reserved it, never twice, never one who
+    /// waits in the queue or has a place anywhere.
+    #[test]
+    fn a_player_out_of_the_queue_is_seated_by_the_rules_of_a_batch() {
+        let mm = Matchmaking::new(Duration::ZERO);
+        mm.set_growing_rules(Duration::ZERO, 1.0);
+        let now = Instant::now();
+        mm.queue_in_pool(
+            &[player(1), player(2)],
+            &[],
+            false,
+            now,
+            QueuePool::GrowingRoster,
+        );
+        mm.poll_with(1, now, Some(&TEN));
+        let id = mm.seat(1).unwrap().0;
+        // The host refuses: nothing changes.
+        assert!(!mm.append_player(id, player(3), 1, |_, _| false));
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 2);
+        assert_eq!(mm.seat(3), None);
+        // A team that is none, a match that is none.
+        assert!(!mm.append_player(id, player(3), 2, |_, _| panic!("team 2")));
+        assert!(!mm.append_player(id + 1, player(3), 0, |_, _| panic!("no match")));
+        assert!(mm.append_player(id, player(3), 1, |first, seats| {
+            assert_eq!(first, 2);
+            assert_eq!(
+                seats,
+                [Seat {
+                    player: player(3),
+                    team: 1,
+                    squad: 0
+                }]
+            );
+            true
+        }));
+        assert_eq!(mm.seat(3), Some((id, 2)));
+        assert_eq!(mm.queued_players(), 0);
+        // Seated already; and one who waits in the queue.
+        assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("twice")));
+        mm.queue_in_pool(&[player(4)], &[], false, now, QueuePool::GrowingRoster);
+        assert!(!mm.append_player(id, player(4), 0, |_, _| panic!("queued")));
+        // A place given up is still a place of the match.
+        mm.give_up_seat(player(3).account_id);
+        assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("former place")));
+        // A match of the standard queue takes nobody late.
+        mm.queue(&[player(5), player(6)], false, now);
+        let Some(QueueState::Placed { match_id, .. }) = mm.poll(5, now) else {
+            panic!("a standard match");
+        };
+        assert!(!mm.append_player(match_id, player(7), 0, |_, _| panic!("standard")));
     }
 
     /// A leveled queue as it was before the start rules of 2026-10-13: two
