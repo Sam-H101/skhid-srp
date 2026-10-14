@@ -73,19 +73,55 @@ Which way a positive yaw turns is to be seen in stage 0.
 
 All inputs at once (kept 60 s), and the worlds the patched clients upload
 (about 0.5 s old, every 3-5 s today; `snapshot_rules.md` §7). Each player's
-block has alive, pitch, yaw and the last mask (PROVEN, `players.rs`); the
-position is being traced (LIKELY: a float triple near the end of a living
-player's state). Between worlds the position can be carried forward from
-the inputs (walk about 2.8 m/s, sprint about 4.5 m/s; LIKELY).
+block head has alive, pitch, yaw and the last mask (PROVEN, `players.rs`).
+
+**Position (PROVEN, 2026-10-14):** `base_player::serialize` (0x2DAF60)
+writes `bullet_character_controller::serialize` (0x7F7F0, 67 bytes) for a
+living player only (the skip at 0x2DB303). It starts `84 + 8n` bytes before
+the end of the player's state, `n` being the recent hits counted just
+before the end (`u32 n`, then `n × {u32 time, f32 speed}`, then one byte).
+Its first 12 bytes are `m_last_pos` in physics space: the map frame is
+`(x, y, -z)`, the capsule's centre, 0.9 m above the feet standing (checked
+against the walker mesh of level_05: 0.90 ± 0.03 m at 9 of 12 standing
+samples). Then the jumping and crouch flags, normals, and at +66 sprinting.
+Earlier in the tail: the horizontal speed (about 3.1-3.6 walking, 5.2-5.3
+sprinting; unit LIKELY m/s), the spawn time, and per body part a health
+(part 0: 1.0 unhurt; LIKELY the player's health). Decoded on the four
+worlds of a live match, every player read with no ambiguity. Not yet seen:
+a crouched sample, the sign of A/D. `players.rs`'s "No 0.26g snapshot was
+seen yet" is stale.
+
+Between worlds the position can be carried forward from the inputs (walk
+about 2.8 m/s, sprint about 4.5 m/s measured from worlds; LIKELY).
 
 ## 5. Map knowledge
 
 There is no navigation data in the archive (the engine's loader is never
 called; PROVEN). Each map project's `client_project` has the respawn
-points, the battery spawners and stations, resupply and damage zones, and
-the placed collision objects; the meshes (walker and bullet) are in the
-models' `collision` / `walker_collision` entries. A navigation grid would be
-built offline from the walker mesh.
+points, the battery spawners, containers and stations, resupply and damage
+zones, and the placed collision objects (`collision_objects[]`: library
+name, position, rotation, scale, group and mask); the meshes are in the
+models' `collision` / `walker_collision` entries (vertices, triangles, a
+u16 per face whose top 2 bits are the walker behaviour: 0 ground up to
+60°, 1 always ground, 2 never ground). Many walker meshes are hard links in
+the archive's index: a loader must follow them.
+
+- The walking body (group 4, mask 2) meets objects with `cgroup & 2`;
+  bullets (16, 8) meet `cgroup & 8`. Walls come from the walker mesh; the
+  bullet mesh is for line of sight only. PROVEN.
+- Placement: world point = (local point × the `#[sx][sy][sz]` scale in the
+  library name) × `Rx·Ry·Rz`(rotation) + position, row vectors; the
+  object's own `scale` field is not applied again. All 43 spawns of
+  level_01/day_4 land within -0.04..+0.12 m of a walking surface this way.
+  (The 0.100b srp's `combat/collision.rs` applies the scale twice.)
+- Body: capsule 0.76 m wide, 1.8 m standing, 1.1 m crouched; walk 3.5,
+  sprint 5.5 m/s (`default.player`); step 0.6 m (PROVEN). Jump height:
+  GUESS.
+- A walk grid from the walker mesh (Recast-style, 0.25-0.5 m cells) builds
+  in 0.2-1.4 s per map; a ray tree on the bullet mesh in 0.2 s, 1-2 µs a
+  ray. On level_01/day_4 all 43 spawns connect with jumps; on
+  level_05/evening_2 the spawn areas are left by drops and never re-entered
+  (players' word: spawns can be one-way, with nothing to go back for).
 
 ## 6. Stages
 
@@ -112,3 +148,9 @@ Bots and late joiners: a roster place is never reused, so a joiner cannot
 take the bot's own place; the bot leaves (0xEA) and the joiner comes on a
 new place. Every place ever used counts toward the 20 of a match, so bots
 should fill a match to a modest size.
+
+## 7. Behaviour
+
+What bots should do in a match, built on this data (senses, plays such as
+battery ambushes, carrier interception and sneaking into an empty base,
+reactions to events such as a stolen battery): `player_bots_behaviour.md`.
