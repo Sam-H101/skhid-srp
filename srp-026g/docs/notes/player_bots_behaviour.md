@@ -78,9 +78,10 @@ Each play has a score from the situation, a precondition and steps. A commander 
     - support: escorts, crossfires, covering humans.
 
     The losing team grows more aggressive as the gap grows.
+15. **Hold the exits.** Hold forward chokes on the routes out of the enemy's base, as humans do: in the saved worlds the best kill spots of each side are mostly 30–60 m from the enemy base, and the enemy third of the map gives the best K/D (×1.3 overall, ×1.6 in Team Deathmatch). Owner's rule (2026-10-14): near the exits yes, **never inside a spawn area**. Mostly in Team Deathmatch; in the battery modes the batteries come first.
 
 **Never:**
-- camp an enemy spawn;
+- go into an enemy spawn area, or shoot into one from outside to camp it;
 - aim perfectly from the first frame;
 - react to anything no sense gave.
 
