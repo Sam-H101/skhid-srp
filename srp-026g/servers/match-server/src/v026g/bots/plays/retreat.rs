@@ -290,6 +290,7 @@ mod tests {
                 team,
                 position: Vec3::new(x, 0.0, 35.0),
                 damage_type: String::new(),
+                damage: None,
                 shapes: Vec::new(),
             });
         }

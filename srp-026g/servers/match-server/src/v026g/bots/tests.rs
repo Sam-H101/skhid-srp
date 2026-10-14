@@ -73,6 +73,9 @@ struct Game {
     points: [u32; 2],
     /// Team Deathmatch's tickets.
     tickets: Option<[u32; 2]>,
+    /// Timed batteries: the next one's time, and every how long one
+    /// appears by a station (round the stations in turn).
+    timed: Option<(u32, u32)>,
     inputs: Vec<VecDeque<(u32, u32, (f32, f32))>>,
     /// The worlds of the last two seconds.
     history: VecDeque<Recorded>,
@@ -96,6 +99,7 @@ fn soak_world() -> Arc<World> {
             use_shapes: Vec::new(),
         };
         map.containers = vec![container(0, 0, 12.0, 30.0), container(1, 1, 68.0, 30.0)];
+        map.stations = vec![Vec3::new(40.0, 0.0, 33.0), Vec3::new(30.0, 0.0, 5.0)];
         map.battery_spawners = [(40.0, 33.0), (25.0, 12.0), (55.0, 12.0)]
             .iter()
             .map(|&(x, z)| BatterySpawner {
@@ -108,19 +112,30 @@ fn soak_world() -> Arc<World> {
 }
 
 impl Game {
-    fn new(world: Arc<World>, teams: &[u8], seed: u64, tickets: Option<u32>) -> Self {
+    fn new(
+        world: Arc<World>,
+        teams: &[u8],
+        seed: u64,
+        tickets: Option<u32>,
+        timed: Option<u32>,
+    ) -> Self {
         let containers = world
             .map
             .containers
             .iter()
             .map(|c| (c.team as u8, c.position))
             .collect();
-        let batteries = world
-            .map
-            .battery_spawners
-            .iter()
-            .map(|s| Lying::Free(s.item))
-            .collect();
+        // Timed batteries start with none lying about.
+        let batteries = if timed.is_some() {
+            Vec::new()
+        } else {
+            world
+                .map
+                .battery_spawners
+                .iter()
+                .map(|s| Lying::Free(s.item))
+                .collect()
+        };
         let body = |team| Body {
             team,
             feet: Vec3::ZERO,
@@ -145,6 +160,7 @@ impl Game {
             stats: vec![(0, 0, 0); teams.len()],
             points: [0, 0],
             tickets: tickets.map(|t| [t, t]),
+            timed: timed.map(|every| (every, every)),
             inputs: vec![VecDeque::new(); teams.len()],
             history: VecDeque::new(),
             tick: 0,
@@ -264,6 +280,16 @@ impl Game {
         }
         self.shoot(tick);
         self.use_and_drop(&pressed);
+        // Timed batteries: one appears by the next station in turn.
+        if let Some((next, every)) = self.timed
+            && tick >= next
+        {
+            let stations = &self.world.map.stations;
+            let at = stations[self.batteries.len() % stations.len()];
+            self.batteries
+                .push(Lying::Free(at + Vec3::new(1.5, 0.3, 0.0)));
+            self.timed = Some((next + every, every));
+        }
     }
 
     /// Shots: a hit on the nearest enemy chest within 0.45 m of the ray.
@@ -405,6 +431,7 @@ impl Game {
             stats: self.stats.clone(),
             points: Some(self.tickets.unwrap_or(self.points)),
             can_respawn: Some(self.tickets.map_or([true, true], |t| [t[0] > 0, t[1] > 0])),
+            next_battery: self.timed.map(|(next, _)| next),
             batteries: self
                 .batteries
                 .iter()
@@ -454,11 +481,25 @@ struct Outcome {
 /// when `win` is 0: the most kills when time is up), for at most
 /// `limit_s`.
 fn soak(per_team: usize, win: u32, tdm_tickets: u32, limit_s: u32, seed: u64) -> Outcome {
+    soak_mode(per_team, win, tdm_tickets, None, limit_s, seed)
+}
+
+/// [`soak`], with timed batteries (one every `timed_s`) when given.
+fn soak_mode(
+    per_team: usize,
+    win: u32,
+    tdm_tickets: u32,
+    timed_s: Option<u32>,
+    limit_s: u32,
+    seed: u64,
+) -> Outcome {
     let world = soak_world();
     let teams: Vec<u8> = (0..2 * per_team).map(|p| u8::from(p >= per_team)).collect();
     let driven = vec![true; teams.len()];
     let roles: Vec<Option<&str>> = vec![None; teams.len()];
-    let mode = if win > 0 {
+    let mode = if timed_s.is_some() {
+        survarium::v026g::maps::mode::TIMED_BATTERIES
+    } else if win > 0 {
         survarium::v026g::maps::mode::BATTERIES
     } else {
         survarium::v026g::maps::mode::TEAM_DEATHMATCH
@@ -475,7 +516,7 @@ fn soak(per_team: usize, win: u32, tdm_tickets: u32, limit_s: u32, seed: u64) ->
     );
     bots.map_ready(world.clone());
     let tickets = (win == 0).then_some(tdm_tickets);
-    let mut game = Game::new(world, &teams, seed, tickets);
+    let mut game = Game::new(world, &teams, seed, tickets, timed_s.map(|s| s * 1000));
     for place in 0..teams.len() {
         bots.entered(place, true, 0);
     }
@@ -651,4 +692,22 @@ fn a_team_deathmatch_of_bots_is_fought_to_the_last_ticket() {
         out.shots
     );
     assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
+}
+
+/// Timed batteries: they come by the stations over time; bots wait there
+/// and bring them home.
+#[test]
+#[ignore = "a whole match; run in release"]
+fn timed_batteries_are_waited_for_at_the_stations_and_brought_home() {
+    let out = soak_mode(4, 4, 0, Some(20), 900, 4);
+    assert!(
+        out.delivered[0] + out.delivered[1] >= 2,
+        "{:?}",
+        out.delivered
+    );
+    assert!(
+        out.notes.iter().any(|n| n.text.contains("takes Station")),
+        "no station waits"
+    );
+    assert!(out.winner.is_some());
 }

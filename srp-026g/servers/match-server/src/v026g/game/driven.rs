@@ -246,6 +246,10 @@ fn world_facts(time: u32, decoded: &Decoded) -> WorldFacts {
         batteries,
         container_counts,
         can_respawn: rules.map(|rules| rules.team_respawn),
+        next_battery: gather
+            .and_then(|gather| gather.timed.as_ref())
+            .filter(|timed| timed.started)
+            .map(|timed| timed.next_spawn),
     }
 }
 
@@ -333,6 +337,15 @@ impl Game {
         }
         let notes = walkers.bots.facts(world_facts(snapshot.time, decoded));
         log_notes(id, notes);
+        let (read, missed) = walkers
+            .bots
+            .anomalies_from_world(decoded.sections.objects, snapshot.time);
+        if read + missed > 0 {
+            log::debug!(
+                "Match {id:#x}: anomalies in the world at {} ms: {read} read, {missed} missed",
+                snapshot.time
+            );
+        }
     }
 
     /// The match's clock as the bots need it: the time left in play.

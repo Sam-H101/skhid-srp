@@ -1200,6 +1200,7 @@ mod tests {
             deaths: vec![],
             world_time: 0,
             can_respawn: [true, true],
+            next_battery: None,
         }
     }
 

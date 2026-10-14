@@ -40,6 +40,7 @@ pub mod pair_up;
 pub mod retreat;
 pub mod roam;
 pub mod sneak;
+pub mod station;
 pub mod trade;
 
 use mapdata::Vec3;
@@ -104,10 +105,12 @@ pub enum PlayKind {
     /// Team Deathmatch's endgame: the enemy cannot respawn; hunt the last
     /// of them.
     Hunt,
+    /// Timed batteries: by a station when its battery comes.
+    Station,
 }
 
 impl PlayKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Roam,
         Self::Collect,
         Self::Ambush,
@@ -125,6 +128,7 @@ impl PlayKind {
         Self::Trade,
         Self::Heal,
         Self::Hunt,
+        Self::Station,
     ];
 
     /// The personality family whose weight the play's `Personality`
@@ -135,7 +139,7 @@ impl PlayKind {
             Self::Intercept | Self::Trade | Self::LateDenial | Self::Hunt => Family::Push,
             Self::Sneak | Self::Flank => Family::Sneak,
             Self::Escort | Self::CoverHuman | Self::PairUp => Family::Support,
-            Self::Roam | Self::Collect | Self::Retreat | Self::Heal => Family::None,
+            Self::Roam | Self::Collect | Self::Retreat | Self::Heal | Self::Station => Family::None,
         }
     }
 }
@@ -532,6 +536,7 @@ pub enum Running {
     Trade(trade::State),
     Heal(heal::State),
     Hunt(hunt::State),
+    Station(station::State),
 }
 
 impl Running {
@@ -554,6 +559,7 @@ impl Running {
             Self::Trade(_) => PlayKind::Trade,
             Self::Heal(_) => PlayKind::Heal,
             Self::Hunt(_) => PlayKind::Hunt,
+            Self::Station(_) => PlayKind::Station,
         }
     }
 
@@ -587,6 +593,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     trade::candidates(cx, out);
     heal::candidates(cx, out);
     hunt::candidates(cx, out);
+    station::candidates(cx, out);
 }
 
 /// A play's start.
@@ -609,6 +616,7 @@ pub fn start(kind: PlayKind, target: TargetRef, cx: &Ctx, rng: &mut Rng) -> Runn
         PlayKind::Trade => Running::Trade(trade::start(target, cx, rng)),
         PlayKind::Heal => Running::Heal(heal::start(target, cx, rng)),
         PlayKind::Hunt => Running::Hunt(hunt::start(target, cx, rng)),
+        PlayKind::Station => Running::Station(station::start(target, cx, rng)),
     }
 }
 
@@ -632,6 +640,7 @@ pub fn step(running: &mut Running, target: TargetRef, cx: &Ctx, rng: &mut Rng) -
         Running::Trade(s) => trade::step(s, target, cx, rng),
         Running::Heal(s) => heal::step(s, target, cx, rng),
         Running::Hunt(s) => hunt::step(s, target, cx, rng),
+        Running::Station(s) => station::step(s, target, cx, rng),
     }
 }
 
@@ -655,6 +664,7 @@ pub fn default_tuning(kind: PlayKind) -> PlayTuning {
         PlayKind::Trade => trade::tuning(),
         PlayKind::Heal => heal::tuning(),
         PlayKind::Hunt => hunt::tuning(),
+        PlayKind::Station => station::tuning(),
     }
 }
 
@@ -678,6 +688,7 @@ pub fn numbers(kind: PlayKind) -> &'static [(&'static str, f32)] {
         PlayKind::Trade => trade::NUMBERS,
         PlayKind::Heal => heal::NUMBERS,
         PlayKind::Hunt => hunt::NUMBERS,
+        PlayKind::Station => station::NUMBERS,
     }
 }
 

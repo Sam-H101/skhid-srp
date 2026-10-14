@@ -244,6 +244,9 @@ impl Bot {
 /// A match's bots.
 pub struct Bots {
     level: u8,
+    /// The static info's seed (`registry::static_id`): every anomaly's
+    /// random stream starts from it (`anomalies.rs`).
+    static_seed: u32,
     pub tuning: Arc<Tuning>,
     tracker: Tracker,
     tactics: Option<Tactics>,
@@ -291,6 +294,7 @@ impl Bots {
             .collect();
         Self {
             level,
+            static_seed: crate::v026g::registry::static_id(match_id),
             tracker: Tracker::new(mode, teams, driven, Vec::new()),
             tactics: None,
             teams: [team_state(&tuning), team_state(&tuning)],
@@ -348,7 +352,11 @@ impl Bots {
     /// containers. A few ms to a few tens, once. Returns a line for the
     /// log.
     pub fn map_ready(&mut self, world: Arc<World>) -> String {
-        let tactics = Tactics::new(world, self.tuning.hazard_margin);
+        let mut tactics = Tactics::new(world, self.tuning.hazard_margin);
+        // The anomalies that switch (level_03's electric pairs, level_02's
+        // cloud) run on the match clock from the seed.
+        let anomalies = anomalies::Anomalies::new(&tactics.world.map, self.static_seed);
+        tactics.hazards.attach(anomalies);
         let teams = survarium::v026g::match_msgs::rules::container_teams(self.level);
         let mut containers: Vec<(u8, Vec3)> = Vec::new();
         for container in &tactics.world.map.containers {
@@ -517,6 +525,15 @@ impl Bots {
         notes
     }
 
+    /// A trusted world's objects section: the anomalies' states put right.
+    /// Returns (cores read, cores missed).
+    pub fn anomalies_from_world(&mut self, objects: &[u8], time: u32) -> (usize, usize) {
+        self.tactics.as_mut().map_or((0, 0), |tactics| {
+            let report = tactics.hazards.sync_from_world(objects, time);
+            (report.synced.len(), report.missed.len())
+        })
+    }
+
     /// The rest of a trusted world: deaths become danger spots and duels,
     /// a battery of ours carried off is a theft.
     pub fn facts(&mut self, facts: WorldFacts) -> Vec<Note> {
@@ -599,6 +616,9 @@ impl Bots {
         let now = clock.clock;
         let world = self.tactics.as_ref().map(|t| t.world.clone());
         self.tracker.held_sounds(now);
+        if let Some(tactics) = self.tactics.as_mut() {
+            tactics.hazards.advance(now);
+        }
         let view = self
             .tracker
             .view(&clock, &self.tuning.kin, world.as_deref());

@@ -45,6 +45,9 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // The score times this by mode.
     ("weight_tdm", 1.0),
     ("weight_batteries", 0.6),
+    // Timed batteries: holding in the enemy third brought nothing there
+    // (0.00 batteries a life, against 0.60 for those who kept moving).
+    ("weight_timed", 0.3),
     // Moved on after this many kills (drawn between, whole).
     ("kills_min", 1.0),
     ("kills_max", 2.0),
@@ -107,10 +110,10 @@ pub enum State {
 /// The candidate's score times the mode's weight (`weight_tdm`,
 /// `weight_batteries`): the players' research favours the play in one mode.
 fn weighed(cx: &Ctx, kind: PlayKind, mut c: Candidate) -> Option<Candidate> {
-    let weight = if cx.view.mode == Mode::TeamDeathmatch {
-        cx.num(kind, "weight_tdm")
-    } else {
-        cx.num(kind, "weight_batteries")
+    let weight = match cx.view.mode {
+        Mode::TeamDeathmatch => cx.num(kind, "weight_tdm"),
+        Mode::Batteries => cx.num(kind, "weight_batteries"),
+        Mode::TimedBatteries => cx.num(kind, "weight_timed"),
     };
     c.score = Score::new(c.score.get() * weight);
     (!c.score.is_zero()).then_some(c)

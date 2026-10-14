@@ -74,6 +74,7 @@ impl Scenario {
             deaths: Vec::new(),
             world_time: 299_000,
             can_respawn: [true, true],
+            next_battery: None,
         };
         let mut s = Self {
             view,
