@@ -14,6 +14,7 @@ use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::{self, mode};
 use survarium::v026g::match_msgs::client_model::{ClientModel, Skip, Taken};
 use survarium::v026g::match_msgs::late_join::{CONNECT_CAPABILITY, Prepare, Prepared, Status};
+use survarium::v026g::match_msgs::motion;
 use survarium::v026g::match_msgs::players::{self, PlayerState};
 use survarium::v026g::match_msgs::rules::{self, TimelimitParams, TimelimitRule, state};
 use survarium::v026g::match_msgs::snapshot::{
@@ -64,6 +65,10 @@ pub struct Sim {
     /// block is in every world (alive, and what it has in store of each
     /// item of its profile).
     pub player_states: Vec<Option<PlayerState>>,
+    /// By place: the end of its player's state (a body where the world
+    /// has it, `motion::Tail`), at the world's time; with none the state
+    /// ends at the head and an opaque inventory.
+    pub player_tails: Vec<Option<motion::Tail>>,
     /// No world was loaded yet: the next is this game's first.
     first_world: bool,
     /// From a tick on the statistics have the tickets of the match's
@@ -92,6 +97,7 @@ impl Sim {
             ballast: 0,
             late_objects_from: None,
             player_states: vec![None; players],
+            player_tails: vec![None; players],
             first_world: true,
             stale_tickets_from: None,
         }
@@ -278,10 +284,18 @@ impl Sim {
             if let Some(head) = head {
                 mask |= 1 << place;
                 let animation = players::animation_bytes(&[true; 9], &[time, time + 7], &[0.5]);
-                blocks.extend(players::block_bytes(
-                    &players::state_bytes(head, &[0xA5; 16]),
-                    Some(&animation),
-                ));
+                let state = match self.player_tails.get(place).and_then(Option::as_ref) {
+                    Some(tail) => motion::state_bytes(
+                        head,
+                        &[0xA5; 16],
+                        &motion::Tail {
+                            time_ms: time,
+                            ..tail.clone()
+                        },
+                    ),
+                    None => players::state_bytes(head, &[0xA5; 16]),
+                };
+                blocks.extend(players::block_bytes(&state, Some(&animation)));
             }
         }
         Sections {
@@ -503,6 +517,7 @@ impl Client {
                 options.players.push(prepare.profile.clone());
                 self.sim.players = options.players.len();
                 self.sim.player_states.resize(self.sim.players, None);
+                self.sim.player_tails.resize(self.sim.players, None);
             } else {
                 assert_eq!(options.players.get(place), Some(&prepare.profile));
             }

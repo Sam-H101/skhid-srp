@@ -118,8 +118,24 @@ worlds of a live match, every player read with no ambiguity. Not yet seen:
 a crouched sample, the sign of A/D. `players.rs`'s "No 0.26g snapshot was
 seen yet" is stale.
 
-Between worlds the position can be carried forward from the inputs (walk
-about 2.8 m/s, sprint about 4.5 m/s measured from worlds; LIKELY).
+**Movement (measured 2026-10-14 on 163,369 player rows of 165 saved
+matches; private analysis, numbers below):**
+
+| What | Value | How sure |
+|---|---|---|
+| Forward at yaw `a`, map frame (x, z) | `(-sin a, cos a)`; a positive yaw turns left | PROVEN (median error 1.6° over 4,456 pairs of worlds 50 ms apart; aim at enemies agrees) |
+| LEFT / RIGHT | yaw + 90° / yaw − 90°; diagonals ±45° at the forward speed | PROVEN |
+| Yaw, pitch | the yaw is never wrapped (seen from −66 to +55 rad); pitch up-positive, ±1 | PROVEN; the clamp LIKELY |
+| `m_linear_horizontal_speed` | m/s, equal to the moves between worlds | PROVEN (ratio 0.997-0.999) |
+| Walk | 3.5 m/s; each life at ×0.95, ×1 or ×1.05 of it | PROVEN (the cause, kit modifiers, LIKELY) |
+| Sprint | about 5.2 m/s (also 4.95-5.0; never the config's 5.5) | PROVEN as seen |
+| Strafe, crouch / aimed / aimed strafe / back | 0.75 / 0.9 / 0.6 / 0.85 of walk | PROVEN; back LIKELY |
+| Getting to speed | about +0.6 m/s a tick, −0.5 slowing (0 to 3.5 in 0.3 s) | LIKELY |
+| A world's keys | not yet in its own position: a tick's keys move the body from the next | LIKELY |
+| Respawn | about 7.9 s after death, a median 72 m from it | LIKELY / PROVEN |
+
+The bots' movement model (`v026g::bots::kin`) is this table. Between worlds
+a bot's position is carried forward from its own inputs (`bots::body`).
 
 ## 5. Map knowledge
 
@@ -185,12 +201,61 @@ the archive's index: a loader must follow them.
      `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
    - Not yet: a bot leaving to make room for a late joiner; any choice of
      what to do (the script is fixed).
-2. Positions from the worlds, worlds more often in matches with bots, a
-   simple state machine (go, turn, shoot at short range, reload).
-3. Map data on the server: collision, line of sight, a navigation grid and
-   paths; objectives of the battery modes.
-4. Difficulty, aim error, cover, grenades; bots fill short queues and give
-   their place up to late joiners.
+2. **Bots that walk the map.** Built 2026-10-14, not run with a real game:
+   - `SRP_MAPDATA_DIR` (match server): the folder of `mapdata-dump`'s files
+     (`player_bots_mapdata.md`). With it, the server's bots
+     (`v026g::bots`) walk; without it, or for a map with no file, they run
+     the stage 0 script. The map's walk grid is built on a thread of its
+     own (0.3-0.8 s, 60-150 MB) when the match is made; the bots stand
+     until it is there.
+   - **Where its body is** (`bots::body`): the trusted worlds show it
+     (`Game::observe` → `observe_driven`: the controller's position, yaw,
+     keys, speed, alive, spawn time). Between worlds it is carried forward
+     tick by tick with the bot's own inputs and the movement model above,
+     kept on the walk grid (walls stop it, it slides along them); each
+     world puts it back and the inputs since are played again. While bots
+     walk, the clients are asked for a world every 2 s (1 s while a bot
+     waits to see its body: just entered, or dead), not 5 s.
+   - **Routes** (`bots::path`): A* on the grid, pulled straight to the few
+     real corners; a jump or a drop is a corner of its own.
+   - **Smooth movement** (`bots::motor`): the view turns with an eased
+     speed (most of a turn in about 0.15 s, at most 5 rad/s, its speed
+     changing by at most 45 rad/s²), never past the heading; it walks while
+     turning and lets go of forward only for a turn over 80°; it steers at
+     a point 1.6 m + 0.35 s ahead on the route (shortened until the line
+     there is walkable, so it never cuts a corner into a wall); it sprints
+     only with 10 m of straight route ahead, after facing the way for
+     0.3 s, and stops 3.5 m before a sharp corner; its heading sways by
+     about a degree; standing, it looks about every 1-2 s.
+   - **Stuck** (`bots::stuck`): two worlds 1.5 s apart that show the body
+     moved under 0.4 m while it walked. First a jump and a step back and
+     to a side, and the same route again; caught again at the same spot
+     within 20 s, a jump and a sidestep and another goal; a third time, it
+     stands a few seconds and goes elsewhere. A spot that caught it twice
+     is kept clear of for 45 s (routes past it are not taken, unless every
+     route passes it).
+   - **What it does** (the one play of this stage): walks to one of the
+     map's objectives (a container, a battery's place, a station) or a
+     floor 20-60 m off, never within 25 m of the other side's spawns (its
+     side: the spawns it first came out of), looks about there 1.5-5 s,
+     and picks the next.
+   - Each bot's random numbers are its own, seeded by the match and its
+     place (`bots::rng`), so a replay with the same worlds repeats it.
+   - Tests: `bots` (movement model, encoder, the body's reckoning, routes,
+     motor smoothness, stuck), scenario tests against a stand-in game
+     that moves the body by the bot's inputs (`bots/tests.rs`: goal to goal
+     round a wall, a post the grid lacks), and the match end to end
+     (`tests/driven.rs`: a client's worlds show the body, the bot walks
+     with eased turns, steps back when the worlds show it not moving, and
+     the worlds are asked for every 2 s).
+   - Not yet: a real game; what the bot does about other players (it does
+     not see, aim or shoot); jumps up ledges are pressed but their reach is
+     not checked; the cost of the extra uploads for the clients (two
+     worlds every 2 s) is not measured.
+3. Senses and combat: seeing and hearing (`player_bots_behaviour.md`), aim
+   with error and reaction time, the plays of the battery modes.
+4. Difficulty, cover, grenades; bots fill short queues and give their
+   place up to late joiners.
 
 Bots and late joiners: a roster place is never reused, so a joiner cannot
 take the bot's own place; the bot leaves (0xEA) and the joiner comes on a

@@ -314,9 +314,72 @@ fn damage_model(s: &[u8], head: usize, inserted_at: usize, now: u32) -> Option<D
     found
 }
 
+/// The end of a state as [`Motion::read`] reads it, for tests and tools
+/// ([`state_bytes`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tail {
+    /// The state's time (written into the head too).
+    pub time_ms: u32,
+    pub speed: f32,
+    pub health: f32,
+    pub inserted_time_ms: u32,
+    /// The controller's `m_last_pos` (physics frame); `None`: dead.
+    pub physics_position: Option<[f32; 3]>,
+    pub crouching: bool,
+    pub sprinting: bool,
+    pub recent_hits: Vec<(u32, f32)>,
+}
+
+/// A whole player state for tests and tools: the head (its time set to the
+/// tail's), an opaque inventory, and the tail as the game writes it
+/// (20 body parts, no usable object).
+pub fn state_bytes(head: &PlayerState, inventory: &[u8], tail: &Tail) -> Vec<u8> {
+    let items = head.items.len();
+    let mut out = super::players::state_bytes(head, inventory);
+    let now = tail.time_ms;
+    out[2 + 4 * items + 19..2 + 4 * items + 23].copy_from_slice(&now.to_le_bytes());
+    // Damage model.
+    out.push(2); // jump_type
+    out.extend(tail.speed.to_le_bytes());
+    out.push(0); // second chance
+    out.extend(0u32.to_le_bytes()); // last hit
+    out.extend(now.to_le_bytes()); // last tick
+    out.extend([0; 8]); // invulnerability
+    for part in 0..20 {
+        out.extend(if part == 0 { tail.health } else { 1.0f32 }.to_le_bytes());
+        out.extend(0u32.to_le_bytes());
+        out.push(1); // one {u8, u32}
+        out.extend([3, 0, 0, 0, 0]);
+        out.push(0); // no hits
+        out.extend(1.0f32.to_le_bytes());
+    }
+    out.push(0); // no usable object
+    out.extend(tail.inserted_time_ms.to_le_bytes());
+    if let Some(position) = tail.physics_position {
+        for v in position {
+            out.extend(v.to_le_bytes());
+        }
+        let crouch = if tail.crouching { 0xFF } else { 0 };
+        out.extend([0, crouch, crouch, crouch, 0xFF, 0]);
+        for v in [
+            0.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ] {
+            out.extend(v.to_le_bytes());
+        }
+        out.push(if tail.sprinting { 0xFF } else { 0 });
+    }
+    out.extend([0; 12]); // spot times, stagger
+    out.extend((tail.recent_hits.len() as u32).to_le_bytes());
+    for (time, speed) in &tail.recent_hits {
+        out.extend(time.to_le_bytes());
+        out.extend(speed.to_le_bytes());
+    }
+    out.push(0); // respawn not disabled
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::players::state_bytes;
     use super::*;
 
     const NOW: u32 = 104_550;
@@ -336,47 +399,23 @@ mod tests {
     }
 
     /// A state with an opaque inventory, then the tail as the game writes
-    /// it: `parts` body parts of `health`, the controller if alive, `hits`.
+    /// it: 20 body parts, part 0 at `health`, the controller if alive,
+    /// `hits`.
     fn state(alive: bool, items: usize, health: f32, hits: &[(u32, f32)]) -> Vec<u8> {
-        let mut out = state_bytes(&head(alive, items), &[7; 40]);
-        out[2 + 4 * items + 19..2 + 4 * items + 23].copy_from_slice(&NOW.to_le_bytes());
-        // Damage model.
-        out.push(2); // jump_type
-        out.extend(3.4f32.to_le_bytes());
-        out.push(0); // second chance
-        out.extend(0u32.to_le_bytes()); // last hit
-        out.extend(NOW.to_le_bytes()); // last tick
-        out.extend([0; 8]); // invulnerability
-        for part in 0..20 {
-            out.extend(if part == 0 { health } else { 1.0f32 }.to_le_bytes());
-            out.extend(0u32.to_le_bytes());
-            out.push(1); // one {u8, u32}
-            out.extend([3, 0, 0, 0, 0]);
-            out.push(0); // no hits
-            out.extend(1.0f32.to_le_bytes());
-        }
-        out.push(0); // no usable object
-        out.extend(90_000u32.to_le_bytes()); // inserted
-        if alive {
-            for v in [10.0f32, 1.9, -20.0] {
-                out.extend(v.to_le_bytes());
-            }
-            out.extend([0, 0xFF, 0xFF, 0xFF, 0xFF, 0]); // crouching
-            for v in [
-                0.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ] {
-                out.extend(v.to_le_bytes());
-            }
-            out.push(0); // not sprinting
-        }
-        out.extend([0; 12]); // spot times, stagger
-        out.extend((hits.len() as u32).to_le_bytes());
-        for (time, speed) in hits {
-            out.extend(time.to_le_bytes());
-            out.extend(speed.to_le_bytes());
-        }
-        out.push(0); // respawn not disabled
-        out
+        state_bytes(
+            &head(alive, items),
+            &[7; 40],
+            &Tail {
+                time_ms: NOW,
+                speed: 3.4,
+                health,
+                inserted_time_ms: 90_000,
+                physics_position: alive.then_some([10.0, 1.9, -20.0]),
+                crouching: true,
+                sprinting: false,
+                recent_hits: hits.to_vec(),
+            },
+        )
     }
 
     #[test]

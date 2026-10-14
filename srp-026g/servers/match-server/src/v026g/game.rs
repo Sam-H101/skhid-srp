@@ -631,6 +631,9 @@ pub(crate) struct Game {
     bots_alone_since: Option<Instant>,
     /// By place: the script of the server's own bot ([`driven`]).
     drives: Vec<Option<super::drive::Drive>>,
+    /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
+    /// ([`driven`], stage 2).
+    walkers: Option<driven::Walkers>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -645,6 +648,7 @@ impl Game {
     pub fn new(formed: Arc<Formed>, port: u16, settings: Settings, now: Instant) -> Self {
         let players = formed.places.len();
         let rule = TimelimitRule::new(TimelimitParams::of(formed.map, players as u8));
+        let walkers = driven::Walkers::new(&formed, &settings);
         Self {
             id: formed.match_id,
             port,
@@ -686,6 +690,7 @@ impl Game {
             quits: Vec::new(),
             recording: None,
             drives: Self::new_drives(&formed),
+            walkers,
             formed,
         }
     }
@@ -2569,6 +2574,7 @@ impl Game {
         {
             return;
         }
+        self.observe_driven(snapshot);
         let teams: Vec<u8> = self.formed.places.iter().map(|place| place.team).collect();
         let standing = decoded.standing(self.game_mode(), &teams);
         if let Err(why) = self.plausible(&decoded, standing, snapshot.time) {
@@ -3685,6 +3691,7 @@ impl Game {
             } else {
                 timing.refresh
             };
+            let every = self.driven_refresh(every);
             self.next_refresh = Some(now + every);
             self.request_upload(usize::MAX, now, SNAPSHOT_WAIT.min(every));
         }

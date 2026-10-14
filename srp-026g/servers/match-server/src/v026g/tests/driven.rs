@@ -146,3 +146,138 @@ fn the_servers_bots_have_no_seats_and_share_session_zero() {
     late.driven = true;
     assert!(registry.join_running(1, late).is_err());
 }
+
+/// A 60 x 60 m floor for the map of [`MAP_TDM`] with two stations to walk
+/// to, written where `SRP_MAPDATA_DIR` would point; the store with its
+/// walk grid built.
+fn walking_map() -> std::sync::Arc<crate::v026g::bots::maps::Maps> {
+    use crate::v026g::bots::maps::{MapState, Maps};
+    use mapdata::{Library, MapData, Placement, Vec3, WalkerBehaviour};
+
+    let project = survarium::v026g::maps::map_mode(MAP_TDM).unwrap().project;
+    let floor = Library {
+        name: "floor".into(),
+        vertices: vec![
+            Vec3::new(-30.0, 0.0, -30.0),
+            Vec3::new(30.0, 0.0, -30.0),
+            Vec3::new(30.0, 0.0, 30.0),
+            Vec3::new(-30.0, 0.0, 30.0),
+        ],
+        triangles: vec![[0, 2, 1], [0, 3, 2]],
+        walker: vec![WalkerBehaviour::Walk; 2],
+        primitives: 0,
+    };
+    let map = MapData {
+        project: project.into(),
+        levelmap_min: Vec3::new(-30.0, 0.0, -30.0),
+        levelmap_max: Vec3::new(30.0, 1.0, 30.0),
+        stations: vec![Vec3::new(20.0, 0.0, 20.0), Vec3::new(20.0, 0.0, -20.0)],
+        libraries: vec![floor],
+        placements: vec![Placement {
+            library: 0,
+            position: Vec3::ZERO,
+            rotation: Vec3::ZERO,
+            cgroup: 10,
+            cmask: 20,
+        }],
+        ..MapData::default()
+    };
+    let dir = std::env::temp_dir().join(format!("srp-walking-map-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    map.write(&dir.join(mapdata::format::file_name(project)))
+        .unwrap();
+    let maps = Maps::new(Some(dir));
+    let started = std::time::Instant::now();
+    while !matches!(maps.get(project), MapState::Ready(_)) {
+        assert!(started.elapsed().as_secs() < 20, "{:?}", maps.get(project));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    maps
+}
+
+#[test]
+fn with_the_map_the_servers_bot_sees_its_body_in_the_worlds_and_walks_smoothly() {
+    use survarium::v026g::match_msgs::motion::Tail;
+    use survarium::v026g::match_msgs::players::PlayerState;
+
+    let settings = Settings {
+        maps: Some(walking_map()),
+        ..Settings::default()
+    };
+    let mut bench = Bench::with_driven(2, MAP_TDM, settings, &[1]);
+    // The real client's worlds have the bot's body standing at (-20, 0, 0)
+    // (the physics frame mirrors z), facing +z.
+    let sim = &mut bench.clients[0].sim;
+    sim.player_states[1] = Some(PlayerState {
+        current_index: 0,
+        target_index: 0,
+        items: vec![1, 2, 3],
+        alive: true,
+        has_to_die: false,
+        look_pitch: 0.0,
+        rotation_y: 0.0,
+        actions_mask: 0,
+        effects: 0,
+    });
+    sim.player_tails[1] = Some(Tail {
+        time_ms: 0,
+        speed: 0.0,
+        health: 1.0,
+        inserted_time_ms: 100,
+        physics_position: Some([-20.0, 0.9, 0.0]),
+        crouching: false,
+        sprinting: false,
+        recent_hits: Vec::new(),
+    });
+    bench.join(0);
+    assert!(bench.until(2_000, |bench| bench.clients[0].entered() == [0, 1]));
+
+    // Once a world shows its body it heads for a station: forward, and
+    // turns that ease in, none more than the top turning speed allows.
+    assert!(bench.until(10_000, |bench| {
+        bench.clients[0]
+            .relays_of(1)
+            .iter()
+            .any(|input| input.actions & key::FORWARD != 0)
+    }));
+    bench.run_long(3_000);
+    let relays = bench.clients[0].relays_of(1);
+    assert_bot_inputs(&relays);
+    let yaw = |input: &PlayerInput| {
+        crate::v026g::drive::half_value(u16::from_le_bytes([input.rotation[0], input.rotation[1]]))
+    };
+    assert!(
+        relays.iter().filter(|input| yaw(input) != 0.0).count() >= 3,
+        "{relays:?}"
+    );
+    assert!(
+        relays
+            .iter()
+            .all(|input| yaw(input).abs() <= 5.0 * 0.05 + 1e-3)
+    );
+
+    // The worlds keep showing the body where it stood: it is stuck, and
+    // steps back to get out.
+    assert!(bench.until(20_000, |bench| {
+        bench.clients[0]
+            .relays_of(1)
+            .iter()
+            .any(|input| input.actions & key::BACK != 0)
+    }));
+    // While it walks the client is asked for a world every 2 s (5 s
+    // without bots).
+    let asked = |bench: &Bench| {
+        bench.clients[0]
+            .got(|message| match message {
+                ServerMessage::UploadRequest => Some(()),
+                _ => None,
+            })
+            .len()
+    };
+    let before = asked(&bench);
+    bench.run_long(10_000);
+    let during = asked(&bench) - before;
+    assert!((4..=7).contains(&during), "{during} requests in 10 s");
+    assert_eq!(bench.game().resyncs(0), 0);
+    bench.assert_no_faults();
+}
