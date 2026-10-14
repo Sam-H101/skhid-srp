@@ -87,9 +87,12 @@ const REPLAN_ERROR_M: f32 = 2.0;
 /// The reflex's side step is taken only with a clear walk this far that
 /// side, metres (no step off a ledge or into a wall).
 const STRAFE_CLEAR_M: f32 = 1.5;
-/// A goal no way was found to is not planned to again for this long, ms:
-/// a search that fails has searched all it can reach, the dearest kind.
+/// A goal no way was found to is not planned to again for this long, ms.
 const NO_WAY_RETRY_MS: u32 = 500;
+/// Grid searches a poll may make for all the match's bots: a search costs
+/// up to tens of ms on the host, and the match loop is the server's one
+/// thread. A bot left without one plans at a later poll (5 ms on).
+const SEARCHES_PER_POLL: u32 = 2;
 /// A death this recent is a fight where it fell, for the choice of the bot
 /// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
 const FIGHT_DEATH_MS: u32 = 10_000;
@@ -288,6 +291,8 @@ pub struct Bots {
     /// The human routes of this map and mode (play 17), till the map is
     /// built and they are put on its floors.
     routes: Vec<routes::HumanRoute>,
+    /// Grid searches left to this poll ([`SEARCHES_PER_POLL`]).
+    searches_left: u32,
 }
 
 impl Bots {
@@ -334,6 +339,7 @@ impl Bots {
             battery_votes: (0, 0),
             routes: Vec::new(),
             weapons: Vec::new(),
+            searches_left: SEARCHES_PER_POLL,
         }
     }
 
@@ -379,11 +385,19 @@ impl Bots {
         self.tactics.as_ref()
     }
 
-    /// The map's walk grid is built: the tactics (hazards, exits) and the
-    /// containers. A few ms to a few tens, once. Returns a line for the
-    /// log.
+    /// The map's walk grid is built: the tactics (hazards, exits, the
+    /// regions) and the containers. 0.15-0.3 s on the big maps on a fast
+    /// machine: the match server builds the tactics on a thread of its own
+    /// ([`Self::tactics_ready`]). Returns a line for the log.
     pub fn map_ready(&mut self, world: Arc<World>) -> String {
-        let mut tactics = Tactics::new(world, self.tuning.hazard_margin);
+        let tactics = Tactics::new(world, self.tuning.hazard_margin);
+        self.tactics_ready(tactics)
+    }
+
+    /// [`Self::map_ready`] with the tactics built ([`Tactics::new`] with
+    /// this match's `tuning.hazard_margin`): the routes, the anomalies'
+    /// clocks and the containers, a few ms.
+    pub fn tactics_ready(&mut self, mut tactics: Tactics) -> String {
         tactics.set_routes(std::mem::take(&mut self.routes));
         // The anomalies that switch (level_03's electric pairs, level_02's
         // cloud) run on the match clock from the seed.
@@ -737,6 +751,7 @@ impl Bots {
             }
         }
         let mut rays = RayBudget(self.tuning.think.rays_per_poll);
+        self.searches_left = SEARCHES_PER_POLL;
         for index in 0..self.bots.len() {
             if self.bots[index].is_none() {
                 continue;
@@ -1089,6 +1104,7 @@ impl Bots {
             return;
         };
         let world = self.tactics.as_ref().map(|t| t.world.clone());
+        let searches = &mut self.searches_left;
         for time in bot.encoder.ticks(clock.clock, entered + START_AFTER_MS) {
             let estimate = self
                 .tracker
@@ -1104,7 +1120,7 @@ impl Bots {
                         velocity: at.velocity,
                         ..me.clone()
                     };
-                    drive_tick(bot, &me, view, tactics, &tuning, time)
+                    drive_tick(bot, &me, view, tactics, &tuning, time, searches)
                 }
                 _ => bot.motor.rest(),
             };
@@ -1154,6 +1170,7 @@ fn drive_tick(
     tactics: &Tactics,
     tuning: &Tuning,
     time: u32,
+    searches: &mut u32,
 ) -> Decision {
     let intent = bot.intent;
     let pose = Pose {
@@ -1228,22 +1245,30 @@ fn drive_tick(
             });
             if replan && no_way {
                 bot.route = None;
+            } else if replan && *searches == 0 {
+                // No search left to this poll: the old route meanwhile.
             } else if replan {
+                *searches -= 1;
                 let grid = &tactics.world.grid;
                 let stuck = &bot.stuck;
                 let side = bot.side;
                 let objective = intent.objective;
-                // Round the spots it got stuck at, if there is a way.
+                // Round the spots it got stuck at, if there is a way; else
+                // through them (a second search only when there are any).
+                let avoiding = stuck.avoids_any(time);
                 let route = grid
                     .locate(me.feet, 1.5)
                     .zip(grid.locate(at, 3.0))
                     .and_then(|(from, to)| {
-                        path::plan_where(grid, from, to, |node| {
-                            tactics.allowed(node, time, side, objective)
-                                && !stuck.near_spot(time, grid.position(node))
+                        tactics.route_nodes(from, to, time, side, objective, |node| {
+                            !(avoiding && stuck.near_spot(time, grid.position(node)))
                         })
                     })
-                    .or_else(|| tactics.route_for(me.feet, at, time, side, objective));
+                    .or_else(|| {
+                        avoiding
+                            .then(|| tactics.route_for(me.feet, at, time, side, objective))
+                            .flatten()
+                    });
                 bot.no_way = route.is_none().then_some((at, time + NO_WAY_RETRY_MS));
                 bot.route = route.map(|route| (route, at));
             }

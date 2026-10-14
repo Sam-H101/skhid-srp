@@ -267,6 +267,84 @@ volume only, never in an image or this repository. A file added for a
 project no match has asked for yet is used; one whose project was already
 found missing or broken needs a restart.
 
+### The bots' cost on the real maps (2026-10-14)
+
+`real_bot_cost` (`bots/tests.rs`, `SRP_MAPDATA_DIR`, `SRP_BOT_ROUTES`):
+the soaks' stand-in game on a real map, the bots polled every 5 ms as the
+match loop does with nobody sending (every datagram polls every match too:
+the recorded matches of 6-10 players bring 100-200 a second), each part of
+a poll timed. Measured on a fast desktop core; the 0.26g host's core is
+about 2.6 times slower (the same Python loop: 0.26 s here, 0.66 s there).
+
+**Before** (commit f8fcd38): on level_06/day_2 four bots a side took 2.5
+cores (247 % of a core), a poll up to 0.64 s, all of it in route searches:
+421 of 440 searches failed, 75 ms each. A search for a goal with no way
+(a bot on a floor island, a goal behind a drop, a battery in their spawn
+area) floods everything it reaches, up to 1.5 million floors, and each bot
+asked again every 0.5 s; even a search that found its way took 4-14 ms on
+average, up to 0.16 s (`real_search_budget`). The bots never met: no shot
+in 240 s.
+
+**What changed:**
+- `WalkGrid::pieces` (union-find over the links at the build): floors in
+  pieces no link joins have no way, answered at once (`may_reach`).
+- `WalkGrid::search`: the A* keeps its arrays on the thread between
+  searches, marked by a search number, so a search costs what it expands,
+  not the grid's size (it allocated and filled 2 × 4 bytes a floor, 18 MB
+  on level_02, every time); a floor met again by a cheaper way is skipped
+  when its stale heap entry comes up (it was expanded again).
+- `mapdata::regions` (hierarchical path finding, as HPA* and navigation
+  meshes do it): 8 m blocks cut into regions of floors joined by walk
+  links both ways and of one label; regions link where floors do (one way
+  for a drop or jump). 2,500-5,800 regions a map. A search goes by the
+  regions first, then the floors' A* inside the corridor of regions and
+  one ring of neighbours, then three rings more, last the whole grid.
+- The tactics label every floor with what `Tactics::allowed` asks (the
+  zones' set, the sides' spawn areas) and cut the regions by the labels, so
+  the regions' search keeps off what the floors' does, exactly (Detour's
+  query filters and area flags are the same idea). `allowed` reads the
+  label instead of measuring to every spawn point for every floor.
+- A poll makes at most 2 searches for all the match's bots (the others
+  plan at the next poll, 5 ms on); the second search through a bot's stuck
+  spots is made only when it has any.
+- The tactics (hazard marks, labels, regions, exits; 0.15-0.3 s on a big
+  map here, 0.4-0.8 s on the host) are built on a thread of their own
+  (`game/driven.rs`), not on the match loop; the bots stand until they
+  come, as they stand until the world is built.
+
+**Same answers** (`real_route_search`, 300 pairs of floors 10-150 m apart
+a map, with and without 8 round "anomalies" of 6 m on the way): the
+regions say "no way" exactly when the whole grid's A* does (all 4,800
+pairs), and a way found costs 0.1-1.2 % more on average than the whole
+grid's cheapest (its string is pulled straight after either way). The
+bases' exits are worked out once a map with the whole grid's search, as
+before. The three soaks and the real-map route and cut tests pass with the
+same kills, hits and batteries.
+
+**After**, the same runs (120 s of play; % of the fast core):
+
+| map | 4 v 4 | 10 v 10 | worst poll (10 v 10) |
+|---|---|---|---|
+| level_06/day_2 | 0.20 % (was 247 %) | 0.76 % (34.7 % with the first fixes) | 46 ms (was 0.64 s) |
+| level_01/day_4 | 0.54 % | 1.62 % | 20 ms |
+| level_03/day_3 | 0.31 % | 1.90 % | 17 ms |
+
+So a 10 v 10 of bots takes about 2-5 % of the host's core. A search took
+1-2 ms on average and 46 ms at worst (a long corridor on level_06).
+`real_bot_cost` prints the searches by stage.
+
+**Memory, not yet solved:** the 0.26g container is limited to 512 MB and
+uses about 190 MB; a world is 63-149 MB and its build peaks near twice
+that; a match's tactics add 4 bytes a floor of labels, 4 of regions and 2
+of hazard marks (up to 23 MB on level_02); the A* arrays the match thread
+keeps are 12 bytes a floor of the largest grid searched (27 MB). One bot
+match on a big map fits; a build beside a second one may not. Prebuilt
+worlds (read, not built) would remove the build's peak and its 1-3 s of
+the host's core; the weather projects of a level share their geometry on
+levels 1, 2, 6 and 7 (`weather_projects_share_geometry`), and level_04's
+except its rain; not levels 3 and 5 (placements differ); level_08 not
+looked at.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map

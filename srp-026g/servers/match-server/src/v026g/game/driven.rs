@@ -74,6 +74,7 @@
 //! - without it, the stage 0 script (`super::super::drive`).
 
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 use mapdata::{Vec3, World};
 use survarium::v026g::match_msgs::motion::Motion;
@@ -87,6 +88,7 @@ use crate::v026g::bots::body::Fix;
 use crate::v026g::bots::maps::{MapState, Maps};
 use crate::v026g::bots::reflex::WeaponKind;
 use crate::v026g::bots::routes::RouteTable;
+use crate::v026g::bots::tactics::Tactics;
 use crate::v026g::bots::trace::Trace;
 use crate::v026g::bots::tuning::Tuning;
 use crate::v026g::bots::view::{BatteryState, Clock, WorldFacts};
@@ -118,6 +120,10 @@ pub(super) struct Walkers {
     project: &'static str,
     /// Held once built, so the store may drop it while the match runs.
     world: Option<Arc<World>>,
+    /// The bots' tactics being built on a thread of their own (0.4-0.8 s
+    /// on the host for a big map, which the match loop, the server's one
+    /// thread, must not wait for).
+    tactics: Option<Receiver<Tactics>>,
     /// The map has no walk grid: the stage 0 script drives them.
     absent: bool,
     /// The roster events handed to the bots so far.
@@ -174,6 +180,7 @@ impl Walkers {
             maps,
             project,
             world: None,
+            tactics: None,
             absent: false,
             events_seen: 0,
         })
@@ -191,18 +198,60 @@ impl Walkers {
         })
     }
 
-    /// The map's walk grid, once built (handed to the bots once); `absent`
-    /// set if there is none.
+    /// The map's walk grid, once built, and the bots' tactics on it (built
+    /// on a thread, handed to the bots once); `absent` set if there is
+    /// none.
     fn world(&mut self, id: u32) -> Option<Arc<World>> {
+        if let Some(built) = self.tactics.as_ref() {
+            match built.try_recv() {
+                Ok(tactics) => {
+                    self.tactics = None;
+                    let floors = tactics.world.grid.len();
+                    let summary = self.bots.tactics_ready(tactics);
+                    log::info!(
+                        "Match {id:#x}: the bots have the map {} ({floors} floors; {summary})",
+                        self.project,
+                    );
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    log::warn!(
+                        "Match {id:#x}: the bots' tactics for {} were not built; the server's \
+                         bots run the stage 0 script",
+                        self.project
+                    );
+                    self.tactics = None;
+                    self.absent = true;
+                }
+            }
+        }
         if self.world.is_none() && !self.absent {
             match self.maps.get(self.project) {
                 MapState::Ready(world) => {
-                    let summary = self.bots.map_ready(world.clone());
-                    log::info!(
-                        "Match {id:#x}: the bots have the map {} ({} floors; {summary})",
-                        self.project,
-                        world.grid.len()
-                    );
+                    let (send, built) = std::sync::mpsc::channel();
+                    let margin = self.bots.tuning.hazard_margin;
+                    let for_tactics = world.clone();
+                    let spawned = std::thread::Builder::new()
+                        .name(format!("bot tactics {id:#x}"))
+                        .spawn(move || {
+                            let started = std::time::Instant::now();
+                            let tactics = Tactics::new(for_tactics, margin);
+                            log::info!(
+                                "Match {id:#x}: the bots' tactics built in {:.2} s",
+                                started.elapsed().as_secs_f32()
+                            );
+                            let _ = send.send(tactics);
+                        });
+                    match spawned {
+                        Ok(_) => self.tactics = Some(built),
+                        Err(error) => {
+                            log::warn!(
+                                "Match {id:#x}: can't start the bots' tactics build ({error}); \
+                                 the server's bots run the stage 0 script"
+                            );
+                            self.absent = true;
+                        }
+                    }
                     self.world = Some(world);
                 }
                 MapState::Loading => {}
@@ -495,6 +544,15 @@ impl Game {
             .and_then(|state| state.rules.as_ref())
             .is_some_and(|rules| !rules.team_respawn[usize::from(team.min(1))]);
         if out { None } else { bots.last().copied() }
+    }
+
+    /// Whether the server's bots have their map's tactics (built on a
+    /// thread of their own), for the tests.
+    #[cfg(test)]
+    pub(crate) fn bots_have_map(&self) -> bool {
+        self.walkers
+            .as_ref()
+            .is_some_and(|walkers| walkers.bots.has_map())
     }
 
     /// How often to ask for a world, `every` being what the match asks:

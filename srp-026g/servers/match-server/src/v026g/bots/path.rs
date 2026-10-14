@@ -12,7 +12,8 @@
 //! rounds the corners in a curve as a player does, instead of reaching
 //! each one and turning on the spot.
 
-use mapdata::{LinkKind, NodeId, Vec3, WalkGrid};
+use mapdata::regions::Regions;
+use mapdata::{LinkKind, NodeId, Search, Vec3, WalkGrid};
 
 /// A straight line is not tried farther than this (metres): the check
 /// walks every cell of it.
@@ -36,6 +37,38 @@ pub struct Route {
     segment: usize,
 }
 
+/// The searches of this thread so far, for the tests' counts.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Searches {
+    pub searches: u64,
+    pub failed: u64,
+    pub us: f64,
+    /// By [`mapdata::regions::Stage`]: how many, and their µs.
+    pub stages: [u64; 4],
+    pub stage_us: [f64; 4],
+    pub worst_us: f64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEARCHES: std::cell::Cell<Searches> = const {
+        std::cell::Cell::new(Searches {
+            searches: 0,
+            failed: 0,
+            us: 0.0,
+            stages: [0; 4],
+            stage_us: [0.0; 4],
+            worst_us: 0.0,
+        })
+    };
+}
+
+#[cfg(test)]
+pub fn searches() -> Searches {
+    SEARCHES.with(|s| s.get())
+}
+
 /// The route from one floor to another, if there is one.
 pub fn plan(grid: &WalkGrid, from: NodeId, to: NodeId) -> Option<Route> {
     plan_where(grid, from, to, |_| true)
@@ -43,6 +76,7 @@ pub fn plan(grid: &WalkGrid, from: NodeId, to: NodeId) -> Option<Route> {
 
 /// [`plan`] over the floors `allowed` lets through (an anomaly's, a spawn
 /// area's are not): the A* keeps off them, and so do the straight legs.
+/// The search covers the whole grid; [`plan_in`] goes by regions.
 pub fn plan_where(
     grid: &WalkGrid,
     from: NodeId,
@@ -50,7 +84,47 @@ pub fn plan_where(
     allowed: impl Fn(NodeId) -> bool,
 ) -> Option<Route> {
     let path = grid.path_where(from, to, &allowed)?;
-    let nodes = path.nodes;
+    Some(pull(grid, path.nodes, allowed))
+}
+
+/// [`plan_where`] by `regions` first ([`Regions::route_search`]): a goal
+/// with no way is known at once, and a way is searched in a corridor of
+/// the grid, not the whole of it. `region_ok` shuts a region whose floors
+/// `allowed` shuts (the tactics' labels make them agree).
+pub fn plan_in(
+    grid: &WalkGrid,
+    regions: &Regions,
+    from: NodeId,
+    to: NodeId,
+    allowed: impl Fn(NodeId) -> bool,
+    region_ok: impl Fn(u32) -> bool,
+) -> Option<Route> {
+    #[cfg(test)]
+    let started = std::time::Instant::now();
+    let (found, _stage) = regions.route_search(grid, from, to, &allowed, region_ok, usize::MAX);
+    let path = match found {
+        Search::Found(path) => Some(path),
+        Search::NoWay | Search::TooFar => None,
+    };
+    #[cfg(test)]
+    SEARCHES.with(|s| {
+        let mut c = s.get();
+        let took = started.elapsed().as_secs_f64() * 1e6;
+        c.searches += 1;
+        c.failed += u64::from(path.is_none());
+        c.us += took;
+        c.stages[_stage as usize] += 1;
+        c.stage_us[_stage as usize] += took;
+        c.worst_us = c.worst_us.max(took);
+        s.set(c);
+    });
+    let path = path?;
+    Some(pull(grid, path.nodes, allowed))
+}
+
+/// A grid path pulled straight: only the real corners left (module
+/// documentation).
+fn pull(grid: &WalkGrid, nodes: Vec<NodeId>, allowed: impl Fn(NodeId) -> bool) -> Route {
     // The kind of the link into each node.
     let mut into = vec![LinkKind::Walk; nodes.len()];
     for k in 1..nodes.len() {
@@ -90,7 +164,7 @@ pub fn plan_where(
             jump: false,
         });
     }
-    Some(Route::new(points))
+    Route::new(points)
 }
 
 /// Whether a body walks from `a` to `b` in a straight line: every half
@@ -316,5 +390,171 @@ mod tests {
         assert!((s - 16.0).abs() < 1e-4);
         let (s, _) = route.progress(Vec3::new(5.0, 0.0, 0.0));
         assert!(s >= 10.0, "{s}");
+    }
+
+    /// The search budget a real way needs, only with `SRP_MAPDATA_DIR`:
+    /// random pairs of floors 10-150 m apart on each map, the least of a
+    /// few budgets that finds the way, and the time of a full search.
+    ///
+    /// ```text
+    /// SRP_MAPDATA_DIR=<dir> cargo test -p match-server --release real_search_budget -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement; needs SRP_MAPDATA_DIR"]
+    fn real_search_budget() {
+        use crate::v026g::bots::rng::Rng;
+        use mapdata::Search;
+        let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+            eprintln!("skipping: SRP_MAPDATA_DIR is not set");
+            return;
+        };
+        const BUDGETS: [usize; 7] = [5_000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000];
+        for level in 1..=8 {
+            let project = format!("level_{level:02}/day_2");
+            let map =
+                mapdata::MapData::read(&dir.join(mapdata::format::file_name(&project))).unwrap();
+            let world = mapdata::World::build(map, mapdata::CELL, mapdata::Body::default());
+            let grid = &world.grid;
+            let mut rng = Rng::new(level);
+            let (mut needed, mut none, mut over) = ([0usize; BUDGETS.len()], 0, 0);
+            let (mut found_us, mut found_n, mut worst_us) = (0.0, 0, 0.0f64);
+            let mut tried = 0;
+            while tried < 300 {
+                let a = rng.below(grid.len()) as NodeId;
+                let b = rng.below(grid.len()) as NodeId;
+                let d = grid.position(a).distance_xz(grid.position(b));
+                if !(10.0..=150.0).contains(&d) || !grid.may_reach(a, b) {
+                    continue;
+                }
+                tried += 1;
+                let started = std::time::Instant::now();
+                let full = grid.search(a, b, |_| true, usize::MAX);
+                let us = started.elapsed().as_secs_f64() * 1e6;
+                worst_us = worst_us.max(us);
+                if !matches!(full, Search::Found(_)) {
+                    none += 1;
+                    continue;
+                }
+                found_us += us;
+                found_n += 1;
+                match BUDGETS.iter().position(|&budget| {
+                    matches!(grid.search(a, b, |_| true, budget), Search::Found(_))
+                }) {
+                    Some(k) => needed[k] += 1,
+                    None => over += 1,
+                }
+            }
+            eprintln!(
+                "{project}: {} floors; of {tried} pairs in one piece, {none} with no way; ways found within {:?}: {:?}, more {over}; full search {:.0} µs on average when found, worst {:.0} µs",
+                grid.len(),
+                BUDGETS,
+                needed,
+                found_us / found_n.max(1) as f64,
+                worst_us
+            );
+        }
+    }
+
+    /// The regions' search ([`mapdata::regions`]) against the search of
+    /// the whole grid on the real maps, only with `SRP_MAPDATA_DIR`: random
+    /// pairs of floors 10-150 m apart, with no filter and with round
+    /// "anomalies" shut (8 of 6 m on the way): the same answer on whether
+    /// there is a way, the route's cost, the time.
+    ///
+    /// ```text
+    /// SRP_MAPDATA_DIR=<dir> cargo test -p match-server --release real_route_search -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement; needs SRP_MAPDATA_DIR"]
+    fn real_route_search() {
+        use crate::v026g::bots::rng::Rng;
+        use mapdata::Search;
+        use mapdata::regions::Stage;
+        let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+            eprintln!("skipping: SRP_MAPDATA_DIR is not set");
+            return;
+        };
+        for level in 1..=8 {
+            let project = format!("level_{level:02}/day_2");
+            let map =
+                mapdata::MapData::read(&dir.join(mapdata::format::file_name(&project))).unwrap();
+            let started = std::time::Instant::now();
+            let world = mapdata::World::build(map, mapdata::CELL, mapdata::Body::default());
+            let built = started.elapsed().as_secs_f32();
+            let grid = &world.grid;
+            let regions = mapdata::regions::Regions::build(grid, None);
+            let mut rng = Rng::new(level);
+            for filtered in [false, true] {
+                let (mut tried, mut differ, mut worse) = (0, 0, 0usize);
+                let (mut ratio_sum, mut ratio_max, mut found) = (0.0f64, 0.0f64, 0);
+                let (mut whole_us, mut regions_us, mut regions_worst) = (0.0, 0.0, 0.0f64);
+                let mut stages = [0usize; 4];
+                while tried < 300 {
+                    let a = rng.below(grid.len()) as NodeId;
+                    let b = rng.below(grid.len()) as NodeId;
+                    let (pa, pb) = (grid.position(a), grid.position(b));
+                    let d = pa.distance_xz(pb);
+                    if !(10.0..=150.0).contains(&d) {
+                        continue;
+                    }
+                    tried += 1;
+                    let holes: Vec<Vec3> = if filtered {
+                        (0..8)
+                            .map(|_| {
+                                let t = rng.range(0.15, 0.85);
+                                let p = pa + (pb - pa) * t;
+                                Vec3::new(
+                                    p.x + rng.range(-8.0, 8.0),
+                                    p.y,
+                                    p.z + rng.range(-8.0, 8.0),
+                                )
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let allowed = |n: NodeId| {
+                        let p = grid.position(n);
+                        holes.iter().all(|h| h.distance_xz(p) > 3.0)
+                    };
+                    let t = std::time::Instant::now();
+                    let whole = grid.search(a, b, &allowed, usize::MAX);
+                    whole_us += t.elapsed().as_secs_f64() * 1e6;
+                    let t = std::time::Instant::now();
+                    let (by_regions, stage) =
+                        regions.route_search(grid, a, b, &allowed, |_| true, usize::MAX);
+                    let us = t.elapsed().as_secs_f64() * 1e6;
+                    regions_us += us;
+                    regions_worst = regions_worst.max(us);
+                    stages[stage as usize] += 1;
+                    match (&whole, &by_regions) {
+                        (Search::Found(w), Search::Found(r)) => {
+                            let ratio = f64::from(r.cost / w.cost);
+                            ratio_sum += ratio;
+                            ratio_max = ratio_max.max(ratio);
+                            found += 1;
+                            if ratio > 1.10 {
+                                worse += 1;
+                            }
+                        }
+                        (Search::NoWay, Search::NoWay) => {}
+                        _ => differ += 1,
+                    }
+                }
+                eprintln!(
+                    "{project} ({} floors, {} regions, built in {built:.2} s){}: {tried} pairs, {differ} answered otherwise; {found} ways, cost x{:.3} on average, worst x{:.2}, {worse} over x1.10; stages {:?} (no way, corridor, widened, whole); µs a search: whole grid {:.0}, by regions {:.0} (worst {:.0})",
+                    grid.len(),
+                    regions.len(),
+                    if filtered { " with anomalies" } else { "" },
+                    ratio_sum / found.max(1) as f64,
+                    ratio_max,
+                    stages,
+                    whole_us / tried as f64,
+                    regions_us / tried as f64,
+                    regions_worst,
+                );
+                let _ = Stage::Corridor;
+            }
+        }
     }
 }

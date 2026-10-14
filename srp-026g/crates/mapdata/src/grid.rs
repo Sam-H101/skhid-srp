@@ -24,6 +24,7 @@
 //!
 //! Positions are in the map frame, at the feet ([`crate::math`]).
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -134,6 +135,9 @@ pub struct WalkGrid {
     ceiling: Vec<f32>,
     links: Vec<[u32; 8]>,
     kinds: Vec<[LinkKind; 8]>,
+    /// Per node, its piece of the grid: floors joined by links either way
+    /// ([`Self::may_reach`]).
+    piece: Vec<u32>,
 }
 
 /// Counts of a build, for logs and the docs.
@@ -222,9 +226,11 @@ impl WalkGrid {
             ceiling,
             links: Vec::new(),
             kinds: Vec::new(),
+            piece: Vec::new(),
         };
         grid.link(&forced);
         grid.erode();
+        grid.pieces();
         stats.floors_after_erosion = grid.len();
         (grid, stats)
     }
@@ -421,7 +427,50 @@ impl WalkGrid {
 
     /// Bytes the grid holds.
     pub fn memory_bytes(&self) -> usize {
-        self.start.len() * 4 + self.len() * (4 + 4 + 4 + 32 + 8)
+        self.start.len() * 4 + self.len() * (4 + 4 + 4 + 32 + 8 + 4)
+    }
+
+    /// The block of `block` cells a side that `node` lies in.
+    pub(crate) fn block_of(&self, node: NodeId, block: usize) -> (usize, usize) {
+        let (i, k) = self.cell_xz(self.cell_of[node as usize] as usize);
+        (i as usize / block, k as usize / block)
+    }
+
+    /// Labels each floor with its piece: the floors it is joined to by
+    /// links taken either way (union-find over the links).
+    fn pieces(&mut self) {
+        let n = self.len();
+        let mut root: Vec<u32> = (0..n as u32).collect();
+        fn find(root: &mut [u32], mut a: u32) -> u32 {
+            while root[a as usize] != a {
+                let up = root[root[a as usize] as usize];
+                root[a as usize] = up;
+                a = up;
+            }
+            a
+        }
+        for a in 0..n {
+            for &b in &self.links[a] {
+                if b != NONE {
+                    let (ra, rb) = (find(&mut root, a as u32), find(&mut root, b));
+                    if ra != rb {
+                        root[ra.max(rb) as usize] = ra.min(rb);
+                    }
+                }
+            }
+        }
+        self.piece = (0..n as u32).map(|a| find(&mut root, a)).collect();
+    }
+
+    /// Whether a way from `from` to `to` may exist: false when they lie in
+    /// pieces no link joins (one floor on a roof, the other on the ground
+    /// with no way up), so no search need prove it. True does not promise a
+    /// way (a drop is one way).
+    pub fn may_reach(&self, from: NodeId, to: NodeId) -> bool {
+        match (self.piece.get(from as usize), self.piece.get(to as usize)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
     }
 
     /// The floor's point: the cell's centre at the floor's height.
@@ -557,44 +606,100 @@ impl WalkGrid {
         to: NodeId,
         allowed: impl Fn(NodeId) -> bool,
     ) -> Option<Path> {
-        let n = self.len();
-        if from as usize >= n || to as usize >= n {
-            return None;
+        match self.search(from, to, allowed, usize::MAX) {
+            Search::Found(path) => Some(path),
+            Search::NoWay | Search::TooFar => None,
         }
-        let goal = self.position(to);
-        let mut cost = vec![f32::INFINITY; n];
-        let mut parent = vec![NONE; n];
-        let mut open = BinaryHeap::new();
-        cost[from as usize] = 0.0;
-        open.push(Entry(self.position(from).distance_xz(goal), from));
-        while let Some(Entry(_, u)) = open.pop() {
-            if u == to {
-                let mut nodes = vec![to];
-                let mut at = to;
-                while at != from {
-                    at = parent[at as usize];
-                    nodes.push(at);
-                }
-                nodes.reverse();
-                return Some(Path {
-                    nodes,
-                    cost: cost[to as usize],
-                });
+    }
+
+    /// [`Self::path_where`], giving up after `budget` floors expanded
+    /// ([`Search::TooFar`]): a search that cannot end (a goal the allowed
+    /// floors shut off) otherwise floods the whole piece, a million floors
+    /// on the big maps. Floors in different pieces ([`Self::may_reach`])
+    /// are [`Search::NoWay`] at once. The search's arrays are kept by the
+    /// thread between searches and marked by a search number, so a search
+    /// costs what it expands, not the grid's size.
+    pub fn search(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        allowed: impl Fn(NodeId) -> bool,
+        budget: usize,
+    ) -> Search {
+        let n = self.len();
+        if from as usize >= n || to as usize >= n || !self.may_reach(from, to) {
+            return Search::NoWay;
+        }
+        SCRATCH.with(|scratch| {
+            let mut scratch = scratch.borrow_mut();
+            let Scratch {
+                mark,
+                cost,
+                parent,
+                search,
+                open,
+            } = &mut *scratch;
+            if mark.len() < n {
+                mark.resize(n, 0);
+                cost.resize(n, f32::INFINITY);
+                parent.resize(n, NONE);
             }
-            let cu = cost[u as usize];
-            for (v, kind) in self.links(u) {
-                if v != to && !allowed(v) {
+            // A mark of `2 * search` is a floor reached in this search,
+            // `2 * search + 1` one expanded (closed).
+            *search += 1;
+            if *search >= u32::MAX / 2 - 1 {
+                mark.fill(0);
+                *search = 1;
+            }
+            let (seen, closed) = (2 * *search, 2 * *search + 1);
+            open.clear();
+            let goal = self.position(to);
+            mark[from as usize] = seen;
+            cost[from as usize] = 0.0;
+            parent[from as usize] = NONE;
+            open.push(Entry(self.position(from).distance_xz(goal), from));
+            let mut expanded = 0usize;
+            while let Some(Entry(_, u)) = open.pop() {
+                // A floor met again by a cheaper way is in the heap twice:
+                // the later entry is stale.
+                if mark[u as usize] == closed {
                     continue;
                 }
-                let c = cu + self.link_cost(u, v, kind);
-                if c < cost[v as usize] {
-                    cost[v as usize] = c;
-                    parent[v as usize] = u;
-                    open.push(Entry(c + self.position(v).distance_xz(goal), v));
+                mark[u as usize] = closed;
+                if u == to {
+                    let mut nodes = vec![to];
+                    let mut at = to;
+                    while at != from {
+                        at = parent[at as usize];
+                        nodes.push(at);
+                    }
+                    nodes.reverse();
+                    return Search::Found(Path {
+                        nodes,
+                        cost: cost[to as usize],
+                    });
+                }
+                expanded += 1;
+                if expanded > budget {
+                    return Search::TooFar;
+                }
+                let cu = cost[u as usize];
+                for (v, kind) in self.links(u) {
+                    let m = mark[v as usize];
+                    if m == closed || (v != to && !allowed(v)) {
+                        continue;
+                    }
+                    let c = cu + self.link_cost(u, v, kind);
+                    if m != seen || c < cost[v as usize] {
+                        mark[v as usize] = seen;
+                        cost[v as usize] = c;
+                        parent[v as usize] = u;
+                        open.push(Entry(c + self.position(v).distance_xz(goal), v));
+                    }
                 }
             }
-        }
-        None
+            Search::NoWay
+        })
     }
 
     /// The cost from every floor to the nearest of `targets` (a flood
@@ -771,6 +876,31 @@ fn clip(polygon: &[Vec3], axis: usize, value: f32, keep_above: bool, out: &mut V
     }
 }
 
+/// How a search ([`WalkGrid::search`]) ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Search {
+    Found(Path),
+    /// There is no way over the allowed floors.
+    NoWay,
+    /// The budget ran out first.
+    TooFar,
+}
+
+/// A search's arrays, kept by each thread between searches (a few MB on the
+/// big maps, once).
+#[derive(Default)]
+struct Scratch {
+    mark: Vec<u32>,
+    cost: Vec<f32>,
+    parent: Vec<u32>,
+    search: u32,
+    open: BinaryHeap<Entry>,
+}
+
+thread_local! {
+    static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+}
+
 /// A path of floors and its cost (metres plus link penalties).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
@@ -820,7 +950,7 @@ impl DistanceMap {
 
 /// A heap entry, smallest cost first.
 #[derive(Clone, Copy, PartialEq)]
-struct Entry(f32, NodeId);
+pub(crate) struct Entry(pub(crate) f32, pub(crate) NodeId);
 
 impl Eq for Entry {}
 
@@ -837,8 +967,18 @@ impl Ord for Entry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Two 15 x 12 m rooms side by side, the wall between them at x = 15
+    /// with a 2 m door at z 5-7.
+    pub(crate) fn two_rooms() -> WalkGrid {
+        let mut tris = Vec::new();
+        tris.extend(floor(0.0, 0.0, 30.0, 12.0, 0.0));
+        tris.extend(wall_x(15.0, 0.0, 5.0, 3.0));
+        tris.extend(wall_x(15.0, 7.0, 12.0, 3.0));
+        WalkGrid::build(&tris, [0.0, 0.0, 30.0, 12.0], 0.25, Body::default())
+    }
 
     fn quad(min: Vec3, max_x: f32, max_z: f32, walker: WalkerBehaviour) -> [Triangle; 2] {
         let y = min.y;

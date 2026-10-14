@@ -245,3 +245,39 @@ fn level_05_evening_2_spawn_areas_are_left_one_way() {
         assert_eq!(batteries, 50);
     }
 }
+
+/// Whether a level's weather projects (day, evening, rain) share their
+/// walk and bullet geometry: one built world could serve all three.
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR"]
+fn weather_projects_share_geometry() {
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    for level in 1..=8 {
+        for mode in 2..=4 {
+            let read = |weather: &str| {
+                let project = format!("level_{level:02}/{weather}_{mode}");
+                MapData::read(&dir.join(mapdata::format::file_name(&project))).ok()
+            };
+            let Some(day) = read("day") else { continue };
+            for weather in ["evening", "rain", "prerain"] {
+                let Some(other) = read(weather) else { continue };
+                let same_libraries = day.libraries.len() == other.libraries.len()
+                    && day.libraries.iter().zip(&other.libraries).all(|(a, b)| {
+                        a.vertices == b.vertices
+                            && a.triangles == b.triangles
+                            && a.walker == b.walker
+                    });
+                let same_placements = day.placements == other.placements;
+                let same_box = day.levelmap_min == other.levelmap_min
+                    && day.levelmap_max == other.levelmap_max;
+                eprintln!(
+                    "level_{level:02} mode {mode} day vs {weather}: libraries {same_libraries}, placements {same_placements}, box {same_box}, spawns {}, zones {}",
+                    day.spawns == other.spawns,
+                    day.zones.len() == other.zones.len()
+                );
+            }
+        }
+    }
+}

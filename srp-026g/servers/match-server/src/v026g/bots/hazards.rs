@@ -233,6 +233,12 @@ impl Hazards {
             .all(|zone| zone.activity.off_for(time, ms))
     }
 
+    /// The set of zones marking `node` (0: none); floors of one set are
+    /// shut and open together.
+    pub fn set_of(&self, node: NodeId) -> u16 {
+        self.floor_set.get(node as usize).copied().unwrap_or(0)
+    }
+
     /// Whether no zone marks `node` at all (a place to stay).
     pub fn hazard_free(&self, node: NodeId) -> bool {
         self.zone_of(node).is_none()

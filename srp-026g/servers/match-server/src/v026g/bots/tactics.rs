@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use mapdata::regions::Regions;
 use mapdata::{NodeId, Vec3, World};
 
 use super::hazards::Hazards;
@@ -36,7 +37,17 @@ pub struct Tactics {
     /// The routes humans took on this map and mode (play 17), on its
     /// floors; empty without `SRP_BOT_ROUTES`.
     pub routes: Vec<super::routes::HumanRoute>,
+    /// Per floor, what of [`Self::allowed`] it is subject to: the zones'
+    /// set (`Hazards`) in the high bits, a bit per side (`1 << side`, sides
+    /// 0-7) whose spawn area it lies in.
+    labels: Vec<u32>,
+    /// The grid's regions cut by the labels, so [`Self::allowed`] is the
+    /// same on every floor of a region (`mapdata::regions`).
+    regions: Regions,
 }
+
+/// The label's bits for the sides' spawn areas.
+const SPAWN_BITS: u32 = 8;
 
 /// What a spot is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,11 +93,33 @@ pub struct Spot {
 impl Tactics {
     pub fn new(world: Arc<World>, hazard_margin: f32) -> Self {
         let hazards = Hazards::build(&world, hazard_margin);
+        let grid = &world.grid;
+        let mut labels: Vec<u32> = (0..grid.len() as NodeId)
+            .map(|node| u32::from(hazards.set_of(node)) << SPAWN_BITS)
+            .collect();
+        for spawn in &world.map.spawns {
+            let bit = 1u32 << (spawn.team.clamp(0, SPAWN_BITS as i32 - 1));
+            let p = spawn.position;
+            let area = [
+                p.x - SPAWN_AREA_M,
+                p.z - SPAWN_AREA_M,
+                p.x + SPAWN_AREA_M,
+                p.z + SPAWN_AREA_M,
+            ];
+            for node in grid.floors_in(area) {
+                if grid.position(node).distance_xz(p) < SPAWN_AREA_M {
+                    labels[node as usize] |= bit;
+                }
+            }
+        }
+        let regions = Regions::build(grid, Some(&labels));
         let mut tactics = Self {
             world,
             hazards,
             exits: Vec::new(),
             routes: Vec::new(),
+            labels,
+            regions,
         };
         let sides: Vec<i32> = {
             let mut sides: Vec<i32> = tactics.world.map.spawns.iter().map(|s| s.team).collect();
@@ -152,12 +185,29 @@ impl Tactics {
         let Some(side) = side.filter(|_| !objective) else {
             return true;
         };
-        let at = self.world.grid.position(node);
-        self.world
-            .map
-            .spawns
-            .iter()
-            .all(|spawn| spawn.team == side || spawn.position.distance_xz(at) >= SPAWN_AREA_M)
+        // No spawn area of another side.
+        let own = 1u32 << side.clamp(0, SPAWN_BITS as i32 - 1);
+        let spawn_areas = self
+            .labels
+            .get(node as usize)
+            .map_or(0, |l| l & ((1 << SPAWN_BITS) - 1));
+        spawn_areas & !own == 0
+    }
+
+    /// [`Self::allowed`] for a whole region (its floors share their label).
+    pub fn region_allowed(
+        &self,
+        region: u32,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+    ) -> bool {
+        self.allowed(self.regions.middle(region), time, side, objective)
+    }
+
+    /// The regions the routes go by.
+    pub fn regions(&self) -> &Regions {
+        &self.regions
     }
 
     /// The route from `from` to `to` for a body of map side `side`, off
@@ -178,9 +228,28 @@ impl Tactics {
         let grid = &self.world.grid;
         let start = grid.locate(from, 1.5)?;
         let goal = grid.locate(to, LOCATE_M)?;
-        path::plan_where(grid, start, goal, |node| {
-            self.allowed(node, time, side, objective)
-        })
+        self.route_nodes(start, goal, time, side, objective, |_| true)
+    }
+
+    /// [`Self::route_for`] between floors, keeping off the floors `avoid`
+    /// shuts too (the spots a bot got stuck at).
+    pub fn route_nodes(
+        &self,
+        start: NodeId,
+        goal: NodeId,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+        open: impl Fn(NodeId) -> bool,
+    ) -> Option<Route> {
+        path::plan_in(
+            &self.world.grid,
+            &self.regions,
+            start,
+            goal,
+            |node| self.allowed(node, time, side, objective) && open(node),
+            |region| self.region_allowed(region, time, side, objective),
+        )
     }
 
     /// Whether a body walks from `a` to `b` in a line, on allowed floors.
@@ -300,7 +369,15 @@ impl Tactics {
         };
         let mut exits: Vec<Vec3> = Vec::new();
         for spawn in ours.iter().step_by(ours.len().div_ceil(6).max(1)) {
-            let Some(route) = self.route(*spawn, target, 0, None) else {
+            // The whole grid's search, the very cheapest way (once a map).
+            let grid = &self.world.grid;
+            let Some(route) = grid
+                .locate(*spawn, 1.5)
+                .zip(grid.locate(target, LOCATE_M))
+                .and_then(|(from, to)| {
+                    path::plan_where(grid, from, to, |node| self.allowed(node, 0, None, false))
+                })
+            else {
                 continue;
             };
             // The first point 30-60 m along that is out of every spawn area.

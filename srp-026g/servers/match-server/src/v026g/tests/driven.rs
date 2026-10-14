@@ -448,6 +448,13 @@ fn with_the_map_the_servers_bot_sees_its_body_in_the_worlds_and_walks_smoothly()
     });
     bench.join(0);
     assert!(bench.until(2_000, |bench| bench.clients[0].entered() == [0, 1]));
+    // The bots' tactics are built on a thread of their own, in real time.
+    let started = std::time::Instant::now();
+    while !bench.game().bots_have_map() {
+        assert!(started.elapsed().as_secs() < 20, "no tactics");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        bench.step(5);
+    }
 
     // Once a world shows its body it heads for a station: forward, and
     // turns that ease in, none more than the top turning speed allows.

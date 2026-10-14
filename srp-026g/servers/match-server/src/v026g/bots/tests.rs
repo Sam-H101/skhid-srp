@@ -803,6 +803,299 @@ fn timed_batteries_are_waited_for_at_the_stations_and_brought_home() {
     assert!(out.winner.is_some());
 }
 
+/// Where the time of the bots' polls goes, seconds.
+#[derive(Default)]
+struct Times {
+    polls: u64,
+    view: f64,
+    commander: f64,
+    think: f64,
+    ticks: f64,
+    /// Each poll's whole time, µs.
+    each: Vec<f32>,
+    /// The longest of each part in one poll, µs.
+    worst: [f32; 4],
+}
+
+/// [`Bots::poll`] with each part timed; the same steps in the same order.
+fn timed_poll(bots: &mut Bots, clock: Clock, times: &mut Times) -> (Vec<Made>, Vec<Note>) {
+    use std::time::Instant;
+    let started = Instant::now();
+    let (mut made, mut notes) = (Vec::new(), Vec::new());
+    let now = clock.clock;
+    let world = bots.tactics.as_ref().map(|t| t.world.clone());
+    bots.tracker.held_sounds(now);
+    if let Some(tactics) = bots.tactics.as_mut() {
+        tactics.hazards.advance(now);
+    }
+    let view = bots
+        .tracker
+        .view(&clock, &bots.tuning.kin, world.as_deref());
+    let viewed = Instant::now();
+    if bots.tactics.is_some() {
+        for team in 0..2u8 {
+            if now >= bots.teams[usize::from(team)].next_commander {
+                bots.commander(team, &view, &mut notes);
+            }
+        }
+    }
+    let commanded = Instant::now();
+    let (mut think, mut ticks) = (0.0, 0.0);
+    let mut rays = RayBudget(bots.tuning.think.rays_per_poll);
+    bots.searches_left = SEARCHES_PER_POLL;
+    for index in 0..bots.bots.len() {
+        if bots.bots[index].is_none() {
+            continue;
+        }
+        let a = Instant::now();
+        bots.think(index, &view, &mut rays, &mut notes);
+        let b = Instant::now();
+        bots.ticks(index, &clock, &view, &mut made);
+        think += (b - a).as_secs_f64();
+        ticks += b.elapsed().as_secs_f64();
+    }
+    let parts = [
+        (viewed - started).as_secs_f64(),
+        (commanded - viewed).as_secs_f64(),
+        think,
+        ticks,
+    ];
+    times.polls += 1;
+    times.view += parts[0];
+    times.commander += parts[1];
+    times.think += parts[2];
+    times.ticks += parts[3];
+    for (worst, part) in times.worst.iter_mut().zip(parts) {
+        *worst = worst.max(part as f32 * 1e6);
+    }
+    times.each.push(started.elapsed().as_secs_f32() * 1e6);
+    (made, notes)
+}
+
+/// The cost of the bots on the real maps, only with
+/// `SRP_MAPDATA_DIR=<mapdata-dump files>` (and `SRP_BOT_ROUTES` for the
+/// human routes): the stand-in game on a real map, polled every 5 ms as
+/// the match server's loop does with nobody sending, each part of the poll
+/// timed (the stand-in's own time not counted).
+///
+/// ```text
+/// SRP_MAPDATA_DIR=<dir> SRP_BOT_ROUTES=<json> cargo test -p match-server --release real_bot_cost -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "a measurement; needs SRP_MAPDATA_DIR"]
+fn real_bot_cost() {
+    use std::time::Instant;
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        eprintln!("skipping: SRP_MAPDATA_DIR is not set");
+        return;
+    };
+    let table = std::env::var_os("SRP_BOT_ROUTES")
+        .map(|path| super::routes::RouteTable::load(std::path::Path::new(&path)).unwrap());
+    let limit_s: u32 = std::env::var("SRP_BENCH_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(240);
+    let sizes: Vec<usize> = std::env::var("SRP_BENCH_SIDES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or(vec![4, 8, 10]);
+    use survarium::v026g::maps::mode;
+    let maps: Vec<(u8, u8)> = std::env::var("SRP_BENCH_MAPS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .filter_map(|m| {
+                    let (level, mode) = m.split_once('/')?;
+                    Some((level.parse().ok()?, mode.parse().ok()?))
+                })
+                .collect()
+        })
+        .unwrap_or(vec![
+            (6, mode::BATTERIES),
+            (1, mode::TEAM_DEATHMATCH),
+            (3, mode::TIMED_BATTERIES),
+        ]);
+    for (level, mode) in maps {
+        let project = format!("level_{level:02}/day_{mode}");
+        let started = Instant::now();
+        let map = mapdata::MapData::read(&dir.join(mapdata::format::file_name(&project))).unwrap();
+        let world = Arc::new(World::build(map, mapdata::CELL, mapdata::Body::default()));
+        let built_s = started.elapsed().as_secs_f32();
+        for &per_team in &sizes {
+            let teams: Vec<u8> = (0..2 * per_team).map(|p| u8::from(p >= per_team)).collect();
+            let driven = vec![true; teams.len()];
+            let roles: Vec<Option<&str>> = vec![None; teams.len()];
+            let mut bots = Bots::new(
+                0xBE7C + per_team as u32,
+                mode,
+                level,
+                &teams,
+                &driven,
+                &roles,
+                Arc::new(Tuning::default()),
+                Trace::none(0),
+            );
+            if let Some(table) = &table {
+                bots.set_routes(table);
+            }
+            let started = Instant::now();
+            let summary = bots.map_ready(world.clone());
+            let ready_ms = started.elapsed().as_secs_f32() * 1e3;
+            let (tickets, timed) = match mode {
+                mode::TEAM_DEATHMATCH => (Some(60), None),
+                mode::TIMED_BATTERIES => (None, Some(20_000)),
+                _ => (None, None),
+            };
+            let mut game = Game::new(world.clone(), &teams, per_team as u64, tickets, timed);
+            for place in 0..teams.len() {
+                bots.entered(place, true, 0);
+            }
+            let mut times = Times::default();
+            let mut plays: std::collections::BTreeMap<String, u32> = Default::default();
+            let searches_before = super::path::searches();
+            let rays_before = super::aimpoint::rays_cast();
+            let limit_ms = limit_s * 1000;
+            let (mut clock, mut next_world) = (0, 1_000);
+            while clock < limit_ms {
+                clock += 5;
+                while game.tick + TICK_MS <= clock {
+                    game.step();
+                }
+                if clock >= next_world {
+                    next_world += 1_000;
+                    if let Some((_, fixes, health, facts)) =
+                        game.world_at(clock / TICK_MS * TICK_MS - 300)
+                    {
+                        for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                            bots.fixed(place, fix, Some(health));
+                        }
+                        bots.facts(facts);
+                    }
+                }
+                let clock_now = Clock {
+                    clock,
+                    time_left_s: (limit_ms - clock) as f32 / 1000.0,
+                    total_s: limit_s as f32,
+                };
+                let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
+                for note in notes {
+                    let key: String = note
+                        .text
+                        .split(|c: char| c == '(' || c == ':' || c.is_ascii_digit())
+                        .next()
+                        .unwrap_or("")
+                        .to_owned();
+                    *plays.entry(key).or_default() += 1;
+                }
+                for made in made {
+                    let r = made.input.rotation;
+                    let turn = (
+                        half_value(u16::from_le_bytes([r[0], r[1]])),
+                        half_value(u16::from_le_bytes([r[2], r[3]])),
+                    );
+                    let target = bots.bots[made.place]
+                        .as_ref()
+                        .and_then(|bot| bot.reflex.target());
+                    game.inputs[made.place].push_back((
+                        made.time,
+                        made.input.actions,
+                        turn,
+                        target,
+                    ));
+                }
+            }
+            let rays = super::aimpoint::rays_cast() - rays_before - game.metric_rays;
+            let searches = super::path::searches();
+            let (searched, failed, search_us) = (
+                searches.searches - searches_before.searches,
+                searches.failed - searches_before.failed,
+                searches.us - searches_before.us,
+            );
+            let stages: Vec<(u64, f64)> = (0..4)
+                .map(|k| {
+                    let n = searches.stages[k] - searches_before.stages[k];
+                    let us = searches.stage_us[k] - searches_before.stage_us[k];
+                    (n, us / 1e3 / n.max(1) as f64)
+                })
+                .collect();
+            eprintln!(
+                "  by stage (no way, corridor, widened, whole): (searches, ms each) {stages:?}; worst search {:.1} ms",
+                searches.worst_us / 1e3
+            );
+            eprintln!(
+                "  grid searches {searched} ({:.1} a bot a second), {failed} failed; {:.2} ms each on average; {:.0} % of the bots' time",
+                searched as f64 / teams.len() as f64 / limit_s as f64,
+                search_us / 1e3 / searched.max(1) as f64,
+                search_us / 1e4 / (times.view + times.commander + times.think + times.ticks)
+            );
+            if std::env::var_os("SRP_BENCH_WHY").is_some() {
+                let tactics = bots.tactics.as_ref().unwrap();
+                let grid = &tactics.world.grid;
+                for bot in bots.bots.iter().flatten() {
+                    let me = game.bodies[bot.place].feet;
+                    let goal = match bot.intent.go {
+                        Go::To { at, .. } => Some(at),
+                        _ => None,
+                    };
+                    let from = grid.locate(me, 1.5);
+                    let to = goal.and_then(|g| grid.locate(g, 3.0));
+                    let open = from.zip(to).map(|(a, b)| path::plan(grid, a, b).is_some());
+                    let allowed = from.zip(to).map(|(a, b)| {
+                        path::plan_where(grid, a, b, |n| tactics.allowed(n, clock, bot.side, false))
+                            .is_some()
+                    });
+                    let objective = from.zip(to).map(|(a, b)| {
+                        path::plan_where(grid, a, b, |n| tactics.allowed(n, clock, bot.side, true))
+                            .is_some()
+                    });
+                    eprintln!(
+                        "  bot {} team {} side {:?} at {me:?} goal {goal:?} objective {} from {from:?} to {to:?}: path open {open:?}, allowed {allowed:?}, objective-allowed {objective:?}; play {:?}",
+                        bot.place,
+                        bot.team,
+                        bot.side,
+                        bot.intent.objective,
+                        bot.assignment.as_ref().map(|a| (a.kind, a.target)),
+                    );
+                }
+            }
+            let mut top: Vec<_> = plays.into_iter().collect();
+            top.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!("  notes: {:?}", &top[..top.len().min(12)]);
+            let total = times.view + times.commander + times.think + times.ticks;
+            let mut each = std::mem::take(&mut times.each);
+            each.sort_by(f32::total_cmp);
+            let at = |q: f64| each[((each.len() - 1) as f64 * q) as usize];
+            let kills: u32 = game.stats.iter().map(|s| s.0).sum();
+            eprintln!(
+                "{project} {per_team}v{per_team}: world built in {built_s:.2} s, map_ready {ready_ms:.1} ms ({summary})\n  \
+                 {limit_s} s of play: bots {:.1} ms a second = {:.2} % of a core; per bot {:.3} %\n  \
+                 poll µs p50 {:.0}, p99 {:.0}, p99.9 {:.0}, max {:.0}; {} polls\n  \
+                 parts: view {:.0} %, commander {:.0} %, think {:.0} %, ticks {:.0} %; worst µs view {:.0}, commander {:.0}, think {:.0}, ticks {:.0}\n  \
+                 rays {:.1} per bot a second; kills {kills}, shots {}, hits {}",
+                total * 1e3 / limit_s as f64,
+                total * 100.0 / limit_s as f64,
+                total * 100.0 / limit_s as f64 / teams.len() as f64,
+                at(0.5),
+                at(0.99),
+                at(0.999),
+                each[each.len() - 1],
+                times.polls,
+                100.0 * times.view / total,
+                100.0 * times.commander / total,
+                100.0 * times.think / total,
+                100.0 * times.ticks / total,
+                times.worst[0],
+                times.worst[1],
+                times.worst[2],
+                times.worst[3],
+                rays as f64 / teams.len() as f64 / limit_s as f64,
+                game.shots,
+                game.hits,
+            );
+        }
+    }
+}
+
 /// A body at `x` on the line z = 0, alive or not, in a world at `time`.
 fn standing(time: u32, x: f32, alive: bool) -> Fix {
     Fix {

@@ -40,10 +40,11 @@ pub mod grid;
 pub mod library;
 pub mod math;
 pub mod project;
+pub mod regions;
 pub mod resources;
 pub mod sight;
 
-pub use grid::{Body, BuildStats, DistanceMap, LinkKind, NodeId, Path, WalkGrid};
+pub use grid::{Body, BuildStats, DistanceMap, LinkKind, NodeId, Path, Search, WalkGrid};
 pub use library::{Library, Materials, WalkerBehaviour};
 pub use math::{PhysicsPoint, Rotation, Transform, Vec3};
 pub use project::{
