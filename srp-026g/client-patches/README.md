@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `e02183a89db5e0eb3166a3f88a9cb9e229f4897dd653023e3e78cf07e91ff97f` (patch revision 10); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `af1fa71d0e32835fba3e08e17c5e33dc2327c9e3507c931de03cf6fef1e48390`. Revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `6689d3549a13f63a38d60a031df5aa4a4903ad811f291d4a35425ef8400f9923` (patch revision 10); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `1656e51d96a6eb6c1f7da61bfa513f37db620f410c4eaf8a4b93bbcf49404efe`. Revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -862,7 +862,7 @@ up with the ZIP. The match server needs no change (its clock factor and
 the late join take 10). A late-join exe built by hand (`0x80`) is let in
 and has not the patch.
 
-Checked: `selftest_026g.py`, 760 checks (check 19: the five bytes; the
+Checked: `selftest_026g.py`, 760 checks, 787 with patch 19 (check 19: the five bytes; the
 spawn around them and the registers it leaves; the respawn rules' vtables
 and tick; the player's initialize and the inventory's 23 slots; the
 weapon's constructor, the bind's two vtables and their RTTI names; every
@@ -879,6 +879,48 @@ the revision byte, the five bytes, the hook's 118 bytes and two bytes of
 the PE checksum. **Not run: a game.** Not covered: the single-player
 respawn rule (the test mode `loopback_client` alone). Evidence:
 `../docs/notes/client_patch.md` section 3.18.
+
+### 19. A first world's kit choices and inputs (patch revision 10)
+
+Reported for the matches after 0x1ce45cbe (2026-10-14): of fifteen late
+joins five were out of step from their first tick and never let in; for two
+a newcomer's world with one player's next kit changed gave the newcomer's
+reported hash byte for byte.
+
+**The cause.** A game's first world of a match (a newcomer's, a game's that
+comes back, and every game's at a match's start) gives each place of the
+world an entry at the world's time in its input list and in its list of kit
+choices (0x2D4AB0 and 0x2D4B50, from deserialize 0x2D0B70). The kit choice
+was the kit in use, not the one the world has chosen for the next spawn,
+and both entries went at the newest end of their list even when it held
+newer entries (relayed between the server's 0xE5 and the world), where
+every other writer keeps the lists in time order. Each tick the place's
+next kit is the newest entry at or before the tick, looked for from the
+newest end: the world's choice, and a choice relayed for later, were both
+hidden by the kit in use, and the newcomer respawned that player in
+another kit than the other games did.
+
+**The patch.** The two calls (0x2D1050, 0x2D1055) go to `first_load_input`
+and `first_load_kit` (`late_join_026g.asm`, offsets 3840 and 3920, 178
+bytes): the same input entry, the kit choice being the world's next kit
+(place+0xD), each put before the oldest newer entry with the game's own
+allocator and insert (0x1FCB60, 0x2D4850); an entry of the same time is
+given the value, as before. With no newer entry the lists are what the
+game's own left, but for the kit choice's value. Every game that loads the
+same world, the starters of a match too, makes the same entries; a kit
+chosen before a match's first world is no longer reset to the kit in use
+(in every game of revision 10 alike).
+
+Checked: `selftest_026g.py` check 20 (787 checks in all).
+`check_late_join_026g.py` runs the game's own block of the first world
+with its allocator and insert on made-up lists, then the places' own tick:
+in the build the lists are in time order and the next kit after each tick
+is what a game that played has (a choice before the world, one relayed for
+later, empty lists, an entry of the world's time, every entry newer, the
+pool full); in the original the later choice is hidden by the kit in use;
+the original and three broken copies fail it. **Not run: a game**, nor the
+reported hash reproduction with this exe. Evidence:
+`../docs/notes/client_patch.md` section 3.19.
 
 ## Not ported, not done
 

@@ -91,6 +91,16 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     client's weapon; the hook's code tests that bind, writes +5BCh alone,
     and ends with the two instructions; no branch or address aims inside
     the five bytes.
+20. the same build: the two calls of a game's first world (0x2D1050,
+    0x2D1055) go to first_load_input and first_load_kit; in the original
+    they are the only calls of 0x2D4AB0 and 0x2D4B50, in deserialize's
+    block of the first world after the world is read (which puts the
+    world's next kit into place+0Dh), the kit choice is the kit in use and
+    both append at the newest end; each tick takes the next kit from the
+    newest entry at or before it, and the network inserts in time order;
+    the new code reads place+0Dh, calls the game's allocator and the
+    list's insert only, writes a node's value and time only and leaves to
+    nowhere else; nothing aims inside the two calls.
 """
 
 import ctypes
@@ -1187,6 +1197,70 @@ def test_weapon_random(original, image, before):
           "bytes (0x316E76 aims at their start)" + "".join(f"\n          {a:#x}" for a in found))
 
 
+def test_first_load(original, image, before):
+    """Check 20: a first world's inputs and kit choices, in time order."""
+    source = Image(original)
+    texts = lambda blob, at, size: [text for _, _, text in ndisasm(blob.read(at, size), at)]
+    sites = []
+    for (va, old, offset, _), was in ((P.FIRST_LOAD_INPUT_HOOK, 0x2D4AB0), (P.FIRST_LOAD_KIT_HOOK, 0x2D4B50)):
+        entry = P.LATE_JOIN_VA + offset
+        sites.append((va, old, entry, was))
+        check(source.read(va, 5) == old and before.read(va, 5) == old
+              and texts(source, va, 5) == [f"call 0x{was:x}"] and texts(image, va, 5) == [f"call 0x{entry:x}"]
+              and branches_to(original, was) == [va],
+              f"{va:#x}: `call 0x{was:x}` is `call 0x{entry:x}`; it was the only call of 0x{was:x}; the build "
+              "without the late join keeps it")
+    block = texts(source, 0x2D0FBE, 0x2D1067 - 0x2D0FBE)
+    check(block[0] == "cmp byte [edi+0x18fdf],0x0" and "jz near 0x2d105e" in block
+          and "mov byte [edi+0x18fdf],0x0" in block
+          and all(text in block for text in ("mov [esp+0x24],ecx", "mov [esp+0x28],ecx", "mov [esp+0x2c],dl",
+                                             "lea edi,[esp+0x24]", "and esi,ebx", "jnz 0x2d0ff2"))
+          and block[block.index("lea edi,[esp+0x24]") + 1:block.index("lea edi,[esp+0x24]") + 4]
+          == ["mov [esp+0x2c],dl", "call 0x2d4ab0", "call 0x2d4b50"]
+          and texts(source, 0x2D0FB9, 5) == ["call 0x2d2770"]
+          and "mov [edi+0xd],al" in texts(source, 0x2D2A30, 0x10),
+          "the two calls are in deserialize's block of a game's first world (the frozen flag, +18FDFh, cleared), "
+          "for each place of the world's mask, with edi -> {core, the world's time, place}, after the world is "
+          "read (0x2D2770, which puts the world's next kit into place+0Dh at 0x2D2A37)")
+    kit, given = texts(source, 0x2D4B50, 0x87), texts(source, 0x2D4AB0, 0x95)
+    check("mov bl,[edx+0x115]" in kit and "add esi,[ecx+0x89d8]" in kit and "call 0x1fcb60" in kit
+          and "add esi,[ecx+0x2fcc]" in given and "mov ebx,[eax+0x32c]" in given and "mov ebp,[eax+0x330]" in given
+          and "call 0x1fcb60" in given and "call 0x2d4850" not in kit + given,
+          "in the original the kit choice is the kit in use (player+115h) and both put a new entry at the newest "
+          "end themselves, not through the list's insert (0x2D4850)")
+    tick = texts(source, 0x321790, 0x4B)
+    network = texts(source, 0x1FBF00, 0x70)
+    inputs = texts(source, 0x1FB41B, 0x60)
+    check(all(text in tick for text in ("mov edx,[edx+0x89d8]", "mov eax,[eax+edx+0x8]", "cmp [eax+0x20],edx",
+                                        "mov eax,[eax+0x4]", "mov [ecx+0xd],al"))
+          and all(text in network for text in ("add ebx,[edi+0x89d8]", "mov eax,[ebx+0x4]", "cmp [eax+0x20],esi",
+                                               "mov eax,[eax]", "call 0x2d4850"))
+          and all(text in inputs for text in ("add eax,[ebx+0x2fcc]", "mov esi,[eax+0x4]", "cmp [esi+0x20],edi",
+                                              "mov esi,[esi]", "call 0x1fcb60")),
+          "each tick (0x321790) takes the next kit from the newest entry at or before it, looked for from the "
+          "newest end; the network puts kit choices and inputs before the oldest newer entry (0x1FBF00, 0x1FB41B)")
+    code = ndisasm(image.read(sites[0][2], 0xC0), sites[0][2])
+    code = code[:next(i for i, (address, _, text) in enumerate(code)
+                      if text == "ret" and address > sites[1][2] + 0x2E) + 1]
+    code_texts = [text for _, _, text in code]
+    end = code[-1][0] + 1
+    calls = sorted({branch_target(text) for text in code_texts if text.startswith("call")})
+    leaving = [text for text in code_texts if branch_target(text) is not None and not text.startswith("call")
+               and not sites[0][2] <= branch_target(text) < end]
+    stores = sorted({text for text in code_texts if text.startswith("mov [")})
+    check(code[0][0] == sites[0][2] and any(address == sites[1][2] for address, _, _ in code)
+          and "mov bl,[eax+0xd]" in code_texts and "mov ebx,[eax+0x32c]" in code_texts
+          and calls[:2] == [0x1FCB60, 0x2D4850] and all(sites[0][2] <= c < end for c in calls[2:])
+          and not leaving and stores == ["mov [eax+0x20],ecx", "mov [eax+0x8],bl", "mov [eax+0x8],ebx",
+                                         "mov [eax+0xc],ebp"],
+          f"first_load_input ({sites[0][2]:#x}) and first_load_kit ({sites[1][2]:#x}): the kit choice is place+0Dh; "
+          "they call the game's allocator (0x1FCB60) and the list's insert (0x2D4850) and their own search alone, "
+          "write a node's value and time alone, and no branch leaves them")
+    found = [address for va, old, _, _ in sites for address in aimed_inside(original, va, len(old), 0x82)]
+    check(not found, "no rel32 branch of .text, no rel8 branch byte near them and no 4-byte value aims inside the "
+          "two calls" + "".join(f"\n          {a:#x}" for a in found))
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -1322,6 +1396,7 @@ def test_late_join(original, without, server, source):
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
     test_weapon_random(original, image, before)
+    test_first_load(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

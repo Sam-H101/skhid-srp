@@ -376,3 +376,23 @@ them. `notes/match.md` §28 has the evidence and the choices,
     `loopback_client` alone) spawns another way and keeps the old state.
   - The other cause of that match's desyncs (inputs made while a resync
     world loads) is the server's and is not touched here.
+
+## 0.26g, added 2026-10-14: a newcomer that respawns a player in the wrong kit
+
+- **Done 2026-10-14, in the same revision 10, not in a download: a game's
+  first world of a match could make it respawn a player in another kit than
+  the other games.** Reported by the analysis of the matches after
+  0x1ce45cbe: of fifteen late joins five were out of step from their first
+  tick and never let in; for two, a newcomer's world with one player's next
+  kit changed gave its reported hash byte for byte (LIKELY a third). The
+  first world gives each place an entry at its time in the lists of inputs
+  and of kit choices: the kit choice was the kit in use, not the world's
+  choice for the next spawn, and both went at the newest end even after
+  newer entries relayed before the world. PROVEN in the code
+  (`notes/client_patch.md` §3.19), the game's own code run with Unicorn
+  before and after the patch.
+  - Revision 10 puts the world's choice, and both entries in time order.
+    A kit chosen before a match's first world is now kept by every game of
+    10 (the original reset it to the kit in use in every game alike).
+  - Not run in a game; the hash reproduction was not run with the new exe.
+    Whether the two other never-admitted joins had this cause is open.

@@ -146,7 +146,10 @@ Patches:
   respawn rule's spawn (0x316DA0) calls into the new code at 0x316EA0,
   after the new kit's player is initialised and before it is put into the
   world: each weapon of its inventory gets a state from its place, kit,
-  slot and the spawn's time, the same in every game;
+  slot and the spawn's time, the same in every game. And a game's first
+  world of a match puts each place's input and kit choice into the place's
+  lists in time order (calls at 0x2D1050 and 0x2D1055), the kit choice
+  being the one the world made for the next spawn, not the kit in use;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -252,7 +255,11 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # a world during a match kept the other kits' weapons at the constructor's
 # 1, and a respawn into such a kit put it out of step at once. What a match
 # computes changes from a match's first spawn: a game of 10 and an older one
-# part there, so a server asks for 10.
+# part there, so a server asks for 10. With it, a game's first world of a
+# match puts each place's input and kit choice where their time puts them in
+# the place's lists, the kit choice being the one the world has made for the
+# next spawn (FIRST_LOAD below): in 9 and before a newcomer could respawn a
+# player in another kit than the other games did.
 REVISION = 10
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -386,6 +393,34 @@ def weapon_random_state(place, kit, slot, time):
          ^ (time * 0x9E3779B1)) & 0xFFFFFFFF
     return (h ^ h >> 15) % (WEAPON_RANDOM_MODULUS - 1) + 1
 
+
+# A game's first world of a match (game_world_core::deserialize 0x2D0B70,
+# the block 0x2D0FE3..0x2D105C while the world is still frozen: every game's
+# at a match's start, a newcomer's, a game's that comes back) gives each
+# place of the world an input and a kit choice at the world's time: `call
+# 0x2d4ab0` at 0x2D1050 (the current player's input, +32Ch/+330h, into the
+# place's input list, core+2FCCh) and `call 0x2d4b50` at 0x2D1055 (a kit
+# choice into core+89D8h), edi -> {core, the world's time, place}. Both put
+# their entry at the newest end of the list when it has none of that time,
+# even after newer entries (inputs and kit choices relayed between the
+# server's 0xE5 and the world), where every other writer keeps the lists in
+# time order (the network's 0x1FB42A and 0x1FBF00 insert through 0x2D4850).
+# And the kit choice was the kit in use (player+115h), not the one the world
+# has chosen for the next spawn (place+0Dh, read from the world at 0x2D2A37).
+# Each tick 0x321790 sets the place's next kit from the newest entry at or
+# before the tick, looked for from the newest end: the world's choice, or a
+# choice relayed for later, was replaced by the kit in use, and the newcomer
+# respawned that player in another kit than the other games (reported by
+# the analysis of the matches after 0x1ce45cbe for joins that were never let
+# in). The two calls go to first_load_input and first_load_kit
+# (late_join_026g.asm): the same entries, the kit choice being place+0Dh,
+# put before the oldest newer entry (0x2D4850), an entry of that time given
+# the value as before. With no newer entry the lists end as the game's own
+# left them, but for the kit choice's value.
+FIRST_LOAD_INPUT_HOOK = (0x2D1050, bytes.fromhex("e85b3a0000"), 3840, 0xE8)
+FIRST_LOAD_KIT_HOOK = (0x2D1055, bytes.fromhex("e8f63a0000"), 3920, 0xE8)
+FIRST_LOAD_DESERIALIZE_VA = 0x2D0B70
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -425,6 +460,8 @@ LATE_JOIN_HOOKS = (
     (0x23572B, bytes.fromhex("8b8c2498000000"), 3456, 0xE9),     # the hud's lists of players, made again: lists_hook
     (0x39E52, bytes.fromhex("f30f7e00660fd64704"), 3520, 0xE9),  # a box that is no box, in the tree: box_hook
     WEAPON_RANDOM_HOOK,                                          # a spawn's weapons' random state: weapon_random_hook
+    FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
+    FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -847,7 +884,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "goes on without the focus, a model not in the scene stays out of it, "
                      f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor), "
                      "the countdown shows the match's team points, "
-                     "a spawn gives its weapons a random state of the match's own"
+                     "a spawn gives its weapons a random state of the match's own, "
+                     "a first world's kit choices are the world's and in time order"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

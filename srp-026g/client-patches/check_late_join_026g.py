@@ -14,7 +14,12 @@ games, one whose weapons of the new kit were drawn from and one whose are at
 the constructor's 1: the build gives both the same random states, the ones
 patch_026g.weapon_random_state names, after the player's initialize and
 before it is put into the world, and nothing else; the original leaves them
-apart; copies with one thing broken fail. These tests establish profile decoding, capacity,
+apart; copies with one thing broken fail. The block of a game's first
+world (0x2D0FF2..0x2D105E) runs with the game's own allocator on made-up
+lists, then the places' own tick (0x321790): in the build the entries are
+in time order and the kit choice is the world's, so the next kit after each
+tick is the one the games that played the match have; in the original a
+choice relayed for later is hidden by the kit in use. These tests establish profile decoding, capacity,
 calling convention and ID allocation, not a playable late join.
 """
 import argparse
@@ -1424,6 +1429,224 @@ def weapon_random_fails(original, changed):
         raise AssertionError(f"weapon_random passes with {name}")
 
 
+LOAD_CORE, LOAD_LISTS, LOAD_NODES, LOAD_PLACES, LOAD_STACK = 0x4600000, 0x4620000, 0x4640000, 0x4660000, 0x4680000
+NODE_SIZE = 0x40
+
+
+def first_load(data, places, time, pool_room=64):
+    """The block of a game's first world (0x2D0FF2..0x2D105E, the game's own
+    instructions and its two calls, patched or not) on a made-up core and
+    world: `places` = {place: (kit in use, the world's next kit, the kit
+    choices there are, the inputs there are)}, each list [(time, value)]
+    oldest first, as the network's sorted inserts leave them; the nodes
+    come from the game's own allocator (0x1FCB60 with 0x2D48B0 and the
+    pool's 0x5A540) on a pool of `pool_room` nodes for each list. Then the
+    game's own tick of each place (0x321790) for the ticks from the world's
+    time on. Returns {place: (kit choices, inputs, every list walked both
+    ways, the next kit after each tick)}."""
+    m = Machine(data)
+    uc = m.uc
+    for base, size in ((LOAD_CORE, 0x19000), (LOAD_LISTS, 0x20000), (LOAD_NODES, 0x20000),
+                       (LOAD_PLACES, 0x4000), (LOAD_STACK - 0x1000, 0x2000)):
+        uc.mem_map(base, size)
+    uc.mem_map(0x2260000, 0x1000)                 # 0x5A540's debug flag (0x22601BB): off
+    m.write(LOAD_CORE + 0x18458, LOAD_PLACES)
+    m.write(LOAD_CORE + 0x2FCC, LOAD_LISTS)
+    m.write(LOAD_CORE + 0x89D8, LOAD_LISTS + 0x8000)
+    free = [LOAD_NODES]
+
+    def pool_for(header):
+        """A pool of its own for the list at `header` (+10h), its free list
+        strung through the nodes' first word."""
+        pool = header + 0x100
+        nodes = [free[0] + NODE_SIZE * i for i in range(pool_room)]
+        free[0] += NODE_SIZE * pool_room
+        for node, after in zip(nodes, nodes[1:] + [0]):
+            m.write(node, after)
+        m.write(header + 0x10, pool)
+        m.write(pool + 0x20, nodes[0])
+        m.write(pool + 0x24, 0)
+        m.write(pool + 0x28, pool_room)
+        return pool
+
+    def fill(header, entries, inputs):
+        pool = pool_for(header)
+        previous = 0
+        for at, value in entries:
+            node = m.read(pool + 0x20)
+            m.write(pool + 0x20, m.read(node))
+            m.write(pool + 0x24, m.read(pool + 0x24) + 1)
+            uc.mem_write(node, bytes(NODE_SIZE))
+            m.write(node + 4, previous)
+            m.write(node + 0x20, at)
+            if inputs:
+                m.write(node + 8, value)
+                m.write(node + 0xC, value ^ 0x5A5A5A5A)
+            else:
+                uc.mem_write(node + 8, bytes([value]))
+            if previous:
+                m.write(previous, node)
+            else:
+                m.write(header + 4, node)
+            m.write(header + 8, node)
+            previous = node
+        m.write(header, len(entries))
+
+    mask = 0
+    for place, (in_use, chosen, kits, inputs) in places.items():
+        mask |= 1 << place
+        entry = LOAD_PLACES + place * 0x30
+        for kit in range(3):
+            player = LOAD_PLACES + 0x1000 + place * 0x100 + kit * 0x40
+            m.write(entry + kit * 4, player)
+        uc.mem_write(entry + 0xC, bytes([in_use, chosen]))
+        m.write(entry + 0x28, LOAD_CORE)
+        uc.mem_write(entry + 0x2C, bytes([place]))
+        # The player in use: its kit byte and its input, mapped apart.
+        player = 0x46A0000 + place * 0x1000
+        try:
+            uc.mem_map(player, 0x1000)
+        except Exception:
+            pass
+        m.write(entry + in_use * 4, player)
+        uc.mem_write(player + 0x115, bytes([in_use]))
+        m.write(player + 0x32C, 0x1000 + place)
+        m.write(player + 0x330, 0x2000 + place)
+        fill(LOAD_LISTS + place * 0x480, inputs, True)
+        fill(LOAD_LISTS + 0x8000 + place * 0x480, kits, False)
+    # The frame of 0x2D0B70 at 0x2D0FF2: [ebp+8] the core, [esp+14h] the
+    # history item (its time at +C0BB0h), esi the mask left to do.
+    uc.mem_map(0x4700000, 0xC1000)
+    m.write(0x4700000 + 0xC0BB0, time)
+    frame = LOAD_STACK
+    m.write(frame + 8, LOAD_CORE)
+    esp = LOAD_STACK - 0x80
+    m.write(esp + 0x14, 0x4700000)
+    uc.reg_write(UC_X86_REG_ESP, esp)
+    uc.reg_write(UC_X86_REG_EBP, frame)
+    uc.reg_write(UC_X86_REG_ESI, mask)
+    uc.reg_write(UC_X86_REG_EDI, 0x77777777)
+    uc.emu_start(0x2D0FF2, 0x2D105E, count=200000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x2D105E and uc.reg_read(UC_X86_REG_ESP) == esp
+    assert uc.reg_read(UC_X86_REG_EBP) == frame and uc.reg_read(UC_X86_REG_ESI) == 0
+
+    def walk(header, inputs):
+        forward, node, before = [], m.read(header + 4), 0
+        while node:
+            assert m.read(node + 4) == before and len(forward) < 1000
+            value = (m.read(node + 8), m.read(node + 0xC)) if inputs else uc.mem_read(node + 8, 1)[0]
+            forward.append((m.read(node + 0x20), value))
+            before, node = node, m.read(node)
+        linked = m.read(header + 8) == before and m.read(header) == len(forward)
+        return forward, linked
+
+    out = {}
+    for place in places:
+        kits, kits_linked = walk(LOAD_LISTS + 0x8000 + place * 0x480, False)
+        inputs, inputs_linked = walk(LOAD_LISTS + place * 0x480, True)
+        entry = LOAD_PLACES + place * 0x30
+        chosen = []
+        for tick in range(time, time + 400, 50):
+            uc.reg_write(UC_X86_REG_ECX, entry)
+            m.start(0x321790, args=(0, tick, 0), count=2000)
+            assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16
+            chosen.append(uc.mem_read(entry + 0xD, 1)[0])
+        out[place] = (kits, inputs, kits_linked and inputs_linked, chosen)
+    return out
+
+
+def next_kits(entries, chosen, time):
+    """What a game that played the match has as the place's next kit after
+    each tick from `time` on: the world's choice at `time`, then the newest
+    entry at or before the tick (every kit is there)."""
+    out = []
+    for tick in range(time, time + 400, 50):
+        older = [value for at, value in entries if at <= tick]
+        if older and older[-1] < 3:
+            chosen = older[-1]
+        out.append(chosen)
+    return out
+
+
+def first_world(original, changed):
+    """patch_026g.py's FIRST_LOAD: the entries of a first world, in the
+    original and in the build, against what the games that played the match
+    have."""
+    time = 300050
+    cases = {
+        # The newcomer case: a kit chosen before the world (2, the world's
+        # next kit) and one relayed for later (1, at +100 ms); kit 0 in use.
+        3: (0, 2, [(time - 200, 2), (time + 100, 1)], [(time - 100, 7), (time + 50, 8)]),
+        # A first world of a match: nothing in the lists, the next kit the
+        # one in use.
+        0: (1, 1, [], []),
+        # An entry of the world's very time, and only older ones.
+        8: (2, 0, [(time - 50, 1), (time, 0)], [(time, 9)]),
+        # Every entry newer than the world.
+        19: (1, 0, [(time + 50, 2), (time + 150, 1)], [(time + 50, 3)]),
+    }
+    for data, build in ((original, False), (changed, True)):
+        for room in (64, 2):          # 2: the pool full, its oldest node given back
+            if room == 2 and not build:
+                continue
+            got = first_load(data, {p: c for p, c in cases.items() if room == 64 or p in (0, 19)}, time, room)
+            for place, (kits, inputs, linked, chosen) in got.items():
+                in_use, world_next, had_kits, had_inputs = cases[place]
+                assert linked, place
+                current = (0x1000 + place, 0x2000 + place)
+                if build:
+                    full = room == 2 and len(had_kits) >= 2
+                    kept_kits = had_kits[1:] if full else had_kits
+                    kept_inputs = had_inputs
+                    # In time order; the world's entry at its time.
+                    want_kits = sorted([e for e in kept_kits if e[0] != time] + [(time, world_next)])
+                    want_inputs = sorted([(at, (v, v ^ 0x5A5A5A5A)) for at, v in kept_inputs if at != time]
+                                         + [(time, current)])
+                    assert kits == want_kits, (place, kits, want_kits)
+                    assert inputs == want_inputs, (place, inputs, want_inputs)
+                    # The next kit as every other game has it.
+                    assert chosen == next_kits(kept_kits, world_next, time), (place, chosen)
+                elif place == 3:
+                    # The fault: the kit in use at the newest end, after the
+                    # choice relayed for later, which it hides from then on.
+                    assert kits == had_kits + [(time, in_use)], kits
+                    assert chosen != next_kits(had_kits, world_next, time) and set(chosen) == {in_use}, chosen
+                elif place == 0:
+                    assert kits == [(time, in_use)] and inputs == [(time, current)]
+    # With nothing newer and the next kit the one in use, the build's lists
+    # are the original's.
+    case = {0: (1, 1, [(time - 100, 1)], [(time - 50, 4)])}
+    assert first_load(original, case, time)[0][:2] == first_load(changed, case, time)[0][:2]
+
+
+def first_world_fails(original, changed):
+    """first_world given the original as the build, and copies of the build
+    with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, _, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.FIRST_LOAD_INPUT_HOOK[2]
+    code = bytes(changed[cave:cave + 0xC0])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "the kit in use for the world's choice": broken(bytes.fromhex("8a580d"), bytes.fromhex("8a580c")),
+        "at the newest end (as the game's own)": broken(bytes.fromhex("394a207205"), bytes.fromhex("394a20eb05")),
+        "an entry of the same time not found": broken(bytes.fromhex("394820743272"), bytes.fromhex("394820909072")),
+    }
+    for name, data in copies.items():
+        try:
+            first_world(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"first_world passes with {name}")
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -1443,6 +1666,8 @@ def check(original, nasm):
     pregame_progress(original, changed)
     weapon_random(original, changed)
     weapon_random_fails(original, changed)
+    first_world(original, changed)
+    first_world_fails(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1484,7 +1709,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); ABI; PE checksum and certificate")
 
 
 def main():

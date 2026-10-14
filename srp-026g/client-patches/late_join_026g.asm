@@ -827,4 +827,113 @@ weapon_random_hook:
     mov eax, [edx+0x20]
     ret
 
+times 3840-($-$$) db 0xcc
+; A game's first world of a match (game_world_core::deserialize 0x2D0B70,
+; the block 0x2D0FE3..0x2D105C while the world is still frozen; a newcomer's,
+; a game coming back, and every game's at a match's start) gives each place
+; of the world an input and a kit choice at the world's time, two calls at
+; 0x2D1050 and 0x2D1055 with edi -> {core, the world's time, place}. The
+; game's own (0x2D4AB0, 0x2D4B50) put the entry at the newest end of the
+; place's list even when the list held newer ones (inputs and kit choices
+; relayed between the server's 0xE5 and the world), where every other
+; writer keeps it in time order (the network's 0x1FB42A / 0x1FBF00 insert
+; through 0x2D4850); and the kit choice they put was the kit in use
+; (player+115h), not the one the world has chosen for the next spawn
+; (place+0Dh, read from the world at 0x2D2A37). Each tick 0x321790 takes
+; the place's next kit from the newest entry at or before the tick, from
+; the newest end: a choice of the world, or one relayed for later, was
+; replaced by the kit in use, and the newcomer respawned that player in
+; another kit than the other games did. Here the same entries, the kit
+; choice being the world's, go where their time puts them; an entry of the
+; same time is given the value, as the game's own did.
+;
+; first_load_input replaces `call 0x2d4ab0`: the current player's input
+; (+32Ch, +330h) into the place's input list (core+2FCCh, 480h a place).
+first_load_input:
+    push ebx
+    push ebp
+    push esi
+    movzx eax, byte [edi+8]
+    mov ecx, [edi]
+    lea esi, [eax+eax*8]
+    shl esi, 7
+    add esi, [ecx+0x2fcc]
+    lea eax, [eax+eax*2]
+    shl eax, 4
+    add eax, [ecx+0x18458]
+    movzx ecx, byte [eax+0xc]
+    mov eax, [eax+ecx*4]
+    mov ebx, [eax+0x32c]
+    mov ebp, [eax+0x330]
+    call entry_at_time
+    mov [eax+8], ebx
+    mov [eax+0xc], ebp
+    pop esi
+    pop ebp
+    pop ebx
+    ret
+
+times 3920-($-$$) db 0xcc
+; first_load_kit replaces `call 0x2d4b50`: the kit the world has chosen for
+; the place's next spawn (place+0Dh) into its kit choices (core+89D8h).
+first_load_kit:
+    push ebx
+    push esi
+    movzx eax, byte [edi+8]
+    mov ecx, [edi]
+    lea esi, [eax+eax*8]
+    shl esi, 7
+    add esi, [ecx+0x89d8]
+    lea eax, [eax+eax*2]
+    shl eax, 4
+    add eax, [ecx+0x18458]
+    mov bl, [eax+0xd]
+    call entry_at_time
+    mov [eax+8], bl
+    pop esi
+    pop ebx
+    ret
+
+; esi = a place's list (+4 the oldest, +8 the newest; a node: +0 the next
+; newer, +4 the next older, +20h its time), [edi+4] = the time. Returns in
+; eax the node of that time: the one there is, or a new one (the game's
+; 0x1FCB60, which may first give the oldest node back to the pool when
+; the pool is full) put before the oldest node that is newer (0x2D4850; at
+; the newest end when there is none, as the game's own did). Keeps ebx,
+; ebp, esi, edi.
+entry_at_time:
+    mov ecx, [edi+4]
+    mov eax, [esi+8]
+.same:
+    test eax, eax
+    jz .new
+    cmp [eax+0x20], ecx
+    je .found
+    jb .new                       ; older: none of that time
+    mov eax, [eax+4]
+    jmp .same
+.new:
+    mov eax, esi
+    call 0x1fcb60
+    mov ecx, [edi+4]
+    mov [eax+0x20], ecx
+    mov edx, [esi+8]
+.older:
+    test edx, edx
+    jz .oldest
+    cmp [edx+0x20], ecx
+    jb .after
+    mov edx, [edx+4]
+    jmp .older
+.after:
+    mov edx, [edx]                ; before the next newer one, or at the end
+    jmp .link
+.oldest:
+    mov edx, [esi+4]              ; before the oldest (none: the list is empty)
+.link:
+    push esi
+    call 0x2d4850
+.found:
+    ret
+
 times 4096-($-$$) db 0xcc
