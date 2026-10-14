@@ -785,7 +785,7 @@ def late_join_sites():
     revision and the ready hook, which the build without it changes too."""
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
-        [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1]))]
+        [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1]))]
 
 
 def test_late_join_bin():
@@ -871,6 +871,9 @@ def test_late_join(original, without, server, source):
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
+    # The entry of the relocation table that is disabled (scene::remove_model's branch).
+    ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
+               if kind == 3 and va == P.REMOVE_MODEL_VA + 2]
     allowed = bytearray(raw)
     for at, size in ranges:
         allowed[at:at + size] = b"\1" * size
@@ -908,6 +911,23 @@ def test_late_join(original, without, server, source):
           and branch_target(original_rows[-1][2]) == 0x1A113,
           f"{va:#x}: the active check's `{original_rows[-1][2]}` at {P.RUN_UNFOCUSED_BRANCH_VA:#x} is two nops; "
           "the call and the test before it are the original's; the build without the late join keeps the jump")
+    # scene::remove_model: the branch of a model that is not in the scene
+    # is a jump to the function's own end, where it lets go of the model it
+    # was given and returns.
+    va, old, new = P.REMOVE_MODEL
+    rows, original_rows = rows_at(va, len(old)), ndisasm(Image(original).read(va - 8, len(old) + 8), va - 8)
+    check(image.read(va, len(old)) == new and Image(original).read(va, len(old)) == old
+          and before.read(va, len(old)) == old
+          and [text for _, _, text in original_rows[:2]] == ["cmp edi,esi", "jnz near 0x15006c"]
+          and rows[0][2].startswith("jmp") and branch_target(rows[0][2]) == P.REMOVE_MODEL_END
+          and [text for _, _, text in rows[1:]] == ["nop"]
+          and [text for _, _, text in ndisasm(Image(original).read(P.REMOVE_MODEL_END, 0x2C), P.REMOVE_MODEL_END)]
+          == ["mov eax,[ebp+0xc]", "test eax,eax", "jz 0x150215", "add eax,0xd0", "or ecx,byte -0x1",
+              "lock xadd [eax],ecx", "jnz 0x150215", "mov ecx,[ebp+0xc]", "lea eax,[ecx+0xd0]", "call 0xe0210",
+              "pop edi", "pop esi", "pop ebx", "mov esp,ebp", "pop ebp", "ret 0x8"],
+          f"{va:#x}: scene::remove_model's branch for a model that is not in the scene is `{rows[0][2]}` + nop, "
+          "to the function's own end (it lets go of the model it was given, then returns); the build without "
+          "the late join keeps the original")
     ready = ndisasm(image.read(P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET, 128), P.LATE_JOIN_VA + P.LATE_JOIN_READY_OFFSET)
     onward = [branch_target(text) for _, _, text in ready if text.startswith("jmp")]
     check(ready[0][2] == "pusha" and onward[:1] == [P.SECTION_VA],
@@ -916,8 +936,15 @@ def test_late_join(original, without, server, source):
     sites = [(va, va + size) for va, size in late_join_sites()]
     under = lambda relocations: [va for kind, va in relocations.values()
                                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
-    check(not under(Image(original).relocations()) and image.relocations() == before.relocations(),
-          "no base relocation is under a late-join site; the relocation table is the build's without it")
+    kept = [(lo, hi) for lo, hi in sites if lo != P.REMOVE_MODEL_VA]
+    under_kept = [va for kind, va in Image(original).relocations().values()
+                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in kept)]
+    now, was = image.relocations(), before.relocations()
+    differing = sorted(key for key in set(now) | set(was) if now.get(key) != was.get(key))
+    check(not under_kept and len(differing) == 1 and was[differing[0]] == (3, P.REMOVE_MODEL_VA + 2)
+          and now[differing[0]][0] == 0,
+          "no base relocation is under a late-join site but the one of scene::remove_model's branch "
+          f"({P.REMOVE_MODEL_VA + 2:#x}), which is disabled; the rest of the table is the build's without it")
 
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")

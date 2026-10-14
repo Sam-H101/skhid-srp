@@ -343,7 +343,9 @@ for a session whose game signed in with patch revision 5 or later
 (`late_join::spoken_by`), `Standard` for every other. Sections 3 to 8 above
 are the standard queue. A squad of both kinds is refused at Play; arranged
 clan matches keep their own teams and take nobody late. A server whose
-players should all meet asks for revision 5 (`SRP_MIN_PATCH_REVISION`).
+players should all meet asks for revision 6 (`SRP_MIN_PATCH_REVISION`): 5 has the
+late join too and plays with 6, but a game of 5 can be killed when a player joins its
+match (`client_patch.md` §3.13).
 
 ### 9.1 A new match
 
