@@ -37,12 +37,20 @@
 //!   with no time limit (0x3F4DA0). What was queued behind a split message
 //!   stays behind it until each part has gone once; what was queued before
 //!   it, and anything once its parts only go again, does not wait.
+//! - Short-lived messages (the table's 250 ms ids: relays, roster changes,
+//!   drop orders) wait up to `Config::gather` after the last datagram with
+//!   messages, so that what comes meanwhile shares one datagram; anything
+//!   else that is queued takes them along at once (§11.1).
+//! - A client that took a late datagram of ours from the lap before as its
+//!   newest acks that seq from then on, which reads here as one we have
+//!   not sent yet. Our seq then skips ahead to it, and the client takes the
+//!   next one as newer by one (§11.2).
 //! - From the client: plain messages are not deduplicated by the transport
 //!   (the client's own has none either), so a resent D8, D9, DA, DE or E0
 //!   reaches the caller again and the caller must dedup them. Unique ones
 //!   (every lobby request) are delivered once, through a 128-wide window.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::ack;
@@ -86,8 +94,10 @@ const SLOW_IDLE: Duration = Duration::from_secs(1);
 const CLOSING_PACE: Duration = Duration::from_millis(100);
 /// The most half-received split messages kept per channel.
 const MAX_ASSEMBLIES: usize = 8;
-/// How many lost serials are remembered for `is_lost`.
-const LOST_KEPT: usize = 64;
+/// How many lost serials are remembered for `is_lost`: a stall of a few
+/// seconds can end the lives of a few hundred relays before their sender
+/// looks.
+const LOST_KEPT: usize = 4096;
 
 /// The server's timers for one connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +128,13 @@ pub struct Config {
     /// the time that earns one more: a part fills a datagram, so this is
     /// the rate of the large ones. `u32::MAX` parts at once is no limit.
     pub bulk_pace: Duration,
+    /// How long a short-lived message (one the table gives up after a
+    /// lifetime, sent without an id: the match's relays, roster changes
+    /// and drop orders) may wait after the last datagram with messages for
+    /// more to share its datagram. Anything else queued, a full datagram's
+    /// worth, or an ack due takes it along at once. Zero: every message
+    /// goes at once.
+    pub gather: Duration,
 }
 
 impl Config {
@@ -147,6 +164,15 @@ impl Config {
                 Table::Lobby => u32::MAX,
             },
             bulk_pace: Duration::from_millis(3),
+            // A match's relays went one per datagram, 100 to 220 datagrams
+            // a second to each client (live, 2026-10-14): the seq lapped
+            // every 1.2 to 2.5 s and the client's acks named fewer of them.
+            // Some 15 ms is a fraction of the 250 ms a relay has before its
+            // tick is final. The lobby has no short-lived ids.
+            gather: match table {
+                Table::Match => Duration::from_millis(15),
+                Table::Lobby => Duration::ZERO,
+            },
         }
     }
 }
@@ -212,8 +238,12 @@ struct Outgoing {
     channel: Channel,
     lifetime: Lifetime,
     resend: Duration,
-    /// Set at the first send of a message with a limited lifetime.
+    /// Set at the first send of a message with a limited lifetime; or when
+    /// it is queued with a deadline (`send_until`), and then moved on to
+    /// the table's lifetime from its first send if that is later.
     expires: Option<Instant>,
+    /// It may wait for others to share its datagram (`Config::gather`).
+    gathers: bool,
     /// The datagrams it went out in (their running numbers), newest last.
     sent_in: VecDeque<u64>,
 }
@@ -301,12 +331,17 @@ pub struct Transport {
     unacked: Vec<(Outgoing, Instant)>,
     low_level: VecDeque<u8>,
     last_sent: Option<Instant>,
+    /// When the last datagram with messages went (`Config::gather`).
+    last_data: Option<Instant>,
     last_received: Instant,
     state: State,
     /// The ED/EE player mask size, from the roster.
     mask_bytes: usize,
-    /// Serials of messages dropped at the end of their lifetime.
-    lost: VecDeque<u64>,
+    /// Serials of messages dropped at the end of their lifetime, the
+    /// newest [`LOST_KEPT`].
+    lost: BTreeSet<u64>,
+    /// How often our seq skipped ahead to the one the client acks.
+    skips: u32,
     /// Client unique ids delivered.
     unique_in: Window,
     unique_parts: BTreeMap<u8, Assembly>,
@@ -359,10 +394,12 @@ impl Transport {
             unacked: Vec::new(),
             low_level: VecDeque::new(),
             last_sent: None,
+            last_data: None,
             last_received: now,
             state: State::Connected,
             mask_bytes: 0,
-            lost: VecDeque::new(),
+            lost: BTreeSet::new(),
+            skips: 0,
             unique_in: Window::default(),
             unique_parts: BTreeMap::new(),
             order_in: 0xFF,
@@ -408,6 +445,13 @@ impl Transport {
     /// How many client datagrams were dropped because they did not parse.
     pub fn rejected(&self) -> u32 {
         self.rejected
+    }
+
+    /// How often our seq skipped ahead to the one the client acks: each
+    /// time, the client had taken a late datagram of ours from the lap
+    /// before as its newest (§11.2).
+    pub fn skips(&self) -> u32 {
+        self.skips
     }
 
     /// The round trips measured since the last call, as the mean and the
@@ -463,6 +507,7 @@ impl Transport {
             }
         };
         self.last_received = now;
+        self.skip_to_echo(parsed.seq, parsed.rseq);
         self.acknowledge(parsed.rseq, parsed.acks.bits, parsed.acks.count, now);
         let before = self.received.newest();
         match self.received.record(parsed.seq) {
@@ -544,6 +589,51 @@ impl Transport {
         }
     }
 
+    /// The client echoes a seq of ours 1 to 128 past our newest: one of
+    /// the lap before, which reached it so late that it took it for newer
+    /// than everything (§2.3 step 6: 1 to 127 ahead of its newest, or 128
+    /// ahead and the lower number; §11.2). It acks that seq from then on,
+    /// which would
+    /// read here as a seq not sent yet, so no ack would count and data
+    /// would stop at `MAX_AHEAD` (live, 2026-10-14: 1.56 s). Our seq skips
+    /// ahead to it instead: the client takes the next one as newer by one
+    /// (nothing in it checks for gaps), and its acks name our datagrams by
+    /// the same numbers again, since its window still holds the ones it
+    /// had before the late one, at the distance the skip gives them.
+    ///
+    /// Only for the client's newest datagram (a late one carries an old
+    /// `rseq`), only for a seq we did send a lap before, and only when that
+    /// one is older than the newest it acked: a client that has had
+    /// nothing from us for 128 of our datagrams echoes its true newest,
+    /// and its window then holds older datagrams than the numbers a skip
+    /// would give them.
+    fn skip_to_echo(&mut self, seq: u8, rseq: u8) {
+        if self.sent_total == 0
+            || self
+                .received
+                .newest()
+                .is_some_and(|newest| !is_newer(seq, newest))
+        {
+            return;
+        }
+        let ahead = u64::from(rseq.wrapping_sub(self.sent_total.wrapping_sub(1) as u8));
+        if !(1..=128).contains(&ahead) || self.sent_total + ahead < 257 {
+            return;
+        }
+        let echoed = self.sent_total - 1 + ahead - 256;
+        if self.newest_acked.is_none_or(|acked| echoed >= acked) {
+            return;
+        }
+        self.sent_total += ahead;
+        self.skips += 1;
+        log::debug!(
+            "The client echoes seq {rseq}, of our datagram {echoed}: our seq skips {ahead} ahead"
+        );
+        if let Some(log) = &mut self.log {
+            log.note(&format!("seq skips {ahead} ahead to {rseq}"));
+        }
+    }
+
     /// The client's acks: `rseq` and every older seq its bits name, as
     /// datagram numbers.
     fn acknowledge(&mut self, rseq: u8, bits: u128, count: u32, now: Instant) {
@@ -596,10 +686,21 @@ impl Transport {
         }
         // What this ack reports missing (inside its window, not set) while
         // a datagram sent some later was received was probably lost: send
-        // it again now. Bits beyond the window say nothing.
+        // it again now. Bits beyond the window say nothing. The later one
+        // is one we sent: after a skip (`skip_to_echo`) `newest` is a
+        // number no datagram had.
+        let Some(received) = self
+            .sent
+            .iter()
+            .rev()
+            .map(|sent| sent.number)
+            .find(|number| acked(*number))
+        else {
+            return;
+        };
         for (message, at) in &mut self.unacked {
             let skipped = message.sent_in.back().is_some_and(|sent| {
-                *sent + FAST_RESEND_GAP <= newest && newest - *sent < u64::from(count)
+                *sent + FAST_RESEND_GAP <= received && newest - *sent < u64::from(count)
             });
             if skipped && *at > now {
                 *at = now;
@@ -654,7 +755,7 @@ impl Transport {
     /// not accept (it drops the whole datagram, or loses its place in a
     /// multi datagram).
     pub fn send(&mut self, id: u8, payload: &[u8]) -> Result<u64, SendError> {
-        self.send_for(id, payload, None, None)
+        self.send_for(id, payload, None, None, None)
     }
 
     /// As [`Self::send`], but a message the table would give up after its
@@ -663,7 +764,7 @@ impl Transport {
     /// own matter; the client takes a late copy as any other. A send-once
     /// id is still sent once.
     pub fn send_kept(&mut self, id: u8, payload: &[u8]) -> Result<u64, SendError> {
-        self.send_for(id, payload, Some(Lifetime::Forever), None)
+        self.send_for(id, payload, Some(Lifetime::Forever), None, None)
     }
 
     /// As [`Self::send_kept`], sent again every `resend` while it is not
@@ -676,7 +777,7 @@ impl Transport {
         payload: &[u8],
         resend: Duration,
     ) -> Result<u64, SendError> {
-        self.send_for(id, payload, Some(Lifetime::Forever), Some(resend))
+        self.send_for(id, payload, Some(Lifetime::Forever), Some(resend), None)
     }
 
     /// As [`Self::send`], but a message the table would give up after its
@@ -689,7 +790,25 @@ impl Transport {
         payload: &[u8],
         lifetime: Duration,
     ) -> Result<u64, SendError> {
-        self.send_for(id, payload, Some(Lifetime::For(lifetime)), None)
+        self.send_for(id, payload, Some(Lifetime::For(lifetime)), None, None)
+    }
+
+    /// As [`Self::send`], but a message the table would give up after its
+    /// lifetime is given up at `deadline` if that is later, and if it has
+    /// not gone out by then, at `deadline` in any case. Until then it goes
+    /// again at the table's pace. For what is of use to the client only
+    /// until a moment (a relay, until the game's history has passed its
+    /// tick): one held back by a stall is lost at that moment rather than
+    /// sent late, and one that goes in time lives at least the table's
+    /// lifetime from its first send, however near the deadline was. A
+    /// message with no lifetime of that kind goes as the table has it.
+    pub fn send_until(
+        &mut self,
+        id: u8,
+        payload: &[u8],
+        deadline: Instant,
+    ) -> Result<u64, SendError> {
+        self.send_for(id, payload, None, None, Some(deadline))
     }
 
     /// As [`Self::send`] (the table's lifetime), sent again every `resend`
@@ -702,7 +821,7 @@ impl Transport {
         payload: &[u8],
         resend: Duration,
     ) -> Result<u64, SendError> {
-        self.send_for(id, payload, None, Some(resend))
+        self.send_for(id, payload, None, Some(resend), None)
     }
 
     /// A unique id the table sends once (0xE7), sent again every `resend`
@@ -722,9 +841,9 @@ impl Transport {
             .info(Direction::ToClient, id)
             .ok_or(SendError::UnknownId(id))?;
         if info.class != Class::Unique {
-            return self.send_for(id, payload, None, Some(resend));
+            return self.send_for(id, payload, None, Some(resend), None);
         }
-        let serial = self.send_for(id, payload, None, Some(resend))?;
+        let serial = self.send_for(id, payload, None, Some(resend), None)?;
         for message in self
             .pending
             .iter_mut()
@@ -769,6 +888,7 @@ impl Transport {
         payload: &[u8],
         kept: Option<Lifetime>,
         resend: Option<Duration>,
+        deadline: Option<Instant>,
     ) -> Result<u64, SendError> {
         if self.table.is_forbidden(id) {
             return Err(SendError::Forbidden(id));
@@ -848,7 +968,11 @@ impl Transport {
                 (lifetime, _) => lifetime,
             },
             resend: resend.unwrap_or(info.resend),
-            expires: None,
+            expires: match info.lifetime {
+                Lifetime::For(_) => deadline,
+                Lifetime::Once | Lifetime::Forever => None,
+            },
+            gathers: info.class == Class::Plain && matches!(info.lifetime, Lifetime::For(_)),
             sent_in: VecDeque::new(),
         };
         if whole {
@@ -885,8 +1009,8 @@ impl Transport {
     }
 
     /// Whether a message was dropped unacked at the end of its lifetime
-    /// (the short-lived ids, and the snapshot E8 after 1.75 s). The last 64
-    /// are remembered.
+    /// (the short-lived ids, and the snapshot E8 after 1.75 s). The last
+    /// 4096 are remembered.
     pub fn is_lost(&self, serial: u64) -> bool {
         self.lost.contains(&serial)
     }
@@ -945,7 +1069,8 @@ impl Transport {
             }
             let bases = self.channel_bases(now);
             self.refill(now);
-            while self.ahead() < MAX_AHEAD && self.budget > 0 {
+            let flush = self.flush_due(now);
+            while flush && self.ahead() < MAX_AHEAD && self.budget > 0 {
                 let Some(messages) = self.take_messages(bases) else {
                     break;
                 };
@@ -956,6 +1081,7 @@ impl Transport {
                 }
                 datagrams.push(self.datagram(multi, &body, now));
                 self.budget -= 1;
+                self.last_data = Some(now);
                 let number = self.sent_total - 1;
                 for mut message in messages {
                     if !message.sent_in.is_empty() {
@@ -971,8 +1097,13 @@ impl Transport {
                         Lifetime::For(lifetime) => Some(lifetime),
                         Lifetime::Forever => None,
                     };
-                    if message.expires.is_none() {
-                        message.expires = lifetime.map(|lifetime| now + lifetime);
+                    // At its first send: the table's lifetime from now, or
+                    // its deadline (`send_until`) if that is later.
+                    if message.sent_in.is_empty()
+                        && let Some(lifetime) = lifetime
+                    {
+                        let end = now + lifetime;
+                        message.expires = Some(message.expires.map_or(end, |at| at.max(end)));
                     }
                     if message.sent_in.len() == SEQS_PER_MESSAGE {
                         message.sent_in.pop_front();
@@ -1005,6 +1136,52 @@ impl Transport {
             }
         }
         datagrams
+    }
+
+    /// Whether the queued messages go now (`Config::gather`). Short-lived
+    /// ones wait until `gather` has passed since the last datagram with
+    /// messages, so that the relays that come meanwhile share a datagram.
+    /// They go sooner, with everything queued, when:
+    /// - anything else is queued: a clock message or a ping (E5, E6, E7)
+    ///   must not wait, or the round trip and clock samples taken with it
+    ///   would be off by the wait; nor anything kept until acked;
+    /// - a part of a split message may go;
+    /// - the queue fills a datagram;
+    /// - a client datagram waits for its ack for `ack_delay`: the ack
+    ///   rides on the messages, not on a bare `FC` just before them.
+    fn flush_due(&self, now: Instant) -> bool {
+        let gather = self.config.gather;
+        if self
+            .last_data
+            .is_none_or(|at| now.saturating_duration_since(at) >= gather)
+        {
+            return true;
+        }
+        if self.ack_due
+            && self
+                .last_sent
+                .is_none_or(|at| now.saturating_duration_since(at) >= self.config.ack_delay)
+        {
+            return true;
+        }
+        let room = MAX_DATAGRAM - HEADER - self.tail_wanted().0;
+        let mut used = 0;
+        for (index, message) in self.pending.iter().enumerate() {
+            if message.is_part() {
+                if self.bulk_budget > 0 {
+                    return true;
+                }
+                continue;
+            }
+            if !message.gathers {
+                return true;
+            }
+            used += message.multi_len();
+            if used >= room || index + 1 >= MAX_MESSAGES {
+                return true;
+            }
+        }
+        false
     }
 
     /// Earn the datagrams of the time since the last count.
@@ -1058,13 +1235,9 @@ impl Transport {
             self.pending
                 .retain(|message| !lost.contains(&message.serial));
         }
-        for serial in lost {
-            if !self.lost.contains(&serial) {
-                if self.lost.len() == LOST_KEPT {
-                    self.lost.pop_front();
-                }
-                self.lost.push_back(serial);
-            }
+        self.lost.extend(lost);
+        while self.lost.len() > LOST_KEPT {
+            self.lost.pop_first();
         }
     }
 
