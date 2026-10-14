@@ -667,6 +667,84 @@ animation_append:
     pop esi
     ret
 
+times 3168-($-$$) db 0xcc
+; 0x316E57 in the respawn rule's spawn 0x316DA0: `mov edx,[esi]` / `mov
+; edx,[edx+1Ch]`, the load of the call that initialises the new kit's
+; player (vtable+1Ch). Here the new kit is the current one (0x316DE3); esi =
+; its player; [esp+10h] is the kit of the player that was current before and
+; [esp+18h] the new one's (0x316E02, 0x316E06; the game's own test of a
+; change at 0x316E0A), +24h here behind the call and pushad.
+;
+; A world holds the current kit's player alone. A game that loaded one during
+; a match (a newcomer, a game that was resynced or came back) has the other
+; kits' players as they were built; the games that played them have them as
+; their last life left them. Before a spawn the respawn tick takes the
+; place's current player out of the world (0x3169A0, vtable+24h with 1:
+; 0x2DA790): the weapon in hand is put away and the inventory goes back to
+; the profile (0x2FD2D0), each weapon's magazine and chambered round back
+; into its ammunition stack (0x2E18E0). A weapon keeps through that, and the
+; initialize does not set again: the time it was last ticked (+5A4h; only
+; the weapon in hand is ticked, and its activation, 0x2E2A30, which the
+; initialize runs for the weapon it puts in hand, sets it to the spawn's time
+; first), the fire mode (+5E6h, changed by the player's input alone,
+; 0x2E0CE1) and the ammunition kind (+5B1h, +5B2h). Seen in saved worlds of
+; the players' server: +5A4h of a kit's weapon in slot 10, -1 in a game that
+; loaded a world, the time of its last use in the others.
+; At every spawn each weapon of the player gets -1 at +5A4h; at a spawn into
+; another kit than the one before, also the fire mode, the ammunition kind
+; and, as a safety (LIKELY already so after the removal above), +5A8h, the
+; magazine, the aim (+5E8h), +5ECh, the chamber (+5F1h), +5F5h and the
+; recoil (+5FCh..+60Ch) their constructor's values (0x2DF0D0), before the
+; initialize: the weapon put in hand is then activated as a new one is. A
+; respawn into the same kit keeps what the player chose: that kit's player
+; is in every world, so every game has it alike.
+kit_state_hook:
+    pushad
+    call .pc
+.pc:
+    pop ebx
+    add ebx, 0x2e30f0-.pc         ; weapon_core's bind, where the image is
+    mov ecx, [esi+0x10c]          ; the player's inventory
+    test ecx, ecx
+    jz .done
+    mov al, [esp+0x34]            ; the kit before (the spawn's [esp+10h])
+    cmp al, [esp+0x3c]            ; the new kit (the spawn's [esp+18h])
+    setne al
+    xor edi, edi                  ; slot 0..22, the inventory's +10Ch
+.slot:
+    mov edx, [ecx+edi*4+0x10c]
+    test edx, edx
+    jz .next
+    mov ebp, [edx]
+    cmp [ebp+0x70], ebx
+    jne .next                     ; not a weapon (the item is weapon+10h)
+    add edx, 0x594                ; weapon+5A4h
+    or dword [edx], -1            ; +5A4h m_last_tick_time_in_ms
+    test al, al
+    jz .next
+    or dword [edx+0x04], -1       ; +5A8h m_ammo_switch_time_in_ms
+    xor ebp, ebp
+    mov [edx+0x0d], bp            ; +5B1h m_current_ammo_id, +5B2h m_next_ammo_id
+    mov [edx+0x41], bp            ; +5E5h m_ammo_in_magazine, +5E6h m_fire_queue_type
+    mov byte [edx+0x44], 0        ; +5E8h m_aimed
+    mov dword [edx+0x48], 6       ; +5ECh
+    mov byte [edx+0x4d], 0        ; +5F1h m_is_round_chambered
+    mov byte [edx+0x51], 0        ; +5F5h m_need_to_auto_reload
+    mov [edx+0x58], ebp           ; +5FCh..+608h, 0.0
+    mov [edx+0x5c], ebp
+    mov [edx+0x60], ebp
+    mov [edx+0x64], ebp
+    or dword [edx+0x68], -1       ; +60Ch
+.next:
+    inc edi
+    cmp edi, 23
+    jb .slot
+.done:
+    popad
+    mov edx, [esi]                ; what the call replaces
+    mov edx, [edx+0x1c]
+    ret
+
 times 3328-($-$$) db 0xcc
 ; The hud's lists of players: the scoreboard (root.list_set_players), the
 ; second list (root.set_players_list) and the enemies' markers
@@ -754,5 +832,186 @@ box_hook:
     jmp .copy
 align 4, db 0xcc
 .box: dd -1.0, -1.0, -1.0, 1.0, 1.0, 1.0
+
+times 3712-($-$$) db 0xcc
+; 0x316EA0 in the respawn rule's spawn 0x316DA0 (slot +5Ch of every respawn
+; rule; the rule's tick 0x316820 calls it for every spawn, a match's first
+; too, in every game and again in every replay of the tick after a
+; rollback): `mov edx,[esi]` / `mov eax,[edx+20h]`, the load of the call
+; that puts the player into the world (vtable+20h). Here the new kit is the
+; current one (0x316DE3) and its player is initialised (vtable+1Ch: the
+; inventory set up from the profile, a weapon in hand; no weapon object is
+; made anew); esi = that player, ebp = the spawn's time.
+;
+; A weapon's random state, weapon_core+5BCh (boost's minstd_rand: x * 48271
+; mod 2^31-1; drawn from by the spread of its shots alone, 0x2E1D50 and
+; 0x2E2120), is set to 1 by the constructor and read from a world by
+; deserialize, and by nothing else. A world holds the current kit's player
+; alone, so a game that loaded one during a match (a newcomer, a game that
+; was resynced) had the other kits' weapons at 1 where the games that played
+; them had them drawn from: a respawn into such a kit put the games out of
+; step at once, and so did a rollback over a respawn into another kit. Each
+; weapon of the player's inventory (an item whose vtable+70h is weapon_core's
+; bind 0x2E30F0: weapon_core's and the client's weapon's vtables alone have
+; it; the inventory holds the item, weapon+10h) gets a state every game works
+; out alike from its place (+114h), kit (+115h), slot and the spawn's time:
+;   h = ((place << 16 | kit << 8 | slot) * 0x85EBCA6B) ^ (time * 0x9E3779B1)
+;   state = (h ^ h >> 15) mod (2^31 - 2) + 1, in 1..2^31-2
+; (0 would stay 0 for ever, 2^31-1 would become 0).
+weapon_random_hook:
+    pushad
+    call .pc
+.pc:
+    pop ebx
+    add ebx, 0x2e30f0-.pc         ; weapon_core's bind, where the image is
+    mov ecx, [esi+0x10c]          ; the player's inventory
+    test ecx, ecx
+    jz .done
+    xor edi, edi                  ; slot 0..22, the inventory's +10Ch
+.slot:
+    mov edx, [ecx+edi*4+0x10c]
+    test edx, edx
+    jz .next
+    mov eax, [edx]
+    cmp [eax+0x70], ebx
+    jne .next                     ; not a weapon
+    movzx eax, byte [esi+0x114]   ; place
+    shl eax, 8
+    mov al, [esi+0x115]           ; kit
+    shl eax, 8
+    or eax, edi                   ; slot
+    imul eax, eax, -0x7a143595    ; 0x85EBCA6B
+    push edx
+    imul edx, ebp, -0x61c8864f    ; the time * 0x9E3779B1
+    xor eax, edx
+    mov edx, eax
+    shr edx, 15
+    xor eax, edx
+    push ecx
+    xor edx, edx
+    mov ecx, 0x7ffffffe
+    div ecx
+    pop ecx
+    inc edx
+    pop eax
+    mov [eax+0x5ac], edx          ; weapon+5BCh
+.next:
+    inc edi
+    cmp edi, 23
+    jb .slot
+.done:
+    popad
+    mov edx, [esi]                ; what the call replaces
+    mov eax, [edx+0x20]
+    ret
+
+times 3840-($-$$) db 0xcc
+; A game's first world of a match (game_world_core::deserialize 0x2D0B70,
+; the block 0x2D0FE3..0x2D105C while the world is still frozen; a newcomer's,
+; a game coming back, and every game's at a match's start) gives each place
+; of the world an input and a kit choice at the world's time, two calls at
+; 0x2D1050 and 0x2D1055 with edi -> {core, the world's time, place}. The
+; game's own (0x2D4AB0, 0x2D4B50) put the entry at the newest end of the
+; place's list even when the list held newer ones (inputs and kit choices
+; relayed between the server's 0xE5 and the world), where every other
+; writer keeps it in time order (the network's 0x1FB42A / 0x1FBF00 insert
+; through 0x2D4850); and the kit choice they put was the kit in use
+; (player+115h), not the one the world has chosen for the next spawn
+; (place+0Dh, read from the world at 0x2D2A37). Each tick 0x321790 takes
+; the place's next kit from the newest entry at or before the tick, from
+; the newest end: a choice of the world, or one relayed for later, was
+; replaced by the kit in use, and the newcomer respawned that player in
+; another kit than the other games did. Here the same entries, the kit
+; choice being the world's, go where their time puts them; an entry of the
+; same time is given the value, as the game's own did.
+;
+; first_load_input replaces `call 0x2d4ab0`: the current player's input
+; (+32Ch, +330h) into the place's input list (core+2FCCh, 480h a place).
+first_load_input:
+    push ebx
+    push ebp
+    push esi
+    movzx eax, byte [edi+8]
+    mov ecx, [edi]
+    lea esi, [eax+eax*8]
+    shl esi, 7
+    add esi, [ecx+0x2fcc]
+    lea eax, [eax+eax*2]
+    shl eax, 4
+    add eax, [ecx+0x18458]
+    movzx ecx, byte [eax+0xc]
+    mov eax, [eax+ecx*4]
+    mov ebx, [eax+0x32c]
+    mov ebp, [eax+0x330]
+    call entry_at_time
+    mov [eax+8], ebx
+    mov [eax+0xc], ebp
+    pop esi
+    pop ebp
+    pop ebx
+    ret
+
+times 3920-($-$$) db 0xcc
+; first_load_kit replaces `call 0x2d4b50`: the kit the world has chosen for
+; the place's next spawn (place+0Dh) into its kit choices (core+89D8h).
+first_load_kit:
+    push ebx
+    push esi
+    movzx eax, byte [edi+8]
+    mov ecx, [edi]
+    lea esi, [eax+eax*8]
+    shl esi, 7
+    add esi, [ecx+0x89d8]
+    lea eax, [eax+eax*2]
+    shl eax, 4
+    add eax, [ecx+0x18458]
+    mov bl, [eax+0xd]
+    call entry_at_time
+    mov [eax+8], bl
+    pop esi
+    pop ebx
+    ret
+
+; esi = a place's list (+4 the oldest, +8 the newest; a node: +0 the next
+; newer, +4 the next older, +20h its time), [edi+4] = the time. Returns in
+; eax the node of that time: the one there is, or a new one (the game's
+; 0x1FCB60, which may first give the oldest node back to the pool when
+; the pool is full) put before the oldest node that is newer (0x2D4850; at
+; the newest end when there is none, as the game's own did). Keeps ebx,
+; ebp, esi, edi.
+entry_at_time:
+    mov ecx, [edi+4]
+    mov eax, [esi+8]
+.same:
+    test eax, eax
+    jz .new
+    cmp [eax+0x20], ecx
+    je .found
+    jb .new                       ; older: none of that time
+    mov eax, [eax+4]
+    jmp .same
+.new:
+    mov eax, esi
+    call 0x1fcb60
+    mov ecx, [edi+4]
+    mov [eax+0x20], ecx
+    mov edx, [esi+8]
+.older:
+    test edx, edx
+    jz .oldest
+    cmp [edx+0x20], ecx
+    jb .after
+    mov edx, [edx+4]
+    jmp .older
+.after:
+    mov edx, [edx]                ; before the next newer one, or at the end
+    jmp .link
+.oldest:
+    mov edx, [esi+4]              ; before the oldest (none: the list is empty)
+.link:
+    push esi
+    call 0x2d4850
+.found:
+    ret
 
 times 4096-($-$$) db 0xcc
