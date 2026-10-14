@@ -1032,24 +1032,25 @@ fn drive_tick(
                 let grid = &tactics.world.grid;
                 let stuck = &bot.stuck;
                 let side = bot.side;
-                let leaving = side.is_some_and(|side| tactics.in_spawn_area(me.feet, Some(side)));
+                let objective = intent.objective;
                 // Round the spots it got stuck at, if there is a way.
                 let route = grid
                     .locate(me.feet, 1.5)
                     .zip(grid.locate(at, 3.0))
                     .and_then(|(from, to)| {
                         path::plan_where(grid, from, to, |node| {
-                            tactics.allowed(node, time, side, leaving)
+                            tactics.allowed(node, time, side, objective)
                                 && !stuck.near_spot(time, grid.position(node))
                         })
                     })
-                    .or_else(|| tactics.route(me.feet, at, time, side));
+                    .or_else(|| tactics.route_for(me.feet, at, time, side, objective));
                 bot.route = route.map(|route| (route, at));
             }
             match bot.route.as_mut() {
                 Some((route, _)) => {
                     let side = bot.side;
-                    let clear = |p: Vec3| tactics.clear_line(me.feet, p, time, side);
+                    let objective = intent.objective;
+                    let clear = |p: Vec3| tactics.clear_line_for(me.feet, p, time, side, objective);
                     let (decision, walked) = match aim {
                         Some(aim) => bot.motor.walk_aiming(route, &pose, OFF_ROUTE_M, clear, aim),
                         None => bot.motor.walk(route, &pose, OFF_ROUTE_M, clear),

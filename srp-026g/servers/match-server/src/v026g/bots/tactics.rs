@@ -122,41 +122,68 @@ impl Tactics {
     }
 
     /// Whether a body of map side `side` may walk on `node` at `time`: no
-    /// active hazard, not the other side's spawn area, and not its own
-    /// unless it is in it now (`leaving`).
-    pub fn allowed(&self, node: NodeId, time: u32, side: Option<i32>, leaving: bool) -> bool {
+    /// active hazard, and not the other side's spawn area unless the goal
+    /// is in their base (`objective`: their container, which lies 6-23 m
+    /// from their spawns on the shipped maps). Its own spawn area is open:
+    /// its container is there.
+    pub fn allowed(&self, node: NodeId, time: u32, side: Option<i32>, objective: bool) -> bool {
         if !self.hazards.allowed(node, time) {
             return false;
         }
-        let Some(side) = side else {
+        let Some(side) = side.filter(|_| !objective) else {
             return true;
         };
         let at = self.world.grid.position(node);
-        self.world.map.spawns.iter().all(|spawn| {
-            spawn.position.distance_xz(at) >= SPAWN_AREA_M || (spawn.team == side && leaving)
-        })
+        self.world
+            .map
+            .spawns
+            .iter()
+            .all(|spawn| spawn.team == side || spawn.position.distance_xz(at) >= SPAWN_AREA_M)
     }
 
-    /// The route from `from` to `to` for a body of map side `side`.
+    /// The route from `from` to `to` for a body of map side `side`, off
+    /// their spawn area.
     pub fn route(&self, from: Vec3, to: Vec3, time: u32, side: Option<i32>) -> Option<Route> {
+        self.route_for(from, to, time, side, false)
+    }
+
+    /// [`Self::route`], into their base if `objective`.
+    pub fn route_for(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+    ) -> Option<Route> {
         let grid = &self.world.grid;
         let start = grid.locate(from, 1.5)?;
         let goal = grid.locate(to, LOCATE_M)?;
-        let leaving = side.is_some_and(|side| self.in_spawn_area(from, Some(side)));
         path::plan_where(grid, start, goal, |node| {
-            self.allowed(node, time, side, leaving)
+            self.allowed(node, time, side, objective)
         })
     }
 
     /// Whether a body walks from `a` to `b` in a line, on allowed floors.
     pub fn clear_line(&self, a: Vec3, b: Vec3, time: u32, side: Option<i32>) -> bool {
+        self.clear_line_for(a, b, time, side, false)
+    }
+
+    /// [`Self::clear_line`], into their base if `objective`.
+    pub fn clear_line_for(
+        &self,
+        a: Vec3,
+        b: Vec3,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+    ) -> bool {
         let grid = &self.world.grid;
         let (Some(from), Some(to)) = (grid.locate(a, 1.0), grid.locate(b, 0.6)) else {
             return false;
         };
-        let leaving = side.is_some_and(|side| self.in_spawn_area(a, Some(side)));
         path::straight_where(grid, from, to, |node| {
-            self.allowed(node, time, side, leaving)
+            self.allowed(node, time, side, objective)
         })
     }
 
@@ -323,7 +350,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn routes_keep_out_of_the_other_sides_spawn_area_and_leave_ones_own() {
+    fn routes_keep_out_of_the_other_sides_spawn_area_unless_bound_for_its_container() {
         let tactics = Tactics::new(field(), 1.0);
         // From side 0's spawn to beside side 1's area: out of its own, never
         // into theirs.
@@ -341,6 +368,27 @@ pub(super) mod tests {
             assert!(!tactics.in_spawn_area(at, Some(1)), "{at:?}");
             s += 0.5;
         }
+        // Bound for their container (inside their area): it may go in.
+        let into = tactics
+            .route_for(
+                Vec3::new(5.0, 0.0, 10.0),
+                Vec3::new(72.0, 0.0, 12.0),
+                0,
+                Some(0),
+                true,
+            )
+            .unwrap();
+        assert!(into.end().distance_xz(Vec3::new(72.0, 0.0, 12.0)) < 1.0);
+        assert!(
+            tactics
+                .route(
+                    Vec3::new(5.0, 0.0, 10.0),
+                    Vec3::new(72.0, 0.0, 12.0),
+                    0,
+                    Some(0)
+                )
+                .is_none()
+        );
         // A goal in their spawn area is no goal.
         assert!(!tactics.fine_goal(Vec3::new(75.0, 0.0, 15.0), 0, Some(0)));
         assert!(tactics.fine_goal(Vec3::new(40.0, 0.0, 35.0), 0, Some(0)));

@@ -217,6 +217,9 @@ pub struct Intent {
     /// Whether the reflex may fire (a carrier cannot; a sneak holds fire
     /// till seen).
     pub fire: bool,
+    /// The goal is in the enemy base (their container): their spawn area
+    /// is open to the route (`Tactics::allowed`).
+    pub objective: bool,
 }
 
 impl Intent {
@@ -229,6 +232,15 @@ impl Intent {
             press: 0,
             hold: 0,
             fire: true,
+            objective: false,
+        }
+    }
+
+    /// Bound for the enemy base (their container).
+    pub fn into_base(self) -> Self {
+        Self {
+            objective: true,
+            ..self
         }
     }
 
