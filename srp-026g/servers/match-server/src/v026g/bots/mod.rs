@@ -144,19 +144,25 @@ pub struct Bot {
 }
 
 impl Bot {
-    fn new(match_id: u32, place: Place, team: u8, tuning: &Tuning) -> Self {
+    fn new(match_id: u32, place: Place, team: u8, role: Option<&str>, tuning: &Tuning) -> Self {
         let mut rng = Rng::for_bot(match_id, place);
         let motor = Motor::new(tuning.feel.clone(), &mut rng);
-        // A personality by the shares (play 14).
+        // The personality of its role (play 14: the lobby gave it that
+        // role's gear, `survarium::v026g::loadouts::BotRole`), else one
+        // drawn by the shares.
         let mut pick = rng.unit();
-        let personality = tuning
-            .personalities
-            .iter()
-            .position(|p| {
-                pick -= p.share;
-                pick < 0.0
-            })
-            .unwrap_or(0);
+        let personality = role
+            .and_then(|role| tuning.personalities.iter().position(|p| p.name == role))
+            .unwrap_or_else(|| {
+                tuning
+                    .personalities
+                    .iter()
+                    .position(|p| {
+                        pick -= p.share;
+                        pick < 0.0
+                    })
+                    .unwrap_or(0)
+            });
         Self {
             place,
             team,
@@ -246,14 +252,16 @@ pub struct Bots {
 }
 
 impl Bots {
-    /// `teams[place]`, `driven[place]` (a bot's place); `mode` and `level`
-    /// the map's.
+    /// `teams[place]`, `driven[place]` (a bot's place), `roles[place]` (a
+    /// bot's role by its gear); `mode` and `level` the map's.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         match_id: u32,
         mode: u8,
         level: u8,
         teams: &[u8],
         driven: &[bool],
+        roles: &[Option<&str>],
         tuning: Arc<Tuning>,
         trace: Trace,
     ) -> Self {
@@ -270,7 +278,8 @@ impl Bots {
             .zip(driven)
             .enumerate()
             .map(|(place, (&team, &driven))| {
-                driven.then(|| Bot::new(match_id, place, team, &tuning))
+                let role = roles.get(place).copied().flatten();
+                driven.then(|| Bot::new(match_id, place, team, role, &tuning))
             })
             .collect();
         Self {

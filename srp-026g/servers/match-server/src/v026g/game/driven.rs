@@ -96,6 +96,12 @@ impl Walkers {
         let project = formed.map.project;
         maps.request(project);
         let teams: Vec<u8> = formed.places.iter().map(|place| place.team).collect();
+        let roles: Vec<Option<&str>> = formed
+            .profiles
+            .iter()
+            .map(|profile| survarium::v026g::loadouts::bot_role_of(profile).map(|role| role.name()))
+            .collect();
+        log::info!("Match {id:#x}: the bots' roles by place {roles:?}");
         Some(Self {
             bots: Bots::new(
                 id,
@@ -103,6 +109,7 @@ impl Walkers {
                 formed.map.level,
                 &teams,
                 &driven,
+                &roles,
                 Arc::new(tuning),
                 trace,
             ),
