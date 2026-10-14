@@ -1463,6 +1463,150 @@ fn file_size(bytes: u64) -> String {
     }
 }
 
+/// `SRP_MATCH_TEAM_SIZE`: the most players of one side, 1 to half a match.
+fn match_team_size() -> usize {
+    let half = session::MAX_PLAYERS_PER_MATCH / 2;
+    std::env::var("SRP_MATCH_TEAM_SIZE")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|team| (1..=half).contains(team))
+        .unwrap_or(half)
+}
+
+/// Whether every game that can press Play plays in the growing queue (the
+/// games of patch revision 5 or later): the lobby refuses the others
+/// (`SRP_PATCH_REVISION_CHECK` is `refuse`, and `SRP_MIN_PATCH_REVISION` is
+/// 5 or more). The lobby makes two queues of the games with and without the
+/// late join; the page tells the growing one's rules only when no game is
+/// left for the other.
+fn only_growing_games() -> bool {
+    let refuses = std::env::var("SRP_PATCH_REVISION_CHECK").is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "refuse" | "on" | "1" | "true" | "yes"
+        )
+    });
+    let minimum = std::env::var("SRP_MIN_PATCH_REVISION")
+        .ok()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    refuses && minimum >= survarium::v026g::match_msgs::late_join::FIRST_REVISION
+}
+
+/// What the growing queue and the matches it makes are set to.
+struct GrowingRules {
+    /// The most players of one side.
+    team: usize,
+    /// The fewest players a new match starts with.
+    min_players: usize,
+    /// How long after that many wait a new match starts.
+    gather: u64,
+    /// A running match takes players until this much of it is left.
+    cutoff: u64,
+    /// How long a player who would make an even match uneven waits.
+    patience: u64,
+}
+
+impl GrowingRules {
+    fn from_env() -> Self {
+        let (min_players, gather) = session::growing_start_rules_from_env();
+        let patience = std::env::var("SRP_LATE_JOIN_PATIENCE_SECONDS")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE.as_secs());
+        Self {
+            team: match_team_size(),
+            min_players,
+            gather: gather.as_secs(),
+            cutoff: session::matchmaking_policy::JOIN_CUTOFF.as_secs(),
+            patience,
+        }
+    }
+}
+
+/// The list under "How matches start" for the growing queue: a match starts
+/// small and takes players while it is played.
+fn growing_rules(lang: Lang, rules: &GrowingRules, squads: bool) -> String {
+    let GrowingRules {
+        team,
+        min_players,
+        gather,
+        cutoff,
+        patience,
+    } = *rules;
+    let full = team * 2;
+    let cutoff_min = cutoff / 60;
+    let items = [
+        lang.tr(
+            &format!(
+                "{min_players} players are enough to start a match: it starts {gather} s after that many are waiting. Whoever presses Play in that time goes into the same match."
+            ),
+            &format!(
+                "Для початку матчу досить {min_players} гравців: він починається через {gather} с після того, як їх набралося стільки. Хто натисне «Грати» за цей час, потрапить у той самий матч."
+            ),
+        ),
+        lang.tr(
+            &format!("{full} players waiting: the match starts at once."),
+            &format!("{full} гравців чекає: матч починається одразу."),
+        ),
+        lang.tr(
+            &format!(
+                "A match that is being played takes new players until {cutoff_min} minutes of it are left, up to {team} a side. A newcomer goes to the side that makes the teams more even."
+            ),
+            &format!(
+                "Матч, що триває, приймає нових гравців, доки не лишиться {cutoff_min} хв до його кінця, до {team} на сторону. Новачок іде на ту сторону, де команди стають рівнішими."
+            ),
+        ),
+        lang.tr(
+            &format!(
+                "A player who would make an even match uneven waits up to {patience} s for somebody to go in with."
+            ),
+            &format!(
+                "Гравець, через якого рівний матч став би нерівним, чекає до {patience} с, щоб хтось зайшов разом із ним."
+            ),
+        ),
+        lang.tr(
+            &format!(
+                "The lobby's \u{ab}Matches\u{bb} window lists the matches being played (it comes with the launcher's update of the game's screens: start Skhid.bat). A match shows a JOIN button for you only if you would be put into it at once and it would make its teams more even by value, counting you: it takes players now (more than {cutoff_min} minutes left, room on a side), you are in the lobby, not searching, not in a match and not in a squad, you were never in that match, and your game is up to date. A match whose teams already count alike takes nobody."
+            ),
+            &format!(
+                "\u{ab}Матчі\u{bb} в лобі показують матчі, що тривають (вікно приходить з оновленням екранів гри через лаунчер: запустіть Skhid.bat). Кнопка JOIN біля матчу з'являється, лише якщо вас одразу поставлять у нього й це зробить його команди рівнішими за цінністю з вами: матч приймає гравців зараз (лишилося понад {cutoff_min} хв, на стороні є місце), ви в лобі, не шукаєте матч, не в матчі й не в загоні, ви ще не були в цьому матчі, а гра оновлена. Матч, команди якого вже рівні, нікого не бере."
+            ),
+        ),
+        lang.tr(
+            "JOIN takes you in with one click, with no wait. Only one player can join a match at a time, so for a few seconds others see no JOIN on it. If the match stops taking players before you are in, the game shows an error and you are not put in the search.",
+            "JOIN ставить вас у матч одним клацанням, без очікування. До матчу можна долучитися лише по одному гравцю, тож кілька секунд інші не бачать на ньому JOIN. Якщо матч перестав приймати гравців до того, як ви зайшли, гра покаже помилку, а в пошук вас не буде поставлено.",
+        ),
+        if squads {
+            lang.tr(
+                &format!(
+                    "Fewer than {min_players} players: no match starts until there are {min_players}."
+                ),
+                &format!(
+                    "Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}."
+                ),
+            )
+        } else {
+            lang.tr(
+                &format!(
+                    "Fewer than {min_players} players: no match starts until there are {min_players}. Squads are switched off: everybody queues alone."
+                ),
+                &format!(
+                    "Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загони вимкнено: кожен стає в чергу сам."
+                ),
+            )
+        },
+        lang.tr(
+            "The server makes the two sides as even as it can: by the players' gear, their level and their results in earlier matches. With an odd number of players, the stronger ones are the side with a player fewer.",
+            "Сервер ділить гравців на дві сторони якомога рівніше: за спорядженням, рівнем і результатами попередніх матчів. Якщо гравців непарна кількість, сильніші грають на стороні, де на одного гравця менше.",
+        ),
+    ];
+    items
+        .iter()
+        .map(|item| format!("<li>{item}</li>"))
+        .collect()
+}
+
 fn home(lang: Lang, stats: Stats) -> String {
     let v026g = stats.v026g;
     let with_launcher = stats.launcher;
@@ -1672,14 +1816,12 @@ fn home(lang: Lang, stats: Stats) -> String {
                 .as_deref(),
             Some("off" | "0" | "false" | "no")
         );
-    let rules = if v026g {
+    let rules = if v026g && only_growing_games() {
+        growing_rules(lang, &GrowingRules::from_env(), squads)
+    } else if v026g {
         let (min_players, extension, longest) = session::leveled_start_rules_from_env();
         let (extension, longest) = (extension.as_secs(), longest.as_secs());
-        let team: usize = std::env::var("SRP_MATCH_TEAM_SIZE")
-            .ok()
-            .and_then(|value| value.trim().parse().ok())
-            .filter(|team| (1..=max / 2).contains(team))
-            .unwrap_or(max / 2);
+        let team = match_team_size();
         let full = team * 2;
         let longest_min = longest / 60;
         format!(
@@ -2474,6 +2616,63 @@ mod tests {
         assert_eq!(Lang::pick("de", "uk-UA,uk;q=0.9"), Lang::Uk);
         assert_eq!(Lang::pick("", "ru-RU,ru"), Lang::En);
         assert_eq!(Lang::pick("", ""), Lang::En);
+    }
+
+    fn live_growing_rules() -> GrowingRules {
+        GrowingRules {
+            team: 10,
+            min_players: 2,
+            gather: 120,
+            cutoff: 120,
+            patience: 60,
+        }
+    }
+
+    #[test]
+    fn the_growing_queue_is_told_as_it_is() {
+        let en = growing_rules(Lang::En, &live_growing_rules(), false);
+        assert!(en.contains(
+            "2 players are enough to start a match: it starts 120 s after that many are waiting."
+        ));
+        assert!(en.contains("20 players waiting: the match starts at once."));
+        assert!(en.contains("until 2 minutes of it are left, up to 10 a side"));
+        assert!(en.contains("waits up to 60 s"));
+        assert!(en.contains("JOIN button for you only if you would be put into it at once"));
+        assert!(en.contains("more than 2 minutes left"));
+        assert!(en.contains("JOIN takes you in with one click"));
+        assert!(en.contains(
+            "Fewer than 2 players: no match starts until there are 2. Squads are switched off"
+        ));
+        // Nothing of the standard queue's rules is left in it.
+        assert!(!en.contains("countdown"));
+        assert!(!en.contains("nobody has pressed Play"));
+        assert!(!en.contains('4'), "{en}");
+
+        let squads = growing_rules(Lang::En, &live_growing_rules(), true);
+        assert!(!squads.contains("Squads are switched off"));
+
+        let uk = growing_rules(Lang::Uk, &live_growing_rules(), false);
+        assert!(uk.contains("Для початку матчу досить 2 гравців"));
+        assert!(uk.contains("Загони вимкнено"));
+        assert!(uk.contains("JOIN"));
+        assert_eq!(en.matches("<li>").count(), uk.matches("<li>").count());
+    }
+
+    #[test]
+    fn the_growing_queue_follows_its_settings() {
+        let rules = GrowingRules {
+            team: 8,
+            min_players: 4,
+            gather: 90,
+            cutoff: 180,
+            patience: 30,
+        };
+        let en = growing_rules(Lang::En, &rules, true);
+        assert!(en.contains("4 players are enough to start a match: it starts 90 s after"));
+        assert!(en.contains("16 players waiting"));
+        assert!(en.contains("until 3 minutes of it are left, up to 8 a side"));
+        assert!(en.contains("waits up to 30 s"));
+        assert!(en.contains("more than 3 minutes left"));
     }
 
     #[test]
