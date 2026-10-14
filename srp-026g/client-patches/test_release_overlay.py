@@ -1,5 +1,6 @@
 """Check player-folder/ZIP contents without distributing or needing a game binary."""
 import contextlib
+import hashlib
 import io
 import os
 from pathlib import Path
@@ -11,12 +12,44 @@ import time
 import unittest
 from unittest import mock
 import zipfile
+import zlib
 
 import make_client_026g as overlay
 
 # A program that writes down how it was started (client/updater/tests).
 STAND_IN = Path(overlay.HERE, '..', '..', 'client', 'updater', 'tests', 'fake_exe', 'target',
                 'i686-pc-windows-msvc', 'release', 'fake-exe.exe').resolve()
+
+
+def forged(original, text):
+    """Bytes of the original's length that start with `text` and end in four
+    bytes chosen so that the game CRC is the original's (a CRC from 0 with
+    no final xor is linear in the bits of a message of one length)."""
+    def crc0(data):
+        return ~zlib.crc32(data, 0xFFFFFFFF) & 0xFFFFFFFF
+    body = text + original[len(text):-4]
+    need = crc0(body + b'\0' * 4) ^ crc0(original)
+    effects = []
+    for bit in range(32):
+        tail = (1 << bit).to_bytes(4, 'little')
+        effects.append(crc0(bytes(len(body)) + tail))
+    # Gaussian elimination over GF(2): which tail bits give `need`.
+    basis = {}
+    for bit, effect in enumerate(effects):
+        chosen = 1 << bit
+        while effect:
+            top = effect.bit_length() - 1
+            if top not in basis:
+                basis[top] = (effect, chosen)
+                break
+            effect ^= basis[top][0]
+            chosen ^= basis[top][1]
+    tail = 0
+    while need:
+        top = need.bit_length() - 1
+        need ^= basis[top][0]
+        tail ^= basis[top][1]
+    return body + tail.to_bytes(4, 'little')
 
 
 class ReleaseTests(unittest.TestCase):
@@ -254,6 +287,110 @@ class ReleaseTests(unittest.TestCase):
                 self.assertFalse(output.parent.exists())
                 self.assertIn('play_skhid.sh', messages)
                 self.assertIn('LINUX.txt', messages)
+
+    # --- resource regions ---------------------------------------------------
+
+    def fake_db(self):
+        """A small resources.db with two known entries in it, and the table
+        of regions that points at them."""
+        db = bytearray(os.urandom(4096))
+        lobby, login = bytes(db[1000:1000 + 700]), bytes(db[2500:2500 + 300])
+        (self.game / 'resources.db').write_bytes(bytes(db))
+        regions = {'lobby_menu': (1000, 700, hashlib.sha256(lobby).hexdigest()),
+                   'login_menu': (2500, 300, hashlib.sha256(login).hexdigest())}
+        return bytes(db), regions
+
+    def entry(self, original, name, crc=True):
+        """A changed entry of the original's size, with its game CRC when `crc`."""
+        changed = forged(original, b'changed ' + name.encode()) if crc else b'x' * len(original)
+        path = self.root / f'{name}.bin'
+        path.write_bytes(changed)
+        return path, changed
+
+    def test_resource_regions_add_the_plan_and_the_blobs(self):
+        db, regions = self.fake_db()
+        lobby, login = db[1000:1700], db[2500:2800]
+        lobby_path, lobby_new = self.entry(lobby, 'lobby')
+        login_path, login_new = self.entry(login, 'login')
+        self.assertEqual(overlay.game_crc(lobby_new), overlay.game_crc(lobby))
+        self.assertNotEqual(lobby_new, lobby)
+        blobs = self.root / 'blobs'
+        archive = self.root / 'regions.zip'
+        sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
+        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+            # The options in any order; the plan in the order of the db.
+            self.build(archive, '--pack-zip', f'--resource-region=login_menu={login_path}',
+                       f'--resource-region=lobby_menu={lobby_path}', f'--resources-out={blobs}')
+        with zipfile.ZipFile(archive) as z:
+            self.assertEqual(set(z.namelist()), self.names | {overlay.RESOURCES_PLAN})
+            plan = z.read(overlay.RESOURCES_PLAN)
+        self.assertEqual(plan, (
+            'skhid-resources 1\r\n'
+            f'region game/resources.db 4096 1000 700 {sha(lobby)} {sha(lobby_new)} lobby_menu\r\n'
+            f'region game/resources.db 4096 2500 300 {sha(login)} {sha(login_new)} login_menu\r\n'
+            'end\r\n').encode())
+        # The targets and the originals, by their sha256, for the server.
+        self.assertEqual({p.name: p.read_bytes() for p in blobs.iterdir()},
+                         {sha(data): data for data in (lobby, lobby_new, login, login_new)})
+        self.assertEqual((self.game / 'resources.db').read_bytes(), db, 'the game is only read')
+        # Again into the same folder: the blobs there are the same ones.
+        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+            self.build(self.root / 'again.zip', '--pack-zip', f'--resource-region=lobby_menu={lobby_path}',
+                       f'--resources-out={blobs}')
+        self.assertEqual(len(list(blobs.iterdir())), 4)
+        # The same in the real table: the two entries of build 2777's db.
+        self.assertEqual(overlay.RESOURCE_REGIONS['lobby_menu'][:2], (19165044, 38985769))
+        self.assertEqual(overlay.RESOURCE_REGIONS['login_menu'][:2], (58150813, 3508744))
+
+    def test_an_entry_the_game_or_the_updater_would_refuse_is_refused(self):
+        db, regions = self.fake_db()
+        lobby = db[1000:1700]
+        good, _ = self.entry(lobby, 'good')
+        blobs = f'--resources-out={self.root / "blobs"}'
+        short = self.root / 'short.bin'
+        short.write_bytes(good.read_bytes()[:-1])
+        bad_crc, _ = self.entry(lobby, 'bad', crc=False)
+        for options, said in [
+            ((f'--resource-region=lobby_menu={short}', blobs), 'it must be the same size'),
+            ((f'--resource-region=lobby_menu={bad_crc}', blobs), 'the game would refuse it'),
+            ((f'--resource-region=other_menu={good}', blobs), 'with a name of'),
+            ((f'--resource-region=lobby_menu={good}',), 'needs --resources-out'),
+            ((f'--resource-region=lobby_menu={good}', blobs, '--no-launcher'), 'needs the updater'),
+            ((f'--resource-region=lobby_menu={good}', f'--resource-region=lobby_menu={good}', blobs), 'twice'),
+            ((blobs,), 'is for --resource-region'),
+        ]:
+            with self.subTest(said=said), mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+                with self.assertRaises(SystemExit) as refused:
+                    self.build(self.root / 'refused.zip', '--pack-zip', *options)
+                self.assertIn(said, str(refused.exception))
+                self.assertFalse((self.root / 'refused.zip').exists())
+                self.assertFalse((self.root / 'blobs').exists())
+        # The original entry itself changes nothing.
+        original = self.root / 'original.bin'
+        original.write_bytes(lobby)
+        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+            with self.assertRaises(SystemExit) as refused:
+                self.build(self.root / 'refused.zip', '--pack-zip', f'--resource-region=lobby_menu={original}', blobs)
+        self.assertIn('it is the original', str(refused.exception))
+        # A db whose entry is not the original one (another build, or changed).
+        (self.game / 'resources.db').write_bytes(db[:1000] + b'y' * 700 + db[1700:])
+        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+            with self.assertRaises(SystemExit) as refused:
+                self.build(self.root / 'refused.zip', '--pack-zip', f'--resource-region=lobby_menu={good}', blobs)
+        self.assertIn('is not the original one', str(refused.exception))
+
+    def test_the_game_crc_is_the_games_formula(self):
+        # movie_db.py's crc0 and game_hash, by their definition: CRC-32 of
+        # the reflected polynomial from 0, no final xor, bits reversed.
+        def slow(data):
+            crc = 0
+            for byte in data:
+                crc ^= byte
+                for _ in range(8):
+                    crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
+            return int(f'{crc:032b}'[::-1], 2)
+        for data in (b'', b'a', b'abc', os.urandom(1000)):
+            self.assertEqual(overlay.game_crc(data), slow(data))
 
     def test_existing_release_is_not_overwritten(self):
         archive = self.root / 'release.zip'

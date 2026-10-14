@@ -19,6 +19,9 @@ USAGE
         [--site=https://<host>]      the server's web page; https://<host of --server>
                                      when not given
         [--no-launcher]              without the launcher and its updater
+        [--resource-region=<name>=<entry file> ...  --resources-out=<folder>]
+                                     have the updater rewrite a known entry of
+                                     resources.db in place (see RESOURCE REGIONS)
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
@@ -90,6 +93,24 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/README.txt
         what to do with it, and where the original game is had.
 
+RESOURCE REGIONS
+
+    --resource-region=<name>=<entry file> (once per region) adds
+    <output>/game/binaries/x86/updater_skhid.resources, the plan of the
+    updater's resource step (../../client/updater, "Resources"): after each
+    update the updater writes the entry file over that entry's bytes in the
+    player's game/resources.db, in place, and puts the original bytes back
+    once a later archive no longer names it. <name> is one of
+    RESOURCE_REGIONS below (an entry of build 2777's resources.db). The
+    entry file must have exactly the entry's size and the same game CRC as
+    the original entry (the file table of the db is signed and is not
+    changed), and the source game's resources.db must hold the original
+    entry. The blobs the updater fetches, named by their sha256 (the entry
+    file and the original entry), are copied into --resources-out=<folder>:
+    upload them to the server's download/resources/ BEFORE the archive is
+    offered. Without --resource-region the archive is as before, byte for
+    byte.
+
 A player unpacks the overlay into an empty folder, or into the game's folder
 (the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
@@ -105,6 +126,7 @@ import os
 from pathlib import Path
 import sys
 import zipfile
+import zlib
 
 import patch_026g as P
 
@@ -142,6 +164,17 @@ LINUX_STARTER = "Skhid.sh"
 SCRIPTS = (LINUX_LAUNCHER, LINUX_STARTER)
 # The localizations the client knows (login_chat.md: the language byte).
 LOCALIZATIONS = ("english", "russian", "ukrainian", "german", "polish")
+# The plan of the updater's resource step, in the archive
+# (PLAN_NAME in client/updater/logic/src/resources.rs).
+RESOURCES_PLAN = "game/binaries/x86/updater_skhid.resources"
+RESOURCES_DB = "game/resources.db"
+# Entries of build 2777's resources.db that can be rewritten in place: their
+# offset and size in the file (the file table's pos_in_db and size_in_db) and
+# the sha256 of their original bytes.
+RESOURCE_REGIONS = {
+    "lobby_menu": (19165044, 38985769, "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"),
+    "login_menu": (58150813, 3508744, "805ea5f872402d0b8c4abceed4f8cabf5ed50b7d62d5c3fc45f58f6d64e982cf"),
+}
 
 
 def sha256(data):
@@ -198,6 +231,71 @@ def read_extractor(path):
         sys.exit(f"{path}: not the extractor the updater is built to run "
                  f"({EXTRACTOR_SIZE} bytes, sha256 {EXTRACTOR_SHA256})")
     return data
+
+
+def game_crc(data):
+    """The checksum the game compares a file it reads from resources.db with
+    (the signed file table's): CRC-32, reflected polynomial 0x04C11DB7,
+    started at 0 with no final xor, its 32 bits reversed."""
+    crc = ~zlib.crc32(data, 0xFFFFFFFF) & 0xFFFFFFFF
+    return int(f"{crc:032b}"[::-1], 2)
+
+
+def resource_regions(source, chosen):
+    """The plan's region lines and the blobs to upload, for `chosen`
+    ([(name, entry file path)]): every entry file checked against the
+    original entry in the source game's resources.db."""
+    db = os.path.join(source, "resources.db")
+    try:
+        db_size = os.path.getsize(db)
+    except OSError as e:
+        sys.exit(f"{db}: cannot read the game's resources.db ({e})")
+    lines, blobs = [], {}
+    for name, path in sorted(chosen, key=lambda pair: RESOURCE_REGIONS[pair[0]][0]):
+        offset, size, original_sha = RESOURCE_REGIONS[name]
+        try:
+            built = Path(path).read_bytes()
+        except OSError as e:
+            sys.exit(f"{path}: cannot read the entry file for {name} ({e})")
+        if len(built) != size:
+            sys.exit(f"{path}: {len(built)} bytes; the entry {name} has {size}: it must be the same size")
+        with open(db, "rb") as file:
+            file.seek(offset)
+            original = file.read(size)
+        if len(original) != size or sha256(original) != original_sha:
+            sys.exit(f"{db}: the entry {name} at {offset} is not the original one (sha256 {original_sha}): "
+                     "not build 2777's resources.db, or already changed")
+        if game_crc(built) != game_crc(original):
+            sys.exit(f"{path}: its game CRC is {game_crc(built):08x}, the original {name}'s {game_crc(original):08x}: "
+                     "the game would refuse it")
+        target_sha = sha256(built)
+        if target_sha == original_sha:
+            sys.exit(f"{path}: it is the original {name}: nothing to change")
+        lines.append(f"region {RESOURCES_DB} {db_size} {offset} {size} {original_sha} {target_sha} {name}")
+        blobs[target_sha] = built
+        blobs[original_sha] = original
+    return lines, blobs
+
+
+def resources_plan(lines):
+    """The plan's text (write_plan in client/updater/logic/src/resources.rs)."""
+    return "".join(line + "\r\n" for line in ["skhid-resources 1", *lines, "end"]).encode("ascii")
+
+
+def write_blobs(folder, blobs, check):
+    """Each blob as <folder>/<sha256>; one that is there must be the same."""
+    for name, data in sorted(blobs.items()):
+        target = os.path.join(folder, name)
+        if os.path.exists(target):
+            if sha256(Path(target).read_bytes()) != name:
+                sys.exit(f"{target}: already there with other bytes")
+            print(f"kept {target} ({len(data)} bytes)")
+            continue
+        if not check:
+            os.makedirs(folder, exist_ok=True)
+            with open(target, "xb") as out:
+                out.write(data)
+        print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {name})")
 
 
 def game_root(folder):
@@ -417,6 +515,7 @@ def main():
     launcher, updater_path, site = True, UPDATER_EXE, None
     extractor_path = EXTRACTOR_EXE
     late_join = True
+    regions, resources_out = [], None
     for option in options:
         if option == "--check":
             check = True
@@ -442,6 +541,15 @@ def main():
             site = L.parse_site(option[len("--site="):])
         elif option == "--no-launcher":
             launcher = False
+        elif option.startswith("--resource-region="):
+            name, _, path = option[len("--resource-region="):].partition("=")
+            if name not in RESOURCE_REGIONS or not path:
+                sys.exit(f"{option}: <name>=<entry file>, with a name of {', '.join(RESOURCE_REGIONS)}")
+            if any(name == other for other, _ in regions):
+                sys.exit(f"{option}: {name} is given twice")
+            regions.append((name, path))
+        elif option.startswith("--resources-out="):
+            resources_out = os.path.abspath(option[len("--resources-out="):])
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) != 2 or server is None:
@@ -453,6 +561,16 @@ def main():
     if not check and os.path.lexists(output):
         if archive or not os.path.isdir(output) or os.listdir(output):
             sys.exit(f"{output}: output already exists; use a new ZIP or an empty folder")
+    if regions and not launcher:
+        sys.exit("--resource-region needs the updater: leave out --no-launcher")
+    if regions and not resources_out:
+        sys.exit("--resource-region needs --resources-out=<folder> for the blobs the server is to offer")
+    if resources_out and not regions:
+        sys.exit("--resources-out is for --resource-region")
+    if resources_out and (inside(resources_out, source) or inside(resources_out, os.path.dirname(source))):
+        sys.exit(f"{resources_out}: the blobs' folder must be outside the game folder {os.path.dirname(source)}")
+    # Checked before anything is written.
+    region_lines, blobs = resource_regions(source, regions) if regions else ([], {})
 
     bugtrap = read_bugtrap(bugtrap_path)
 
@@ -505,6 +623,8 @@ def main():
         ]
         files += [(os.path.join("game", EXE_DIR, L.PAGES_DIR, name), data)
                   for name, data in sorted(launcher_pages.pages(site).items())]
+        if region_lines:
+            files.append((RESOURCES_PLAN.replace("/", os.sep), resources_plan(region_lines)))
     listed = [(name.replace(os.sep, "/"), sha256(data)) for name, data in files]
     files.append(("README.txt", readme(server, localization, description, listed, embedded,
                                        site if launcher else None)))
@@ -527,6 +647,10 @@ def main():
             if name in SCRIPTS:
                 os.chmod(target, 0o755)
         print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {sha256(data)})")
+    if blobs:
+        write_blobs(resources_out, blobs, check)
+        for line in region_lines:
+            print(f"resource {line}")
     print(f"exe: {description}")
     if launcher_description:
         print(f"launcher: {launcher_description}")

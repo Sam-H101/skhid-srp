@@ -187,6 +187,21 @@ installing. `--check` does every check and writes nothing. Existing ZIPs are
 never overwritten. `--bugtrap=<path>` selects another built DLL; by default
 the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
 
+`--resource-region=<name>=<entry file>` (once per entry; `lobby_menu` and
+`login_menu` are known, `RESOURCE_REGIONS` in the tool) with
+`--resources-out=<folder>` adds `game/binaries/x86/updater_skhid.resources`,
+the plan of the updater's resource step: the updater rewrites that entry of
+the player's `resources.db` in place with the entry file
+(`../../client/updater/README.md`, "Resources"). The tool refuses an entry
+file of another size or another game CRC than the original entry, and a
+source `resources.db` whose entry is not the original (it reads that part of
+the file only). The blobs the server must hand out at `/resources/<sha256>`,
+the entry file and the original entry, go into `<folder>`, named by their
+sha256: they are uploaded before the ZIP is offered
+(`launcher/README.md`, "Putting it on a server"). Without the option the ZIP
+is byte for byte what it was before the option existed (checked 2026-10-14
+against a build of `main` a63f37d with the same inputs).
+
 Full overlays embed the supplied `--server` address in the executable, so
 players do not need `-server=` at launch. The generated batch file retains
 the language and allocator options. To use another server, add
