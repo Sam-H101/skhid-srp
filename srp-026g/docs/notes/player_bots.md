@@ -186,15 +186,32 @@ the archive's index: a loader must follow them.
    - `SRP_SERVER_BOTS=<n>` (lobby, default 0, testing only) puts `n` bots
      into each match made, after its players, each on the side with fewer
      places (`play::server_bot`): name `Bot-<n>`, clan tag `BOT`, the
-     bots' kit, session and account 0, no seat.
-   - **The bots' kit** (`survarium::v026g::loadouts::BOT_KIT`: item, slot,
-     count, input bit; `bot_kit()`, `pockets()`): the starter kit (TT-33
-     in slot 7, bit 12, and a clip in slot 8), `bm_back_1` (slot 3) and
-     `bm_legs_5` (slot 4), and in the pockets two `medkit` (slot 13, quick
-     use 1, bit 14), the radio `respawn_booster` (slot 14, no key: it
-     works carried; default modification 1220, `respawn_time_modifier`
-     -0.2) and
-     two `rgd-5` (slot 15, bit 23).
+     kit of its role, session and account 0, no seat.
+   - **The bots' kit** (`survarium::v026g::loadouts`; `BOT_KIT`:
+     item, slot, count, input bit, what every role wears; `BotRole`,
+     `BotRole::gear()`, `bot_kit(role)`, `bot_kit_items(role)`,
+     `pockets()`): the starter's TT-33 as weapon 2 (slot 10, bit 13, a
+     clip in slot 11), `bm_back_1` (slot 3) and `bm_legs_5` (slot 4), and
+     in the pockets two `medkit` (slot 13, quick use 1, bit 14), the radio
+     `respawn_booster` (slot 14, no key: it works carried; default
+     modification 1220, `respawn_time_modifier` -0.2) and two `rgd-5`
+     (slot 15, bit 23).
+   - **Roles** (`BotRole`: the match server's personalities and shares,
+     flanker 0.30, support 0.25, rusher 0.30, camper 0.15): weapon 1 in
+     slot 7 (bit 12) with a clip in slot 8, and armour. All non-premium,
+     item level 5 at most:
+     | Role | Weapon 1 (level) and ammo | Armour |
+     |---|---|---|
+     | flanker | `uzi` SMG (2), `ammo_9x19p_para` | `bm_torso_1`, `bm_boots_1` (level 1, light) |
+     | support | `ak_74u` (5, the lowest of the assault rifle category), `ammo_5.45x39_7n6m` | `bm_torso_4` (3, 6 kg, a fourth pocket: a third medkit in slot 16), `bm_helmet_1` (3) |
+     | rusher | `toz_34` double-barrel shotgun (1), `ammo_12mm_buck` | `scav_torso_1`, `scav_boots_1` (level 1, light) |
+     | camper | `mosin_nagant` (0, free, the sniper category), `ammo_7.62x54r_old` | `scav_torso_2` (3, 6 kg), `bm_helmet_1` (3) |
+
+     The lobby gives each team's `k`-th bot `BotRole::nth(k)` (smooth
+     weighted round robin: flanker, rusher, support, camper, ...) and
+     logs "bots' roles". The match server reads a bot's role back from
+     its profile: `loadouts::bot_role_of(&MatchProfile)` (weapon 1
+     decides; `Formed::profiles[place]`).
      - Pockets: drugs, boosters, traps and grenades go only in slots
        13..18 (the dictionary's `slots_restrictions`), and the client
        throws from the first of them holding a grenade set (0x2FE8B0,
@@ -240,8 +257,9 @@ the archive's index: a loader must follow them.
      a late joiner's place counts from past them; the rewards move no
      rating in a match with one and keep nothing for account 0.
    - Tests: `match-server` `tests/driven.rs`, lobby
-     `the_servers_bots_take_the_places_after_the_players` and
-     `a_server_bot_wears_the_bots_kit_and_a_client_reads_it`, rewards
+     `the_servers_bots_take_the_places_after_the_players`,
+     `a_server_bot_wears_its_roles_kit_and_a_client_reads_it` and
+     `each_teams_bots_take_the_roles_by_the_shares`, rewards
      `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
    - Not yet: a bot leaving to make room for a late joiner; any choice of
      what to do (the script is fixed); pressing the kit's keys (nothing
