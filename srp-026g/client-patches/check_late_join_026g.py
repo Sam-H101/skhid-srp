@@ -6,7 +6,9 @@ The original instructions run against small fixture objects. Per-player
 statistics codecs and the animation bind method are intercepted. Both a
 synthetic binder and the native binder with weapon inventories are exercised;
 the bounded profile wrapper executes the native constructor and decoder with
-only CRT memcpy intercepted. These tests establish profile decoding, capacity,
+only CRT memcpy intercepted. The statistics handler's start_match, on_event
+and deserialize run on a made-up handler: a newcomer's scoreboard score
+through rollbacks, in the original and in the build. These tests establish profile decoding, capacity,
 calling convention and ID allocation, not a playable late join.
 """
 import argparse
@@ -980,6 +982,227 @@ def native_direct_match(data, session):
             assert m.uc.reg_read(reg) == value
 
 
+HANDLER, CORE, OPTIONS, FUNCTION = 0x4000000, 0x4010000, 0x4040000, 0x40B0000
+HANDLER_VTABLE = 0xA0755C
+
+
+def map_constants(machine, data, addresses):
+    """Map, from the file, the pages of these addresses outside .text."""
+    sections = patch.base.Headers(data).sections(data)
+    for address in addresses:
+        page = address & ~4095
+        for _, rva, size, raw, raw_size, _ in sections:
+            start = patch.base.IMAGE_BASE + rva
+            if start <= page < start + max(size, raw_size):
+                try:
+                    machine.uc.mem_map(page, 4096)
+                except Exception:  # mapped already (an executable section)
+                    break
+                at = raw + page - start
+                machine.uc.mem_write(page, bytes(data[at:at + min(4096, max(0, raw_size - (page - start)))]))
+                break
+
+
+def scoreboard(data, roster, newcomer, rollbacks):
+    """The game's own base_game_statistics_handler (patch_026g.py,
+    STATISTICS_COUNT): start_match through its vtable slot +3Ch, a newcomer
+    the way lj_native_install adds it (the roster and the shared live count
+    raised), one tick in which a starting place and the newcomer each kill,
+    told through the shared statistics' callback (0x26DEA0, slot +44h, as
+    shared_statistics does after adding the kill to the record), then
+    `rollbacks` times: the state before that tick loaded through deserialize
+    (slot +34h; the shared statistics' reader intercepted, the records put
+    back) and the tick simulated again. The hud is a function that keeps
+    what it is told, its cells first holding a score of an earlier match.
+    Returns (scores kept, the handler's count, places told at the start,
+    the hud's cells)."""
+    machine = Machine(data)
+    uc = machine.uc
+    map_constants(machine, data, (HANDLER_VTABLE, 0xA70884, 0xA2D774, 0x927A44))
+    uc.mem_map(HANDLER, 0x4000)
+    uc.mem_map(CORE, 0x1A000)
+    uc.mem_map(OPTIONS, 0x58000)
+    uc.mem_map(FUNCTION, 0x2000)
+    invoker = FUNCTION + 0x1000
+    uc.mem_write(invoker, b"\xc3")                     # cdecl (functor, place, score): ret
+    machine.write(FUNCTION + 4, invoker)              # boost::function's invoker
+    machine.write(HANDLER, HANDLER_VTABLE)
+    machine.write(HANDLER + 0x3218, FUNCTION)          # the hud's score-changed callback
+    uc.mem_write(OPTIONS + 0x577B5, bytes([roster]))
+    weights = [0.0] * 28
+    weights[0], weights[15] = 10.0, 2.5                 # kill, headshot kill
+    uc.mem_write(OPTIONS + 0x577BC, struct.pack("<28f", *weights))
+    hud, told = {place: 953 for place in range(20)}, []
+
+    def visit(uc, address, size, _):
+        if address == invoker:
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            assert machine.read(esp + 4) == HANDLER + 0x3220
+            place, score = machine.read(esp + 8) & 0xFF, machine.read(esp + 12) & 0xFFFF
+            hud[place] = score
+            told.append(place)
+        elif address == 0x2F5BE0:                       # shared_statistics::deserialize
+            assert uc.reg_read(UC_X86_REG_ESI) == HANDLER + 8
+            uc.mem_write(HANDLER + 8, saved)
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            uc.reg_write(UC_X86_REG_EIP, machine.read(esp))
+            uc.reg_write(UC_X86_REG_ESP, esp + 4)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    slot = lambda offset: machine.read(HANDLER_VTABLE + offset)
+
+    def run(address, args):
+        uc.reg_write(UC_X86_REG_ECX, HANDLER)
+        machine.start(address, args=args, count=200000)
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 4 + 4 * len(args)
+
+    run(slot(0x3C), (CORE, OPTIONS))                   # start_match
+    assert machine.read(CORE + 0x18FA8) == HANDLER
+    assert uc.mem_read(HANDLER + 0x31E8, 1)[0] == roster   # the shared live count: the roster
+    at_start = list(told)
+    # The late join (late_join_install_026g.c): the roster and the shared
+    # statistics' live count take the newcomer.
+    uc.mem_write(OPTIONS + 0x577B5, bytes([newcomer + 1]))
+    uc.mem_write(HANDLER + 8 + 0x31E0, bytes([newcomer + 1]))
+    saved = bytes(uc.mem_read(HANDLER + 8, 20 * 0x1F8))
+
+    def tick():
+        for place, event in ((0, 0), (newcomer, 0), (newcomer, 15)):
+            record = HANDLER + 8 + place * 0x1F8 + event * 6
+            count = struct.unpack("<H", uc.mem_read(record, 2))[0]
+            uc.mem_write(record, struct.pack("<H", count + 1))
+            uc.reg_write(UC_X86_REG_ECX, HANDLER)
+            machine.start(0x26DEA0, args=(place, event, 1), count=200000)
+            assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16   # on_event: ret 0Ch
+
+    tick()
+    for _ in range(rollbacks):
+        run(slot(0x34), (0x12345678, 0))               # deserialize: the state before the tick
+        tick()
+    scores = list(struct.unpack("<20H", uc.mem_read(HANDLER + 0x31F0, 40)))
+    # Past the start the hud is told of the two places that score alone.
+    assert set(told[len(at_start):]) <= {0, newcomer}, told[len(at_start):]
+    return scores, uc.mem_read(HANDLER + 0x3240, 1)[0], at_start, hud
+
+
+def statistics_scores(original, changed):
+    """A newcomer's scoreboard score in the original and in the build."""
+    for roster, newcomer in ((5, 5), (1, 1), (8, 9), (19, 19)):
+        for rollbacks in (0, 1, 3):
+            # A kill (10) and a headshot (2.5) are 13 a tick, rounded by
+            # event or once.
+            scores, count, at_start, hud = scoreboard(original, roster, newcomer, rollbacks)
+            assert count == roster and at_start == list(range(roster)), (count, at_start)
+            # The fault: a starting place's score is worked out again at the
+            # state loaded, the newcomer's tick is added once more for every
+            # rollback, and the cells of places past the roster keep an
+            # earlier match's score until they are told one.
+            assert scores[0] == 10 and scores[newcomer] == 13 * (rollbacks + 1), (roster, newcomer, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13 * (rollbacks + 1)
+            assert all(hud[place] == 953 for place in range(roster, 20) if place != newcomer)
+            scores, count, at_start, hud = scoreboard(changed, roster, newcomer, rollbacks)
+            assert count == 20 and at_start == list(range(20)), (count, at_start)
+            # The build: every place worked out again at every state loaded,
+            # and every cell told a 0 at the start.
+            assert scores[0] == 10 and scores[newcomer] == 13, (roster, newcomer, rollbacks, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13
+            assert all(hud[place] == 0 and scores[place] == 0 for place in range(1, 20) if place != newcomer)
+
+
+HUD, GAME, PLAYER = 0x4100000, 0x4110000, 0x4120000
+# update_ui's calls between the countdown's test and the players' rows:
+# (name, what `ret` takes off the stack).
+HUD_CALLS = {0x236AD0: ("show_pregame", 0), 0x236B50: ("set_pregame", 4), 0x236A00: ("set_match_time", 4),
+             0x2375C0: ("tip", 16), 0x2364C0: ("set_game_progress", 16), 0x236610: ("set_last_players", 12),
+             0x236C30: ("set_respawn_time", 4), 0xE0210: ("destroy_player", 0)}
+
+
+def hud_update(data, countdown, mode, tip_shown):
+    """game_world_ui::update_ui (0x23B200) from its test of the countdown
+    flag (0x23B307) to the players' rows (0x23B421), the game's own
+    instructions on a made-up hud whose state has changed; the functions it
+    calls are taken at their entry, written down with what they were given,
+    and returned from as they return. Returns (the calls, esp, ebp and edi
+    at the rows, the player's count before and after)."""
+    machine = Machine(data)
+    uc = machine.uc
+    uc.mem_map(HUD, 0x1000)
+    uc.mem_map(GAME, 0x10000)
+    uc.mem_map(PLAYER, 0x10000)
+    uc.mem_write(HUD + 0x15C, bytes([0xFF if countdown else 0]))   # the timelimit rule's flag
+    uc.mem_write(HUD + 0x370, bytes([1 if tip_shown else 0]))
+    machine.write(HUD + 0x20, mode)
+    machine.write(HUD + 0x28, 123000)                   # match time
+    machine.write(HUD + 0x2C, 0)                        # respawn time: nobody waits for one
+    machine.write(HUD + 0xB0, 15)                       # countdown seconds
+    uc.mem_write(HUD + 0xB4, struct.pack("<HH", 150, 149))   # the state's team points
+    uc.mem_write(HUD + 0xB8, bytes([5, 4]))             # Team Deathmatch's alive counts
+    machine.write(HUD + 0x18, GAME)
+    machine.write(GAME + 0x9C, GAME + 0x1000)           # the network client
+    machine.write(GAME + 0x1000 + 0x53AC, GAME + 0x2000)
+    machine.write(GAME + 0x2004, PLAYER)                # the current player
+    machine.write(PLAYER + 0xD0, 1)
+    machine.write(PLAYER + 0x6B8, PLAYER + 0x1000)      # its profile
+    machine.write(PLAYER + 0x1000 + 0x45EC, 1)          # its team
+    calls = []
+
+    def visit(uc, address, size, _):
+        if address not in HUD_CALLS:
+            return
+        name, pops = HUD_CALLS[address]
+        esp = uc.reg_read(UC_X86_REG_ESP)
+        args = [machine.read(esp + 4 + 4 * i) for i in range(pops // 4)]
+        calls.append((name, uc.reg_read(UC_X86_REG_EAX) & (0xFF if name == "show_pregame" else 0xFFFFFFFF), args))
+        uc.reg_write(UC_X86_REG_EIP, machine.read(esp))
+        uc.reg_write(UC_X86_REG_ESP, esp + 4 + pops)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    uc.reg_write(UC_X86_REG_EDI, HUD)
+    uc.reg_write(UC_X86_REG_EBP, 0x5A5A5A5A)            # the state's hash, stored after the rows
+    uc.reg_write(UC_X86_REG_ESP, STACK)
+    uc.emu_start(0x23B307, 0x23B421, count=10000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x23B421
+    return (calls, uc.reg_read(UC_X86_REG_ESP), uc.reg_read(UC_X86_REG_EBP), uc.reg_read(UC_X86_REG_EDI),
+            machine.read(PLAYER + 0xD0))
+
+
+def pregame_progress(original, changed):
+    """patch_026g.py's PREGAME_PROGRESS: what the hud is told while a match
+    counts down, and while it is played, in the original and in the build."""
+    def matches(calls, wanted):
+        # (name, eax, arguments); None: whatever it was.
+        return len(calls) == len(wanted) and all(
+            name == w_name and (w_eax is None or eax == w_eax) and (w_args is None or args == w_args)
+            for (name, eax, args), (w_name, w_eax, w_args) in zip(calls, wanted))
+
+    for mode in (4, 3, 2):
+        for tip_shown in (False, True):
+            # The team points of the state and the player's team, the alive
+            # counts (Team Deathmatch only) with the team in eax, the respawn
+            # time (0) in eax.
+            drawn = [("set_game_progress", None, [HUD, 150, 149, 1])]
+            if mode == 4:
+                drawn.append(("set_last_players", 1, [HUD, 5, 4]))
+            drawn.append(("set_respawn_time", 0, [HUD]))
+            tip = [] if tip_shown else [("tip", None, None)]
+            play = tip + [("show_pregame", 0, []), ("set_match_time", 123000, [HUD])] + drawn
+            for data in (original, changed):
+                calls, esp, ebp, edi, count = hud_update(data, False, mode, tip_shown)
+                assert matches(calls, play), calls
+                assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+            # The countdown: the original shows it alone; the build then the
+            # team points, the last players and the respawn time as play
+            # does, without the match time and the tip, with the stack, the
+            # hash, the hud and the player's count as play leaves them.
+            shown = [("show_pregame", 1, []), ("set_pregame", None, [HUD])]
+            calls, esp, ebp, edi, count = hud_update(original, True, mode, tip_shown)
+            assert matches(calls, shown), calls
+            assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+            calls, esp, ebp, edi, count = hud_update(changed, True, mode, tip_shown)
+            assert matches(calls, shown + drawn), calls
+            assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -995,6 +1218,8 @@ def check(original, nasm):
     native_query(changed)
     native_profile(changed)
     native_histories(changed)
+    statistics_scores(original, changed)
+    pregame_progress(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1036,7 +1261,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; ABI; PE checksum and certificate")
 
 
 def main():

@@ -230,7 +230,14 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # 8: the game's clock is brought to the match clock at 30 % instead of 5 %
 # (CLOCK_FACTOR below). Nothing a match computes: 7 and 8 play together,
 # and the match server times its corrections by the revision a game says.
-REVISION = 8
+# 9: the statistics handler keeps the scoreboard's score of all twenty
+# places (LATE_JOIN_PATCHES, start_match). In 5 to 8 a newcomer's score was
+# added again at every rollback over its events, and its row showed a
+# score of an earlier match until its first. And the hud draws the team
+# points while a match counts down (PREGAME_PROGRESS); the original kept
+# the last match's until play began. Neither is saved in the world or
+# hashed: 7, 8 and 9 play together.
+REVISION = 9
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -305,6 +312,27 @@ LATE_JOIN_STATE_NAME = b".srpd\0\0\0"
 LATE_JOIN_STATE_SIZE = 0x1000
 LATE_JOIN_STATE_CHARACTERISTICS = 0xC0000080   # uninitialized data, read, write
 
+# base_game_statistics_handler (the network client's, +1EE8D8h; vtable
+# 0xA0755C) keeps the scoreboard's score of each place, `m_scores[20]` at
+# +31F0h, which the world does not save. on_event (0x26DB80, slot +44h, on
+# every statistics event) adds the event's points to any place's score;
+# recalculate_scores (0x26DC30), which deserialize (0x26DB60, slot +34h)
+# runs after every state a game loads, works them out again from the
+# statistics, and start_match (0x26D8D0, slot +3Ch) tells the hud all of
+# them, both for as many places as the handler's count, +3240h. start_match
+# copies that count from the roster of the start (options+577B5h); the late
+# join raises the roster and the shared statistics' live count (+31E8h) but
+# not this one. So a newcomer's score was never worked out again: every
+# rollback over its events added them once more (2.7 to 4 times its score
+# in a match of ten, seen live), and its hud cell kept the score a player
+# of an earlier match had had in that place until its first. With twenty, every
+# place is worked out again at every state loaded, and start_match tells
+# the hud a 0 for every place at a match's start. Places with no player
+# have zero statistics: a score of 0, told once. The live count beside it
+# stays the roster's. `mov al,[edx+577B5h]` -> `mov al,14h`.
+STATISTICS_START_MATCH_VA = 0x26D8D0
+STATISTICS_COUNT = (0x26D8F3, bytes.fromhex("8a82b5770500"), b"\xb0\x14" + b"\x90" * 4)
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -318,6 +346,9 @@ LATE_JOIN_PATCHES = (
     # kd_stats_rule: all twenty entries of its array, which the constructor
     # zeroes. `mov dl,[ecx+577B5h]` -> `mov dl,14h`.
     (0x3237B4, bytes.fromhex("8a91b5770500"), b"\xb2\x14" + b"\x90" * 4),
+    # base_game_statistics_handler::start_match: all twenty scores
+    # (STATISTICS_COUNT above).
+    STATISTICS_COUNT,
     # shared_statistics::serialize and deserialize: twenty records, not the
     # live count (which rewards and event handlers go on reading).
     # `cmp [esi+31E0h],bl` / `cmp bl,[esi+31E0h]` -> `cmp bl,14h`.
@@ -402,6 +433,30 @@ CLOCK_FACTOR_MIN_VA, CLOCK_FACTOR_MAX_VA = 0x91A8F0, 0x927A44
 # .data: the only section but .text that a patch writes into.
 DATA_VA, DATA_FILE, DATA_FILE_SIZE = 0xA5E000, 0xA4C400, 0x92200
 CLOCK_FACTOR_PATCH = (CLOCK_FACTOR_VA, struct.pack("<f", CLOCK_FACTOR_ORIGINAL), struct.pack("<f", CLOCK_FACTOR))
+
+# game_world_ui::update_ui (0x23B200), when the hud's state has changed:
+# while the match waits or counts down (state+138h, the timelimit rule's)
+# it shows the countdown (0x236AD0, 0x236B50) and jumps past the rest to the
+# players' rows (0x23B328 -> 0x23B421); otherwise it shows the match time
+# (0x236A00) and goes on at 0x23B383: the team points (0x2364C0,
+# `root.set_game_progress`), in Team Deathmatch the last players
+# (0x236610, `root.set_last_players`), and the respawn time (0x236C30,
+# `root.set_respawn_time`). The rules fill the state's points every tick,
+# the countdown too (tdm 0x316430: the tickets; gather 0x3140C0: the
+# points), so they are the match's own then, but the hud kept the bars of
+# the match before until play began (seen: 63 and 53, the last match's end,
+# under "Awaiting match start"). The jump goes on to 0x23B383 instead: the
+# same three, with the match time and the start's tip left out. During the
+# countdown the respawn time is 0 (no player waits for one: the saved
+# worlds of a real match), which shows an empty text, and the hud movie
+# hides the last players while a team has tickets (HUD.as,
+# set_game_progress): nothing but the bars changes, and they are drawn as
+# play would draw them a few seconds later. Both paths reach 0x23B383 with
+# the stack and the registers the code after it reads alike. The jump's
+# rel32 holds no address. `jmp 0x23b421` -> `jmp 0x23b383`.
+PREGAME_PROGRESS_VA, PREGAME_PROGRESS_TARGET = 0x23B328, 0x23B383
+PREGAME_PROGRESS = (PREGAME_PROGRESS_VA, bytes.fromhex("e9f4000000"),
+                    b"\xE9" + struct.pack("<i", PREGAME_PROGRESS_TARGET - PREGAME_PROGRESS_VA - 5))
 
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
@@ -706,6 +761,8 @@ def build(original, mode, code=None, server=None, late_join=None):
             sites.append((va, va + len(expected)))
         patch(data, *RUN_UNFOCUSED)
         sites.append((RUN_UNFOCUSED_VA, RUN_UNFOCUSED_VA + len(RUN_UNFOCUSED[1])))
+        patch(data, *PREGAME_PROGRESS)
+        sites.append((PREGAME_PROGRESS_VA, PREGAME_PROGRESS_VA + len(PREGAME_PROGRESS[1])))
         patch(data, *REMOVE_MODEL)
         # The one address in what is replaced: the loader must not add to it.
         if neutralize_relocs(data, [(REMOVE_MODEL_VA, REMOVE_MODEL_VA + len(REMOVE_MODEL[1]))]) != [REMOVE_MODEL_VA + 2]:
@@ -734,7 +791,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                   + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
                      f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
                      "goes on without the focus, a model not in the scene stays out of it, "
-                     f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor)"
+                     f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor), "
+                     "the countdown shows the match's team points"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
