@@ -363,11 +363,18 @@ impl PlayerStatistics {
         Some(player)
     }
 
+    /// As the game writes it. The events' mask is not started again for
+    /// each kit: it is cleared once (0x33575D) and a kit's pass only sets
+    /// bits in it (0x335778..0x3357A9), so a kit's mask has the bits of the
+    /// kits before it too, and each bit is followed by that kit's count, a
+    /// zero when it has none. The damage masks are each kit's own
+    /// (0x3353E7).
     fn write(&self, out: &mut Vec<u8>) {
+        let mut mask = 0u32;
         for kit in 0..KITS {
-            let mask = (0..EVENTS)
+            mask = (0..EVENTS)
                 .filter(|&event| self.events[event][kit] > 0)
-                .fold(0u32, |mask, event| mask | 1 << event);
+                .fold(mask, |mask, event| mask | 1 << event);
             out.extend(mask.to_le_bytes());
             for event in BYTE_EVENTS {
                 if mask & (1 << event) != 0 {
@@ -557,7 +564,8 @@ impl Statistics {
         (reader.rest() == 0).then_some(statistics)
     }
 
-    /// The section's bytes, as the client writes them.
+    /// The section's bytes, as the client writes them: a player's event
+    /// masks too, which grow from kit to kit (`PlayerStatistics::write`).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for player in &self.players {
@@ -1047,10 +1055,7 @@ impl Rules {
         // had its rules looked at (the standing is in the statistics, so
         // battery matches ended all the same; a Team Deathmatch could not
         // have ended by its rule).
-        let team_respawn = [
-            wire_bool(bytes[flags_at])?,
-            wire_bool(bytes[flags_at + 1])?,
-        ];
+        let team_respawn = [wire_bool(bytes[flags_at])?, wire_bool(bytes[flags_at + 1])?];
         let kills_deaths = bytes[kd_at..flags_at]
             .as_chunks::<{ KillsDeaths::LEN }>()
             .0
@@ -1140,7 +1145,10 @@ impl Rules {
         for record in &self.kills_deaths {
             record.write(&mut out);
         }
-        out.extend(self.team_respawn.map(|flag| if flag { WIRE_TRUE } else { 0 }));
+        out.extend(
+            self.team_respawn
+                .map(|flag| if flag { WIRE_TRUE } else { 0 }),
+        );
         out
     }
 }
@@ -1331,10 +1339,11 @@ mod tests {
         let mut bytes = Vec::new();
         // Kit 0: events 0 (kill) and 2 (death), one byte each.
         bytes.extend([0x05, 0, 0, 0, 3, 1]);
-        // Kit 1: events 6 and 22, u16 each, in the table's order.
-        bytes.extend([0x40, 0x00, 0x40, 0x00, 0x96, 0x00, 0x2C, 0x01]);
-        // Kit 2: nothing.
-        bytes.extend([0, 0, 0, 0]);
+        // Kit 1: kit 0's bits stay, a zero each; then events 6 and 22, u16
+        // each, in the table's order.
+        bytes.extend([0x45, 0x00, 0x40, 0x00, 0, 0, 0x96, 0x00, 0x2C, 0x01]);
+        // Kit 2: nothing of its own, so the same mask and zeros.
+        bytes.extend([0x45, 0x00, 0x40, 0x00, 0, 0, 0, 0, 0, 0]);
         // Damage received with kit 0 from player 1: 12.5.
         bytes.extend([0x02, 0, 0, 0, 0x00, 0x00, 0x48, 0x41]);
         bytes.extend([0, 0, 0, 0]);
@@ -1402,7 +1411,9 @@ mod tests {
     fn one_byte_events_come_before_a_kits_wide_ones() {
         // Events 5, 6, 7 with one kit: 5 and 7 as bytes, then 6 as u16.
         let mut bytes = vec![0xE0, 0, 0, 0, 55, 77, 0x9A, 0x02];
-        bytes.extend([0; 8]);
+        // The other two kits: the same mask, and zeros in the same order.
+        bytes.extend([0xE0, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend([0xE0, 0, 0, 0, 0, 0, 0, 0]);
         bytes.extend([0; 28]);
         bytes.extend(TAIL);
         let statistics = Statistics::decode(&bytes, 1, 0).unwrap();
@@ -1422,6 +1433,67 @@ mod tests {
         let mut out = Vec::new();
         player.write(&mut out);
         assert_eq!(out[..5], [0x01, 0, 0, 0, 0x05]);
+    }
+
+    /// The events of a made-up player's record, as `write` gives them: the
+    /// bytes before the three damage masks.
+    fn event_bytes(player: &PlayerStatistics) -> Vec<u8> {
+        let mut out = Vec::new();
+        player.write(&mut out);
+        // Three damage masks, the hit mask and 12 bytes follow.
+        out.truncate(out.len() - 28);
+        out
+    }
+
+    #[test]
+    fn a_kits_event_mask_keeps_the_bits_of_the_kits_before_it() {
+        // Kit 0 alone: 4 kills, a death and 300 bullets fired.
+        let mut first_kit = PlayerStatistics::default();
+        first_kit.events[event::KILL][0] = 4;
+        first_kit.events[event::DEATH][0] = 1;
+        first_kit.events[event::BULLET_FIRE][0] = 300;
+        let mask = [0x05, 0x00, 0x40, 0x00];
+        let mut bytes = Vec::new();
+        bytes.extend(mask);
+        bytes.extend([4, 1, 0x2C, 0x01]);
+        // The same mask twice more, a zero for each of its events.
+        bytes.extend(mask);
+        bytes.extend([0, 0, 0, 0]);
+        bytes.extend(mask);
+        bytes.extend([0, 0, 0, 0]);
+        assert_eq!(event_bytes(&first_kit), bytes);
+
+        // Kit 1 alone: kit 0's mask has none of its bits, kit 2's has all.
+        let mut second_kit = PlayerStatistics::default();
+        second_kit.events[event::KILL][1] = 4;
+        second_kit.events[event::DEATH][1] = 1;
+        second_kit.events[event::BULLET_FIRE][1] = 300;
+        let mut bytes = vec![0, 0, 0, 0];
+        bytes.extend(mask);
+        bytes.extend([4, 1, 0x2C, 0x01]);
+        bytes.extend(mask);
+        bytes.extend([0, 0, 0, 0]);
+        assert_eq!(event_bytes(&second_kit), bytes);
+
+        // Each kit an event of its own: a bit more with every kit, and a
+        // kit's count under a bit an earlier kit set.
+        let mut every_kit = PlayerStatistics::default();
+        every_kit.events[event::KILL] = [2, 0, 7];
+        every_kit.events[event::BRING_VICTORY_ITEM][1] = 150;
+        every_kit.events[event::DEATH][2] = 1;
+        let mut bytes = vec![0x01, 0, 0, 0, 2];
+        bytes.extend([0x41, 0, 0, 0, 0, 0x96, 0x00]);
+        bytes.extend([0x45, 0, 0, 0, 7, 1, 0, 0]);
+        assert_eq!(event_bytes(&every_kit), bytes);
+
+        // What is written reads back as it was.
+        let statistics = Statistics {
+            players: vec![first_kit, second_kit, every_kit],
+            victory_items: Vec::new(),
+            tail: tail(),
+        };
+        let bytes = statistics.encode();
+        assert_eq!(Statistics::decode(&bytes, 3, 0), Some(statistics));
     }
 
     #[test]
@@ -1593,7 +1665,15 @@ mod tests {
                 .iter()
                 .map(|record| (record.kills, record.deaths))
                 .collect::<Vec<_>>(),
-            [(15, 20), (12, 11), (17, 9), (13, 15), (12, 8), (14, 17), (5, 10)]
+            [
+                (15, 20),
+                (12, 11),
+                (17, 9),
+                (13, 15),
+                (12, 8),
+                (14, 17),
+                (5, 10)
+            ]
         );
         // The map's respawn points (`rules::respawn_points`).
         assert_eq!(
@@ -1606,7 +1686,13 @@ mod tests {
         assert!(gather.containers[1].items.is_empty());
         for (number, battery) in gather.batteries.iter().enumerate() {
             if number == 3 {
-                assert!(matches!(battery, Battery::Free { spotted_mask: 1, .. }));
+                assert!(matches!(
+                    battery,
+                    Battery::Free {
+                        spotted_mask: 1,
+                        ..
+                    }
+                ));
             } else {
                 assert_eq!(*battery, Battery::InContainer(0));
             }
