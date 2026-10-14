@@ -66,6 +66,7 @@ fn world() -> World {
         token_failures: Mutex::new((0, None)),
         connections: AtomicU32::new(0),
         downloads: AtomicU32::new(0),
+        resource_downloads: AtomicU32::new(0),
         game: Some(Game {
             accounts: accounts.clone(),
             lobby: told.clone(),

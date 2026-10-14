@@ -10,6 +10,7 @@ pub mod game;
 pub mod inflate;
 pub mod manifest;
 pub mod pipe;
+pub mod resources;
 pub mod sha256;
 pub mod url;
 pub mod zip;

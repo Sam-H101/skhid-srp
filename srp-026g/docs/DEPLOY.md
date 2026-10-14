@@ -49,7 +49,9 @@ use the game's own 1234, 1235, 1236.
    fill it in. `SRP_PUBLIC_HOST` is required. Keep `.env` out of any
    repository: it holds the admin page's token and path.
 3. Put the players' download (the zip made as `client-patches/README.md`
-   says) into `./download`, or set `SRP_DOWNLOAD_URL`.
+   says) into `./download`, or set `SRP_DOWNLOAD_URL`. A zip made with
+   resource regions comes with blobs: they go into `./download/resources/`
+   first (`client-patches/launcher/README.md`, "Putting it on a server").
 4. `docker compose config` (checks the file and the settings), then
    `docker compose build srp26`, then `docker compose up -d srp26`.
 5. For HTTPS on the web page, on a host whose port 443 is free: point a

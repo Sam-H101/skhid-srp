@@ -4,9 +4,11 @@
 (`srp-026g/client-patches/launcher`) starts in the place of the game's own
 `survarium_updater.exe`. It keeps the few Skhid files of a player's game
 (the patched exe, the certificate, the crash reporter, the start scripts,
-the launcher and itself) the same as the ZIP the server's page offers.
+the launcher and itself) the same as the ZIP the server's page offers, and
+then, best effort, rewrites in place the few entries of the game's own
+`resources.db` that the ZIP's plan names ("Resources" below).
 
-A 32-bit Windows program of about 80 KB, without the Rust standard library
+A 32-bit Windows program of about 130 KB, without the Rust standard library
 and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 `user32.dll` (its message box) and `winhttp.dll`.
 
@@ -32,10 +34,16 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   prompt is needed. Allow about 10 GB of free disk space. The game is
   unpacked with `7zr.exe`, a file of the Skhid archive beside the updater
   (`extractor/`): nothing that is run is downloaded on its own.
+- After the Skhid files, at every start, the resource step: `GET
+  /resources/<sha256>` for the blobs the plan `updater_skhid.resources`
+  names, written over entries of the game's `resources.db` in place
+  ("Resources" below). Best effort: it never fails the update and never
+  keeps PLAY off.
 - Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
   does hold the game folder's path) beside itself. `updater_skhid.lock`
-  prevents simultaneous installs in the same folder.
+  prevents simultaneous installs in the same folder. The resource step
+  writes its own files beside it too (listed under "Resources").
 - No BitTorrent, no listening port, no UPnP, no registry, no service, no
   crash upload, no administrator rights (its manifest says `asInvoker`;
   without one Windows takes a program named "updater" for an installer and
@@ -60,7 +68,7 @@ says so and does nothing.
 
 | Folder | What |
 |---|---|
-| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the two text formats, the launcher's pipe messages, command-line splitting, the server address. `cargo test` there runs on any host |
+| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the resource plan and its record) and what the resource step decides, the launcher's pipe messages, command-line splitting, the server address. `cargo test` there runs on any host |
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
 | `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started |
 
@@ -141,6 +149,102 @@ downloads, verifies and extracts the full game with the extractor of
 `extractor/`, then installs the Skhid overlay. It does not contact Drive or
 archive.org.
 
+## Resources
+
+The players' ZIP may hold a plan, `game/binaries/x86/updater_skhid.resources`
+(`make_client_026g.py --resource-region`; the format and its rules are in
+`logic/src/resources.rs`):
+
+```text
+skhid-resources 1
+region <path> <file size> <offset> <size> <original sha256> <target sha256> <name>
+file <sha256> <size> <path>
+end
+```
+
+A `region` line says that the bytes `[offset, offset + size)` of a game
+file (today `game/resources.db`, 6.3 GB) are the blob `<original>` as the
+game is shipped, and are to become the blob `<target>`: an entry of the db
+rewritten in place with the same size and the same game CRC, so the db's
+signed file table is not changed (the first two: the lobby's and the login
+screen's Flash movies). A `file` line is a whole file fetched by its
+checksum, for later (new maps, if the game can load them); it may not name
+a file of the overlay, an original game file (`game::FILES`) or one of the
+updater's own. A line with an unknown word is skipped. A plan of a higher
+format, one cut short (no `end`), one with a line that cannot be read, or
+one where two lines claim the same bytes, changes nothing at all.
+
+The step runs after the overlay at every start the game may be played
+after: also when nothing new was installed, and when the server could not
+be asked (then with what is kept here only: nothing is downloaded). When
+the run replaced the updater or the launcher, the new ones start at once
+and do it. It holds the installation lock, as the overlay does. For each
+region:
+
+1. The region is hashed (39 MB in 125 ms on the test PC with the file in
+   Windows' cache; a cold read from a hard disk is slower, not measured).
+   It holds the target: done, nothing downloaded or written.
+2. A missing file, or a file of another size than the plan's (another
+   build of the game): skipped, logged.
+3. The file is opened by the updater alone (share mode 0) and closed again.
+   The game keeps `resources.db` open from its start to its exit (share
+   mode read and write), so this fails with error 32 while a game runs: the
+   log says "the game is running" and no region is changed this run, and
+   nothing is fetched for them either.
+4. The target is fetched from `<site>/resources/<sha256>` into
+   `updater_skhid.cache\<sha256>.part`, streamed to the disk 64 KiB at a
+   time, flushed, its size and SHA-256 checked as read back from the disk,
+   then renamed to `<sha256>`. A blob that is there and checks is used
+   again. Two tries a run.
+5. The file is opened by the updater alone again. A region that holds the
+   original, with no checked copy of it yet, is copied into
+   `updater_skhid.backup\<original sha256>` first (written, flushed, read
+   back, checked); if that fails, the region is not written.
+6. The region is recorded in `updater_skhid.resources.state` and noted in
+   `updater_skhid.resources.journal` (both flushed) before its first byte is
+   written: a region is never changed without a note of how to put it
+   back. Then the blob is written at the region's offset (64-bit offsets),
+   `FlushFileBuffers`, the region read back and checked, and the journal
+   and the cached blob deleted.
+7. If the write or the check fails, the original is written back (from the
+   copy kept, else from the site's blob of the original) and checked. If
+   that fails too, the region stays recorded for the next run.
+8. A region that holds neither its original nor its target (a write cut
+   short, a disk error, another program, the target of an earlier plan) is
+   damaged: the target is written over it. The checksum decides; a journal
+   left over is told in the log.
+
+A recorded region the plan no longer has (or the plan itself is gone,
+because the server's ZIP has none) gets its original back the same way,
+before the plan's own regions are written. A planned region over the bytes
+of a recorded one whose original could not be put back waits. A region of
+the plan with a new target is written over the old target directly (the
+copy of the original stays the way back). A recorded `file` the plan no
+longer has is deleted if it is still the file placed. Every handle on the
+db is closed before the launcher is told that PLAY may be pressed.
+
+What it never does: fail the update, show a message box, change the
+overlay's files or `updater_skhid.state`, or touch a byte outside the
+regions. Every step and failure is in `updater_skhid.log`, each line after
+`resources:`. The launcher shows it as an install: "downloading" with the
+bar for a blob, "Extracting file <name>" while a region is written, then
+"latest" as always. When there is nothing to do it says nothing.
+
+Its files beside the updater: `updater_skhid.resources` (the plan, from the
+ZIP), `updater_skhid.resources.state` (the record),
+`updater_skhid.resources.journal` (only while a region is written),
+`updater_skhid.cache\` (blobs not written yet; emptied and removed when
+done) and `updater_skhid.backup\` (the originals of the regions planned or
+recorded, 39 MB and 3.5 MB today; removed when no region needs them).
+
+Not handled: a record that is lost or damaged (a region the plan still
+names is recorded again when it holds its target; one that left the plan
+meanwhile keeps its target); a game started with `play_skhid.bat` in the
+second a region is being written (its own open of the db fails then); a
+db of the plan's size but another build (the size is the only sign of the
+build the plan gives, so its regions would count as damaged and be
+overwritten).
+
 ## Build and test
 
 Use the same nightly Rust as the game workspaces (`srp-026g/flake.nix`
@@ -163,6 +267,13 @@ Run on 2026-10-13 (Windows 11): the 28 unit tests and the 18 end-to-end
 scenarios pass; the real launcher drove it through an install, a repair, a
 replacement of the launcher itself and a start with the server down. Not
 run under Wine yet.
+
+Run on 2026-10-14 (Windows 11), with the resource step: the 39 unit tests
+and the 30 end-to-end scenarios pass (one skipped without
+`SKHID_TEST_BUNDLE`, as before), 12 of them the resource step's (a
+4 MB stand-in for `resources.db`, a plan made by `make_client_026g.py`'s
+own functions, and one region of the lobby movie's size). Not run yet: the
+real launcher, a real `resources.db`, Wine.
 
 ## Not done
 

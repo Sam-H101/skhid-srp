@@ -285,6 +285,13 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   lower-case hex SHA-1 of what was typed), with the same lockout; an unknown
   name is never registered; nothing of it is logged. An account that never
   signed in to the 0.26g lobby has nothing to exchange.
+- `/resources/<sha256>` (64 lower-case hex digits; `GET` and `HEAD`): the
+  file of that name in the folder `resources` beside `SRP_DOWNLOAD_FILE`, as
+  `/download` hands out its file (a `Range` too, five at a time in slots of
+  their own), "not found" when there is none. The blobs of the updater's
+  resource step (`../../client/updater/README.md`, "Resources"). Any other
+  name under `/resources/` is the page's "not found"; the 0.21d page has no
+  such route.
 - `/api/client-files` and `/launcher/…` (since 2026-10-13, for the patched game
   launcher and its updater: `../client-patches/launcher/README.md`). The first answers with the
   SHA-256 and size of the file `/download` hands out (`SRP_DOWNLOAD_FILE`), as

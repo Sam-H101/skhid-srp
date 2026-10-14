@@ -3,6 +3,8 @@
 //!
 //! - `GET /api/client-files`: which archive `/download` hands out now, as its
 //!   SHA-256 and size. The updater compares it with what it installed last.
+//! - `GET /resources/<sha256>`: a blob of the updater's resource step, served
+//!   as `/download` is (`resource_file` in `lib.rs`).
 //! - `GET /launcher/…`: the page the launcher shows in its window, in the
 //!   place of the original game's news page: the best players and the
 //!   matches being played, as two tabs, what the server counts, and the
