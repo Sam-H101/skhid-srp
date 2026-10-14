@@ -580,6 +580,9 @@ pub(crate) struct Game {
     /// CRC reports by tick and client.
     hashes: BTreeMap<u32, HashMap<usize, u32>>,
     hashes_checked_until: u32,
+    /// Reports for ticks up to this are not judged: the games were
+    /// installing a new place then ([`Game::installing`]).
+    hashes_unjudged_until: u32,
     /// Since when two or more clients have been reporting with no tick
     /// that two of them named.
     hash_unshared_since: Option<Instant>,
@@ -634,6 +637,7 @@ impl Game {
             events: Vec::new(),
             hashes: BTreeMap::new(),
             hashes_checked_until: 0,
+            hashes_unjudged_until: 0,
             hash_unshared_since: None,
             hash_starved: false,
             hash_starved_logged: None,
@@ -2861,10 +2865,22 @@ impl Game {
         let clock = self.clock(now);
         let timing = self.settings.timing.clone();
         let settled = clock.saturating_sub(timing.hash_settle_ms);
+        if self.installing() {
+            // The games' worlds differ by the new place until each has
+            // it: no report up to now says that a game is out of step,
+            // and a resync would give it a world of the other kind. What
+            // stood against a game before is looked for again afterwards.
+            self.hashes_unjudged_until = clock;
+            for peer in self.peers.iter_mut().flatten() {
+                peer.diverged = None;
+            }
+        }
+        let unjudged_until = self.hashes_unjudged_until;
         let times: Vec<u32> = self
             .hashes
             .range(self.hashes_checked_until..settled)
             .map(|(time, _)| *time)
+            .filter(|time| *time > unjudged_until)
             .collect();
         for time in times {
             let (wrong, right) = self.judge(time, now);
