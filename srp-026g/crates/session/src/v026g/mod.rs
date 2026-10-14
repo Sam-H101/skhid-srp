@@ -17,6 +17,9 @@
 //!   the order the client needs.
 //! - [`persist`]: the repositories (SQLite tables `g26_*` in `srp.db`,
 //!   memory).
+//! - [`matches_now`]: which of the matches being played is listed for the
+//!   players, and which score is told: one rule for the launcher's page
+//!   and the lobby's list.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
@@ -29,6 +32,7 @@ pub mod bots;
 pub mod clans;
 pub mod extras;
 pub mod items_rules;
+pub mod matches_now;
 pub mod matchmaking;
 pub mod names;
 pub mod notices;

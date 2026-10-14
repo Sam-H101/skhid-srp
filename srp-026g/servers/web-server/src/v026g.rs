@@ -52,16 +52,9 @@ pub trait MatchCounter: Send + Sync {
     fn live_matches(&self) -> Vec<LiveMatch>;
 }
 
-/// How far a match is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LivePhase {
-    /// Its players load the level; the countdown has not begun.
-    Gathering,
-    Countdown,
-    Playing,
-    /// It has its result and is about to go.
-    Over,
-}
+/// How far a match is: the lobby's list of the matches has the same, and
+/// with it the rules of what is listed (`session::v026g::matches_now`).
+pub use session::v026g::matches_now::Phase as LivePhase;
 
 /// A match as the launcher's page shows it: no player is named.
 #[derive(Clone, Debug, PartialEq, Eq)]

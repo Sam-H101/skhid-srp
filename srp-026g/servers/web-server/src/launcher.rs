@@ -36,10 +36,6 @@ const TOP_PLAYERS: usize = 10;
 /// The lines the matches' tab has room for: with more matches than that,
 /// the last line counts the rest.
 const MOST_MATCHES: usize = 10;
-/// A score older than this is not shown. The match server takes a score
-/// from a world its clients agree on, every few seconds; while they do not
-/// agree it has none newer, and the page would name a leader from memory.
-const SCORE_AGE: Duration = Duration::from_secs(60);
 /// The same invite as the crash reporter; opened externally only on click.
 const DISCORD_LINK: &str = include_str!("../launcher-skin/discord-link.html");
 /// How long the page's numbers are kept before they are counted again, so
@@ -428,13 +424,13 @@ fn mode_name(lang: Lang, mode: u8) -> String {
 ///   is "at most".
 /// - Score: tickets left in a Team Deathmatch, batteries brought otherwise,
 ///   the leader's in bold; only of a match in play, and only as fresh as
-///   [`SCORE_AGE`].
+///   [`session::v026g::matches_now::SCORE_AGE`].
+///
+/// Which match is listed and which score is told are the rules the lobby's
+/// list of the matches has too ([`session::v026g::matches_now`]).
 fn matches(lang: Lang, live: &[LiveMatch]) -> String {
     const NONE: &str = "&mdash;";
-    let open: Vec<&LiveMatch> = live
-        .iter()
-        .filter(|each| each.phase != LivePhase::Over)
-        .collect();
+    let open: Vec<&LiveMatch> = live.iter().filter(|each| each.phase.is_listed()).collect();
     if open.is_empty() {
         return format!(
             "<p class=none>{}</p>",
@@ -473,7 +469,7 @@ fn matches(lang: Lang, live: &[LiveMatch]) -> String {
         });
         let score = each
             .standing
-            .filter(|standing| each.phase == LivePhase::Playing && standing.age <= SCORE_AGE)
+            .filter(|standing| each.phase.shows_score(standing.age))
             .map_or(NONE.to_owned(), |standing| {
                 let [first, second] = standing.points;
                 match standing.leader {
@@ -668,6 +664,7 @@ mod tests {
     use super::*;
     use crate::LiveStanding;
     use session::v026g::BoardRow;
+    use session::v026g::matches_now::SCORE_AGE;
 
     /// Team Deathmatch and batteries on Rudnya, Team Deathmatch on School.
     const RUDNYA_TDM: u8 = 117;
