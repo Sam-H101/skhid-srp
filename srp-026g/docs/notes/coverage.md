@@ -178,7 +178,7 @@ Dispatch: `servers/lobby-server/src/v026g/dispatch.rs`, `Core::handle`. "Writer"
 | `34` | automatic, for each squad mate shown | 0x26FE70 / 0x26FE7E | **real**: `88` with the mate's active kit | `social.rs` `squad_member` | high |
 | `37` | automatic, after a level or referral notice | 0x26FE20 (0x226B39, 0x226D49) | **real**: `8C` | `dispatch.rs` | high |
 | `39` | automatic, after a quest or reputation notice | 0x26FE20 (0x22625F, 0x226606) | **real**: `8E` | `dispatch.rs` | high |
-| `3B` | the ranking page (`request_players_range`) | 0x270070 / 0x27007E | **real**: `91` from the stored ratings; with start 0 also `8F` and `90` | `dispatch.rs` `ranking` | high |
+| `3B` | the ranking page (`request_players_range`) | 0x270070 / 0x27007E | **real**: `91` from the stored ratings; with start 0 also `8F` and `90`. srp's own, asked only by its changed lobby movie: start 2 000 000 000 is answered with the matches now in a `91`, a higher start with nothing (lobby.md §2.16.1) | `dispatch.rs` `ranking`, `reserved_ranking` | high |
 | `3C` | automatic, after quest notices, `83 4B`, and the results screen | 0x26FE20 (0x22633D, 0x274EED); inline 0x2719A7 | **real**: quests refreshed, `92` | `dispatch.rs` | high |
 | `3D` | clicking a player on the results screen | 0x26FF00 / 0x26FF0E | **real**: the report is kept while a screen of it may be open (2026-10-12) | `dispatch.rs` | high |
 | `3E` | automatic, after quest notices and `83 4B` | 0x26FE20 (0x226205, 0x22627B, 0x274EF6) | **real**: `94` | `dispatch.rs` | high |

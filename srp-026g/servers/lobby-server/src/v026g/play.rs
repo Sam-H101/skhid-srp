@@ -39,6 +39,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use session::matchmaking_policy::{self as policy, Joiner, LateRule, Worth};
+use session::v026g::matches_now::Phase;
 use session::v026g::{Account, matchmaking, quests, rules, wire};
 use session::{Level, LevelRules, LockExt, MAX_PLAYERS_PER_MATCH, QueuePool, QueueState};
 use survarium::v026g::lobby::requests::id;
@@ -80,6 +81,11 @@ pub trait MatchHost: Send + Sync {
     fn live(&self, _match_id: u32, _now: Instant) -> Option<LiveView> {
         None
     }
+    /// Every match made and not ended as it is now, the oldest first: what
+    /// the lobby lists for the players (`dispatch`, `matches_now`).
+    fn open_matches(&self, _now: Instant) -> Vec<OpenMatch> {
+        Vec::new()
+    }
     /// Whether the match is made and not over. The lobby asks about its
     /// matches every second and frees the seats of one that is over, also
     /// when nobody called [`super::Inbox::match_finished`].
@@ -103,6 +109,27 @@ pub struct LiveView {
     /// Each team's kills in that world.
     pub kills: [u16; 2],
     /// Since play began. `None` before it has, and after the end.
+    pub played: Option<Duration>,
+}
+
+/// A match as the match server has it now, for the players' list of the
+/// matches ([`MatchHost::open_matches`]): what the launcher's page has of
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenMatch {
+    /// [`MatchTicket::match_id`].
+    pub match_id: u32,
+    /// The `maps_dict` id: the map and the mode.
+    pub map_id: u8,
+    pub phase: Phase,
+    /// Each team's players who have not left: before the countdown the
+    /// ones still to come count too.
+    pub players: [u8; 2],
+    /// Batteries home (modes 2, 3) or tickets left (mode 4), by team, and
+    /// how old the world is that said so. `None` until the match server
+    /// trusted a world.
+    pub standing: Option<([u16; 2], Duration)>,
+    /// Since play began.
     pub played: Option<Duration>,
 }
 
@@ -333,6 +360,61 @@ impl Core<'_> {
         (lead.map(i64::from), dramatic)
     }
 
+    /// How long a running match still plays, if it takes players now: one
+    /// of growing rosters whose teams are not fixed, to which the match
+    /// server admits (in play, and no earlier joiner still on its way in),
+    /// with more left to play than [`policy::JOIN_CUTOFF`].
+    fn late_admission(&self, running: &Running, now: Instant) -> Option<Duration> {
+        if running.pool != QueuePool::GrowingRoster || running.fixed_teams {
+            return None;
+        }
+        self.host
+            .admission_remaining(running.ticket.match_id, now)
+            .filter(|remaining| *remaining > policy::JOIN_CUTOFF)
+    }
+
+    /// The sides of a running match as they are now, and the rule players
+    /// are put into it by ([`policy::place_late`]).
+    fn late_rule(&self, running: &Running, live: Option<&LiveView>) -> ([Worth; 2], LateRule) {
+        let (lead, dramatic) = self.lead_now(running, live);
+        let rule = LateRule {
+            capacity: self.settings.team_size.min(MAX_PLAYERS_PER_MATCH / 2),
+            room: MAX_PLAYERS_PER_MATCH.saturating_sub(running.seats.len()),
+            player_value: i64::from(self.settings.balance.player_value()),
+            lead,
+            dramatic,
+        };
+        (Self::sides_now(running, live), rule)
+    }
+
+    /// Whether a running match would take one more player now, by the
+    /// rules [`Self::fill_running_matches`] puts the queue's players into
+    /// it by: it admits ([`Self::late_admission`]), and the placement finds
+    /// a side for a player alone ([`policy::place_late`]: a roster place
+    /// left, a side under its most, the sides not too far apart after).
+    ///
+    /// The player is no one in particular: one who has waited out its
+    /// patience (an even match takes nobody alone before that,
+    /// [`super::Settings::late_join_patience`]), so what it counts for
+    /// decides nothing. Whether a certain account may is not asked here:
+    /// not one that has a roster place of the match already, and not a
+    /// game too old for growing rosters.
+    pub(super) fn takes_one_more(&self, running: &Running, now: Instant) -> bool {
+        if self.late_admission(running, now).is_none() {
+            return false;
+        }
+        let live = self.host.live(running.ticket.match_id, now);
+        let (sides, rule) = self.late_rule(running, live.as_ref());
+        let one = Joiner {
+            worth: Worth {
+                players: 1,
+                strength: 0,
+            },
+            waited_out: true,
+        };
+        policy::place_late(sides, &[one], &rule).is_some()
+    }
+
     /// `(what a side counts for, the players in it, its lead)`, in gear
     /// levels, for the log.
     fn counted(&self, sides: [Worth; 2], lead: [i64; 2]) -> [(f64, usize, f64); 2] {
@@ -409,7 +491,6 @@ impl Core<'_> {
     fn fill_running_matches(&mut self, now: Instant) {
         let unix = quests::now();
         let exponent = self.store.matchmaking().population_exponent();
-        let player_value = i64::from(self.settings.balance.player_value());
         let patience = self.settings.late_join_patience;
         // One successful batch changes both queue and roster; recompute after each.
         let mut attempted = std::collections::HashSet::new();
@@ -433,19 +514,12 @@ impl Core<'_> {
             }
             let mut candidates = Vec::new();
             for (&id, running) in &self.matches {
-                if running.pool != QueuePool::GrowingRoster
-                    || running.fixed_teams
-                    || attempted.contains(&id)
-                {
+                if attempted.contains(&id) {
                     continue;
                 }
-                let Some(remaining) = self.host.admission_remaining(running.ticket.match_id, now)
-                else {
+                let Some(remaining) = self.late_admission(running, now) else {
                     continue;
                 };
-                if remaining <= policy::JOIN_CUTOFF {
-                    continue;
-                }
                 // A historical slot cannot be reused by the same account.
                 let Some(formed) = self.store.matchmaking().formed_match(id) else {
                     continue;
@@ -463,8 +537,7 @@ impl Core<'_> {
                     })
                     .collect();
                 let live = self.host.live(running.ticket.match_id, now);
-                let sides = Self::sides_now(running, live.as_ref());
-                let (lead, dramatic) = self.lead_now(running, live.as_ref());
+                let (sides, rule) = self.late_rule(running, live.as_ref());
                 let joiners: Vec<Joiner> = available
                     .iter()
                     .map(|(_, group)| Joiner {
@@ -472,13 +545,6 @@ impl Core<'_> {
                         waited_out: now.saturating_duration_since(group.since) >= patience,
                     })
                     .collect();
-                let rule = LateRule {
-                    capacity: self.settings.team_size.min(MAX_PLAYERS_PER_MATCH / 2),
-                    room: MAX_PLAYERS_PER_MATCH.saturating_sub(running.seats.len()),
-                    player_value,
-                    lead,
-                    dramatic,
-                };
                 let Some(mut placement) = policy::place_late(sides, &joiners, &rule) else {
                     continue;
                 };
@@ -488,7 +554,7 @@ impl Core<'_> {
                 let Some(score) = placement.score(remaining, exponent) else {
                     continue;
                 };
-                candidates.push((id, score, placement, lead, dramatic));
+                candidates.push((id, score, placement, rule.lead, rule.dramatic));
             }
             candidates.sort_by(|a, b| {
                 b.1.total_cmp(&a.1)

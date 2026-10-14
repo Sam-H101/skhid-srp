@@ -37,6 +37,9 @@ pub(super) struct TestHost {
     pub live: Mutex<std::collections::HashMap<u32, super::LiveView>>,
     /// Every place given to a new session: `(match, account, session)`.
     pub reseated: Mutex<Vec<(u32, u32, u32)>>,
+    /// The matches the match server has, as the test says they are: what
+    /// the players' list of the matches is made of.
+    pub listed: Mutex<Vec<super::OpenMatch>>,
 }
 
 /// Where the test host says its matches are.
@@ -106,6 +109,10 @@ impl MatchHost for TestHost {
                 .copied()
                 .unwrap_or(std::time::Duration::from_secs(600))
         })
+    }
+
+    fn open_matches(&self, _: std::time::Instant) -> Vec<super::OpenMatch> {
+        self.listed.locked().clone()
     }
 
     fn is_open(&self, match_id: u32) -> bool {

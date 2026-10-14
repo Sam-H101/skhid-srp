@@ -702,6 +702,32 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
         live.time_left
             .is_some_and(|left| left > Duration::from_secs(900))
     );
+    // The lobby lists the same for its "matches now" window, asked with the
+    // ranking's request and the start no ranking page has: the header with
+    // the count, then the match: Rudnya (level 1), Team Deathmatch (mode
+    // 4), its countdown running (phase 1), a player a team, no score and no
+    // time played before play, and nobody taken into it.
+    alice.take();
+    alice.ask(request::ranking(survarium::v026g::lobby::MATCHES_START, 32));
+    until(
+        &mut [&mut alice, &mut bob],
+        SOON,
+        "the lobby's list of the matches",
+        |games| games[0].has(|message| matches!(message, Decoded::EloList(_))),
+    );
+    let list = alice
+        .find(|message| match message {
+            Decoded::EloList(rows) => Some(rows.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        list,
+        [
+            ("M1;1".to_owned(), 2_000_000_000, 0, 0),
+            ("1;4;1;1;1;-;-;-;0".to_owned(), 2_000_000_001, 0, 0),
+        ]
+    );
 
     // ---- 9. The match ends by its mode's rule: Bob's team has no tickets
     // and nobody alive. (The rule is set to "in play" on both clients at
