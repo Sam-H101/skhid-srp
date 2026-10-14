@@ -219,7 +219,15 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # lists made again, BOX below, REMOVE_MODEL below). A game of 5 in a match
 # can still be killed by a newcomer, so a server that takes players into
 # matches asks for 6. 5 and 6 compute a match alike and play together.
-REVISION = 6
+# 7: a slot's grenades and traps go in front of the list the world is saved
+# by, whenever the slot is bound (late_join_026g.asm, bind_slot_reserved),
+# and into the states a game rolls back to (late_join_install_026g.c). In 5
+# and 6 a player with a grenade or a trap in a kit who was taken into a
+# match being played was never let in. The order of the world's game
+# objects is another one than 5 and 6 keep: a game of 7 and an older one
+# part as soon as two players' grenades are not as they began, so a server
+# asks for 7.
+REVISION = 7
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4

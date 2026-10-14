@@ -177,6 +177,224 @@ def native_binding(data, place, kits, weapons=False, world_objects=0):
     assert uc.reg_read(UC_X86_REG_ESP) == STACK + 8
 
 
+def saved_list(machine, core):
+    """The list the world saves its game objects by (core+0x18914 the first,
+    +0x18918 the last), walked from the first with every link checked."""
+    nodes, before, node = [], 0, machine.read(core + 0x18914)
+    while node:
+        assert machine.read(node + 4) == before, "the link back of a saved object"
+        assert len(nodes) < 1000, "the list of saved objects does not end"
+        nodes.append(node)
+        before, node = node, machine.read(node + 8)
+    assert machine.read(core + 0x18918) == before, "the last of the saved objects"
+    return nodes
+
+
+def stack_items(machine, inventory, slot, bind, objects, vector):
+    """An inventory item that is a stack of world objects (a grenade or a
+    trap item: the objects' pointers at +0x268..+0x26C) whose vtable+0x70,
+    the bind the inventory calls, is the game's `bind`."""
+    item, vtable = vector + 0x100, vector + 0x400
+    machine.write(vtable + 0x70, bind)
+    machine.write(item, vtable)
+    for index, each in enumerate(objects):
+        machine.write(vector + index * 4, each)
+    machine.write(item + 0x268, vector)
+    machine.write(item + 0x26C, vector + len(objects) * 4)
+    machine.write(inventory + 0x10C + slot * 4, item)
+    return item
+
+
+def saved_objects(data):
+    """The game's own binders (slot 0x321820, kit 0x2D75B0, inventory
+    0x2FC7D0, grenade item 0x309EC0 and grenade 0x303820, trap item
+    0x3067A0) on made-up kits, through the hooked call: where each slot's
+    grenades and traps are in the list the world is saved by, whenever the
+    slot is bound. Only the animation object's bind is a `ret 4`."""
+    machine = Machine(data)
+    uc = machine.uc
+    active_objects(machine, BASE)
+    machine.write(BASE + 0x18FB0, COUNTER)
+    machine.write(COUNTER, 73)
+    uc.mem_map(0x5000000, 0x80000)
+    free = [0x5000000]
+
+    def room(size):
+        at = free[0]
+        free[0] += (size + 0xFFF) & ~0xFFF
+        return at
+
+    vtable = room(0x200)
+    machine.write(vtable, vtable + 0x100)
+    uc.mem_write(vtable + 0x100, b"\xc2\x04\x00")
+    displacement = struct.unpack_from("<i", data, patch.base.file_offset(0x2D3880) + 1)[0]
+
+    def bind(place, kits):
+        """kits: {kit: (grenades, traps)}. Returns the nodes the slot's
+        objects have in the list, in the order the game binds them."""
+        slot = room(0x40)
+        uc.mem_write(slot + 0x2C, bytes([place]))
+        expected, ids, next_id = [], [], (place + 1) << 16
+        for kit in sorted(kits):
+            grenades, traps = kits[kit]
+            player = room(0x1000)
+            inventory = player + 0x800
+            machine.write(slot + kit * 4, player)
+            machine.write(player + 0x10C, inventory)
+            machine.write(player + 0x3A4, vtable)
+            # The inventory binds its slots in their order: the grenades'
+            # (14) before the traps' (16).
+            objects = [room(0x200) for _ in range(grenades)]
+            if objects:
+                stack_items(machine, inventory, 14, 0x309EC0, objects, room(0x800))
+            for each in objects:
+                expected.append(each + 0x10)
+                ids.append((each + 0x168, next_id))
+                ids.append((each + 0x180, next_id + 1))
+                ids.append((each + 0x188, BASE))
+                next_id += 2
+            objects = [room(0x300) for _ in range(traps)]
+            if objects:
+                stack_items(machine, inventory, 16, 0x3067A0, objects, room(0x800))
+            for each in objects:
+                expected.append(each + 0x74)
+                ids.append((each + 0x234, next_id))
+                ids.append((each + 0x19C, BASE))
+                next_id += 1
+            ids.append((player + 0x698, next_id))
+            ids.append((player + 0x6B0, next_id + 1))
+            next_id += 2
+        ids.append((slot + 0x20, next_id))
+        saved = {UC_X86_REG_EBX: 0x12345678, UC_X86_REG_ESI: 0x23456789,
+                 UC_X86_REG_EDI: 0x3456789A, UC_X86_REG_EBP: 0x456789AB}
+        for register, value in saved.items():
+            uc.reg_write(register, value)
+        uc.reg_write(UC_X86_REG_EAX, BASE)
+        machine.start(0x2D3885 + displacement, args=(slot,), count=100000)
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 8
+        assert all(uc.reg_read(register) == value for register, value in saved.items())
+        assert machine.read(BASE + 0x18FB0) == COUNTER and machine.read(COUNTER) == 73
+        for address, value in ids:
+            assert machine.read(address) == value, hex(address)
+        return expected
+
+    def map_object():
+        """As the map's objects come into the list (0x285864..0x28588F):
+        at its end."""
+        node, last = room(0x40), machine.read(BASE + 0x18918)
+        machine.write(node + 4, last)
+        machine.write(last + 8 if last else BASE + 0x18914, node)
+        machine.write(BASE + 0x18918, node)
+        return node
+
+    # A slot with nothing to save, into a list with nothing in it.
+    assert bind(0, {0: (0, 0), 1: (0, 0)}) == [] and saved_list(machine, BASE) == []
+    # The start of a match: its slots, then the map's objects.
+    first = bind(1, {0: (2, 1), 1: (0, 2), 2: (3, 0)})
+    assert len(first) == 8 and saved_list(machine, BASE) == first
+    second = bind(2, {1: (1, 0)})
+    assert saved_list(machine, BASE) == second + first
+    of_map = [map_object() for _ in range(3)]
+    assert saved_list(machine, BASE) == second + first + of_map
+    # Slots bound while the match is played: in front of all of it, as a
+    # game that starts with them has them.
+    assert bind(3, {0: (0, 0), 2: (0, 0)}) == []
+    assert saved_list(machine, BASE) == second + first + of_map
+    fourth = bind(4, {0: (2, 0), 2: (2, 2)})
+    assert len(fourth) == 6 and saved_list(machine, BASE) == fourth + second + first + of_map
+    fifth = bind(19, {1: (0, 1)})
+    assert saved_list(machine, BASE) == fifth + fourth + second + first + of_map
+    # A list of the map's objects alone, and a slot with grenades after it.
+    machine = Machine(data)
+    uc = machine.uc
+    active_objects(machine, BASE)
+    machine.write(BASE + 0x18FB0, COUNTER)
+    machine.write(COUNTER, 73)
+    uc.mem_map(0x5000000, 0x80000)
+    free[0] = 0x5000000
+    vtable = room(0x200)
+    machine.write(vtable, vtable + 0x100)
+    uc.mem_write(vtable + 0x100, b"\xc2\x04\x00")
+    of_map = [map_object() for _ in range(2)]
+    late = bind(5, {0: (2, 0)})
+    assert saved_list(machine, BASE) == late + of_map
+
+
+def untouched_objects(data):
+    """What the install puts into the kept states for each node of a late
+    slot is one zero byte. Here the game's own code says so: a grenade and
+    a trap as their constructors leave them (grenade_core 0x303640; the
+    trap's 0x3043C0 as far as 0x3044E3, where its own fields are set) save
+    themselves as that byte (0x303DA0, 0x3052E0) and load it back
+    (0x303F80, 0x3053C0) reading nothing more, changed in nothing and
+    calling nothing but the grenade's look for its owner. The two
+    constructors of the base every game object has (0xF70F0, 0xF17E0)
+    are a `ret`; a virtual call would read a vtable that is not mapped."""
+    m = Machine(data)
+    uc = m.uc
+    uc.mem_map(0x1F1D000, 4096)      # the writers' debug flags: off
+    uc.mem_map(0x5000000, 0x10000)
+    grenade, trap, owner = 0x5000000, 0x5001000, 0x5004000
+    stream, buffer, saved = 0x5002000, 0x5002100, 0x5003000
+    owner_asked = []
+
+    def visit(uc, address, size, _):
+        if address not in (0xF70F0, 0xF17E0, STOP + 0x300):
+            return
+        esp = uc.reg_read(UC_X86_REG_ESP)
+        if address == STOP + 0x300:
+            owner_asked.append(uc.reg_read(UC_X86_REG_ECX))
+            uc.reg_write(UC_X86_REG_EAX, 0)
+        uc.reg_write(UC_X86_REG_EIP, m.read(esp))
+        uc.reg_write(UC_X86_REG_ESP, esp + (12 if address == 0xF70F0 else 4))
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+
+    def save(node, function):
+        """The bytes the node writes: into a stream as a state has it
+        (+0x14 its buffer: an allocator, the bytes, the room, the size)."""
+        uc.mem_write(saved, b"\xEE" * 0x100)
+        for address, value in ((stream + 0x14, buffer), (buffer, 0), (buffer + 4, saved),
+                               (buffer + 8, 0x100), (buffer + 12, 0)):
+            m.write(address, value)
+        uc.reg_write(UC_X86_REG_ECX, node)
+        m.start(function, args=(stream, 0))
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 12
+        written = bytes(uc.mem_read(saved, m.read(buffer + 12)))
+        assert bytes(uc.mem_read(saved + len(written), 4)) == b"\xEE" * 4
+        return written
+
+    def load(node, function, byte):
+        """How many bytes the node reads of `byte` and 0xEE after it."""
+        uc.mem_write(saved, bytes([byte]) + b"\xEE" * 0xFF)
+        for address, value in ((stream, saved), (stream + 4, saved), (stream + 8, 0x100)):
+            m.write(address, value)
+        uc.reg_write(UC_X86_REG_ECX, node)
+        m.start(function, args=(stream, 0, 0))
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16
+        return m.read(stream + 4) - saved
+
+    # The grenade: its owner is asked for (the item, +0x250, +0x174, the
+    # vtable's +0xC) and has no player.
+    uc.reg_write(UC_X86_REG_EDI, grenade)
+    m.start(0x303640)
+    assert uc.reg_read(UC_X86_REG_EAX) == grenade
+    for address, value in ((grenade + 0xC, owner), (owner + 0x250, owner + 0x300),
+                           (owner + 0x300 + 0x174, owner + 0x600), (owner + 0x600, owner + 0x700),
+                           (owner + 0x700 + 0xC, STOP + 0x300)):
+        m.write(address, value)
+    whole = bytes(uc.mem_read(grenade, 0x220))
+    assert save(grenade + 0x10, 0x303DA0) == b"\0"
+    assert load(grenade + 0x10, 0x303F80, 0) == 1 and owner_asked == [owner + 0x600]
+    assert bytes(uc.mem_read(grenade, 0x220)) == whole
+    # The trap.
+    m.start(0x3043C0, end=0x3044E3, args=(trap, 0x1234))
+    whole = bytes(uc.mem_read(trap, 0x270))
+    assert save(trap + 0x74, 0x3052E0) == b"\0"
+    assert load(trap + 0x74, 0x3053C0, 0) == 1 and len(owner_asked) == 1
+    assert bytes(uc.mem_read(trap, 0x270)) == whole
+
+
 def native_histories(data):
     """Construct all four vectors through the original engine functions."""
     machine = Machine(data)
@@ -497,13 +715,17 @@ def native_animations(data):
             assert [m.read(entries[index] + 8) for index in expected] == list(range(count))
 
 
-def native_preparation(data):
+def native_preparation(data, grenades=0, traps=0):
     """Exercise the composed ready -> E4 -> query -> install -> ACK -> teardown.
 
     Native profile reading, callback invocation, slot/player/inventory binding
     and the compiled C lifecycle run. Resource scheduling, allocation, packet
     transport, animation/physics/UI setup and player destruction are intercepted.
     This is an integration fixture, not a live resource-engine test.
+
+    The newcomer's kit has `grenades` grenades and `traps` traps, bound by
+    the game's own code; the world has two saved objects already and four
+    states to roll back to.
     """
     m = Machine(data)
     uc = m.uc
@@ -542,6 +764,36 @@ def native_preparation(data):
     ):
         m.write(address, value)
     uc.mem_write(animation_bind, b"\xc2\x04\x00")
+    # The newcomer's grenades and traps, as stacks in its inventory.
+    carried = [BASE + 0x1A000 + index * 0x400 for index in range(grenades + traps)]
+    if grenades:
+        stack_items(m, inventory, 14, 0x309EC0, carried[:grenades], BASE + 0x35000)
+    if traps:
+        stack_items(m, inventory, 16, 0x3067A0, carried[grenades:], BASE + 0x36000)
+    new_nodes = [each + 0x10 for each in carried[:grenades]] + [each + 0x74 for each in carried[grenades:]]
+    # What the list of saved objects holds: an older slot's and the map's.
+    older, of_map = BASE + 0x1F000, BASE + 0x1F100
+    for address, value in ((core + 0x18914, older), (core + 0x18918, of_map),
+                           (older + 8, of_map), (of_map + 4, older)):
+        m.write(address, value)
+    # The states the game can roll back to, oldest first: the game-objects
+    # bytes of each, in a buffer of 0x2000 filled with a pattern. The third
+    # is all but full: no late slot's bytes go in.
+    states = 0xB000000
+    uc.mem_map(states, 0x400000)
+    saved = (bytes(range(1, 8)), b"", bytes(index % 251 + 1 for index in range(0x1FFE)),
+             bytes([0x44, 0x04, 0x99]))
+    items = [states + index * 0x100000 for index in range(len(saved))]
+    filler = bytes(0xC0 + index % 61 for index in range(0x2000))
+    for index, (item, blob) in enumerate(zip(items, saved)):
+        uc.mem_write(item + 0xBBF30, blob + filler[len(blob):])
+        for offset, value in ((0xBDF30, 0), (0xBDF34, item + 0xBBF30), (0xBDF38, 0x2000),
+                              (0xBDF3C, len(blob)), (0xC0BA8, items[index - 1] if index else 0),
+                              (0xC0BAC, items[index + 1] if index + 1 < len(items) else 0)):
+            m.write(item + offset, value)
+    m.write(core + 0x2FB8, len(items))
+    m.write(core + 0x2FBC, items[0])
+    m.write(core + 0x2FC0, items[-1])
     uc.mem_write(options + 0x577B5, b"\x02")
     uc.mem_write(statistics + 8 + 0x31E0, b"\x02")
     uc.mem_write(statistics + 0x31E0, b"\x5a")
@@ -643,8 +895,27 @@ def native_preparation(data):
     assert calls == ["allocate", "query", "animations", "physics", "ready", "new_packet", "enqueue"]
     assert m.read(pvp + 0xD0) == 1 and m.read(player + 0xD0) == 2
     assert m.read(core + 0x1845C) == slot + 48 and m.read(slot) == player
-    assert m.read(slot + 0x28) == core and m.read(slot + 0x20) == 0x30002
-    assert m.read(player + 0x698) == 0x30000 and m.read(player + 0x6B0) == 0x30001
+    taken = grenades * 2 + traps
+    assert m.read(slot + 0x28) == core and m.read(slot + 0x20) == 0x30002 + taken
+    assert m.read(player + 0x698) == 0x30000 + taken and m.read(player + 0x6B0) == 0x30001 + taken
+    # The newcomer's objects are in front of what the list held, in the
+    # order the game bound them, and each took its ids of the place's.
+    assert saved_list(m, core) == new_nodes + [older, of_map]
+    for index, each in enumerate(carried[:grenades]):
+        assert [m.read(each + offset) for offset in (0x168, 0x180, 0x188)] == [
+            0x30000 + index * 2, 0x30001 + index * 2, core]
+    for index, each in enumerate(carried[grenades:]):
+        assert [m.read(each + offset) for offset in (0x234, 0x19C)] == [0x30000 + grenades * 2 + index, core]
+    # Every state it can roll back to has one zero byte for each of them in
+    # front of its game-objects bytes; the one with no room is as it was.
+    added = len(new_nodes)
+    for item, blob in zip(items, saved):
+        fits = len(blob) + added <= 0x2000
+        now = bytes(added) + blob if fits else blob
+        assert m.read(item + 0xBDF3C) == len(now), (hex(item), m.read(item + 0xBDF3C))
+        assert bytes(uc.mem_read(item + 0xBBF30, 0x2000)) == now + filler[len(now):]
+        assert [m.read(item + offset) for offset in (0xBDF30, 0xBDF34, 0xBDF38)] == [0, item + 0xBBF30, 0x2000]
+    assert [m.read(core + offset) for offset in (0x2FB8, 0x2FBC, 0x2FC0)] == [len(items), items[0], items[-1]]
     assert m.read(core + 0x18FB0) == COUNTER and m.read(COUNTER) == 73
     assert bytes(uc.mem_read(histories_at, len(histories))) == histories
     assert m.read(state + 56) == 3 and uc.mem_read(options + 0x577B5, 1)[0] == 3
@@ -717,6 +988,10 @@ def check(original, nasm):
     native_direct_match(patch.build(original, nasm, test_session=0x1002), 0x1002)
     native_animations(changed)
     native_preparation(changed)
+    for grenades, traps in ((2, 0), (0, 1), (6, 3), (1, 1)):
+        native_preparation(changed, grenades, traps)
+    saved_objects(changed)
+    untouched_objects(changed)
     native_query(changed)
     native_profile(changed)
     native_histories(changed)
@@ -761,7 +1036,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; ABI; PE checksum and certificate")
 
 
 def main():

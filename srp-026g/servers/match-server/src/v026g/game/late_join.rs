@@ -135,6 +135,24 @@ impl Game {
         rejected
     }
 
+    /// Whether a game of the match has a place still to install. Until it
+    /// has, its world and the world of a game that has the place differ by
+    /// what the place's kits put into the saved world before its player is
+    /// let in (a byte for each grenade and trap, patch revision 7; the
+    /// games of 5 and 6 differed too), and neither is wrong. A place whose
+    /// admission failed is not asked for any more.
+    pub(super) fn installing(&self) -> bool {
+        self.growing_roster()
+            && self.peers.iter().flatten().any(|peer| {
+                peer.stage != Stage::Gone
+                    && peer.resources_loaded
+                    && peer.installed_roster < self.players()
+                    && !self.admissions[peer.installed_roster]
+                        .as_ref()
+                        .is_some_and(Admission::failed)
+            })
+    }
+
     pub(super) fn join_ready(&self, index: usize) -> bool {
         let Some(admission) = &self.admissions[index] else {
             return true;

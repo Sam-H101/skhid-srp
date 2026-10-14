@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::v026g::JoinError;
-use survarium::v026g::match_msgs::late_join::{Prepared, Status};
+use survarium::v026g::match_msgs::late_join::{Prepare, Prepared, Status};
 use survarium::v026g::match_msgs::{ServerMessage, id, rules::state};
 
 fn running() -> Bench {
@@ -859,4 +859,81 @@ fn a_cancelled_admission_cannot_later_remove_the_accounts_new_match_seat() {
         shared.matchmaking().seat(newcomer.session_id),
         Some((new_match, 0))
     );
+}
+
+/// Three games in a match being played: a tick two of them name alike has
+/// a majority.
+fn running_three() -> Bench {
+    let mut bench = Bench::growing(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    bench.run_long(25_000);
+    assert_eq!(bench.game().rule_state(), state::IN_PROCESS);
+    assert!(bench.game().admitting());
+    bench
+}
+
+/// A newcomer is reserved and loading; game 1 has not installed its place
+/// yet. Returns the place and what game 1 was asked to install.
+fn reserve_with_one_game_still_installing(bench: &mut Bench) -> (usize, Prepare) {
+    bench.clients[1].auto_prepare = false;
+    let place = reserve(bench);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    assert!(bench.until(1_000, |b| !b.clients[1].prepares.is_empty()));
+    let prepare = bench.clients[1].prepares[0].clone();
+    (place, prepare)
+}
+
+#[test]
+fn games_that_install_a_place_seconds_apart_are_not_resynced_for_it() {
+    let mut bench = running_three();
+    // The newcomer's kits have six grenades. A game's world has a byte for
+    // each from the tick it has the place; the newcomer's own from its
+    // start.
+    for client in &mut bench.clients {
+        client.late_objects = 6;
+    }
+    let (place, prepare) = reserve_with_one_game_still_installing(&mut bench);
+    bench.clients[place].sim.late_objects_from = Some((0, 6));
+    assert!(bench.until(1_000, |b| {
+        b.clients[0].sim.late_objects_from.is_some() && b.clients[2].sim.late_objects_from.is_some()
+    }));
+    // Game 1 loads the newcomer's kits five seconds longer than the other
+    // two: all that time its reports are the minority's, and it is right.
+    bench.run(5_000);
+    assert!(bench.clients[1].sim.late_objects_from.is_none());
+    assert_eq!(bench.game().resyncs(1), 0);
+    assert_eq!(&bench.stages()[..3], "LLL");
+    bench.clients[1].prepared(&prepare, Status::Installed);
+    assert!(bench.until(8_000, |b| b.stages() == "LLLL"));
+    assert!(bench.until(500, |b| {
+        b.clients
+            .iter()
+            .all(|c| c.entered().contains(&(place as u8)))
+    }));
+    // The reports of those seconds are judged at no later time either.
+    bench.run(6_000);
+    for index in 0..4 {
+        assert_eq!(bench.game().resyncs(index), 0, "player {index}");
+    }
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_game_out_of_step_while_a_place_is_installed_is_resynced_afterwards() {
+    let mut bench = running_three();
+    let (_, prepare) = reserve_with_one_game_still_installing(&mut bench);
+    // Game 2's world goes its own way while game 1 still loads the place.
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    bench.run(5_000);
+    assert_eq!(bench.game().resyncs(2), 0);
+    // Every game has the place: reports are judged as ever from here.
+    bench.clients[1].prepared(&prepare, Status::Installed);
+    assert!(bench.until(10_000, |b| b.game().resyncs(2) == 1));
+    assert_eq!(bench.game().resyncs(0), 0);
+    assert_eq!(bench.game().resyncs(1), 0);
+    assert!(bench.until(8_000, |b| b.stages() == "LLLL"));
+    bench.assert_no_faults();
 }

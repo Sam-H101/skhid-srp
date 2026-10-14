@@ -55,6 +55,11 @@ pub struct Sim {
     pub salt_from: Option<(u32, u8)>,
     /// Extra bytes in every world (a bigger upload).
     pub ballast: usize,
+    /// From a tick on the world's game objects have this many bytes: the
+    /// grenades and traps of a place this game installed, or started with.
+    /// A loaded world does not take them away, as it does the salt: they
+    /// are this game's objects.
+    pub late_objects_from: Option<(u32, usize)>,
     /// By place: the head of its player's state, for a place whose player
     /// block is in every world (alive, and what it has in store of each
     /// item of its profile).
@@ -85,6 +90,7 @@ impl Sim {
             kills_from: None,
             salt_from: None,
             ballast: 0,
+            late_objects_from: None,
             player_states: vec![None; players],
             first_world: true,
             stale_tickets_from: None,
@@ -259,6 +265,12 @@ impl Sim {
         if let Some((_, salt)) = self.salt_from.filter(|(from, _)| since(*from)) {
             bullets.push(salt);
         }
+        let objects = vec![
+            0;
+            self.late_objects_from
+                .filter(|(from, _)| since(*from))
+                .map_or(0, |(_, bytes)| bytes)
+        ];
         // The player blocks: a state, and an animation state after it.
         let mut mask = 0u32;
         let mut blocks = Vec::new();
@@ -277,7 +289,7 @@ impl Sim {
             players: &blocks,
             bullets: &bullets,
             statistics: &statistics,
-            objects: &[],
+            objects: &objects,
             physics: &[],
             rules: &rules,
             effects: &[],
@@ -362,6 +374,10 @@ pub struct Client {
     /// and normal simulation continue, independently of resource readiness.
     pub auto_prepare: bool,
     pub prepares: Vec<Prepare>,
+    /// The bytes a place this game installs adds to its world's game
+    /// objects, from the tick of the install on (a newcomer whose kits
+    /// have grenades or traps).
+    pub late_objects: usize,
     /// The server disconnected it (FA or FD).
     pub disconnected: bool,
     last_words: Option<Vec<u8>>,
@@ -433,6 +449,7 @@ impl Client {
             skipped: Vec::new(),
             faults: Vec::new(),
             auto_prepare: true,
+            late_objects: 0,
             prepares: Vec::new(),
             disconnected: false,
             last_words: None,
@@ -488,6 +505,9 @@ impl Client {
                 self.sim.player_states.resize(self.sim.players, None);
             } else {
                 assert_eq!(options.players.get(place), Some(&prepare.profile));
+            }
+            if self.late_objects > 0 && self.sim.late_objects_from.is_none() {
+                self.sim.late_objects_from = Some((self.clock(), self.late_objects));
             }
         }
         let bytes = Prepared {
