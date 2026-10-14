@@ -25,6 +25,12 @@ cargo run --release -p mapdata --bin mapdata-dump -- --db <resources.db> --out <
 - `--stats <cell>` also builds the grid and the sight tree and prints
   counts and timings (§5).
 
+For drawing (heat maps of saved worlds), `mapdata-layout --out <dir>
+<file.mapdata>...` writes a top view per project: the top height and the
+number of floors per 0.5 m cell, of the floors a spawn reaches only
+(level_02 has an invisible walkable ceiling at 48 m over the whole map),
+and the objects as CSV. Its output is game data as well.
+
 Mode variants of one map place different props (level_01: 1157 / 1159 /
 1015 collision objects), so a match loads the file of its own project.
 

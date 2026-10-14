@@ -61,7 +61,7 @@ Still never:
 Each play has a score from the situation, a precondition and steps. A commander per team hands them out every ~0.5 s: never two bots on one ambush, and no bot parked at its own container. In the saved worlds lives that stay in their own third are the worst in every mode (K/D 0.3–0.6, ~0.03 batteries a life), so a steal is answered by the 1–2 nearest bots (the thief cheat and the alarms in §4); the only guard is play 18.
 
 1. **Battery ambush.** An enemy is heading to a battery no friend covers.
-   1. Hide 10–25 m from it, with a line of sight to the pickup point and out of sight of his approach. The bot goes only if it gets there first; otherwise it intercepts (play 2).
+   1. Hide 10–25 m from it, with a line of sight to the pickup point and out of sight of his approach. The bot goes only if it gets there first; otherwise it intercepts (play 2). Saved worlds: the killers of players who died within 6 m of a battery spawner stood 10 / 17 / 27 m from it (quartiles), 45 % of them 10–25 m away.
    2. Crouch, stand still, aim at the pickup point.
    3. Let him finish the pickup: he then cannot shoot back and is slow. Kill him, and take the battery he drops.
    4. Shoot during the pickup only if his teammates are close.
@@ -104,7 +104,7 @@ Each play has a score from the situation, a precondition and steps. A commander 
    A bot whose route turns bad on the way picks again from where it stands.
 
    **Sprinting on a route:** sprint out of spawn and behind the team's own lines; walk once within ~30 m of a known danger (an enemy sensed, last known or on the radar, a danger-map spot, a teammate's death). Lives that were mostly sprinting did far worse than steady movers reaching as far (K/D 0.2–1.0 against 0.6–2.3), but that is LIKELY skewed by short lives being mostly the run out of spawn, and sprinting right before a death was no commoner than before a kill. A cheap rule of thumb, not a finding.
-18. **Guard the lead (battery modes).** The other side of play 16: in the last ~2 minutes, the leading side puts 1–2 bots near its own container, out of its doorway's sight lines, to stop a late denial. The only time bots guard their base.
+18. **Guard the lead (battery modes).** The other side of play 16: in the last ~2 minutes, the leading side puts 1–2 bots 12–20 m from its own container, covering it, to stop a late denial. The only time bots guard their base. Not on top of it: in the saved worlds players within 12 m of their own container had K/D 0.74–0.81 of the mode's (0.46 within 6 m in timed batteries), 12–20 m off about even.
 19. **Spot for the humans.** A bot that sees an enemy presses spot (bit 28, key down, 3 s cooldown), so its human teammates get what it sees: honest teamwork that humans notice. What a spot shows in 0.26g is to be checked in stage 0 before this is relied on.
 20. **Grenade before the peek.** Against a held angle (play 8) or a camping spot from the danger map, throw a grenade (bit 23, held until the throw starts) and then peek or push. Rarely, so it stays a surprise, and never at an enemy no sense gave.
 21. **Trade partner.** Bots leave spawn in pairs about 10 m apart. When one dies, the other gets ~3 s to trade on that spot (it was seen or heard), then breaks off (play 7). Not measured yet: the assists in the statistics can test how often humans trade.
