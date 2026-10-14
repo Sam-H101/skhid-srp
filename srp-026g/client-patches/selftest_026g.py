@@ -50,6 +50,13 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     `.srp` has the first page unchanged, then the code; `.srpd` is one
     zeroed writable page after it with no bytes in the file; the checks
     of 2 and 7 to 14 hold for it too, and the revision is REVISION.
+16. the same build: the default of the game's setting
+    time_floating_factor (0xA799C8, in .data) is CLOCK_FACTOR, four bytes
+    under no relocation, inside the range the game itself allows; in the
+    original the value is read by the `game` constructor alone, into the
+    field of the game clock's timer that set_offset multiplies the
+    correction's sign by, and the console variable registered for it has
+    that name. The build without the late join keeps the original's 0.05.
 """
 
 import ctypes
@@ -816,6 +823,56 @@ def test_late_join_bin():
     return code
 
 
+def test_clock_factor(original, image, before):
+    """Check 16: the game's time_floating_factor."""
+    source = Image(original)
+    va, old, new = P.CLOCK_FACTOR_PATCH
+    value = lambda blob: struct.unpack("<f", blob)[0]
+    check(source.read(va, 4) == old and before.read(va, 4) == old and image.read(va, 4) == new
+          and abs(value(new) - P.CLOCK_FACTOR) < 1e-7 and abs(value(old) - P.CLOCK_FACTOR_ORIGINAL) < 1e-8,
+          f"{va:#x}: the default of time_floating_factor is {value(image.read(va, 4)):g}; the original and the "
+          f"build without the late join have {value(source.read(va, 4)):g}")
+    low, high = value(source.read(P.CLOCK_FACTOR_MIN_VA, 4)), value(source.read(P.CLOCK_FACTOR_MAX_VA, 4))
+    register = [text for _, _, text in ndisasm(source.read(P.CLOCK_FACTOR_REGISTER_VA - 0x39, 0x63),
+                                               P.CLOCK_FACTOR_REGISTER_VA - 0x39)]
+    wanted = [f"mov ecx,0x{P.CLOCK_FACTOR_OPTION:x}",
+              f"movss xmm0,dword [dword 0x{P.CLOCK_FACTOR_MIN_VA:x}]",
+              f"movss dword [dword 0x{P.CLOCK_FACTOR_OPTION + 0x44:x}],xmm0",
+              f"movss xmm0,dword [dword 0x{P.CLOCK_FACTOR_MAX_VA:x}]",
+              f"mov dword [dword 0x{P.CLOCK_FACTOR_OPTION + 0x40:x}],0x{va:x}",
+              f"movss dword [dword 0x{P.CLOCK_FACTOR_OPTION + 0x48:x}],xmm0"]
+    name_at = struct.unpack("<I", source.read(P.CLOCK_FACTOR_OPTION + 0x10, 4))[0]
+    name = source.read(name_at, 21)
+    check(all(text in register for text in wanted) and register[-1] == "ret"
+          and name == b"time_floating_factor\0",
+          f"the console variable at {P.CLOCK_FACTOR_OPTION:#x} is `time_floating_factor`: its value is the float at "
+          f"{va:#x}, its least {low:g} and its most {high:g} (registered at {P.CLOCK_FACTOR_REGISTER_VA - 0x39:#x})")
+    check(abs(low - 0.001) < 1e-9 and high == 0.5 and low <= P.CLOCK_FACTOR <= high,
+          f"{P.CLOCK_FACTOR:g} is inside the range the game allows the setting")
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    needle, held, at = struct.pack("<I", va), [], 0
+    while (at := text.find(needle, at)) >= 0:
+        held.append(P.TEXT_VA + at)
+        at += 1
+    read = [text for _, _, text in ndisasm(source.read(P.CLOCK_FACTOR_READ_VA, 0x2A), P.CLOCK_FACTOR_READ_VA)]
+    check(held == [P.CLOCK_FACTOR_READ_VA + 4, P.CLOCK_FACTOR_REGISTER_VA + 6]
+          and read[0] == f"movss xmm0,dword [dword 0x{va:x}]" and read[1] == "lea esi,[ebx+0x52d8]"
+          and "call 0x146b60" in read and read[-1] == "movss dword [esi+0x28],xmm0",
+          f"the value's address is in the code twice: the registration, and the `game` constructor "
+          f"({P.CLOCK_FACTOR_READ_VA:#x}), which puts it into the game clock's timer (game+52D8h) at +28h")
+    offset = [text for _, _, text in ndisasm(source.read(0x1EE9E0, 0x4C), 0x1EE9E0)]
+    handler = [text for _, _, text in ndisasm(source.read(0x27B7F0, 0x34), 0x27B7F0)]
+    check("movss xmm0,dword [esi+0x28]" in offset and "mulss xmm0,xmm1" in offset
+          and "movss dword [esi+0x24],xmm0" in offset
+          and "add esi,0x52d8" in handler and "call 0x1ee9e0" in handler,
+          "set_offset (0x1EE9E0) makes the timer's rate of that field and the correction's sign, and the 0xE7 "
+          "handler (0x27B7F0) calls it for the game clock's timer with the offset as it came")
+    under = lambda relocations: [at for kind, at in relocations.values() if kind == 3 and at + 4 > va and at < va + 4]
+    check(not under(source.relocations()) and not under(image.relocations()),
+          "no base relocation is under the four bytes, in the original or in the build")
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -867,6 +924,7 @@ def test_late_join(original, without, server, source):
 
     # Every byte before .srp's file data, against the build without.
     ranges = [(P.file_offset(va), size) for va, size in late_join_sites()]
+    ranges.append((P.data_file_offset(P.CLOCK_FACTOR_VA), 4))
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
@@ -946,6 +1004,7 @@ def test_late_join(original, without, server, source):
           "no base relocation is under a late-join site but the one of scene::remove_model's branch "
           f"({P.REMOVE_MODEL_VA + 2:#x}), which is disabled; the rest of the table is the build's without it")
 
+    test_clock_factor(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
