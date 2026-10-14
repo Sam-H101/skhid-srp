@@ -1565,6 +1565,18 @@ fn growing_rules(lang: Lang, rules: &GrowingRules, squads: bool) -> String {
                 "Гравець, через якого рівний матч став би нерівним, чекає до {patience} с, щоб хтось зайшов разом із ним."
             ),
         ),
+        lang.tr(
+            &format!(
+                "The lobby's \u{ab}Matches\u{bb} window lists the matches being played (it comes with the launcher's update of the game's screens: start Skhid.bat). A match shows a JOIN button for you only if you would be put into it at once and it would make its teams more even by value, counting you: it takes players now (more than {cutoff_min} minutes left, room on a side), you are in the lobby, not searching, not in a match and not in a squad, you were never in that match, and your game is up to date. A match whose teams already count alike takes nobody."
+            ),
+            &format!(
+                "\u{ab}Матчі\u{bb} в лобі показують матчі, що тривають (вікно приходить з оновленням екранів гри через лаунчер: запустіть Skhid.bat). Кнопка JOIN біля матчу з'являється, лише якщо вас одразу поставлять у нього й це зробить його команди рівнішими за цінністю з вами: матч приймає гравців зараз (лишилося понад {cutoff_min} хв, на стороні є місце), ви в лобі, не шукаєте матч, не в матчі й не в загоні, ви ще не були в цьому матчі, а гра оновлена. Матч, команди якого вже рівні, нікого не бере."
+            ),
+        ),
+        lang.tr(
+            "JOIN takes you in with one click, with no wait. Only one player can join a match at a time, so for a few seconds others see no JOIN on it. If the match stops taking players before you are in, the game shows an error and you are not put in the search.",
+            "JOIN ставить вас у матч одним клацанням, без очікування. До матчу можна долучитися лише по одному гравцю, тож кілька секунд інші не бачать на ньому JOIN. Якщо матч перестав приймати гравців до того, як ви зайшли, гра покаже помилку, а в пошук вас не буде поставлено.",
+        ),
         if squads {
             lang.tr(
                 &format!(
@@ -2625,6 +2637,9 @@ mod tests {
         assert!(en.contains("20 players waiting: the match starts at once."));
         assert!(en.contains("until 2 minutes of it are left, up to 10 a side"));
         assert!(en.contains("waits up to 60 s"));
+        assert!(en.contains("JOIN button for you only if you would be put into it at once"));
+        assert!(en.contains("more than 2 minutes left"));
+        assert!(en.contains("JOIN takes you in with one click"));
         assert!(en.contains(
             "Fewer than 2 players: no match starts until there are 2. Squads are switched off"
         ));
@@ -2639,6 +2654,7 @@ mod tests {
         let uk = growing_rules(Lang::Uk, &live_growing_rules(), false);
         assert!(uk.contains("Для початку матчу досить 2 гравців"));
         assert!(uk.contains("Загони вимкнено"));
+        assert!(uk.contains("JOIN"));
         assert_eq!(en.matches("<li>").count(), uk.matches("<li>").count());
     }
 
@@ -2656,6 +2672,7 @@ mod tests {
         assert!(en.contains("16 players waiting"));
         assert!(en.contains("until 3 minutes of it are left, up to 8 a side"));
         assert!(en.contains("waits up to 30 s"));
+        assert!(en.contains("more than 3 minutes left"));
     }
 
     #[test]

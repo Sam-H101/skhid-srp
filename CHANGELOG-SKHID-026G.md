@@ -23,12 +23,26 @@ These two come through the launcher: close the game, start `Skhid.bat`, and it
 changes the game's lobby and login screens by itself (the original screens are
 kept and can be put back).
 
-- **New "Matches" window in the lobby**: the matches being played right now,
-  with map, mode, score and time.
-- **JOIN button** in that window: shown only when you would be put into that
-  match at once and it would make the sides more even (a 3 v 4 that is already
-  even takes nobody). The place is held for you for 10 seconds. You must be in
-  the lobby, not in the queue and not in a squad.
+- **New "Matches" window in the lobby** (a tab after the chat tabs): the matches
+  being played right now, with map, mode, how many players each side has, the
+  score (batteries or tickets) and how long it has been played. A match that has
+  its result is not listed.
+- **JOIN button** in that window, one click, no waiting. It is on for you in a
+  match only when all of this is true:
+  - the match takes players now: it is being played, has more than 2 minutes
+    left, and has a free place on a side (a match takes one newcomer at a time,
+    so for a few seconds after somebody joins, others see no JOIN on it);
+  - you would be put into it at once and it would make the teams **more even by
+    value** (gear, level and your hidden rating, yours counted), not just by
+    head count: a match whose teams already count alike takes nobody, even at
+    3 v 4;
+  - you are in the lobby, not searching, not in a match and not in a squad, you
+    were never in that match, and your game is up to date.
+- When you press JOIN you are put into the match at once, on the side that
+  makes the teams more even. The place is held for you for 10 seconds. If the
+  match stops taking players before you are in (the teams became even, somebody
+  took the place, it is nearly over), the game shows "Error changing readiness
+  status" and you are not put in the search.
 - **Login screen** no longer shows the original game's registration link; it
   has a short hint on how to get an account here.
 
