@@ -363,6 +363,14 @@ the archive's index: a loader must follow them.
      medkits, two RGD-5 and the radio (passive: −20 % respawn time, PROVEN
      in the client); the role is read back from the gear and sets the
      bot's personality.
+   - Weapons (`guns.rs`): each weapon's rounds a load, shot time, trigger
+     and reload time from the client's item configs and clips; the reflex
+     counts the rounds it fires (an automatic weapon a shot per pass of its
+     fire clip while held; the TOZ-34, the Mosin and the TT-33 one press a
+     round, the trigger up before the shot's state is over), reloads at
+     empty with the weapon's time (the Mosin round by round), and takes the
+     TT-33 when weapon 1's kit ammo is gone (the AK-74U's 30 are one
+     magazine).
    - Anomalies (`anomalies.rs`, `hazards.rs`): every damage zone with a hit
      is kept off with a margin; level_03's electric pairs run on the match
      clock from the static seed (checked on 36 matches' worlds) and are
@@ -379,7 +387,7 @@ the archive's index: a loader must follow them.
      174 routes over 8 maps and 3 modes, all 992 points on a floor, 891 of
      them open to the side (the rest in the enemy's spawn area), every
      route leaving from its own side's spawns.
-   - Not yet: a real game; per-weapon clip sizes.
+   - Not yet: a real game.
 4. Bots fill short queues and give their place up to late joiners. The
    giving way is built (2026-10-14, not run with a real game); filling
    short queues is not.

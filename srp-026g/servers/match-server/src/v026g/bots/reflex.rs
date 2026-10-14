@@ -37,6 +37,7 @@
 use mapdata::Vec3;
 use serde::{Deserialize, Serialize};
 
+use super::guns::{Arms, Hands};
 use super::kin::{wrap, yaw_of};
 use super::know::{Memory, SeenTrack, Source, TeamKnowledge};
 use super::rng::Rng;
@@ -173,17 +174,20 @@ pub struct CombatTuning {
     pub camp_m: f32,
     /// Play 21: the partner's death spot is looked at this long, ms.
     pub trade_ms: u32,
-    /// Reloading: after this much fire held since the last reload (about
-    /// a clip; drawn per clip), ms, at the first moment with no seen
-    /// target or out of sight (breaking sight first when a target is
-    /// seen).
-    pub reload_fire_ms: (u32, u32),
     /// A tactical reload: no enemy seen for `reload_idle_ms` and at least
-    /// `reload_some_fire_ms` of fire since the last reload.
+    /// this share of the magazine fired (one round at least). The reload
+    /// of an empty weapon needs no number: its rounds are counted
+    /// ([`super::guns`]), and it comes at the first moment with no seen
+    /// target or out of sight (breaking sight first when a target is
+    /// seen); its time is the weapon's.
     pub reload_idle_ms: u32,
-    pub reload_some_fire_ms: u32,
-    /// No shot this long after the reload key, ms (the reload's time).
-    pub reload_ms: u32,
+    pub reload_some_share: f32,
+    /// A weapon that fires one round a press: the trigger held this long,
+    /// ms, and never past half its shot (so it is up before the fire state
+    /// is over, [`super::guns`]); the next press after the weapon's cycle
+    /// and `press_gap_ms` more.
+    pub press_ms: u32,
+    pub press_gap_ms: u32,
 }
 
 impl Default for CombatTuning {
@@ -232,10 +236,10 @@ impl Default for CombatTuning {
             camp_ms: 8_000,
             camp_m: 3.0,
             trade_ms: 3_000,
-            reload_fire_ms: (2_500, 4_000),
             reload_idle_ms: 3_000,
-            reload_some_fire_ms: 1_000,
-            reload_ms: 2_000,
+            reload_some_share: 0.3,
+            press_ms: 100,
+            press_gap_ms: 100,
         }
     }
 }
@@ -440,10 +444,18 @@ pub struct Reflex {
     camps: Vec<Camp>,
     /// The partner's death spot to watch, until when.
     trade: Option<(Vec3, u32)>,
-    /// Fire held since the last reload, ms, and the clip drawn (0: not
-    /// drawn yet).
-    fired_ms: u32,
-    clip_ms: u32,
+    /// What it carries (its role's; `None`: [`Arms::fallback`]), kept
+    /// from life to life; and this life's rounds, from the first tick or
+    /// think of the life.
+    arms: Option<&'static Arms>,
+    hands: Option<Hands>,
+    /// An automatic weapon: the trigger held this long without a break,
+    /// ms (its shots, [`super::guns::Gun::shots_held`]).
+    held_ms: u32,
+    /// A one-round-a-press weapon: the present press is held until this;
+    /// the next press not before `next_press`.
+    press_until: u32,
+    next_press: u32,
     /// The last tick and the time since the one before, ms (the fire's
     /// time).
     last_tick: Option<u32>,
@@ -452,8 +464,9 @@ pub struct Reflex {
     last_seen: u32,
     /// Empty with a target seen and no cover found: reload where it is.
     reload_here: bool,
-    /// No shot before this (a reload under way).
-    reloaded_until: u32,
+    /// No shot before this (a reload or the switch to the pistol under
+    /// way).
+    busy_until: u32,
 }
 
 /// The bearing of `to` from `from`, radians.
@@ -488,6 +501,24 @@ fn step_toward(from: Vec3, to: Vec3, m: f32) -> Vec3 {
 }
 
 impl Reflex {
+    /// A reflex for a bot carrying `arms` (`None`: [`Arms::fallback`]).
+    pub fn armed(arms: Option<&'static Arms>) -> Self {
+        Self {
+            arms,
+            ..Self::default()
+        }
+    }
+
+    pub fn arms(&self) -> Option<&'static Arms> {
+        self.arms
+    }
+
+    /// This life's weapons, from its arms at the first use.
+    pub fn hands(&mut self) -> &mut Hands {
+        let arms = self.arms.unwrap_or_else(Arms::fallback);
+        self.hands.get_or_insert_with(|| Hands::of(arms))
+    }
+
     pub fn target(&self) -> Option<Place> {
         self.target
     }
@@ -543,9 +574,10 @@ impl Reflex {
         if hit {
             self.break_sight(me, sit, memory, now, c, rng);
         }
-        // About a clip fired with a target seen: out of sight to reload,
-        // else reload where it stands.
-        let empty = self.clip_ms > 0 && self.fired_ms >= self.clip_ms;
+        // The magazine out with a target seen: out of sight to reload, else
+        // reload where it stands. (Out of ammo too, it takes the pistol
+        // where it stands: [`Self::reload`].)
+        let empty = self.hands().held().needs_reload();
         if empty && self.target.is_some() && !self.reload_here {
             self.break_sight(me, sit, memory, now, c, rng);
             self.reload_here = !matches!(self.cover, Cover::Hiding { .. });
@@ -555,11 +587,12 @@ impl Reflex {
         self.grenade_roll(me, sit.view, now, c, rng);
     }
 
-    /// A new life: the per-life counts start again.
+    /// A new life: the per-life counts start again (the rounds with a full
+    /// kit); what it carries stays.
     fn new_life(&mut self, me: &PlaceView) {
         if self.life != Some(me.spawned) {
             if self.life.is_some() {
-                *self = Self::default();
+                *self = Self::armed(self.arms);
             }
             self.life = Some(me.spawned);
         }
@@ -869,7 +902,13 @@ impl Reflex {
             return;
         };
         let enemy = sit.weapons.get(track.who()).copied().flatten();
-        let Some(band) = preferred_band(sit.weapon, enemy, c) else {
+        // With the pistol out, the pistol's band.
+        let own = if self.hands().pistol_out {
+            Some(WeaponKind::Pistol)
+        } else {
+            sit.weapon
+        };
+        let Some(band) = preferred_band(own, enemy, c) else {
             return;
         };
         self.band = Some(band);
@@ -938,30 +977,84 @@ impl Reflex {
         }
     }
 
-    /// The reload habit: `key::RELOAD` for this tick, or 0. After about a
-    /// clip of fire, at the first moment with no target seen or out of
-    /// sight (or where it stands when no cover was found); tactically
-    /// after `reload_idle_ms` with nothing seen and some fire.
-    fn reload(&mut self, seen: bool, now: u32, c: &CombatTuning, rng: &mut Rng) -> u32 {
-        if self.clip_ms == 0 {
-            self.clip_ms = rng.range(c.reload_fire_ms.0 as f32, c.reload_fire_ms.1 as f32) as u32;
-        }
-        if now < self.reloaded_until || self.fired_ms == 0 {
+    /// The reload habit: `key::RELOAD` (or `key::WEAPON_2`) for this tick,
+    /// or 0. With the magazine out (its rounds counted), at the first
+    /// moment with no target seen or out of sight (or where it stands when
+    /// no cover was found); tactically after `reload_idle_ms` with nothing
+    /// seen and `reload_some_share` of the magazine fired. Nothing to load
+    /// (the kit's ammo is a life's), weapon 1 dry: the pistol, at once and
+    /// where it stands (a switch is quicker than any way to cover). No shot
+    /// until the weapon's reload or the switch is done. The client would
+    /// also reload by itself at a press on an empty weapon (its reload
+    /// predicate 0x2E3EF0 takes the trigger with nothing in it); the count
+    /// keeps the bot from needing that.
+    fn reload(&mut self, seen: bool, now: u32, c: &CombatTuning) -> u32 {
+        if now < self.busy_until {
             return 0;
         }
-        let empty = self.fired_ms >= self.clip_ms;
         let hiding = matches!(self.cover, Cover::Hiding { .. });
-        let tactical = !seen
-            && now >= self.last_seen + c.reload_idle_ms
-            && self.fired_ms >= c.reload_some_fire_ms;
-        if !(empty && (!seen || hiding || self.reload_here) || tactical) {
+        let last_seen = self.last_seen;
+        let reload_here = self.reload_here;
+        let hands = self.hands();
+        if let Some(ms) = hands.switch_ms() {
+            hands.pistol_out = true;
+            self.busy_until = now + ms;
+            self.held_ms = 0;
+            self.press_until = 0;
+            self.next_press = 0;
+            self.reload_here = false;
+            return key::WEAPON_2;
+        }
+        let load = hands.held_mut();
+        let fired = load.gun.magazine - load.rounds;
+        let some = ((load.gun.magazine as f32 * c.reload_some_share).ceil() as u32).max(1);
+        let tactical = !seen && now >= last_seen + c.reload_idle_ms && fired >= some;
+        if load.loadable() == 0
+            || !(load.rounds == 0 && (!seen || hiding || reload_here) || tactical)
+        {
             return 0;
         }
-        self.fired_ms = 0;
-        self.clip_ms = rng.range(c.reload_fire_ms.0 as f32, c.reload_fire_ms.1 as f32) as u32;
-        self.reloaded_until = now + c.reload_ms;
+        let ms = load.reload();
+        self.busy_until = now + ms;
+        self.held_ms = 0;
+        self.press_until = 0;
         self.reload_here = false;
         key::RELOAD
+    }
+
+    /// The trigger this tick when the reflex `wants` to fire, and the rounds
+    /// that leave: an automatic weapon fires while held, a shot at every
+    /// pass of its fire clip; any other is pressed for `press_ms` (at most
+    /// half its shot) and pressed again only after its cycle and
+    /// `press_gap_ms`, one round a press ([`super::guns`] on why).
+    fn trigger(&mut self, wants: bool, allowed: bool, now: u32, c: &CombatTuning) -> bool {
+        let held = *self.hands().held();
+        let gun = held.gun;
+        // A press under way is held to its end while the play allows fire
+        // (a tick's tap might meet a weapon not ready to take it); its
+        // round is counted already.
+        if !gun.auto && allowed && now < self.press_until {
+            return true;
+        }
+        if !wants || held.rounds == 0 {
+            self.held_ms = 0;
+            return false;
+        }
+        let shots = if gun.auto {
+            let before = gun.shots_held(self.held_ms);
+            self.held_ms += self.tick_ms;
+            gun.shots_held(self.held_ms) - before
+        } else if now < self.next_press {
+            return false;
+        } else {
+            let hold = c.press_ms.min(gun.shot_ms() as u32 / 2).max(1);
+            self.press_until = now + hold;
+            self.next_press = now + gun.cycle_ms() + c.press_gap_ms;
+            1
+        };
+        let load = self.hands().held_mut();
+        load.rounds = load.rounds.saturating_sub(shots);
+        true
     }
 
     /// The legs the reflex takes this tick, if any.
@@ -1024,6 +1117,14 @@ impl Reflex {
         rng: &mut Rng,
     ) -> Override {
         let c = &aim.combat;
+        self.new_life(me);
+        // Ticks skipped (getting unstuck has the keys) had the trigger up.
+        if self
+            .last_tick
+            .is_none_or(|last| now.saturating_sub(last) > 100)
+        {
+            self.held_ms = 0;
+        }
         self.tick_ms = self
             .last_tick
             .map_or(50, |last| now.saturating_sub(last).clamp(1, 100));
@@ -1033,6 +1134,7 @@ impl Reflex {
         let floor = mix(aim.error_deg, skill).to_radians();
         // Play 20: a throw under way has the look and the hands.
         if let Some(mut throw) = self.throw {
+            self.held_ms = 0;
             let d = throw.at.distance_xz(me.feet);
             let point = throw.at + Vec3::new(0.0, 1.0 + 0.12 * d, 0.0);
             let error = (floor * (rng.unit() - 0.5), floor * 0.5 * (rng.unit() - 0.5));
@@ -1072,9 +1174,10 @@ impl Reflex {
         if seen.is_some() {
             self.last_seen = now;
         }
-        let reload = self.reload(seen.is_some(), now, c, rng);
+        let reload = self.reload(seen.is_some(), now, c);
         let Some(track) = seen else {
             self.target = None;
+            self.held_ms = 0;
             // Play 21: the partner's death spot, weapon up; else play 6.
             if let Some((at, _)) = self.trade.filter(|(_, until)| now < *until) {
                 return Override {
@@ -1124,28 +1227,28 @@ impl Reflex {
             self.spot_pending = None;
         }
         // Fire in bursts when the view is near the aim, a reaction after
-        // noticing.
+        // noticing, with a round in the weapon; the weapon's trigger turns
+        // a burst into presses and counts the rounds.
         let within = off <= aim.fire_within_deg.to_radians();
-        let mut fire = false;
+        let mut wants = false;
         if fire_allowed
             && within
             && now >= self.first_shot_at
-            && now >= self.reloaded_until
+            && now >= self.busy_until
+            && self.hands().held().rounds > 0
             && point.distance_xz(me.feet) <= aim.range_m
         {
             if now < self.burst_until {
-                fire = true;
+                wants = true;
             } else if now >= self.pause_until {
                 self.burst_until =
                     now + rng.range(aim.burst_ms.0 as f32, aim.burst_ms.1 as f32) as u32;
                 self.pause_until = self.burst_until
                     + rng.range(aim.pause_ms.0 as f32, aim.pause_ms.1 as f32) as u32;
-                fire = true;
+                wants = true;
             }
         }
-        if fire {
-            self.fired_ms += self.tick_ms;
-        }
+        let fire = self.trigger(wants, fire_allowed, now, c);
         Override {
             look_at: Some(point),
             error,
@@ -1161,6 +1264,7 @@ impl Reflex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v026g::bots::guns;
     use crate::v026g::bots::know::{DangerSpot, Percept};
     use crate::v026g::bots::view::{Mode, Sound};
 
@@ -1790,9 +1894,12 @@ mod tests {
         );
     }
 
-    /// Ticks a duel with the enemy always seen and the view on him; returns
-    /// per tick (time, fire, reload pressed, legs' why).
+    /// Ticks a duel of a bot of `role` with the enemy seen until
+    /// `seen_until` and the view on him; returns per tick (time, fire,
+    /// keys, legs' why).
+    #[allow(clippy::too_many_arguments)]
     fn duel(
+        role: &str,
         sit: &Situation,
         me: &mut PlaceView,
         enemy_at: Vec3,
@@ -1800,9 +1907,9 @@ mod tests {
         from: u32,
         until: u32,
         seen_until: u32,
-    ) -> Vec<(u32, bool, bool, Option<LegsWhy>)> {
+    ) -> Vec<(u32, bool, u32, Option<LegsWhy>)> {
         let mut memory = Memory::default();
-        let mut reflex = Reflex::default();
+        let mut reflex = Reflex::armed(Arms::of_role(role));
         let mut rng = Rng::new(21);
         let mut out = Vec::new();
         let chest = enemy_at + Vec3::new(0.0, 1.3, 0.0);
@@ -1819,19 +1926,39 @@ mod tests {
             }
             facing(me, chest);
             let o = reflex.tick(me, sit.view, &memory, now, true, aim, 0.5, &mut rng);
-            out.push((
-                now,
-                o.fire,
-                o.keys & key::RELOAD != 0,
-                o.legs.map(|l| l.why),
-            ));
+            out.push((now, o.fire, o.keys, o.legs.map(|l| l.why)));
             now += 50;
         }
         out
     }
 
+    /// The trigger's runs in a duel: (first tick, ticks held), and the
+    /// times of the presses of `keys`.
+    fn runs(ticks: &[(u32, bool, u32, Option<LegsWhy>)]) -> Vec<(u32, u32)> {
+        let mut runs: Vec<(u32, u32)> = Vec::new();
+        let mut last = None;
+        for &(now, fire, _, _) in ticks {
+            if fire {
+                match runs.last_mut() {
+                    Some((_, n)) if last == Some(now - 50) => *n += 1,
+                    _ => runs.push((now, 1)),
+                }
+                last = Some(now);
+            }
+        }
+        runs
+    }
+
+    fn pressed(ticks: &[(u32, bool, u32, Option<LegsWhy>)], keys: u32) -> Vec<u32> {
+        ticks
+            .iter()
+            .filter(|t| t.2 & keys != 0)
+            .map(|t| t.0)
+            .collect()
+    }
+
     #[test]
-    fn it_reloads_after_about_a_clip_and_holds_fire_while_reloading() {
+    fn it_reloads_at_the_clip_counted_in_rounds_then_takes_the_pistol() {
         let enemy_at = Vec3::new(0.0, 0.0, 20.0);
         let mut me = body(0, 0, Vec3::ZERO, 0.0);
         let view = view_of(vec![me.clone(), body(1, 1, enemy_at, 0.0)]);
@@ -1839,43 +1966,117 @@ mod tests {
             fire_within_deg: 180.0,
             ..AimTuning::default()
         };
-        let c = &aim.combat;
+        let [uzi, .., tt] = &guns::GUNS;
+        // The flanker: the Uzi, 32 in it and 18 more; the TT-33, 8 and 42.
         // No map: no cover to find, so it reloads where it stands.
         let ticks = duel(
+            "flanker",
             &Situation::of(&view),
             &mut me,
             enemy_at,
             &aim,
             1_000,
-            30_000,
-            30_000,
+            40_000,
+            40_000,
         );
-        let mut fired = 0;
-        let mut reloads = Vec::new();
-        for &(now, fire, reload, _) in &ticks {
-            if reload {
-                assert!(fired >= c.reload_fire_ms.0, "{fired} ms of fire at {now}");
-                reloads.push(now);
-                fired = 0;
-            }
-            if fire {
-                fired += 50;
-                assert!(
-                    fired <= c.reload_fire_ms.1 + 300,
-                    "{fired} ms without a reload"
-                );
-            }
-        }
+        let reloads = pressed(&ticks, key::RELOAD);
+        let switches = pressed(&ticks, key::WEAPON_2);
+        assert_eq!(switches.len(), 1, "{switches:?}");
+        let switch = switches[0];
         assert!(reloads.len() >= 2, "{reloads:?}");
-        // No shot for `reload_ms` after each press.
-        for at in &reloads {
-            assert!(
-                ticks
-                    .iter()
-                    .all(|&(now, fire, _, _)| !(fire && now > *at && now < at + c.reload_ms)),
-                "fired while reloading after {at}"
-            );
-        }
+        assert!(
+            reloads[0] < switch && switch < reloads[1],
+            "{reloads:?} {switch}"
+        );
+        // The Uzi's rounds, by its holds (a shot a 100 ms begun): the
+        // magazine, then the 18 the one reload loads, then it is dry.
+        let shots = |from: u32, to: u32| -> u32 {
+            runs(&ticks)
+                .iter()
+                .filter(|(at, _)| (from..to).contains(at))
+                .map(|(_, n)| uzi.shots_held(n * 50))
+                .sum()
+        };
+        assert_eq!(shots(0, reloads[0]), 32);
+        assert_eq!(shots(reloads[0], switch), 18);
+        // No shot while reloading or switching.
+        let quiet = |at: u32, ms: u32| {
+            ticks
+                .iter()
+                .all(|&(now, fire, _, _)| !(fire && now >= at && now < at + ms))
+        };
+        assert!(quiet(reloads[0], 2_300) && quiet(switch, 800 + 500));
+        // The pistol: one round a press, pressed at most half its 200 ms
+        // shot, again after its cycle; reloaded after its 8.
+        let presses: Vec<(u32, u32)> = runs(&ticks)
+            .into_iter()
+            .filter(|(at, _)| *at > switch)
+            .collect();
+        assert!(presses.iter().all(|(_, n)| *n * 50 <= 100), "{presses:?}");
+        assert!(
+            presses
+                .windows(2)
+                .all(|w| w[1].0 - w[0].0 >= tt.cycle_ms() + aim.combat.press_gap_ms)
+        );
+        let before = presses.iter().filter(|(at, _)| *at < reloads[1]).count();
+        assert_eq!(before, 8, "{presses:?} {reloads:?}");
+        assert!(quiet(reloads[1], 3_077), "from empty");
+    }
+
+    #[test]
+    fn a_bolt_fires_once_a_press_and_reloads_round_by_round() {
+        let enemy_at = Vec3::new(0.0, 0.0, 40.0);
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        let view = view_of(vec![me.clone(), body(1, 1, enemy_at, 0.0)]);
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            ..AimTuning::default()
+        };
+        let mosin = guns::gun("mosin_nagant").unwrap();
+        // The camper: the Mosin, 5 in it and 5 more.
+        let ticks = duel(
+            "camper",
+            &Situation::of(&view),
+            &mut me,
+            enemy_at,
+            &aim,
+            1_000,
+            40_000,
+            40_000,
+        );
+        let reloads = pressed(&ticks, key::RELOAD);
+        let switch = pressed(&ticks, key::WEAPON_2);
+        assert_eq!(switch.len(), 1);
+        let presses: Vec<(u32, u32)> = runs(&ticks)
+            .into_iter()
+            .filter(|(at, _)| *at < switch[0])
+            .collect();
+        // Each press shorter than the shot's 375 ms; the next after the
+        // shot and the bolt.
+        assert!(presses.iter().all(|(_, n)| *n * 50 <= 100), "{presses:?}");
+        assert!(
+            presses
+                .windows(2)
+                .all(|w| w[1].0 - w[0].0 >= mosin.cycle_ms() + aim.combat.press_gap_ms),
+            "{presses:?}"
+        );
+        // Five presses, the reload of five (start, 5 x 500, finish), five
+        // more, then dry: the pistol.
+        let reloads: Vec<u32> = reloads.into_iter().filter(|at| *at < switch[0]).collect();
+        assert_eq!(reloads.len(), 1, "{reloads:?}");
+        let first = presses.iter().filter(|(at, _)| *at < reloads[0]).count();
+        assert_eq!(first, 5);
+        let reload_ms = 1_667 + 5 * 500 + 1_367;
+        assert!(
+            presses
+                .iter()
+                .all(|(at, _)| !(*at >= reloads[0] && *at < reloads[0] + reload_ms))
+        );
+        let second = presses
+            .iter()
+            .filter(|(at, _)| *at > reloads[0] && *at < switch[0])
+            .count();
+        assert_eq!(second, 5);
     }
 
     #[test]
@@ -1895,8 +2096,13 @@ mod tests {
         };
         // Empty with the target in sight: it heads for cover, and the
         // reload comes once it is breaking sight.
-        let ticks = duel(&sit, &mut me, enemy_at, &aim, 1_000, 12_000, 12_000);
-        let first = ticks.iter().find(|t| t.2).expect("reloads");
+        let ticks = duel(
+            "flanker", &sit, &mut me, enemy_at, &aim, 1_000, 12_000, 12_000,
+        );
+        let first = ticks
+            .iter()
+            .find(|t| t.2 & key::RELOAD != 0)
+            .expect("reloads");
         assert_eq!(first.3, Some(LegsWhy::BreakSight), "{first:?}");
         // A little fire, then nothing seen: a tactical reload after
         // `reload_idle_ms`, once.
@@ -1904,6 +2110,7 @@ mod tests {
         let enemy_at = Vec3::new(0.0, 0.0, 20.0);
         let view = view_of(vec![me.clone(), body(1, 1, enemy_at, 0.0)]);
         let ticks = duel(
+            "flanker",
             &Situation::of(&view),
             &mut me,
             enemy_at,
@@ -1912,12 +2119,14 @@ mod tests {
             12_000,
             4_500,
         );
-        let fired = ticks.iter().filter(|t| t.1).count() as u32 * 50;
-        assert!(
-            fired >= aim.combat.reload_some_fire_ms && fired < aim.combat.reload_fire_ms.0,
-            "{fired}"
-        );
-        let reloads: Vec<u32> = ticks.iter().filter(|t| t.2).map(|t| t.0).collect();
+        let uzi = guns::gun("uzi").unwrap();
+        let fired: u32 = runs(&ticks)
+            .iter()
+            .map(|(_, n)| uzi.shots_held(n * 50))
+            .sum();
+        let some = (uzi.magazine as f32 * aim.combat.reload_some_share).ceil() as u32;
+        assert!(fired >= some && fired < uzi.magazine, "{fired}");
+        let reloads = pressed(&ticks, key::RELOAD);
         assert_eq!(reloads.len(), 1, "{reloads:?}");
         assert!(
             reloads[0] >= 4_500 + aim.combat.reload_idle_ms - 500,
