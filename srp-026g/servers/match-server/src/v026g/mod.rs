@@ -59,9 +59,16 @@
 //!   lag it was started with, and its inputs come that much later);
 //! - `SRP_CHECK_INITIAL_WORLD=on|off` (default `on`): whether the world
 //!   that starts a match is refused when it already has kills or other
-//!   statistics in it.
+//!   statistics in it;
+//! - `SRP_RECORD_DIR=<dir>` (default off): every datagram of a match in
+//!   and out, one file per match, kept when `SRP_RECORD_MIN_PLAYERS`
+//!   (default 6, late joiners counted) have entered it; kept files over
+//!   `SRP_RECORD_MAX_MB` (default 5000) together go oldest first
+//!   ([`record`]).
 
 mod game;
+/// Match recordings (`SRP_RECORD_DIR`) and their reader.
+pub mod record;
 mod registry;
 mod server;
 
@@ -170,6 +177,8 @@ pub(crate) struct Settings {
     /// (`SRP_COMPRESS_STATE`).
     pub compress_state: bool,
     pub snapshot_dir: Option<PathBuf>,
+    /// `SRP_RECORD_DIR`: the match recordings, if any.
+    pub record: Option<record::RecordSettings>,
     pub timing: Timing,
 }
 
@@ -183,6 +192,7 @@ impl Default for Settings {
             check_initial_world: true,
             compress_state: true,
             snapshot_dir: None,
+            record: None,
             timing: Timing::default(),
         }
     }
@@ -223,6 +233,7 @@ impl Settings {
                 true,
             ),
             snapshot_dir: parse_snapshot_dir(var("SRP_SNAPSHOT_DIR").as_deref()),
+            record: record::RecordSettings::from_env(),
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(
                     parse_number(

@@ -16,6 +16,7 @@ use udp_transport::{Event, PacketLog, Table, Transport};
 
 use super::Settings;
 use super::game::Game;
+use super::record::Recorder;
 use super::registry::{MatchEnd, MatchRegistry, MatchResult, PlayerResult, ResultsSink};
 
 /// How long a receive waits before the matches are advanced anyway.
@@ -162,6 +163,8 @@ pub(crate) struct Server {
     results: Box<dyn ResultsSink>,
     settings: Settings,
     packet_log: Option<PacketLog>,
+    /// `SRP_RECORD_DIR`: the match recordings' writer.
+    recorder: Option<Recorder>,
     pub(crate) games: HashMap<u32, Game>,
     /// Clients not yet placed: their 0xD8 hasn't come.
     pending: HashMap<SocketAddr, Transport>,
@@ -188,6 +191,27 @@ impl Server {
         settings: Settings,
         now: Instant,
     ) -> Self {
+        let recorder = settings.record.clone().and_then(|record| {
+            let (dir, min, max) = (
+                record.dir.clone(),
+                record.min_players,
+                record.max_bytes >> 20,
+            );
+            match Recorder::start(record) {
+                Ok(recorder) => {
+                    log::info!(
+                        "Match recordings in {}: kept for a match {min} players or more have \
+                         entered (late joiners counted), {max} MB at most together",
+                        dir.display()
+                    );
+                    Some(recorder)
+                }
+                Err(error) => {
+                    log::error!("Match recordings: can't use {}: {error}", dir.display());
+                    None
+                }
+            }
+        });
         Self {
             port,
             registry,
@@ -195,6 +219,7 @@ impl Server {
             results,
             settings,
             packet_log: None,
+            recorder,
             games: HashMap::new(),
             pending: HashMap::new(),
             routes: HashMap::new(),
@@ -254,6 +279,12 @@ impl Server {
             {
                 self.stray_datagrams.remove(&addr);
                 self.connect(addr, session, debug, now);
+                // The datagram with its 0xD8, for the recording.
+                if let Some(&(match_id, index)) = self.routes.get(&addr)
+                    && let Some(game) = self.games.get_mut(&match_id)
+                {
+                    game.record_in(index, datagram, now);
+                }
                 return;
             }
         }
@@ -331,10 +362,11 @@ impl Server {
                 formed.map.mode,
                 formed.places.len()
             );
-            self.games.insert(
-                seat.match_id,
-                Game::new(formed, self.port, self.settings.clone(), now),
-            );
+            let mut game = Game::new(formed, self.port, self.settings.clone(), now);
+            if let Some(recorder) = &self.recorder {
+                game.start_recording(recorder, now);
+            }
+            self.games.insert(seat.match_id, game);
         }
         let growing = survarium::v026g::match_msgs::late_join::has_connect_capability(debug);
         if (growing && debug == 0x81) || (!growing && debug != 0) {

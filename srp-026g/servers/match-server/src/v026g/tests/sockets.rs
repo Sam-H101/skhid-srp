@@ -182,3 +182,104 @@ fn a_client_out_of_step_is_resynced_over_udp() {
     assert!(net.clients[0].0.left().is_empty());
     net.assert_no_faults();
 }
+
+/// A match recording (`SRP_RECORD_DIR`) of a match of three, kept from
+/// three players: every place's datagrams both ways, the notes, the end.
+#[test]
+fn a_match_of_enough_players_is_recorded_whole_over_udp() {
+    use crate::v026g::record::{self, IN, NOTE, OUT, RecordSettings};
+
+    let _guard = one_at_a_time();
+    let dir = std::env::temp_dir().join(format!("srp-record-net-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let recorded = |min_players: usize| {
+        let mut settings = quick();
+        settings.record = Some(RecordSettings {
+            dir: dir.clone(),
+            min_players,
+            max_bytes: 1 << 30,
+        });
+        let mut net = Net::new(3, MAP_BATTERIES, settings);
+        for place in 0..3 {
+            net.join(place);
+        }
+        assert!(net.until(SOON, |net| net.clients[0].0.entered() == [0, 1, 2]));
+        net.run(Duration::from_millis(1_000));
+        let first = net.client(0).input(100, 0x8000_0021);
+        assert!(net.until(SOON, |net| net.clients[1].0.relays_of(0) == [first]));
+        for place in 0..3 {
+            net.client(place).leave();
+        }
+        assert!(net.until(SOON, |net| net.registry.match_count() == 0));
+        net.assert_no_faults();
+    };
+    let files = || -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default()
+    };
+
+    // Three entered, three wanted: kept.
+    recorded(3);
+    let mut records = Vec::new();
+    for _ in 0..300 {
+        if let [path] = files().as_slice()
+            && path.extension().is_some_and(|ext| ext == "srprec")
+            && let Ok(read) = record::read(path)
+            && read
+                .last()
+                .is_some_and(|last| last.bytes.starts_with(b"{\"dropped\""))
+        {
+            records = read;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!records.is_empty(), "{:?}", files());
+    let notes: Vec<serde_json::Value> = records
+        .iter()
+        .filter(|record| record.kind == NOTE)
+        .map(|record| serde_json::from_slice(&record.bytes).expect("JSON"))
+        .collect();
+    assert_eq!(notes[0]["note"], "header");
+    assert_eq!(notes[0]["places"].as_array().map(Vec::len), Some(3));
+    let entered = notes
+        .iter()
+        .filter(|note| note["note"] == "entered")
+        .count();
+    assert_eq!(entered, 3);
+    assert!(notes.iter().any(|note| note["note"] == "clock"));
+    assert!(notes.iter().any(|note| note["note"] == "result"));
+    let closed = notes.last().expect("notes");
+    assert_eq!(closed["note"], "closed");
+    assert_eq!(closed["players"], 3);
+    assert_eq!(closed["dropped"], 0);
+    for place in 0..3u8 {
+        let of = |kind| {
+            records
+                .iter()
+                .filter(|record| record.kind == kind && record.place == place)
+                .count()
+        };
+        assert!(
+            of(IN) > 10 && of(OUT) > 10,
+            "place {place}: {} in, {} out",
+            of(IN),
+            of(OUT)
+        );
+    }
+    // Times go forward (a roster note takes the time it is made, a moment
+    // after the loop's own).
+    assert!(
+        records
+            .windows(2)
+            .all(|pair| pair[0].at_ms <= pair[1].at_ms + 5)
+    );
+
+    // Three entered, four wanted: nothing left behind.
+    std::fs::remove_dir_all(&dir).expect("the folder");
+    recorded(4);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(files().is_empty(), "{:?}", files());
+    let _ = std::fs::remove_dir_all(&dir);
+}

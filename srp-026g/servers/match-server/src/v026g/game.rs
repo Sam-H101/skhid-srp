@@ -103,6 +103,7 @@ use survarium::v026g::match_msgs::{
 };
 use udp_transport::{Event, SendError, Transport};
 
+use super::record::{Recorder, Recording};
 use super::registry::{Formed, MatchEnd, MatchResult, PlayerResult};
 use super::{LateInputs, Settings};
 
@@ -632,6 +633,8 @@ pub(crate) struct Game {
     /// The players who left by their own word (0xE0) and were not asked
     /// about yet ([`Game::take_quits`]): session and account.
     quits: Vec<(u32, u32)>,
+    /// `SRP_RECORD_DIR`: every datagram of the match ([`super::record`]).
+    recording: Option<Recording>,
 }
 
 impl Game {
@@ -678,8 +681,99 @@ impl Game {
             result: None,
             result_made: false,
             quits: Vec::new(),
+            recording: None,
             formed,
         }
+    }
+
+    /// Records this match from now on (`SRP_RECORD_DIR`): its header first.
+    pub(crate) fn start_recording(&mut self, recorder: &Recorder, now: Instant) {
+        let map = self.formed.map;
+        let header = serde_json::json!({
+            "match_id": format!("{:#x}", self.id),
+            "map_id": map.id,
+            "map": map.name,
+            "mode": map.mode,
+            "match_level": self.formed.match_level,
+            "growing_roster": self.formed.growing_roster,
+            "initial_players": self.formed.initial_players,
+            "late_inputs": format!("{:?}", self.settings.late_inputs),
+            "places": self.places_note(0),
+        });
+        self.recording = Some(recorder.open(self.id, header, now));
+    }
+
+    /// The places from `from` on, for a recording.
+    fn places_note(&self, from: usize) -> serde_json::Value {
+        let places: Vec<serde_json::Value> = self
+            .formed
+            .places
+            .iter()
+            .enumerate()
+            .skip(from)
+            .map(|(index, place)| {
+                serde_json::json!({
+                    "place": index,
+                    "account_id": place.account_id,
+                    "name": place.name,
+                    "team": place.team,
+                    "squad": self.formed.profiles.get(index).map(|profile| profile.squad),
+                    "bot": place.bot,
+                })
+            })
+            .collect();
+        places.into()
+    }
+
+    /// A datagram of the client at `index` the server took (its 0xD8 comes
+    /// through here: `Server::connect`).
+    pub(crate) fn record_in(&mut self, index: usize, datagram: &[u8], now: Instant) {
+        if let Some(recording) = self.recording.as_mut() {
+            recording.datagram_in(index, datagram, now);
+        }
+    }
+
+    fn record_note(&mut self, note: serde_json::Value, now: Instant) {
+        if let Some(recording) = self.recording.as_mut() {
+            recording.note(&note, now);
+        }
+    }
+
+    fn record_result(&mut self, result: &MatchResult, now: Instant) {
+        if self.recording.is_none() {
+            return;
+        }
+        let players: Vec<serde_json::Value> = result
+            .players
+            .iter()
+            .map(|player| {
+                serde_json::json!({
+                    "place": player.place,
+                    "account_id": player.account_id,
+                    "team": player.team,
+                    "entered": player.entered,
+                    "present_at_end": player.present_at_end,
+                    "left": player.left,
+                    "time_in_match_ms": player.time_in_match_ms,
+                    "score": player.score,
+                    "kills": player.kills,
+                    "deaths": player.deaths,
+                    "longest_killstreak": player.longest_killstreak,
+                })
+            })
+            .collect();
+        let note = serde_json::json!({
+            "note": "result",
+            "end": format!("{:?}", result.end),
+            "winner": result.winner,
+            "team_points": result.team_points,
+            "duration_ms": result.duration_ms,
+            "played_ms": result.played_ms,
+            "trusted_snapshot_ms": result.trusted_snapshot_ms,
+            "trusted_by": result.trusted_by,
+            "players": players,
+        });
+        self.record_note(note, now);
     }
 
     fn players(&self) -> usize {
@@ -737,7 +831,9 @@ impl Game {
         };
         let present = vec![false; self.players()];
         self.result_made = true;
-        Some(self.build_result(end, self.clock(now), &present))
+        let result = self.build_result(end, self.clock(now), &present);
+        self.record_result(&result, now);
+        Some(result)
     }
 
     /// The match clock in ms: 0 until the first snapshot, then running from
@@ -880,6 +976,9 @@ impl Game {
 
     /// A datagram from the client at roster place `index`.
     pub fn receive(&mut self, index: usize, datagram: &[u8], now: Instant) {
+        if self.peers.get(index).is_some_and(Option::is_some) {
+            self.record_in(index, datagram, now);
+        }
         let Some(peer) = self.peers.get_mut(index).and_then(Option::as_mut) else {
             return;
         };
@@ -1362,6 +1461,18 @@ impl Game {
             }
         }
         self.events.push((at, index, entered));
+        let bot = self.is_bot(index);
+        if let Some(recording) = self.recording.as_mut() {
+            if entered && !bot {
+                recording.entered(index);
+            }
+            let note = serde_json::json!({
+                "note": if entered { "entered" } else { "left" },
+                "place": index,
+                "match_ms": at,
+            });
+            recording.note(&note, Instant::now());
+        }
         let step = if entered {
             self.first_entered.get_or_insert(at);
             self.rule.on_player_entered(player, at)
@@ -2387,6 +2498,10 @@ impl Game {
             snapshot::crc(&snapshot.body)
         );
         self.clock_start = Some((now, snapshot.time));
+        self.record_note(
+            serde_json::json!({ "note": "clock", "match_ms": snapshot.time, "place": index }),
+            now,
+        );
         self.rule.on_match_ready(snapshot.time);
         self.dump(&snapshot, index, "initial");
         self.observe(&snapshot, 1);
@@ -3315,6 +3430,7 @@ impl Game {
         let clock = self.clock(now);
         let present = self.present();
         let result = self.build_result(end, clock, &present);
+        self.record_result(&result, now);
         log::info!(
             "Match {:#x}: over at {clock} ms ({end:?}); winner {:?}, points {:?}, scores {:?}",
             self.id,
@@ -3574,7 +3690,7 @@ impl Game {
         }
 
         let mut datagrams = Vec::new();
-        for slot in &mut self.peers {
+        for (index, slot) in self.peers.iter_mut().enumerate() {
             let Some(peer) = slot else {
                 continue;
             };
@@ -3583,12 +3699,13 @@ impl Game {
                 flush_held(peer);
                 peer.held_until = now + WAITING_RELAY_FLUSH;
             }
-            datagrams.extend(
-                peer.transport
-                    .poll(now)
-                    .into_iter()
-                    .map(|datagram| (addr, datagram)),
-            );
+            let sent = peer.transport.poll(now);
+            if let Some(recording) = self.recording.as_mut() {
+                for datagram in &sent {
+                    recording.datagram_out(index, datagram, now);
+                }
+            }
+            datagrams.extend(sent.into_iter().map(|datagram| (addr, datagram)));
             if peer.stage == Stage::Gone && peer.transport.is_gone_after(now, timing.client_timeout)
             {
                 *slot = None;

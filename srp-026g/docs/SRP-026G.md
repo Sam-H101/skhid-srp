@@ -125,6 +125,9 @@ A port that is not a number stops srp at start.
 | `SRP_LOG_KEEP_DAYS` | 14 | Files of `SRP_LOG_DIR` older than this are deleted (at least 1) |
 | `RUST_LOG` | `info` | The log level |
 | `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where the match server keeps accepted worlds; `off`: nowhere |
+| `SRP_RECORD_DIR` | unset (off; the compose file sets `/srv/srp/data/recordings`) | Match recordings: every datagram of a match in and out (no addresses), one LZMA2-packed file per match (`servers/match-server/src/v026g/record.rs` has the format); read with `srp-recording` |
+| `SRP_RECORD_MIN_PLAYERS` | `6` | A recording is kept once this many players (test bots not counted) have entered its match, late joiners included; the others are deleted when their match ends |
+| `SRP_RECORD_MAX_MB` | `5000` | Kept recordings over this together: the oldest are deleted |
 | `SRP_PACKET_LOG` | unset | A folder: every datagram of the lobby and the match server, one file a connection (the lobby sign-in's session id left out). **Set it for every live test** |
 
 ### Sign-in
