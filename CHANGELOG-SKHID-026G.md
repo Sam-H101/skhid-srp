@@ -9,6 +9,26 @@ release that made it what it is now.
 
 ---
 
+## 14 Oct, 21:26 — Fewer desyncs (update required)
+
+Start `Skhid.bat` and the launcher updates the game by itself. An older game
+can no longer play: Play tells you to update.
+
+- **Back in step faster.** A player who went out of step is put back in one
+  go; before, the game often fell out of step again right away, over and over
+  for 15 seconds or more. This was the most common cause of lag in the
+  evening matches of 14 Oct.
+- **Fewer lost moves.** The server packs the other players' moves together
+  and sends again what a weak connection lost, so big matches lag less.
+- **Respawning into another kit** no longer puts a game out of step. That
+  kit's weapons now start on their first fire mode and first ammunition type
+  again; nothing you own changes.
+- **Joining a running match** works more often: a joiner no longer respawns
+  someone in the wrong kit, and one member of a group who is slow or leaves no
+  longer keeps the others out.
+- **Scoreboard:** a player who joined late now counts right on the Tab
+  scoreboard, and the team points show during the countdown.
+
 ## 14 Oct, 05:36 — Match recordings
 
 - Matches that had 6 or more players (late arrivals count) are now recorded
