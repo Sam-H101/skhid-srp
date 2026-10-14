@@ -418,13 +418,14 @@ mod tests {
 
     #[test]
     fn a_life_loads_from_its_ammo_and_reloads_what_is_left() {
-        // The support: 30 rounds, all in the magazine; nothing to reload.
+        // The support: 120 rounds, 30 in the magazine, 90 to load.
         let support = Hands::of(Arms::of_role("support").unwrap());
-        assert_eq!((support.primary.rounds, support.primary.spare), (30, 0));
-        // The camper: 10 rounds, 5 in, 5 to load once.
+        assert_eq!((support.primary.rounds, support.primary.spare), (30, 90));
+        // The camper: 30 rounds, 5 in, 25 to load; down to its last 5.
         let mut camper = Hands::of(Arms::of_role("camper").unwrap());
         let mosin = camper.held_mut();
-        assert_eq!((mosin.rounds, mosin.spare), (5, 5));
+        assert_eq!((mosin.rounds, mosin.spare), (5, 25));
+        mosin.spare = 5;
         mosin.rounds = 2;
         assert_eq!(mosin.reload(), 1_667 + 3 * 500 + 1_367);
         assert_eq!((mosin.rounds, mosin.spare), (5, 2));

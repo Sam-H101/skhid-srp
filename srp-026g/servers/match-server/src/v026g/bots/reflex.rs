@@ -1909,7 +1909,20 @@ mod tests {
         seen_until: u32,
     ) -> Vec<(u32, bool, u32, Option<LegsWhy>)> {
         let mut memory = Memory::default();
-        let mut reflex = Reflex::armed(Arms::of_role(role));
+        // The role's guns with the test's ammo: a magazine and a little
+        // more (the kits carry a life's worth, too long a duel to test).
+        let arms = Arms::of_role(role).map(|arms| {
+            let spare = match arms.primary.0.item {
+                "uzi" => 50,
+                "mosin_nagant" => 10,
+                _ => arms.primary.1,
+            };
+            &*Box::leak(Box::new(Arms {
+                primary: (arms.primary.0, spare),
+                pistol: arms.pistol,
+            }))
+        });
+        let mut reflex = Reflex::armed(arms);
         let mut rng = Rng::new(21);
         let mut out = Vec::new();
         let chest = enemy_at + Vec3::new(0.0, 1.3, 0.0);

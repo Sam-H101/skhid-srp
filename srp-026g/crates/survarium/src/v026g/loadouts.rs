@@ -327,6 +327,16 @@ pub const BOT_KIT: [BotKitItem; 7] = [
     BOT_GRENADE,
 ];
 
+/// How much ammo a role's weapon 1 carries: a life's worth, as players
+/// carry it. An ammo slot holds rounds, not clips (`count` is rounds; the
+/// weight is `count / clip_size × clip_weight`), and the players' kits on
+/// the 0.26g server (2026-10-14, kits the client's own lobby checked before
+/// sending) hold 90-200 rounds of rifle and SMG ammo a slot, 15-60 of
+/// buckshot and 20-40 of the Mosin's: the bots carry 150 (Uzi), 120
+/// (AK-74U), 30 (TOZ-34) and 30 (Mosin), each well under the carry limit.
+/// One clip (the shop's unit) would leave the AK-74U a single magazine.
+pub const BOT_AMMO_NOTE: () = ();
+
 /// A server bot's role: the match server's play personality of the same
 /// name (`match-server` `bots::tuning::Personality::defaults`), and the
 /// weapon and armour it wears for it ([`BotRole::gear`]). Every role's
@@ -341,26 +351,26 @@ pub enum BotRole {
 }
 
 /// Flanker: the Uzi (`uzi`, an SMG of item level 2, 3,800 silver, 32
-/// rounds of 9x19) with a clip of its cheapest ammo (`ammo_9x19p_para`,
-/// level 2), and light Black Market armour of level 1: `bm_torso_1` (3 kg,
+/// rounds of 9x19) with 150 rounds of its cheapest ammo
+/// (`ammo_9x19p_para`, level 2; see [`BOT_AMMO_NOTE`]), and light Black Market armour of level 1: `bm_torso_1` (3 kg,
 /// an ammo bag more) and `bm_boots_1`.
 const FLANKER: [BotKitItem; 4] = [
     kit_item("uzi", 7, 1, Some(WEAPON_1_BIT)),
-    kit_item("ammo_9x19p_para", 8, 50, None),
+    kit_item("ammo_9x19p_para", 8, 150, None),
     kit_item("bm_torso_1", 2, 1, None),
     kit_item("bm_boots_1", 6, 1, None),
 ];
 
 /// Support: the AK-74U (`ak_74u`, the lowest piece of the assault rifle
-/// category 8: item level 5, 12,920 silver, 30 rounds of 5.45x39) with a
-/// clip of `ammo_5.45x39_7n6m` (level 5), heavier armour of level 3:
+/// category 8: item level 5, 12,920 silver, 30 rounds of 5.45x39) with
+/// 120 rounds of `ammo_5.45x39_7n6m` (level 5), heavier armour of level 3:
 /// `bm_torso_4` (6 kg, the cheapest torso with a pocket, modification
 /// 1030) and the helmet `bm_helmet_1`, and in the fourth pocket the torso
 /// opens one more medkit (no key of its own: quick use counts filled slots,
 /// and whether an emptied stack still fills its slot was not read).
 const SUPPORT: [BotKitItem; 5] = [
     kit_item("ak_74u", 7, 1, Some(WEAPON_1_BIT)),
-    kit_item("ammo_5.45x39_7n6m", 8, 30, None),
+    kit_item("ammo_5.45x39_7n6m", 8, 120, None),
     kit_item("bm_torso_4", 2, 1, None),
     kit_item("bm_helmet_1", 0, 1, None),
     kit_item("medkit", 16, 1, None),
@@ -368,24 +378,24 @@ const SUPPORT: [BotKitItem; 5] = [
 
 /// Rusher: the TOZ-34 (`toz_34`, a double-barrelled shotgun of item level
 /// 1, 2,100 silver: the lowest shotgun with `toz_66`, which is a sawn-off)
-/// with a clip of buckshot (`ammo_12mm_buck`, 15, level 1), and the
+/// with 30 rounds of buckshot (`ammo_12mm_buck`, level 1), and the
 /// lightest armour: Scavengers' `scav_torso_1` (level 1, 3 kg) and
 /// `scav_boots_1` (level 1).
 const RUSHER: [BotKitItem; 4] = [
     kit_item("toz_34", 7, 1, Some(WEAPON_1_BIT)),
-    kit_item("ammo_12mm_buck", 8, 15, None),
+    kit_item("ammo_12mm_buck", 8, 30, None),
     kit_item("scav_torso_1", 2, 1, None),
     kit_item("scav_boots_1", 6, 1, None),
 ];
 
 /// Camper: the Mosin carbine (`mosin_nagant`, a bolt-action rifle of the
 /// sniper category 13, level 0 and free: a new account owns it,
-/// [`STARTER_STASH`]) with a clip of its free ammo (`ammo_7.62x54r_old`,
-/// 10), and heavier armour of level 3: Scavengers' `scav_torso_2` (6 kg)
+/// [`STARTER_STASH`]) with 30 rounds of its free ammo
+/// (`ammo_7.62x54r_old`), and heavier armour of level 3: Scavengers' `scav_torso_2` (6 kg)
 /// and the helmet `bm_helmet_1`.
 const CAMPER: [BotKitItem; 4] = [
     kit_item("mosin_nagant", 7, 1, Some(WEAPON_1_BIT)),
-    kit_item("ammo_7.62x54r_old", 8, 10, None),
+    kit_item("ammo_7.62x54r_old", 8, 30, None),
     kit_item("scav_torso_2", 2, 1, None),
     kit_item("bm_helmet_1", 0, 1, None),
 ];
@@ -725,14 +735,16 @@ mod tests {
             slots.sort_unstable();
             slots.dedup();
             assert_eq!(slots.len(), wanted.len(), "{role}");
-            // Each weapon has a clip of an ammo it fires.
+            // Each weapon has an ammo it fires, at least a clip of it (the
+            // pistol a clip, weapon 1 a life's worth: `BOT_AMMO_NOTE`).
             for (weapon, ammo) in [(7, 8), (10, 11)] {
                 let (weapon, ammo) = (kit.slot(weapon).unwrap(), kit.slot(ammo).unwrap());
                 assert!(
                     dictionary.compatible(weapon.dict_id, ammo.dict_id),
                     "{role}"
                 );
-                assert_eq!(ammo.count, item_params::shop_unit(ammo.dict_id), "{role}");
+                assert!(ammo.count >= item_params::shop_unit(ammo.dict_id), "{role}");
+                assert!(ammo.count <= 200, "{role}: more than players carry");
             }
             assert!(kit.fits_carry_limit(), "{role}: {}", kit.weight());
 
