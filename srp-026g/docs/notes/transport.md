@@ -152,6 +152,7 @@ Let `R` = remote_seq, and `b(k)` = 1 if the sender has received peer seq `R−k`
 5. `update_local_acknowledgements(r, acks, count)` 0x3FD7E0.
 6. Record `local_seq` in the received set (0x3FD7A0 → 0x3F3AA0 / 0x3FF4A0). If it is already set (older seq within 128, bit set), the messages are dropped as a duplicate.
    - **Seqs ≥128 older are accepted** (0x3F3AA0: the mask becomes 0). This is the same quirk as 0.21d.
+   - Exactly, with `d = (seq − R) mod 256` (record 0x3F3950, re-read 2026-10-14): `d` 1..127 → the new newest, window shifted by `d`, no gap limit; `d == 128` and seq numerically below R → also the new newest, window reset to that seq alone; `d == 128` and seq numerically above → delivered, nothing recorded, R unchanged; `d` 129..255 (older by 1..127) → recorded and delivered if its bit is clear, a duplicate if set. (`d == 0` never gets here: step 3.) So a datagram of ours that arrives 129 to 255 of ours late (or 128, as the lower number) becomes the client's newest, and the client echoes that old seq from then on (§11.2). PROVEN.
 7. Dispatch each message:
    - `message_data+0x18` bit 0 = low-level → 0x3FDCF0.
    - Otherwise → 0x3F4720.
@@ -694,4 +695,130 @@ it adds on its own judgement, to stay inside the client's 128-wide windows:
 | part sizes | 496 (part 0) and 497 | 500/501 less 4 tail bytes |
 | parts of split messages at once, then one per (match link; the lobby has no limit) | 4, 3 ms | 28 full datagrams in one millisecond are more than some lines carry (live 2026-10-13, match.md §27); the client takes parts at any pace (§5) |
 | a message's lifetime or resend time, where its sender says so | `send_lasting`, `send_kept_every` | the client's table values are the sender's own matter (§4) |
+| a message's end at a moment, counted from when it is queued | `send_until` | §11.3 |
+| short-lived messages wait for others to share their datagram (match link; lobby 0) | 15 ms (`SRP_RELAY_PACK_MS`) | §11.1 |
+| lost serials remembered for `is_lost` | 4096 | a stall of a few seconds ends hundreds of relays before their sender looks |
+
+### 11.1 Packing short-lived messages (added 2026-10-14)
+
+Each relay used to go in a datagram of its own as soon as it was queued:
+100 to 220 datagrams a second to each client of a full match. The one-byte
+seq then lapped every 1.2 to 2.5 s, and the client's acks, which always
+carry 6 bits and more only as the server's acks of them allow, named a
+smaller share of our datagrams (99.3 to 99.8 % at 60 to 100 datagrams a
+second, 87 to 92 % at 160 to 220).
+
+Now a short-lived message (the table's 250 ms ids: EB, EC, E9, EA, EF,
+F0, F1, F2) waits until `Config::gather` (15 ms on the match link) has
+passed since the last datagram with messages. Everything queued then goes
+together, as many to a datagram as fit (an EB is 11 bytes: some 44 to a
+datagram). It goes at once, and takes the waiting ones along, when:
+
+- anything else is queued: E5, E6 and E7 (a wait would skew the round
+  trip and clock samples taken with them), E8, F3 to F6, E3, E4, and a
+  short-lived id kept until acked (`send_kept`, `send_kept_every`: a
+  resync's replay and the relays to a loading game). Until 2026-10-14 a
+  kept relay was packed as a short-lived one (the test looked at the
+  table's lifetime, not the sender's), against what this list said;
+- a part of a split message may go;
+- the queue fills a datagram;
+- a client datagram has waited `ack_delay` (20 ms) for its ack: the ack
+  goes on the messages, not on a bare `FC` in front of them.
+
+Resends ride on the next such datagram. The client reads a relay in a
+multi datagram with the same handler as a lone one (§3.1), live games
+already acked multi datagrams of 20 to 60 messages, and one bad message
+drops the whole datagram, so every message still passes the table checks
+before it is queued. With a server that looks every 5 ms a relay waits
+15 to 20 ms at most; a link then carries some 50 to 70 datagrams a second
+plus the pings, clock messages and acks, whatever the number of players.
+
+### 11.4 Two messages in one datagram; acks of copies (added 2026-10-14)
+
+`send_joined(first, second)` queues two whole messages that go in one
+datagram, `first` right ahead of `second`: the packer takes them together
+or not at all (a datagram that has no room for both closes before the
+first). The client handles the messages of a datagram in order (§2.3 step
+7), and a datagram lost loses both. The match server sends a 0xE7 of
+offset 0 ahead of a 0xE5 so while a clock correction may still run
+(match.md §29): alone after the 0xE5 it would be wrong. Both are send-once
+ids, so neither goes again by itself.
+
+A message is acked by an ack of any datagram it went in; the server
+remembers the newest 32 of them (`SEQS_PER_MESSAGE`; 8, the client's own
+ring for its messages, until 2026-10-14). A kept relay goes again every
+50 ms, so with 8 a round trip of 400 ms and more left every ack naming a
+copy already forgotten, and the message was never acked. 32 cover 1.6 s.
+
+### 11.2 A late datagram of ours from the lap before (added 2026-10-14)
+
+Live, 2026-10-14: a datagram of ours arrived some 810 ms late, after more
+than 128 later ones (§2.3 step 6). The client took it for its newest and
+from then on echoed its seq as `rseq`, which read here as 1 to 128 *past*
+our newest seq: a seq not sent yet. Every ack was ignored, data stopped at
+100 datagrams past the newest acked one, only `FC` went for 1.5 s, and then
+1.5 s old relays went out.
+
+Now, when the client's newest datagram (one older than another already
+received never counts: a late client datagram carries an old `rseq`)
+echoes a seq `a` (1..=128) past our newest, and that seq is one we sent a
+lap before which is older than the newest the client had acked, our seq
+skips `a` ahead: the next datagram is the echoed seq plus one, which the
+client takes as newer by one (it has no gap check). Its window still holds
+the datagrams it had before the late one, at the distance the skip gives
+them, so its acks name our datagrams by the right numbers again. The
+skipped numbers have no datagram: their acks give no round trip, and the
+fast resend counts from the newest acked datagram actually sent. Each skip
+is counted (`Transport::skips`), logged per player and noted in the packet
+log. A tool that numbers our datagrams must unwrap their seq bytes (a
+match recording stores every datagram whole, seq included), not count
+them.
+
+Not skipped: a client that heard nothing from us for 128 and more of our
+datagrams also echoes a seq that reads as ahead, but its true newest; its
+window holds older datagrams under the same seqs, and a skip would take
+them as acks of ours. Data waits for it as before.
+
+Left as is: when we send `a` or more datagrams between the late one's
+arrival and its echo reaching us, ours under the echoed seq is dropped by
+the client (§2.3 step 3) and the echo reads as its ack: its messages count
+as delivered. A message that also went in another datagram the client had
+is not lost by that; one that went only there is lost unreported. With a
+round trip of some 100 ms and 50 to 70 datagrams a second (§11.1) that
+needs the late datagram to come more than some 245 of ours late.
+
+### 11.3 Lifetimes counted from the send (added 2026-10-14)
+
+A message with a limited lifetime ends that long after its **first send**
+(§4, as the client does). In a stall nothing is sent, so nothing ends: a
+relay queued during 1.5 s without acks went out 1.5 s old. And 4 desyncs of
+2026-10-14 were a relay whose every copy was lost within its 250 ms on a
+line losing 30 to 60 %, while the game's history (500 ms) could still have
+used a later copy.
+
+`send_until(id, payload, deadline)` sets the end when the message is
+queued; until then it goes again at the table's pace (50 ms for the short
+ids). A message not sent by its deadline is lost unsent; one that went
+lives at least the table's lifetime from its first send (the end is
+`max(first send + 250 ms, deadline)`), so a deadline never gives fewer
+copies than before. The match server uses it for:
+
+- relays to a playing game (EB, EC): the tick's time + 500 ms on the match
+  clock, less half the game's round trip (50 ms at least), so the last
+  copy still arrives while the game's history has the tick. One that
+  arrives later is moved to a tick of the game's own choosing (match.md
+  section 5.1). The round trip is the median of the game's latest 32
+  samples, not the last one: on a spiky line one long sample would cut
+  every relay of the next second to the 250 ms floor. For an input in
+  time that is 250 to 450 ms instead of 250 ms from the first send.
+- drop orders to the input's owner (F1, F2 and EF, F0 from the input
+  handler): 450 ms after they are queued. The owner's world time is not
+  known here (its inputs are late because its clock or its line is), and
+  a late one is refused quietly (match.md section 5.2).
+
+Relays to a game that is loading a world stay kept until acked (its world
+starts behind the inputs it gets meanwhile), and the drops and roster
+changes of a sync keep the table's 250 ms from the first send. A relay or
+drop order that ends unacked still marks its game as out of step from its
+tick (`check_in_flight`), now some 200 ms later than before.
 

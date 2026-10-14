@@ -64,7 +64,10 @@
 //!   and out, one file per match, kept when `SRP_RECORD_MIN_PLAYERS`
 //!   (default 6, late joiners counted) have entered it; kept files over
 //!   `SRP_RECORD_MAX_MB` (default 5000) together go oldest first
-//!   ([`record`]).
+//!   ([`record`]);
+//! - `SRP_RELAY_PACK_MS` (default 15, at most 50; 0 = off): how long a
+//!   relay or a drop order may wait for others to share its datagram
+//!   (`udp_transport::Config::gather`, transport.md section 11.1).
 
 mod game;
 /// Match recordings (`SRP_RECORD_DIR`) and their reader.
@@ -84,6 +87,8 @@ pub use scripted as test_client;
 
 use std::path::PathBuf;
 use std::time::Duration;
+
+use udp_transport::{Config, Table};
 
 pub use registry::{
     CreateError, DRAW, JoinError, LiveMatch, LivePhase, LiveStanding, MatchEnd, MatchPlayer,
@@ -179,6 +184,8 @@ pub(crate) struct Settings {
     pub snapshot_dir: Option<PathBuf>,
     /// `SRP_RECORD_DIR`: the match recordings, if any.
     pub record: Option<record::RecordSettings>,
+    /// `SRP_RELAY_PACK_MS`: the match link's `Config::gather`.
+    pub pack: Duration,
     pub timing: Timing,
 }
 
@@ -193,6 +200,7 @@ impl Default for Settings {
             compress_state: true,
             snapshot_dir: None,
             record: None,
+            pack: Config::for_table(Table::Match).gather,
             timing: Timing::default(),
         }
     }
@@ -234,6 +242,12 @@ impl Settings {
             ),
             snapshot_dir: parse_snapshot_dir(var("SRP_SNAPSHOT_DIR").as_deref()),
             record: record::RecordSettings::from_env(),
+            pack: match var("SRP_RELAY_PACK_MS") {
+                Some(value) => Duration::from_millis(u64::from(
+                    parse_number("SRP_RELAY_PACK_MS", Some(&value), 15).min(50),
+                )),
+                None => Config::for_table(Table::Match).gather,
+            },
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(
                     parse_number(

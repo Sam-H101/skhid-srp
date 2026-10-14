@@ -62,10 +62,18 @@ impl Tracker {
         back < 128 && self.bits >> (127 - back) & 1 != 0
     }
 
+    /// 0x3F3950. A value 1 to 127 ahead is the new newest, the window
+    /// shifted by as much. One 128 away is newer when it is the lower
+    /// number: the window starts over with it alone; when it is the higher
+    /// number nothing is recorded (and its messages are delivered: it is
+    /// not "received").
     fn record(&mut self, value: u8) {
+        let ahead = u32::from(value.wrapping_sub(self.newest));
         if newer(value, self.newest) {
-            let ahead = u32::from(value.wrapping_sub(self.newest));
             self.bits = self.bits >> ahead | 1 << 127;
+            self.newest = value;
+        } else if ahead == 128 && value < self.newest {
+            self.bits = 1 << 127;
             self.newest = value;
         } else {
             let back = u32::from(self.newest.wrapping_sub(value));
