@@ -315,10 +315,65 @@ the archive's index: a loader must follow them.
      not see, aim or shoot); jumps up ledges are pressed but their reach is
      not checked; the cost of the extra uploads for the clients (two
      worlds every 2 s) is not measured.
-3. Senses and combat: seeing and hearing (`player_bots_behaviour.md`), aim
-   with error and reaction time, the plays of the battery modes.
-4. Difficulty, cover, grenades; bots fill short queues and give their
-   place up to late joiners.
+3. **Bots that play** (built 2026-10-14, not run with a real game; the
+   design of `player_bots_research.md` part B, the behaviour of
+   `player_bots_behaviour.md`). `servers/match-server/src/v026g/bots/`:
+   - layers: `view` (every body reckoned from its inputs and the trusted
+     worlds, sounds from inputs, deaths from the statistics, batteries
+     and their carriers), `sense` (sight on the bullet mesh in a 90° view
+     within a ray budget; hearing), `know` (facts by source; the motor
+     aims only at a `SeenTrack`, made after the noticing delay),
+     `cheats` (every battery, the thief ±10 m, a radar ±15 m while nothing
+     is sensed; never in the aim), `signals` (team modifiers from the
+     score gap, time left and who is alive; self-balancing skill in damped
+     steps, taken at respawn), `team` (the commander every 0.5 s: rank
+     bands, a commitment margin, one bot per slot), `plays/` (one file a
+     play), `tactics` (routes off damage zones and the enemy's spawn area,
+     spot queries with sight lines, the bases' exits), `reflex` (target,
+     reaction delay, settling aim, bursts, reloads, a turn to a shot, a
+     push on a reload, breaking sight and re-peeking from another angle,
+     the weapon's range, spotting, a grenade at a held angle, a partner's
+     trade), `motor` (smooth turns, strafing while aiming), `encode`;
+     `tuning` (every number; `SRP_BOT_TUNING` JSON read when a match is
+     made, unknown fields refused, hashed) and `trace`
+     (`SRP_BOT_TRACE_DIR`: a JSON line per decision with every candidate's
+     considerations).
+   - Plays: roam toward the enemy base's exits by a way of its own
+     (17), collect a battery and bring it home, ambush (1), intercept a
+     carrier and answer a theft (2), escort (3), sneak and steal (4),
+     flank a held angle (8), crossfire (9), retreat to resupply (10),
+     cover a human (12), pair up against the top player (13), hold an exit
+     (15), late denial (16), guard the lead (18), trade a partner's death
+     (21), heal behind cover (22), the Team Deathmatch hunt, the timed
+     batteries' station.
+   - By mode (the players' worlds, `player_bots_behaviour.md` §3):
+     Team Deathmatch holds the enemy's exits long, favours crossfire and
+     flanks, and ends with the hunt (the enemy out of tickets cannot
+     respawn; a team out of tickets plays it safe); batteries are a race
+     for the batteries lying about, then intercepting, escorting,
+     stealing, late denial and guarding a lead; timed batteries wait by
+     the station whose battery is due (6-20 m off) and keep moving (a hold
+     weighs 0.3 of a Team Deathmatch one).
+   - Kit and role (`survarium::v026g::loadouts::BotRole`): flanker (Uzi),
+     support (AK-74U), rusher (TOZ-34), camper (Mosin), each with two
+     medkits, two RGD-5 and the radio (passive: −20 % respawn time, PROVEN
+     in the client); the role is read back from the gear and sets the
+     bot's personality.
+   - Anomalies (`anomalies.rs`, `hazards.rs`): every damage zone with a hit
+     is kept off with a margin; level_03's electric pairs run on the match
+     clock from the static seed (checked on 36 matches' worlds) and are
+     put right by every world; level_02's cloud is kept off.
+   - Movement model from the client's code (sprint 5.0 m/s, speeds per
+     stance, a 6-tick blend; §4).
+   - Tests: each layer and play; soak runs of whole matches of bots
+     against a stand-in game (`bots/tests.rs`: 4 against 4 in each mode to
+     a winner; the long ones with `cargo test --release -- --ignored`).
+   - A local test with one game and 7 bots: `SRP_SERVER_BOTS=7`,
+     `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
+     `SRP_MAPDATA_DIR` set.
+   - Not yet: a real game; the human routes per map (play 17's data);
+     per-weapon clip sizes; a bot giving its place up to a late joiner.
+4. Bots fill short queues and give their place up to late joiners.
 
 Bots and late joiners: a roster place is never reused, so a joiner cannot
 take the bot's own place; the bot leaves (0xEA) and the joiner comes on a
