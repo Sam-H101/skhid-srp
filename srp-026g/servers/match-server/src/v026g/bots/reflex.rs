@@ -217,6 +217,7 @@ mod tests {
             sounds: vec![],
             deaths: vec![],
             world_time: 0,
+            can_respawn: [true, true],
         };
         let aim = AimTuning::default();
         let mut memory = Memory::default();

@@ -72,6 +72,7 @@ impl Scenario {
             sounds: Vec::new(),
             deaths: Vec::new(),
             world_time: 299_000,
+            can_respawn: [true, true],
         };
         let mut s = Self {
             view,

@@ -129,6 +129,7 @@ mod tests {
             sounds: vec![],
             deaths: vec![],
             world_time: 9_000,
+            can_respawn: [true, true],
         };
         let tuning = CheatTuning::default();
         let mut clock = CheatClock::default();

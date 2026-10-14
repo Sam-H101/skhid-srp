@@ -181,6 +181,7 @@ mod tests {
             sounds,
             deaths: vec![],
             world_time: 0,
+            can_respawn: [true, true],
         }
     }
 

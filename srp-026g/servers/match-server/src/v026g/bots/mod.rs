@@ -626,6 +626,11 @@ impl Bots {
             .fold(1e6, f32::min);
         state.signals = MatchSignals::read(view, team, since_theft);
         state.mods.update(&state.signals, &tuning.mods);
+        // A team that can no longer respawn (Team Deathmatch, its tickets
+        // out) plays it safe.
+        if !view.can_respawn[usize::from(team & 1)] {
+            state.mods.aggression = state.mods.aggression.min(0.2);
+        }
         if let Some((before, after, kd)) = state.skill.balance(now, &tuning.skill) {
             notes.push(Note {
                 place: usize::MAX,

@@ -8,6 +8,8 @@
 //! - the dead respawn at their side's spawns after 6.4 s (the radio);
 //! - a use takes a battery within reach, puts it in at one's own
 //!   container, or steals from the other's; a drop drops it;
+//! - Team Deathmatch: each death costs the team a ticket; a team out of
+//!   tickets no longer respawns, and loses when its last body dies;
 //! - a world of every body, the statistics and the batteries comes every
 //!   second, 300 ms behind the clock, as the match gives the bots.
 //!
@@ -69,6 +71,8 @@ struct Game {
     containers: Vec<(u8, Vec3)>,
     stats: Vec<(u32, u32, u32)>,
     points: [u32; 2],
+    /// Team Deathmatch's tickets.
+    tickets: Option<[u32; 2]>,
     inputs: Vec<VecDeque<(u32, u32, (f32, f32))>>,
     /// The worlds of the last two seconds.
     history: VecDeque<Recorded>,
@@ -104,7 +108,7 @@ fn soak_world() -> Arc<World> {
 }
 
 impl Game {
-    fn new(world: Arc<World>, teams: &[u8], seed: u64) -> Self {
+    fn new(world: Arc<World>, teams: &[u8], seed: u64, tickets: Option<u32>) -> Self {
         let containers = world
             .map
             .containers
@@ -140,6 +144,7 @@ impl Game {
             containers,
             stats: vec![(0, 0, 0); teams.len()],
             points: [0, 0],
+            tickets: tickets.map(|t| [t, t]),
             inputs: vec![VecDeque::new(); teams.len()],
             history: VecDeque::new(),
             tick: 0,
@@ -231,7 +236,9 @@ impl Game {
         self.record();
         for place in 0..n {
             if !self.bodies[place].alive {
-                if tick >= self.bodies[place].dead_at + 6_400 {
+                let team = usize::from(self.bodies[place].team);
+                let may = self.tickets.is_none_or(|tickets| tickets[team] > 0);
+                if may && tick >= self.bodies[place].dead_at + 6_400 {
                     self.spawn(place);
                 }
                 continue;
@@ -309,6 +316,10 @@ impl Game {
                 }
                 self.stats[target].1 += 1;
                 self.stats[target].2 = 0;
+                if let Some(tickets) = self.tickets.as_mut() {
+                    let team = usize::from(other.team);
+                    tickets[team] = tickets[team].saturating_sub(1);
+                }
                 self.stats[shooter].0 += 1;
                 self.stats[shooter].2 += 1;
             }
@@ -392,7 +403,8 @@ impl Game {
         let facts = WorldFacts {
             time: self.tick,
             stats: self.stats.clone(),
-            points: Some(self.points),
+            points: Some(self.tickets.unwrap_or(self.points)),
+            can_respawn: Some(self.tickets.map_or([true, true], |t| [t[0] > 0, t[1] > 0])),
             batteries: self
                 .batteries
                 .iter()
@@ -441,7 +453,7 @@ struct Outcome {
 /// A match of `per_team` bots a side to `win` batteries (Team Deathmatch
 /// when `win` is 0: the most kills when time is up), for at most
 /// `limit_s`.
-fn soak(per_team: usize, win: u32, limit_s: u32, seed: u64) -> Outcome {
+fn soak(per_team: usize, win: u32, tdm_tickets: u32, limit_s: u32, seed: u64) -> Outcome {
     let world = soak_world();
     let teams: Vec<u8> = (0..2 * per_team).map(|p| u8::from(p >= per_team)).collect();
     let driven = vec![true; teams.len()];
@@ -462,7 +474,8 @@ fn soak(per_team: usize, win: u32, limit_s: u32, seed: u64) -> Outcome {
         Trace::none(0),
     );
     bots.map_ready(world.clone());
-    let mut game = Game::new(world, &teams, seed);
+    let tickets = (win == 0).then_some(tdm_tickets);
+    let mut game = Game::new(world, &teams, seed, tickets);
     for place in 0..teams.len() {
         bots.entered(place, true, 0);
     }
@@ -510,6 +523,15 @@ fn soak(per_team: usize, win: u32, limit_s: u32, seed: u64) -> Outcome {
             && let Some(team) = (0..2u8).find(|&t| game.points[usize::from(t)] >= win)
         {
             out.winner = Some(team);
+            break;
+        }
+        // Team Deathmatch: a team out of tickets with no one alive loses.
+        if let Some(tickets) = game.tickets
+            && let Some(loser) = (0..2u8).find(|&t| {
+                tickets[usize::from(t)] == 0 && !game.bodies.iter().any(|b| b.team == t && b.alive)
+            })
+        {
+            out.winner = Some(1 - loser);
             break;
         }
     }
@@ -570,7 +592,7 @@ fn soak(per_team: usize, win: u32, limit_s: u32, seed: u64) -> Outcome {
 
 #[test]
 fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
-    let out = soak(4, 3, 900, 1);
+    let out = soak(4, 3, 0, 900, 1);
     let total = out.kills[0] + out.kills[1];
     assert!(
         total >= 4,
@@ -593,8 +615,16 @@ fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
 }
 
 #[test]
-fn a_team_deathmatch_of_bots_has_kills_on_both_sides() {
-    let out = soak(4, 0, 240, 2);
+fn a_team_deathmatch_of_bots_is_fought_to_the_last_ticket() {
+    // 25 tickets a side: the endgame (no respawns, the hunt) comes.
+    let out = soak(4, 0, 25, 900, 2);
+    assert!(
+        out.winner.is_some(),
+        "a winner in {} s: {:?}",
+        out.end_s,
+        out.kills
+    );
+    assert!(out.end_s < 899.0, "ended by the tickets: {} s", out.end_s);
     assert!(
         out.kills[0] > 0 && out.kills[1] > 0,
         "{:?} ({} hits, {} shots)",

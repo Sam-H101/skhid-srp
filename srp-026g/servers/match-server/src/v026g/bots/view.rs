@@ -176,6 +176,8 @@ pub struct MatchView {
     pub deaths: Vec<Death>,
     /// The time of the newest world.
     pub world_time: u32,
+    /// Whether each team may still respawn.
+    pub can_respawn: [bool; 2],
 }
 
 impl MatchView {
@@ -235,6 +237,9 @@ pub struct WorldFacts {
     pub batteries: Vec<BatteryState>,
     /// By container id: the batteries in it.
     pub container_counts: Vec<usize>,
+    /// Whether each team may still respawn (Team Deathmatch clears a
+    /// team's when its tickets are out).
+    pub can_respawn: Option<[bool; 2]>,
 }
 
 /// Sounds are kept this long, ms.
@@ -272,6 +277,7 @@ pub struct Tracker {
     carriers: Vec<Option<Place>>,
     container_counts: Vec<usize>,
     points: [u32; 2],
+    can_respawn: [bool; 2],
     sounds: VecDeque<Sound>,
     deaths: VecDeque<Death>,
     world_time: u32,
@@ -297,6 +303,7 @@ impl Tracker {
             batteries: Vec::new(),
             carriers: Vec::new(),
             points: [0, 0],
+            can_respawn: [true, true],
             sounds: VecDeque::new(),
             deaths: VecDeque::new(),
             world_time: 0,
@@ -474,6 +481,9 @@ impl Tracker {
         if let Some(points) = facts.points {
             self.points = points;
         }
+        if let Some(can_respawn) = facts.can_respawn {
+            self.can_respawn = can_respawn;
+        }
         if !facts.container_counts.is_empty() {
             self.container_counts = facts.container_counts;
         }
@@ -606,6 +616,7 @@ impl Tracker {
             sounds: self.sounds.iter().copied().collect(),
             deaths: self.deaths.iter().copied().collect(),
             world_time: self.world_time,
+            can_respawn: self.can_respawn,
         }
     }
 }

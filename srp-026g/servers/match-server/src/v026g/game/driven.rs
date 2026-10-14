@@ -221,6 +221,7 @@ fn world_facts(time: u32, decoded: &Decoded) -> WorldFacts {
         points,
         batteries,
         container_counts,
+        can_respawn: rules.map(|rules| rules.team_respawn),
     }
 }
 
