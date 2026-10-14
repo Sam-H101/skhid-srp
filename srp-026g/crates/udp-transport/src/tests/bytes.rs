@@ -484,6 +484,58 @@ fn a_kept_message_goes_again_at_the_pace_its_sender_says() {
     assert!(transport.is_delivered(relay));
 }
 
+#[test]
+fn a_message_goes_again_at_its_senders_pace_within_its_own_lifetime() {
+    let (mut transport, now) = connect_match();
+    // A world (E8: 1.75 s of life, again every 500 ms) again every 150 ms.
+    let world = transport.send_every(0xE8, &[8; 40], ms(150)).unwrap();
+    assert_eq!(carrying(&transport.poll(now), 0xE8), 1);
+    assert_eq!(carrying(&transport.poll(now + ms(149)), 0xE8), 0);
+    assert_eq!(carrying(&transport.poll(now + ms(150)), 0xE8), 1);
+    assert_eq!(carrying(&transport.poll(now + ms(300)), 0xE8), 1);
+    // Given up at the end of the table's lifetime all the same.
+    transport.poll(now + ms(1749));
+    assert!(!transport.is_lost(world));
+    transport.poll(now + ms(1750));
+    assert!(transport.is_lost(world));
+}
+
+#[test]
+fn a_send_once_unique_message_can_be_kept_with_its_unique_id() {
+    let (mut transport, now) = connect_match();
+    // A clock correction (E7: sent once by the table) again every 150 ms
+    // until acked, always with the same unique id: the client acts on one.
+    let correction = transport
+        .send_unique_kept(0xE7, &[0x10, 0x00], ms(150))
+        .unwrap();
+    let unique_ids = |datagrams: &[Vec<u8>]| -> Vec<u8> {
+        datagrams
+            .iter()
+            .flat_map(|datagram| {
+                wire::parse(Table::Match, Direction::ToClient, datagram, 3)
+                    .unwrap()
+                    .messages
+                    .iter()
+                    .filter(|message| message.id == 0xE7)
+                    .filter_map(|message| message.x)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let first = transport.poll(now);
+    let x = unique_ids(&first);
+    assert_eq!(x.len(), 1);
+    assert!(unique_ids(&transport.poll(now + ms(149))).is_empty());
+    let again = transport.poll(now + ms(150));
+    assert_eq!(unique_ids(&again), x);
+    assert_eq!(unique_ids(&transport.poll(now + ms(3_000))), x);
+    assert!(!transport.is_lost(correction) && !transport.is_delivered(correction));
+    let last = transport.poll(now + ms(3_150));
+    transport.receive(&flow(1, last[0][0], &[]), now + ms(3_200));
+    assert!(transport.is_delivered(correction));
+    assert!(unique_ids(&transport.poll(now + ms(4_000))).is_empty());
+}
+
 /// The parts of a split message in `datagrams`: `(unique id, index)`.
 fn parts(datagrams: &[Vec<u8>]) -> Vec<(u8, u8)> {
     datagrams

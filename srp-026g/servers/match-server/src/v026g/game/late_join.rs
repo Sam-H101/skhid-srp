@@ -24,6 +24,10 @@ const JOINER_MAJORITY_WAIT_MS: u32 = 3_000;
 const JOINER_ROSTER_CLEAR_MS: u32 = 500;
 /// The admission's time is longer by this for the second start, once.
 const JOINER_EXTRA_TIME: Duration = Duration::from_secs(30);
+/// A newcomer whose game has not connected for this long (never since its
+/// reservation, or not again after it left) is let go, and the rest of its
+/// group is admitted without it.
+const JOINER_ABSENT: Duration = Duration::from_secs(20);
 
 pub(super) struct LoadingProfile {
     proposal: Proposal,
@@ -58,6 +62,17 @@ pub(super) struct Admission {
     extra_syncs: u32,
     /// Added to its time ([`PREPARE_TIMEOUT`]) for that start.
     extra_time: Duration,
+    /// Since when its game has not been connected (from the reservation
+    /// until it connects; again while it is gone).
+    absent_since: Option<Instant>,
+    /// It failed by itself (its game never came, left, or did not catch up
+    /// in time), not because a game could not install its place: the rest
+    /// of its group goes on without it (`poll_roster`), and its place is
+    /// still installed by every game, as one whose player left.
+    failed_alone: bool,
+    /// Caught up, it waits: without the rest of its group the sides would
+    /// be too far apart (said once).
+    waits_for_balance: bool,
 }
 
 impl Admission {
@@ -74,7 +89,17 @@ impl Admission {
             upload_received: false,
             extra_syncs: 0,
             extra_time: Duration::ZERO,
+            absent_since: Some(now),
+            failed_alone: false,
+            waits_for_balance: false,
         }
+    }
+
+    /// Its place is not installed any more: a game could not install it,
+    /// and the places after it can then never be (a roster only grows at
+    /// its end). A place whose player failed alone is installed on.
+    fn install_stopped(&self) -> bool {
+        self.failed() && !self.failed_alone
     }
 
     /// Its reports from here on start a new count.
@@ -194,8 +219,9 @@ impl Game {
     /// has, its world and the world of a game that has the place differ by
     /// what the place's kits put into the saved world before its player is
     /// let in (a byte for each grenade and trap, patch revision 7; the
-    /// games of 5 and 6 differed too), and neither is wrong. A place whose
-    /// admission failed is not asked for any more.
+    /// games of 5 and 6 differed too), and neither is wrong. A place no
+    /// game is asked to install any more (`Admission::install_stopped`) is
+    /// not waited for.
     pub(super) fn installing(&self) -> bool {
         self.growing_roster()
             && self.peers.iter().flatten().any(|peer| {
@@ -204,7 +230,7 @@ impl Game {
                     && peer.installed_roster < self.players()
                     && !self.admissions[peer.installed_roster]
                         .as_ref()
-                        .is_some_and(Admission::failed)
+                        .is_some_and(Admission::install_stopped)
             })
     }
 
@@ -295,7 +321,7 @@ impl Game {
         }
         if self.admissions[usize::from(ack.proposal.place)]
             .as_ref()
-            .is_some_and(Admission::failed)
+            .is_some_and(Admission::install_stopped)
         {
             return true;
         }
@@ -342,7 +368,7 @@ impl Game {
             let place = peer.installed_roster;
             if self.admissions[place]
                 .as_ref()
-                .is_some_and(Admission::failed)
+                .is_some_and(Admission::install_stopped)
             {
                 continue;
             }
@@ -390,19 +416,43 @@ impl Game {
                     .flatten()
                     .filter(|p| p.stage != Stage::Gone)
                     .all(|p| p.resources_loaded && p.installed_roster > index);
+            let connected = self.peers[index]
+                .as_ref()
+                .is_some_and(|p| p.stage != Stage::Gone);
             let admission = self.admissions[index].as_mut().unwrap();
             if admission.entered() {
                 continue;
+            }
+            if connected {
+                admission.absent_since = None;
+            } else {
+                admission.absent_since.get_or_insert(now);
+            }
+            if !admission.failed()
+                && admission
+                    .absent_since
+                    .is_some_and(|since| now.saturating_duration_since(since) >= JOINER_ABSENT)
+            {
+                log::warn!(
+                    "Match {:#x}: new place {index}'s game has not been connected for {} s; it is \
+                     let go, and the rest of its group goes on without it",
+                    self.id,
+                    JOINER_ABSENT.as_secs()
+                );
+                admission.phase = AdmissionPhase::Failed;
+                admission.failed_alone = true;
             }
             if !admission.failed()
                 && now.saturating_duration_since(admission.since)
                     >= PREPARE_TIMEOUT + admission.extra_time
             {
                 log::warn!(
-                    "Match {:#x}: new place {index} timed out during preparation or catch-up",
+                    "Match {:#x}: new place {index} timed out during preparation or catch-up; the \
+                     rest of its group goes on without it",
                     self.id
                 );
                 admission.phase = AdmissionPhase::Failed;
+                admission.failed_alone = true;
             }
             if admission.failed() {
                 if let Some(peer) = self.peers[index].as_mut()
@@ -446,9 +496,21 @@ impl Game {
             }
         }
         self.check_joiner_worlds(&caught_up, now);
-        // One reservation group is pending at a time. Its members enter or
-        // fail together, even when their resources and snapshots finish apart.
-        if self.admissions.iter().flatten().any(Admission::failed) {
+        // One reservation group is pending at a time. Its members enter
+        // together, on one tick, even when their resources and snapshots
+        // finish apart: the lobby placed them together, to even the sides
+        // (`matchmaking_policy::place_late`), and a squad is one group. A
+        // place no game could install fails them all: the places after it
+        // can never be installed. A member that failed alone (its game
+        // never came, left, or did not catch up) is left out, and the rest
+        // enter without it if the sides are then no further apart than
+        // one player, or than before (`entry_keeps_balance`).
+        if self
+            .admissions
+            .iter()
+            .flatten()
+            .any(Admission::install_stopped)
+        {
             for admission in self.admissions.iter_mut().flatten() {
                 if !admission.entered() && !admission.failed() {
                     admission.phase = AdmissionPhase::Failed;
@@ -456,13 +518,33 @@ impl Game {
             }
             return;
         }
-        let waiting = self
+        let waiting: Vec<Instant> = self
             .admissions
             .iter()
             .flatten()
-            .filter(|a| !a.entered())
-            .count();
-        if waiting > 0 && caught_up.len() == waiting {
+            .filter(|a| !a.entered() && !a.failed())
+            .map(|a| a.since)
+            .collect();
+        // A member of this group left out: it was reserved with them.
+        let short = self
+            .admissions
+            .iter()
+            .flatten()
+            .any(|a| a.failed_alone && !a.entered() && waiting.contains(&a.since));
+        if !waiting.is_empty() && caught_up.len() == waiting.len() {
+            if short && let Err(sides) = self.entry_keeps_balance(&caught_up) {
+                let admission = self.admissions[caught_up[0]].as_mut().unwrap();
+                if !std::mem::replace(&mut admission.waits_for_balance, true) {
+                    log::info!(
+                        "Match {:#x}: new places {caught_up:?} caught up, but without the rest of \
+                         their group the sides would be {} v {}; they wait",
+                        self.id,
+                        sides[0],
+                        sides[1]
+                    );
+                }
+                return;
+            }
             let at = grid_up(clock + ROSTER_LEAD_MS);
             for index in caught_up {
                 log::info!(
@@ -471,6 +553,35 @@ impl Game {
                 );
                 self.roster_change(None, index, true, at);
             }
+        }
+    }
+
+    /// Whether `entering` may enter without the members of their group that
+    /// were left out: the sides, counted by the players in the match, are
+    /// then at most one player apart, or no further apart than now. The
+    /// lobby placed the whole group to even the sides; a part of it may
+    /// not (two placed one on each side, one of them gone). The sides it
+    /// would make when not.
+    fn entry_keeps_balance(&self, entering: &[usize]) -> Result<(), [i64; 2]> {
+        let mut sides = [0i64; 2];
+        for (index, place) in self.formed.places.iter().enumerate() {
+            let in_match = !self.waiting_entry(index)
+                && self.peers[index]
+                    .as_ref()
+                    .is_some_and(|peer| peer.stage != Stage::Gone);
+            if in_match {
+                sides[usize::from(place.team.min(1))] += 1;
+            }
+        }
+        let before = (sides[0] - sides[1]).abs();
+        for index in entering {
+            sides[usize::from(self.formed.places[*index].team.min(1))] += 1;
+        }
+        let after = (sides[0] - sides[1]).abs();
+        if after <= 1 || after <= before {
+            Ok(())
+        } else {
+            Err(sides)
         }
     }
 

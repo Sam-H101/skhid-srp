@@ -836,6 +836,99 @@ fn a_reserved_group_enters_on_one_tick_after_every_member_catches_up() {
     bench.assert_no_faults();
 }
 
+/// A group of newcomers reserved together (as the lobby's late placement
+/// does, `join_running_group`): their clients, not connected.
+fn reserve_group(bench: &mut Bench, count: usize) -> Vec<usize> {
+    let first = bench.clients.len();
+    let places: Vec<usize> = (first..first + count).collect();
+    bench
+        .registry
+        .join_running_group(
+            bench.match_id,
+            places.iter().map(|place| player(*place)).collect(),
+        )
+        .unwrap();
+    for place in &places {
+        bench.clients.push(Client::growing(
+            session_of(*place),
+            first + count,
+            MAP_BATTERIES,
+        ));
+        bench
+            .addrs
+            .push(SocketAddr::from(([127, 0, 0, 1], 40_000 + *place as u16)));
+    }
+    places
+}
+
+#[test]
+fn a_group_member_whose_game_never_comes_is_left_out_and_the_rest_enter() {
+    let mut bench = running();
+    let places = reserve_group(&mut bench, 2);
+    // Only the first comes; it catches up at once, and waits for the other.
+    bench.join(places[0]);
+    bench.run_long(15_000);
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    // 20 s after the reservation the other is let go: the first enters
+    // (2 v 1 then, as the sides may be).
+    assert!(bench.until(8_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(places[0] as u8)))
+    }));
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    assert!(bench.registry.seat(session_of(places[1])).is_none());
+    assert!(bench.registry.seat(session_of(places[0])).is_some());
+    bench.run(3_000);
+    for index in 0..2 {
+        assert_eq!(bench.clients[index].model.syncs, 1);
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_group_member_that_leaves_is_left_out_and_the_rest_enter() {
+    let mut bench = running();
+    let places = reserve_group(&mut bench, 2);
+    bench.clients[places[1]].no_hashes = true;
+    for place in &places {
+        bench.join(*place);
+    }
+    // The second leaves before it is in; the first waits for it a while.
+    bench.clients[places[1]].leave();
+    bench.run_long(10_000);
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    assert!(bench.until(15_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(places[0] as u8)))
+    }));
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_part_of_a_group_that_would_unbalance_the_sides_does_not_enter_alone() {
+    // Three in play, 2 v 1; the group is one for each side.
+    let mut bench = Bench::growing(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    bench.run_long(25_000);
+    assert!(bench.game().admitting());
+    let places = reserve_group(&mut bench, 2);
+    assert_eq!(places, [3, 4]);
+    // The one for the side that has fewer never comes: the other alone
+    // would make it 3 v 1.
+    bench.join(places[1]);
+    bench.run_long(30_000);
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    // So it waits out its time.
+    bench.run_long(31_000);
+    assert!(bench.clients[places[1]].disconnected);
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    bench.assert_no_faults();
+}
+
 #[test]
 fn group_reservation_validates_every_member_before_changing_any_seat() {
     let bench = running();
@@ -946,6 +1039,56 @@ fn reserve_with_one_game_still_installing(bench: &mut Bench) -> (usize, Prepare)
     assert!(bench.until(1_000, |b| !b.clients[1].prepares.is_empty()));
     let prepare = bench.clients[1].prepares[0].clone();
     (place, prepare)
+}
+
+#[test]
+fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_before_the_world() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use udp_transport::wire;
+    use udp_transport::{Direction, Table};
+    let mut bench = running_three();
+    let place = reserve(&mut bench);
+    // The newcomer's world is held up on its way.
+    let holding = Arc::new(AtomicBool::new(true));
+    let held = holding.clone();
+    bench.clients[place].lose = Some(Box::new(move |datagram| {
+        held.load(Ordering::Relaxed)
+            && wire::parse(Table::Match, Direction::ToClient, datagram, 20).is_ok_and(|parsed| {
+                parsed
+                    .messages
+                    .iter()
+                    .any(|message| message.id == id::SNAPSHOT)
+            })
+    }));
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    assert!(bench.until(8_000, |b| b.stages().ends_with('s')));
+    // A player leaves meanwhile (live, 2026-10-14: that 0xEA came after the
+    // newcomer's load, 906 ms past its tick, and was refused as too old).
+    bench.clients[2].leave();
+    bench.run(300);
+    holding.store(false, Ordering::Relaxed);
+    assert!(bench.until(8_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(place as u8)))
+    }));
+    let taken = &bench.clients[place].taken;
+    let left = taken
+        .iter()
+        .position(|message| matches!(message, ServerMessage::PlayerLeft { player: 2, .. }))
+        .expect("the leave");
+    let world = taken
+        .iter()
+        .position(|message| matches!(message, ServerMessage::Snapshot { .. }))
+        .unwrap();
+    assert!(left < world, "{left} {world}");
+    for index in 0..2 {
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    assert_eq!(bench.clients[place].snapshots().len(), 1);
+    bench.assert_no_faults();
 }
 
 #[test]

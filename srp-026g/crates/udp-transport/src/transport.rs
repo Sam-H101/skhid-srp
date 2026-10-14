@@ -692,6 +692,77 @@ impl Transport {
         self.send_for(id, payload, Some(Lifetime::For(lifetime)), None)
     }
 
+    /// As [`Self::send`] (the table's lifetime), sent again every `resend`
+    /// while it is not acked, not at the table's pace: for the parts of a
+    /// world a game that plays waits for (0xE8 goes again every 500 ms by
+    /// the table, which a burst of lost parts makes seconds).
+    pub fn send_every(
+        &mut self,
+        id: u8,
+        payload: &[u8],
+        resend: Duration,
+    ) -> Result<u64, SendError> {
+        self.send_for(id, payload, None, Some(resend))
+    }
+
+    /// A unique id the table sends once (0xE7), sent again every `resend`
+    /// until acked: the client takes a unique id once and drops a copy of
+    /// it while it is in its 128-wide window (transport.md: 0x3F47AA), so
+    /// only one copy is acted on. The caller sends no newer one of the kind
+    /// before this is acked, or the late first copy of this one could
+    /// arrive after it.
+    pub fn send_unique_kept(
+        &mut self,
+        id: u8,
+        payload: &[u8],
+        resend: Duration,
+    ) -> Result<u64, SendError> {
+        let info = self
+            .table
+            .info(Direction::ToClient, id)
+            .ok_or(SendError::UnknownId(id))?;
+        if info.class != Class::Unique {
+            return self.send_for(id, payload, None, Some(resend));
+        }
+        let serial = self.send_for(id, payload, None, Some(resend))?;
+        for message in self
+            .pending
+            .iter_mut()
+            .filter(|message| message.serial == serial)
+        {
+            message.lifetime = Lifetime::Forever;
+        }
+        Ok(serial)
+    }
+
+    /// Stop sending a message that is not acked yet (one kept by
+    /// [`Self::send_unique_kept`] that something newer makes wrong). A copy
+    /// on its way may still arrive. It counts as delivered from then on,
+    /// never as lost.
+    pub fn forget(&mut self, serial: u64, now: Instant) {
+        let mut channels = Vec::new();
+        self.pending.retain(|message| {
+            let keep = message.serial != serial;
+            if !keep {
+                channels.push(message.channel);
+            }
+            keep
+        });
+        self.unacked.retain(|(message, _)| {
+            let keep = message.serial != serial;
+            if !keep {
+                channels.push(message.channel);
+            }
+            keep
+        });
+        channels.dedup();
+        for channel in channels {
+            if channel != Channel::None {
+                self.retired.push_back((channel, now));
+            }
+        }
+    }
+
     fn send_for(
         &mut self,
         id: u8,

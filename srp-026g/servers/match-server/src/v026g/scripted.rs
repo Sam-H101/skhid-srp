@@ -409,6 +409,9 @@ pub struct Client {
     pub uploads_hashed_tick: bool,
     /// Does not answer 0xF6 (as if its pool guard skipped every request).
     pub no_uploads: bool,
+    /// Its datagrams ack nothing (as a game's acks that name only its
+    /// newest few seqs miss most of a burst).
+    pub mute_acks: bool,
     /// Does not answer 0xE5 (as if the answer were lost).
     pub mute_time_replies: bool,
     /// Acks as the real game was seen to (live, 2026-10-13): a pure ack
@@ -466,6 +469,7 @@ impl Client {
             simulates: true,
             uploads_hashed_tick: false,
             no_uploads: false,
+            mute_acks: false,
             mute_time_replies: false,
             slow_acks: false,
             lose: None,
@@ -631,7 +635,7 @@ impl Client {
     }
 
     fn datagram(&mut self, body: &[u8]) -> Vec<u8> {
-        let (rseq, bits, tail) = match self.received.newest() {
+        let (rseq, bits, tail) = match self.received.newest().filter(|_| !self.mute_acks) {
             Some(newest) => (
                 newest,
                 self.received.bits(),

@@ -604,6 +604,49 @@ fn a_game_whose_build_the_server_has_wrong_is_brought_up_all_the_same() {
 }
 
 #[test]
+fn a_clock_correction_that_is_lost_goes_again_until_it_arrives() {
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    // Its clock falls 300 ms behind; every datagram with a 0xE7 in it is
+    // lost for two seconds (a send-once message, live, 2026-10-14).
+    let losing = Arc::new(AtomicBool::new(true));
+    let lost = losing.clone();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let counted = dropped.clone();
+    bench.clients[1].lose = Some(Box::new(move |datagram| {
+        let drop = lost.load(Ordering::Relaxed)
+            && wire::parse(Table::Match, Direction::ToClient, datagram, 1).is_ok_and(|parsed| {
+                parsed
+                    .messages
+                    .iter()
+                    .any(|message| message.id == id::CLOCK_OFFSET)
+            });
+        if drop {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }
+        drop
+    }));
+    let clock = bench.clients[1].model.clock.unwrap();
+    bench.clients[1].model.clock = Some(clock - 300);
+    bench.run(2_000);
+    // It went, and again, and no newer one in its place.
+    assert!(dropped.load(Ordering::Relaxed) >= 2, "{dropped:?}");
+    losing.store(false, Ordering::Relaxed);
+    bench.run(1_000);
+    let offsets = bench.clients[1].got(|message| match message {
+        ServerMessage::ClockOffset(offset) => Some(*offset),
+        _ => None,
+    });
+    // Taken once (a copy has the same unique id), and the clock is right.
+    assert_eq!(offsets.len(), 1, "{offsets:?}");
+    assert!((290..=310).contains(&offsets[0]), "{offsets:?}");
+    let off = i64::from(bench.clock()) - i64::from(bench.clients[1].clock());
+    assert!(off.abs() <= 10, "{off} ms behind");
+    bench.assert_no_faults();
+}
+
+#[test]
 fn a_client_out_of_step_is_resynced_as_the_next_generation() {
     let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
     bench.join_all();
@@ -2113,18 +2156,18 @@ fn resync_third(
     let from = bench.clients[2].clock();
     bench.clients[2].sim.salt_from = Some((from, 7));
     let mut made = Vec::new();
-    let mut frozen_at = None;
+    let mut resync_at = None;
     while bench.ms < 60_000 {
-        let (frozen, replayed) = bench.game().frozen(2);
-        if frozen {
-            frozen_at.get_or_insert(bench.clock());
+        let (resyncing, replayed) = bench.game().resync_state(2);
+        if resyncing {
+            resync_at.get_or_insert(bench.clock());
             holding.store(true, Ordering::Relaxed);
         }
         if replayed {
-            return (made, frozen_at.unwrap());
+            return (made, resync_at.unwrap());
         }
         if let Some(ahead) = own_ahead
-            && !frozen
+            && !resyncing
             && bench.ms.is_multiple_of(50)
         {
             made.push(bench.clients[2].input(ahead, 0x21));
@@ -2211,7 +2254,7 @@ fn a_resynced_clients_inputs_are_relayed_throughout_and_their_answers_wait_for_i
     // it has loaded one (500 ms).
     let clock = bench.clock();
     let in_time = own_input(&mut bench, clock - 100 + 7);
-    let late_time = bench.clock() - 300 + 3;
+    let late_time = bench.clock() - 255 + 3;
     assert!(late_time > newest, "{late_time} {newest}");
     let late = own_input(&mut bench, late_time);
     bench.step(5);
@@ -2291,9 +2334,10 @@ fn an_answer_a_resynced_game_could_no_longer_take_has_it_started_from_a_newer_wo
 fn a_resynced_clients_world_waits_for_its_replay_and_is_never_old() {
     let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
     let holding = hold(&mut bench, 2, &[id::INPUT_RELAY]);
-    let (_, frozen_at) = resync_third(&mut bench, &holding, None);
-    // It made no input: its clock is put at the match clock as the 0xE5
-    // arrives (half a round trip of a few ms).
+    let (_, resync_at) = resync_third(&mut bench, &holding, None);
+    // It made no input: its clock is put at its own as the 0xE5 arrives
+    // (known from the 0xE5 it last took; the match clock here, and half a
+    // round trip of a few ms), never behind it.
     let time = first(&bench.clients[2], |message| {
         matches!(message, ServerMessage::SetTime { generation: 1, .. })
     })
@@ -2302,8 +2346,8 @@ fn a_resynced_clients_world_waits_for_its_replay_and_is_never_old() {
         unreachable!()
     };
     assert!(
-        (frozen_at..=frozen_at + 15).contains(&match_time),
-        "{match_time} {frozen_at}"
+        (resync_at..=resync_at + 15).contains(&match_time),
+        "{match_time} {resync_at}"
     );
     let newest = hold_replay(&mut bench, &holding);
     // While its replay is not acked, no world goes.
@@ -2350,6 +2394,150 @@ fn a_lost_roster_change_of_a_resyncs_replay_has_the_sync_done_again() {
     let snapshots = bench.clients[2].snapshots();
     assert_eq!(snapshots.len(), 2, "{snapshots:?}");
     assert_eq!(snapshots[1].0, 2);
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_resync_world_not_loaded_in_time_is_sent_again_from_a_fresh_snapshot_three_times_at_most() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    let holding = hold(&mut bench, 2, &[id::SNAPSHOT]);
+    resync_third(&mut bench, &holding, None);
+    // Its world does not arrive: 1.2 s after the snapshot's time (and the
+    // way back of an ack) it is done again from a fresh one, as the next
+    // generation, three times.
+    for redone in 1..=3u32 {
+        assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLs"));
+        let time = bench.game().sync_time(2).unwrap();
+        let generation = bench.game().generation(2).unwrap();
+        assert!(until_playing(&mut bench, 3_000, |bench| {
+            bench.game().slow_loads(2) == redone
+        }));
+        assert!(bench.clock() > time + 1_200, "{} {time}", bench.clock());
+        assert!(until_playing(&mut bench, 3_000, |bench| {
+            bench.game().generation(2) == Some(generation + 1)
+        }));
+    }
+    // Then a slower load is taken: the fourth world is not given up at
+    // 1.2 s.
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLs"));
+    let time = bench.game().sync_time(2).unwrap();
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.clock() > time + 1_400));
+    assert_eq!(bench.stages(), "LLs");
+    // (Past the three: the slow load is taken.)
+    assert_eq!(bench.game().slow_loads(2), 4);
+    holding.store(false, Ordering::Relaxed);
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLL"));
+    assert_eq!(bench.game().slow_loads(2), 0);
+    let snapshots = bench.clients[2].snapshots();
+    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    assert_eq!(snapshots[1].0, 4);
+    bench.assert_no_faults();
+}
+
+#[test]
+fn the_lost_parts_of_a_resync_world_go_again_soon() {
+    // Uncompressed and big: a world of many parts.
+    let settings = Settings {
+        compress_state: false,
+        ..Settings::default()
+    };
+    let mut bench = Bench::new(3, MAP_BATTERIES, settings);
+    for client in &mut bench.clients {
+        client.sim.ballast = 13_000;
+    }
+    // It acks as a game was seen to: 13 seqs deep, so that a part lost
+    // early in a burst is not seen skipped by the acks of later ones.
+    bench.clients[2].slow_acks = true;
+    let holding = hold(&mut bench, 2, &[id::SNAPSHOT]);
+    resync_third(&mut bench, &holding, None);
+    // The first 60 ms of parts of its world are lost on their way.
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLs"));
+    let sent = bench.ms;
+    until_playing(&mut bench, 60, |_| false);
+    holding.store(false, Ordering::Relaxed);
+    // They come again 120 ms on (the table's own pace is 500 ms).
+    assert!(until_playing(&mut bench, 1_000, |bench| bench.stages() == "LLL"));
+    let took = bench.ms - sent;
+    assert!(took < 400, "loaded {took} ms after it went");
+    assert_eq!(bench.clients[2].snapshots().len(), 2);
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_world_whose_parts_go_unacked_is_taken_as_loaded_on_the_games_right_hash() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    let holding = hold(&mut bench, 2, &[]);
+    resync_third(&mut bench, &holding, None);
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLs"));
+    let generation = bench.game().generation(2);
+    // From its world's first parts on, its acks name nothing (a game's
+    // acks name its newest few seqs only, live, 2026-10-14) ...
+    bench.clients[2].mute_acks = true;
+    // ... but its game loads the world and reports the world's hashes:
+    // that is the proof, before the world's 1.75 s and before 1.2 s past
+    // its snapshot.
+    assert!(until_playing(&mut bench, 1_000, |bench| bench.stages() == "LLL"));
+    assert_eq!(bench.game().generation(2), generation);
+    bench.clients[2].mute_acks = false;
+    bench.run(3_000);
+    assert_eq!(bench.clients[2].snapshots().len(), 2);
+    assert_eq!(bench.game().resyncs(2), 1);
+    assert_eq!(bench.game().generation(2), generation);
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_tie_does_not_clear_a_disagreement_that_stands() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    // Player 1's inputs come late: in a tie its side counts for less.
+    for _ in 0..60 {
+        bench.clients[1].input(-300, 0x21);
+        bench.run(20);
+    }
+    bench.run(3_000);
+    // Player 2's world goes its own way; the three report it for a second.
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    bench.run(1_000);
+    // Then player 0 reports no more: every tick has two reports, 1 against
+    // 2, which the links decide for 2. Taken as "agrees again", that wiped
+    // a standing disagreement (live, 2026-10-14); it stands, and player 2
+    // is resynced.
+    bench.clients[0].no_hashes = true;
+    assert!(bench.until(10_000, |bench| bench.game().resyncs(2) == 1));
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_relay_that_reached_a_game_past_its_history_keeps_its_resync_past_it() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    // Player 2's clock runs 600 ms ahead: the others' inputs reach its
+    // game more than 500 ms past their ticks, and the game moves them.
+    let match_id = bench.match_id;
+    bench
+        .server
+        .games
+        .get_mut(&match_id)
+        .unwrap()
+        .set_clock_correction(false);
+    bench.clients[2].model.advance(600);
+    bench.run(2_000);
+    until_playing(&mut bench, 1_000, |_| false);
+    let floor = bench.game().resync_floor(2);
+    assert!(floor > bench.clock() + 300, "{floor} {}", bench.clock());
+    // Its resync starts from no snapshot before the last moved tick.
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    assert!(bench.until(20_000, |bench| {
+        bench.game().resyncs(2) == 1 && bench.stages() == "LLL"
+    }));
+    let snapshots = bench.clients[2].snapshots();
+    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    assert!(snapshots[1].1 >= floor, "{snapshots:?} {floor}");
     bench.assert_no_faults();
 }
 
