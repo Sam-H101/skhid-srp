@@ -86,7 +86,10 @@ impl Game {
                 catchup_hashes: VecDeque::new(),
             }));
         }
+        let before = self.players();
         self.formed = formed;
+        let note = serde_json::json!({ "note": "places", "places": self.places_note(before) });
+        self.record_note(note, now);
     }
 
     pub(crate) fn admitting(&self) -> bool {

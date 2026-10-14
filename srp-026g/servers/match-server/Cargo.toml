@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 
 session = { workspace = true }
 survarium = { workspace = true }
