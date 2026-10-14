@@ -470,6 +470,33 @@ impl WalkGrid {
         (self.position(to) - self.position(from)).length() + kind.penalty()
     }
 
+    /// Every floor whose cell overlaps the ground box `[x0, z0, x1, z1]`.
+    pub fn floors_in(&self, area: [f32; 4]) -> impl Iterator<Item = NodeId> + '_ {
+        let index = |v: f32, origin: f32, n: usize| {
+            ((v - origin) / self.cell).floor().clamp(-1.0, n as f32) as i64
+        };
+        let (i0, i1) = (
+            index(area[0], self.x0, self.nx).max(0),
+            index(area[2], self.x0, self.nx).min(self.nx as i64 - 1),
+        );
+        let (k0, k1) = (
+            index(area[1], self.z0, self.nz).max(0),
+            index(area[3], self.z0, self.nz).min(self.nz as i64 - 1),
+        );
+        (k0..=k1).flat_map(move |k| {
+            let row = k as usize * self.nx;
+            let (a, b) = if i0 <= i1 {
+                (
+                    self.start[row + i0 as usize],
+                    self.start[row + i1 as usize + 1],
+                )
+            } else {
+                (0, 0)
+            };
+            a..b
+        })
+    }
+
     /// The nearest floor to a point at the feet: within `max_distance` on
     /// the ground plane, from 1 m above the point to 2.5 m below it.
     pub fn locate(&self, point: Vec3, max_distance: f32) -> Option<NodeId> {
