@@ -725,6 +725,107 @@ pub fn ranking_flush(top: &[Ranked]) -> Option<Result<ServerMessage, WireError>>
     Some(elo_rows(&rows))
 }
 
+/// The `start` of a `3B` that asks for the matches being played now and
+/// not for a ranking page: srp's own, asked only by srp's changed lobby
+/// movie ([`matches_now`]).
+pub const MATCHES_START: u32 = 2_000_000_000;
+/// Every `start` of a `3B` from here on is srp's own and never a ranking
+/// page. The stock page asks only for indexes below the count of ranked
+/// players it was told (`PlayerRanking.request_players`), so a stock game
+/// never sends one. The ones above [`MATCHES_START`] are kept for later
+/// and get no answer.
+pub const RESERVED_START: u32 = MATCHES_START;
+/// The most matches one [`matches_now`] lists, whatever the `3B` asks for.
+pub const MATCHES_NOW_ROWS: usize = 32;
+/// The first field of the header row of [`matches_now`]: the version of
+/// the rows' format.
+pub const MATCHES_NOW_VERSION: &str = "M1";
+
+/// How far a match of [`matches_now`] is: the row's `phase` field.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchPhase {
+    /// Made: its players load the level, and the countdown has not begun.
+    Gathering = 0,
+    /// "Match begins in … seconds".
+    Countdown = 1,
+    /// In play.
+    Playing = 2,
+}
+
+/// A match of [`matches_now`]. It names no player, no account and no
+/// match id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchNow {
+    /// The level and the mode of the match's `maps_dict` entry
+    /// (`maps::MapMode`).
+    pub level: u8,
+    pub mode: u8,
+    pub phase: MatchPhase,
+    /// Each team's players who have not left.
+    pub players: [u8; 2],
+    /// Each team's points; `None` writes `-` for both: no score to show.
+    pub score: Option<[u16; 2]>,
+    /// Whole seconds since play began; `None` writes `-`: it has not.
+    pub played: Option<u32>,
+    /// A late joiner could be admitted to it right now.
+    pub join: bool,
+}
+
+/// `91` as the answer to `3B 00 <MATCHES_START> <count>`: the matches being
+/// played now, the oldest first, for the "matches now" window of srp's
+/// changed lobby movie. **srp's own**: the original server had no such
+/// answer, and a stock game must never be sent one (its ranking page would
+/// take the rows as ranking rows, [`ranking_flush`]); it never asks.
+///
+/// The rows are ordinary ranking rows `{name, place, rating, change}` with
+/// rating and change 0, and the movie tells them from a ranking page by
+/// the first row's place (`PlayerRanking.fillPlayers`):
+///
+/// - row 0, the header, always there (an empty list is not no answer):
+///   `name = "M1;<total>"`, `place = MATCHES_START`. `total` is the matches
+///   open now, which may be more than the rows that follow.
+/// - row `i` from 1, a match: `place = MATCHES_START + i`, `name =
+///   "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>"`
+///   ([`MatchNow`]): ASCII decimal numbers with `;` between them, `-` for a
+///   score or a time there is none of, `join` 1 or 0. The movie ignores
+///   fields after the ones it knows, so a later version may append.
+///
+/// At most [`MATCHES_NOW_ROWS`] matches. A name is 42 bytes at the most,
+/// within the 63 of a ranking row's name.
+pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, WireError> {
+    at_most("matches now", matches.len(), MATCHES_NOW_ROWS)?;
+    let row = |name: String| Ranked {
+        name,
+        rating: 0,
+        rating_before: 0,
+    };
+    let mut rows = vec![row(format!("{MATCHES_NOW_VERSION};{total}"))];
+    rows.extend(matches.iter().map(|each| {
+        let [score0, score1] = match each.score {
+            Some(score) => score.map(|points| points.to_string()),
+            None => ["-".to_owned(), "-".to_owned()],
+        };
+        row(format!(
+            "{};{};{};{};{};{score0};{score1};{};{}",
+            each.level,
+            each.mode,
+            each.phase as u8,
+            each.players[0],
+            each.players[1],
+            each.played
+                .map_or("-".to_owned(), |seconds| seconds.to_string()),
+            u8::from(each.join)
+        ))
+    }));
+    let placed: Vec<(u32, &Ranked)> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (MATCHES_START + index as u32, row))
+        .collect();
+    elo_rows(&placed)
+}
+
 /// One 20-byte `quest_instance` of 0x92.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuestRecord {
