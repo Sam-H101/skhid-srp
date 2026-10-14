@@ -33,6 +33,9 @@ pub struct Tactics {
     pub hazards: Hazards,
     /// The bases' exits by map side, worked out once.
     exits: Vec<(i32, Vec<Vec3>)>,
+    /// The routes humans took on this map and mode (play 17), on its
+    /// floors; empty without `SRP_BOT_ROUTES`.
+    pub routes: Vec<super::routes::HumanRoute>,
 }
 
 /// What a spot is for.
@@ -83,6 +86,7 @@ impl Tactics {
             world,
             hazards,
             exits: Vec::new(),
+            routes: Vec::new(),
         };
         let sides: Vec<i32> = {
             let mut sides: Vec<i32> = tactics.world.map.spawns.iter().map(|s| s.team).collect();
@@ -95,6 +99,21 @@ impl Tactics {
             tactics.exits.push((side, exits));
         }
         tactics
+    }
+
+    /// The human routes of this map and mode, put on its floors; a route
+    /// left with no point is dropped.
+    pub fn set_routes(&mut self, routes: Vec<super::routes::HumanRoute>) {
+        self.routes = routes
+            .into_iter()
+            .map(|route| route.on_floors(&self.world.grid))
+            .filter(|route| !route.points.is_empty())
+            .collect();
+    }
+
+    /// The human routes out of `side`'s base.
+    pub fn routes_of(&self, side: i32) -> impl Iterator<Item = &super::routes::HumanRoute> {
+        self.routes.iter().filter(move |route| route.team == side)
     }
 
     /// Whether `point` is in a spawn area of `side` (any side if `None`).

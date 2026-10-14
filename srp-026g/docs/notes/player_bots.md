@@ -338,8 +338,11 @@ the archive's index: a loader must follow them.
      made, unknown fields refused, hashed) and `trace`
      (`SRP_BOT_TRACE_DIR`: a JSON line per decision with every candidate's
      considerations).
-   - Plays: roam toward the enemy base's exits by a way of its own
-     (17), collect a battery and bring it home, ambush (1), intercept a
+   - Plays: roam toward the enemy base by the routes humans took (17;
+     drawn by what a life on each gave, less where a teammate died or
+     teammates already went, more for a fighter where enemies are known;
+     `SRP_BOT_ROUTES`, a private table from the players' worlds; without
+     it to the exits by a way of its own), collect a battery and bring it home, ambush (1), intercept a
      carrier and answer a theft (2), escort (3), sneak and steal (4),
      flank a held angle (8), crossfire (9), retreat to resupply (10),
      cover a human (12), pair up against the top player (13), hold an exit
@@ -370,9 +373,13 @@ the archive's index: a loader must follow them.
      a winner; the long ones with `cargo test --release -- --ignored`).
    - A local test with one game and 7 bots: `SRP_SERVER_BOTS=7`,
      `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
-     `SRP_MAPDATA_DIR` set.
-   - Not yet: a real game; the human routes per map (play 17's data);
-     per-weapon clip sizes; a bot giving its place up to a late joiner.
+     `SRP_MAPDATA_DIR` set (and `SRP_BOT_ROUTES` for play 17's routes).
+   - Human routes on the real maps (a test run with the private files):
+     174 routes over 8 maps and 3 modes, all 992 points on a floor, 891 of
+     them open to the side (the rest in the enemy's spawn area), every
+     route leaving from its own side's spawns.
+   - Not yet: a real game; per-weapon clip sizes; a bot giving its place
+     up to a late joiner.
 4. Bots fill short queues and give their place up to late joiners.
 
 Bots and late joiners: a roster place is never reused, so a joiner cannot

@@ -39,6 +39,7 @@ pub mod path;
 pub mod plays;
 pub mod reflex;
 pub mod rng;
+pub mod routes;
 pub mod sense;
 pub mod signals;
 pub mod stuck;
@@ -244,6 +245,8 @@ impl Bot {
 /// A match's bots.
 pub struct Bots {
     level: u8,
+    /// The mode's id (2 batteries, 3 timed batteries, 4 TDM).
+    mode: u8,
     /// The static info's seed (`registry::static_id`): every anomaly's
     /// random stream starts from it (`anomalies.rs`).
     static_seed: u32,
@@ -259,6 +262,9 @@ pub struct Bots {
     /// written, or with z mirrored (physics); settled against the map's
     /// battery places.
     battery_votes: (u32, u32),
+    /// The human routes of this map and mode (play 17), till the map is
+    /// built and they are put on its floors.
+    routes: Vec<routes::HumanRoute>,
 }
 
 impl Bots {
@@ -294,6 +300,7 @@ impl Bots {
             .collect();
         Self {
             level,
+            mode,
             static_seed: crate::v026g::registry::static_id(match_id),
             tracker: Tracker::new(mode, teams, driven, Vec::new()),
             tactics: None,
@@ -302,6 +309,7 @@ impl Bots {
             trace,
             tuning,
             battery_votes: (0, 0),
+            routes: Vec::new(),
             weapons: Vec::new(),
         }
     }
@@ -353,6 +361,7 @@ impl Bots {
     /// log.
     pub fn map_ready(&mut self, world: Arc<World>) -> String {
         let mut tactics = Tactics::new(world, self.tuning.hazard_margin);
+        tactics.set_routes(std::mem::take(&mut self.routes));
         // The anomalies that switch (level_03's electric pairs, level_02's
         // cloud) run on the match clock from the seed.
         let anomalies = anomalies::Anomalies::new(&tactics.world.map, self.static_seed);
@@ -371,16 +380,26 @@ impl Bots {
         let sides: std::collections::BTreeSet<i32> =
             tactics.world.map.spawns.iter().map(|s| s.team).collect();
         let summary = format!(
-            "{} damage zones over {} floors; exits by side {:?}",
+            "{} damage zones over {} floors; exits by side {:?}; human routes by side {:?}",
             tactics.hazards.zones.len(),
             tactics.hazards.marked(),
             sides
                 .iter()
                 .map(|side| (*side, tactics.exits(*side).len()))
+                .collect::<Vec<_>>(),
+            sides
+                .iter()
+                .map(|side| (*side, tactics.routes_of(*side).count()))
                 .collect::<Vec<_>>()
         );
         self.tactics = Some(tactics);
         summary
+    }
+
+    /// The human routes of the match's map and mode (play 17), from
+    /// `SRP_BOT_ROUTES`; before [`Self::map_ready`].
+    pub fn set_routes(&mut self, table: &routes::RouteTable) {
+        self.routes = table.for_map(self.level, self.mode);
     }
 
     pub fn has_map(&self) -> bool {
