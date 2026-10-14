@@ -238,8 +238,9 @@ struct Outgoing {
     channel: Channel,
     lifetime: Lifetime,
     resend: Duration,
-    /// Set at the first send of a message with a limited lifetime, or when
-    /// it is queued with a deadline (`send_until`).
+    /// Set at the first send of a message with a limited lifetime; or when
+    /// it is queued with a deadline (`send_until`), and then moved on to
+    /// the table's lifetime from its first send if that is later.
     expires: Option<Instant>,
     /// It may wait for others to share its datagram (`Config::gather`).
     gathers: bool,
@@ -793,13 +794,14 @@ impl Transport {
     }
 
     /// As [`Self::send`], but a message the table would give up after its
-    /// lifetime is given up at `deadline` instead, whether it went out by
-    /// then or not: its life counts from now, not from its first send.
-    /// Until then it goes again at the table's pace. For what is of use to
-    /// the client only until a moment (a relay, until the game's history
-    /// has passed its tick): one held back by a stall is lost at that
-    /// moment rather than sent late. A message with no lifetime of that
-    /// kind goes as the table has it.
+    /// lifetime is given up at `deadline` if that is later, and if it has
+    /// not gone out by then, at `deadline` in any case. Until then it goes
+    /// again at the table's pace. For what is of use to the client only
+    /// until a moment (a relay, until the game's history has passed its
+    /// tick): one held back by a stall is lost at that moment rather than
+    /// sent late, and one that goes in time lives at least the table's
+    /// lifetime from its first send, however near the deadline was. A
+    /// message with no lifetime of that kind goes as the table has it.
     pub fn send_until(
         &mut self,
         id: u8,
@@ -1024,8 +1026,13 @@ impl Transport {
                         Lifetime::For(lifetime) => Some(lifetime),
                         Lifetime::Forever => None,
                     };
-                    if message.expires.is_none() {
-                        message.expires = lifetime.map(|lifetime| now + lifetime);
+                    // At its first send: the table's lifetime from now, or
+                    // its deadline (`send_until`) if that is later.
+                    if message.sent_in.is_empty()
+                        && let Some(lifetime) = lifetime
+                    {
+                        let end = now + lifetime;
+                        message.expires = Some(message.expires.map_or(end, |at| at.max(end)));
                     }
                     if message.sent_in.len() == SEQS_PER_MESSAGE {
                         message.sent_in.pop_front();

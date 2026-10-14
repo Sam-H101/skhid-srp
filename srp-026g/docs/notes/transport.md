@@ -777,14 +777,19 @@ used a later copy.
 
 `send_until(id, payload, deadline)` sets the end when the message is
 queued; until then it goes again at the table's pace (50 ms for the short
-ids). The match server uses it for:
+ids). A message not sent by its deadline is lost unsent; one that went
+lives at least the table's lifetime from its first send (the end is
+`max(first send + 250 ms, deadline)`), so a deadline never gives fewer
+copies than before. The match server uses it for:
 
 - relays to a playing game (EB, EC): the tick's time + 500 ms on the match
   clock, less half the game's round trip (50 ms at least), so the last
   copy still arrives while the game's history has the tick. One that
   arrives later is moved to a tick of the game's own choosing (match.md
-  section 5.1). One copy goes in any case. For an input in time that is
-  200 to 450 ms instead of 250 ms from the first send.
+  section 5.1). The round trip is the median of the game's latest 32
+  samples, not the last one: on a spiky line one long sample would cut
+  every relay of the next second to the 250 ms floor. For an input in
+  time that is 250 to 450 ms instead of 250 ms from the first send.
 - drop orders to the input's owner (F1, F2 and EF, F0 from the input
   handler): 450 ms after they are queued. The owner's world time is not
   known here (its inputs are late because its clock or its line is), and

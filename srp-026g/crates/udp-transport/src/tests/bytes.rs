@@ -506,12 +506,17 @@ fn a_deadline_ends_a_message_however_often_it_went() {
     assert_eq!(carrying(&transport.poll(now + ms(450)), 0xEB), 0);
     assert!(transport.is_lost(relay) && !transport.is_delivered(relay));
 
-    // The deadline counts from the send, not from the first time out.
+    // A near deadline never makes the life shorter than the table's 250
+    // ms from the first send: five copies, as without one.
     let at = now + ms(1000);
-    let late = transport.send_until(0xEB, &[8; 10], at + ms(100)).unwrap();
-    assert_eq!(carrying(&transport.poll(at + ms(60)), 0xEB), 1);
-    assert_eq!(carrying(&transport.poll(at + ms(100)), 0xEB), 0);
-    assert!(transport.is_lost(late));
+    let near = transport.send_until(0xEB, &[8; 10], at + ms(100)).unwrap();
+    for step in 0..5 {
+        let datagrams = transport.poll(at + ms(60) + ms(50) * step);
+        assert_eq!(carrying(&datagrams, 0xEB), 1, "send {step}");
+    }
+    assert!(!transport.is_lost(near));
+    assert_eq!(carrying(&transport.poll(at + ms(310)), 0xEB), 0);
+    assert!(transport.is_lost(near));
 
     // What the table keeps or sends once is not cut short.
     let at = now + ms(2000);

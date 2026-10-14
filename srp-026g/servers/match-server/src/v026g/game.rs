@@ -363,9 +363,10 @@ const WORLD_LIFETIME: Duration = Duration::from_millis(1750);
 /// relay's tick: its history is 500 ms, and one that comes later is moved
 /// to a tick of the game's own choosing (match.md section 5.1). It is sent
 /// again until its last copy can still arrive by then (`relay_deadline`),
-/// not for the table's 250 ms from its first send: a relay that waited in
-/// a stall is lost there, not sent late, and one whose copies were all
-/// lost in 250 ms still had a few hundred ms of use (live, 2026-10-14).
+/// and at least for the table's 250 ms from its first send: a relay that
+/// waited in a stall is lost there, not sent late, and one whose copies
+/// were all lost in 250 ms still had a few hundred ms of use (live,
+/// 2026-10-14).
 const RELAY_USEFUL_MS: u32 = 500;
 /// A drop order (0xF1/0xF2, 0xEF/0xF0) is sent again for this long after
 /// it is queued. Its owner's world time is not known here (its inputs are
@@ -2397,7 +2398,8 @@ impl Game {
             };
             match peer.stage {
                 Stage::Live => {
-                    let until = relay_deadline(peer.round_trip, clock, time, now);
+                    let round_trip = usual_round_trip(&peer.round_trips, peer.round_trip);
+                    let until = relay_deadline(round_trip, clock, time, now);
                     if let Some(serial) = send_until(peer, &message, until) {
                         track(peer, serial, Flight::Relay, time);
                     }
@@ -4227,15 +4229,29 @@ fn input_summary(peer: &Peer) -> String {
 }
 
 /// When a relay for the match time `time`, queued at match clock `clock`,
-/// stops going to a game whose round trip is `round_trip` ms: its last
-/// copy must reach the game before the game's world is
-/// [`RELAY_USEFUL_MS`] past the tick, so half a round trip (50 ms at the
-/// least) before that on the match clock, which a live game's clock
-/// keeps to. One copy goes in any case.
+/// stops going to a game whose usual round trip is `round_trip` ms
+/// ([`usual_round_trip`]): its last copy must reach the game before the
+/// game's world is [`RELAY_USEFUL_MS`] past the tick, so half a round trip
+/// (50 ms at the least) before that on the match clock, which a live
+/// game's clock keeps to. One copy goes in any case, and the transport
+/// keeps a relay that went for the table's 250 ms from its first send at
+/// least.
 fn relay_deadline(round_trip: u32, clock: u32, time: u32, now: Instant) -> Instant {
     let way = (round_trip / 2).max(50);
     let left = (time + RELAY_USEFUL_MS).saturating_sub(clock + way).max(50);
     now + Duration::from_millis(u64::from(left))
+}
+
+/// The median of a client's latest round trips ([`ROUND_TRIPS_KEPT`]), or
+/// its `last` before there are any: on a spiky line one long sample would
+/// otherwise cut every relay of the next second short.
+fn usual_round_trip(latest: &VecDeque<u32>, last: u32) -> u32 {
+    let mut round_trips: Vec<u32> = latest.iter().copied().collect();
+    if round_trips.is_empty() {
+        return last;
+    }
+    round_trips.sort_unstable();
+    round_trips[round_trips.len() / 2]
 }
 
 /// As [`send`], given up at `until` (`Transport::send_until`).
@@ -4492,6 +4508,34 @@ mod tests {
         // With no round trip known from before, the samples' shortest is
         // the usual one.
         assert_eq!(correction_for(stall.iter(), None, None), Some(-183));
+    }
+
+    #[test]
+    fn one_long_round_trip_does_not_cut_the_relays_short() {
+        let now = Instant::now();
+        let left = |until: Instant| until.duration_since(now).as_millis();
+        // A line of 80 ms with one sample of 900 ms, the latest.
+        let mut latest: VecDeque<u32> = [80, 85, 78, 82, 90, 81, 79].into();
+        latest.push_back(900);
+        let usual = usual_round_trip(&latest, 900);
+        assert_eq!(usual, 82);
+        // An input on time (its tick 100 ms behind the match clock): 400
+        // ms less 50, not cut to the one copy of 50 ms.
+        assert_eq!(left(relay_deadline(usual, 10_100, 10_000, now)), 350);
+        assert_eq!(left(relay_deadline(900, 10_100, 10_000, now)), 50);
+        // Before any sample, the last round trip; a slow line all along
+        // does shorten it.
+        assert_eq!(usual_round_trip(&VecDeque::new(), 120), 120);
+        let slow: VecDeque<u32> = [400, 420, 380].into();
+        assert_eq!(
+            left(relay_deadline(
+                usual_round_trip(&slow, 400),
+                10_100,
+                10_000,
+                now
+            )),
+            200
+        );
     }
 
     #[test]
