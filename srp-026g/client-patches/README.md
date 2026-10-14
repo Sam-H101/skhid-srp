@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `6689d3549a13f63a38d60a031df5aa4a4903ad811f291d4a35425ef8400f9923` (patch revision 10); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `1656e51d96a6eb6c1f7da61bfa513f37db620f410c4eaf8a4b93bbcf49404efe`. Revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `c43bfd8a1f67369c394470848aa7610a19405122c306414992a47784c2def85e` (patch revision 10); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `c2188027dfce70a4591d13912fea5560b4492de5a39bf394cb28d8d31ac2746b`. Revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen, and patch 20: a spawn gives the new kit's weapons the time of their last tick, and at a change of kit the fire mode, ammunition, chamber, aim and recoil, a new weapon has, where those were what the kit's last life left in the games that played it; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -911,7 +911,7 @@ same world, the starters of a match too, makes the same entries; a kit
 chosen before a match's first world is no longer reset to the kit in use
 (in every game of revision 10 alike).
 
-Checked: `selftest_026g.py` check 20 (787 checks in all).
+Checked: `selftest_026g.py` check 20 (787 checks in all, 814 with patch 20).
 `check_late_join_026g.py` runs the game's own block of the first world
 with its allocator and insert on made-up lists, then the places' own tick:
 in the build the lists are in time order and the next kit after each tick
@@ -921,6 +921,59 @@ pool full); in the original the later choice is hidden by the kit in use;
 the original and three broken copies fail it. **Not run: a game**, nor the
 reported hash reproduction with this exe. Evidence:
 `../docs/notes/client_patch.md` section 3.19.
+
+### 20. A weapon's state that a respawn kept (patch revision 10)
+
+Reported by the analysis of the evening matches of 2026-10-14: in 0x47d5fa35
+most of the stale-kit desyncs were not of the random state (patch 18): six
+games each at two respawns. The saved worlds of those ticks differ in a
+second field of the kit's weapon in slot 10, `m_last_tick_time_in_ms`: -1 in
+the games that had loaded a world during the match, the time of its last use
+in the others (also 0x3c67147b, and 0x4301ed65 where the random states were
+equal).
+
+**The cause.** A world holds the current kit's player alone, and a weapon
+keeps fields through a death and a respawn that the initialize does not set
+again: the time it was last ticked (only the weapon in hand is ticked; the
+activation of the weapon put in hand sets it to the spawn's time), the fire
+mode and the kind of ammunition the player chose in a kit. Each is in the world's bytes, so a respawn into a kit used
+before a game's world parted that game from the others. (The removal of the
+player before a spawn already puts each magazine and chambered round back
+into the ammunition stack, 0x2E18E0.)
+
+**The patch.** At 0x316E57 in the respawn rule's spawn, the load of the
+initialize's call (`8B 16 8B 52 1C`) becomes a call into `kit_state_hook`
+(`late_join_026g.asm`, offset 3168, 129 bytes). Before the initialize, each
+weapon of the new kit gets -1 as the time of its last tick (the
+constructor's) at every spawn, and at a spawn into another kit than the one
+before also the constructor's fire mode and ammunition kind, and as a safety
+(LIKELY no-ops) the magazine, chamber, aim, recoil and the activation's
+other fields (`KIT_STATE_FIELDS` in `patch_026g.py`). The initialize then activates the weapon it puts in hand
+as a new one. A respawn into the same kit keeps the fire mode and the
+ammunition kind: that kit's player is in every world.
+
+**What changes for a player**, exactly two things, both only after a
+respawn into another kit: the kit's fire mode is forgotten (mode 0, the
+first of the weapon's own list: always one it has), and the kit's
+ammunition kind is forgotten (kind 0, the first of the kit's own matching
+ammunition: always one it carries). Edge case: when kind 0's rounds are used
+up and another kind has rounds, the weapon spawns empty on kind 0 and goes
+to a kind with rounds only at an input with action bit 20h or 40h (PROVEN
+that it waits; which keys NOT PROVEN, LIKELY fire or reload). No round is
+lost or added and the server's ammunition count does not change. Not proven:
+rounds in a magazine of a weapon with no ammunition item would be dropped
+(no way to load such a magazine was found).
+
+Checked: `selftest_026g.py` check 21 (814 checks in all).
+`check_late_join_026g.py` runs the game's own spawn with both hooks on
+made-up objects as two games (a kit's last life left in one, a new weapon
+in the other): in the build the new kit's weapons are alike in both at the
+initialize and nothing else changes; the original and five broken copies
+fail it. **Not run: a game.** Not covered: a player who left and came back
+(the place's profile, its storage of stacks and the conditions kept in it,
+is in no world while he is away), the other items' own timers (artefacts,
+medkits, oxygen tanks: none differed in the saved worlds), a weapon's state
+machine and scope. Evidence: `../docs/notes/client_patch.md` section 3.20.
 
 ## Not ported, not done
 

@@ -1196,6 +1196,152 @@ def test_weapon_random(original, image, before):
     check(not found, "no rel32 branch of .text, no rel8 branch byte near it and no 4-byte value aims inside the five "
           "bytes (0x316E76 aims at their start)" + "".join(f"\n          {a:#x}" for a in found))
 
+def register_sites(original, field):
+    """Every [register+field] (disp32, not esp-based) of .text, by the
+    address of its instruction's opcode (a 0x66 prefix not counted)."""
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    sites, position = [], 0
+    while (position := text.find(struct.pack("<I", field), position)) >= 0:
+        modrm, sib = text[position - 1], text[position - 2]
+        if modrm & 0xC0 == 0x80 and modrm & 7 != 4:
+            sites.append(P.TEXT_VA + position - 2)
+        elif sib & 0xC0 == 0x80 and sib & 7 == 4 and modrm & 7 != 4:
+            sites.append(P.TEXT_VA + position - 3)
+        position += 1
+    return sites
+
+
+def test_kit_state(original, image, before):
+    """Check 21: a spawn gives the new kit's weapons the state a weapon
+    every game has alike."""
+    source = Image(original)
+    va, old, offset, _ = P.KIT_STATE_HOOK
+    entry = P.LATE_JOIN_VA + offset
+    rows = lambda blob, at, size: ndisasm(blob.read(at, size), at)
+    texts = lambda blob, at, size: [text for _, _, text in rows(blob, at, size)]
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and texts(source, va, len(old)) == ["mov edx,[esi]", "mov edx,[edx+0x1c]"]
+          and texts(image, va, len(old)) == [f"call 0x{entry:x}"],
+          f"{va:#x}: `mov edx,[esi]` / `mov edx,[edx+0x1c]` is `call 0x{entry:x}`; the original and the build "
+          "without the late join keep them")
+    spawn = rows(source, P.WEAPON_SPAWN_VA, 0x316EB3 - P.WEAPON_SPAWN_VA)
+    at = {address: text for address, _, text in spawn}
+    order = [address for address, _, _ in spawn]
+    between = lambda lo, hi: [at[a] for a in order if lo <= a < hi]
+    check(at.get(0x316DDD) == "mov cl,[ecx+0x115]" and at.get(0x316DE3) == "mov [eax+0xc],dl"
+          and at.get(0x316DFC) == "mov al,[eax+0x115]" and at.get(0x316E02) == "mov [esp+0x10],cl"
+          and at.get(0x316E06) == "mov [esp+0x18],al" and at.get(0x316E0A) == "cmp cl,al"
+          and at.get(0x316E0C) == "jz 0x316e3b" and at.get(0x316E53) == "mov edi,[esp+0x1c]"
+          and between(0x316E3B, 0x316E57) == ["mov eax,[esi+0x134]", "fldz", "mov eax,[eax+0x18458]",
+                                               "movzx ecx,byte [eax+edi+0xc]", "add eax,edi",
+                                               "mov esi,[eax+ecx*4]", "mov edi,[esp+0x1c]"]
+          and not [text for text in between(0x316E0A, 0x316E57) if re.match(r"mov (byte )?\[esp", text)],
+          "the spawn keeps the kit of the player that was current at [esp+10h] (0x316E02) and the new one's at "
+          "[esp+18h] (0x316E06) and tests them for a change of kit (0x316E0A); both paths read the spawn point at "
+          "[esp+1Ch] at 0x316E53 with the same esp, nothing writes the two bytes again, and esi is the new kit's "
+          "player at 0x316E57")
+    ctor = texts(source, 0x2DF0D0, 0x480)
+    check(all(text in ctor for text in (
+        "or eax,byte -0x1", "mov [ebp+0x5a4],eax", "mov [ebp+0x5a8],eax", "mov [ebp+0x5b1],bl",
+        "mov [ebp+0x5b2],bl", "mov [ebp+0x5e5],bl", "mov [ebp+0x5e6],bl", "mov [ebp+0x5e8],bl",
+        "mov [ebp+0x5f1],bl", "mov [ebp+0x5f5],bl", "mov dword [ebp+0x5ec],0x6", "movss dword [ebp+0x5fc],xmm0",
+        "movss dword [ebp+0x600],xmm0", "movss dword [ebp+0x604],xmm0", "movss dword [ebp+0x608],xmm0",
+        "mov dword [ebp+0x60c],0xffffffff", "xor ebx,ebx"))
+          and ctor.index("xor ebx,ebx") < ctor.index("mov [ebp+0x5b1],bl")
+          and not [text for text in ctor[ctor.index("xor ebx,ebx") + 1:ctor.index("mov [ebp+0x5f5],bl")]
+                   if re.match(r"(mov|xor|or|and|add|sub|inc|dec|pop|lea|movzx|setn?z) (ebx|bl|bx),", text)]
+          and ctor[ctor.index("mov [ebp+0x5a4],eax") - 1] == "or eax,byte -0x1"
+          and ctor[ctor.index("mov [ebp+0x5a8],eax") - 1] == "mov [ebp+0x5a4],eax"
+          and "xorps xmm0,xmm0" in ctor[ctor.index("mov [ebp+0x5e0],ebx"):ctor.index("movss dword [ebp+0x5fc],xmm0")]
+          and not [text for text in ctor[ctor.index("mov [ebp+0x5e0],ebx"):ctor.index("movss dword [ebp+0x608],xmm0")]
+                   if re.match(r"\w+ xmm0,", text) and text != "xorps xmm0,xmm0"],
+          "weapon_core's constructor (0x2DF0D0) gives +5A4h and +5A8h -1, +5B1h, +5B2h, +5E5h, +5E6h, +5E8h, "
+          "+5F1h and +5F5h 0, +5ECh 6, +5FCh..+608h 0.0 and +60Ch -1: KIT_STATE_FIELDS")
+    initialize = texts(source, 0x2DAC00, 0x260)
+    activate = texts(source, 0x2E2A30, 0x290)
+    core_vtable = lambda number: struct.unpack("<I", source.read(0xA11094 + number, 4))[0]
+    check("mov [esi+0x324],ebx" in initialize and initialize.index("mov ebx,[ebp+0x8]") < initialize.index(
+        "mov [esi+0x324],ebx") and "call 0x2fcb70" in initialize and "mov [esi+0x128],ecx" in initialize
+          and initialize.index("call 0x2fcb70") < initialize.index("mov [esi+0x128],ecx")
+          and "mov eax,[edx+0x14]" in initialize[initialize.index("mov [esi+0x128],ecx"):]
+          and core_vtable(0x14) == 0x2E2A30
+          and "mov esi,[eax+0x324]" in activate and "mov [edi+0x5a4],esi" in activate
+          and activate.index("mov esi,[eax+0x324]") < activate.index("mov [edi+0x5a4],esi")
+          and all(text in activate for text in ("mov byte [edi+0x5e8],0x0", "mov dword [edi+0x5ec],0x6",
+                                                "mov byte [edi+0x5f5],0x0", "mov dword [edi+0x60c],0xffffffff",
+                                                "mov dword [edi+0x5a8],0xffffffff")),
+          "the initialize keeps the spawn's time at +324h, sets the inventory up (0x2FCB70) and activates the item "
+          "it puts in hand (+128h, vtable+14h: weapon_core's 0x2E2A30), which sets +5A4h to that time and the aim, "
+          "+5ECh, +5F5h, +60Ch and +5A8h as a new weapon has them")
+    tick_sites = {0x244E20: "mov eax,[ebx+0x5a4]", 0x26D028: "mov ecx,[esi+0x5a4]", 0x2DF405: "mov [ebp+0x5a4],eax",
+                  0x2E09EF: "sub edi,[ebp+0x5a4]", 0x2E09F5: "mov [ebp+0x5a4],ebx", 0x2E1BAF: "mov ecx,[edi+0x5a4]",
+                  0x2E1C4B: "mov ecx,[edi+0x5a4]", 0x2E2696: "mov eax,[ecx+0x5a4]", 0x2E2C2B: "mov [edi+0x5a4],esi",
+                  0x2E317D: "lea eax,[ebx+0x5a4]", 0x2E34D2: "mov [edi+0x5a4],ecx"}
+    sites = [site for site in register_sites(original, 0x5A4) if "+0x5a4]" in texts(source, site, 8)[0]]
+    check(sorted(sites) == sorted(tick_sites)
+          and all(texts(source, site, 8)[0] == want for site, want in tick_sites.items())
+          and core_vtable(0x28) == 0x2E09E0,
+          "+5A4h of a register is in .text eleven times: the constructor, the weapon's tick (vtable+28h, 0x2E09E0: "
+          "the time since it, then the tick's time), the activation, the serialize and the deserialize, the "
+          "aim's two (0x2E1B50, 0x2E1BF0, of the weapon in hand), the change of ammunition (0x2E2650, by the "
+          "player's input), the client's draw (0x244E10) and 0x26D028 (another class's +5A4h, read by hand)")
+    fire_mode = {0x2DF4A0: "mov [ebp+0x5e6],bl", 0x2E0CE1: "mov [ecx+0x5e6],dl", 0x2E3504: "mov [edi+0x5e6],cl"}
+    sites = [site for site in register_sites(original, 0x5E6) if "+0x5e6]" in texts(source, site, 8)[0]]
+    writers = [site for site in sites if not re.match(r"(movzx|cmp|lea|test|push) ", texts(source, site, 8)[0])]
+    check(sorted(writers) == sorted(fire_mode)
+          and all(texts(source, site, 8)[0] == want for site, want in fire_mode.items()),
+          "the fire mode (+5E6h) is written by the constructor, the player's input (0x2E0CA0) and the deserialize "
+          "alone: it is kept through deaths and spawns")
+    hook = rows(image, entry, 0xA0)
+    hook = hook[:next(i for i, (_, _, text) in enumerate(hook) if text == "ret") + 1]
+    hook_texts = [text for _, _, text in hook]
+    pc = next(i for i, (_, _, text) in enumerate(hook) if text.startswith("call"))
+    add = re.match(r"add ebx,0x([0-9a-f]+)$", hook_texts[pc + 2])
+    base = 0x594 + 0x10
+    stores = {}
+    for text in hook_texts:
+        match = re.match(r"(or|mov) (byte |dword )?\[edx(?:\+0x([0-9a-f]+))?\],(.*)$", text)
+        if not match:
+            continue
+        field = base + int(match.group(3) or "0", 16)
+        operand = match.group(4)
+        if operand == "byte -0x1":
+            stores[field] = (4, 0xFFFFFFFF)
+        elif operand == "bp":
+            stores[field], stores[field + 1] = (1, 0), (1, 0)
+        elif operand == "ebp":
+            stores[field] = (4, 0)
+        elif match.group(2) == "byte " and operand == "0x0":
+            stores[field] = (1, 0)
+        elif match.group(2) == "dword ":
+            stores[field] = (4, int(operand, 16))
+        else:
+            stores[field] = None
+    wanted = {offset: (size, value) for offset, size, value in P.KIT_STATE_FIELDS}
+    wanted[P.KIT_STATE_TICK_FIELD] = (4, 0xFFFFFFFF)
+    tick_store = hook_texts.index("or dword [edx],byte -0x1")
+    inside = all(entry <= branch_target(text) < hook[-1][0] + 1 for text in hook_texts
+                 if branch_target(text) is not None)
+    other_writes = [text for text in hook_texts if re.match(r"(mov|or|and|add|sub|xor|inc|dec) [a-z ]*\[", text)
+                    and "[edx" not in text]
+    check(hook_texts[0] == "pusha" and hook_texts[-4:] == ["popa", "mov edx,[esi]", "mov edx,[edx+0x1c]", "ret"]
+          and hook_texts[pc + 1] == "pop ebx" and branch_target(hook_texts[pc]) == hook[pc + 1][0]
+          and add is not None and (hook[pc + 1][0] + int(add.group(1), 16)) & 0xFFFFFFFF == P.WEAPON_BIND_VA
+          and "cmp [ebp+0x70],ebx" in hook_texts and "mov ecx,[esi+0x10c]" in hook_texts
+          and "mov al,[esp+0x34]" in hook_texts and "cmp al,[esp+0x3c]" in hook_texts and "setnz al" in hook_texts
+          and "add edx,0x594" in hook_texts and "cmp edi,byte +0x17" in hook_texts
+          and hook_texts[tick_store + 1:tick_store + 3] == ["test al,al", f"jz 0x{hook[-7][0]:x}"]
+          and hook_texts[-7:-4] == ["inc edi", "cmp edi,byte +0x17", f"jc 0x{hook[hook_texts.index('mov edx,[ecx+edi*4+0x10c]')][0]:x}"]
+          and stores == wanted and not other_writes and inside,
+          f"kit_state_hook ({entry:#x}): pushad; for the 23 slots of the player's inventory, an item whose "
+          f"vtable+70h is {P.WEAPON_BIND_VA:#x} gets -1 at weapon+5A4h and, when the kit before (the spawn's "
+          "[esp+10h]) is not the new one ([esp+18h]), KIT_STATE_FIELDS; nothing else is written; popad, the two "
+          "instructions, ret; no branch leaves it")
+    found = aimed_inside(original, va, len(old), 0x82)
+    check(not found, "no rel32 branch of .text, no rel8 branch byte near it and no 4-byte value aims inside the five "
+          "bytes" + "".join(f"\n          {a:#x}" for a in found))
+
 
 def test_first_load(original, image, before):
     """Check 20: a first world's inputs and kit choices, in time order."""
@@ -1396,6 +1542,7 @@ def test_late_join(original, without, server, source):
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
     test_weapon_random(original, image, before)
+    test_kit_state(original, image, before)
     test_first_load(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")

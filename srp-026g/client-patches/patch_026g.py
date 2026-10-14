@@ -394,6 +394,36 @@ def weapon_random_state(place, kit, slot, time):
     return (h ^ h >> 15) % (WEAPON_RANDOM_MODULUS - 1) + 1
 
 
+# The same spawn, before the initialize: at 0x316E57 (`mov edx,[esi]` /
+# `mov edx,[edx+1Ch]`, the load of the initialize's call; esi = the new
+# kit's player, [esp+10h] the kit before, [esp+18h] the new kit, as
+# 0x316E02/0x316E06 put them) a call into kit_state_hook
+# (late_join_026g.asm). Each weapon of the inventory gets -1 (the
+# constructor's) as m_last_tick_time_in_ms (+5A4h): only the weapon in hand
+# is ticked, and the activation (0x2E2A30) the initialize runs for the
+# weapon it puts in hand sets the field to the spawn's time before any tick.
+# At a spawn into another kit than the one before, the fields a weapon keeps
+# through deaths and that the initialize and the activation do not set
+# again, or set only for the weapon in hand, get the constructor's values
+# (0x2DF0D0): KIT_STATE_FIELDS. A respawn into the same kit keeps them: that
+# kit's player is in every world.
+KIT_STATE_VA, KIT_STATE_OFFSET = 0x316E57, 3168
+KIT_STATE_HOOK = (KIT_STATE_VA, bytes.fromhex("8b168b521c"), KIT_STATE_OFFSET, 0xE8)
+KIT_STATE_TICK_FIELD = 0x5A4                  # m_last_tick_time_in_ms, -1 at every spawn
+# (weapon offset, size, the constructor's value) set at a spawn into another kit
+KIT_STATE_FIELDS = (
+    (0x5A8, 4, 0xFFFFFFFF),                   # m_ammo_switch_time_in_ms
+    (0x5B1, 1, 0), (0x5B2, 1, 0),             # m_current_ammo_id, m_next_ammo_id
+    (0x5E5, 1, 0), (0x5E6, 1, 0),             # m_ammo_in_magazine, m_fire_queue_type
+    (0x5E8, 1, 0),                            # m_aimed
+    (0x5EC, 4, 6),
+    (0x5F1, 1, 0),                            # m_is_round_chambered
+    (0x5F5, 1, 0),                            # m_need_to_auto_reload
+    (0x5FC, 4, 0), (0x600, 4, 0), (0x604, 4, 0), (0x608, 4, 0),   # 0.0
+    (0x60C, 4, 0xFFFFFFFF),
+)
+
+
 # A game's first world of a match (game_world_core::deserialize 0x2D0B70,
 # the block 0x2D0FE3..0x2D105C while the world is still frozen: every game's
 # at a match's start, a newcomer's, a game's that comes back) gives each
@@ -460,6 +490,7 @@ LATE_JOIN_HOOKS = (
     (0x23572B, bytes.fromhex("8b8c2498000000"), 3456, 0xE9),     # the hud's lists of players, made again: lists_hook
     (0x39E52, bytes.fromhex("f30f7e00660fd64704"), 3520, 0xE9),  # a box that is no box, in the tree: box_hook
     WEAPON_RANDOM_HOOK,                                          # a spawn's weapons' random state: weapon_random_hook
+    KIT_STATE_HOOK,                                              # a spawn's weapons' kept state: kit_state_hook
     FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
     FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
 )
@@ -885,6 +916,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor), "
                      "the countdown shows the match's team points, "
                      "a spawn gives its weapons a random state of the match's own, "
+                     "and the state a new weapon has where a game could not know the kit's last life, "
                      "a first world's kit choices are the world's and in time order"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))

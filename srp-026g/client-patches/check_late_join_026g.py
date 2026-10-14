@@ -14,7 +14,11 @@ games, one whose weapons of the new kit were drawn from and one whose are at
 the constructor's 1: the build gives both the same random states, the ones
 patch_026g.weapon_random_state names, after the player's initialize and
 before it is put into the world, and nothing else; the original leaves them
-apart; copies with one thing broken fail. The block of a game's first
+apart; copies with one thing broken fail. The same spawn on a kit one
+game played (its weapons as a last life leaves them) and another loaded a
+world since: in the build the new kit's weapons have, at the initialize,
+-1 as their last tick and, at a change of kit, a new weapon's fire mode,
+ammunition, chamber, aim and recoil, alike in both games. The block of a game's first
 world (0x2D0FF2..0x2D105E) runs with the game's own allocator on made-up
 lists, then the places' own tick (0x321790): in the build the entries are
 in time order and the kit choice is the world's, so the next kit after each
@@ -1224,7 +1228,7 @@ PLAIN_ITEM_VTABLE, GRENADE_ITEM_BIND = 0xA1395C, 0x309EC0
 SPAWN_STUBS = {"kit_changed": 4, "statistics": 16, "initialize": 16, "damage_model": 0, "activate": 4}
 
 
-def spawn(data, place, old_kit, new_kit, time, states, protection=0):
+def spawn(data, place, old_kit, new_kit, time, states, protection=0, fields=None, observe=None):
     """The respawn rule's spawn (0x316DA0, the game's own instructions, with
     the hook of the build if it has one) on a made-up rule, world and place:
     three kits, each with a weapon in slots 7 and 10 (the client's class
@@ -1234,7 +1238,10 @@ def spawn(data, place, old_kit, new_kit, time, states, protection=0):
     the statistics, the player's initialize and activate, the damage model)
     are written down and returned from. Returns (the weapons' states after
     it, as they were at initialize and at activate, the calls, a check of
-    everything else)."""
+    everything else). `fields` {kit: {weapon offset: (size, value)}} is
+    written into both weapons of a kit first; with `observe` (a dict) the
+    weapons' bytes are put into it before the spawn, at the initialize and
+    after the spawn."""
     m = Machine(data)
     uc = m.uc
     map_constants(m, data, (WEAPON_VTABLES[0][1], WEAPON_VTABLES[1][1], PLAIN_ITEM_VTABLE))
@@ -1276,6 +1283,8 @@ def spawn(data, place, old_kit, new_kit, time, states, protection=0):
             m.write(weapon, primary)
             m.write(weapon + 0x10, item)
             m.write(weapon + 0x5BC, states[kit][index])
+            for offset, (size, value) in (fields or {}).get(kit, {}).items():
+                uc.mem_write(weapon + offset, value.to_bytes(size, "little"))
             m.write(inventory + 0x10C + slot * 4, weapon + 0x10)
             weapons[kit, slot] = weapon
         ammunition, grenades = ARMS + 0xC000 + kit * 0x1000, ARMS + 0x18000 + kit * 0x1000
@@ -1292,6 +1301,9 @@ def spawn(data, place, old_kit, new_kit, time, states, protection=0):
     random_state = lambda: {key: m.read(weapon + 0x5BC) for key, weapon in weapons.items()}
     others_before = [bytes(uc.mem_read(item, 0x1000)) for item in others]
     calls, at_initialize, at_activate = [], {}, {}
+    weapon_bytes = lambda: {key: bytes(uc.mem_read(weapon, 0x1000)) for key, weapon in weapons.items()}
+    if observe is not None:
+        observe["before"] = weapon_bytes()
 
     def visit(uc, address, size, _):
         for name, at in stub.items():
@@ -1301,6 +1313,8 @@ def spawn(data, place, old_kit, new_kit, time, states, protection=0):
                 calls.append((name, uc.reg_read(UC_X86_REG_ECX), args))
                 if name == "initialize":
                     at_initialize.update(random_state())
+                    if observe is not None:
+                        observe["initialize"] = weapon_bytes()
                 elif name == "activate":
                     at_activate.update(random_state())
 
@@ -1314,6 +1328,8 @@ def spawn(data, place, old_kit, new_kit, time, states, protection=0):
     # bytes are what they were (0x316994).
     m.start(0x316DA0, args=(0xABCDEF00 | place, point, time), count=20000)
     new_player = SPAWN_PLAYERS + new_kit * 0x2000
+    if observe is not None:
+        observe["after"] = weapon_bytes()
     rest = (uc.reg_read(UC_X86_REG_ESP) == STACK + 16
             and all(uc.reg_read(register) == value for register, value in kept.items())
             and list(uc.mem_read(entry + 0xC, 2)) == [new_kit, new_kit]
@@ -1427,6 +1443,111 @@ def weapon_random_fails(original, changed):
         except AssertionError:
             continue
         raise AssertionError(f"weapon_random passes with {name}")
+
+
+# A weapon of a kit's last life, as it can be when the kit is not current:
+# the time of its last tick, the fire mode and ammunition kind the player
+# chose; the magazine 0 as the removal before a spawn leaves it (0x2E18E0);
+# and, for the safety resets, values a weapon in hand had (aim, recoil,
+# chamber, +5ECh, +5F5h, +5A8h), LIKELY never left so by the removal (the
+# random state is weapon_random's).
+USED_WEAPON = {0x5A4: (4, 58700), 0x5A8: (4, 61250), 0x5B1: (1, 1), 0x5B2: (1, 1), 0x5E5: (1, 0), 0x5E6: (1, 2),
+               0x5E8: (1, 1), 0x5EC: (4, 3), 0x5F1: (1, 1), 0x5F5: (1, 1), 0x5FC: (4, 0x3E99999A),
+               0x600: (4, 0x3F000000), 0x604: (4, 0xBDCCCCCD), 0x608: (4, 0x3C23D70A), 0x60C: (4, 61200)}
+
+
+def field_value(blob, offset, size):
+    return int.from_bytes(blob[offset:offset + size], "little")
+
+
+def kit_state(original, changed):
+    """patch_026g.py's KIT_STATE: the respawn rule's spawn on a kit that
+    one game played (its weapons as USED_WEAPON) and another loaded a world
+    since (its weapons as the constructor leaves them). In the build, at
+    the initialize, both games' weapons of the new kit have -1 as the time
+    of their last tick, and at a spawn into another kit every field of
+    KIT_STATE_FIELDS at the constructor's value; at a spawn into the same
+    kit (whose player is in every world, so the games have it alike) the
+    rest is kept. Nothing else of any weapon changes but the random state
+    weapon_random gives, the other kits' weapons not at all."""
+    fresh = {offset: (size, value) for offset, size, value in patch.base.KIT_STATE_FIELDS}
+    fresh[patch.base.KIT_STATE_TICK_FIELD] = (4, 0xFFFFFFFF)
+    assert sorted(fresh) == sorted(USED_WEAPON) and all(fresh[o][0] == USED_WEAPON[o][0] for o in fresh)
+    assert all(fresh[o][1] != USED_WEAPON[o][1] for o in fresh if o != 0x5E5)
+    states = {kit: (1, 1) for kit in range(3)}
+    reset = set(fresh)
+    changed_bytes = lambda offsets: {o + i for o in offsets for i in range(fresh[o][0])} | set(range(0x5BC, 0x5C0))
+    for place, old_kit, new_kit, time, protection in ((0, 0, 1, 21750, 0), (3, 1, 1, 148800, 3000),
+                                                      (8, 2, 0, 729200, 0), (19, 0, 2, 0xFFFFFFCE, 2000),
+                                                      (5, 2, 2, 564750, 0)):
+        for data in (original, changed):
+            game = {}
+            for name in ("played", "loaded"):
+                # A respawn into the same kit: that kit's player is in every
+                # world, so a game that loaded one has it as the others do.
+                new_kit_fields = USED_WEAPON if name == "played" or old_kit == new_kit else fresh
+                fields = {kit: (USED_WEAPON if name == "played" else fresh) for kit in range(3)}
+                fields[new_kit] = new_kit_fields
+                observe = {}
+                _, _, _, calls_right, rest = spawn(data, place, old_kit, new_kit, time, states, protection,
+                                                   fields, observe)
+                assert calls_right and rest, (name, place, old_kit, new_kit)
+                for key, before in observe["before"].items():
+                    at, after = observe["initialize"][key], observe["after"][key]
+                    kit, slot = key
+                    # The initialize is given the weapons as they end: nothing
+                    # but weapon_random's state changes after it.
+                    assert at[:0x5BC] == after[:0x5BC] and at[0x5C0:] == after[0x5C0:]
+                    if kit != new_kit:
+                        assert after == before, (name, key)
+                        continue
+                    differ = {i for i in range(0x1000) if after[i] != before[i]}
+                    if data is changed:
+                        wanted = reset if old_kit != new_kit else {patch.base.KIT_STATE_TICK_FIELD}
+                        assert differ <= changed_bytes(wanted), (name, key, sorted(differ))
+                        for offset, (size, value) in fresh.items():
+                            if offset in wanted:
+                                assert field_value(at, offset, size) == value, (name, key, hex(offset))
+                            else:
+                                assert field_value(at, offset, size) == field_value(before, offset, size)
+                    else:
+                        assert differ <= set(range(0x5BC, 0x5C0)), (name, key, sorted(differ))
+                game[name] = {key: blob[:0x5BC] + blob[0x5C0:] for key, blob in observe["after"].items()
+                              if key[0] == new_kit}
+            if data is changed:
+                assert game["played"] == game["loaded"], (place, old_kit, new_kit)
+            elif old_kit != new_kit:
+                assert game["played"] != game["loaded"]
+
+
+def kit_state_fails(original, changed):
+    """kit_state given the original as the build, and copies of the build
+    with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, rva, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.KIT_STATE_OFFSET
+    code = bytes(changed[cave:cave + 0x90])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "slot 10 left out (the slots end at 10)": broken(bytes.fromhex("83ff17"), bytes.fromhex("83ff0a")),
+        "the change of kit read from the wrong place": broken(bytes.fromhex("3a44243c"), bytes.fromhex("3a442438")),
+        "the fire mode left out": broken(bytes.fromhex("66896a41"), bytes.fromhex("90909090")),
+        "every spawn taken for a change of kit": broken(bytes.fromhex("0f95c0"), bytes.fromhex("b00190")),
+        "the time of the last tick left out": broken(bytes.fromhex("830aff"), bytes.fromhex("909090")),
+    }
+    for name, data in copies.items():
+        try:
+            kit_state(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"kit_state passes with {name}")
 
 
 LOAD_CORE, LOAD_LISTS, LOAD_NODES, LOAD_PLACES, LOAD_STACK = 0x4600000, 0x4620000, 0x4640000, 0x4660000, 0x4680000
@@ -1666,6 +1787,8 @@ def check(original, nasm):
     pregame_progress(original, changed)
     weapon_random(original, changed)
     weapon_random_fails(original, changed)
+    kit_state(original, changed)
+    kit_state_fails(original, changed)
     first_world(original, changed)
     first_world_fails(original, changed)
     for debug in (0, 0xff):
@@ -1709,7 +1832,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); the new kit's weapons' kept state at a spawn: the time of the last tick at every spawn, the fire mode, ammunition, chamber, aim and recoil at a change of kit, alike in a game that played the kit and one that loaded a world, nothing else changed (and the original and five broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); ABI; PE checksum and certificate")
 
 
 def main():

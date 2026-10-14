@@ -396,3 +396,41 @@ them. `notes/match.md` §28 has the evidence and the choices,
     10 (the original reset it to the kit in use in every game alike).
   - Not run in a game; the hash reproduction was not run with the new exe.
     Whether the two other never-admitted joins had this cause is open.
+
+## 0.26g, added 2026-10-14: a weapon's state that a respawn kept
+
+- **Done 2026-10-14, in the same revision 10, not in a download: a respawn
+  into a kit used before a game's world could still part the games after
+  the random state of revision 10.** Seen in the evening matches of
+  2026-10-14 (0x47d5fa35: twelve games out of step at two respawns;
+  0x3c67147b; 0x4301ed65, where the random states were equal): the saved
+  worlds differ in the slot-10 weapon's `m_last_tick_time_in_ms`, -1 in the
+  games that had loaded a world, the time of its last use in the others.
+  A weapon also keeps the fire mode and the ammunition kind the player
+  chose through deaths and spawns; a world holds the current kit alone. PROVEN in the code and in
+  the saved worlds (`notes/client_patch.md` §3.20).
+  - Revision 10 now gives every weapon of the new kit -1 as its last tick at
+    every spawn, and at a spawn into another kit the constructor's fire
+    mode and ammunition kind (and, as a safety, LIKELY no-ops, magazine,
+    chamber, aim and recoil), before the initialize. For players exactly
+    two things change, after a respawn into another kit (kept at a respawn
+    into the same kit): the kit's fire mode and its ammunition kind are
+    forgotten. Edge case: with kind 0's rounds used up and another kind
+    left, the weapon spawns empty and switches only at an input with action
+    bit 20h or 40h (which keys: NOT PROVEN). No ammunition is lost or added.
+    The game's own spawn run with Unicorn; not run in a game.
+  - NOT PROVEN edge case: rounds in a magazine of a weapon with no
+    ammunition item would be dropped by the reset; no way to load such a
+    magazine was found.
+  - **Open: a player who leaves and comes back.** The place's profile (the
+    storage of stacks, the conditions kept in it) and its kits' objects are
+    in no world while he is away: the games that saw him leave keep them as
+    they were, the games that loaded a world meanwhile build them anew
+    (0x47d5fa35: seven games out of step at the return of two players; the
+    majority was the newer games, so the older ones were resynced). Needs a
+    decision: reset a returning place's profile to its static values in
+    every game (he gets his storage back; the server's count of what he
+    used would be short), or let worlds carry the profiles of the places
+    that are away (a world format change).
+  - Open, not seen apart in any saved world: the own timers of artefacts,
+    medkits and oxygen tanks, a weapon's state machine and scope.
