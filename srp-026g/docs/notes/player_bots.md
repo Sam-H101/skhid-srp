@@ -34,19 +34,46 @@ two IEEE half floats (rotation), u32 `actions_mask` (`match_msgs.rs`).
 | 12 / 13 | 0x1000 / 0x2000 | weapon 1 (slot 7) / weapon 2 (slot 10) |
 | 14-19 | 0x4000 .. 0x80000 | quick use 1..6 |
 | 20 | 0x100000 | hold breath |
-| 21 | 0x200000 | use |
-| 22 | 0x400000 | drop |
-| 23 | 0x800000 | throw grenade |
+| 21 | 0x200000 | use: acts on the key going down only, if no use is running |
+| 22 | 0x400000 | drop: acts only while carrying a battery |
+| 23 | 0x800000 | throw grenade: held until the throw starts |
 | 25 / 26 | 0x2000000 / 0x4000000 | next / previous weapon: **never** (below) |
 | 27 | 0x8000000 | melee |
 | 28 | 0x10000000 | spot (key down, 3 s cooldown) |
-| 24, 29, 30 | | unused |
+| 24 | 0x1000000 | never set by the game, yet tested (0x2D8BC1, on a path naming "brain"): **never** send it |
+| 29, 30 | | unused |
 | 31 | | a per-input flag the reader splits off |
 
 PROVEN from the builder (0x241250) and the action table (0xA74AF0); the low
-bits were checked against masks in real worlds. Whether a switch bit acts on
-its level or on its edge is a GUESS: the bot sends key-down actions as one
-tick pulses.
+bits were checked against masks in real worlds. The consumer is
+`base_player` 0x2D86E0:
+- **Use** (0x2D88C3..0x2D88DF) starts on the edge, 0 then 1; holding 1 starts
+  nothing new. PROVEN.
+- **Grenade** (0x2D8E05..0x2D8E6E): pressing marks the grenade slot as
+  wanted (0x309DC0), releasing clears it; the throw starts once the weapon is
+  in state 6 (0x2E4090). So a bot holds bit 23 until the throw begins. PROVEN;
+  the shortest hold that throws is not known.
+- **Quick use 1..6** (0x2D8D7D..0x2D8DFF): key down calls 0x2FCAA0(slot, 1),
+  key up (slot, 0); the slot is the n-th filled one in the order 13..18, 3,
+  0, 1, 2, 4, 5, 6, then pocket items. PROVEN.
+- **Drop** (0x2D8E73..0x2D8EC8): bit 22, or a new fire press, lets go of a
+  carried battery. PROVEN that it runs; "a carrier who fires drops it" is
+  LIKELY, not seen in a game.
+
+Whether the other switch bits act on their level or their edge is a GUESS:
+the bot sends key-down actions as one-tick pulses.
+
+Batteries (code): taking one from the ground on use is instant (0x3007E0),
+and so are putting one in and stealing from a container (0x31CC40); the
+battery config's `take_time: 0.6` is LIKELY the hands-up animation before it
+is in hand. Only resupply zones (`resupply_time_in_ms`), artefact
+containers (`artefacts_search_time_sec`) and defusing a trap need use held.
+A carrier's speed is ×0.95 (`movement_speed_modifier: -0.05`, read at
+0x30016D; speed = max(0, 1 + sum of modifiers), 0x2D5AE0): 3.325 m/s
+walking. The worlds agree: carriers' horizontal speed piles up at 3.32–3.33
+m/s, and of 20 carriers seen with the sprint key and a move key down most
+stay at 3.32–3.4 (LIKELY a carrier cannot sprint; the few at 4.5–4.75 m/s
+are not explained).
 
 Rotation: the first half is a change of yaw, the second of pitch, in
 radians, made once at the input's tick (LIKELY: applied at 0x2D86E0, yaw

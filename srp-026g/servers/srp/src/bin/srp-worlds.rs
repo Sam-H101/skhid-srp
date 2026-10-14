@@ -12,7 +12,11 @@
 //!   frame, facing, keys, crouch and sprint, speed, health, recent hits;
 //! - `statistics.csv`: each roster place's event totals;
 //! - `batteries.csv`: each battery's owner team, finder, the distances
-//!   the statistics keep, and how far each player has carried it.
+//!   the statistics keep, and how far each player has carried it;
+//! - `hits.csv`: for each match, each pair of places where one hit the
+//!   other (a receiver's damage from an inflictor, or an inflictor's last
+//!   hit time on a receiver), with the number of worlds that show it: who
+//!   fought whom, so the two sides. The damage is kept for a life only.
 //!
 //! The roster size and the battery count are not in the file names: the
 //! ones whose statistics fill their section exactly are taken.
@@ -121,10 +125,15 @@ fn run(dir: &Path, out: &Path) -> std::io::Result<()> {
         "match,time,battery,owner_team,first_finder,nearest_0,nearest_1,carried"
     )?;
 
+    let mut hits = BufWriter::new(File::create(out.join("hits.csv"))?);
+    writeln!(hits, "match,inflictor,receiver,worlds")?;
+
     let (mut worlds, mut unread, mut players_read, mut players_unread) = (0, 0, 0, 0);
     for (id, saved) in &matches {
         // (roster places, batteries) once found for the match.
         let mut shape: Option<(usize, usize)> = None;
+        // (inflictor, receiver) -> worlds that show a hit.
+        let mut pairs: BTreeMap<(usize, usize), u32> = BTreeMap::new();
         for world in saved.values() {
             worlds += 1;
             let body = std::fs::read(&world.path)?;
@@ -195,8 +204,27 @@ fn run(dir: &Path, out: &Path) -> std::io::Result<()> {
                     carried.join(";")
                 )?;
             }
+            for (receiver, player) in decoded.players.iter().enumerate() {
+                for inflictor in 0..MAX_PLAYERS {
+                    if player
+                        .received_damage
+                        .iter()
+                        .any(|kit| kit[inflictor] > 0.0)
+                    {
+                        *pairs.entry((inflictor, receiver)).or_default() += 1;
+                    }
+                    if inflictor != receiver && player.last_hit_ms[inflictor] > 0 {
+                        // This player (receiver here) hit `inflictor`.
+                        *pairs.entry((receiver, inflictor)).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for ((inflictor, receiver), count) in pairs {
+            writeln!(hits, "{id},{inflictor},{receiver},{count}")?;
         }
     }
+    hits.flush()?;
     positions.flush()?;
     statistics.flush()?;
     batteries.flush()?;

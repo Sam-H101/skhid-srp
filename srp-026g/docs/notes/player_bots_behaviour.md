@@ -21,11 +21,13 @@ From the code and data (`player_bots.md` §4, §5):
 - **Loadouts:** each player's weapons and armour, from the match's start info.
 - **Map:** spawns, battery spawners, containers, stations, resupply zones, the walker mesh and the bullet mesh (`player_bots.md` §5).
 
-Unknown, to read from match recordings (`SRP_RECORD_DIR`):
-- the "use" key bit: a pickup would then be seen the moment it starts;
-- the grenade throw bit: an unknown key bit followed by that player's grenade count dropping in the next world;
-- the real carrier speed;
-- the pickup time.
+From the client code since (`player_bots.md` §2):
+- **Use** is bit 21, acting on the key going down: a pickup is seen in the inputs the moment it starts. PROVEN.
+- **Grenade** is bit 23, held until the throw starts. PROVEN.
+- **Pickup:** taking a battery is instant in code, with a LIKELY 0.6 s hands-up animation (`take_time`). Players feel it takes time; the bots plan with ~0.6 s and the recordings will say more.
+- **Carrier speed:** ×0.95, 3.325 m/s walking (PROVEN in code); the saved worlds show carriers at 3.32–3.33 m/s, LIKELY unable to sprint.
+
+Still to read from match recordings (`SRP_RECORD_DIR`): how long humans really stand at a battery, and how they throw grenades.
 
 ## 2. What a bot may know
 
@@ -105,7 +107,9 @@ Bots never path back into their own spawn area.
 - **Real routes:** where humans approach batteries from (play 1), and which routes are busy (play 4).
 - **Real timings:** spawn to each battery, pickup time, carrier speed.
 - **Human numbers:** reaction time (an enemy appears, then the first turn toward him and the first shot), burst lengths, how often humans re-peek. These set the bots' parameters.
-- **The unknown key bits** (use, grenade).
+- **Grenades and pickups in use:** when humans throw (bit 23) and how long they stand at a battery (bit 21).
+
+The worlds the server already saves (one every ~5 s, `SRP_SNAPSHOT_DIR`) give a first danger map now: `srp-worlds` tables them (positions, statistics, batteries), and a kill is placed where the killer stood in the world after his kill count grew, if he moved under 10 m in those 5 s. Per 8 m cell: time present, kills, kills per minute present (shrunk toward the level's rate), K/D against the level's average. Matches of fewer than 4 players are left out. The tables and maps stay private (game data of real matches).
 
 ## 6. Technical needs
 
