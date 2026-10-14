@@ -150,8 +150,13 @@ impl Default for CheatTuning {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AimTuning {
-    /// The aim's error when it settles, degrees.
+    /// The aim's error when it settles, degrees: a floor drawn every tick.
     pub error_deg: (f32, f32),
+    /// The aim's slow wander about a tracked target: its spread (standard
+    /// deviation, yaw; the pitch's is half), degrees, and how fast it
+    /// comes back, seconds (a mean-reverting walk).
+    pub wander_deg: (f32, f32),
+    pub wander_s: f32,
     /// The time to bring the view onto a target, seconds (the motor's
     /// turn time while aiming).
     pub settle_s: (f32, f32),
@@ -176,11 +181,13 @@ impl Default for AimTuning {
     fn default() -> Self {
         Self {
             error_deg: (6.0, 1.5),
+            wander_deg: (3.0, 1.3),
+            wander_s: 0.4,
             settle_s: (0.35, 0.15),
             notice: (1.5, 0.8),
             fire_within_deg: 4.0,
-            burst_ms: (250, 600),
-            pause_ms: (300, 700),
+            burst_ms: (500, 1_000),
+            pause_ms: (200, 650),
             range_m: 80.0,
             reaction_ms: (450.0, 180.0),
             combat: super::reflex::CombatTuning::default(),
@@ -397,6 +404,20 @@ impl Tuning {
         check(self.skill.kd_low < self.skill.kd_high, "skill.kd_*")?;
         check(self.aim.burst_ms.0 <= self.aim.burst_ms.1, "aim.burst_ms")?;
         check(self.aim.pause_ms.0 <= self.aim.pause_ms.1, "aim.pause_ms")?;
+        check(self.aim.wander_s > 0.0, "aim.wander_s")?;
+        let c = &self.aim.combat;
+        check(
+            c.strafe_run_ms.0 > 0 && c.strafe_run_ms.0 <= c.strafe_run_ms.1,
+            "aim.combat.strafe_run_ms",
+        )?;
+        check(
+            c.strafe_still_ms.0 <= c.strafe_still_ms.1,
+            "aim.combat.strafe_still_ms",
+        )?;
+        check(
+            c.recoil_pull_deg_s >= 0.0 && c.recoil_pull_max_deg >= 0.0,
+            "aim.combat.recoil_pull_*",
+        )?;
         check(self.hazard_margin >= 0.0, "hazard_margin")?;
         let shares: f32 = self.personalities.iter().map(|p| p.share).sum();
         check(
@@ -460,5 +481,18 @@ mod tests {
         assert!(Tuning::load(&path).is_err());
         std::fs::write(&path, r#"{"skill":{"kd_low":2,"kd_high":1}}"#).unwrap();
         assert!(Tuning::load(&path).is_err());
+        std::fs::write(&path, r#"{"aim":{"wander_s":0}}"#).unwrap();
+        assert!(Tuning::load(&path).is_err());
+        std::fs::write(&path, r#"{"aim":{"combat":{"strafe_run_ms":[0,100]}}}"#).unwrap();
+        assert!(Tuning::load(&path).is_err());
+        // A section given in part keeps the rest of its defaults.
+        std::fs::write(&path, r#"{"aim":{"combat":{"ads_near_m":12}}}"#).unwrap();
+        let tuning = Tuning::load(&path).unwrap();
+        assert_eq!(tuning.aim.combat.ads_near_m, 12.0);
+        assert_eq!(
+            tuning.aim.combat.strafe_run_ms,
+            defaults.aim.combat.strafe_run_ms
+        );
+        assert_eq!(tuning.aim.burst_ms, defaults.aim.burst_ms);
     }
 }
