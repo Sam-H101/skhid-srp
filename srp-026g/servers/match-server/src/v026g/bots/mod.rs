@@ -26,6 +26,7 @@
 //! on bodies and statistics, the map once its grid is built; and the
 //! inputs the bots make.
 
+pub mod aimpoint;
 pub mod anomalies;
 pub mod body;
 pub mod cheats;
@@ -1169,6 +1170,8 @@ fn drive_tick(
         let decision = bot.motor.rest();
         return Decision { keys, ..decision };
     }
+    // [aimpoint] What of its target shows, before the reflex aims.
+    bot.reflex.look(me, view, &tactics.world, time);
     let over = bot.reflex.tick(
         me,
         view,
