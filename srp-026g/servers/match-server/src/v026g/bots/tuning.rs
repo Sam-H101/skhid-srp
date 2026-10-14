@@ -164,6 +164,12 @@ pub struct AimTuning {
     pub pause_ms: (u32, u32),
     /// Farther than this a bot does not shoot, metres.
     pub range_m: f32,
+    /// From noticing an enemy to the first shot, ms (drawn ±15 % per
+    /// target).
+    pub reaction_ms: (f32, f32),
+    /// The reflex's other numbers (plays 5, 7, 11, 19, 20, 21, reloads),
+    /// the same at every skill.
+    pub combat: super::reflex::CombatTuning,
 }
 
 impl Default for AimTuning {
@@ -176,6 +182,8 @@ impl Default for AimTuning {
             burst_ms: (250, 600),
             pause_ms: (300, 700),
             range_m: 80.0,
+            reaction_ms: (450.0, 180.0),
+            combat: super::reflex::CombatTuning::default(),
         }
     }
 }
