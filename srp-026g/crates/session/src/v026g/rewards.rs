@@ -64,6 +64,9 @@
 //!   level pays [`pay::level_reward`].
 //! - **Rating**: 0.21d's Elo between the teams (`v021d::rating`), from
 //!   [`pay::START_RATING`].
+//! - **The balance rating** (srp's own, for the sides of a match:
+//!   [`balance`]): moved by a match that had `SRP_BALANCE_RATED_PLAYERS`
+//!   players or more in it (default 4), each by its share of the match.
 //! - **Quests**: [`quests::evaluate_scaled`] with the match's numbers:
 //!   a quest's silver and reputation times the match level's multipliers,
 //!   its reputation times `SRP_REPUTATION_RATE` percent too, and twice in
@@ -273,14 +276,18 @@ pub struct Terms {
     /// Whether the first games of a play period raise the drop chance
     /// ([`pay::drop_playtime_bonus`]).
     pub playtime_bonus: bool,
+    /// The fewest players a match must have had in it to move the balance
+    /// rating ([`balance::players_in`]). 1: every match does.
+    pub rated_players: u32,
 }
 
 impl Terms {
     /// srp's terms at `now`: `SRP_EXPERIENCE_RATE` (default 2),
     /// `SRP_MONEY_RATE` (default: by the match's level),
     /// `SRP_REPUTATION_RATE` (default 120), `SRP_ITEM_WEAR` and
-    /// `SRP_DROP_PLAYTIME_BONUS` (both off unless set) and the weights
-    /// srp's matches are made with.
+    /// `SRP_DROP_PLAYTIME_BONUS` (both off unless set),
+    /// `SRP_BALANCE_RATED_PLAYERS` (default 4) and the weights srp's
+    /// matches are made with.
     pub fn at(now: u64) -> Self {
         Self {
             now,
@@ -290,6 +297,7 @@ impl Terms {
             score_weights: SCORE_WEIGHTS,
             wear: pay::item_wear(),
             playtime_bonus: pay::drop_playtime_bonus(),
+            rated_players: balance::rated_players(),
         }
     }
 }
@@ -1243,7 +1251,10 @@ impl<'a> Shared<'a> {
     /// are the ranking's: those who were in the match, one who left with
     /// its team's result and nothing more. A match with a test bot, with
     /// no known winner, or left by a whole side ([`MatchEnd::Deserted`]:
-    /// its winner is who stayed) moves none.
+    /// its winner is who stayed) moves none. Nor does a match of few
+    /// players ([`Terms::rated_players`], by default one against one and
+    /// two against one): it is not one more match of anybody's either, so
+    /// it adds nothing to how far a rating is trusted.
     ///
     /// Each counts for the share of the match it was in
     /// ([`balance::changes_by_share`]): its time in the match against the
@@ -1288,6 +1299,16 @@ impl<'a> Shared<'a> {
             .collect();
         // One side only: no match to learn from, and none counted.
         if !(0..2).all(|team| list.iter().any(|player| player.0 == team)) {
+            return changes;
+        }
+        let players = balance::players_in(&list);
+        if players < self.terms.rated_players {
+            log::info!(
+                "Match {:#x} moves no balance rating: {players} players were in it for half of \
+                 it or more, and it takes {}",
+                self.result.match_id,
+                self.terms.rated_players
+            );
             return changes;
         }
         for (&(index, ..), change) in rated.iter().zip(balance::changes_by_share(&list, winner)) {

@@ -73,6 +73,10 @@ RUST_LOG=info
 # SRP_BALANCE_PLAYER_LEVEL=1.5
 # SRP_BALANCE_RATING=4
 # SRP_BALANCE_TRUST_MATCHES=5
+# The fewest players a match must have had in it, for half of it or more,
+# to move the balance rating: 4 leaves out one against one and two against
+# one. 1: every match moves it.
+# SRP_BALANCE_RATED_PLAYERS=4
 # Games of patch revision 5 or later join matches that are being played.
 # A match of theirs starts with this many players, this long after the
 # second one pressed Play, and takes who comes later:

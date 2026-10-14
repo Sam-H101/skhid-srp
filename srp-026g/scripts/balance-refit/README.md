@@ -50,7 +50,10 @@ python scripts/balance-refit/refit.py LOGDIR --min-players 0
     because two players can only be split one way, so the match says nothing
     about how sides should be made, and because so small a match is the
     easiest to play by agreement. `--min-players 0` keeps every size: run
-    both and compare.
+    both and compare. The server moves no balance rating for a match of
+    fewer than four either (`SRP_BALANCE_RATED_PLAYERS`, `matchmaking.md`
+    section 8.3); it counts the players who were in for half of the
+    longest stay, which is not always the same number.
 - A per-minute line is taken only when it agrees with itself: the players it
   leaves in are as many as it says and count for what it says, less the lead.
   One that does not is left out and counted in a NOTE. Lines written before

@@ -150,6 +150,7 @@ A port that is not a number stops srp at start.
 | `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
 | `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |
 | `SRP_BALANCE_TRUST_MATCHES` | 5 | The matches after which a balance rating counts for half; one of no match counts for nothing |
+| `SRP_BALANCE_RATED_PLAYERS` | 4 | The fewest players a match must have had in it to move the balance rating, 1 to 20: the players who were in it for half of the longest stay or more. With 4, one against one and two against one move none; 1: every match does (`matchmaking.md` §8.3). The ranking's rating and the pay do not depend on it |
 | `SRP_BALANCE_BATTERY_LEAD` | 0.55 | In a match being played (modes 2, 3): what a battery of lead counts for, in players, for the side that leads. Used where a player who joins late goes, and in the log's prediction (`matchmaking.md` §9) |
 | `SRP_BALANCE_TICKET_LEAD` | 0.2 | The same for a ticket of lead in a Team Deathmatch |
 | `SRP_BALANCE_DRAMATIC_LEAD` | 2.5 | The lead, in players, from which the side that trails may have two players more than the other when players join late (5 batteries, 13 tickets). 0: never more than one |
