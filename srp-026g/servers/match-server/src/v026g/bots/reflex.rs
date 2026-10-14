@@ -467,6 +467,9 @@ pub struct Reflex {
     /// No shot before this (a reload or the switch to the pistol under
     /// way).
     busy_until: u32,
+    /// [aimpoint] The target's parts that show, the view's line
+    /// ([`Self::look`]).
+    sight: super::aimpoint::Sight,
 }
 
 /// The bearing of `to` from `from`, radians.
@@ -585,6 +588,21 @@ impl Reflex {
         self.cover_steps(me, sit, now, c, rng);
         self.matchup(me, sit, memory, now, c);
         self.grenade_roll(me, sit.view, now, c, rng);
+    }
+
+    /// [aimpoint] Before each [`Self::tick`]: which parts of the target
+    /// show from the bot's eyes on `world`'s bullet mesh. A reflex never
+    /// told this (no map) aims at the chest and holds no shot for the
+    /// world.
+    pub fn look(
+        &mut self,
+        me: &PlaceView,
+        view: &MatchView,
+        world: &std::sync::Arc<mapdata::World>,
+        now: u32,
+    ) {
+        self.new_life(me);
+        self.sight.update(me, self.target, view, world, now);
     }
 
     /// A new life: the per-life counts start again (the rounds with a full
@@ -1195,6 +1213,8 @@ impl Reflex {
                     ..Override::default()
                 },
                 _ => Override {
+                    // [aimpoint] Where the last target was last seen.
+                    look_at: self.sight.pre_aim(now),
                     keys: reload,
                     legs,
                     ..Override::default()
@@ -1204,6 +1224,10 @@ impl Reflex {
         // The seen body where it is now (a seen enemy is tracked by eye).
         let body = view.place(track.who()).filter(|p| p.alive);
         let point = body.map_or(track.at() + Vec3::new(0.0, 1.3, 0.0), PlaceView::chest);
+        // [aimpoint] The part of him that shows (none: where he was last
+        // seen); a shot only clear of the world (the last test below).
+        let aimed = self.sight.aim(track.who(), body, point);
+        let point = aimed.point;
         // The error settles from its start toward the skill's, never to 0.
         let t = now.saturating_sub(self.since) as f32 / 1000.0;
         let fade = (-t / settle_s).exp();
@@ -1237,6 +1261,7 @@ impl Reflex {
             && now >= self.busy_until
             && self.hands().held().rounds > 0
             && point.distance_xz(me.feet) <= aim.range_m
+            && self.sight.clear_shot(me, &aimed, error)
         {
             if now < self.burst_until {
                 wants = true;

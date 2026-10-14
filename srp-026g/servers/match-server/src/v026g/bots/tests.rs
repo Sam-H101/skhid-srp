@@ -51,6 +51,8 @@ struct Body {
     carrying: Option<usize>,
     last_shot: u32,
     moved: f32,
+    /// The bot's target as its last input was made (the reflex's).
+    target: Option<Place>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +63,8 @@ enum Lying {
 }
 
 type Recorded = (u32, Vec<Fix>, Vec<f32>, WorldFacts);
+/// An input for a tick: the tick, the keys, the turn, the bot's target.
+type Queued = (u32, u32, (f32, f32), Option<Place>);
 
 /// The stand-in game.
 struct Game {
@@ -76,13 +80,19 @@ struct Game {
     /// Timed batteries: the next one's time, and every how long one
     /// appears by a station (round the stations in turn).
     timed: Option<(u32, u32)>,
-    inputs: Vec<VecDeque<(u32, u32, (f32, f32))>>,
+    inputs: Vec<VecDeque<Queued>>,
     /// The worlds of the last two seconds.
     history: VecDeque<Recorded>,
     tick: u32,
     rng: Rng,
     shots: u32,
     hits: u32,
+    /// Shots at the bot's target whose ray met the world short of him, and
+    /// those with nothing of him showing.
+    walled: u32,
+    hidden: u32,
+    /// Rays the counts above cast (not the bots').
+    metric_rays: u64,
     delivered: [u32; 2],
     stolen: u32,
 }
@@ -151,6 +161,7 @@ impl Game {
             carrying: None,
             last_shot: 0,
             moved: 0.0,
+            target: None,
         };
         let mut game = Self {
             kin: Kinematics::default(),
@@ -167,6 +178,9 @@ impl Game {
             rng: Rng::new(seed),
             shots: 0,
             hits: 0,
+            walled: 0,
+            hidden: 0,
+            metric_rays: 0,
             delivered: [0, 0],
             stolen: 0,
             world,
@@ -236,7 +250,7 @@ impl Game {
         let n = self.bodies.len();
         let mut pressed = vec![0u32; n];
         for (place, queue) in self.inputs.iter_mut().enumerate() {
-            while let Some(&(at, keys, turn)) = queue.front() {
+            while let Some(&(at, keys, turn, target)) = queue.front() {
                 if at > tick {
                     break;
                 }
@@ -245,6 +259,7 @@ impl Game {
                 let body = &mut self.bodies[place];
                 pressed[place] = keys & !body.keys;
                 body.keys = keys;
+                body.target = target;
                 body.yaw += turn.0;
                 body.pitch = (body.pitch + turn.1).clamp(-1.0, 1.0);
             }
@@ -310,6 +325,23 @@ impl Game {
             let [fx, fz] = forward(body.yaw);
             let (c, s) = (body.pitch.cos(), body.pitch.sin());
             let dir = Vec3::new(fx * c, s, fz * c);
+            // A shot at the bot's target with nothing of him showing
+            // (`aimpoint`'s parts), or whose ray meets the world short of
+            // him.
+            if let Some(target) = body.target.map(|t| &self.bodies[t])
+                && target.alive
+            {
+                let before = super::aimpoint::rays_cast();
+                let crouched = target.keys & key::CROUCH != 0;
+                if !super::aimpoint::shows(eye, target.feet, crouched, &self.world.sight, || true) {
+                    self.hidden += 1;
+                }
+                let reach = (Self::chest(target) - eye).length() - 0.5;
+                if self.world.sight.ray_cast(eye, dir, reach).is_some() {
+                    self.walled += 1;
+                }
+                self.metric_rays += super::aimpoint::rays_cast() - before;
+            }
             let mut best: Option<(Place, f32)> = None;
             for (target, other) in self.bodies.iter().enumerate() {
                 if !other.alive || other.team == body.team {
@@ -471,6 +503,11 @@ struct Outcome {
     stolen: u32,
     shots: u32,
     hits: u32,
+    walled: u32,
+    hidden: u32,
+    /// Sight and aim rays the bots cast (`aimpoint`), per bot and second
+    /// of play.
+    rays_per_bot_s: f32,
     least_moved_m: f32,
     stuck_notes: usize,
     #[allow(dead_code)]
@@ -521,6 +558,7 @@ fn soak_mode(
         bots.entered(place, true, 0);
     }
     let mut out = Outcome::default();
+    let rays_before = super::aimpoint::rays_cast();
     let limit_ms = limit_s * 1000;
     let (mut clock, mut next_world) = (0, 1_000);
     while clock < limit_ms {
@@ -558,7 +596,10 @@ fn soak_mode(
                 half_value(u16::from_le_bytes([r[2], r[3]])),
             );
             assert!(turn.0.abs() < std::f32::consts::PI && turn.1.abs() < std::f32::consts::PI);
-            queue.push_back((made.time, made.input.actions, turn));
+            let target = bots.bots[made.place]
+                .as_ref()
+                .and_then(|bot| bot.reflex.target());
+            queue.push_back((made.time, made.input.actions, turn, target));
         }
         if win > 0
             && let Some(team) = (0..2u8).find(|&t| game.points[usize::from(t)] >= win)
@@ -597,6 +638,11 @@ fn soak_mode(
     out.stolen = game.stolen;
     out.shots = game.shots;
     out.hits = game.hits;
+    out.walled = game.walled;
+    out.hidden = game.hidden;
+    out.rays_per_bot_s = (super::aimpoint::rays_cast() - rays_before - game.metric_rays) as f32
+        / teams.len() as f32
+        / out.end_s.max(1.0);
     out.least_moved_m = game
         .bodies
         .iter()
@@ -616,7 +662,7 @@ fn soak_mode(
         }
         let Outcome { notes: _, .. } = &out;
         eprintln!(
-            "winner {:?} at {} s; kills {:?}; delivered {:?}; stolen {}; hits {} of {} shots; least moved {:.0} m; stuck notes {}",
+            "winner {:?} at {} s; kills {:?}; delivered {:?}; stolen {}; hits {} of {} shots, {} into a wall short of the target, {} at a hidden target; {:.1} sight and aim rays per bot a second; least moved {:.0} m; stuck notes {}",
             out.winner,
             out.end_s,
             out.kills,
@@ -624,6 +670,9 @@ fn soak_mode(
             out.stolen,
             out.hits,
             out.shots,
+            out.walled,
+            out.hidden,
+            out.rays_per_bot_s,
             out.least_moved_m,
             out.stuck_notes
         );
@@ -644,6 +693,16 @@ fn a_short_soak_has_fights_and_keeps_the_input_rules() {
         out.shots
     );
     assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
+    // Never through the world (`aimpoint`): before it, 48 of 416 shots
+    // went into a wall short of the target or at one of whom nothing
+    // showed; the few left are a tick's turn or step.
+    assert!(
+        out.walled + out.hidden <= out.shots / 33,
+        "{} into a wall, {} at a hidden target, of {} shots",
+        out.walled,
+        out.hidden,
+        out.shots
+    );
 }
 
 /// The whole match (minutes of play: `cargo test --release -- --ignored`).

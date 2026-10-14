@@ -371,6 +371,22 @@ the archive's index: a loader must follow them.
      empty with the weapon's time (the Mosin round by round), and takes the
      TT-33 when weapon 1's kit ammo is gone (the AK-74U's 30 are one
      magazine).
+   - Sight and aim by body part (`aimpoint.rs`, owner 2026-10-14): an enemy
+     is seen when some part of him shows on the bullet mesh (chest, head,
+     belly, thighs, the chest's edges, shins; heights of the game's hit
+     boxes as the 0.100b server poses them, standing and crouched; the
+     same in 0.26g is a GUESS); the reflex aims at the first part that
+     shows (centre mass first, the head last, the motor's usual settle when
+     it changes) and fires only while that part shows where the enemy is
+     and where his speed takes him, and the view's line now and after this
+     tick's turn meets no wall short of him; with nothing showing it holds
+     fire and keeps the view where he was last seen (1.5 s). Grenades are
+     not held. Bullets pierce some thin materials in the game
+     (`bullet::try_pierce`, material `armor`), but the mesh has no material
+     per face: everything in it counts as solid. Soaks: shots into a wall
+     short of the target 3.5-9 % → 0-0.5 %, at a target with nothing
+     showing 1.4-2.4 % → 0-0.7 %; about 1.1 µs a ray on the real maps
+     (`real_sight_cost`), 42-51 sight and aim rays a bot a second.
    - Anomalies (`anomalies.rs`, `hazards.rs`): every damage zone with a hit
      is kept off with a margin; level_03's electric pairs run on the match
      clock from the static seed (checked on 36 matches' worlds) and are

@@ -2,9 +2,11 @@
 //! way enemy facts come to it besides its team's callouts and the cheats.
 //!
 //! - **Sight:** an enemy within `sight_m`, inside the view's width, with a
-//!   clear line from the bot's eyes to his eyes or chest on the bullet
-//!   mesh. The rays come from a budget shared by all bots of the match,
-//!   and the enemies longest unchecked go first (research B5).
+//!   clear line from the bot's eyes to some part of his body on the bullet
+//!   mesh (`aimpoint`: chest, head, belly, thighs, the chest's edges,
+//!   shins; the first that shows ends the test). The rays come from a
+//!   budget shared by all bots of the match, and the enemies longest
+//!   unchecked go first (research B5).
 //! - **Hearing:** the sounds of the last think (shots, sprinting, a reload
 //!   or switch, a use) within their ranges (× the hearing cheat), placed
 //!   with an error that grows with the distance.
@@ -76,9 +78,9 @@ pub fn sense(
         if distance > tuning.sight_m || !in_view(me.feet, me.yaw, enemy.feet, tuning.view_deg) {
             continue;
         }
-        let seen = [enemy.eye(), enemy.chest()]
-            .into_iter()
-            .any(|point| rays.take() && sight.visible(eye, point));
+        // [aimpoint] Seen when some part of him shows, not only the eyes
+        // or the chest: legs on a stair, a head over a wall.
+        let seen = super::aimpoint::any_part_visible(eye, enemy, sight, || rays.take());
         if seen {
             out.push(Percept {
                 who,
