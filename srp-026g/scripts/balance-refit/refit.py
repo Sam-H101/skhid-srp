@@ -7,7 +7,7 @@ Reads, by match id:
   "Match 0x.. late join: .."   who came into the match being played;
   "Match 0x.. at <s> s: .."    each minute: how many of each side are in the
                                match, and who of its roster is out;
-  "Match 0x.. settled (.., winner Some(N), ..)"   who won.
+  "Match 0x.. settled (.., winner Some(N), ..)"   who won, and how it ended.
 
 and answers:
 
@@ -24,12 +24,19 @@ the mean of its rosters over the minutes, so a player who was there for half
 of the match is half a player. A match without them (a log from before those
 lines) is fitted on its starting roster.
 
+Left out: a match with no winner, a match a whole side left (the server does
+not move the balance rating for one either), and a match with fewer than
+--min-players in it for most of its time (4: one against one and two against
+one say little about how sides should be made, and are the easiest to play
+by agreement).
+
 Usage:
   refit.py LOG [LOG ...]                       # files or directories of srp-*.log
   refit.py logs/ --since 2026-10-13T21:31      # only matches made after that UTC time
   refit.py logs/ --weights 12,1,1.5,4 --weights 10,1,2,4
   refit.py logs/ --start-roster                # the sides as the lobby made them
   refit.py logs/ --strict                      # only matches whose roster the log gives in full
+  refit.py logs/ --min-players 2               # the smallest matches too
 
 Needs only Python 3. Prints no player names.
 
@@ -85,6 +92,7 @@ def parse_joiners(text):
 def read_matches(paths, since, until):
     """Yield a dict for each match that has a "sides" and a "settled" line:
     id, sides=[[player..],[player..]], winner (0, 1, 2 for a draw, None),
+    reason (how it ended: ModeRule, TimeLimit, Deserted, NoShow),
     settled_players, late (somebody joined it), and events: in the log's
     order ("join", [player..]) and ("minute", dict(count, n, lead, out))."""
     files = []
@@ -130,11 +138,38 @@ def read_matches(paths, since, until):
                 m = SETTLED.search(line)
                 if m:
                     win = int(m.group(4)) if m.group(4) is not None else None
-                    settled[m.group(1)] = (win, int(m.group(5)))
+                    settled[m.group(1)] = (win, int(m.group(5)), m.group(2))
     for mid, s in sides.items():
         if mid in settled:
             yield dict(id=mid, sides=s, winner=settled[mid][0], settled_players=settled[mid][1],
+                       reason=settled[mid][2],
                        late=any(kind == "join" for kind, _ in events[mid]), events=events[mid])
+
+
+def players_in(match):
+    """How many players the match had: as many as were in it for at least half
+    of its per-minute lines, so a match that began one against one and grew is
+    as large as it was for most of its time. Its starting roster when the log
+    has no such lines."""
+    counts = sorted((sum(what["n"]) for kind, what in match["events"] if kind == "minute"), reverse=True)
+    if not counts:
+        return sum(len(side) for side in match["sides"])
+    return counts[(len(counts) - 1) // 2]
+
+
+def left_out(match, min_players):
+    """Why the match is not fitted ("no winner", "deserted", "small"), or None.
+
+    Deserted: a whole side left, and the winner is who stayed; the server
+    moves no balance rating for such a match either. Small: fewer than
+    `min_players` were in it for most of its time."""
+    if match["winner"] not in (0, 1):
+        return "no winner"
+    if match["reason"] in ("Deserted", "NoShow"):
+        return "deserted"
+    if players_in(match) < min_players:
+        return "small"
+    return None
 
 
 def split_names(text, names):
@@ -332,28 +367,33 @@ def main():
     ap.add_argument("--strict", action="store_true",
                     help="leave out the matches whose roster the log does not give in full "
                          "(with --start-roster: the matches whose roster changed)")
+    ap.add_argument("--min-players", type=int, default=4,
+                    help="leave out the matches with fewer players in them for most of their time "
+                         "(4: no one against one, no two against one; 0 keeps every size)")
     ap.add_argument("--bootstrap", type=int, default=300, help="resamples for the ranges (0 = off)")
     ap.add_argument("--seed", type=int, default=1)
     args = ap.parse_args()
 
     ms = list(read_matches(args.logs, args.since, args.until))
     total = len(ms)
-    ms = [m for m in ms if m["winner"] in (0, 1)]
-    draws = total - len(ms)
+    why = [left_out(m, args.min_players) for m in ms]
+    ms = [m for m, reason in zip(ms, why) if reason is None]
+    dropped = (f"{why.count('no winner')} with no winner 0/1, {why.count('deserted')} left by a whole side, "
+               f"{why.count('small')} with fewer than {args.min_players} players in them for most of their time")
     rows = [(m,) + match_features(m, args.trust_matches, args.start_roster) for m in ms]
     if args.strict:
         # In full: every per-minute line read, or none in the log and no sign of a change.
         rows = [(m, x, how) for m, x, how in rows
                 if not how["changed"] or (not args.start_roster and how["minutes"] and not how["unread"])]
     if len(rows) < 8:
-        sys.exit(f"{len(rows)} usable matches ({total} paired, {draws} without a winner 0/1): too few to fit.")
+        sys.exit(f"{len(rows)} usable matches ({total} paired by id; left out: {dropped}): too few to fit.")
     ms = [m for m, _, _ in rows]
     feats = [x for _, x, _ in rows]
     hows = [how for _, _, how in rows]
     ys = [1 if m["winner"] == 0 else 0 for m in ms]
 
-    print(f"{len(ms)} matches used ({total} paired by id, {draws} dropped for no winner 0/1"
-          f"{', strict roster' if args.strict else ''}); team 0 won {sum(ys)}.")
+    print(f"{len(ms)} matches used ({total} paired by id; left out: {dropped}"
+          f"{'; strict roster' if args.strict else ''}); team 0 won {sum(ys)}.")
     by_minute = sum(1 for how in hows if how["minutes"])
     changed = sum(1 for how in hows if how["changed"])
     if args.start_roster:

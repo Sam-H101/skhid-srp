@@ -11,6 +11,7 @@ names.
 python scripts/balance-refit/refit.py LOGDIR --since 2026-10-13T21:31
 python scripts/balance-refit/refit.py LOGDIR --weights 10,1,2,4 --weights 8,1,2.5,4 --strict
 python scripts/balance-refit/refit.py LOGDIR --start-roster
+python scripts/balance-refit/refit.py LOGDIR --min-players 0
 ```
 
 - Free fit: the weights that would have predicted the winners best, in the
@@ -37,6 +38,19 @@ python scripts/balance-refit/refit.py LOGDIR --start-roster
   that the roster changed (a late join, or as many settled as were not
   seated at the start).
   With `--start-roster` it leaves out the matches whose roster changed.
+- Left out, and counted in the first line of the output:
+  - a match with no winner;
+  - a match a whole side left (`Deserted`, `NoShow`): its winner is who
+    stayed, and the server moves no balance rating for it either;
+  - a match with fewer than `--min-players` (4) in it for most of its time.
+    The size of a match is the number of players that were in it for at
+    least half of its per-minute lines, so a match that began one against
+    one and grew counts as what it grew to; without such lines it is the
+    starting roster. One against one and two against one are left out
+    because two players can only be split one way, so the match says nothing
+    about how sides should be made, and because so small a match is the
+    easiest to play by agreement. `--min-players 0` keeps every size: run
+    both and compare.
 - A per-minute line is taken only when it agrees with itself: the players it
   leaves in are as many as it says and count for what it says, less the lead.
   One that does not is left out and counted in a NOTE. Lines written before
@@ -54,4 +68,5 @@ python scripts/balance-refit/refit.py LOGDIR --start-roster
   ticket of lead counts for) are not fitted here.
 - Tests: `python -I scripts/balance-refit/test_refit.py` (synthetic logs, and
   the lines of one real match: parsing, the since filter, the rosters by
-  minute, the fit recovering known weights, the scoring).
+  minute, the matches left out, the fit recovering known weights, the
+  scoring).

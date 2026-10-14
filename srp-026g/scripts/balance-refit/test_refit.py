@@ -33,8 +33,8 @@ def minute(mid, s, sides, out=""):
                 + (f"; out: {out}" if out else ""))
 
 
-def settled(mid, winner, players):
-    return f"13:00:00.000Z [srp] [INFO] Match {mid} settled (TimeLimit, winner Some({winner}), {players} players): x"
+def settled(mid, winner, players, reason="TimeLimit"):
+    return f"13:00:00.000Z [srp] [INFO] Match {mid} settled ({reason}, winner Some({winner}), {players} players): x"
 
 
 def read(text):
@@ -87,7 +87,9 @@ class Refit(unittest.TestCase):
         self.assertEqual(len(ms), 1)
         m = ms[0]
         self.assertTrue(m["late"])
-        self.assertEqual((m["winner"], m["settled_players"]), (2, 3))
+        self.assertEqual((m["winner"], m["settled_players"], m["reason"]), (2, 3, "Deserted"))
+        # Two were in it for two of its three minutes.
+        self.assertEqual(refit.players_in(m), 2)
         self.assertEqual([kind for kind, _ in m["events"]], ["minute", "join", "minute", "minute"])
         self.assertEqual(m["events"][1][1], [dict(name="5", value=12.0, team=0)])
         self.assertEqual(m["events"][2][1]["n"], (2, 1))
@@ -147,6 +149,33 @@ class Refit(unittest.TestCase):
         self.assertEqual(refit.match_features(m, 5.0)[1], dict(minutes=0, unread=0, changed=False))
         m = read("\n".join([head, settled("0xd", 1, 3)]))[0]
         self.assertTrue(refit.match_features(m, 5.0)[1]["changed"])
+
+    def test_small_and_deserted_matches_are_left_out(self):
+        a, b = player("Aa", 1, 1, 0.0, 0), player("Bb", 2, 1, 0.0, 0)
+        va, vb = value(1, 1, 0.0, 0), value(2, 1, 0.0, 0)
+        head = line("12:00:00.000", f"Match 0xe sides: team 0 counts {va:.1f}: {a} | team 1 counts {vb:.1f}: {b}")
+        duel = [minute("0xe", s, ((va, 1), (vb, 1))) for s in (0, 60)]
+        grown = [minute("0xe", s, ((va, 2), (vb, 2))) for s in (120, 180, 240)]
+        # One against one all through; without per-minute lines the starting roster is the size.
+        for lines in (duel, []):
+            m = read("\n".join([head] + lines + [settled("0xe", 0, 2)]))[0]
+            self.assertEqual(refit.players_in(m), 2)
+            self.assertEqual(refit.left_out(m, 4), "small")
+            self.assertIsNone(refit.left_out(m, 2))
+        # It began one against one and was two against two for most of its time.
+        m = read("\n".join([head] + duel + grown + [settled("0xe", 0, 4)]))[0]
+        self.assertEqual(refit.players_in(m), 4)
+        self.assertIsNone(refit.left_out(m, 4))
+        # Half of its minutes with four in is enough; less is not.
+        m = read("\n".join([head] + duel + grown[:2] + [settled("0xe", 0, 4)]))[0]
+        self.assertEqual(refit.players_in(m), 4)
+        m = read("\n".join([head] + duel + grown[:1] + [settled("0xe", 0, 4)]))[0]
+        self.assertEqual(refit.players_in(m), 2)
+        # A side that left gives a winner the fit does not take; a draw has none.
+        m = read("\n".join([head] + duel + grown + [settled("0xe", 0, 4, "Deserted")]))[0]
+        self.assertEqual(refit.left_out(m, 4), "deserted")
+        m = read("\n".join([head] + duel + grown + [settled("0xe", 2, 4)]))[0]
+        self.assertEqual(refit.left_out(m, 4), "no winner")
 
     def test_split_names(self):
         names = ["a", "a, b", "b", "c"]
