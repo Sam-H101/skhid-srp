@@ -715,11 +715,14 @@ together, as many to a datagram as fit (an EB is 11 bytes: some 44 to a
 datagram). It goes at once, and takes the waiting ones along, when:
 
 - anything else is queued: E5, E6 and E7 (a wait would skew the round
-  trip and clock samples taken with them), E8, F3 to F6, E3, E4, and a
+  trip and clock samples taken with them), E8, F3 to F6, E3, E4. A
   short-lived id kept until acked (`send_kept`, `send_kept_every`: a
-  resync's replay and the relays to a loading game). Until 2026-10-14 a
-  kept relay was packed as a short-lived one (the test looked at the
-  table's lifetime, not the sender's), against what this list said;
+  resync's replay, the relays to a resynced or loading game) is packed
+  as any relay (the test looks at the table's lifetime, not the
+  sender's). From 2026-10-14 (f3c93e1) to 2026-10-15 kept relays went at
+  once, one per datagram: to a resynced game at 20 players some 100 to
+  200 datagrams a second, more than its acks of the newest 6 seqs cover
+  (match.md §30), so its replay was never all acked;
 - a part of a split message may go;
 - the queue fills a datagram;
 - a client datagram has waited `ack_delay` (20 ms) for its ack: the ack
@@ -749,6 +752,16 @@ remembers the newest 32 of them (`SEQS_PER_MESSAGE`; 8, the client's own
 ring for its messages, until 2026-10-14). A kept relay goes again every
 50 ms, so with 8 a round trip of 400 ms and more left every ack naming a
 copy already forgotten, and the message was never acked. 32 cover 1.6 s.
+
+### 11.5 Whether a message is delivered, in O(1) (added 2026-10-15)
+
+`is_delivered(serial)` walked the whole queue (pending and unacked). The
+match server asks it for every entry of a resync's gate and of
+`check_in_flight` on every poll: O(queue × entries), with hundreds of each
+at 20 players. The transport now counts the queue entries of each serial
+(`outstanding`; the parts of a split message one each), kept on every
+send, ack, send-once, expiry, `forget` and disconnect, and the answer is a
+map lookup. A test walks the queue after every step and compares.
 
 ### 11.2 A late datagram of ours from the lap before (added 2026-10-14)
 

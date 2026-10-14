@@ -2378,53 +2378,58 @@ fn a_resynced_clients_world_waits_for_its_replay_and_is_never_old() {
         "{match_time} {resync_at}"
     );
     let newest = hold_replay(&mut bench, &holding);
-    // While its replay is not acked, no world goes.
-    assert!(until_playing(&mut bench, 2_000, |bench| bench.clock() >= newest + 1_100));
-    assert_eq!(bench.stages(), "LLt");
-    assert_eq!(bench.clients[2].snapshots().len(), 1);
-    // Acked now; but the newest world is over a second old: none goes ...
-    holding.store(false, Ordering::Relaxed);
-    until_playing(&mut bench, 500, |_| false);
-    assert_eq!(bench.clients[2].snapshots().len(), 1);
-    // ... and its generation and replay are kept ...
-    assert_eq!(bench.stages(), "LLt");
+    // While its replay is not acked, the world waits, as long as its
+    // snapshot stays young enough to be loaded in time (and a second at
+    // most): then it goes without it, never older.
+    assert!(until_playing(&mut bench, 2_000, |bench| bench.stages() == "LLs"));
+    let waited_to = bench.clock();
+    assert!(
+        (newest + 800..=newest + 1_000).contains(&waited_to),
+        "{newest} {waited_to}"
+    );
+    assert_eq!(bench.game().sync_time(2), Some(newest));
     assert_eq!(bench.game().generation(2), Some(1));
-    // ... until a fresh one comes.
+    // The replay up to the world's time is in the world: no more of it
+    // goes. The rest arrives once the line lets it, and the game is in.
     release(&mut bench, &holding);
-    assert!(until_playing(&mut bench, 5_000, |bench| {
-        bench.clients[2].snapshots().len() == 2
-    }));
+    assert!(until_playing(&mut bench, 3_000, |bench| bench.stages() == "LLL"));
     let snapshots = bench.clients[2].snapshots();
-    assert_eq!(snapshots[1].0, 1);
-    let age = bench.clock() - snapshots[1].1;
-    assert!(age <= 1_000, "{snapshots:?}, {age} ms old");
+    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    assert_eq!(snapshots[1], (1, newest));
     assert_eq!(generations(&bench.clients[2]), [0, 1]);
-    let (time, world) = sync_span(&bench.clients[2], 1);
-    let replayed = bench.clients[2].taken[time..world]
-        .iter()
-        .filter(|message| matches!(message, ServerMessage::InputRelay { .. }))
-        .count();
-    assert!(replayed > 0);
-    assert!(until_playing(&mut bench, 1_000, |bench| bench.stages() == "LLL"));
     bench.assert_no_faults();
 }
 
 #[test]
-fn a_lost_roster_change_of_a_resyncs_replay_has_the_sync_done_again() {
+fn a_roster_change_to_a_resynced_client_goes_again_until_acked() {
     let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
     let holding = hold(&mut bench, 2, &[id::INPUT_RELAY, id::PLAYER_LEFT]);
     resync_third(&mut bench, &holding, None);
     // The second player leaves while the third stands still: that roster
-    // change is sent to it at once, and never arrives.
+    // change is sent to it at once, and its copies are lost for a while.
+    let left_at = bench.clock();
     bench.clients[1].leave();
-    assert!(bench.until(2_000, |bench| bench.game().generation(2) == Some(2)));
-    assert_eq!(bench.clients[2].snapshots().len(), 1);
+    bench.run(600);
+    let left = |bench: &Bench| {
+        bench.clients[2]
+            .got(|message| match message {
+                ServerMessage::PlayerLeft { player: 1, .. } => Some(()),
+                _ => None,
+            })
+            .len()
+    };
+    assert_eq!(left(&bench), 0);
     holding.store(false, Ordering::Relaxed);
-    // In from the next generation's world, which has the player gone.
-    assert!(bench.until(5_000, |bench| bench.stages().ends_with('L')));
+    // Kept until acked: the world (older than the leave) went without
+    // it, in the same generation, and it arrives all the same.
+    assert!(bench.until(5_000, |bench| {
+        bench.stages().ends_with('L') && left(bench) >= 1
+    }));
     let snapshots = bench.clients[2].snapshots();
     assert_eq!(snapshots.len(), 2, "{snapshots:?}");
-    assert_eq!(snapshots[1].0, 2);
+    assert_eq!(snapshots[1].0, 1);
+    assert!(snapshots[1].1 < left_at, "{snapshots:?} {left_at}");
+    assert!(bench.clients[2].skipped.is_empty());
     bench.assert_no_faults();
 }
 

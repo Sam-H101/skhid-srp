@@ -12,6 +12,7 @@ mod bots;
 mod game;
 mod late_join;
 mod late_join_edge_cases;
+mod resync_gate;
 mod sockets;
 mod units;
 
@@ -103,6 +104,8 @@ pub struct Bench {
     /// Datagrams on a delayed way: when they arrive, the place, whether to
     /// the server, the bytes.
     in_air: Vec<(u64, usize, bool, Vec<u8>)>,
+    /// The wall-clock time spent in the server's `poll`.
+    pub server_busy: Duration,
 }
 
 impl Bench {
@@ -172,6 +175,7 @@ impl Bench {
             ms: 0,
             one_way: Vec::new(),
             in_air: Vec::new(),
+            server_busy: Duration::ZERO,
         }
     }
 
@@ -212,7 +216,10 @@ impl Bench {
                 }
             }
         }
-        for (addr, datagram) in self.server.poll(now) {
+        let busy = Instant::now();
+        let out = self.server.poll(now);
+        self.server_busy += busy.elapsed();
+        for (addr, datagram) in out {
             // A client that is gone hears nothing.
             if let Some(place) = self.addrs.iter().position(|each| *each == addr) {
                 let delay = self.one_way.get(place).copied().unwrap_or(0);

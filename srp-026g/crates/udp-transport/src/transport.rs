@@ -40,8 +40,11 @@
 //! - Short-lived messages (the table's 250 ms ids: relays, roster changes,
 //!   drop orders) wait up to `Config::gather` after the last datagram with
 //!   messages, so that what comes meanwhile shares one datagram; anything
-//!   else that is queued takes them along at once (§11.1). One of those ids
-//!   kept until acked (`send_kept`) is not short-lived and does not wait.
+//!   else that is queued takes them along at once (§11.1). So do those ids
+//!   kept until acked (`send_kept`: a resync's replay, the relays to a
+//!   resynced game): a burst of them is packed, never one per datagram.
+//!   Only what is not of those ids (E5, E6, E7, a world's parts) flushes
+//!   the queue at once.
 //! - Two messages sent joined (`send_joined`) go in one datagram, in their
 //!   order: a 0xE7 that ends a clock correction ahead of a 0xE5.
 //! - A client that took a late datagram of ours from the lap before as its
@@ -53,7 +56,7 @@
 //!   reaches the caller again and the caller must dedup them. Unique ones
 //!   (every lobby request) are delivered once, through a 128-wide window.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::ack;
@@ -339,6 +342,11 @@ pub struct Transport {
     next_serial: u64,
     pending: VecDeque<Outgoing>,
     unacked: Vec<(Outgoing, Instant)>,
+    /// How many entries of `pending` and `unacked` each serial has (the
+    /// parts of a split message one each): [`Self::is_delivered`] in O(1),
+    /// not a walk of the queue (a resync's gate and `check_in_flight` ask
+    /// it for hundreds of serials a poll).
+    outstanding: HashMap<u64, u32>,
     low_level: VecDeque<u8>,
     last_sent: Option<Instant>,
     /// When the last datagram with messages went (`Config::gather`).
@@ -402,6 +410,7 @@ impl Transport {
             next_serial: 0,
             pending: VecDeque::new(),
             unacked: Vec::new(),
+            outstanding: HashMap::new(),
             low_level: VecDeque::new(),
             last_sent: None,
             last_data: None,
@@ -681,10 +690,14 @@ impl Transport {
             }
         }
         let retired = &mut self.retired;
+        let outstanding = &mut self.outstanding;
         let mut waits = |message: &Outgoing| {
             let waits = !message.sent_in.iter().any(|number| acked(*number));
-            if !waits && message.channel != Channel::None {
-                retired.push_back((message.channel, now));
+            if !waits {
+                if message.channel != Channel::None {
+                    retired.push_back((message.channel, now));
+                }
+                settle(outstanding, message.serial);
             }
             waits
         };
@@ -751,6 +764,7 @@ impl Transport {
         self.state = State::Closed;
         self.pending.clear();
         self.unacked.clear();
+        self.outstanding.clear();
         if let Some(log) = &mut self.log {
             log.note("closed");
         }
@@ -890,6 +904,7 @@ impl Transport {
                 self.retired.push_back((channel, now));
             }
         }
+        self.outstanding.remove(&serial);
     }
 
     /// Two whole messages that go in one datagram, `first` ahead of
@@ -916,6 +931,7 @@ impl Transport {
             Ok(serial) => serial,
             Err(error) => {
                 self.pending.retain(|message| message.serial != a);
+                self.outstanding.remove(&a);
                 return Err(error);
             }
         };
@@ -1021,12 +1037,15 @@ impl Transport {
                 Lifetime::For(_) => deadline,
                 Lifetime::Once | Lifetime::Forever => None,
             },
-            // Only what still has its short lifetime: one kept until acked
-            // (`send_kept`, a resync's replay) goes at once (`flush_due`).
-            gathers: info.class == Class::Plain && matches!(lifetime, Lifetime::For(_)),
+            // The ids with a short lifetime by the table, kept until acked
+            // or not (`send_kept`: a resync's replay and the relays to a
+            // resynced game): a burst of them is packed (`flush_due`).
+            gathers: info.class == Class::Plain && matches!(info.lifetime, Lifetime::For(_)),
             joined: false,
             sent_in: VecDeque::new(),
         };
+        self.outstanding
+            .insert(serial, if whole { 1 } else { parts as u32 });
         if whole {
             let mut head = vec![id];
             head.extend(x);
@@ -1053,11 +1072,21 @@ impl Transport {
     pub fn is_delivered(&self, serial: u64) -> bool {
         serial < self.next_serial
             && !self.lost.contains(&serial)
-            && !self.pending.iter().any(|message| message.serial == serial)
-            && !self
-                .unacked
-                .iter()
-                .any(|(message, _)| message.serial == serial)
+            && !self.outstanding.contains_key(&serial)
+    }
+
+    /// The walk of the queue that `outstanding` stands for agrees with it.
+    #[cfg(test)]
+    pub(crate) fn outstanding_agrees(&self) -> bool {
+        let mut counted: HashMap<u64, u32> = HashMap::new();
+        for message in self
+            .pending
+            .iter()
+            .chain(self.unacked.iter().map(|(message, _)| message))
+        {
+            *counted.entry(message.serial).or_default() += 1;
+        }
+        counted == self.outstanding
     }
 
     /// Whether a message was dropped unacked at the end of its lifetime
@@ -1072,6 +1101,7 @@ impl Transport {
         if self.state == State::Connected {
             self.pending.clear();
             self.unacked.clear();
+            self.outstanding.clear();
             self.state = State::Closing { since: now };
         }
     }
@@ -1144,6 +1174,7 @@ impl Transport {
                             if message.channel != Channel::None {
                                 self.retired.push_back((message.channel, now));
                             }
+                            settle(&mut self.outstanding, message.serial);
                             continue;
                         }
                         Lifetime::For(lifetime) => Some(lifetime),
@@ -1196,7 +1227,8 @@ impl Transport {
     /// They go sooner, with everything queued, when:
     /// - anything else is queued: a clock message or a ping (E5, E6, E7)
     ///   must not wait, or the round trip and clock samples taken with it
-    ///   would be off by the wait; nor anything kept until acked;
+    ///   would be off by the wait (a relay kept until acked is not such:
+    ///   it waits to be packed as any relay);
     /// - a part of a split message may go;
     /// - the queue fills a datagram;
     /// - a client datagram waits for its ack for `ack_delay`: the ack
@@ -1286,6 +1318,9 @@ impl Transport {
                 .retain(|(message, _)| !lost.contains(&message.serial));
             self.pending
                 .retain(|message| !lost.contains(&message.serial));
+            for serial in &lost {
+                self.outstanding.remove(serial);
+            }
         }
         self.lost.extend(lost);
         while self.lost.len() > LOST_KEPT {
@@ -1460,6 +1495,16 @@ impl Transport {
 /// Add a part to the split message `x` of a channel; the whole payload once
 /// it is complete. A new message past the limit pushes out the one furthest
 /// behind it.
+/// One entry of `serial` left the queue for good (acked, or sent once).
+fn settle(outstanding: &mut HashMap<u64, u32>, serial: u64) {
+    if let Some(count) = outstanding.get_mut(&serial) {
+        *count -= 1;
+        if *count == 0 {
+            outstanding.remove(&serial);
+        }
+    }
+}
+
 fn add_part(
     assemblies: &mut BTreeMap<u8, Assembly>,
     x: u8,
