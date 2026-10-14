@@ -83,6 +83,12 @@ const OFF_ROUTE_M: f32 = 3.0;
 const REPLAN_MOVED_M: f32 = 2.0;
 /// A world that puts the body this far from its reckoning plans again.
 const REPLAN_ERROR_M: f32 = 2.0;
+/// The reflex's side step is taken only with a clear walk this far that
+/// side, metres (no step off a ledge or into a wall).
+const STRAFE_CLEAR_M: f32 = 1.5;
+/// A goal no way was found to is not planned to again for this long, ms:
+/// a search that fails has searched all it can reach, the dearest kind.
+const NO_WAY_RETRY_MS: u32 = 500;
 /// A death this recent is a fight where it fell, for the choice of the bot
 /// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
 const FIGHT_DEATH_MS: u32 = 10_000;
@@ -136,6 +142,8 @@ pub struct Bot {
     intent: Intent,
     /// The route and the goal it was planned to.
     route: Option<(Route, Vec3)>,
+    /// A goal no way was found to, and until when it is not tried again.
+    no_way: Option<(Vec3, u32)>,
     /// Keys to press for one tick.
     press: u32,
     /// Keys held for a few ticks to get unstuck.
@@ -197,6 +205,7 @@ impl Bot {
             last_ran: Vec::new(),
             intent: Intent::stay(),
             route: None,
+            no_way: None,
             press: 0,
             unstick: None,
             pause_until: 0,
@@ -1202,13 +1211,21 @@ fn drive_tick(
         Go::To { at, within_m } if me.feet.distance_xz(at) > within_m => Some(at),
         _ => None,
     };
+    // Standing to aim (no way to walk): the reflex's side step may move it.
+    let mut aiming_still = false;
     let mut decision = match goal {
         Some(at) => {
             let replan = bot
                 .route
                 .as_ref()
                 .is_none_or(|(_, planned)| planned.distance_xz(at) > REPLAN_MOVED_M);
-            if replan {
+            // A goal with no way lately: not searched again every tick.
+            let no_way = bot.no_way.is_some_and(|(goal, until)| {
+                time < until && goal.distance_xz(at) <= REPLAN_MOVED_M
+            });
+            if replan && no_way {
+                bot.route = None;
+            } else if replan {
                 let grid = &tactics.world.grid;
                 let stuck = &bot.stuck;
                 let side = bot.side;
@@ -1224,6 +1241,7 @@ fn drive_tick(
                         })
                     })
                     .or_else(|| tactics.route_for(me.feet, at, time, side, objective));
+                bot.no_way = route.is_none().then_some((at, time + NO_WAY_RETRY_MS));
                 bot.route = route.map(|route| (route, at));
             }
             match bot.route.as_mut() {
@@ -1241,7 +1259,10 @@ fn drive_tick(
                     decision
                 }
                 None => match aim {
-                    Some(aim) => bot.motor.aim_still(&pose, aim),
+                    Some(aim) => {
+                        aiming_still = true;
+                        bot.motor.aim_still(&pose, aim)
+                    }
                     None => bot.motor.stand(&pose, &mut bot.rng),
                 },
             }
@@ -1249,11 +1270,24 @@ fn drive_tick(
         None => {
             bot.route = None;
             match aim {
-                Some(aim) => bot.motor.aim_still(&pose, aim),
+                Some(aim) => {
+                    aiming_still = true;
+                    bot.motor.aim_still(&pose, aim)
+                }
                 None => bot.motor.stand(&pose, &mut bot.rng),
             }
         }
     };
+    // The side step, where the ground that side is clear for a stride.
+    if aiming_still && over.strafe != 0 {
+        let left = over.strafe == key::LEFT;
+        let [sx, sz] = kin::forward(me.yaw + std::f32::consts::FRAC_PI_2);
+        let sign = if left { 1.0 } else { -1.0 };
+        let to = me.feet + Vec3::new(sign * sx * STRAFE_CLEAR_M, 0.0, sign * sz * STRAFE_CLEAR_M);
+        if tactics.clear_line_for(me.feet, to, time, bot.side, intent.objective) {
+            decision.keys |= over.strafe;
+        }
+    }
     // The stance and pace.
     if intent.crouch || intent.pace == Pace::Sneak {
         decision.keys |= key::CROUCH;
@@ -1267,7 +1301,7 @@ fn drive_tick(
         decision.keys &= !key::SPRINT;
     }
     decision.keys |= over.keys;
-    if over.keys & (key::GRENADE | key::RELOAD) != 0 {
+    if over.keys & (key::GRENADE | key::RELOAD | key::AIM | key::CROUCH) != 0 {
         decision.keys &= !key::SPRINT;
     }
     decision.keys |= intent.hold | std::mem::take(&mut bot.press);

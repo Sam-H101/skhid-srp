@@ -8,11 +8,20 @@
 //! `know::SeenTrack`, so never at what no sense gave, and never before the
 //! noticing delay; the first shot waits a reaction delay more
 //! (`AimTuning::reaction_ms`). Its aim is a human's: it starts off by
-//! `AimTuning::error_deg` × 3 and settles toward its error over `settle_s`;
-//! the error never goes to 0 (a floor drawn every tick: no perfect recoil
-//! or spread). Play 23 changes only the numbers that are aim or reaction
-//! (`error_deg`, `settle_s`, `notice`, `reaction_ms`), through `skill`;
-//! every number of [`CombatTuning`] is the same at every skill.
+//! `AimTuning::error_deg` × 3 and settles toward its error over `settle_s`,
+//! wanders slowly about the target as it tracks him (`wander_deg`); the
+//! error never goes to 0 (a floor drawn every tick: no perfect recoil or
+//! spread). Play 23 changes only the numbers that are aim or reaction
+//! (`error_deg`, `wander_deg`, `settle_s`, `notice`, `reaction_ms`),
+//! through `skill`; every number of [`CombatTuning`] is the same at every
+//! skill.
+//!
+//! How it fires and stands, from the best players of the recorded matches
+//! (`player_bots_behaviour.md` §5): an automatic weapon in bursts of
+//! 0.5-1 s with the aim pulled down as the kick climbs, a one-round weapon
+//! at every cycle of its own; down the sights at a seen target (always
+//! from 10 m on); standing to aim it steps side to side, and a hit turns
+//! the step; with a bolt action it stands (or crouches) instead.
 //!
 //! What it does besides aiming and firing (`player_bots_behaviour.md` §3):
 //! - **play 5, punish a reload:** an enemy seen within `punish_m` or heard
@@ -188,6 +197,26 @@ pub struct CombatTuning {
     /// and `press_gap_ms` more.
     pub press_ms: u32,
     pub press_gap_ms: u32,
+    /// An automatic weapon's kick: while its trigger is held the aim is
+    /// pulled this many degrees a second below the target, up to
+    /// `recoil_pull_max_deg`, as the best players pull the mouse down (the
+    /// kick is not in the look pitch, `player_bots_behaviour.md` §3).
+    pub recoil_pull_deg_s: f32,
+    pub recoil_pull_max_deg: f32,
+    /// Aiming down the sights at a seen target: always from `ads_near_m`
+    /// on, nearer with this chance (drawn per target).
+    pub ads_near_m: f32,
+    pub ads_near_chance: f32,
+    /// Standing to aim at a seen target, the legs step side to side: runs
+    /// of `strafe_run_ms` one way then the other, a still moment of
+    /// `strafe_still_ms` between with `strafe_still_chance`; a hit turns
+    /// the step at once. Never with a bolt-action weapon.
+    pub strafe_run_ms: (u32, u32),
+    pub strafe_still_chance: f32,
+    pub strafe_still_ms: (u32, u32),
+    /// With a bolt-action weapon, it crouches to fire at a target with
+    /// this chance (drawn per target).
+    pub sniper_crouch_chance: f32,
 }
 
 impl Default for CombatTuning {
@@ -236,10 +265,18 @@ impl Default for CombatTuning {
             camp_ms: 8_000,
             camp_m: 3.0,
             trade_ms: 3_000,
-            reload_idle_ms: 3_000,
+            reload_idle_ms: 1_000,
             reload_some_share: 0.3,
             press_ms: 100,
-            press_gap_ms: 100,
+            press_gap_ms: 50,
+            recoil_pull_deg_s: 7.0,
+            recoil_pull_max_deg: 5.5,
+            ads_near_m: 10.0,
+            ads_near_chance: 0.85,
+            strafe_run_ms: (250, 700),
+            strafe_still_chance: 0.5,
+            strafe_still_ms: (150, 450),
+            sniper_crouch_chance: 0.3,
         }
     }
 }
@@ -360,6 +397,10 @@ pub struct Override {
     /// Play 11: the distance band to the target it prefers, metres (a hint
     /// for the plays; the reflex steps into it itself with `legs`).
     pub band_m: Option<(f32, f32)>,
+    /// The side step (`key::LEFT` or `key::RIGHT`, or 0) the legs take
+    /// while the bot stands to aim at a seen target; the caller presses it
+    /// only where the ground that side is clear.
+    pub strafe: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -467,6 +508,17 @@ pub struct Reflex {
     /// No shot before this (a reload or the switch to the pistol under
     /// way).
     busy_until: u32,
+    /// The aim's slow wander about the target, radians (yaw, pitch).
+    wander: (f32, f32),
+    /// Drawn per target: it aims down the sights nearer than `ads_near_m`;
+    /// it crouches to fire (a bolt-action weapon).
+    ads_near: bool,
+    crouch_fire: bool,
+    /// The side step: the key held (0: still) and until when.
+    strafe: u32,
+    strafe_until: u32,
+    /// The last way it stepped, to step the other way next.
+    strafe_last: u32,
 }
 
 /// The bearing of `to` from `from`, radians.
@@ -572,6 +624,10 @@ impl Reflex {
             self.last_seen = now;
         }
         if hit {
+            // Shot at: the side step turns the other way at once.
+            if self.target.is_some() {
+                self.step_aside(now, c, rng);
+            }
             self.break_sight(me, sit, memory, now, c, rng);
         }
         // The magazine out with a target seen: out of sight to reload, else
@@ -642,8 +698,10 @@ impl Reflex {
                 let reaction = mix(aim.reaction_ms, skill).max(0.0) * rng.range(0.85, 1.15);
                 self.first_shot_at = noticed.max(self.since.min(noticed)) + reaction as u32;
                 self.sound = None;
-                // Play 19: a new enemy is spotted once in the crosshair.
                 let c = &aim.combat;
+                self.ads_near = rng.unit() < c.ads_near_chance;
+                self.crouch_fire = rng.unit() < c.sniper_crouch_chance;
+                // Play 19: a new enemy is spotted once in the crosshair.
                 let lately = self
                     .spotted
                     .iter()
@@ -1057,6 +1115,35 @@ impl Reflex {
         true
     }
 
+    /// A run of the side step the other way than the last.
+    fn step_aside(&mut self, now: u32, c: &CombatTuning, rng: &mut Rng) {
+        let next = match self.strafe_last {
+            key::LEFT => key::RIGHT,
+            key::RIGHT => key::LEFT,
+            _ if rng.unit() < 0.5 => key::LEFT,
+            _ => key::RIGHT,
+        };
+        self.strafe = next;
+        self.strafe_last = next;
+        self.strafe_until =
+            now + rng.range(c.strafe_run_ms.0 as f32, c.strafe_run_ms.1 as f32) as u32;
+    }
+
+    /// The side step this tick while it stands to aim: runs one way then
+    /// the other, now and then a still moment between.
+    fn side_step(&mut self, now: u32, c: &CombatTuning, rng: &mut Rng) -> u32 {
+        if now >= self.strafe_until {
+            if self.strafe != 0 && rng.unit() < c.strafe_still_chance {
+                self.strafe = 0;
+                self.strafe_until =
+                    now + rng.range(c.strafe_still_ms.0 as f32, c.strafe_still_ms.1 as f32) as u32;
+            } else {
+                self.step_aside(now, c, rng);
+            }
+        }
+        self.strafe
+    }
+
     /// The legs the reflex takes this tick, if any.
     fn legs(&mut self, now: u32) -> Option<Legs> {
         if self.push.is_some_and(|p| now >= p.until) {
@@ -1168,6 +1255,7 @@ impl Reflex {
                 keys,
                 legs: None,
                 band_m: self.band,
+                strafe: 0,
             };
         }
         let seen = self.target.and_then(|target| memory.seen(target, now));
@@ -1178,6 +1266,8 @@ impl Reflex {
         let Some(track) = seen else {
             self.target = None;
             self.held_ms = 0;
+            self.strafe = 0;
+            self.strafe_until = 0;
             // Play 21: the partner's death spot, weapon up; else play 6.
             if let Some((at, _)) = self.trade.filter(|(_, until)| now < *until) {
                 return Override {
@@ -1204,12 +1294,23 @@ impl Reflex {
         // The seen body where it is now (a seen enemy is tracked by eye).
         let body = view.place(track.who()).filter(|p| p.alive);
         let point = body.map_or(track.at() + Vec3::new(0.0, 1.3, 0.0), PlaceView::chest);
-        // The error settles from its start toward the skill's, never to 0.
+        // The error settles from its start toward the skill's, never to 0,
+        // and wanders slowly about him as a player's tracking does.
         let t = now.saturating_sub(self.since) as f32 / 1000.0;
         let fade = (-t / settle_s).exp();
+        self.wander_step(aim, skill, rng);
+        // An automatic weapon's kick, pulled down while the trigger is held.
+        let gun = self.hands().held().gun;
+        let pull = if gun.auto {
+            (c.recoil_pull_deg_s * self.held_ms as f32 / 1000.0)
+                .min(c.recoil_pull_max_deg)
+                .to_radians()
+        } else {
+            0.0
+        };
         let error = (
-            self.error.0 * fade + floor * (rng.unit() - 0.5),
-            self.error.1 * fade + floor * 0.5 * (rng.unit() - 0.5),
+            self.error.0 * fade + self.wander.0 + floor * (rng.unit() - 0.5),
+            self.error.1 * fade + self.wander.1 - pull + floor * 0.5 * (rng.unit() - 0.5),
         );
         let off = off_by(me, point, error);
         // Play 19: spot him once he is in the crosshair, the cooldown kept.
@@ -1226,9 +1327,12 @@ impl Reflex {
             self.spotted.push((track.who(), now));
             self.spot_pending = None;
         }
-        // Fire in bursts when the view is near the aim, a reaction after
-        // noticing, with a round in the weapon; the weapon's trigger turns
-        // a burst into presses and counts the rounds.
+        // Fire when the view is near the aim, a reaction after noticing,
+        // with a round in the weapon: an automatic weapon in bursts, any
+        // other at every cycle of its own (players press again as soon as
+        // the weapon takes it); the weapon's trigger turns that into
+        // presses and counts the rounds.
+        let distance = point.distance_xz(me.feet);
         let within = off <= aim.fire_within_deg.to_radians();
         let mut wants = false;
         if fire_allowed
@@ -1236,9 +1340,9 @@ impl Reflex {
             && now >= self.first_shot_at
             && now >= self.busy_until
             && self.hands().held().rounds > 0
-            && point.distance_xz(me.feet) <= aim.range_m
+            && distance <= aim.range_m
         {
-            if now < self.burst_until {
+            if !gun.auto || now < self.burst_until {
                 wants = true;
             } else if now >= self.pause_until {
                 self.burst_until =
@@ -1249,6 +1353,22 @@ impl Reflex {
             }
         }
         let fire = self.trigger(wants, fire_allowed, now, c);
+        // Down the sights at him, unless it runs for cover; with a bolt
+        // action crouched (drawn per target), with anything else the side
+        // step while it stands to aim.
+        let running = legs.is_some_and(|l| l.run);
+        if !running && (distance >= c.ads_near_m || self.ads_near) {
+            keys |= key::AIM;
+        }
+        let mut strafe = 0;
+        if !gun.auto && gun.chamber_ms > 0 {
+            self.strafe = 0;
+            if self.crouch_fire && !running {
+                keys |= key::CROUCH;
+            }
+        } else if legs.is_none() {
+            strafe = self.side_step(now, c, rng);
+        }
         Override {
             look_at: Some(point),
             error,
@@ -1257,7 +1377,21 @@ impl Reflex {
             keys,
             legs,
             band_m: self.band,
+            strafe,
         }
+    }
+
+    /// The aim's wander, one tick on: a mean-reverting walk whose spread is
+    /// the skill's `wander_deg` (the pitch's half) and which comes back in
+    /// about `wander_s`.
+    fn wander_step(&mut self, aim: &AimTuning, skill: f32, rng: &mut Rng) {
+        let spread = mix(aim.wander_deg, skill).max(0.0).to_radians();
+        let a = (self.tick_ms as f32 / 1000.0 / aim.wander_s.max(0.01)).min(1.0);
+        // Uniform shocks (a spread of 1/sqrt(12)) scaled to keep the walk's
+        // spread at `spread`.
+        let shock = spread * (2.0 * a - a * a).sqrt() * 12f32.sqrt();
+        self.wander.0 += -self.wander.0 * a + shock * (rng.unit() - 0.5);
+        self.wander.1 += -self.wander.1 * a + 0.5 * shock * (rng.unit() - 0.5);
     }
 }
 
@@ -1496,6 +1630,413 @@ mod tests {
             }
         }
         assert!(largest > 0.1_f32.to_radians(), "{largest}");
+    }
+
+    /// A duel as a match gives it: an enemy comes into sight 20 m ahead at
+    /// 1 s, strafing 2.5 m/s in runs of 450 ms; the bot thinks every
+    /// 200-400 ms with the sense's noticing delay, and its motor turns the
+    /// view. What came out: the time from sight to the first shot, ms; the
+    /// view's yaw off the enemy's chest at every tick of fire, degrees; and
+    /// the ticks of fire with AIM held, of all ticks of fire.
+    fn duel_numbers(aim: &AimTuning, skill: f32, seed: u64) -> (Option<u32>, Vec<f32>, (u32, u32)) {
+        use super::super::motor::{Feel, Motor, Pose};
+        use super::super::sense::notice_ms;
+        use super::super::tuning::SenseTuning;
+        let senses = SenseTuning::default();
+        let mut rng = Rng::new(seed);
+        let mut motor = Motor::new(Feel::default(), &mut rng);
+        let mut me = body(0, 0, Vec3::ZERO, rng.range(-0.3, 0.3));
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let appear = 1_000;
+        let mut next_think = 800 + rng.range(0.0, 400.0) as u32;
+        let (mut first, mut errors, mut aimed) = (None, Vec::new(), (0, 0));
+        let (mut x, mut dir, mut turn_at) = (0.0f32, 1.0f32, appear + 450);
+        for k in 0..160u32 {
+            let now = 800 + k * 50;
+            if now >= turn_at {
+                dir = -dir;
+                turn_at = now + 450;
+            }
+            if now >= appear {
+                x += dir * 2.5 * 0.05;
+            }
+            let mut enemy = body(1, 1, Vec3::new(x, 0.0, 20.0), 0.0);
+            enemy.velocity = [dir * 2.5, 0.0];
+            let view = view_of(vec![me.clone(), enemy.clone()]);
+            if now >= next_think {
+                next_think = now + rng.range(200.0, 400.0) as u32;
+                let factor = mix(aim.notice, skill);
+                let percepts: Vec<Percept> = if now >= appear {
+                    vec![Percept {
+                        busy: true,
+                        ..percept(1, enemy.feet, now, Source::Seen)
+                    }]
+                } else {
+                    vec![]
+                };
+                let feet = me.feet;
+                memory.update(
+                    &percepts,
+                    now,
+                    |p: &Percept| notice_ms(&senses, p.at.distance_xz(feet), p.busy, factor),
+                    3_000,
+                    20_000,
+                );
+                reflex.think_with(
+                    &me,
+                    &Situation::of(&view),
+                    &memory,
+                    now,
+                    aim,
+                    skill,
+                    &mut rng,
+                );
+            }
+            let o = reflex.tick(&me, &view, &memory, now, true, aim, skill, &mut rng);
+            if let Some(p) = o.look_at {
+                let eye = me.eye();
+                let (dx, dz) = (p.x - eye.x, p.z - eye.z);
+                let want = (
+                    yaw_of([dx, dz]) + o.error.0,
+                    (p.y - eye.y).atan2(dx.hypot(dz)) + o.error.1,
+                );
+                motor.turn_time = o.turn_time_s;
+                let pose = Pose {
+                    feet: me.feet,
+                    yaw: me.yaw,
+                    pitch: me.pitch,
+                    speed: 0.0,
+                };
+                let d = motor.aim_still(&pose, want);
+                me.yaw = wrap(me.yaw + d.turn.0);
+                me.pitch += d.turn.1;
+            }
+            if o.fire {
+                first.get_or_insert(now - appear);
+                let (eye, chest) = (me.eye(), enemy.chest());
+                let bearing = yaw_of([chest.x - eye.x, chest.z - eye.z]);
+                errors.push(wrap(bearing - me.yaw).abs().to_degrees());
+                aimed.1 += 1;
+                if o.keys & key::AIM != 0 {
+                    aimed.0 += 1;
+                }
+            }
+        }
+        (first, errors, aimed)
+    }
+
+    fn median(mut v: Vec<f32>) -> f32 {
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(f32::NAN)
+    }
+
+    /// Prints the bot's duel numbers by skill (`cargo test -p match-server
+    /// duel_numbers_by_skill -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn duel_numbers_by_skill() {
+        let aim = AimTuning::default();
+        for skill in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let (mut firsts, mut errors) = (Vec::new(), Vec::new());
+            for seed in 0..60 {
+                let (first, e, _) = duel_numbers(&aim, skill, seed);
+                firsts.extend(first.map(|f| f as f32));
+                errors.extend(e);
+            }
+            println!(
+                "skill {skill}: first shot {:.0} ms (n={}), yaw off while firing {:.2} deg (n={})",
+                median(firsts.clone()),
+                firsts.len(),
+                median(errors.clone()),
+                errors.len()
+            );
+        }
+    }
+
+    /// The duel against the top players' numbers (`TOP-PLAYERS.md`, 10
+    /// recorded matches): sight to first shot 400 / 650 / 1050 ms
+    /// (quartiles), the yaw off the chest while firing about 1.0° once the
+    /// replay's own error is taken out (1.5° measured). The best bot is a
+    /// top player's match, not better; a weaker one is slower and looser.
+    #[test]
+    fn the_duel_numbers_are_a_top_players_at_the_best_skill() {
+        let aim = AimTuning::default();
+        let numbers = |skill: f32| {
+            let (mut firsts, mut errors) = (Vec::new(), Vec::new());
+            for seed in 0..60 {
+                let (first, e, _) = duel_numbers(&aim, skill, seed);
+                firsts.extend(first.map(|f| f as f32));
+                errors.extend(e);
+            }
+            (firsts.len(), median(firsts), median(errors))
+        };
+        let (n, first, error) = numbers(1.0);
+        assert_eq!(n, 60, "every duel ends in a shot");
+        assert!((400.0..=1_050.0).contains(&first), "{first}");
+        assert!((0.6..=1.5).contains(&error), "{error}");
+        let (_, slow, loose) = numbers(0.0);
+        assert!(slow > first && loose > error, "{slow} {loose}");
+    }
+
+    /// A bot of `role` facing an enemy `distance` ahead from 1 s for
+    /// `ticks` ticks, at skill 1, with the view kept on the aim: each
+    /// tick's override.
+    fn facing_fight(
+        role: &str,
+        distance: f32,
+        aim: &AimTuning,
+        ticks: u32,
+    ) -> Vec<(u32, Override)> {
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        let at = Vec3::new(0.0, 0.0, distance);
+        let enemy = body(1, 1, at, 0.0);
+        facing(&mut me, enemy.chest());
+        let view = view_of(vec![me.clone(), enemy]);
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::armed(Arms::of_role(role));
+        let mut rng = Rng::new(11);
+        let mut out = Vec::new();
+        for k in 0..ticks {
+            let now = 1_000 + k * 50;
+            sense(&mut memory, &[percept(1, at, now, Source::Seen)], now);
+            if k % 5 == 0 {
+                reflex.think_with(&me, &Situation::of(&view), &memory, now, aim, 1.0, &mut rng);
+            }
+            out.push((
+                now,
+                reflex.tick(&me, &view, &memory, now, true, aim, 1.0, &mut rng),
+            ));
+        }
+        out
+    }
+
+    /// Runs of `on` in the ticks: (start, length ms).
+    fn spans(ticks: &[(u32, Override)], on: impl Fn(&Override) -> bool) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        let mut start = None;
+        for (now, o) in ticks {
+            match (on(o), start) {
+                (true, None) => start = Some(*now),
+                (false, Some(s)) => {
+                    out.push((s, now - s));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn an_automatic_weapon_fires_in_the_top_players_bursts() {
+        // Top players: bursts 500 / 750 / 1100 ms, pauses 200 / 400 / 750 ms
+        // (everyone else: 150 / 350 / 800 and 100 / 200 / 450).
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            ..AimTuning::default()
+        };
+        // 24 s: the AK-74U's 120 rounds, four magazines (then the pistol).
+        let ticks = facing_fight("support", 20.0, &aim, 480);
+        let bursts = spans(&ticks, |o| o.fire);
+        assert!(bursts.len() >= 8, "{bursts:?}");
+        // A burst cut by the magazine running out is shorter (one a
+        // magazine); the rest lie in the tuning's range (a tick either side).
+        let whole: Vec<u32> = bursts
+            .iter()
+            .map(|b| b.1)
+            .filter(|&ms| ms + 50 >= aim.burst_ms.0)
+            .collect();
+        assert!(whole.len() + 4 >= bursts.len(), "{bursts:?}");
+        for ms in &whole {
+            assert!(
+                (aim.burst_ms.0 - 50..=aim.burst_ms.1 + 50).contains(ms),
+                "{bursts:?}"
+            );
+        }
+        let pauses: Vec<u32> = bursts
+            .windows(2)
+            .map(|w| w[1].0 - (w[0].0 + w[0].1))
+            .filter(|&gap| gap < 1_500)
+            .collect();
+        assert!(!pauses.is_empty());
+        for gap in &pauses {
+            assert!(
+                (aim.pause_ms.0 - 50..=aim.pause_ms.1 + 100).contains(gap),
+                "{pauses:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bolt_action_is_pressed_once_a_cycle_with_no_burst_pause() {
+        // Players press a one-round weapon again as soon as it takes it
+        // (SKS 200 ms apart at its 200 ms cycle, the TT-33 250 at 200): the
+        // bot presses at the cycle and `press_gap_ms`, whatever the bursts.
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            ..AimTuning::default()
+        };
+        let mosin = guns::gun("mosin_nagant").unwrap();
+        let ticks = facing_fight("camper", 40.0, &aim, 300);
+        let presses: Vec<u32> = spans(&ticks, |o| o.fire).iter().map(|r| r.0).collect();
+        assert!(presses.len() >= 4, "{presses:?}");
+        let cycle = mosin.cycle_ms() + aim.combat.press_gap_ms;
+        for w in presses.windows(2) {
+            let gap = w[1] - w[0];
+            // The next tick after the cycle, or a reload between.
+            assert!(gap >= cycle, "{presses:?}");
+            assert!(gap <= cycle + 50 || gap >= cycle + 1_000, "{presses:?}");
+        }
+    }
+
+    #[test]
+    fn the_aim_is_pulled_down_while_an_automatic_trigger_is_held() {
+        // No wander and next to no floor: the pitch error is the pull.
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            error_deg: (0.01, 0.01),
+            wander_deg: (0.0, 0.0),
+            ..AimTuning::default()
+        };
+        let c = &aim.combat;
+        let ticks = facing_fight("support", 20.0, &aim, 200);
+        // The trigger held so far (the tick's own press counts from the
+        // next tick on).
+        let mut held = 0u32;
+        let mut deepest: f32 = 0.0;
+        for (now, o) in &ticks {
+            let want = (c.recoil_pull_deg_s * held as f32 / 1000.0).min(c.recoil_pull_max_deg);
+            if *now >= 2_000 {
+                assert!(
+                    (o.error.1.to_degrees() + want).abs() < 0.05,
+                    "{} vs {want} after {held} ms",
+                    o.error.1.to_degrees()
+                );
+            }
+            deepest = deepest.min(o.error.1.to_degrees());
+            held = if o.fire { held + 50 } else { 0 };
+        }
+        assert!(deepest <= -3.0, "{deepest}");
+        assert!(deepest >= -c.recoil_pull_max_deg - 0.05, "{deepest}");
+        // A one-round weapon: no pull.
+        let ticks = facing_fight("camper", 40.0, &aim, 200);
+        assert!(
+            ticks
+                .iter()
+                .all(|(_, o)| o.error.1.abs() < 0.01_f32.to_radians())
+        );
+    }
+
+    #[test]
+    fn it_aims_down_the_sights_and_steps_side_to_side_at_a_seen_target() {
+        let aim = AimTuning::default();
+        let ticks = facing_fight("support", 20.0, &aim, 200);
+        let fighting: Vec<&Override> = ticks
+            .iter()
+            .map(|(_, o)| o)
+            .filter(|o| o.look_at.is_some())
+            .collect();
+        assert!(fighting.len() > 150);
+        // From 10 m on, always down the sights.
+        assert!(fighting.iter().all(|o| o.keys & key::AIM != 0));
+        // Side to side: both ways, runs in the tuning's range, a still
+        // moment now and then; never both keys.
+        let c = &aim.combat;
+        let left = spans(&ticks, |o| o.strafe == key::LEFT);
+        let right = spans(&ticks, |o| o.strafe == key::RIGHT);
+        assert!(left.len() >= 3 && right.len() >= 3, "{left:?} {right:?}");
+        for (_, ms) in left
+            .iter()
+            .chain(&right)
+            .filter(|(start, _)| *start > 1_200)
+        {
+            assert!(
+                *ms >= c.strafe_run_ms.0 - 50 && *ms <= c.strafe_run_ms.1 + 50,
+                "{left:?} {right:?}"
+            );
+        }
+        let moving = fighting.iter().filter(|o| o.strafe != 0).count() as f32;
+        let share = moving / fighting.len() as f32;
+        // Top players: a side key on 78 % of their automatic fire.
+        assert!((0.6..=0.95).contains(&share), "{share}");
+        // Near, down the sights only with the per-target draw.
+        let never = AimTuning {
+            combat: CombatTuning {
+                ads_near_chance: 0.0,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
+        let near = facing_fight("support", 6.0, &never, 60);
+        assert!(near.iter().all(|(_, o)| o.keys & key::AIM == 0));
+        // A bolt action: no side step; crouched to fire when drawn.
+        let crouching = AimTuning {
+            combat: CombatTuning {
+                sniper_crouch_chance: 1.0,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
+        let sniper = facing_fight("camper", 40.0, &crouching, 100);
+        assert!(sniper.iter().all(|(_, o)| o.strafe == 0));
+        assert!(
+            sniper
+                .iter()
+                .filter(|(_, o)| o.look_at.is_some())
+                .all(|(_, o)| o.keys & (key::CROUCH | key::AIM) == key::CROUCH | key::AIM)
+        );
+    }
+
+    #[test]
+    fn a_hit_turns_the_side_step_at_once() {
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        let at = Vec3::new(0.0, 0.0, 20.0);
+        let enemy = body(1, 1, at, 0.0);
+        facing(&mut me, enemy.chest());
+        let aim = AimTuning {
+            combat: CombatTuning {
+                strafe_run_ms: (5_000, 5_000),
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let mut rng = Rng::new(12);
+        let mut steps = Vec::new();
+        for k in 0..60u32 {
+            let now = 1_000 + k * 50;
+            if k == 40 {
+                me.health = 0.7;
+            }
+            let view = view_of(vec![me.clone(), enemy.clone()]);
+            sense(&mut memory, &[percept(1, at, now, Source::Seen)], now);
+            if k % 5 == 0 {
+                reflex.think_with(
+                    &me,
+                    &Situation::of(&view),
+                    &memory,
+                    now,
+                    &aim,
+                    1.0,
+                    &mut rng,
+                );
+            }
+            steps.push(
+                reflex
+                    .tick(&me, &view, &memory, now, true, &aim, 1.0, &mut rng)
+                    .strafe,
+            );
+        }
+        // One long run until the hit, the other way after it.
+        let before = steps[39];
+        assert_ne!(before, 0);
+        assert!(steps[20..40].iter().all(|&s| s == before));
+        assert!(
+            steps[40..].iter().all(|&s| s != before && s != 0),
+            "{steps:?}"
+        );
     }
 
     #[test]

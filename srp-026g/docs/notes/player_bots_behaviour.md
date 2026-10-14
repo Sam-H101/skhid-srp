@@ -156,6 +156,26 @@ What decides the winner (52 matches of 6+ players with a result, 10 of them reco
 - **Human numbers:** reaction time (an enemy appears, then the first turn toward him and the first shot), burst lengths, how often humans re-peek. These set the bots' parameters.
 - **Grenades and pickups in use:** when humans throw (bit 23) and how long they stand at a battery (bit 21).
 
+**How the best players fight** (10 recorded matches of 6–10 players, 2026-10-14; every input of every player at its 50 ms tick, positions replayed between the worlds, sight on the bullet mesh as the bots' own; private research, aggregate numbers only). The three best players by kills a minute, K/D and kills+assists a life (players I, B and E; 20 matches between them, 1.4 / 1.4 / 0.8 kills a minute) against the 17 other humans; quartiles, n in brackets. The bots' defaults (`tuning.rs`, `reflex.rs`) are set to the top three's numbers where a bot can do the same:
+
+| | top three | everyone else | bots |
+|---|---|---|---|
+| sight to first shot | 400 / 650 / 1050 ms (262) | 450 / 750 / 1300 ms (508) | 550 ms median at skill 1, 750 at 0.5, 950 at 0 (unchanged) |
+| yaw off the chest while firing | 1.5° median (7,810 ticks), ~1.0° without the replay's error | 1.8° (12,551) | 0.9° at skill 1, 1.5° at 0.5, 2.0° at 0 (a slow wander added; was 0.3–0.8°) |
+| automatic bursts | 500 / 750 / 1100 ms (658) | 150 / 350 / 800 ms (1,514) | 500–1000 ms (was 250–600) |
+| pauses between bursts | 200 / 400 / 750 ms (139) | 100 / 200 / 450 ms (658) | 200–650 ms (was 300–700) |
+| aim below the chest during a burst | 1.4° in the first 250 ms, 3.5° by 500 ms, 5.8° by 1 s (median) | 1.1 / 2.4 / 4.4° | pulled down 7° a second up to 5.5° (new) |
+| down the sights while firing | 86 % within 10 m, 99 % beyond | 80 % / 98 % | always beyond 10 m, nearer with 85 % a target (new) |
+| a side key held while firing (automatic) | 78 % (7,810) | 64 % (12,551) | side steps of 250–700 ms, a still moment of 150–450 ms after half of them (new) |
+| one way of the side step, in a fight | 300 / 450 / 750 ms (920) | 250 / 450 / 750 ms (1,720) | as above; a hit turns it at once (73 % of the top three turn within 1 s) |
+| standing still while shot at | 3 % (1,742 ticks) | 16 % (4,358) | side steps (bolt action excepted) |
+| crouched while firing | automatic 12 %, bolt action 32 % (112) | 19 % / 28 % | a bolt action crouches with 30 % a target (new) |
+| one-round weapons | press again at the weapon's cycle (SKS 200 ms at 200, TT-33 250 at 200, all players) | | at the cycle + 50 ms (was + 100), no burst pause (was one) |
+| reload | 90 % before empty, half the magazine left (363) | 93 %, two thirds left (670) | tactical after 1 s with nothing seen (was 3 s) |
+| sprint, share of moving time | 70 % with every enemy > 60 m, 49 % at 30–60 m, 30 % within 30 m unseen, 74 % of the first 10 s of a life | 57 / 49 / 36 %, 61 % | unchanged: run unless a known danger is within 30 m (play 17) |
+
+PROVEN: the look pitch of a world is the sum of the inputs' turns (to 1e-5 rad over 1,275 pairs), so the weapon's kick is not in it. LIKELY: the kick lifts the shot (the 0.21d recoil clips move the camera), so the best players pull the mouse down as a burst goes on; that is what the bots copy. Estimated: the replay's place error (~0.3 m) adds about 0.9° at 20 m to every angle above; reaction times are on the match clock from the first tick the enemy is in the view and in sight (the client's own display delay included, as it is for what a bot shows).
+
 The worlds the server already saves (one every ~5 s, `SRP_SNAPSHOT_DIR`) give a first danger map now: `srp-worlds` tables them (positions, statistics, batteries), and a kill is placed where the killer stood in the world after his kill count grew, if he moved under 10 m in those 5 s. Per 8 m cell: time present, kills, kills per minute present (shrunk toward the level's rate), K/D against the level's average. Matches of fewer than 4 players are left out. The tables and maps stay private (game data of real matches).
 
 ## 6. Technical needs
