@@ -237,6 +237,43 @@ bash -n play_skhid.sh
 Other builds of the patch: `--cert-only` (only patch 1), `--cave=hash-mismatch`
 (patch 4 in another place, see below), `--check`.
 
+## Login menu account hint
+
+`login_hint_026g.py` replaces the old registration button with plain text:
+
+- English: "Account created on first sign-in"
+- Ukrainian: "Акаунт створюється під час першого входу"
+- Russian: "Аккаунт создаётся при первом входе"
+- German: "Konto wird beim ersten Login erstellt"
+- Polish: "Konto powstaje przy pierwszym logowaniu"
+
+The hint wraps inside the login panel. The old button is hidden and disabled,
+removed from keyboard focus, and its browser callback is erased. All five game
+languages have a translation. The language comes from the native client's
+localization data, so it follows `-localization`.
+
+Build a new resource archive with Python 3, a JDK and JPEXS FFDec 26.0.0:
+
+```sh
+python login_hint_026g.py /original/game/resources.db /output/game/resources.db \
+  --ffdec=/path/to/ffdec.jar
+```
+
+`--java` and `--javac` can specify the JDK executables. The original archive is
+only read; an existing output is refused. Install the output as the client's
+`game/resources.db` while the game is closed, keeping the original for rollback.
+This archive is a separate output from the small `make_client_026g.py` overlay;
+include it when preparing a complete client distribution.
+
+The patch verifies the original build 2777 login movie's SHA-256 and edits one
+ActionScript block. All other movie tags and existing unrelated methods remain
+byte-identical. Recompressing the movie leaves enough room in its original
+archive entry; padding preserves the entry size and offsets, with four ignored
+trailer bytes retaining the original content CRC. Both the signed file table
+and the resource checksum validation remain intact. No archive signature bypass
+is added. The sources are in `login_hint/`;
+game assets are generated locally and are not checked in.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
