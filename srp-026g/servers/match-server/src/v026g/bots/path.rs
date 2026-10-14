@@ -38,7 +38,18 @@ pub struct Route {
 
 /// The route from one floor to another, if there is one.
 pub fn plan(grid: &WalkGrid, from: NodeId, to: NodeId) -> Option<Route> {
-    let path = grid.path(from, to)?;
+    plan_where(grid, from, to, |_| true)
+}
+
+/// [`plan`] over the floors `allowed` lets through (an anomaly's, a spawn
+/// area's are not): the A* keeps off them, and so do the straight legs.
+pub fn plan_where(
+    grid: &WalkGrid,
+    from: NodeId,
+    to: NodeId,
+    allowed: impl Fn(NodeId) -> bool,
+) -> Option<Route> {
+    let path = grid.path_where(from, to, &allowed)?;
     let nodes = path.nodes;
     // The kind of the link into each node.
     let mut into = vec![LinkKind::Walk; nodes.len()];
@@ -68,7 +79,7 @@ pub fn plan(grid: &WalkGrid, from: NodeId, to: NodeId) -> Option<Route> {
         let mut j = i + 1;
         while j + 1 < nodes.len()
             && into[j + 1] == LinkKind::Walk
-            && straight(grid, nodes[i], nodes[j + 1])
+            && straight_where(grid, nodes[i], nodes[j + 1], &allowed)
         {
             j += 1;
         }
@@ -86,6 +97,16 @@ pub fn plan(grid: &WalkGrid, from: NodeId, to: NodeId) -> Option<Route> {
 /// cell of the line is on a floor walked to from the one before (no jump,
 /// no drop), and the line stays within a step's height of the floors.
 pub fn straight(grid: &WalkGrid, a: NodeId, b: NodeId) -> bool {
+    straight_where(grid, a, b, |_| true)
+}
+
+/// [`straight`] over allowed floors only.
+pub fn straight_where(
+    grid: &WalkGrid,
+    a: NodeId,
+    b: NodeId,
+    allowed: impl Fn(NodeId) -> bool,
+) -> bool {
     let (from, to) = (grid.position(a), grid.position(b));
     let length = from.distance_xz(to);
     if length > MAX_STRAIGHT_M {
@@ -114,8 +135,8 @@ pub fn straight(grid: &WalkGrid, a: NodeId, b: NodeId) -> bool {
             .map(|(next, _)| next)
             .find(|&next| within(next))
         {
-            Some(next) => node = next,
-            None => return false,
+            Some(next) if allowed(next) || next == b => node = next,
+            _ => return false,
         }
     }
     node == b

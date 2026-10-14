@@ -77,10 +77,10 @@ impl Game {
         }
         assert_eq!(formed.match_id, self.id);
         assert_eq!(&formed.places[..self.players()], &self.formed.places);
-        for _ in self.players()..formed.places.len() {
+        for place in self.players()..formed.places.len() {
             self.peers.push(None);
             self.best_streaks.push(0);
-            self.push_driven_place();
+            self.push_driven_place(formed.places[place].team);
             self.admissions.push(Some(Admission {
                 since: now,
                 phase: AdmissionPhase::Preparing,

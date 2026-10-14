@@ -43,6 +43,21 @@ pub mod key {
     pub const SPRINT: u32 = 0x200;
     pub const WEAPON_1: u32 = 0x1000;
     pub const WEAPON_2: u32 = 0x2000;
+    /// Quick use 1..6 (bits 14-19): the n-th occupied slot in the order
+    /// 13-18, 3, 0, 1, 2, 4, 5, 6 (table 0x925FD8); press and release both
+    /// act. PROVEN (0x2D8D7D).
+    pub const QUICK: [u32; 6] = [0x4000, 0x8000, 0x1_0000, 0x2_0000, 0x4_0000, 0x8_0000];
+    /// Use (bit 21): on the key going down only, so 0 then 1. PROVEN
+    /// (0x2D88B1).
+    pub const USE: u32 = 0x20_0000;
+    /// Drop the carried item (bit 22). PROVEN (0x2D8E73).
+    pub const DROP: u32 = 0x40_0000;
+    /// Throw a grenade (bit 23): held until the throw starts. PROVEN
+    /// (0x2D8E05).
+    pub const GRENADE: u32 = 0x80_0000;
+    /// Spot (bit 28): on the key going down, a 3 s cooldown. PROVEN
+    /// (0x2D877C).
+    pub const SPOT: u32 = 0x1000_0000;
     /// Bits a bot never sends: the wheel's weapon switch (25, 26) and the
     /// unused 24, 29, 30, 31.
     pub const NEVER: u32 = 0x0100_0000 | 0x0600_0000 | 0xE000_0000;

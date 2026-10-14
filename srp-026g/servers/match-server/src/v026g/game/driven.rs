@@ -1,6 +1,5 @@
 //! The match server's own bots (`MatchPlayer::driven`, `SRP_SERVER_BOTS`):
-//! places with no client. Stages 1 and 2 of the player bots
-//! (`docs/notes/player_bots.md` §6).
+//! places with no client (`docs/notes/player_bots.md` §6).
 //!
 //! A real client simulates every player from the inputs relayed to it,
 //! and a relayed input is applied unchecked (`player_bots.md` §1). So the
@@ -20,35 +19,42 @@
 //!   bots in it is over after [`BOTS_ALONE`] (`check_bots_alone`).
 //!
 //! Where its inputs come from:
-//! - with `SRP_MAPDATA_DIR` ([`Walkers`], stage 2): `super::super::bots`,
-//!   bots that walk the map. They see their bodies in the worlds the match
-//!   trusts (`observe` → [`Game::observe_driven`]); while they walk the
-//!   clients are asked for a world every [`WALKING_REFRESH`], and every
-//!   [`WAITING_REFRESH`] while one waits to see its body (just entered,
-//!   or dead). Until the map's walk grid is built (0.3 to 0.8 s, on a
-//!   thread of its own) they stand; if the map has no file they run the
-//!   stage 0 script instead;
+//! - with `SRP_MAPDATA_DIR` ([`Walkers`]): `super::super::bots`, bots that
+//!   play (`bots/mod.rs`). They get every player's inputs as relayed
+//!   ([`Game::observe_input`]), and the bodies, statistics and batteries of
+//!   the worlds the match trusts ([`Game::observe_driven`]); while they
+//!   play the clients are asked for a world every [`PLAYING_REFRESH`], and
+//!   every [`WAITING_REFRESH`] while one waits to see its body (just
+//!   entered, or dead). Until the map's walk grid is built (0.3 to 0.8 s,
+//!   on a thread of its own) they stand; if the map has no file they run
+//!   the stage 0 script instead. `SRP_BOT_TUNING` (a JSON file, read when
+//!   the match is made) changes their numbers; `SRP_BOT_TRACE_DIR` keeps
+//!   their decisions;
 //! - without it, the stage 0 script (`super::super::drive`).
 
 use std::sync::Arc;
 
-use mapdata::World;
+use mapdata::{Vec3, World};
 use survarium::v026g::match_msgs::motion::Motion;
 use survarium::v026g::match_msgs::players;
+use survarium::v026g::match_msgs::snapshot::{Battery, Decoded};
 
 use super::*;
-use crate::v026g::bots::Bots;
 use crate::v026g::bots::body::Fix;
 use crate::v026g::bots::maps::{MapState, Maps};
+use crate::v026g::bots::trace::Trace;
+use crate::v026g::bots::tuning::Tuning;
+use crate::v026g::bots::view::{BatteryState, Clock, WorldFacts};
+use crate::v026g::bots::{Bots, Note};
 use crate::v026g::drive::{self, Drive};
 
-/// While a walking bot is on its way, a world this often (the clients'
-/// upload: two of them, 30 to 60 KB each [LIKELY, the worlds saved]).
-const WALKING_REFRESH: Duration = Duration::from_secs(2);
+/// While the bots play, a world this often (the clients' upload: two of
+/// them, 30 to 60 KB each [LIKELY, the worlds saved]).
+const PLAYING_REFRESH: Duration = Duration::from_secs(2);
 /// While a bot waits to see its body, sooner.
 const WAITING_REFRESH: Duration = Duration::from_secs(1);
 
-/// The walking bots of a match and their map.
+/// The bots of a match and their map.
 pub(super) struct Walkers {
     bots: Bots,
     maps: Arc<Maps>,
@@ -57,35 +63,66 @@ pub(super) struct Walkers {
     world: Option<Arc<World>>,
     /// The map has no walk grid: the stage 0 script drives them.
     absent: bool,
+    /// The roster events handed to the bots so far.
+    events_seen: usize,
 }
 
 impl Walkers {
     /// With `SRP_MAPDATA_DIR` and a server's bot in the match; the map's
-    /// build starts now.
+    /// build starts now, the tuning file is read now.
     pub(super) fn new(formed: &Formed, settings: &Settings) -> Option<Self> {
         let maps = settings.maps.clone()?;
         let driven: Vec<bool> = formed.places.iter().map(|place| place.driven).collect();
         if !driven.iter().any(|&driven| driven) {
             return None;
         }
+        let id = formed.match_id;
+        let tuning = match std::env::var_os("SRP_BOT_TUNING").filter(|path| !path.is_empty()) {
+            Some(path) => match Tuning::load(path.as_ref()) {
+                Ok(tuning) => tuning,
+                Err(why) => {
+                    log::warn!("Match {id:#x}: SRP_BOT_TUNING not used ({why}); the defaults");
+                    Tuning::default()
+                }
+            },
+            None => Tuning::default(),
+        };
+        let hash = tuning.hash();
+        let trace = match std::env::var_os("SRP_BOT_TRACE_DIR").filter(|dir| !dir.is_empty()) {
+            Some(dir) => Trace::open(dir.as_ref(), id, hash),
+            None => Trace::none(hash),
+        };
+        log::info!("Match {id:#x}: the bots run on tuning {hash:08x}");
         let project = formed.map.project;
         maps.request(project);
+        let teams: Vec<u8> = formed.places.iter().map(|place| place.team).collect();
         Some(Self {
-            bots: Bots::new(formed.match_id, &driven),
+            bots: Bots::new(
+                id,
+                formed.map.mode,
+                formed.map.level,
+                &teams,
+                &driven,
+                Arc::new(tuning),
+                trace,
+            ),
             maps,
             project,
             world: None,
             absent: false,
+            events_seen: 0,
         })
     }
 
-    /// The map's walk grid, once built; `absent` set if there is none.
+    /// The map's walk grid, once built (handed to the bots once); `absent`
+    /// set if there is none.
     fn world(&mut self, id: u32) -> Option<Arc<World>> {
         if self.world.is_none() && !self.absent {
             match self.maps.get(self.project) {
                 MapState::Ready(world) => {
+                    let summary = self.bots.map_ready(world.clone());
                     log::info!(
-                        "Match {id:#x}: the bots have the map {} ({} floors)",
+                        "Match {id:#x}: the bots have the map {} ({} floors; {summary})",
                         self.project,
                         world.grid.len()
                     );
@@ -106,6 +143,80 @@ impl Walkers {
     }
 }
 
+fn log_notes(id: u32, notes: Vec<Note>) {
+    for note in notes {
+        if note.place == usize::MAX {
+            log::info!("Match {id:#x}: the bots at {} ms: {}", note.time, note.text);
+        } else {
+            log::info!(
+                "Match {id:#x}: player {} (the server's bot) at {} ms {}",
+                note.place,
+                note.time,
+                note.text
+            );
+        }
+    }
+}
+
+/// A world's statistics and batteries for the bots.
+fn world_facts(time: u32, decoded: &Decoded) -> WorldFacts {
+    use survarium::v026g::match_msgs::snapshot::event;
+    let stats = decoded
+        .statistics
+        .as_ref()
+        .map(|statistics| {
+            statistics
+                .players
+                .iter()
+                .map(|player| {
+                    let sum =
+                        |e: usize| player.events[e].iter().map(|&n| u32::from(n)).sum::<u32>();
+                    (
+                        sum(event::KILL),
+                        sum(event::DEATH),
+                        u32::from(player.killstreak),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let rules = decoded.rules.as_ref();
+    let points = rules.and_then(|rules| {
+        rules
+            .gather
+            .as_ref()
+            .map(|gather| gather.team_points.map(u32::from))
+            .or_else(|| rules.tdm.map(|tdm| tdm.tickets.map(u32::from)))
+    });
+    let gather = rules.and_then(|rules| rules.gather.as_ref());
+    let batteries = gather
+        .map(|gather| {
+            gather
+                .batteries
+                .iter()
+                .map(|battery| match battery {
+                    Battery::Carried => BatteryState::Carried(None),
+                    Battery::InContainer(id) => BatteryState::Home(*id),
+                    // As written; the bots settle its frame (`Bots::facts`).
+                    Battery::Free { position, .. } => {
+                        BatteryState::Free(Vec3::from_array(*position))
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let container_counts = gather
+        .map(|gather| gather.containers.iter().map(|c| c.items.len()).collect())
+        .unwrap_or_default();
+    WorldFacts {
+        time,
+        stats,
+        points,
+        batteries,
+        container_counts,
+    }
+}
+
 impl Game {
     /// The scripts of the server's bots, by place.
     pub(super) fn new_drives(formed: &Formed) -> Vec<Option<Drive>> {
@@ -117,15 +228,15 @@ impl Game {
     }
 
     /// A place a late joiner takes: never one of the server's bots.
-    pub(super) fn push_driven_place(&mut self) {
+    pub(super) fn push_driven_place(&mut self, team: u8) {
         self.drives.push(None);
         if let Some(walkers) = self.walkers.as_mut() {
-            walkers.bots.push_place();
+            walkers.bots.push_place(team);
         }
     }
 
     /// How often to ask for a world, `every` being what the match asks:
-    /// sooner while the server's bots walk.
+    /// sooner while the server's bots play.
     pub(super) fn driven_refresh(&self, every: Duration) -> Duration {
         let Some(walkers) = self.walkers.as_ref().filter(|walkers| !walkers.absent) else {
             return every;
@@ -133,31 +244,34 @@ impl Game {
         if walkers.bots.need_world() {
             every.min(WAITING_REFRESH)
         } else if walkers.bots.any() {
-            every.min(WALKING_REFRESH)
+            every.min(PLAYING_REFRESH)
         } else {
             every
         }
     }
 
-    /// A trusted world: what it shows of the server's bots' bodies.
-    pub(super) fn observe_driven(&mut self, snapshot: &Snapshot) {
+    /// A human's input as relayed: the bots hear it and track the body.
+    pub(super) fn observe_input(&mut self, index: usize, time: u32, input: &PlayerInput) {
+        if let Some(walkers) = self.walkers.as_mut() {
+            walkers.bots.input(index, time, input);
+        }
+    }
+
+    /// A trusted world: every player's body, and the statistics and
+    /// batteries, for the bots.
+    pub(super) fn observe_driven(&mut self, snapshot: &Snapshot, decoded: &Decoded) {
         let id = self.id;
         let Some(walkers) = self.walkers.as_mut() else {
             return;
         };
-        let world = walkers.world.clone();
         let Some((blocks, _)) = players::walk(&snapshot.body) else {
             return;
         };
         for block in blocks {
             let place = usize::from(block.place);
-            if !walkers.bots.has_entered(place) {
-                continue;
-            }
             let Some((_, motion)) = Motion::find(block.state, snapshot.time) else {
                 log::debug!(
-                    "Match {id:#x}: player {place} (the server's bot) is not read in the world at \
-                     {} ms",
+                    "Match {id:#x}: player {place}'s body is not read in the world at {} ms",
                     snapshot.time
                 );
                 continue;
@@ -169,7 +283,7 @@ impl Game {
                 feet: motion
                     .body
                     .as_ref()
-                    .map(|body| mapdata::Vec3::from_array(body.feet())),
+                    .map(|body| Vec3::from_array(body.feet())),
                 yaw: motion.rotation_y,
                 pitch: motion.look_pitch,
                 keys: motion.actions_mask,
@@ -178,23 +292,30 @@ impl Game {
                     .as_ref()
                     .map(|damage| damage.linear_horizontal_speed),
             };
-            let notes = walkers.bots.fixed(place, fix, world.as_deref());
-            if let Some(bot) = walkers.bots.bot(place)
-                && let Some(error) = bot.track().last_error()
-            {
-                log::debug!(
-                    "Match {id:#x}: player {place} (the server's bot) in the world at {} ms: {error:.2} m from its reckoning",
-                    snapshot.time
-                );
+            let health = motion
+                .damage
+                .as_ref()
+                .and_then(|damage| damage.part_health.first().copied());
+            let notes = walkers.bots.fixed(place, fix, health);
+            log_notes(id, notes);
+        }
+        let notes = walkers.bots.facts(world_facts(snapshot.time, decoded));
+        log_notes(id, notes);
+    }
+
+    /// The match's clock as the bots need it: the time left in play.
+    fn bots_clock(&self, clock: u32) -> Clock {
+        let total_ms = self.rule.params.match_ms;
+        let left_ms = match self.rule.start {
+            Some(start) if self.rule.state == rules::state::IN_PROCESS => {
+                total_ms.saturating_sub(clock.saturating_sub(start))
             }
-            for note in notes {
-                log::info!(
-                    "Match {id:#x}: player {} (the server's bot) at {} ms {}",
-                    note.place,
-                    note.time,
-                    note.text
-                );
-            }
+            _ => total_ms,
+        };
+        Clock {
+            clock,
+            time_left_s: left_ms as f32 / 1000.0,
+            total_s: total_ms as f32 / 1000.0,
         }
     }
 
@@ -227,9 +348,6 @@ impl Game {
                 if let Some(drive) = self.drives[index].as_mut() {
                     drive.entered(at);
                 }
-                if let Some(walkers) = self.walkers.as_mut() {
-                    walkers.bots.entered(index, at);
-                }
                 log::info!(
                     "Match {:#x}: player {index} (the server's bot) entered at {at} ms",
                     self.id
@@ -253,18 +371,17 @@ impl Game {
             }
         }
         let id = self.id;
+        let bots_clock = self.bots_clock(clock);
         if let Some(walkers) = self.walkers.as_mut() {
-            let world = walkers.world(id);
+            // Every entry and leave since the last poll, the humans' too.
+            for &(at, who, entered) in &self.events[walkers.events_seen..] {
+                walkers.bots.entered(who, entered, at);
+            }
+            walkers.events_seen = self.events.len();
+            walkers.world(id);
             if !walkers.absent {
-                let (made, notes) = walkers.bots.poll(clock, world.as_deref());
-                for note in notes {
-                    log::info!(
-                        "Match {id:#x}: player {} (the server's bot) at {} ms {}",
-                        note.place,
-                        note.time,
-                        note.text
-                    );
-                }
+                let (made, notes) = walkers.bots.poll(bots_clock);
+                log_notes(id, notes);
                 due.extend(
                     made.into_iter()
                         .map(|made| (made.place, made.time, made.input)),

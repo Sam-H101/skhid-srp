@@ -36,7 +36,8 @@ use crate::v026g::drive::key;
 const MIN_AHEAD_M: f32 = 0.5;
 
 /// The motor's tuning.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Feel {
     /// The time to take most of a turn, seconds: the turning speed asked is
     /// the remaining angle over this.
@@ -132,6 +133,9 @@ pub struct Motor {
     t: f32,
     /// Standing: the heading looked at, and ticks till the next look.
     look: Option<(f32, u32)>,
+    /// The turn's time constant for this tick when not the feel's (the
+    /// reflex aims faster or slower by skill).
+    pub turn_time: Option<f32>,
 }
 
 impl Motor {
@@ -146,6 +150,7 @@ impl Motor {
             phase: rng.range(0.0, 2.0 * PI),
             t: 0.0,
             look: None,
+            turn_time: None,
         }
     }
 
@@ -153,8 +158,9 @@ impl Motor {
     /// the top speed and change of speed, never past the aim.
     fn turn_toward(&mut self, pose: &Pose, yaw: f32, pitch: f32) -> (f32, f32) {
         let feel = &self.feel;
+        let turn_time = self.turn_time.unwrap_or(feel.turn_time_s).max(0.02);
         let ease = |rate: &mut f32, left: f32| {
-            let want = (left / feel.turn_time_s).clamp(-feel.max_turn_speed, feel.max_turn_speed);
+            let want = (left / turn_time).clamp(-feel.max_turn_speed, feel.max_turn_speed);
             let step = feel.max_turn_accel * TICK_S;
             *rate += (want - *rate).clamp(-step, step);
             let mut turn = *rate * TICK_S;
@@ -264,6 +270,53 @@ impl Motor {
         (Decision { keys, turn }, Walked::OnTheWay)
     }
 
+    /// The decision of one tick that walks the route while the view looks
+    /// at `aim` (yaw, pitch): the legs pick the key of the eight ways
+    /// nearest the way to go, as a player strafes while aiming; no sprint.
+    pub fn walk_aiming(
+        &mut self,
+        route: &mut Route,
+        pose: &Pose,
+        off_m: f32,
+        clear: impl Fn(Vec3) -> bool,
+        aim: (f32, f32),
+    ) -> (Decision, Walked) {
+        self.look = None;
+        self.sprinting = false;
+        self.facing_ticks = 0;
+        let (s, off) = route.progress(pose.feet);
+        let turn = self.turn_toward(pose, aim.0, aim.1);
+        if route.length() - s <= self.feel.arrive_m
+            || pose.feet.distance_xz(route.end()) <= self.feel.arrive_m
+        {
+            self.walking = false;
+            return (Decision { keys: 0, turn }, Walked::Arrived);
+        }
+        if off > off_m {
+            return (Decision { keys: 0, turn }, Walked::Off(off));
+        }
+        let mut ahead = self.feel.look_ahead_m;
+        let mut target = route.point_at(s + ahead);
+        while ahead > MIN_AHEAD_M && !clear(target) {
+            ahead *= 0.6;
+            target = route.point_at(s + ahead);
+        }
+        let (dx, dz) = (target.x - pose.feet.x, target.z - pose.feet.z);
+        self.walking = true;
+        let keys = keys_toward(wrap(yaw_of([dx, dz]) - (pose.yaw + turn.0)));
+        (Decision { keys, turn }, Walked::OnTheWay)
+    }
+
+    /// The decision of one tick standing and looking at `aim`.
+    pub fn aim_still(&mut self, pose: &Pose, aim: (f32, f32)) -> Decision {
+        self.walking = false;
+        self.sprinting = false;
+        self.facing_ticks = 0;
+        self.look = None;
+        let turn = self.turn_toward(pose, aim.0, aim.1);
+        Decision { keys: 0, turn }
+    }
+
     /// The decision of one tick standing still and looking about.
     pub fn stand(&mut self, pose: &Pose, rng: &mut Rng) -> Decision {
         self.walking = false;
@@ -293,10 +346,43 @@ impl Motor {
     }
 }
 
+/// The keys of the eight ways nearest `relative` (the way to go less the
+/// view's yaw; a positive angle is to the left, `kin`).
+pub fn keys_toward(relative: f32) -> u32 {
+    use std::f32::consts::FRAC_PI_4;
+    let sector = (wrap(relative) / FRAC_PI_4).round() as i32;
+    match sector.rem_euclid(8) {
+        0 => key::FORWARD,
+        1 => key::FORWARD | key::LEFT,
+        2 => key::LEFT,
+        3 => key::BACK | key::LEFT,
+        4 => key::BACK,
+        5 => key::BACK | key::RIGHT,
+        6 => key::RIGHT,
+        _ => key::FORWARD | key::RIGHT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::v026g::bots::kin::Kinematics;
+
+    #[test]
+    fn the_eight_ways_match_the_movement_model() {
+        let kin = Kinematics::default();
+        for k in -8..8 {
+            let relative = k as f32 * 0.4;
+            let keys = keys_toward(relative);
+            let [x, z] = kin.target_velocity(keys, 0.0, 1.0);
+            // The way the keys go is within 22.5 degrees of the asked one.
+            let went = yaw_of([x, z]);
+            assert!(
+                wrap(went - relative).abs() <= std::f32::consts::FRAC_PI_8 + 1e-3,
+                "{relative} -> {keys:#x}"
+            );
+        }
+    }
     use crate::v026g::bots::path::Waypoint;
 
     fn route(points: &[(f32, f32)]) -> Route {
@@ -324,7 +410,7 @@ mod tests {
             pitch: 0.0,
             speed: 0.0,
         };
-        let mut velocity = [0.0, 0.0];
+        let mut blend = crate::v026g::bots::kin::Blend::default();
         let mut decisions = Vec::new();
         for _ in 0..ticks {
             let (decision, walked) = motor.walk(route, &pose, 5.0, |_| true);
@@ -335,7 +421,8 @@ mod tests {
             }
             pose.yaw = wrap(pose.yaw + decision.turn.0);
             pose.pitch += decision.turn.1;
-            velocity = kin.approach(velocity, kin.target_velocity(decision.keys, pose.yaw, 1.0));
+            let local = blend.tick(kin.target_local(decision.keys, 1.0), kin.blend_ticks);
+            let velocity = crate::v026g::bots::kin::to_world(local, pose.yaw);
             pose.feet = Vec3::new(
                 pose.feet.x + velocity[0] * TICK_S,
                 0.0,

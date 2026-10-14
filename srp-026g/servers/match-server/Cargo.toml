@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
 # The maps the server's bots path on (`v026g::bots::maps`).
 mapdata = { path = "../../crates/mapdata" }
 serde_json = { workspace = true }

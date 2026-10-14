@@ -2286,6 +2286,7 @@ impl Game {
             }
         }
         peer.placed.push_back((time, relayed_time));
+        self.observe_input(index, relayed_time, &relayed);
         let what = Relayed::Input(relayed);
         self.relay_to_others(index, &what, relayed_time);
         self.inputs.push((relayed_time, index, what));
@@ -2574,7 +2575,7 @@ impl Game {
         {
             return;
         }
-        self.observe_driven(snapshot);
+        self.observe_driven(snapshot, &decoded);
         let teams: Vec<u8> = self.formed.places.iter().map(|place| place.team).collect();
         let standing = decoded.standing(self.game_mode(), &teams);
         if let Err(why) = self.plausible(&decoded, standing, snapshot.time) {

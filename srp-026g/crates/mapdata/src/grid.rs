@@ -519,6 +519,17 @@ impl WalkGrid {
     /// The cheapest path by A* (heuristic: the ground distance), `from` and
     /// `to` included.
     pub fn path(&self, from: NodeId, to: NodeId) -> Option<Path> {
+        self.path_where(from, to, |_| true)
+    }
+
+    /// [`Self::path`] over the floors `allowed` lets through only (`from`
+    /// and `to` are always allowed): a bot's way round an anomaly.
+    pub fn path_where(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        allowed: impl Fn(NodeId) -> bool,
+    ) -> Option<Path> {
         let n = self.len();
         if from as usize >= n || to as usize >= n {
             return None;
@@ -545,6 +556,9 @@ impl WalkGrid {
             }
             let cu = cost[u as usize];
             for (v, kind) in self.links(u) {
+                if v != to && !allowed(v) {
+                    continue;
+                }
                 let c = cu + self.link_cost(u, v, kind);
                 if c < cost[v as usize] {
                     cost[v as usize] = c;
@@ -848,6 +862,25 @@ mod tests {
         assert_eq!(erosion_rounds(0.38, 0.2), 2);
         assert_eq!(erosion_rounds(0.38, 0.1), 4);
         assert_eq!(erosion_rounds(0.0, 0.5), 0);
+    }
+
+    #[test]
+    fn a_path_keeps_off_the_floors_it_is_not_allowed() {
+        let tris = floor(0.0, 0.0, 10.0, 10.0, 0.0);
+        let grid = WalkGrid::build(&tris, AREA, 0.25, Body::default());
+        let a = grid.locate(Vec3::new(1.0, 0.0, 5.0), 1.0).unwrap();
+        let b = grid.locate(Vec3::new(9.0, 0.0, 5.0), 1.0).unwrap();
+        // A round 1.5 m anomaly in the middle.
+        let centre = Vec3::new(5.0, 0.0, 5.0);
+        let clear = |n: NodeId| grid.position(n).distance_xz(centre) > 1.5;
+        let path = grid.path_where(a, b, clear).unwrap();
+        assert!(path.nodes.iter().all(|&n| clear(n)));
+        assert!(path.cost > grid.path(a, b).unwrap().cost);
+        // Walled in: no way.
+        assert!(
+            grid.path_where(a, b, |n| grid.position(n).x < 3.0)
+                .is_none()
+        );
     }
 
     #[test]

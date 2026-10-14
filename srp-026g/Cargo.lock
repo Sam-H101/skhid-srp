@@ -523,6 +523,7 @@ dependencies = [
  "crc32fast",
  "log",
  "mapdata",
+ "serde",
  "serde_json",
  "session",
  "survarium",

@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use mapdata::{LinkKind, NodeId, Vec3, WalkGrid};
 use survarium::v026g::match_msgs::TICK_MS;
 
-use super::kin::{Kinematics, TICK_S, forward, wrap};
+use super::kin::{Blend, Kinematics, TICK_S, to_world, wrap};
 
 /// A world's word on the bot's body.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,7 +47,10 @@ pub struct Fix {
 pub struct Estimate {
     pub time: u32,
     pub feet: Vec3,
+    /// The ground velocity, map frame.
     pub velocity: [f32; 2],
+    /// The velocity's blend, in the body's frame (`kin::Blend`).
+    pub blend: Blend,
     /// In `(-π, π]`.
     pub yaw: f32,
     pub pitch: f32,
@@ -71,6 +74,8 @@ struct Tick {
 const KEPT_MS: u32 = 20_000;
 /// A floor this far from the feet is not the body's.
 const LOCATE_M: f32 = 1.5;
+/// A body is reckoned on this far past its last known tick at most, ms.
+const PROJECT_MS: u32 = 3_000;
 /// The pitch's limit, radians (LIKELY, `kin`).
 const MAX_PITCH: f32 = 1.0;
 
@@ -100,6 +105,30 @@ impl BodyTrack {
 
     pub fn last_error(&self) -> Option<f32> {
         self.last_error
+    }
+
+    /// The body reckoned on to `time` with the keys it holds (a human's,
+    /// between two of its inputs); at most [`PROJECT_MS`] past the last
+    /// tick known, as its inputs may have stopped coming.
+    pub fn at(&self, time: u32, kin: &Kinematics, grid: Option<&WalkGrid>) -> Option<Estimate> {
+        let estimate = *self.estimate.as_ref()?;
+        let until = time.min(estimate.time + PROJECT_MS);
+        let ticks = until.saturating_sub(estimate.time) / TICK_MS;
+        if ticks == 0 {
+            return Some(estimate);
+        }
+        let tick = Tick {
+            time: estimate.time + ticks * TICK_MS,
+            keys: estimate.keys,
+            turn: (0.0, 0.0),
+        };
+        Some(advance(
+            estimate,
+            tick,
+            kin,
+            self.level.unwrap_or(1.0),
+            grid,
+        ))
     }
 
     /// Whether the last world showed the body dead.
@@ -175,34 +204,29 @@ impl BodyTrack {
             })
             .flatten();
         let node = grid.and_then(|grid| grid.locate(feet, LOCATE_M));
-        let held = self
-            .ticks
-            .iter()
-            .rev()
-            .find(|tick| tick.time <= fix.time)
-            .map_or(0, |tick| tick.keys);
-        // The world's velocity: its speed, along the way the keys before
-        // its tick were taking it.
+        // The world has its own tick's keys (PROVEN, `kin`); its velocity
+        // is its speed along the way the keys before were taking it.
+        let held = fix.keys;
         let before = self
             .ticks
             .iter()
             .rev()
             .find(|tick| tick.time < fix.time)
             .map_or(fix.keys, |tick| tick.keys);
-        let mut velocity = kin.target_velocity(before, fix.yaw, level);
+        let mut local = kin.target_local(before, level);
         if let Some(speed) = fix.speed.filter(|speed| speed.is_finite()) {
-            let now = (velocity[0] * velocity[0] + velocity[1] * velocity[1]).sqrt();
-            velocity = if now > 1e-3 {
-                [velocity[0] / now * speed, velocity[1] / now * speed]
+            let now = local[0].hypot(local[1]);
+            local = if now > 1e-3 {
+                [local[0] / now * speed, local[1] / now * speed]
             } else {
-                let [x, z] = forward(fix.yaw);
-                [x * speed, z * speed]
+                [speed, 0.0]
             };
         }
         let mut estimate = Estimate {
             time: fix.time,
             feet,
-            velocity,
+            velocity: to_world(local, fix.yaw),
+            blend: Blend::at(local),
             yaw: wrap(fix.yaw),
             pitch: fix.pitch,
             keys: held,
@@ -232,9 +256,10 @@ fn advance(
     grid: Option<&WalkGrid>,
 ) -> Estimate {
     let steps = (tick.time.saturating_sub(at.time) / TICK_MS).max(1);
-    let target = kin.target_velocity(at.keys, at.yaw, level);
+    let target = kin.target_local(at.keys, level);
     for _ in 0..steps {
-        at.velocity = kin.approach(at.velocity, target);
+        let local = at.blend.tick(target, kin.blend_ticks);
+        at.velocity = to_world(local, at.yaw);
         let to = Vec3::new(
             at.feet.x + at.velocity[0] * TICK_S,
             at.feet.y,
@@ -379,8 +404,7 @@ pub(super) mod tests {
     fn the_body_is_moved_on_by_its_inputs_and_put_back_by_a_world() {
         // Speeds reached at once, to count the metres.
         let kin = Kinematics {
-            speed_up: 100.0,
-            slow_down: 100.0,
+            blend_ticks: 1,
             ..Kinematics::default()
         };
         let mut track = BodyTrack::default();
@@ -394,20 +418,31 @@ pub(super) mod tests {
         assert_eq!(at.time, 2_000);
         // Forward at yaw 0 is +z; the keys of a tick move the body from the
         // next one: 19 ticks of walking.
-        assert!((at.feet.z - (5.0 + kin.walk * 0.95)).abs() < 1e-3, "{at:?}");
+        assert!(
+            (at.feet.z - (5.0 + kin.walk[0] * 0.95)).abs() < 1e-3,
+            "{at:?}"
+        );
         assert!((at.feet.x - 5.0).abs() < 1e-3);
         // A world of a later tick: the body is put where it shows, the
         // ticks after it played again, and how far off the reckoning was is
         // kept.
         track.decided(2_050, key::FORWARD, (0.0, 0.0), &kin, None);
-        assert!(!track.fixed(fix(1_500, Vec3::new(5.0, 0.0, 6.0), 0.0), &kin, None));
+        // The world has its tick's keys: forward.
+        let walking = Fix {
+            keys: key::FORWARD,
+            ..fix(1_500, Vec3::new(5.0, 0.0, 6.0), 0.0)
+        };
+        assert!(!track.fixed(walking, &kin, None));
         let error = track.last_error().unwrap();
         assert!(
-            (error - (kin.walk * 0.45 - 1.0).abs()).abs() < 1e-3,
+            (error - (kin.walk[0] * 0.45 - 1.0).abs()).abs() < 1e-3,
             "{error}"
         );
         let at = *track.estimate().unwrap();
-        assert!((at.feet.z - (6.0 + kin.walk * 0.55)).abs() < 1e-3, "{at:?}");
+        assert!(
+            (at.feet.z - (6.0 + kin.walk[0] * 0.55)).abs() < 1e-3,
+            "{at:?}"
+        );
         // An older world is not used.
         assert!(!track.fixed(fix(1_400, Vec3::new(0.0, 0.0, 0.0), 0.0), &kin, None));
         // A turn is applied at its tick: a quarter turn, then forward goes
@@ -450,14 +485,13 @@ pub(super) mod tests {
         let grid = walled();
         // Speeds reached at once, to count the metres.
         let kin = Kinematics {
-            speed_up: 100.0,
-            slow_down: 100.0,
+            blend_ticks: 1,
             ..Kinematics::default()
         };
         let mut track = BodyTrack::default();
         // At x = 17, facing +x (yaw -π/2), walking into the wall for 2 s.
         let yaw = -std::f32::consts::FRAC_PI_2;
-        assert!((forward(yaw)[0] - 1.0).abs() < 1e-5);
+        assert!((crate::v026g::bots::kin::forward(yaw)[0] - 1.0).abs() < 1e-5);
         track.fixed(fix(0, Vec3::new(17.0, 0.0, 10.0), yaw), &kin, Some(&grid));
         assert!(track.estimate().unwrap().node.is_some());
         for time in (50..=2_000).step_by(50) {
