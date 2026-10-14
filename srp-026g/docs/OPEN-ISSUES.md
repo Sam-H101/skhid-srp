@@ -263,3 +263,57 @@ pass. None of it was seen by a client.
   installed" after the message box); the updater's messages in other
   languages than English; a count of kills for the page (the database keeps
   none).
+
+## 0.26g, added 2026-10-14: two bytes of a battery's statistics
+
+Both are the original game's own code, in modes 2 and 3: no patch made
+them. `notes/match.md` §28 has the evidence and the choices,
+`notes/snapshot_rules.md` §3.2 the code.
+
+- **Open, the owner's to decide: a game that starts in a match being played
+  does not know who took a battery out of a container.** The statistics keep
+  that player in a byte no world carries, and event 26 ("stolen and brought
+  home", what the quest `steal_box` counts) is counted only for it. Seen
+  live once (match 0x69f8c0ba, a late join of revision 6): a battery taken
+  out seconds before the newcomer's world was brought home half a minute
+  later, the newcomer's game did not count it, its hash differed and it was
+  resynced once. PROVEN from the two worlds of that tick and in the exe. A
+  player back in a match and a game that loads after play began have the
+  same gap (not seen); a game resynced in an ordinary match does not.
+  - Nothing is broken beyond that one resync of that one game, and the
+    result is right while the games of the start are the majority.
+  - A fix is a client patch, so a new revision for everybody: save the byte
+    (the count stays what it was; the worlds get ten bytes longer, so the
+    new revision never plays a battery match with 7), or count the event
+    without asking who took the battery out (two bytes, plays with 7, but
+    another rule). Neither is written.
+- **Open: a battery's finder outlives the match.** The reset between two
+  matches clears neither that byte nor `first_finder`, and `first_finder`
+  goes to every game with the first world. Seen in the same match: seven
+  batteries nobody had touched had a finder from the start, LIKELY from the
+  match the game that gave the first world had played two minutes before.
+  From the code, not seen counted wrong: no "found" (event 19) for such a
+  battery, and "found and brought alone" (event 24, the quest
+  `bring_x_items`) for the wrong player. No game falls out of step by it.
+  The fix is the same patch's (0xFF to both bytes at the reset) and plays
+  with revision 7.
+
+## 0.26g, added 2026-10-14: the statistics writer's event masks
+
+- **Open, not done: `snapshot.rs` writes a player's event masks otherwise
+  than a game does.** A game does not start the mask again for each kit:
+  the second kit's mask has the first's bits too, the third's has all
+  three, and each such bit is followed by that kit's count, a zero when it
+  has none (`notes/snapshot_rules.md` §3.1; PROVEN in the exe,
+  0x33575D..0x3357CD, and seen in every record of the worlds of match
+  0x69f8c0ba). `PlayerStatistics::write` makes each kit's own mask.
+  - Nothing read from a real game is wrong: the reader takes either form,
+    so results, quests and the standing are as before.
+  - Only the scripted test client (`match-server/src/v026g/scripted.rs`)
+    and the tests write statistics. Their worlds are not, byte for byte,
+    what a game writes for a player who has an event, and a test that
+    reads a real game's statistics and writes them back does not get the
+    same bytes.
+  - The fix is in the server's code alone (the mask kept across the kits
+    in `write`, a test with a made-up record): no client patch, no
+    revision, nothing for a player to install.
