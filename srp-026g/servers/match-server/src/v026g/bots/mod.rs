@@ -10,6 +10,7 @@
 //! play    -> one play at a time, a small state machine              (plays/)
 //! tactics -> spots and routes; hazards and spawn areas kept off     (tactics.rs, hazards.rs, path.rs)
 //! motor   -> aim, move, fire, smooth as a player's hands           (motor.rs, reflex.rs, stuck.rs)
+//! guns    -> each weapon's rounds, shots and reloads, from the game (guns.rs)
 //! encode  -> the inputs a client would send                         (encode.rs)
 //! ```
 //!
@@ -30,6 +31,7 @@ pub mod body;
 pub mod cheats;
 pub mod curve;
 pub mod encode;
+pub mod guns;
 pub mod hazards;
 pub mod kin;
 pub mod know;
@@ -166,13 +168,21 @@ impl Bot {
                     })
                     .unwrap_or(0)
             });
+        // What it carries: its role's gear, else its personality's name as
+        // a role (the tests' bots), else the fallback.
+        let arms = role.and_then(guns::Arms::of_role).or_else(|| {
+            tuning
+                .personalities
+                .get(personality)
+                .and_then(|p| guns::Arms::of_role(&p.name))
+        });
         Self {
             place,
             team,
             rng,
             encoder: Encoder::default(),
             motor,
-            reflex: Reflex::default(),
+            reflex: Reflex::armed(arms),
             memory: Memory::default(),
             stuck: Stuck::default(),
             personality,
@@ -231,7 +241,7 @@ impl Bot {
         self.intent = Intent::stay();
         self.stuck.reset();
         self.unstick = None;
-        self.reflex = Reflex::default();
+        self.reflex = Reflex::armed(self.reflex.arms());
         self.memory = Memory::default();
         self.skill = skill;
         self.medkits_used = 0;

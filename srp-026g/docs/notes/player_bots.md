@@ -359,6 +359,14 @@ the archive's index: a loader must follow them.
      medkits, two RGD-5 and the radio (passive: −20 % respawn time, PROVEN
      in the client); the role is read back from the gear and sets the
      bot's personality.
+   - Weapons (`guns.rs`): each weapon's rounds a load, shot time, trigger
+     and reload time from the client's item configs and clips; the reflex
+     counts the rounds it fires (an automatic weapon a shot per pass of its
+     fire clip while held; the TOZ-34, the Mosin and the TT-33 one press a
+     round, the trigger up before the shot's state is over), reloads at
+     empty with the weapon's time (the Mosin round by round), and takes the
+     TT-33 when weapon 1's kit ammo is gone (the AK-74U's 30 are one
+     magazine).
    - Anomalies (`anomalies.rs`, `hazards.rs`): every damage zone with a hit
      is kept off with a margin; level_03's electric pairs run on the match
      clock from the static seed (checked on 36 matches' worlds) and are
@@ -372,7 +380,7 @@ the archive's index: a loader must follow them.
      `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
      `SRP_MAPDATA_DIR` set.
    - Not yet: a real game; the human routes per map (play 17's data);
-     per-weapon clip sizes; a bot giving its place up to a late joiner.
+     a bot giving its place up to a late joiner.
 4. Bots fill short queues and give their place up to late joiners.
 
 Bots and late joiners: a roster place is never reused, so a joiner cannot
