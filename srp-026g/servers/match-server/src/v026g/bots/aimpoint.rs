@@ -27,7 +27,10 @@
 //!   part is clear (where he is and where his speed takes him by the shot)
 //!   and the view's own line, the way the bullet flies, meets nothing short
 //!   of him: the view now and the view it turns to this tick (the aim and
-//!   its error). The 0.100b replay starts a shot at the camera (`pose.rs`
+//!   its error). The view is the base pitch and the weapon's kick, which
+//!   lifts the camera and the bullet together (PROVEN, [`super::recoil`]);
+//!   the part of this tick's kick the turn does not take back lifts both
+//!   lines (`reflex`). The 0.100b replay starts a shot at the camera (`pose.rs`
 //!   `head_matrix`); the muzzle's offset is left out. All on the
 //!   bullet mesh ([`mapdata::MapData::bullet_triangles`]: what the game's
 //!   bullet ray meets, `cgroup & 8`, PROVEN). The game lets some bullets
@@ -371,7 +374,7 @@ impl Sight {
 mod tests {
     use super::*;
     use crate::v026g::bots::know::{Memory, Percept, Source};
-    use crate::v026g::bots::reflex::Reflex;
+    use crate::v026g::bots::reflex::{CombatTuning, Reflex};
     use crate::v026g::bots::rng::Rng;
     use crate::v026g::bots::tuning::AimTuning;
     use crate::v026g::bots::view::Mode;
@@ -509,17 +512,14 @@ mod tests {
         assert!(points.iter().all(|p| (p.y - 1.60).abs() < 1e-3));
     }
 
-    #[test]
-    fn a_burst_over_a_wall_is_not_cut_by_the_pull_against_the_kick() {
-        // Only the head shows. The automatic weapon's kick lifts the shot,
-        // and the view is pulled down against it: the shot's line (the view
-        // lifted back) stays clear, so a burst runs its length instead of
-        // stopping as soon as the pulled view dips into the wall.
-        let world = world_of(&[wall(19.0, -3.0, 3.0, 0.0, 1.45)]);
-        let enemy = body(1, 1, Vec3::new(0.0, 0.0, 20.0), false);
+    /// A bot at the origin facing +z, an enemy at `enemy` (seen and
+    /// noticed), four seconds of ticks: the bot's view is its base pitch
+    /// and its weapon's kick as the client moves it (`recoil`); each tick
+    /// the view is turned onto where the reflex aims, with the reflex's
+    /// pull. Returns the longest run of ticks it fired.
+    fn kicked_burst(world: &Arc<World>, enemy: PlaceView, aim: &AimTuning) -> u32 {
         let mut me = body(0, 0, Vec3::ZERO, false);
         let view = view_of(vec![me.clone(), enemy.clone()]);
-        let aim = AimTuning::default();
         let mut memory = Memory::default();
         let mut reflex = Reflex::default();
         assert!(reflex.hands().held().gun.auto);
@@ -534,19 +534,55 @@ mod tests {
         };
         memory.update(&[seen(1_000)], 1_000, |_| 300, 3_000, 20_000);
         memory.update(&[seen(1_300)], 1_300, |_| 300, 3_000, 20_000);
-        reflex.think(&me, &memory, 1_300, &aim, 1.0, &mut rng);
+        reflex.think(&me, &memory, 1_300, aim, 1.0, &mut rng);
+        let mut base = 0.0;
         let (mut run, mut longest) = (0, 0);
         for k in 0..80 {
             let now = 1_300 + k * 50;
             memory.update(&[seen(now)], now, |_| 300, 3_000, 20_000);
-            reflex.look(&me, &view, &world, now);
-            let o = reflex.tick(&me, &view, &memory, now, true, &aim, 1.0, &mut rng);
+            let kick = reflex.weapon_tick(&me, now);
+            me.pitch = base + kick;
+            reflex.look(&me, &view, world, now);
+            let o = reflex.tick(&me, &view, &memory, now, true, aim, 1.0, &mut rng);
+            let before = me.pitch;
             facing(&mut me, o.look_at.unwrap());
+            let turn = me.pitch - before + o.pull;
+            let keys = if o.fire { key::FIRE } else { 0 };
+            base += turn + reflex.sent(now, keys, turn);
             run = if o.fire { run + 1 } else { 0 };
             longest = longest.max(run);
         }
+        longest
+    }
+
+    #[test]
+    fn a_burst_through_a_slit_stays_in_it_as_the_turns_take_back_the_kick() {
+        // Only the head shows, between a wall up to 1.35 m and a beam from
+        // 1.85 m, 19 m out: the line has a quarter metre either way. The
+        // kick lifts the view and the shot with it (PROVEN, `recoil`), and
+        // the wall test is on the view. With the kick taken back by the
+        // turns, the view stays on the head and a burst runs its length.
+        let world = world_of(&[
+            wall(19.0, -3.0, 3.0, 0.0, 1.35),
+            wall(19.0, -3.0, 3.0, 1.85, 4.0),
+        ]);
+        let enemy = body(1, 1, Vec3::new(0.0, 0.0, 20.0), false);
+        let eye = body(0, 0, Vec3::ZERO, false).eye();
+        assert_eq!(aim_part(eye, &enemy, &world.sight), Some(Part::Head));
+        let longest = kicked_burst(&world, enemy.clone(), &AimTuning::default());
         // Bursts are 500-1000 ms: at least 400 ms of them held.
         assert!(longest >= 8, "longest burst {} ms", longest * 50);
+        // Left to lift the view, the kick of the first shot takes the line
+        // into the beam by the next tick, and the burst stops there.
+        let lifted = AimTuning {
+            combat: CombatTuning {
+                recoil_pull: 0.0,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
+        let longest = kicked_burst(&world, enemy, &lifted);
+        assert!(longest <= 2, "longest burst {} ms", longest * 50);
     }
 
     #[test]

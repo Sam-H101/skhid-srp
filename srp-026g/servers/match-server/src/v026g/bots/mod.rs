@@ -11,6 +11,7 @@
 //! tactics -> spots and routes; hazards and spawn areas kept off     (tactics.rs, hazards.rs, path.rs)
 //! motor   -> aim, move, fire, smooth as a player's hands           (motor.rs, reflex.rs, stuck.rs)
 //! guns    -> each weapon's rounds, shots and reloads, from the game (guns.rs)
+//! recoil  -> its kick, which moves the view, as the client moves it  (recoil.rs)
 //! encode  -> the inputs a client would send                         (encode.rs)
 //! ```
 //!
@@ -40,6 +41,7 @@ pub mod maps;
 pub mod motor;
 pub mod path;
 pub mod plays;
+pub mod recoil;
 pub mod reflex;
 pub mod rng;
 pub mod routes;
@@ -557,11 +559,13 @@ impl Bots {
             half_value(u16::from_le_bytes([r[2], r[3]])),
         );
         let world = self.tactics.as_ref().map(|t| t.world.clone());
+        // A human's kick is not known.
         self.tracker.input(
             place,
             time,
             input.actions,
             turn,
+            0.0,
             &self.tuning.kin,
             world.as_deref(),
         );
@@ -1113,6 +1117,7 @@ impl Bots {
             let me = view.place(bot.place).filter(|p| p.alive);
             let decision = match (estimate, me, self.tactics.as_ref()) {
                 (Some(at), Some(me), Some(tactics)) => {
+                    // The base pitch: `drive_tick` adds the kick.
                     let me = PlaceView {
                         feet: at.feet,
                         yaw: at.yaw,
@@ -1126,8 +1131,18 @@ impl Bots {
             };
             let (input, turn) = bot.encoder.encode(time, decision);
             let keys = bot.encoder.keys();
-            self.tracker
-                .input(bot.place, time, keys, turn, &tuning.kin, world.as_deref());
+            // [recoil] The part of the pitch turn the kick takes, and the
+            // tick's shots: the base pitch moves by the rest.
+            let taken = bot.reflex.sent(time, keys, turn.1);
+            self.tracker.input(
+                bot.place,
+                time,
+                keys,
+                (turn.0, turn.1 + taken),
+                bot.reflex.kick(),
+                &tuning.kin,
+                world.as_deref(),
+            );
             if let Some(input) = input {
                 made.push(Made {
                     place: bot.place,
@@ -1161,8 +1176,8 @@ fn from_fight(view: &MatchView, me: &PlaceView) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-/// One tick of a living bot: the reflex's look and trigger, the play's
-/// legs and stance, the presses.
+/// One tick of a living bot (`me` with its base pitch): the reflex's look
+/// and trigger, the play's legs and stance, the presses.
 fn drive_tick(
     bot: &mut Bot,
     me: &PlaceView,
@@ -1172,6 +1187,14 @@ fn drive_tick(
     time: u32,
     searches: &mut u32,
 ) -> Decision {
+    // [recoil] The weapon's update first, as the client's; the view is the
+    // base pitch and the kick the last tick left (the reflex takes back
+    // this tick's rise itself, `Override::pull`).
+    let kick = bot.reflex.weapon_tick(me, time);
+    let me = &PlaceView {
+        pitch: (me.pitch + kick).clamp(-1.0, 1.0),
+        ..me.clone()
+    };
     let intent = bot.intent;
     let pose = Pose {
         feet: me.feet,
@@ -1324,6 +1347,7 @@ fn drive_tick(
     if intent.pace != Pace::Run {
         decision.keys &= !key::SPRINT;
     }
+    decision.turn.1 += over.pull;
     if over.fire {
         decision.keys |= key::FIRE;
         decision.keys &= !key::SPRINT;

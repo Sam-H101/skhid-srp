@@ -5,8 +5,13 @@
 //!   model (`kin`), kept on the walk grid;
 //! - a shot hits the first enemy whose chest lies within 0.45 m of the
 //!   view's ray, with a clear line on the bullet mesh; five hits kill;
-//! - the trigger held lifts the shot over the view: the kick of the game's
-//!   automatic weapons as the recorded matches show it ([`KICK_DEG_S`]);
+//! - the weapon each bot holds fires as the client fires it: an automatic
+//!   one at its rate while the trigger is held, any other once a press;
+//!   and kicks as the client kicks ([`super::recoil`]): the shots lift the
+//!   view itself (the base pitch and the kick), a downward turn is taken
+//!   off the kick first, the kick comes back by the weapon's controller;
+//!   each shot's kick drawn in the config's range (the bots predict the
+//!   middle);
 //! - the dead respawn at their side's spawns after 6.4 s (the radio);
 //! - a use takes a battery within reach, puts it in at one's own
 //!   container, or steals from the other's; a drop drops it;
@@ -15,9 +20,9 @@
 //! - a world of every body, the statistics and the batteries comes every
 //!   second, 300 ms behind the clock, as the match gives the bots.
 //!
-//! The stand-in is much simpler than the game (one kick for every weapon, no
-//! spread, no armour, no
-//! stamina, no jumps): the runs check that bots of two teams find each
+//! The stand-in is much simpler than the game (no spread, no side kick, no
+//! armour, no stamina, no jumps; the rounds are not counted, the bots count
+//! their own): the runs check that bots of two teams find each
 //! other, fight, die, come back, take and bring batteries and end a
 //! match, with no input out of the rules; not how well.
 //! `SRP_BOT_NOTES=1` prints what each bot did.
@@ -29,7 +34,9 @@ use mapdata::{BatterySpawner, Container, NodeId, Vec3, World};
 use survarium::v026g::match_msgs::TICK_MS;
 
 use super::body::{Fix, slide};
+use super::guns::{Arms, Gun};
 use super::kin::{Blend, Kinematics, TICK_S, forward, to_world};
+use super::recoil::{Cadence, Recoil, kick_of};
 use super::rng::Rng;
 use super::trace::Trace;
 use super::tuning::Tuning;
@@ -37,32 +44,20 @@ use super::view::{BatteryState, Clock, WorldFacts};
 use super::*;
 use crate::v026g::drive::{half_value, key};
 
-/// The kick: with the trigger held `held_ms`, a shot leaves this far over
-/// the view, radians. From the recorded matches (private research,
-/// `player_bots_behaviour.md` §5): the attacker's view at 1,427 hits of
-/// automatic fire sat under the victim's chest by 1.6° (median, over the
-/// one-round weapons' hits) after 0.1-0.2 s of trigger, 2.7° at 0.3-0.4 s,
-/// 4.2° at 0.4-0.6 s, 4.8° at 0.6-0.8 s, 5.1° at 0.8-1 s, 7.9° at 1-1.4 s
-/// (7.4° a second through the origin). A one-round press fires as it goes
-/// down, with no kick.
-const KICK_DEG_S: f32 = 7.0;
-const KICK_MAX_DEG: f32 = 5.5;
-
-fn kick(held_ms: u32) -> f32 {
-    (KICK_DEG_S * held_ms as f32 / 1000.0)
-        .min(KICK_MAX_DEG)
-        .to_radians()
-}
-
 /// A body of the stand-in game.
 #[derive(Clone, Debug)]
 struct Body {
-    /// The tick the trigger went down, while it is held.
-    fire_since: Option<u32>,
+    /// The weapon in hand (the bot's, as its last input was made), its
+    /// kick and its trigger.
+    gun: &'static Gun,
+    recoil: Recoil,
+    cadence: Cadence,
     team: u8,
     feet: Vec3,
     node: Option<NodeId>,
     yaw: f32,
+    /// The base pitch (`m_look_pitch`, as the worlds give it); the view is
+    /// it and the kick.
     pitch: f32,
     blend: Blend,
     keys: u32,
@@ -71,7 +66,6 @@ struct Body {
     dead_at: u32,
     spawned: u32,
     carrying: Option<usize>,
-    last_shot: u32,
     moved: f32,
     /// The bot's target as its last input was made (the reflex's).
     target: Option<Place>,
@@ -85,8 +79,9 @@ enum Lying {
 }
 
 type Recorded = (u32, Vec<Fix>, Vec<f32>, WorldFacts);
-/// An input for a tick: the tick, the keys, the turn, the bot's target.
-type Queued = (u32, u32, (f32, f32), Option<Place>);
+/// An input for a tick: the tick, the keys, the turn, the bot's target
+/// and weapon in hand.
+type Queued = (u32, u32, (f32, f32), Option<Place>, &'static Gun);
 
 /// The stand-in game.
 struct Game {
@@ -168,8 +163,11 @@ impl Game {
                 .map(|s| Lying::Free(s.item))
                 .collect()
         };
+        let gun = Arms::fallback().primary.0;
         let body = |team| Body {
-            fire_since: None,
+            gun,
+            recoil: Recoil::new(kick_of(gun.item)),
+            cadence: Cadence::default(),
             team,
             feet: Vec3::ZERO,
             node: None,
@@ -182,7 +180,6 @@ impl Game {
             dead_at: 0,
             spawned: 0,
             carrying: None,
-            last_shot: 0,
             moved: 0.0,
             target: None,
         };
@@ -244,7 +241,10 @@ impl Game {
         body.alive = true;
         body.spawned = tick;
         body.carrying = None;
-        body.fire_since = None;
+        // Weapon 1 in hand afresh.
+        body.gun = Arms::fallback().primary.0;
+        body.recoil = Recoil::new(kick_of(body.gun.item));
+        body.cadence = Cadence::default();
     }
 
     fn eye(body: &Body) -> Vec3 {
@@ -265,16 +265,20 @@ impl Game {
         body.feet + Vec3::new(0.0, up, 0.0)
     }
 
-    /// One tick: each body takes its input (the world of the tick shows
-    /// it, before the move), then moves; shots, uses, drops, deaths,
-    /// respawns.
+    /// One tick: each weapon's kick moves on, each body takes its input
+    /// (the world of the tick shows it, before the move; a downward turn
+    /// is taken off the kick first), then moves; shots, uses, drops,
+    /// deaths, respawns.
     fn step(&mut self) {
         self.tick += TICK_MS;
         let tick = self.tick;
         let n = self.bodies.len();
         let mut pressed = vec![0u32; n];
+        for body in &mut self.bodies {
+            body.recoil.update(tick);
+        }
         for (place, queue) in self.inputs.iter_mut().enumerate() {
-            while let Some(&(at, keys, turn, target)) = queue.front() {
+            while let Some(&(at, keys, turn, target, gun)) = queue.front() {
                 if at > tick {
                     break;
                 }
@@ -284,16 +288,19 @@ impl Game {
                 pressed[place] = keys & !body.keys;
                 body.keys = keys;
                 body.target = target;
+                // Another weapon taken, or a reload: no kick.
+                if gun.item != body.gun.item {
+                    body.gun = gun;
+                    body.recoil = Recoil::new(kick_of(gun.item));
+                    body.recoil.update(tick);
+                    body.cadence = Cadence::default();
+                } else if pressed[place] & key::RELOAD != 0 {
+                    body.recoil.reset();
+                }
                 body.yaw += turn.0;
-                body.pitch = (body.pitch + turn.1).clamp(-1.0, 1.0);
+                let taken = body.recoil.turn(turn.1);
+                body.pitch = (body.pitch + turn.1 + taken).clamp(-1.0, 1.0);
             }
-        }
-        for body in &mut self.bodies {
-            body.fire_since = if body.keys & key::FIRE == 0 {
-                None
-            } else {
-                body.fire_since.or(Some(tick))
-            };
         }
         self.record();
         for place in 0..n {
@@ -338,81 +345,92 @@ impl Game {
         }
     }
 
-    /// Shots: a hit on the nearest enemy chest within 0.45 m of the ray.
+    /// Shots, each along the view (the base pitch and the kick) and each
+    /// kicking it: a hit on the nearest enemy chest within 0.45 m of the
+    /// ray.
     fn shoot(&mut self, tick: u32) {
         for shooter in 0..self.bodies.len() {
-            let body = &self.bodies[shooter];
-            if !body.alive
-                || body.keys & key::FIRE == 0
-                || tick < body.last_shot + 150
-                || body.carrying.is_some()
-            {
+            let body = &mut self.bodies[shooter];
+            let held = body.alive && body.keys & key::FIRE != 0 && body.carrying.is_none();
+            let (auto, interval_ms) = (body.gun.auto, body.gun.shot_ms());
+            let mut times = Vec::new();
+            body.cadence
+                .tick(tick, held, auto, interval_ms, |t| times.push(t));
+            for at in times {
+                self.shot(shooter, at);
+            }
+        }
+    }
+
+    /// One shot of `shooter` at `at` ms (within the tick).
+    fn shot(&mut self, shooter: Place, at: f32) {
+        self.shots += 1;
+        let body = &self.bodies[shooter];
+        let eye = Self::eye(body);
+        let [fx, fz] = forward(body.yaw);
+        let pitch = body.recoil.view(body.pitch);
+        let (c, s) = (pitch.cos(), pitch.sin());
+        let dir = Vec3::new(fx * c, s, fz * c);
+        let kick = body.recoil.kick();
+        let top = kick.top(self.rng.unit());
+        self.bodies[shooter].recoil.shot(at, top, 0.0);
+        let tick = self.tick;
+        let body = &self.bodies[shooter];
+        // A shot at the bot's target with nothing of him showing
+        // (`aimpoint`'s parts), or whose ray meets the world short of
+        // him.
+        if let Some(target) = body.target.map(|t| &self.bodies[t])
+            && target.alive
+        {
+            let before = super::aimpoint::rays_cast();
+            let crouched = target.keys & key::CROUCH != 0;
+            if !super::aimpoint::shows(eye, target.feet, crouched, &self.world.sight, || true) {
+                self.hidden += 1;
+            }
+            let reach = (Self::chest(target) - eye).length() - 0.5;
+            if self.world.sight.ray_cast(eye, dir, reach).is_some() {
+                self.walled += 1;
+            }
+            self.metric_rays += super::aimpoint::rays_cast() - before;
+        }
+        let mut best: Option<(Place, f32)> = None;
+        for (target, other) in self.bodies.iter().enumerate() {
+            if !other.alive || other.team == body.team {
                 continue;
             }
-            self.bodies[shooter].last_shot = tick;
-            self.shots += 1;
-            let body = &self.bodies[shooter];
-            let eye = Self::eye(body);
-            let [fx, fz] = forward(body.yaw);
-            let pitch = body.pitch + kick(body.fire_since.map_or(0, |since| tick - since));
-            let (c, s) = (pitch.cos(), pitch.sin());
-            let dir = Vec3::new(fx * c, s, fz * c);
-            // A shot at the bot's target with nothing of him showing
-            // (`aimpoint`'s parts), or whose ray meets the world short of
-            // him.
-            if let Some(target) = body.target.map(|t| &self.bodies[t])
-                && target.alive
-            {
-                let before = super::aimpoint::rays_cast();
-                let crouched = target.keys & key::CROUCH != 0;
-                if !super::aimpoint::shows(eye, target.feet, crouched, &self.world.sight, || true) {
-                    self.hidden += 1;
-                }
-                let reach = (Self::chest(target) - eye).length() - 0.5;
-                if self.world.sight.ray_cast(eye, dir, reach).is_some() {
-                    self.walled += 1;
-                }
-                self.metric_rays += super::aimpoint::rays_cast() - before;
-            }
-            let mut best: Option<(Place, f32)> = None;
-            for (target, other) in self.bodies.iter().enumerate() {
-                if !other.alive || other.team == body.team {
-                    continue;
-                }
-                let to = Self::chest(other) - eye;
-                let along = to.dot(dir);
-                if along <= 0.0 || along > 100.0 {
-                    continue;
-                }
-                let miss = (to - dir * along).length();
-                if miss < 0.45
-                    && best.is_none_or(|(_, d)| along < d)
-                    && self.world.sight.visible(eye, Self::chest(other))
-                {
-                    best = Some((target, along));
-                }
-            }
-            let Some((target, _)) = best else {
+            let to = Self::chest(other) - eye;
+            let along = to.dot(dir);
+            if along <= 0.0 || along > 100.0 {
                 continue;
-            };
-            self.hits += 1;
-            let other = &mut self.bodies[target];
-            other.health -= 0.2;
-            if other.health <= 1e-3 {
-                other.alive = false;
-                other.dead_at = tick;
-                if let Some(battery) = other.carrying.take() {
-                    self.batteries[battery] = Lying::Free(other.feet);
-                }
-                self.stats[target].1 += 1;
-                self.stats[target].2 = 0;
-                if let Some(tickets) = self.tickets.as_mut() {
-                    let team = usize::from(other.team);
-                    tickets[team] = tickets[team].saturating_sub(1);
-                }
-                self.stats[shooter].0 += 1;
-                self.stats[shooter].2 += 1;
             }
+            let miss = (to - dir * along).length();
+            if miss < 0.45
+                && best.is_none_or(|(_, d)| along < d)
+                && self.world.sight.visible(eye, Self::chest(other))
+            {
+                best = Some((target, along));
+            }
+        }
+        let Some((target, _)) = best else {
+            return;
+        };
+        self.hits += 1;
+        let other = &mut self.bodies[target];
+        other.health -= 0.2;
+        if other.health <= 1e-3 {
+            other.alive = false;
+            other.dead_at = tick;
+            if let Some(battery) = other.carrying.take() {
+                self.batteries[battery] = Lying::Free(other.feet);
+            }
+            self.stats[target].1 += 1;
+            self.stats[target].2 = 0;
+            if let Some(tickets) = self.tickets.as_mut() {
+                let team = usize::from(other.team);
+                tickets[team] = tickets[team].saturating_sub(1);
+            }
+            self.stats[shooter].0 += 1;
+            self.stats[shooter].2 += 1;
         }
     }
 
@@ -628,10 +646,10 @@ fn soak_mode(
                 half_value(u16::from_le_bytes([r[2], r[3]])),
             );
             assert!(turn.0.abs() < std::f32::consts::PI && turn.1.abs() < std::f32::consts::PI);
-            let target = bots.bots[made.place]
-                .as_ref()
-                .and_then(|bot| bot.reflex.target());
-            queue.push_back((made.time, made.input.actions, turn, target));
+            let bot = bots.bots[made.place].as_ref();
+            let target = bot.and_then(|bot| bot.reflex.target());
+            let gun = bot.map_or(Arms::fallback().primary.0, |bot| bot.reflex.held_gun());
+            queue.push_back((made.time, made.input.actions, turn, target, gun));
         }
         if win > 0
             && let Some(team) = (0..2u8).find(|&t| game.points[usize::from(t)] >= win)
@@ -993,14 +1011,15 @@ fn real_bot_cost() {
                         half_value(u16::from_le_bytes([r[0], r[1]])),
                         half_value(u16::from_le_bytes([r[2], r[3]])),
                     );
-                    let target = bots.bots[made.place]
-                        .as_ref()
-                        .and_then(|bot| bot.reflex.target());
+                    let bot = bots.bots[made.place].as_ref();
+                    let target = bot.and_then(|bot| bot.reflex.target());
+                    let gun = bot.map_or(Arms::fallback().primary.0, |bot| bot.reflex.held_gun());
                     game.inputs[made.place].push_back((
                         made.time,
                         made.input.actions,
                         turn,
                         target,
+                        gun,
                     ));
                 }
             }
