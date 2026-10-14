@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `07a846d1c991a4a7a1a63e2c1eaf8dd7f067bcb7aaa76619577161387e74c3df` (patch revision 5); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `3f216a962dd12094ef6032c176dbbbefe41030ac864ab4f1a7ef02146bf1fbd5`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 | Revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 906 616 bytes, sha256 `c85026bb2224fdfad3f3219545e08615349c039a5e80c823abbc4f9083747bcc` (patch revision 6); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `82265418234cf12ad2cd410567608d84bc150cfb152e99fd79e34880f93551ba`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 and 6 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. **Not in a download yet.** It is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -476,6 +476,88 @@ seen by the others while one game is not in front, a join with a game not
 in front); exclusive fullscreen (`r_fullscreen on`) with alt-tab; another
 graphics card. Known cost: a minimised game uses about half a core more
 than before. Sound goes on while the game is not in front.
+
+### 13. Three faults of a match that takes players in (patch revision 6)
+
+Found on 2026-10-13: the first two in the first hour of late joins between real
+players, the third on the test server the hour before.
+
+**The scoreboard without the newcomer.** The hud's lists of players are
+made once, by 0x234880 when the match is ready: the scoreboard
+(`root.list_set_players`), a second list (`root.set_players_list`) and the
+enemies' markers (`root.set_enemy_icon_ids`). Their loops end at the count
+of players there is then. The late join raises the count and nothing made
+the lists again: the players of the match did not see the newcomer in
+their scoreboard (the newcomer, whose game made its lists after loading,
+saw everybody). Now `install_context` calls `rebuild_lists` when the
+newcomer has its place: it builds 0x234880's frame and goes into that
+function where the lists are made (0x234E71), and a jump at 0x23572B
+(`lists_hook`), right after the third list, takes that run out through the
+function's own release of its two arrays and its own return. Nothing else
+of 0x234880 runs again: not its subscription, not `root.reset`, not the
+hud's items. The rows' numbers come back with the game's own refresh
+(0x236D30, every tick the list is shown).
+
+**A game that was given a newcomer died** (access violation at 0x399A8,
+reading 0x20). A model that was in the scene was moved
+(`scene::update_model` 0x14FED0, the tree's `move` 0x3A1C0) to a place of
+numbers that are no numbers (the stack of the dump is full of them). The
+tree then finds the box outside itself and grows to hold it
+(`update_bounds` 0x396F0): it takes a node for a new root and doubles its
+size until that reaches the size it worked out, which for such a box is
+infinity, so it never does (`xmm3`, the size, is infinity in the dump).
+The scene's trees have 1024 nodes each and nothing behind them (0.26g's
+are fixed pools; the engine's older source, `loose_oct_tree.cpp`, asks the
+heap), so the list of free nodes ends and the next one is read through
+null. A bigger pool would end the same way. Which model, and why its place
+was not set, is not known: the other game of that match took the same
+newcomer and lived, and so did both games of the join before. The
+newcomer's own game loaded the world twice and neither time got as far as
+agreeing on a tick with the others (the joins that completed took about a
+second for that); the first time it stopped answering 5 s after its world,
+50 s before the server gave the join up. Its player reports the same tree
+out of nodes while loading (their dump was not seen here). A jump at
+0x39E52 in `loose_oct_tree::insert` (`box_hook`), the
+one way a box gets into a tree (`move` goes through it too), takes a box
+with a not-a-number or an infinity in it as a box of two metres at the
+origin; the next move of the object puts it where it is.
+
+**A game whose join the server gave up died** (access violation at
+0x15EE8D, writing 0xD1; seen on the test server, in a game that had loaded
+a match and was sent back before it was let in). `scene::remove_model`
+0x14FF60 looks the model up in the scene's list; when it is not there it
+writes "remove_model: model is not inserted now" and goes on all the same,
+and erasing the list's end moves what lies after it and adds to a
+reference count through it. The tree's erase before that did not fault, so
+the model's object was in a tree: LIKELY the model is another scene's,
+which holds it. The first instruction of that branch (0x14FF9B) is now a
+jump to the function's own end (0x1501F2), where it lets go of the model
+it was given (the pointer comes by value, the function counts it down) and
+returns: this scene is not touched, the other lets go of the model in its
+own time.
+
+Checked: `selftest_026g.py` (682 checks) and `check_revision6_026g.py`,
+which runs the three with Unicorn on made-up objects: the three lists made
+again for 2 to 20 players, every value released once, registers and stack
+as before, no slot of the frame read that nothing wrote, the hud and the
+options not written, a hud of another match left alone, the game's own
+start of a match unchanged; twenty boxes; a model in the scene, and one not
+in it held by two and by one (one count less, the model's end called for
+the last and only then). `check_late_join_026g.py` passes as before. Read
+in the game's own ActionScript (`hud.swf`, `player_icons.swf`,
+`replay_player.swf`, decompiled): each of the three lists replaces what
+the movie held (`PlayerList.addPlayersList` sets `_players` and makes both
+teams' data anew, keeping which row is the player's own;
+`set_players_list` makes a new data provider; `set_enemy_icon_ids` sets
+the array), and a row's kills and deaths come with the next
+`list_update_player`, which the game sends for every place each tick the
+list is shown (0x23B421, `[hud+0BAh]` = `root.show_player_list`). A
+newcomer's marker is made by the install itself (`player_ready` 0x1F29D0
+calls 0x23BD60, `root.create_player_icon`). **Not run: a game.**
+
+A newcomer has its row from the moment its place is prepared, before it is
+let in; one whose join fails keeps the row, as a player of the first
+roster who never loaded does.
 
 ## Not ported, not done
 

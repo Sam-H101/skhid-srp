@@ -122,6 +122,21 @@ Patches:
   The `jz` after the active check (0x1A0EE) becomes two nops: the window
   being active no longer matters to the simulation (client_patch.md
   section 3.12);
+- three faults of a match that takes players in, found with the first
+  late joins of real players (patch revision 6, client_patch.md section
+  3.13). The hud's lists of players (the scoreboard, a second list, the
+  enemies' markers) are made once, when the match is ready: the late join
+  makes them again when a newcomer has its place (one more jump into the
+  new code, at 0x23572B). loose_oct_tree::insert 0x39E30 takes a box with
+  a number that is no number as a box at the origin (a jump at 0x39E52):
+  with such a box the tree doubled its size without end, a node each
+  time, until none was left, and read through a null one, which killed a
+  game that was given a newcomer. And
+  scene::remove_model 0x14FF60, which went on to take a model out of its
+  list when the model was not in it (and wrote through what it found
+  there), lets go of the model and returns when the model is not in the
+  scene (a jump at 0x14FF9B to the function's end): that killed a game
+  whose join the server gave up (seen on the test server);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -200,7 +215,11 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # 5: adds the late join below. A game with it and one without never play
 # together: the world they keep and the packets they send differ. With it
 # goes the game that goes on without the focus (RUN_UNFOCUSED).
-REVISION = 5
+# 6: adds the three faults of a match that takes players in (the hud's
+# lists made again, BOX below, REMOVE_MODEL below). A game of 5 in a match
+# can still be killed by a newcomer, so a server that takes players into
+# matches asks for 6. 5 and 6 compute a match alike and play together.
+REVISION = 6
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -308,6 +327,8 @@ LATE_JOIN_HOOKS = (
     (0x1F2013, bytes.fromhex("e8e8000000"), 2048, 0xE8),         # player's destructor: player_destroyed_hook
     (0x27B517, bytes.fromhex("8b8f401c1f00"), 2336, 0xE9),       # on_match_disconnected: disconnect_hook
     (0x219E60, bytes.fromhex("558bec83e4f8"), 2432, 0xE9),       # network_client's destructor: client_destroyed_hook
+    (0x23572B, bytes.fromhex("8b8c2498000000"), 3456, 0xE9),     # the hud's lists of players, made again: lists_hook
+    (0x39E52, bytes.fromhex("f30f7e00660fd64704"), 3520, 0xE9),  # a box that is no box, in the tree: box_hook
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -323,6 +344,27 @@ LATE_JOIN_READY_OFFSET = 1664
 # becomes two nops; the call stays, so whatever it does is still done.
 # In the builds of patch revision 5 only (the late join needs every game
 # of a match to answer). (address, the original's bytes, the new ones.)
+# vostok::render::scene::remove_model 0x14FF60. It looks the model up in the
+# scene's list (0x14FF88); when it is not there (`cmp edi,esi` / `jnz`,
+# 0x14FF93) the original writes "remove_model: model is not inserted now"
+# and goes on all the same: it takes the model's object out of the tree and
+# erases the list's end (0x1501B4), which moves what lies after the list
+# and adds one to a reference count through it (access violation at
+# 0x15EE8D, live 2026-10-13: a game that had loaded a match and never
+# entered it, when the server closed its link). The tree's erase before
+# that did not fault, so the model's object was in a tree: LIKELY the model
+# is another scene's, which holds it and lets go of it in its own time. The
+# first instruction of that branch, `cmp [1F1D60Ch],ebx`, becomes a jump to
+# the function's own end (0x1501F2): there it lets go of the model it was
+# given (the pointer is passed by value, and the function that takes it
+# counts it down: `lock xadd [model+0D0h]`, and 0xE0210 at zero), restores
+# the three registers it saved and returns (`ret 8`). A jump past that
+# (0x150215) would keep the model for ever. The branch's address has a base
+# relocation, which is disabled.
+REMOVE_MODEL_VA, REMOVE_MODEL_END = 0x14FF9B, 0x1501F2
+REMOVE_MODEL = (REMOVE_MODEL_VA, bytes.fromhex("391d0cd6f101"),
+                b"\xE9" + struct.pack("<i", REMOVE_MODEL_END - REMOVE_MODEL_VA - 5) + b"\x90")
+
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
 RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
@@ -612,6 +654,10 @@ def build(original, mode, code=None, server=None, late_join=None):
             sites.append((va, va + len(expected)))
         patch(data, *RUN_UNFOCUSED)
         sites.append((RUN_UNFOCUSED_VA, RUN_UNFOCUSED_VA + len(RUN_UNFOCUSED[1])))
+        patch(data, *REMOVE_MODEL)
+        # The one address in what is replaced: the loader must not add to it.
+        if neutralize_relocs(data, [(REMOVE_MODEL_VA, REMOVE_MODEL_VA + len(REMOVE_MODEL[1]))]) != [REMOVE_MODEL_VA + 2]:
+            sys.exit("the base relocation of scene::remove_model's branch is not where it was read")
         # None of these instructions holds an address: a relocation under
         # one would mean another exe than the one they were read in.
         if neutralize_relocs(data, sites):
@@ -631,7 +677,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                   f"({len(relocs)} relocations disabled), {len(HOOKS)} snapshot hooks"
                   + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
                      f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
-                     "goes on without the focus"
+                     "goes on without the focus, a model not in the scene stays out of it"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

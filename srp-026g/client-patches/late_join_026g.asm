@@ -249,6 +249,23 @@ install_context:
     push dword [ebp+8]
     call LJ_INSTALL
     add esp, 28
+    test eax, eax
+    jz .done
+    ; The newcomer has its place: the lists of players made at the match's
+    ; start (the scoreboard among them) are made again, with it in them.
+    push eax
+    mov ecx, [ebp+8]
+    mov edx, [ecx+8]              ; context.client
+    mov eax, [edx+0x1f1c48]
+    add eax, 0xc                  ; the options (the profiles and their count), as
+    push eax                      ; the client's vtable+34h gives them (0x219990)
+    mov edx, [edx+0x14]           ; game; its game_world is at +18, the hud at +1fc of that
+    add edx, 0x214
+    push edx                      ; both as 0x1F8542..0x1F855D pass them
+    call rebuild_lists
+.rebuild_return:
+    pop eax
+.done:
     pop ebp
     ret
 bind_core:
@@ -612,5 +629,93 @@ animation_append:
     call 0x2ef410
     pop esi
     ret
+
+times 3328-($-$$) db 0xcc
+; The hud's lists of players: the scoreboard (root.list_set_players), the
+; second list (root.set_players_list) and the enemies' markers
+; (root.set_enemy_icon_ids). The game makes them once, in 0x234880 when the
+; match is ready, for the players there are then (the loops end at the
+; count, options+577B5h); nothing makes them again, so the players of a
+; match did not see a newcomer in their scoreboard.
+; Stack=(hud, options), ret 8, as 0x234880 itself. This builds that
+; function's frame and goes into it where the lists are made (0x234E71);
+; lists_hook takes it out again, through the function's own release of
+; the two arrays and its own return. Nothing else of the function runs:
+; not its subscription, not root.reset, not the hud's items.
+rebuild_lists:
+    mov eax, [esp+4]
+    mov ecx, [esp+8]
+    ; Only the hud this match's start made, with its two movies.
+    cmp [eax+0x1c], ecx
+    jne .not_ours
+    cmp dword [eax+8], 0
+    je .not_ours
+    cmp dword [eax+0x10], 0
+    je .not_ours
+    sub esp, 0x5d4
+    push ebx
+    push ebp
+    push esi
+    push edi
+    mov ebp, [esp+0x5e8]          ; the hud, as 0x234888 has it
+    lea ebx, [ebp+8]              ; as 0x234AC8
+    mov [esp+0x98], ebx           ; as 0x234AE1
+    xor eax, eax
+    mov [esp+0xdc], eax           ; two values the function's end releases
+    mov [esp+0x160], eax          ; when they hold something: they hold nothing
+    jmp 0x234e71
+.not_ours:
+    ret 8
+
+times 3456-($-$$) db 0xcc
+; 0x23572B in 0x234880, right after root.set_enemy_icon_ids, the last of
+; the three lists: `mov ecx,[esp+98h]`. A run that rebuild_lists began (its
+; return address is the one in install_context) ends here.
+lists_hook:
+    call .pc
+.pc:
+    pop ecx
+    add ecx, install_context.rebuild_return-.pc
+    cmp [esp+0x5e4], ecx
+    jne .start_of_match
+    xor esi, esi                  ; as the function's end has it
+    jmp 0x2363ca
+.start_of_match:
+    mov ecx, [esp+0x98]
+    jmp 0x235732
+
+times 3520-($-$$) db 0xcc
+; 0x39E52 in loose_oct_tree::insert 0x39E30 (the scene's and the collision
+; world's tree), right after the object gave its box: eax -> min xyz, max
+; xyz, six floats; edi = the object, which keeps a copy at +4. A box with a
+; number in it that is no number or not finite is outside the tree, and
+; update_bounds 0x396F0 then doubles the tree's size without end (the size
+; to reach works out as infinity): it takes a node each time until none is
+; left and reads through a null one (0x399A8; seen live 2026-10-13 in a
+; game that was given a newcomer, when a model in the scene was moved to
+; such a place). Such a box is taken as a box of two metres at the origin;
+; the next move of the object puts it where it is.
+box_hook:
+    xor ecx, ecx
+.next:
+    mov edx, [eax+ecx*4]
+    and edx, 0x7f800000
+    cmp edx, 0x7f800000
+    je .not_a_box
+    inc ecx
+    cmp ecx, 6
+    jb .next
+.copy:
+    movq xmm0, [eax]
+    movq [edi+4], xmm0
+    jmp 0x39e5b
+.not_a_box:
+    call .pc
+.pc:
+    pop eax
+    add eax, .box-.pc
+    jmp .copy
+align 4, db 0xcc
+.box: dd -1.0, -1.0, -1.0, 1.0, 1.0, 1.0
 
 times 4096-($-$$) db 0xcc
