@@ -31,7 +31,7 @@ Still to read from match recordings (`SRP_RECORD_DIR`): how long humans really s
 
 ## 2. What a bot may know
 
-The server knows everything; a bot that used it all would play like a wallhack. Every enemy fact passes one of these senses, and nothing else is used:
+The server knows everything; a bot that used it all would play like a wallhack. Every enemy fact passes one of these senses; the only exceptions are the small cheats listed below.
 
 | Sense | Rule |
 |---|---|
@@ -41,9 +41,20 @@ The server knows everything; a bot that used it all would play like a wallhack. 
 | Inferred | What the HUD and kill feed give a human: deaths and respawn timers, score, match clock, the battery markers (marked ones and the team's own) |
 | Forgotten | An enemy not sensed for ~3 s becomes a last known position that fades |
 
-**Batteries:** a bot knows what the HUD shows (marked batteries and its team's). Other batteries must be found by checking the spawner positions; a battery a bot sees becomes known to its team.
+**Batteries:** a fair bot knows what the HUD shows (marked batteries and its team's) and finds the others by checking the spawner positions; a battery a bot sees becomes known to its team. By default bots also know every battery (below).
 
-**Difficulty:** a setting may loosen the senses (for example "hunter" bots). The default plays fair.
+**A little cheating** (players' word, 2026-10-14: "a bit, not too much"). The plays work better with a few things a human can't know, kept small and never in the aim:
+- **Where batteries lie:** every battery's spawner and state, not only the HUD's. Saves the search, changes no fight.
+- **The thief:** when a battery of ours is stolen, his position with ~10 m of error, refreshed every few seconds until he is seen or delivers.
+- **A rough radar:** the nearest enemy's position with ~15 m of error every ~5 s while none is sensed (a human's map sense). It steers routes and where to look, never a shot.
+- **Senses a notch better:** hearing ranges ×1.25, last known positions kept ~5 s instead of ~3 s.
+
+Still never:
+- shooting at, aiming at or pre-tracking an enemy who isn't seen;
+- reacting faster than the noticing delay;
+- perfect recoil and spread.
+
+**Difficulty:** a setting may loosen or tighten this (for example "hunter" bots with a sharper radar, or "fair" bots with none). The default is the small set above.
 
 ## 3. Plays
 
@@ -79,6 +90,14 @@ Each play has a score from the situation, a precondition and steps. A commander 
 
     The losing team grows more aggressive as the gap grows.
 15. **Hold the exits.** Hold forward chokes on the routes out of the enemy's base, as humans do: in the saved worlds the best kill spots of each side are mostly 30–60 m from the enemy base, and the enemy third of the map gives the best K/D (×1.3 overall, ×1.6 in Team Deathmatch). Owner's rule (2026-10-14): near the exits yes, **never inside a spawn area**. Mostly in Team Deathmatch; in the battery modes the batteries come first.
+
+16. **Late denial (battery modes).** Players' word: before the match ends, take batteries out of the enemy's container and just drop them there (no need to carry them home): the enemy's count falls (the statistics take one off the other team when a battery is taken out, `snapshot.rs` `StatisticsTail`), so a narrow lead turns. A bot does it in the last minutes when the score is close or behind and the enemy's container is reachable: steal (use, bit 21), then drop at once (bit 22), then steal the next one or fight off the defenders. Note: dropped batteries can be taken back, so it pays only near the end.
+17. **Routes from humans.** For each map, mode and side, the paths humans took (saved worlds: each life's sideways offset at checkpoints along the base-to-base line, grouped) and what they gave (kills, assists, batteries found and put in). On most sides one or two routes clearly pay more (level_01 batteries, one side: K/D 2.9 on one route, 0.8 on another). Bots pick routes weighted by that reward, not always the best one, so they stay hard to read.
+
+What the paths also say (87 matches of 4+ players; `srp-worlds` tables):
+- Lives that never get 30 % of the way out are the worst in every mode (K/D 0.3–0.6, almost no batteries): bots don't idle at base.
+- Lives that reach the enemy third and then hold still are the longest (3–4 min) with K/D ~2: that is play 15.
+- Sprinting is not what kills: players were sprinting about as often right before a death (21–24 %) as right before a kill (18–23 %).
 
 **Never:**
 - go into an enemy spawn area, or shoot into one from outside to camp it;
