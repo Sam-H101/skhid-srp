@@ -149,6 +149,9 @@ the archive's index: a loader must follow them.
   ray. On level_01/day_4 all 43 spawns connect with jumps; on
   level_05/evening_2 the spawn areas are left by drops and never re-entered
   (players' word: spawns can be one-way, with nothing to go back for).
+- Built: the `mapdata` crate (dump per project, walk grid, paths, line of
+  sight), with its file format, API and timings on all 72 projects:
+  `player_bots_mapdata.md`.
 
 ## 6. Stages
 

@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/binary-config-parser",
+  "crates/mapdata",
   "crates/session",
   "crates/survarium",
   "crates/udp-transport",

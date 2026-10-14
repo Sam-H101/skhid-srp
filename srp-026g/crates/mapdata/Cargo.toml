@@ -1,0 +1,21 @@
+[package]
+name = "mapdata"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+binary-config-parser = { workspace = true }
+clap = { workspace = true }
+resources-db = { workspace = true }
+# The map table (map id -> project) for `mapdata-dump`.
+survarium = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[[bin]]
+name = "mapdata-dump"
+path = "src/bin/mapdata-dump.rs"
