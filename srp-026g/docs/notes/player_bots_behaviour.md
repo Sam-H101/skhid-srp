@@ -58,7 +58,7 @@ Still never:
 
 ## 3. Plays
 
-Each play has a score from the situation, a precondition and steps. A commander per team hands them out every ~0.5 s: never two bots on one ambush, and one defender per base in the battery modes.
+Each play has a score from the situation, a precondition and steps. A commander per team hands them out every ~0.5 s: never two bots on one ambush, and no bot parked at its own container. In the saved worlds lives that stay in their own third are the worst in every mode (K/D 0.3–0.6, ~0.03 batteries a life), so a steal is answered by the 1–2 nearest bots (the thief cheat and the alarms in §4); the only guard is play 18.
 
 1. **Battery ambush.** An enemy is heading to a battery no friend covers.
    1. Hide 10–25 m from it, with a line of sight to the pickup point and out of sight of his approach. The bot goes only if it gets there first; otherwise it intercepts (play 2).
@@ -88,8 +88,12 @@ Each play has a score from the situation, a precondition and steps. A commander 
     - flanker: sneaks, wide routes;
     - support: escorts, crossfires, covering humans.
 
-    The losing team grows more aggressive as the gap grows.
-15. **Hold the exits.** Hold forward chokes on the routes out of the enemy's base, as humans do: in the saved worlds the best kill spots of each side are mostly 30–60 m from the enemy base, and the enemy third of the map gives the best K/D (×1.3 overall, ×1.6 in Team Deathmatch). Owner's rule (2026-10-14): near the exits yes, **never inside a spawn area**. Mostly in Team Deathmatch; in the battery modes the batteries come first.
+    The mix follows how humans play (saved worlds, per life): about 55 % move steadily, 30 % mostly sprint, 10–15 % hold still. So a team of bots is mostly flankers and support, a third rushers, few campers. The losing team grows more aggressive as the gap grows.
+15. **Hold the exits.** Hold forward chokes on the routes out of the enemy's base, as humans do: in the saved worlds the best kill spots of each side are mostly 30–60 m from the enemy base, and the enemy third of the map gives the best K/D (×1.3 overall, ×1.6 in Team Deathmatch). Owner's rule (2026-10-14): near the exits yes, **never inside a spawn area**.
+    - **Team Deathmatch only, as a long hold.** In the battery modes the lives that reach the enemy third and keep moving bring the most (0.41 batteries a life, 0.60 in timed batteries), holding there brings 0.26 (0.00 in timed batteries): there a bot holds only briefly on its way.
+    - **Never in the middle:** holding in the middle is poor in every mode (K/D 0.5–0.66).
+    - **High ground, mid range:** among the allowed chokes, prefer spots above the exit with sight lines of ~15–30 m (the killer stood >2 m higher in 23 % of kills, lower in 14 %; median kill distance 19 m), not the longest open view.
+    - **Move on:** after 1–2 kills or ~40 s, go to another allowed spot, never straight back to the last one; humans learn a spot fast.
 
 16. **Late denial (battery modes).** Players' word: before the match ends, take batteries out of the enemy's container and just drop them there (no need to carry them home): the enemy's count falls (the statistics take one off the other team when a battery is taken out, `snapshot.rs` `StatisticsTail`), so a narrow lead turns. A bot does it in the last minutes when the score is close or behind and the enemy's container is reachable: steal (use, bit 21), then drop at once (bit 22), then steal the next one or fight off the defenders. Note: dropped batteries can be taken back, so it pays only near the end.
 17. **Routes from humans.** For each map, mode and side, the paths humans took (saved worlds: each life's sideways offset at checkpoints along the base-to-base line, grouped) and what they gave (kills, assists, batteries found and put in). On most sides one or two routes clearly pay more (level_01 batteries, one side: K/D 2.9 on one route, 0.8 on another). Bots pick routes weighted by that reward, not always the best one, so they stay hard to read. What a bot knows then shifts the weights, and is checked again on the way (each ~0.5 s with the commander):
@@ -98,6 +102,14 @@ Each play has a score from the situation, a precondition and steps. A commander 
    - a teammate killed on a route in the last ~20 s: it weighs less;
    - teammates already on a route: it weighs less, so the team spreads (one or two per route).
    A bot whose route turns bad on the way picks again from where it stands.
+
+   **Sprinting on a route:** sprint out of spawn and behind the team's own lines; walk once within ~30 m of a known danger (an enemy sensed, last known or on the radar, a danger-map spot, a teammate's death). Lives that were mostly sprinting did far worse than steady movers reaching as far (K/D 0.2–1.0 against 0.6–2.3), but that is LIKELY skewed by short lives being mostly the run out of spawn, and sprinting right before a death was no commoner than before a kill. A cheap rule of thumb, not a finding.
+18. **Guard the lead (battery modes).** The other side of play 16: in the last ~2 minutes, the leading side puts 1–2 bots near its own container, out of its doorway's sight lines, to stop a late denial. The only time bots guard their base.
+19. **Spot for the humans.** A bot that sees an enemy presses spot (bit 28, key down, 3 s cooldown), so its human teammates get what it sees: honest teamwork that humans notice. What a spot shows in 0.26g is to be checked in stage 0 before this is relied on.
+20. **Grenade before the peek.** Against a held angle (play 8) or a camping spot from the danger map, throw a grenade (bit 23, held until the throw starts) and then peek or push. Rarely, so it stays a surprise, and never at an enemy no sense gave.
+21. **Trade partner.** Bots leave spawn in pairs about 10 m apart. When one dies, the other gets ~3 s to trade on that spot (it was seen or heard), then breaks off (play 7). Not measured yet: the assists in the statistics can test how often humans trade.
+22. **Heal behind cover.** A wounded bot out of every line of sight uses a medkit from a quick slot (bits 14–19), then goes back (play 10). Needs a kit that carries one: the lowest kit a bot spawns in is to be checked.
+23. **Self-balancing difficulty.** Bots should make matches fun, not win them. The commander keeps the bots' K/D against humans: above ~1.5 over the last few minutes, their aim error and noticing delay grow a step; when humans stomp them, they shrink a step, inside set limits. It changes only aim and reaction, never what the bots know (§2).
 
 What the paths also say (87 matches of 4+ players; `srp-worlds` tables):
 - Lives that never get 30 % of the way out are the worst in every mode (K/D 0.3–0.6, almost no batteries): bots don't idle at base.
