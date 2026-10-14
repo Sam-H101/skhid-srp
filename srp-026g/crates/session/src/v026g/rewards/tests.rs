@@ -44,6 +44,7 @@ fn player(place: u8, team: u8, name: &str, statistics: PlayerStatistics) -> Play
         account_id: 10 + u32::from(place),
         name: name.to_owned(),
         team,
+        driven: false,
         entered: true,
         present_at_end: true,
         left: false,
@@ -2296,6 +2297,34 @@ fn a_match_with_a_test_bot_moves_no_rating_and_pays_the_bot_no_daily_bonus() {
     for id in [10, 11] {
         assert!(report.screen_for(id).is_some());
     }
+}
+
+#[test]
+fn a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0() {
+    // Bob's place is the match server's own bot (`SRP_SERVER_BOTS`): no
+    // account, no session.
+    let mut players = alice_and_bob();
+    let store = accounts(&players);
+    players[1].driven = true;
+    (players[1].session_id, players[1].account_id) = (0, 0);
+    players[1].statistics = None;
+    players[1].score = 0;
+    let mut outcome = result(players);
+    outcome.winner = Some(0);
+    outcome.trusted_by = 1;
+    let results = Results::new();
+    let report = results
+        .settle(&outcome, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    // Alice is paid for her win, and her rating stays: a match against a
+    // bot says nothing of her.
+    let alice = &report.players[0];
+    assert!(alice.reward.won && alice.reward.money > 0);
+    assert_eq!(alice.reward.rating_after, alice.reward.rating_before);
+    assert_eq!(account(&store, 10).rating, pay::START_RATING);
+    assert!(report.screen_for(10).is_some());
+    // Nothing is kept for an account 0 to be shown.
+    assert!(!results.has_unseen(0));
 }
 
 /// The players' accounts ([`accounts`]) kept in `repository`.

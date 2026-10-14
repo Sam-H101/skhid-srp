@@ -381,6 +381,7 @@ impl Core<'_> {
                 account_id: who.account_id,
                 profile: match_profile(&account, fit.team, 0, unix),
                 bot: self.accounts.is_bot_name(&account.name),
+                driven: false,
             }
         };
         let first = self.matches[&id].seats.len();

@@ -153,6 +153,59 @@ pub struct MatchPlayer {
     /// unless the operator named bots). The match server then takes the
     /// place as a player and never as a witness of the world.
     pub bot: bool,
+    /// The match server's own bot (`SRP_SERVER_BOTS`; see
+    /// [`server_bot`]): no account, no session (both 0), no client.
+    pub driven: bool,
+}
+
+/// The name the server's `n`-th bot of a match plays under (1 on).
+fn server_bot_name(n: usize) -> String {
+    format!("Bot-{n}")
+}
+
+/// The match server's own bot on `team`, number `n` of its match (1 on): a
+/// place with no account, its player in the starter kit (`loadouts::starter`:
+/// the TT-33 in slot 7 with its ammunition, the kit a new account wears), so
+/// never a spawn with nothing in the weapon slots (`match_profile`).
+pub fn server_bot(n: usize, team: u8) -> MatchPlayer {
+    let mut profile = MatchProfile::from_loadout(
+        &server_bot_name(n),
+        team,
+        survarium::v026g::loadouts::starter(),
+        [0.0; survarium::v026g::skills::MODIFIERS],
+        survarium::v026g::dictionary::Dictionary::shared(),
+        1,
+    );
+    profile.clan_tag = "BOT".to_owned();
+    MatchPlayer {
+        session_id: 0,
+        account_id: 0,
+        profile,
+        bot: false,
+        driven: true,
+    }
+}
+
+/// The teams of `count` bots added to a roster whose teams are `teams`:
+/// each to the side with fewer places then, the weaker side (`counts`, what
+/// the sides count for) on a tie; never past the 20 places of a match.
+fn server_bot_teams(teams: &[u8], counts: [f64; 2], count: usize) -> Vec<u8> {
+    let mut sizes = [0_usize; 2];
+    for &team in teams {
+        sizes[usize::from(team.min(1))] += 1;
+    }
+    let room = session::MAX_PLAYERS_PER_MATCH.saturating_sub(teams.len());
+    (0..count.min(room))
+        .map(|_| {
+            let team = match sizes[0].cmp(&sizes[1]) {
+                std::cmp::Ordering::Less => 0,
+                std::cmp::Ordering::Greater => 1,
+                std::cmp::Ordering::Equal => u8::from(counts[1] < counts[0]),
+            };
+            sizes[usize::from(team)] += 1;
+            team
+        })
+        .collect()
 }
 
 /// A match the lobby formed.
@@ -565,6 +618,7 @@ impl Core<'_> {
                         account_id: player.account_id,
                         profile: match_profile(&account, team, 0, unix),
                         bot: self.accounts.is_bot_name(&account.name),
+                        driven: false,
                     })
                 })
                 .collect();
@@ -1120,9 +1174,26 @@ impl Core<'_> {
                     account_id: seat.player.account_id,
                     profile: match_profile(&account, seat.team, seat.squad, unix),
                     bot: self.accounts.is_bot_name(&account.name),
+                    driven: false,
                 })
             })
             .collect();
+        // The match server's own bots, after the players (`SRP_SERVER_BOTS`).
+        let seat_teams: Vec<u8> = formed.seats.iter().map(|seat| seat.team).collect();
+        let bot_teams = server_bot_teams(
+            &seat_teams,
+            [sides[0].0, sides[1].0],
+            usize::from(self.settings.server_bots),
+        );
+        let players = players.map(|mut players| {
+            players.extend(
+                bot_teams
+                    .iter()
+                    .enumerate()
+                    .map(|(n, &team)| server_bot(n + 1, team)),
+            );
+            players
+        });
         let rng = &mut self.rng;
         let map_id = matchmaking::choose_map(
             &self.settings.maps,
@@ -1165,6 +1236,14 @@ impl Core<'_> {
                     sides[1].0,
                     sides[1].1.join(", ")
                 );
+                if !bot_teams.is_empty() {
+                    log::info!(
+                        "Match {:#x}: {} of the server's bots (SRP_SERVER_BOTS) after the                          players, on teams {bot_teams:?}",
+                        ticket.match_id,
+                        bot_teams.len()
+                    );
+                    self.store.matchmaking().add_bots(match_id, &bot_teams);
+                }
                 // The map is one more that each of them has played.
                 for seat in &formed.seats {
                     let account_id = seat.player.account_id;
@@ -1195,9 +1274,16 @@ impl Core<'_> {
                             .seats
                             .iter()
                             .map(|seat| (seat.player.session_id, seat.team))
+                            .chain(bot_teams.iter().map(|&team| (0, team)))
                             .collect(),
-                        strengths,
-                        names,
+                        strengths: strengths
+                            .into_iter()
+                            .chain(bot_teams.iter().map(|_| 0))
+                            .collect(),
+                        names: names
+                            .into_iter()
+                            .chain((1..=bot_teams.len()).map(server_bot_name))
+                            .collect(),
                         predicted_at: None,
                     },
                 );

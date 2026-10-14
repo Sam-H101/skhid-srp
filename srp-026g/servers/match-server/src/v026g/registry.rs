@@ -58,6 +58,14 @@ pub struct MatchPlayer {
     /// trust and resync rules count the other clients only (`game.rs`,
     /// "Bots").
     pub bot: bool,
+    /// The place is the match server's own bot (`SRP_SERVER_BOTS`; false
+    /// for every player otherwise): no account, no session, no client. Its
+    /// player enters once a real client simulates, and its inputs are made
+    /// by the match server (`super::drive`) and relayed as a player's are.
+    /// Like a test bot it is no witness of the world. Its `session_id` and
+    /// `account_id` are 0 and mean nothing: it has no seat, nobody can
+    /// connect for it, and its result pays nobody.
+    pub driven: bool,
 }
 
 /// A match the lobby formed.
@@ -149,6 +157,8 @@ pub(crate) struct Place {
     pub team: u8,
     /// [`MatchPlayer::bot`].
     pub bot: bool,
+    /// [`MatchPlayer::driven`].
+    pub driven: bool,
 }
 
 /// A made match, until it is over.
@@ -354,9 +364,13 @@ impl MatchRegistry {
             .ok_or(CreateError::Map(setup.map_id))?;
         let mut inner = self.inner();
         for (place, player) in setup.players.iter().enumerate() {
+            // The server's own bots have no session to clash.
+            if player.driven {
+                continue;
+            }
             if setup.players[..place]
                 .iter()
-                .any(|other| other.session_id == player.session_id)
+                .any(|other| !other.driven && other.session_id == player.session_id)
             {
                 return Err(CreateError::DuplicateSession(player.session_id));
             }
@@ -389,12 +403,14 @@ impl MatchRegistry {
                 name: player.profile.name.clone(),
                 team: player.profile.team,
                 bot: player.bot,
+                driven: player.driven,
             })
             .collect();
-        let sessions: Vec<u32> = setup
+        // A server bot's place has no seat: no client connects for it.
+        let sessions: Vec<Option<u32>> = setup
             .players
             .iter()
-            .map(|player| player.session_id)
+            .map(|player| (!player.driven).then_some(player.session_id))
             .collect();
         let options = MatchOptions {
             players: setup
@@ -411,6 +427,9 @@ impl MatchRegistry {
             StaticInfo::new(&options, Dictionary::shared()).map_err(CreateError::StaticInfo)?;
         let profiles = options.players.clone();
         for (place, session_id) in sessions.into_iter().enumerate() {
+            let Some(session_id) = session_id else {
+                continue;
+            };
             inner.seats.insert(
                 session_id,
                 Seat {
@@ -434,13 +453,16 @@ impl MatchRegistry {
                 initial_players: options.players.len(),
             }),
         );
-        let bots = inner.matches[&match_id]
-            .places
-            .iter()
-            .filter(|place| place.bot)
-            .count();
+        let count = |which: fn(&Place) -> bool| {
+            inner.matches[&match_id]
+                .places
+                .iter()
+                .filter(|place| which(place))
+                .count()
+        };
+        let (bots, driven) = (count(|place| place.bot), count(|place| place.driven));
         log::info!(
-            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}",
+            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}{}",
             map.id,
             map.name,
             map.mode,
@@ -449,6 +471,11 @@ impl MatchRegistry {
                 String::new()
             } else {
                 format!(", {bots} of them test bots (SRP_BOT_ACCOUNTS): no witnesses of the world")
+            },
+            if driven == 0 {
+                String::new()
+            } else {
+                format!(", {driven} of them the server's own bots (SRP_SERVER_BOTS)")
             }
         );
         Ok(MatchTicket {
@@ -478,6 +505,11 @@ impl MatchRegistry {
     ) -> Result<MatchTicket, JoinError> {
         if players.is_empty() {
             return Err(JoinError::EmptyGroup);
+        }
+        // The server's own bots are put in when a match is made, never
+        // into one being played.
+        if players.iter().any(|player| player.driven) {
+            return Err(JoinError::Unavailable);
         }
         let mut inner = self.inner();
         let formed = inner.matches.get(&match_id).ok_or(JoinError::Unavailable)?;
@@ -537,6 +569,7 @@ impl MatchRegistry {
                 name: player.profile.name,
                 team: player.profile.team,
                 bot: player.bot,
+                driven: false,
             });
             inner.seats.insert(
                 player.session_id,
@@ -790,6 +823,9 @@ pub struct PlayerResult {
     pub account_id: u32,
     pub name: String,
     pub team: u8,
+    /// [`MatchPlayer::driven`]: the server's own bot. Its session and
+    /// account are 0; nobody is to be paid or told for it.
+    pub driven: bool,
     /// Whether the player was ever in the match (0xE9 went out for it).
     /// One whose game never got that far neither won nor lost.
     pub entered: bool,

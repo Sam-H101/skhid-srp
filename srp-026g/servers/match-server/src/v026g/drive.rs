@@ -1,4 +1,5 @@
-//! `srp-bot --drive`: a test bot that moves. Stage 0 of server-driven
+//! The input script of a bot that moves (`srp-bot --drive`, and the match
+//! server's own bot places). Stage 0 of server-driven
 //! player bots (`docs/notes/player_bots.md`). **For testing only.**
 //!
 //! In lockstep every client simulates every player from the inputs the

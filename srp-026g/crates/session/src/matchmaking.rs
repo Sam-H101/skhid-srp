@@ -822,6 +822,28 @@ impl Matchmaking {
         })
     }
 
+    /// The match server's own bots (`SRP_SERVER_BOTS`) take the places after
+    /// the players', one on each team of `teams`: seats of session, account
+    /// and profile 0, which no player has (sessions and accounts are never
+    /// 0), so that a place taken later counts from past them. `false` when
+    /// the match is not being played.
+    pub fn add_bots(&self, match_id: u32, teams: &[u8]) -> bool {
+        let mut inner = self.inner.locked();
+        let Some(seats) = inner.matches.get_mut(&match_id) else {
+            return false;
+        };
+        seats.extend(teams.iter().map(|&team| Seat {
+            player: Player {
+                session_id: 0,
+                account_id: 0,
+                profile_id: 0,
+            },
+            team,
+            squad: 0,
+        }));
+        true
+    }
+
     /// The match is over: its seats are free.
     pub fn end_match(&self, match_id: u32) {
         let mut inner = self.inner.locked();

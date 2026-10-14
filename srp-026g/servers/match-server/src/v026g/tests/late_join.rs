@@ -65,6 +65,7 @@ fn player(place: usize) -> MatchPlayer {
         account_id: 100 + place as u32,
         profile: profile(&format!("new-player-{place}"), (place % 2) as u8),
         bot: false,
+        driven: false,
     }
 }
 

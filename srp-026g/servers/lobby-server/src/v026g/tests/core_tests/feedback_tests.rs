@@ -417,6 +417,7 @@ impl World {
                 account_id,
                 name: "Alice".to_owned(),
                 team: 0,
+                driven: false,
                 entered: true,
                 present_at_end: true,
                 left: false,

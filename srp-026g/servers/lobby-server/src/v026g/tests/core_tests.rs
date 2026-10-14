@@ -45,6 +45,11 @@ struct World {
 impl World {
     /// A lobby whose queue gathers players for `gather`.
     fn new(gather: Duration) -> Self {
+        Self::with_settings(gather, Settings::local("127.0.0.1:0"))
+    }
+
+    /// The same, with `settings`.
+    fn with_settings(gather: Duration, settings: Settings) -> Self {
         let store: &'static SessionStore = Box::leak(Box::new(SessionStore::with_start_rules(
             gather,
             2,
@@ -56,15 +61,7 @@ impl World {
         let host: &'static TestHost = Box::leak(Box::new(TestHost::default()));
         let inbox: &'static Inbox = Box::leak(Box::new(Inbox::default()));
         let now = Instant::now();
-        let core = Core::new(
-            store,
-            accounts,
-            results,
-            host,
-            inbox,
-            Settings::local("127.0.0.1:0"),
-            now,
-        );
+        let core = Core::new(store, accounts, results, host, inbox, settings, now);
         Self {
             store,
             accounts,
@@ -1816,6 +1813,7 @@ impl World {
                     account_id: player.account_id,
                     name: player.profile.name.clone(),
                     team: player.profile.team,
+                    driven: false,
                     entered: true,
                     present_at_end: true,
                     left: false,

@@ -37,6 +37,7 @@ fn player(place: u32, loadout: &loadouts::Loadout) -> MatchPlayer {
             1 + place * 100,
         ),
         bot: false,
+        driven: false,
     }
 }
 

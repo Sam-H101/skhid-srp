@@ -80,6 +80,7 @@ impl Game {
         for _ in self.players()..formed.places.len() {
             self.peers.push(None);
             self.best_streaks.push(0);
+            self.drives.push(None);
             self.admissions.push(Some(Admission {
                 since: now,
                 phase: AdmissionPhase::Preparing,

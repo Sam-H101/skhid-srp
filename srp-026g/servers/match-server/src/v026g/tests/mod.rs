@@ -9,6 +9,7 @@
 use super::test_client as client;
 
 mod bots;
+mod driven;
 mod game;
 mod late_join;
 mod late_join_edge_cases;
@@ -68,6 +69,7 @@ pub fn setup(players: usize, map_id: u8) -> MatchSetup {
         players: (0..players)
             .map(|place| MatchPlayer {
                 bot: false,
+                driven: false,
                 session_id: session_of(place),
                 account_id: 100 + place as u32,
                 profile: profile(&format!("player{place}"), (place % 2) as u8),
@@ -111,11 +113,16 @@ impl Bench {
     /// (`MatchPlayer::bot`) and given clients that simulate nothing
     /// (`Client::idle`, what `srp-bot` runs).
     pub fn with_bots(players: usize, map_id: u8, settings: Settings, bots: &[usize]) -> Self {
-        Self::with_dialect(players, map_id, settings, bots, false)
+        Self::with_dialect(players, map_id, settings, bots, &[], false)
+    }
+
+    /// With the server's own bots ([`MatchPlayer::driven`]) at `driven`.
+    pub fn with_driven(players: usize, map_id: u8, settings: Settings, driven: &[usize]) -> Self {
+        Self::with_dialect(players, map_id, settings, &[], driven, false)
     }
 
     pub fn growing(players: usize, map_id: u8, settings: Settings) -> Self {
-        Self::with_dialect(players, map_id, settings, &[], true)
+        Self::with_dialect(players, map_id, settings, &[], &[], true)
     }
 
     fn with_dialect(
@@ -123,6 +130,7 @@ impl Bench {
         map_id: u8,
         settings: Settings,
         bots: &[usize],
+        driven: &[usize],
         growing: bool,
     ) -> Self {
         log_to_stderr();
@@ -131,6 +139,10 @@ impl Bench {
         let mut setup = setup(players, map_id);
         for place in bots {
             setup.players[*place].bot = true;
+        }
+        for place in driven {
+            let player = &mut setup.players[*place];
+            (player.driven, player.session_id, player.account_id) = (true, 0, 0);
         }
         let ticket = registry
             .create_with_dialect(setup, start, growing)

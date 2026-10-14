@@ -103,7 +103,12 @@
 //!   of a link that went silent is kept for its client to connect again
 //!   (0: it ends with the link);
 //! - `SRP_PACKET_LOG=<dir>`: the transport's raw datagram log (the sign-in's
-//!   session id is left out of it).
+//!   session id is left out of it);
+//! - `SRP_SERVER_BOTS` (default 0, up to 19; **testing only**): this many of
+//!   the match server's own bots are put into each match made, after its
+//!   players, on the side with fewer places (`play::server_bot`). They have
+//!   no account and no client; the match server plays them (stage 1 of the
+//!   player bots: a fixed script, `docs/notes/player_bots.md` §6).
 
 mod away;
 mod clans;
@@ -235,6 +240,9 @@ pub struct Settings {
     /// What the message box of a refused squad invite says: a text key of
     /// the game, or a sentence (`SRP_SQUADS_OFF_TEXT`).
     pub squads_off_text: String,
+    /// The match server's own bots put into each match made
+    /// (`SRP_SERVER_BOTS`, default 0; testing only).
+    pub server_bots: u8,
 }
 
 impl Settings {
@@ -431,7 +439,26 @@ impl Settings {
         if !squads {
             log::info!("Squads are off: an invite is refused with `{squads_off_text}`");
         }
+        let most_bots = (session::MAX_PLAYERS_PER_MATCH - 1) as u8;
+        let server_bots = match var("SRP_SERVER_BOTS") {
+            Some(value) => match value.trim().parse::<u8>() {
+                Ok(count) if count <= most_bots => count,
+                _ => {
+                    log::error!(
+                        "SRP_SERVER_BOTS is `{value}`; it must be a number from 0 to                          {most_bots}. Using 0"
+                    );
+                    0
+                }
+            },
+            None => 0,
+        };
+        if server_bots > 0 {
+            log::warn!(
+                "SRP_SERVER_BOTS: {server_bots} of the match server's own bots go into each match                  made (testing only)"
+            );
+        }
         Self {
+            server_bots,
             balance,
             late_join_patience,
             squads,
@@ -479,6 +506,7 @@ impl Settings {
             late_join_patience: DEFAULT_LATE_JOIN_PATIENCE,
             squads: true,
             squads_off_text: DEFAULT_SQUADS_OFF_TEXT.to_owned(),
+            server_bots: 0,
         }
     }
 }

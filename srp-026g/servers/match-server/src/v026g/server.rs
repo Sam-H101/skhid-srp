@@ -507,6 +507,7 @@ impl Server {
                             account_id: place.account_id,
                             name: place.name.clone(),
                             team: place.team,
+                            driven: place.driven,
                             entered: false,
                             present_at_end: false,
                             left: false,

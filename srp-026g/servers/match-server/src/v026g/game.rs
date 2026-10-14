@@ -107,6 +107,7 @@ use super::record::{Recorder, Recording};
 use super::registry::{Formed, MatchEnd, MatchResult, PlayerResult};
 use super::{LateInputs, Settings};
 
+mod driven;
 mod late_join;
 mod live;
 use late_join::{Admission, LoadingProfile};
@@ -628,6 +629,8 @@ pub(crate) struct Game {
     pings_logged_at: u32,
     /// Since when a match with test bots has had no real client connected.
     bots_alone_since: Option<Instant>,
+    /// By place: the script of the server's own bot ([`driven`]).
+    drives: Vec<Option<super::drive::Drive>>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -682,6 +685,7 @@ impl Game {
             result_made: false,
             quits: Vec::new(),
             recording: None,
+            drives: Self::new_drives(&formed),
             formed,
         }
     }
@@ -784,10 +788,14 @@ impl Game {
         self.formed.map.mode
     }
 
-    /// Whether the place is a test bot's (`SRP_BOT_ACCOUNTS`): a player
-    /// for the others, no witness of the world (the top of this file).
+    /// Whether the place is a test bot's (`SRP_BOT_ACCOUNTS`) or the
+    /// server's own ([`driven`]): a player for the others, no witness of
+    /// the world (the top of this file).
     fn is_bot(&self, index: usize) -> bool {
-        self.formed.places.get(index).is_some_and(|place| place.bot)
+        self.formed
+            .places
+            .get(index)
+            .is_some_and(|place| place.bot || place.driven)
     }
 
     /// The batteries of modes 2 and 3; none in Team Deathmatch.
@@ -3384,6 +3392,7 @@ impl Game {
                     account_id: place.account_id,
                     name: place.name.clone(),
                     team: place.team,
+                    driven: place.driven,
                     entered: self
                         .events
                         .iter()
@@ -3491,6 +3500,7 @@ impl Game {
             let step = self.rule.tick(clock);
             self.log_transition(step, clock);
         }
+        self.poll_driven(now);
 
         for index in 0..self.peers.len() {
             self.check_in_flight(index);
@@ -3834,10 +3844,11 @@ impl Game {
         self.finish(MatchEnd::Deserted, now);
     }
 
-    /// A match with test bots and no real client connected for
-    /// [`BOTS_ALONE`] is over: the bots never leave by themselves.
+    /// A match with bots (test bots, or the server's own) and no real
+    /// client connected for [`BOTS_ALONE`] is over: the bots never leave by
+    /// themselves.
     fn check_bots_alone(&mut self, now: Instant) {
-        if self.finished_at.is_some() || !self.formed.places.iter().any(|place| place.bot) {
+        if self.finished_at.is_some() || !(0..self.players()).any(|index| self.is_bot(index)) {
             return;
         }
         let real = self.peers.iter().enumerate().any(|(index, peer)| {
@@ -3850,7 +3861,7 @@ impl Game {
         let since = *self.bots_alone_since.get_or_insert(now);
         if now.saturating_duration_since(since) >= BOTS_ALONE {
             log::info!(
-                "Match {:#x}: only test bots for {} s; it is over",
+                "Match {:#x}: only bots for {} s; it is over",
                 self.id,
                 BOTS_ALONE.as_secs()
             );

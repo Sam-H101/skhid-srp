@@ -66,6 +66,9 @@
 //!   `SRP_RECORD_MAX_MB` (default 5000) together go oldest first
 //!   ([`record`]).
 
+/// The input script of a bot: the test bot's (`srp-bot --drive`) and the
+/// server's own bot places' (`MatchPlayer::driven`).
+pub mod drive;
 mod game;
 /// Match recordings (`SRP_RECORD_DIR`) and their reader.
 pub mod record;

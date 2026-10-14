@@ -2,5 +2,8 @@
 //! start the same servers in-process (`tests/v026g_end_to_end.rs`).
 
 pub mod bot;
-pub mod drive;
 pub mod v026g;
+
+/// The input script of a bot: `match_server::v026g::drive`, here since stage
+/// 0 (`srp-bot --drive`).
+pub use match_server::v026g::drive;

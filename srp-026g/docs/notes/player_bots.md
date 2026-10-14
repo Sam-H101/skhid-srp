@@ -166,7 +166,25 @@ the archive's index: a loader must follow them.
    dumped worlds (`SRP_SNAPSHOT_DIR`) as predicted.
 1. Bot places made by the server (no account, no session, never timed out,
    never a voter), entered once a real client is live; the inputs go
-   straight to the relay.
+   straight to the relay. **Built 2026-10-14, not run with a real game:**
+   - `SRP_SERVER_BOTS=<n>` (lobby, default 0, testing only) puts `n` bots
+     into each match made, after its players, each on the side with fewer
+     places (`play::server_bot`): name `Bot-<n>`, clan tag `BOT`, the
+     starter kit (TT-33 in slot 7), session and account 0, no seat.
+   - `MatchPlayer::driven` (match server): `game/driven.rs` enters the
+     place once a real client simulates (0xE9 300 ms ahead) and relays the
+     stage 0 script's inputs (`v026g::drive`, moved there from `srp`) as a
+     player's, kept in the history for clients that start later. No
+     witness of the world (`is_bot`); a match left to bots ends as one
+     left by everyone.
+   - The queue's roster (`Matchmaking::add_bots`) has the bots' seats, so
+     a late joiner's place counts from past them; the rewards move no
+     rating in a match with one and keep nothing for account 0.
+   - Tests: `match-server` `tests/driven.rs`, lobby
+     `the_servers_bots_take_the_places_after_the_players`, rewards
+     `a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0`.
+   - Not yet: a bot leaving to make room for a late joiner; any choice of
+     what to do (the script is fixed).
 2. Positions from the worlds, worlds more often in matches with bots, a
    simple state machine (go, turn, shoot at short range, reload).
 3. Map data on the server: collision, line of sight, a navigation grid and

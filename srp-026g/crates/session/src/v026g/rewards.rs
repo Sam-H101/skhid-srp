@@ -213,6 +213,9 @@ pub struct PlayerResult {
     pub account_id: u32,
     pub name: String,
     pub team: u8,
+    /// The match server's own bot (`SRP_SERVER_BOTS`): no account (0), no
+    /// session; it is shown and paid nothing.
+    pub driven: bool,
     /// Whether the player was ever in the match.
     pub entered: bool,
     pub present_at_end: bool,
@@ -869,12 +872,12 @@ impl Results {
         }
         let mut shared = Shared::of(result, terms);
         // Test bots (`super::bots`; none unless `SRP_BOT_ACCOUNTS` names
-        // them): a match with one in it moves no rating, and a bot is paid
-        // no daily bonus.
+        // them) and the match server's own (`SRP_SERVER_BOTS`): a match with
+        // one in it moves no rating, and a bot is paid no daily bonus.
         let bots: Vec<bool> = result
             .players
             .iter()
-            .map(|player| accounts.is_bot(player.account_id))
+            .map(|player| player.driven || accounts.is_bot(player.account_id))
             .collect();
         shared.unrated = bots.contains(&true);
 
@@ -974,7 +977,12 @@ impl Results {
             players,
         });
         let mut inner = self.inner.locked();
-        for player in &report.players {
+        // The server's own bots have no account (0) to show it to.
+        for player in report
+            .players
+            .iter()
+            .filter(|player| player.account_id != 0)
+        {
             inner
                 .unseen
                 .entry(player.account_id)

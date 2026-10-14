@@ -100,6 +100,7 @@ impl MatchHost for RegistryHost {
                     account_id: player.account_id,
                     profile: player.profile,
                     bot: player.bot,
+                    driven: player.driven,
                 })
                 .collect(),
             // The game's own weights: the ones the rewards are counted
@@ -126,6 +127,7 @@ impl MatchHost for RegistryHost {
                 account_id: player.account_id,
                 profile: player.profile,
                 bot: player.bot,
+                driven: player.driven,
             })
             .collect();
         self.0.join_running_group(match_id, players).is_ok()
@@ -201,6 +203,7 @@ pub fn match_result(result: matches::MatchResult) -> rewards::MatchResult {
                 account_id: player.account_id,
                 name: player.name,
                 team: player.team,
+                driven: player.driven,
                 entered: player.entered,
                 present_at_end: player.present_at_end,
                 left: player.left,
