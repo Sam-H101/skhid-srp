@@ -108,7 +108,10 @@
 //!   the match server's own bots are put into each match made, after its
 //!   players, on the side with fewer places (`play::server_bot`). They have
 //!   no account and no client; the match server plays them (stage 1 of the
-//!   player bots: a fixed script, `docs/notes/player_bots.md` §6).
+//!   player bots: a fixed script, `docs/notes/player_bots.md` §6). A late
+//!   joiner whose side needs the room takes the place of one of them,
+//!   which leaves the match (the match server's `SRP_BOTS_GIVE_WAY`;
+//!   `policy::bot_gives_way`, `play::late_rule`).
 
 mod away;
 mod clans;

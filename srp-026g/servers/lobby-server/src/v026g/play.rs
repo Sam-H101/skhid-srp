@@ -116,6 +116,11 @@ pub struct LiveView {
     pub kills: [u16; 2],
     /// Since play began. `None` before it has, and after the end.
     pub played: Option<Duration>,
+    /// Bit `i`: roster place `i` is one of the match server's own bots,
+    /// in the match, that gives its place up to a late joiner whose side
+    /// needs the room (`policy::bot_gives_way`). None when the match
+    /// server's `SRP_BOTS_GIVE_WAY` is off.
+    pub giving_way: u32,
 }
 
 /// A match as the match server has it now, for the players' list of the
@@ -453,8 +458,26 @@ impl Core<'_> {
             .filter(|remaining| *remaining > policy::JOIN_CUTOFF)
     }
 
+    /// Each side's bots of the match server that give their place up to a
+    /// late joiner who needs it, as the match server says
+    /// ([`LiveView::giving_way`]).
+    fn bots_giving_way(running: &Running, live: Option<&LiveView>) -> [usize; 2] {
+        let mut bots = [0; 2];
+        let Some(live) = live else {
+            return bots;
+        };
+        for (place, &(_, team)) in running.seats.iter().enumerate() {
+            if live.giving_way >> place & 1 == 1 && live.present >> place & 1 == 1 {
+                bots[usize::from(team.min(1))] += 1;
+            }
+        }
+        bots
+    }
+
     /// The sides of a running match as they are now, and the rule players
-    /// are put into it by ([`policy::place_late`]).
+    /// are put into it by ([`policy::place_late`]). A bot that gives its
+    /// place up frees no roster place: places are never used twice, and
+    /// `room` counts every one ever taken.
     pub(super) fn late_rule(
         &self,
         running: &Running,
@@ -467,6 +490,7 @@ impl Core<'_> {
             player_value: i64::from(self.settings.balance.player_value()),
             lead,
             dramatic,
+            bots: Self::bots_giving_way(running, live),
         };
         (Self::sides_now(running, live), rule)
     }

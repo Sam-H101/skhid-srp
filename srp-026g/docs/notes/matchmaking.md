@@ -408,7 +408,17 @@ Of the ways to put the waiting groups on a side or leave them out, the one
 that takes the most players, and of those the one after which the sides
 count most alike. Allowed:
 
-- no side over `SRP_MATCH_TEAM_SIZE` players in the match;
+- no side over `SRP_MATCH_TEAM_SIZE` players in the match. **A joiner takes
+  the place of one of the match server's own bots** (`SRP_SERVER_BOTS`)
+  on its side when that side has one that gives way (`LiveView::
+  giving_way`, `SRP_BOTS_GIVE_WAY` of the match server) and, with the
+  joiner, would have more players than the other side
+  (`matchmaking_policy::bot_gives_way`): the bot leaves, the side keeps its
+  size, and the joiner's strength replaces the bot's none. Several joiners
+  are taken one after another in the order of their places. The match
+  server decides it by the same rule when the joiner enters, so a side
+  full of bots takes humans. The joiner's roster place is a new one all
+  the same: a bot leaving frees no place of the twenty;
 - the sides at most one player apart. **Two, when the side with more is the
   one that trails and the lead is dramatic**: `SRP_BALANCE_DRAMATIC_LEAD`
   (2.5) players, which is five batteries or thirteen tickets. Sides that

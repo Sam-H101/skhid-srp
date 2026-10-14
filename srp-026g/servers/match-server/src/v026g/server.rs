@@ -70,11 +70,12 @@ pub fn run(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}",
+         check: {}, bots give way: {}",
         config.match_server.bind_addr(),
         settings.late_inputs,
         switch(settings.clock_correction),
-        switch(settings.check_initial_world)
+        switch(settings.check_initial_world),
+        switch(settings.bots_give_way)
     );
     serve(
         &socket,
@@ -102,11 +103,12 @@ pub fn run_on(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on UDP {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}",
+         check: {}, bots give way: {}",
         socket.local_addr()?,
         settings.late_inputs,
         switch(settings.clock_correction),
-        switch(settings.check_initial_world)
+        switch(settings.check_initial_world),
+        switch(settings.bots_give_way)
     );
     let port = registry.port();
     serve(

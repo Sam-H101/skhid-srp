@@ -70,7 +70,11 @@
 //!   map is built on a thread of its own the first time a match asks for
 //!   it, and `SRP_MAPDATA_KEEP` (default 1) built maps are kept besides
 //!   those running matches hold. Without it, or without the map's file,
-//!   bots keep their script.
+//!   bots keep their script;
+//! - `SRP_BOTS_GIVE_WAY=on|off` (default `on`): whether one of the
+//!   server's own bots of a side leaves the match when a late joiner comes
+//!   onto that side and it needs the room (`game/driven.rs`, `give_way`).
+//!   Off, bots stay to the end and a full side takes nobody.
 
 /// The server's own bots (`MatchPlayer::driven`): their maps.
 pub mod bots;
@@ -193,6 +197,9 @@ pub(crate) struct Settings {
     pub record: Option<record::RecordSettings>,
     /// `SRP_MAPDATA_DIR`: the bots' maps, shared by every match.
     pub maps: Option<Arc<bots::maps::Maps>>,
+    /// `SRP_BOTS_GIVE_WAY`: the server's bots give their place up to late
+    /// joiners who need it.
+    pub bots_give_way: bool,
     pub timing: Timing,
 }
 
@@ -208,6 +215,7 @@ impl Default for Settings {
             snapshot_dir: None,
             record: None,
             maps: None,
+            bots_give_way: true,
             timing: Timing::default(),
         }
     }
@@ -256,6 +264,11 @@ impl Settings {
                     var("SRP_MAPDATA_KEEP").as_deref(),
                     bots::maps::KEEP as u32,
                 ),
+            ),
+            bots_give_way: parse_switch(
+                "SRP_BOTS_GIVE_WAY",
+                var("SRP_BOTS_GIVE_WAY").as_deref(),
+                true,
             ),
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(

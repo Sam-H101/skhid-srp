@@ -79,7 +79,8 @@
 //! A match with bots in which no real client is connected for
 //! [`BOTS_ALONE`] is over (`MatchEnd::Deserted`): bots never leave by
 //! themselves, and would hold the match, and a real player's seat in it,
-//! until the time limit.
+//! until the time limit. (The server's own bots leave only to make room
+//! for a late joiner, `game/driven.rs`; that never ends a match.)
 //!
 //! Not carried over from 0.21d: the diagnostic uploads and the per-input
 //! trail (log aids), the estimate of when a relay reached a client (a relay
@@ -634,6 +635,9 @@ pub(crate) struct Game {
     /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
     /// ([`driven`], stage 2).
     walkers: Option<driven::Walkers>,
+    /// Bots that owe their place to a late joiner and could not leave yet
+    /// ([`driven`], "Giving way").
+    owed: Vec<driven::Owed>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -691,6 +695,7 @@ impl Game {
             recording: None,
             drives: Self::new_drives(&formed),
             walkers,
+            owed: Vec::new(),
             formed,
         }
     }
@@ -3854,7 +3859,8 @@ impl Game {
 
     /// A match with bots (test bots, or the server's own) and no real
     /// client connected for [`BOTS_ALONE`] is over: the bots never leave by
-    /// themselves.
+    /// themselves. A server's bot that gave its place up to a late joiner
+    /// is no reason to end it: only the real clients are counted here.
     fn check_bots_alone(&mut self, now: Instant) {
         if self.finished_at.is_some() || !(0..self.players()).any(|index| self.is_bot(index)) {
             return;
@@ -4365,6 +4371,17 @@ impl Game {
 
     pub fn set_clock_correction(&mut self, on: bool) {
         self.settings.clock_correction = on;
+    }
+
+    /// Every roster change so far: its tick, the place, entered (else
+    /// left).
+    pub fn roster_events(&self) -> &[(u32, usize, bool)] {
+        &self.events
+    }
+
+    /// How many bots owe their place to a late joiner and have not left.
+    pub fn bots_owing(&self) -> usize {
+        self.owed.len()
     }
 }
 
