@@ -337,3 +337,13 @@ them. `notes/match.md` §28 has the evidence and the choices,
     the quests are the server's and were right.
   - Revision 9 keeps all twenty places in that count (six bytes). It plays
     with 7 and 8; a server need not ask for it. Not run in a game yet.
+
+## 0.26g, added 2026-10-14: the team points during the countdown
+
+- **Done 2026-10-14, in the same revision 9, not in a download: the team
+  points under "Awaiting match start" were the last match's.** The game's
+  hud skips their drawing while a match waits or counts down, though the
+  rules fill the new match's numbers all along (the original game's code,
+  so it was so before srp's patches too). Revision 9 draws them then as
+  play does (one jump, five bytes; `notes/client_patch.md` §3.17). Not run
+  in a game yet.

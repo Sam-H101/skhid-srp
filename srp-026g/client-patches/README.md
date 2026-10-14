@@ -8,8 +8,8 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `9b1fae817f4fab0c3161cb00d895bec6b5404c59534cb36254bb0c53ab0a9572` (patch revision 9); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `0b1a162611c399cc8892c77f3855da44ab7ca6b590ea0d7b38651c59383e6bda`. Revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 to 9 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16: a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first; it plays with 7 and 8 (the score is not in the world), and a server need not ask for it. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 is not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `03202d5ee70b9523560f8e9b362b80939f9f7cf05a6f699bc08e9945700820b7` (patch revision 9); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `f30c3c666bf87ed6eecaea613523f7259306b7881d3157dde1ed4d80149211a1`. Revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 to 9 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 is not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -769,7 +769,7 @@ events read, stays the roster's. Only in the builds with the late join
 **Revisions.** The score is neither in the world nor in its hash: games of
 9, 8 and 7 play one match, and a server need not ask for 9.
 
-Checked: `selftest_026g.py`, 718 checks (check 17: the six bytes; how
+Checked: `selftest_026g.py`, 733 checks with patch 17's (check 17: the six bytes; how
 `start_match` uses the count, and the shared count's copy beside it; the
 handler's `deserialize` and `recalculate_scores`; its vtable; every reader
 of the count in the code; no branch or address into the six bytes).
@@ -778,8 +778,44 @@ of the count in the code; no branch or address into the six bytes).
 13, 26 and 52 after 0, 1 and 3 rollbacks in the original and 13 each time
 in the build, and every row starts at 0 in the build only. Against the
 revision 8 exe of the same server the build differs in the revision byte,
-the six bytes and the PE checksum (compared byte by byte). **Not run: a
-game.**
+the six bytes, one byte of patch 17 and the PE checksum (compared byte by
+byte). **Not run: a game.**
+
+### 17. The team points during the countdown (patch revision 9)
+
+While a match waits or counts down ("Awaiting match start"), the hud shows
+the countdown and nothing else of the match: `game_world_ui::update_ui`
+(0x23B200) jumps from the countdown to the players' rows (0x23B328), past
+the drawing of the team points (0x2364C0), Team Deathmatch's last players
+(0x236610) and the respawn time (0x236C30), which play goes through. The
+hud's state has the match's own numbers then (the rules fill it every
+tick), but the bars kept the last match's until play began: seen on the
+players' server, 63 and 53 under the countdown, the end of the match
+before. The original game's code (0.21d's is the same), not srp's.
+
+**The patch.** The jump goes to those three drawings instead
+(`jmp 0x23b421` at 0x23B328 becomes `jmp 0x23b383`, one byte of its
+displacement), which then go on to the rows as play does; the match time
+and the start's tip stay out. They draw then what the first refresh of
+play would: the start's team points (150 and 150 in Team Deathmatch, 0
+and 0 with batteries); the last players, which the hud movie hides while
+a team has tickets; and a respawn time of 0 (no player waits for one
+during a countdown, as the saved worlds of a real match show), an empty
+text. Only in the builds with the late join (revision 9).
+
+**Revisions.** Nothing a match computes: it plays with 7, 8 and 9 alike.
+
+Checked: `selftest_026g.py` check 18 (the five bytes; both paths of the
+original around them; the calls from the new target to the rows and no
+branch leaving elsewhere; each call's `ret`, so both paths reach the
+target as deep; the three hud movie functions; no branch or address
+inside the jump). `check_late_join_026g.py` runs the game's own
+instructions from the countdown's test to the rows on a made-up hud, the
+functions taken at their entry, for modes 4, 3 and 2: in the original the
+countdown calls the pregame's two alone, in the build then the three play
+calls, with the same arguments; play is the same in both; the stack, the
+registers it keeps and the player's count end as they began; given the
+original for the build it fails. **Not run: a game.**
 
 ## Not ported, not done
 

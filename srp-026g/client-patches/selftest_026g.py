@@ -67,6 +67,15 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     those functions, +3240h is in .text only in those loops and in stores
     of a zeroed register, and no branch or address aims inside the six
     bytes.
+18. the same build: game_world_ui::update_ui's jump of the countdown
+    (0x23B328) goes to 0x23B383 instead of the players' rows; in the
+    original the countdown shows the pregame and jumps to the rows, play
+    shows the match time and goes on at 0x23B383, an instruction of its
+    own, from which the code draws the team points, the last players and
+    the respawn time, lets go of the player it took and leaves to nowhere
+    else; every call before both takes its arguments off the stack; the
+    three are the hud movie's set_game_progress, set_last_players and
+    set_respawn_time; no branch or address aims inside the jump.
 """
 
 import ctypes
@@ -802,7 +811,8 @@ def late_join_sites():
     revision and the ready hook, which the build without it changes too."""
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
-        [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1]))]
+        [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1])),
+         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1]))]
 
 
 def test_late_join_bin():
@@ -951,6 +961,74 @@ def test_statistics_count(original, image, before):
           "value aims inside the six bytes" + "".join(f"\n          {a:#x}" for a in found))
 
 
+def aimed_inside(original, va, size, near):
+    """Every rel32 branch of .text, rel8 branch byte within `near` bytes
+    and 4-byte value of the file that aims inside bytes 1.. of [va, va+size)."""
+    text_start = P.file_offset(P.TEXT_VA)
+    text = bytes(original[text_start:text_start + P.TEXT_VSIZE])
+    inside = lambda target: va < target < va + size
+    found = []
+    for at in range(len(text) - 6):
+        op, here = text[at], P.TEXT_VA + at
+        if op in (0xE8, 0xE9) and inside(here + 5 + struct.unpack_from("<i", text, at + 1)[0]):
+            found.append(here)
+        elif op == 0x0F and 0x80 <= text[at + 1] <= 0x8F and inside(here + 6 + struct.unpack_from("<i", text, at + 2)[0]):
+            found.append(here)
+        elif (op == 0xEB or 0x70 <= op <= 0x7F or 0xE0 <= op <= 0xE3) and va - near <= here < va + size \
+                and inside(here + 2 + struct.unpack_from("<b", text, at + 1)[0]):
+            found.append(here)
+    return found + [va + i for i in range(1, size) if original.find(struct.pack("<I", va + i)) != -1]
+
+
+def test_pregame_progress(original, image, before):
+    """Check 18: the hud draws the team points while a match counts down."""
+    source = Image(original)
+    va, old, new = P.PREGAME_PROGRESS
+    target = P.PREGAME_PROGRESS_TARGET
+    rows = lambda blob, at, size: ndisasm(blob.read(at, size), at)
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new
+          and [text for _, _, text in rows(image, va, len(new))] == [f"jmp 0x{target:x}"]
+          and [text for _, _, text in rows(source, va, len(old))] == ["jmp 0x23b421"],
+          f"{va:#x}: the countdown's `jmp 0x23b421` is `jmp 0x{target:x}`; the original and the build without the "
+          "late join keep it")
+    # update_ui from the test of the countdown flag to the players' rows.
+    was = rows(source, 0x23B307, 0x23B421 - 0x23B307)
+    texts = [text for _, _, text in was]
+    at = {address: i for i, (address, _, _) in enumerate(was)}
+    countdown = texts[at[0x23B307]:at[va] + 1]
+    play = texts[at[0x23B371]:at[target]]
+    check(countdown == ["cmp byte [edi+0x15c],0x0", "jz 0x23b32d", "mov al,0x1", "mov ecx,edi", "call 0x236ad0",
+                        "mov eax,[edi+0xb0]", "lea ecx,[edi+0x30]", "push edi", "call 0x236b50", "jmp 0x23b421"]
+          and play == ["xor al,al", "mov ecx,edi", "call 0x236ad0", "mov eax,[edi+0x28]", "push edi", "call 0x236a00"]
+          and target in at,
+          f"in the original the countdown shows the pregame (0x236AD0 with 1, 0x236B50) and jumps to the rows; play "
+          f"shows the match time (0x236AD0 with 0, 0x236A00) and goes on at {target:#x}, an instruction of its own")
+    after = texts[at[target]:]
+    calls = [text for text in after if text.startswith("call")]
+    leaving = [text for text in after if branch_target(text) is not None and not text.startswith("call")
+               and not target <= branch_target(text) <= 0x23B421]
+    check(calls == ["call 0x2364c0", "call 0x236610", "call 0x236c30", "call 0xe0210"] and not leaving
+          and after[0] == "mov eax,[edi+0x18]",
+          f"from {target:#x} to the rows the code draws the team points (0x2364C0), in Team Deathmatch the last "
+          "players (0x236610) and the respawn time (0x236C30), lets go of the player it took (0xE0210 at the last "
+          "count) and leaves to nowhere else")
+    ret = lambda function: next(text for _, _, text in ndisasm(source.read(function, 0x400), function)
+                                if text.startswith("ret"))
+    pushed = lambda function: {source.read(int(text.split()[-1], 16), 32).split(b"\0")[0]
+                               for _, _, text in ndisasm(source.read(function, 0x200), function)
+                               if text.startswith("push dword 0xa")}
+    rets = {function: ret(function) for function in (0x236AD0, 0x236B50, 0x236A00, 0x2375C0)}
+    check(rets == {0x236AD0: "ret", 0x236B50: "ret 0x4", 0x236A00: "ret 0x4", 0x2375C0: "ret 0x10"}
+          and b"root.set_game_progress" in pushed(0x2364C0) and b"root.set_last_players" in pushed(0x236610)
+          and b"root.set_respawn_time" in pushed(0x236C30),
+          "each call before the jump and before the target takes its arguments off the stack (both paths reach the "
+          "target as deep), and the three after it are the hud movie's set_game_progress, set_last_players and "
+          "set_respawn_time")
+    found = aimed_inside(original, va, len(old), 0x82)
+    check(not found, "no rel32 branch of .text, no rel8 branch byte near it and no 4-byte value aims inside the jump"
+          + "".join(f"\n          {a:#x}" for a in found))
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -1084,6 +1162,7 @@ def test_late_join(original, without, server, source):
 
     test_clock_factor(original, image, before)
     test_statistics_count(original, image, before)
+    test_pregame_progress(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
