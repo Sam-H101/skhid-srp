@@ -25,9 +25,11 @@
 //! through the considerations and the commander.
 
 pub mod ambush;
+pub mod buddy;
 pub mod collect;
 pub mod cover_human;
 pub mod crossfire;
+pub mod cut;
 pub mod escort;
 pub mod flank;
 pub mod guard_lead;
@@ -37,6 +39,7 @@ pub mod hunt;
 pub mod intercept;
 pub mod late_denial;
 pub mod pair_up;
+pub mod raid;
 pub mod retreat;
 pub mod roam;
 pub mod sneak;
@@ -107,10 +110,18 @@ pub enum PlayKind {
     Hunt,
     /// Timed batteries: by a station when its battery comes.
     Station,
+    /// Play 24: take a battery out of the enemy's container and bring it
+    /// home, while their container is weakly held.
+    Raid,
+    /// Play 25: the follower of a bot pair keeps with its leader.
+    Buddy,
+    /// Play 26: hold a side angle on the enemy's best way where it comes
+    /// into our half.
+    Cut,
 }
 
 impl PlayKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 21] = [
         Self::Roam,
         Self::Collect,
         Self::Ambush,
@@ -129,16 +140,21 @@ impl PlayKind {
         Self::Heal,
         Self::Hunt,
         Self::Station,
+        Self::Raid,
+        Self::Buddy,
+        Self::Cut,
     ];
 
     /// The personality family whose weight the play's `Personality`
     /// consideration reads.
     pub fn family(self) -> Family {
         match self {
-            Self::Ambush | Self::HoldExit | Self::GuardLead | Self::Crossfire => Family::Hold,
+            Self::Ambush | Self::HoldExit | Self::GuardLead | Self::Crossfire | Self::Cut => {
+                Family::Hold
+            }
             Self::Intercept | Self::Trade | Self::LateDenial | Self::Hunt => Family::Push,
-            Self::Sneak | Self::Flank => Family::Sneak,
-            Self::Escort | Self::CoverHuman | Self::PairUp => Family::Support,
+            Self::Sneak | Self::Flank | Self::Raid => Family::Sneak,
+            Self::Escort | Self::CoverHuman | Self::PairUp | Self::Buddy => Family::Support,
             Self::Roam | Self::Collect | Self::Retreat | Self::Heal | Self::Station => Family::None,
         }
     }
@@ -537,6 +553,9 @@ pub enum Running {
     Heal(heal::State),
     Hunt(hunt::State),
     Station(station::State),
+    Raid(raid::State),
+    Buddy(buddy::State),
+    Cut(cut::State),
 }
 
 impl Running {
@@ -560,6 +579,9 @@ impl Running {
             Self::Heal(_) => PlayKind::Heal,
             Self::Hunt(_) => PlayKind::Hunt,
             Self::Station(_) => PlayKind::Station,
+            Self::Raid(_) => PlayKind::Raid,
+            Self::Buddy(_) => PlayKind::Buddy,
+            Self::Cut(_) => PlayKind::Cut,
         }
     }
 
@@ -594,6 +616,9 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     heal::candidates(cx, out);
     hunt::candidates(cx, out);
     station::candidates(cx, out);
+    raid::candidates(cx, out);
+    buddy::candidates(cx, out);
+    cut::candidates(cx, out);
 }
 
 /// A play's start.
@@ -617,6 +642,9 @@ pub fn start(kind: PlayKind, target: TargetRef, cx: &Ctx, rng: &mut Rng) -> Runn
         PlayKind::Heal => Running::Heal(heal::start(target, cx, rng)),
         PlayKind::Hunt => Running::Hunt(hunt::start(target, cx, rng)),
         PlayKind::Station => Running::Station(station::start(target, cx, rng)),
+        PlayKind::Raid => Running::Raid(raid::start(target, cx, rng)),
+        PlayKind::Buddy => Running::Buddy(buddy::start(target, cx, rng)),
+        PlayKind::Cut => Running::Cut(cut::start(target, cx, rng)),
     }
 }
 
@@ -641,6 +669,9 @@ pub fn step(running: &mut Running, target: TargetRef, cx: &Ctx, rng: &mut Rng) -
         Running::Heal(s) => heal::step(s, target, cx, rng),
         Running::Hunt(s) => hunt::step(s, target, cx, rng),
         Running::Station(s) => station::step(s, target, cx, rng),
+        Running::Raid(s) => raid::step(s, target, cx, rng),
+        Running::Buddy(s) => buddy::step(s, target, cx, rng),
+        Running::Cut(s) => cut::step(s, target, cx, rng),
     }
 }
 
@@ -665,6 +696,9 @@ pub fn default_tuning(kind: PlayKind) -> PlayTuning {
         PlayKind::Heal => heal::tuning(),
         PlayKind::Hunt => hunt::tuning(),
         PlayKind::Station => station::tuning(),
+        PlayKind::Raid => raid::tuning(),
+        PlayKind::Buddy => buddy::tuning(),
+        PlayKind::Cut => cut::tuning(),
     }
 }
 
@@ -689,6 +723,9 @@ pub fn numbers(kind: PlayKind) -> &'static [(&'static str, f32)] {
         PlayKind::Heal => heal::NUMBERS,
         PlayKind::Hunt => hunt::NUMBERS,
         PlayKind::Station => station::NUMBERS,
+        PlayKind::Raid => raid::NUMBERS,
+        PlayKind::Buddy => buddy::NUMBERS,
+        PlayKind::Cut => cut::NUMBERS,
     }
 }
 

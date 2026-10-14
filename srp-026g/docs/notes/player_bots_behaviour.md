@@ -110,6 +110,9 @@ Each play has a score from the situation, a precondition and steps. A commander 
 21. **Trade partner.** Bots leave spawn in pairs about 10 m apart. When one dies, the other gets ~3 s to trade on that spot (it was seen or heard), then breaks off (play 7). Not measured yet: the assists in the statistics can test how often humans trade.
 22. **Heal behind cover.** A wounded bot out of every line of sight uses a medkit from a quick slot (bits 14–19), then goes back (play 10). Needs a kit that carries one: the lowest kit a bot spawns in is to be checked.
 23. **Self-balancing difficulty.** Bots should make matches fun, not win them. The commander keeps the bots' K/D against humans: above ~1.5 over the last few minutes, their aim error and noticing delay grow a step; when humans stomp them, they shrink a step, inside set limits. It changes only aim and reaction, never what the bots know (§2).
+24. **Raid.** In the battery modes, take a battery out of the enemy's container and bring it home (a swing of two) whenever their container is weakly held: some of them dead, none known by it, not in the first two minutes. Winners of 6+ player matches took batteries out about 2.6 times as often as losers, mostly in the middle and last thirds, not only at the end (play 16 drops them there instead).
+25. **Keep with the partner.** Play 21's pairs move together: the follower keeps beside its leader (9 m, running back past 18 m) instead of roaming alone, and the leader waits up to 6 s for a follower left 25-90 m behind. Deaths with a teammate within 20 m were traded (the killer killed within 5 s) 20 % of the time, without one 3 %; winners died near a teammate more often.
+26. **Cut the enemy's best way.** From the enemy side's human routes (play 17's table), weighed by lives times what a life gave: hold a side angle (off their line by 35 degrees or more, not on their side) 12-28 m from where the route comes into our half (60 % of the way from their base, out of every spawn area). Long holds only in Team Deathmatch; moved on after 1-2 kills. One bot per route.
 
 What the paths also say (87 matches of 4+ players; `srp-worlds` tables):
 - Lives that never get 30 % of the way out are the worst in every mode (K/D 0.3–0.6, almost no batteries): bots don't idle at base.
@@ -122,6 +125,13 @@ What the paths also say (87 matches of 4+ players; `srp-worlds` tables):
 - react to anything no sense gave.
 
 Bots never path back into their own spawn area.
+
+What decides the winner (52 matches of 6+ players with a result, 10 of them recorded at every tick; a private study, 2026-10-14):
+- With sides of equal size, being forward, crouching, sprinting, accuracy and height did not separate winners from losers; the bigger side is forward because it is bigger.
+- Winners survived more and died alone less; their deaths were answered more often. At the tick level a trade needs a teammate within 20 m (play 25).
+- The battery modes are won by the batteries: winners picked up more (20 of 25 matches), lost fewer on the way home (put in per pickup 1.00 against 0.67) and raided the enemy's container (play 24); more kills went with the win in only 64 % of them.
+- Winners mostly won the gunfight itself (the first aimed shot won 85 % against 71 %): skill or gear, not a team pattern. Focus fire, crossfire and who saw first did not separate them. For both sides, firing back within 0.5 s and breaking the line of sight when losing paid.
+- The commander keeps a slot (a battery, a post) with the bot that holds it unless another bot's claim beats it by the margin: two bots no longer swap one battery every half second.
 
 ## 4. Event reactions
 

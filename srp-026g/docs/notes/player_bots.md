@@ -349,7 +349,9 @@ the archive's index: a loader must follow them.
      cover a human (12), pair up against the top player (13), hold an exit
      (15), late denial (16), guard the lead (18), trade a partner's death
      (21), heal behind cover (22), the Team Deathmatch hunt, the timed
-     batteries' station.
+     batteries' station; raid the enemy's container (24), keep with the
+     partner (25) and cut the enemy's best way (26), from a study of what
+     the winners of 6+ player matches did (`player_bots_behaviour.md` §3).
    - By mode (the players' worlds, `player_bots_behaviour.md` §3):
      Team Deathmatch holds the enemy's exits long, favours crossfire and
      flanks, and ends with the hunt (the enemy out of tickets cannot
@@ -386,7 +388,9 @@ the archive's index: a loader must follow them.
    - Human routes on the real maps (a test run with the private files):
      174 routes over 8 maps and 3 modes, all 992 points on a floor, 891 of
      them open to the side (the rest in the enemy's spawn area), every
-     route leaving from its own side's spawns.
+     route leaving from its own side's spawns. Play 26 on them: 45 of the
+     47 sides with enemy routes get cut points (163), and 136 of those a
+     spot to hold.
    - Not yet: a real game.
 4. Bots fill short queues and give their place up to late joiners. The
    giving way is built (2026-10-14, not run with a real game); filling

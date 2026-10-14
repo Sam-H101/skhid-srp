@@ -660,11 +660,14 @@ impl Bots {
                 continue;
             }
             let team = usize::from(a.team & 1);
-            self.teams[team].knowledge.danger.push(DangerSpot {
-                at: b.feet,
-                time,
-                victim: a.place,
-            });
+            // A body never placed (feet at the origin) gives no spot.
+            if b.feet != Vec3::ZERO {
+                self.teams[team].knowledge.danger.push(DangerSpot {
+                    at: b.feet,
+                    time,
+                    victim: a.place,
+                });
+            }
             // Self-balancing counts duels between bots and humans.
             if a.bot && human_kills {
                 self.teams[team].skill.duel(Duel {

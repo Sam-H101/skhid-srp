@@ -63,6 +63,10 @@ pub fn tuning() -> PlayTuning {
 }
 
 pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
+    // A pair's follower keeps with its leader instead (play 25).
+    if super::buddy::leader(cx).is_some() {
+        return;
+    }
     // Human routes: one candidate; the route is drawn when it starts.
     if cx
         .bot
@@ -92,6 +96,8 @@ pub enum State {
     Route {
         points: Vec<Vec3>,
         next: usize,
+        /// Until when it waits for its pair's follower (0: not yet).
+        wait_until: u32,
     },
     /// To the waypoint off the straight way, then to the goal.
     Via {
@@ -216,7 +222,12 @@ fn draw_route(cx: &Ctx, rng: &mut Rng) -> Option<Vec<Vec3>> {
             let friends = cx
                 .view
                 .team(cx.me.team)
-                .filter(|p| p.place != cx.me.place && p.feet.distance_xz(mine) > on && near(p.feet))
+                .filter(|p| {
+                    p.place != cx.me.place
+                        && Some(p.place) != cx.bot.partner
+                        && p.feet.distance_xz(mine) > on
+                        && near(p.feet)
+                })
                 .count();
             w *= num("friend_factor").powi(friends as i32);
             if sneaky {
@@ -256,7 +267,11 @@ pub fn start(target: TargetRef, cx: &Ctx, rng: &mut Rng) -> State {
     if target == TargetRef::None
         && let Some(points) = draw_route(cx, rng)
     {
-        return State::Route { points, next: 0 };
+        return State::Route {
+            points,
+            next: 0,
+            wait_until: 0,
+        };
     }
     // The exit or the way ahead; with no side known, a floor 20-60 m off.
     let goal = cx.roam_goal(target).or_else(|| {
@@ -304,7 +319,11 @@ pub fn step(state: &mut State, _target: TargetRef, cx: &Ctx, rng: &mut Rng) -> S
         return Step::Done("roamed long enough");
     }
     match state {
-        State::Route { points, next } => {
+        State::Route {
+            points,
+            next,
+            wait_until,
+        } => {
             let reach = cx.num(PlayKind::Roam, "reach_m");
             while *next < points.len() && cx.me.feet.distance_xz(points[*next]) < reach {
                 *next += 1;
@@ -328,6 +347,16 @@ pub fn step(state: &mut State, _target: TargetRef, cx: &Ctx, rng: &mut Rng) -> S
                 .any(|d| d.at.distance_xz(at) < on)
             {
                 return Step::Done("the route turned bad");
+            }
+            // The pair's follower left behind: wait a little, once a run
+            // (play 25).
+            if super::buddy::lagging(cx).is_some() {
+                if *wait_until == 0 {
+                    *wait_until = cx.now + (cx.num(PlayKind::Buddy, "wait_s") * 1000.0) as u32;
+                }
+                if cx.now < *wait_until {
+                    return Step::Continue(Intent::stay().looking(Look::Path));
+                }
             }
             Step::Continue(Intent::to(at, cx.pace_toward(at)).within(reach * 0.6))
         }

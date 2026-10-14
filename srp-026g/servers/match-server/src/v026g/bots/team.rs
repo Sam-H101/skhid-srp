@@ -8,6 +8,10 @@
 //! - **Slots:** a candidate with a slot (an ambush on a battery, a battery
 //!   to fetch, a guard post) goes to one bot only; bots are served in the
 //!   order of their best score, so the best-placed bot gets the slot.
+//!   A slot already held stays with its holder while its play is still a
+//!   candidate, unless another bot's candidate for it beats the holder's
+//!   by [`MARGIN`] (else two bots near one battery swap it every tick,
+//!   neither going for it; seen in the soaks).
 //! - The commander says why: each assignment carries the winner's score and
 //!   the runners-up for the trace.
 
@@ -59,10 +63,31 @@ pub fn assign(mut asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool
         let (rb, sb) = best(b);
         rb.cmp(&ra).then(sb.total_cmp(&sa))
     });
+    // Slots held by running plays still asked for: (slot, holder, score).
+    let held: Vec<(SlotKey, Place, f32)> = asking
+        .iter()
+        .filter_map(|bot| {
+            let current = bot.current?;
+            let slot = current.slot?;
+            bot.candidates
+                .iter()
+                .find(|c| {
+                    c.slot == Some(slot) && c.kind == current.kind && c.target == current.target
+                })
+                .map(|c| (slot, bot.place, c.score.get()))
+        })
+        .collect();
     let mut taken: Vec<SlotKey> = Vec::new();
     let mut out = Vec::new();
     for bot in asking {
-        let free = |c: &&Candidate| c.slot.is_none_or(|slot| !taken.contains(&slot));
+        let free = |c: &&Candidate| {
+            c.slot.is_none_or(|slot| {
+                !taken.contains(&slot)
+                    && held.iter().all(|&(s, holder, score)| {
+                        s != slot || holder == bot.place || c.score.get() >= score + MARGIN
+                    })
+            })
+        };
         let Some(best) = bot.candidates.iter().find(free) else {
             continue;
         };
@@ -149,6 +174,48 @@ mod tests {
             PlayKind::Roam,
             "the band below once the slot is taken"
         );
+    }
+
+    #[test]
+    fn a_held_slot_stays_with_its_holder_unless_beaten_by_the_margin() {
+        let current = Assignment {
+            kind: PlayKind::Collect,
+            target: TargetRef::Battery(0),
+            slot: Some(SlotKey {
+                kind: PlayKind::Collect,
+                key: 0,
+            }),
+            score: 0.5,
+            since: 100,
+            reason: "the best play",
+        };
+        let run = |other: f32| {
+            let asking = vec![
+                Asking {
+                    place: 1,
+                    candidates: vec![
+                        c(PlayKind::Collect, Rank::Objective, 0.5, Some(0), 0),
+                        c(PlayKind::Roam, Rank::Roam, 0.9, None, 9),
+                    ],
+                    current: Some(&current),
+                },
+                Asking {
+                    place: 2,
+                    candidates: vec![
+                        c(PlayKind::Collect, Rank::Objective, other, Some(0), 0),
+                        c(PlayKind::Roam, Rank::Roam, 0.9, None, 8),
+                    ],
+                    current: None,
+                },
+            ];
+            let out = assign(asking, 1_000);
+            let of = |place| out.iter().find(|(p, _, _)| *p == place).unwrap().1.kind;
+            (of(1), of(2))
+        };
+        // A little better placed: the holder keeps it.
+        assert_eq!(run(0.55), (PlayKind::Collect, PlayKind::Roam));
+        // Much better placed: it goes over.
+        assert_eq!(run(0.8), (PlayKind::Roam, PlayKind::Collect));
     }
 
     #[test]

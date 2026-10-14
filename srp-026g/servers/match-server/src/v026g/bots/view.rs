@@ -474,12 +474,15 @@ impl Tracker {
                 continue;
             };
             if stats.1 > state.stats.1 {
-                let at = state.body.estimate().map_or(Vec3::ZERO, |e| e.feet);
-                self.deaths.push_back(Death {
-                    place,
-                    at,
-                    time: facts.time,
-                });
+                // A death where the body was never placed says nothing of
+                // a spot (it was the map's origin, and trades ran there).
+                if let Some(estimate) = state.body.estimate() {
+                    self.deaths.push_back(Death {
+                        place,
+                        at: estimate.feet,
+                        time: facts.time,
+                    });
+                }
                 state.alive = false;
             }
             state.stats = *stats;
