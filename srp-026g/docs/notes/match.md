@@ -540,3 +540,48 @@ Modes 2 and 3. PROVEN unless tagged. Tools: `cargo run -p survarium --example ba
 - A sync is still tried for ever. A game whose line carries no world at all waits all match long, and the two uploaders with it (less often now: one world in 4 s).
 - A game's own word that it has loaded (its first hash report) is not used: the sync is done when every part is acked. A waiting game acks about half of what arrives, so a part that arrived can go once or twice more.
 - The lobby link is not paced: its messages are kept until acked, so a thin line makes the sign-in slow, not impossible.
+
+## 28. A battery stolen before a game started and brought home after: the one count no world carries (added 2026-10-14)
+
+**Seen live** (match 0x69f8c0ba, mode 2 on level_05, patch revision 6, five players in the end). Place 4 joined a match being played: its world was of 272150 ms and it entered at 273300 ms, in step. At 304700 ms its hash was another than the others' (`ce2219dc` against `bc336eed`), the server resynced it with the world of 307850 ms, and it was in step from then on.
+
+**What differed** (PROVEN, the two worlds of 304700 ms the server kept): the mask, every player's block and the bullets, objects, physics, rules and effects are the same bytes. The statistics are 1136 bytes in the agreed world and 1130 in the newcomer's, and the six bytes are one counter: **event 26 of player 1** ("stolen and brought home", snapshot_rules.md §3.1), 1 in the games that played from the start and not there in the newcomer's. It is bit 26 of a 32-bit `events_mask` (`0x05520004` against `0x01520004`), three times because a kit's mask keeps the bits of the kits before it, and one u16. The agreed statistics with that one counter taken out are the newcomer's 1130 bytes, byte for byte.
+
+**What had happened in the match** (the worlds of 299700 and 304700 ms): battery 5 was team 1's (`owner_team` 1, `first_finder` 3; player 3 has the events of finding and bringing it). At 299700 ms it is carried, both containers are empty, and its record has had one event since it was put in (the two nearest positions are 1.0 and 1.018, no carried distance). At 304700 ms it is in team 0's container, the points are 1:0, and player 1 (team 0) has events 20, 24 and 100 hundredths of 17 in every game, and 26 in every game but the newcomer's.
+
+**Why** (PROVEN in the exe; the layout and the addresses are in snapshot_rules.md §3.2):
+- The statistics keep, for each battery, who took it out of a container last: the byte +0xFD of its record, written by the "taken out of a container" event (type 1, 0x334B4D; the same event takes one from the other team's `m_team_victory_items`, 0x2F55C1).
+- When a battery is put in (type 0), event 26 is counted for the player who puts it in if the battery was the other team's (`owner_team` is neither its team nor 3) **and that byte is its own place** (0x334C53..0x334C87). Nothing else reads the byte.
+- The record is saved and loaded without it (0x334DC0, 0x334FB0). So a world carries everything event 26 asks for but the taker, and a game has the taker only if it computed the taking out itself.
+- Everything else the battery's events ask for is saved: `owner_team`, `first_finder`, the carried distances (events 6, 17, 18, 19, 24), which is why the newcomer counted 20, 24 and 17 of the same put.
+
+**When it was taken out:** before the newcomer's world. This follows from the code (a game that computes the taking out writes the byte, and the newcomer computed every tick from 272150 ms with the others' inputs) and is not seen in a kept world: the world of 272150 ms is not among those looked at. The log fits: when the place was reserved (the match clock at about 269.7 s) the server's newest trusted world still had the battery in team 1's container, so it was taken out in the few seconds before 272150 ms and carried home in about half a minute. The world of 272150 ms would settle it (both containers empty, the battery carried).
+
+**Who has the gap:**
+
+| game | has the taker? |
+|---|---|
+| played from the start | yes |
+| a late joiner | not of a battery that was out of its container when its world was made (seen) |
+| back in a match it dropped out of | what it had when it dropped out; a game started again, nothing. Not of a taking out while it was away. Not seen |
+| enters for the first time after play began (slow to load) | as a late joiner. Not seen |
+| resynced in an ordinary match | yes: the load does not write the byte, so the game keeps what its own play wrote. Wrong only when the taking out itself is in the stretch it computed otherwise, and then a resync does not mend it. Not seen |
+| after a rollback | yes. A state that is loaded leaves the byte, but a byte that is wrong so is never read: a battery in a container must be taken out before it can be put in, and that writes the byte in every game |
+
+The fault needs a battery of the enemy's that is out of its container when the game's world is made and is then put in by the player who took it out. It costs that game one resync (here: 4 s on a world that differed in one counter, and 0.65 s of its own inputs dropped). The others are not touched, and the result is the majority's. Should the games without the taker be the majority, the count is lost for everybody. On srp event 26 weighs nothing in the score (`SCORE_WEIGHTS`); the quest type 7 `steal_box` counts it. Mode 4 has no batteries.
+
+**A second thing the same two bytes do** (found while reading; PROVEN in the code, seen in these worlds). `first_finder` and the taker are set to "nobody" (0xFF) only when the game's network client is made. The reset between two matches does not write them (snapshot_rules.md §3.2), so a game keeps both from the battery match it played before. The taker of an earlier match does no harm (it is written again before it is read). `first_finder` is saved, so every game of a match has the bytes of the game that gave the first world:
+- In all four worlds of this match seven batteries have a finder (place 0 four times, place 1 three times) and neither place has an event 19; six of them lie free, never owned, with no distance carried and their two nearest positions still equal. The game that gave the first world had ended a battery match two minutes before in the same run (the log has no sign-in of it between the two); that the bytes are that match's is LIKELY (its worlds were not looked at).
+- What it costs (from the code, not seen in a world): event 19 ("found") is never counted for such a battery (0x334B14), and the first test of event 24 (0x334D0C: a fresh battery put in by its finder) fails for the player who did find it and holds for whoever sits at the old place. The quest type 6 `bring_x_items` counts event 24. It is no fault of step: every game has the same bytes.
+
+**What could be done. Nothing is decided and no patch is written.**
+
+| | what | a game of revision 7 with one of the new revision | what it costs or changes |
+|---|---|---|---|
+| A | nothing | | the game that started late is resynced once when it happens |
+| B | save the byte: the record's writer and reader take +0xFD after `first_finder` (a jump into the patch's code at 0x334F61 and at 0x3350CA; no relocation is under either, each function has one caller) | never in modes 2 and 3: every world is ten bytes longer and hashes otherwise from the first tick, and each would read the other's tail wrong. The server asks for the new revision the moment it is offered | the count as the game means it; mends the joiner, the player who is back and the resynced game alike; a rollback then takes the byte back too. The server's reader of the statistics must take both lengths (`snapshot.rs`, exact fit) before any such game plays |
+| C | count event 26 for whoever puts an enemy's battery in: the `jnz` at 0x334C7A becomes two nops (no relocation under it, no jump into it) | they play together and differ only at a put by another player than the taker (the new one counts, 7 does not) and where 7 has this fault: one resync of the fewer each time | another rule: "stolen and brought home" also for a battery a teammate took out. The world's layout stays, the server is not touched |
+| D | carry the ten bytes beside the world: the game that gives a world adds them after the body, the server passes them on, the game that loads puts them in | they play together: what is hashed does not change | the most code (the upload, the server, a hook in the load) and nothing for a world given by a game of 7. Not read in the exe: whether the loader lets bytes follow the body |
+| and | write 0xFF to both bytes in the reset (0x3348A0) | they play together: the finder comes with the first world | ends the finder of an earlier match, with B or C or alone |
+
+Not looked at: whether the two "not traced" event types 2 and 3 reach the event function (they would move the nearest positions, not the taker); how the server picks the world to trust when two games disagree and neither is the majority.
