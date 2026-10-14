@@ -791,8 +791,17 @@ pub struct MatchNow {
 ///   score or a time there is none of, `join` 1 or 0. The movie ignores
 ///   fields after the ones it knows, so a later version may append.
 ///
-/// At most [`MATCHES_NOW_ROWS`] matches. A name is 42 bytes at the most,
-/// within the 63 of a ranking row's name.
+/// At most [`MATCHES_NOW_ROWS`] matches.
+///
+/// The 63 bytes of a row's name are a hard limit: the client's reader
+/// (0x271EB0) copies each name into a 64-byte field of its stack with no
+/// check of the length. Every name goes through `elo_rows`, which cuts it
+/// to [`limits::NAME`] as it does a player's; and with the widest number
+/// in every field a match's name is 42 bytes, so nothing is ever cut. The
+/// client hands the rows to the movie as they are (the place a whole u32)
+/// and looks at them nowhere else: it keeps none and compares no name.
+/// Its sender of the `3B` (0x270070) has no condition of the ranking
+/// page's.
 pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, WireError> {
     at_most("matches now", matches.len(), MATCHES_NOW_ROWS)?;
     let row = |name: String| Ranked {

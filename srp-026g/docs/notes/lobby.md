@@ -279,6 +279,13 @@ Reply: one ordinary `91`, rating and change 0 in every row. The movie tells it f
 
 No player name, account id or match id is in it: the same for whoever asks.
 
+What the exe does with it (PROVEN in the original 0.26g exe, client trace of 2026-10-14):
+
+- The sender of `3B`, 0x270070, writes `3B 00 u32 u8` as it is called: it has no condition of the ranking page's, so the start goes out whole.
+- The `91` reader 0x271EB0 copies each row's name into a 64-byte field of its stack **with no check of the length: 63 bytes are a hard limit**. The writer cuts every name to 63 as it does a player's (`elo_rows`), and the widest row the fields' types allow is 42 bytes.
+- The rows reach the movie as `place` = uint (the u32 whole), `ranking` = uint from the u16, `ranking_diff` = signed int from the i16. Nothing else in the client looks at them: no cache, no compare of names, no log.
+- The movie does not run during a match, so no game asks while it plays.
+
 Where it comes from: the match server's registry (`MatchRegistry::live_matches`), the source of the launcher's page too. Which match is listed and which score is told is one rule for both (`session::v026g::matches_now`). `join` is the lobby's late-join rule (`matchmaking.md` §9; `play.rs` `takes_one_more`) asked for a player alone whose wait for a better moment is over: a match of growing rosters with no fixed teams, admission open at the match server, more than 120 s left to play, a roster place left of the 20, a side under its most. It is about nobody in particular: an account that had a place in the match, or a game too old for growing rosters, is still not taken. A match the lobby did not make itself (the lobby was started again while it went on) has 0.
 
 An srp from before this answers the reserved start as a ranking page past the last row: an empty `91` (`91 00`), with no header. The window takes no header within about 6 s as "no matches".

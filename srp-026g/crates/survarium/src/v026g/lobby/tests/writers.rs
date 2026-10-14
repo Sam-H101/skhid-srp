@@ -627,25 +627,57 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
             ("8;2;0;10;10;-;-;-;0".into(), 2_000_000_002, 0, 0),
         ])
     );
-    // The countdown's number, and the widest row there can be: within the
-    // 63 bytes of a ranking row's name, so nothing of it is cut.
+    // The countdown's number, and the widest row there can be, every field
+    // the largest number its type holds (three digits for the level, the
+    // mode and each team, five for each score, ten for the seconds). The
+    // client copies a name into 64 bytes without a check (0x271EB0): 63 is
+    // all it may be, and this one is 42, so nothing of it is cut.
     let widest = MatchNow {
-        level: 255,
-        mode: 255,
+        level: u8::MAX,
+        mode: u8::MAX,
         phase: MatchPhase::Countdown,
-        players: [255, 255],
+        players: [u8::MAX, u8::MAX],
         score: Some([u16::MAX, u16::MAX]),
         played: Some(u32::MAX),
         join: true,
     };
     let name = "255;255;1;255;255;65535;65535;4294967295;1";
+    assert_eq!(name.len(), 42);
     assert!(name.len() <= limits::NAME);
-    let message = matches_now(u32::MAX, &[widest]).unwrap();
+    let message = matches_now(u32::MAX, &[widest; MATCHES_NOW_ROWS]).unwrap();
+    // On the wire: after the count and the header, the name's length byte
+    // and the name whole.
+    let header = h("91 21 'M1;4294967295' 00943577 0000 0000");
+    assert_eq!(bytes(&message)[..header.len()], header);
+    assert_eq!(bytes(&message)[header.len()], 42);
+    assert_eq!(
+        bytes(&message)[header.len() + 1..header.len() + 43],
+        *name.as_bytes()
+    );
     let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
         panic!("not a ranking list");
     };
+    assert_eq!(rows.len(), 1 + MATCHES_NOW_ROWS);
     assert_eq!(rows[0].0, "M1;4294967295");
-    assert_eq!(rows[1].0, name);
+    assert!(rows[1..].iter().all(|row| row.0 == name));
+    assert!(rows.iter().all(|row| row.0.len() <= limits::NAME));
+    // What a real match has at the most: one-digit level and mode, two
+    // digits a team, five a score, four for the seconds of a match.
+    let full = MatchNow {
+        level: 8,
+        mode: 4,
+        phase: MatchPhase::Playing,
+        players: [10, 10],
+        score: Some([u16::MAX, u16::MAX]),
+        played: Some(9999),
+        join: true,
+    };
+    let message = matches_now(1, &[full]).unwrap();
+    let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
+        panic!("not a ranking list");
+    };
+    assert_eq!(rows[1].0, "8;4;2;10;10;65535;65535;9999;1");
+    assert_eq!(rows[1].0.len(), 30);
     // No more matches than the answer lists.
     assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS]).is_ok());
     assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS + 1]).is_err());
