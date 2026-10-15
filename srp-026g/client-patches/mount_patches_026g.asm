@@ -1,17 +1,18 @@
 ; The game mounts resources.db's patches (build 2777, patch revision 14,
 ; client_patch.md section 0.2). Two entries; patch_026g.py checks the hooks'
 ; targets and the state address at the end:
-;   nasm -f bin -DCAVE=0xA425C00 -DSTATE=0xA428E00 mount_patches_026g.asm -o mount_patches_026g.section.bin
+;   nasm -f bin -DCAVE=0xA425400 -DSTATE=0xA428800 mount_patches_026g.asm -o mount_patches_026g.section.bin
 ;
 ; The start-up mount (mount_by_config_helper, 0xE7D20) mounts one archive:
 ; query_db 0xE7D90 formats "../../%s.db" with "resources" and calls
 ; query_mount_archive 0xE7EF0 once, at 0xE7E3E. That call comes here
 ; (mount_all): first resources.db as the game asked, then
-; ../../resources.db.patch_1, _2, ... for each that exists, up to
-; MAX_PATCHES, stopping at the first number that is not there. All of them
-; are mounted at "resources", in this order; the file system gives a path
-; to the archive mounted last that has it (hash_multiset::insert 0x45900:
-; a node of a later mount goes in front), so a patch replaces files of the
+; ../../resources.db.patch_<n> for every n from 1 to MAX_PATCHES whose file
+; is there, in that order. A patch is numbered by the patch revision that
+; brought it, and not every revision has one: a missing number is skipped.
+; All of them are mounted at "resources"; the file system gives a path to
+; the archive mounted last that has it (hash_multiset::insert 0x45900: a
+; node of a later mount goes in front), so a patch replaces files of the
 ; archives before it and adds new ones.
 ;
 ; Each mount calls the same callback when it is done, on_mounted_resources
@@ -25,11 +26,12 @@
 ; when no start-up mount is pending is the game's own.
 ;
 ; A mount that failed gives a null mount: for resources.db the game's own
-; "Cannot mount resources", for patch n "Cannot mount resources.db.patch_n"
-; (fatal 0x113580, which does not return). Never a patch skipped.
+; "Cannot mount resources", for a patch "Cannot mount resources.db.patch_<n>"
+; (fatal 0x113580, which does not return). A patch that is there is never
+; skipped.
 ;
 ; The state is in `.srpd`, the late join's writable page (STATE, at its
-; 0xE00). The image may be rebased: every address of the exe and of this
+; 0x800). The image may be rebased: every address of the exe and of this
 ; code is taken plus the delta; calls and jumps into the game are relative.
 BITS 32
 ORG CAVE
@@ -41,20 +43,22 @@ ON_MOUNTED_BODY     equ 0x147E6         ; on_mounted_resources after the six byt
 CloseHandle         equ 0x870040        ; the import table's slots
 CreateFileA         equ 0x870048
 
-MAX_PATCHES equ 64
+MAX_PATCHES equ 255                     ; the patch revision is a byte
 REFERENCES  equ 0x1C                    ; a mount's reference count
 
 ; The state (zeroed with the page).
 REMAINING   equ 0                       ; start-up mounts whose callback has not come
 SEEN        equ 4                       ; start-up mounts held so far
 MOUNTS      equ 8                       ; [1 + MAX_PATCHES], resources.db's first
-STATE_SIZE  equ MOUNTS + 4 * (1 + MAX_PATCHES)
+NUMBERS     equ MOUNTS + 4 * (1 + MAX_PATCHES) ; [MAX_PATCHES] bytes: the n of
+                                        ; each patch found, in order
+STATE_SIZE  equ NUMBERS + MAX_PATCHES
 
 ; mount_all's frame, above it pushad's registers, the return address and
 ; query_mount_archive's five arguments.
 DELTA       equ 0
-COUNT       equ 4                       ; patches that exist
-INDEX       equ 8                       ; the patch being mounted
+COUNT       equ 4                       ; patches found
+INDEX       equ 8                       ; the n looked for, then the patch mounted
 PATH        equ 0xC                     ; a native path string: begin, end of the
                                         ; text, end of the buffer, 260 characters,
                                         ; the separator (as query_db's)
@@ -97,9 +101,10 @@ on_mounted:
     mov [esp+0xC], eax
     jmp .game
 .failed:
-    mov eax, [ecx+SEEN]                 ; 0: resources.db, n: patch n
+    mov eax, [ecx+SEEN]                 ; 0: resources.db, k: the k-th patch
     test eax, eax
     jz .game                            ; the game's own "Cannot mount resources"
+    movzx eax, byte [ecx+NUMBERS-1+eax] ; its n
     push eax
     lea eax, [edx+failed]
     push eax
@@ -127,13 +132,16 @@ mount_all:
     lea ecx, [esp+PATH_SEPARATOR]
     mov [esp+PATH+8], ecx
     mov byte [ecx], '\'
-    mov dword [esp+COUNT], 0
-    ; How many patches: 1, 2, ... until one is not there.
+    xor eax, eax
+    mov [esp+COUNT], eax
+    mov [esp+INDEX], eax
+    ; Which patches: every n from 1 to MAX_PATCHES whose file is there.
 .probe:
-    mov eax, [esp+COUNT]
+    mov eax, [esp+INDEX]
     cmp eax, MAX_PATCHES
     jae .probed
     inc eax
+    mov [esp+INDEX], eax
     call format_patch
     mov edx, [esp+DELTA]
     push 0                              ; hTemplateFile
@@ -146,10 +154,14 @@ mount_all:
     push eax
     call [edx+CreateFileA]
     cmp eax, -1                         ; INVALID_HANDLE_VALUE
-    je .probed
+    je .probe
     mov edx, [esp+DELTA]
     push eax
     call [edx+CloseHandle]
+    mov edx, [esp+DELTA]
+    mov ecx, [esp+COUNT]
+    mov eax, [esp+INDEX]
+    mov [edx+STATE+NUMBERS+ecx], al
     inc dword [esp+COUNT]
     jmp .probe
 .probed:
@@ -170,11 +182,12 @@ mount_all:
     add esp, 0x14
     mov dword [esp+INDEX], 0
 .mount:
-    mov eax, [esp+INDEX]
-    cmp eax, [esp+COUNT]
+    mov ecx, [esp+INDEX]
+    cmp ecx, [esp+COUNT]
     jae .done
-    inc eax
-    mov [esp+INDEX], eax
+    inc dword [esp+INDEX]
+    mov edx, [esp+DELTA]
+    movzx eax, byte [edx+STATE+NUMBERS+ecx]
     call format_patch
     mov esi, [esp+SAVED_ESI]
     push dword [esp+ARGS+0x10]          ; the callback

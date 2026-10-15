@@ -1791,7 +1791,7 @@ def test_mount_patches(original, image, before):
     state = struct.unpack_from("<I", code, len(code) - 4)[0]
     late_join = open(P.late_join_bin(), "rb").read()
     page = P.late_join_state_va(late_join)
-    size = 8 + 4 * (1 + P.MOUNT_MAX_PATCHES)
+    size = P.MOUNT_STATE_SIZE
     check(state == page + P.MOUNT_STATE_OFFSET and P.MOUNT_STATE_OFFSET + size <= P.LATE_JOIN_STATE_SIZE,
           f"its state is {size} bytes at {state:#x}, +{P.MOUNT_STATE_OFFSET:#x} of the late join's state page "
           f"{page:#x}, inside it")
@@ -2015,9 +2015,9 @@ def test_late_join(original, without, server, source):
     mount_patches = open(P.mount_patches_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     pieces = [(0, len(first_page), "the build without the late join's first page"),
+              (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
-              (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
@@ -2025,20 +2025,20 @@ def test_late_join(original, without, server, source):
     check(not overlaps, "the first page's code does not overlap: " + ", ".join(
         f"{name} [{start:#x}, {start + size:#x})" for start, size, name in pieces) + "".join("; " + o for o in overlaps))
     check(body[:len(first_page)] == first_page
-          and set(body[len(first_page):P.PICKUP_OFFSET]) <= {0xCC}
+          and set(body[len(first_page):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
+          and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
+          and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
-          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
-          and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
-          and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"pickup code at +{P.PICKUP_OFFSET:#x}, the seek code at +{P.SEEK_CLEAR_OFFSET:#x}, the patches' "
-          f"mount at +{P.MOUNT_PATCHES_OFFSET:#x} and the shell_32.dll check at "
+          f"patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x} and the shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS

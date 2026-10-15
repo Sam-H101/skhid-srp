@@ -16,8 +16,8 @@ under it needs a started process), query_mount_archive
 (it records the message) and on_mounted_resources after its first six
 bytes (it records the mount the game would keep and goes on as the game
 does). Each folder must give: the mounts queued in order (resources.db as
-the game asked, then patch 1, 2, ... until the first that is not there,
-at most 64) with the game's arguments but the two paths; every register
+the game asked, then every patch n from 1 to 255 that is there, in order,
+a missing number skipped) with the game's arguments but the two paths; every register
 the game had and the stack as it was; no handle left open, and no access
 asked for a file; the callbacks of those mounts held but the last, which
 goes on into the game with resources.db's mount; a failed patch stopped
@@ -258,10 +258,12 @@ def main():
     folders = [
         ("no patch", folder(), [db]),
         ("patches 1 to 3", folder(1, 2, 3), [db, patch(1), patch(2), patch(3)]),
-        ("patches 1 and 3: 2 is missing", folder(1, 3), [db, patch(1)]),
-        ("patch 2 alone", folder(2), [db]),
-        ("a patch .db", {db + ".patch_1.db", "..\\..\\resources.db.patch_01"}, [db]),
-        ("patches 1 to 70: 64 at most", folder(*range(1, 71)), [db] + [patch(n) for n in range(1, 65)]),
+        ("patches 1 to 4 and 6", folder(1, 2, 3, 4, 6), [db] + [patch(n) for n in (1, 2, 3, 4, 6)]),
+        ("patches 14 and 17 alone", folder(14, 17), [db, patch(14), patch(17)]),
+        ("patch 255 alone", folder(255), [db, patch(255)]),
+        ("not a patch: .patch_1.db, _01, _0, _256",
+         {db + ".patch_1.db", db + ".patch_01", db + ".patch_0", db + ".patch_256"}, [db]),
+        ("patches 0 to 300: 1 to 255", folder(*range(0, 301)), [db] + [patch(n) for n in range(1, 256)]),
     ]
     failed = 0
 
@@ -288,14 +290,14 @@ def main():
             # A later call is the game's own, its argument untouched.
             mount, count, went = run.mounted(True)
             say(went and count == 1 and run.kept[-1] == mount, f"{name}{rebased}: a later callback is the game's own")
-        # A failed mount.
-        run = Run(data, delta, folder(1, 2))
+        # A failed mount: the fatal names the file.
+        run = Run(data, delta, folder(14, 17, 20))
         run.query()
         run.mounted(True)
         run.mounted(True)
         run.mounted(False)
-        say(run.fatal == "Cannot mount resources.db.patch_2. Please run the Skhid launcher again." and not run.kept,
-            f"patch 2 fails{rebased}: {run.fatal!r}")
+        say(run.fatal == "Cannot mount resources.db.patch_17. Please run the Skhid launcher again." and not run.kept,
+            f"patches 14, 17, 20, 17 fails{rebased}: {run.fatal!r}")
         run = Run(data, delta, folder(1))
         run.query()
         _, _, went = run.mounted(False)

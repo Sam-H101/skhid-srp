@@ -738,9 +738,12 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
 ### 0.2 resources.db's patches: more archives over it (patch revision 14, README patch 27, 2026-10-16)
 
 - **The design** (the owner, 2026-10-16): `resources.db` stays the retail
-  file; content comes as `resources.db.patch_1`, `_2`, ..., each a small
-  archive of the same format, mounted after it at the same virtual path,
-  `resources`, in order. A later archive's file replaces an earlier one's
+  file; content comes as `resources.db.patch_<n>`, each a small archive of
+  the same format, mounted after it at the same virtual path, `resources`,
+  in the order of n. A patch is numbered by the patch revision that brought
+  it (owner, 2026-10-16), so numbers are missing where a revision had no
+  content: n runs from 1 to 255 (the revision is a byte) and a missing one
+  is skipped. A later archive's file replaces an earlier one's
   and its new files are added; nothing is taken away. (This replaces #92's
   `resources_skhid.db`, one archive the updater would have rebuilt.)
 - **Why a later mount wins** [from the VFS labels of #95, not re-read
@@ -781,40 +784,44 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   zero) and starts the next step (0x176D0, 0xE5B60: the shaders' masks).
   `link_mount_ptr`, the engine's way to hold several mounts as one, is not
   in this build.
-- **The patch** (`mount_patches_026g.asm`, 505 bytes at `.srp`+C00h, where
-  revision 12's signature code was):
-  - 0xE7E3E `E8 AD 00 00 00` (`call 0E7EF0h`) becomes `E8 1D DE 33 0A`, `call 0A425C60h`,
-    mount_all. It looks for `..\..\resources.db.patch_<n>` for n = 1, 2,
-    ... (the same 0x18190 with `"../../%s.db.patch_%u"` and the
-    descriptor; `CreateFileA` with no access and OPEN_EXISTING, then
-    `CloseHandle`, the imports at 0x870048 and 0x870040), at most 64,
-    until one is not there. It writes the count of callbacks to come
-    (1 + patches) to its state before it queues anything, then calls
-    0xE7EF0 with the game's five arguments, then once for each patch with
-    its own path string in place of the two paths. All registers are kept
+- **The patch** (`mount_patches_026g.asm`, 549 bytes at `.srp`+400h, after
+  the upload code and the longest default server's stub and name, which end
+  at +21Dh, and before the pickup code at +800h):
+  - 0xE7E3E `E8 AD 00 00 00` (`call 0E7EF0h`) becomes `E8 25 D6 33 0A`,
+    `call 0A425468h`, mount_all. It looks for
+    `..\..\resources.db.patch_<n>` for every n from 1 to 255 (the same
+    0x18190 with `"../../%s.db.patch_%u"` and the descriptor; `CreateFileA`
+    with no access and OPEN_EXISTING, then `CloseHandle`, the imports at
+    0x870048 and 0x870040) and writes down, in order, the n of each one
+    that is there; a missing n is skipped. It writes the count of callbacks
+    to come (1 + patches) to its state before it queues anything, then
+    calls 0xE7EF0 with the game's five arguments, then once for each patch
+    written down with its own path string in place of the two paths. All registers are kept
     (pushad / popad); nothing it needs survives a call in a register.
   - 0x147E0 `55 8B EC 83 E4 F8` (`push ebp` / `mov ebp,esp` / `and esp,-8`)
-    becomes `E9 1B 14 41 0A 90` (`jmp 0A425C00h` / nop), on_mounted. When no
+    becomes `E9 1B 0C 41 0A 90` (`jmp 0A425400h` / nop), on_mounted. When no
     start-up mount is pending it runs the six bytes and jumps to 0x147E6:
-    the game's own. A null mount for the n-th callback: n = 0 the game's own
+    the game's own. A null mount for the k-th callback: k = 0 the game's own
     (its fatal), else the fatal "Cannot mount resources.db.patch_<n>.
-    Please run the Skhid launcher again." Otherwise it takes a reference
+    Please run the Skhid launcher again." with the n of the k-th patch
+    written down. Otherwise it takes a reference
     (`lock inc [mount+1Ch]`), keeps the mount at the next of the state's
-    65 slots and counts the callback down (`lock dec`); for all but the
+    256 slots and counts the callback down (`lock dec`); for all but the
     last it returns (the caller takes the arguments and lets its own
     reference go). The last puts the address of slot 0 (resources.db's
     mount) in place of its third argument and goes on into the game:
     engine_world+2C0h holds resources.db's mount, as without patches, and
     the start-up goes on after every archive is mounted.
-  - The state: 0xE00 of `.srpd` (0xA428E00 with the late-join code as
-    built; the late join's own state is its first 60 bytes): the count of
-    callbacks to come, the count held, 65 mounts. The .bin ends with the
+  - The state: 0x800 of `.srpd` (0xA428800 with the late-join code as
+    built; the late join's own state is its first 60 bytes), 0x507 bytes:
+    the count of callbacks to come, the count held, 256 mounts and the 255
+    bytes of the patches' numbers. The .bin ends with the
     address it was assembled for, and `patch_026g.py` refuses a .bin made
     for another one. Neither site holds an address (no base relocation
     under them) and nothing aims inside them but their first byte (a
     `call 3DB6F0h` at 0x3C6F0A has the bytes of 0x147E1, no relocation).
-- **The order of the callbacks**: FIFO, so the n-th callback is patch n's
-  and the fatal names the right file. If the file system ever ran two
+- **The order of the callbacks**: FIFO, so the k-th callback is the k-th
+  patch's and the fatal names the right file. If the file system ever ran two
   mounts at once only the number in the message could be wrong; which
   call goes on into the game does not depend on the order.
 - **Checked**: `selftest_026g.py` check 27, and
