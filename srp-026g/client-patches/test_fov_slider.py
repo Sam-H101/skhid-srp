@@ -1,4 +1,4 @@
-"""Field-of-view checks (patch 21 and the menu slider) that need neither the
+"""Field-of-view checks (patch 22 and the menu slider) that need neither the
 game exe nor its archive."""
 from pathlib import Path
 import struct

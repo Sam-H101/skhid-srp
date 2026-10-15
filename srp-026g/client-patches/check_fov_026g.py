@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the original and patch 21's camera projections and compare them.
+"""Execute the original and patch 22's camera projections and compare them.
 
     python check_fov_026g.py <original survarium.exe>
 
@@ -120,7 +120,7 @@ def main():
     assert before.get(option) == after.get(option) == 3
     assert before.get(base.FOV_MINIMUM_RELOC) == 3 and after.get(base.FOV_MINIMUM_RELOC) == 0
     assert before.get(CONSTANT_RELOC) == after.get(CONSTANT_RELOC) == 3
-    print(f"patch 21: {checks} projections match (a full scope as the original at every setting); "
+    print(f"patch 22: {checks} projections match (a full scope as the original at every setting); "
           "option name, minimum and relocations checked")
 
 

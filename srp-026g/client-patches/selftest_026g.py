@@ -101,7 +101,15 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     the new code reads place+0Dh, calls the game's allocator and the
     list's insert only, writes a node's value and time only and leaves to
     nowhere else; nothing aims inside the two calls.
-22. the same build: the field-of-view setting (patch 21). The video
+22. the same build: Team Deathmatch's death handler (0x316090) goes on at
+    0x3160F1 where the original and the build without the late join jump
+    to its return when the rule's completion time (+12Ch) is not -1: six
+    nops between `cmp dword [esi+12Ch],-1` and `mov ecx,[esi+128h]`; the
+    handler's only jumps to its return are that one and the one of the
+    other event; no relocation under, no branch into; the rule's code
+    touches +12Ch at seven places (the constructor, the guard, the end
+    test's four, rule_completed). run_tdm_rule.ps1 runs the handler.
+23. the same build: the field-of-view setting (patch 22). The video
     options' option 7 names "uro_fov" (0x262930) where the original names
     "fov", a string nothing else points to; "uro_fov" is the name of the
     console variable at 0xAA6510, whose value (0xA6FA28, 65.0) only its
@@ -507,6 +515,50 @@ def test_gather(original, image, mode):
           "(the constructor sets it at 0x313A1F)")
 
 
+def test_tdm_deaths(original, image, before):
+    """Team Deathmatch's rule counts a death after its own end (patch
+    revision 11, client_patch.md section 3.21): the `jnz` after `cmp dword
+    [esi+12Ch],-1` in the death handler 0x316090 is six nops; the build
+    without the late join keeps it."""
+    va, old, new = P.TDM_DEATHS
+    stock = Image(original)
+    start, end = 0x316090, 0x316200
+    rows = {address: text for address, _, text in ndisasm(image.read(start, end - start), start)}
+    original_rows = ndisasm(stock.read(start, end - start), start)
+    original_at = {address: text for address, _, text in original_rows}
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new,
+          f"{va:#x}: the original's six bytes `{old.hex()}`, kept by the build without the late join, "
+          "six 0x90 in this one")
+    check(original_at.get(0x3160E1) == "cmp eax,byte +0x1" and original_at.get(0x3160E4) == "jnz near 0x3161dd"
+          and original_at.get(0x3160EA) == "cmp dword [esi+0x12c],byte -0x1"
+          and original_at.get(va) == "jnz near 0x3161dd" and original_at.get(0x3160F7) == "mov ecx,[esi+0x128]",
+          "the original's handler: event 1 (`cmp eax,1` / `jnz 0x3161dd`), then `cmp dword [esi+0x12c],-1` / "
+          "`jnz 0x3161dd` / `mov ecx,[esi+0x128]`")
+    check(rows.get(0x3160EA) == "cmp dword [esi+0x12c],byte -0x1"
+          and all(rows.get(va + i) == "nop" for i in range(len(old))) and rows.get(0x3160F7) == "mov ecx,[esi+0x128]",
+          f"{va:#x}: six nops between `cmp dword [esi+0x12c],-1` and `mov ecx,[esi+0x128]`: a death after the "
+          "rule's end is counted")
+    # What the patch changes is one thing: the handler goes on to the
+    # ticket, the alive mask and the end test where it returned at once.
+    leaves = sorted(address for address, text in original_at.items() if branch_target(text) == 0x3161DD)
+    check(leaves == [0x3160E4, va], "the handler's jumps to its return (0x3161dd) are those of the other event "
+          f"(0x3160e4) and the one patched ({va:#x}): {[hex(a) for a in leaves]}")
+    relocated = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not relocated, "no base relocation of the original is under the six bytes")
+    hits = [f"{address:#x}: {text}" for address, _, text in original_rows
+            if branch_target(text) is not None and va + 1 <= branch_target(text) < va + len(old)]
+    check(not hits, "no branch of the handler lands inside the six bytes")
+    # The completion time: set to -1 by the rule's constructor, set by the
+    # end test, read by the end test, `rule_completed` and this guard, and
+    # in no other function of the rule (so nothing else reads it as
+    # "the rule has ended").
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    users = sorted(P.TEXT_VA + m.start() for m in re.finditer(rb"[\x80-\xBF]\x2C\x01\x00\x00", text)
+                   if 0x315F00 <= P.TEXT_VA + m.start() < 0x316700)
+    check(len(users) == 7, "the rule's code touches the completion time (+0x12c) at seven places "
+          f"(constructor, this guard, the end test's four, rule_completed): {[hex(a) for a in users]}")
+
+
 def test_start_up_folder(original, image, mode):
     """A Documents folder the game may not write to (client_patch.md
     section 3.10): the mount without a root, and no journal by default."""
@@ -852,7 +904,7 @@ def late_join_sites():
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
         [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1])),
-         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1]))] + \
+         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1])), (P.TDM_DEATHS[0], len(P.TDM_DEATHS[1]))] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES]
 
 
@@ -1077,7 +1129,7 @@ FOV_VTABLES = {0xA0406C: b".?AVplayer_input_handler@survarium@@", 0xA04084: b".?
 
 
 def test_fov(original, image, before):
-    """Check 22: the field-of-view setting (patch 21)."""
+    """Check 23: the field-of-view setting (patch 22)."""
     source = Image(original)
     pack = lambda value: struct.pack("<I", value)
 
@@ -1658,6 +1710,7 @@ def test_late_join(original, without, server, source):
     test_weapon_random(original, image, before)
     test_kit_state(original, image, before)
     test_first_load(original, image, before)
+    test_tdm_deaths(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

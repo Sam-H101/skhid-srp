@@ -22,7 +22,27 @@
 //!    and no patience waited out, puts A on a side, and the sides then
 //!    count strictly more alike than without A.
 //!
-//! The window's rows say per asker whether that holds (`join`). A JOIN
+//! Near a planned maintenance (the owner's of 2026-10-15), once the clients
+//! turn Play off ([`MAINTENANCE_WINDOW`] minutes or fewer to it), point 4
+//! is the maintenance rule instead: a match whose time limit ends
+//! (`admission_remaining`) at least [`MAINTENANCE_MARGIN`] before the
+//! maintenance starts takes A on its weaker side by value
+//! ([`policy::place_weaker`]: no rule of sizes, of patience or of the sides
+//! counting more alike, only a side's capacity and the match's room); a
+//! match that ends later takes nobody. Everything else stays: the asker's
+//! checks, one hold per match, the hold, Play from the hold (checked again
+//! by the same rule) and never the queue.
+//!
+//! The window's rows say per asker whether that holds, and if not why
+//! ([`JoinCode`], the row's `join`). Of the reasons that apply, the one
+//! said is the first of this order (the owner's of 2026-10-15): the
+//! asker's own that block every match, which the player must act on first
+//! (it waits in the queue 13, it is in a match 8, in a squad 9, an old game
+//! 10), then the match's own that hold for everyone (it takes no late
+//! joiners 7, it is not in play yet 5, it ends soon 6, another player is
+//! joining 4), then the asker's place of old in this match (11), then the
+//! maintenance (12), then the placement (no side takes it 3, the sides
+//! would count no more alike 2). A JOIN
 //! request is decided again at the click: `ok` holds a place for the asker
 //! for [`HOLD`], and its Play then puts it into X through the same steps
 //! the queue's late joins take (`Matchmaking` and the match server's
@@ -40,6 +60,10 @@
 //! a hold lives. A second asker's Play into the same match would always be
 //! refused, so its JOIN is `full` while the first hold lives. For the same
 //! reason the queue's late joins pass a match with a hold in it by.
+//!
+//! The JOIN answer carries the code too (`J1;<result>;<key>;<code>`); its
+//! result word, all that the first M2 movie reads, is the code's
+//! ([`JoinCode::result`]).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -48,7 +72,7 @@ use session::matchmaking_policy::{self as policy, Joiner, LatePlacement, Worth};
 use session::v026g::quests;
 use session::{LockExt, QueuePool};
 use survarium::v026g::lobby::requests::id;
-use survarium::v026g::lobby::{self, JoinResult};
+use survarium::v026g::lobby::{self, JoinCode};
 
 use super::core::{Core, Who};
 use super::play::{MatchPlayer, Running, match_profile};
@@ -62,6 +86,16 @@ pub(super) const HOLD: Duration = Duration::from_secs(10);
 /// says of a Play-like press it could not carry out (the clan team's ready,
 /// `clans`). The game has no text of a match that stopped taking players.
 pub(super) const JOIN_REFUSED: &str = "st_cant_change_ready_state";
+
+/// The maintenance rule is in force from this many minutes before a
+/// planned maintenance on: the minutes the clients are told (`9F`), at
+/// which they turn Play off (`update_play_button_state`, `lobby.md`
+/// §2.16.1).
+pub(super) const MAINTENANCE_WINDOW: u32 = 30;
+
+/// Under the maintenance rule a match takes a joiner only when its time
+/// limit ends at least this long before the maintenance starts.
+pub(super) const MAINTENANCE_MARGIN: Duration = Duration::from_secs(60);
 
 /// A place held in a match for a player whose JOIN was granted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,9 +160,9 @@ impl Listing {
     }
 }
 
-/// Why an asker may not join a match now, as the JOIN answer says it, and
-/// in words for the log.
-type Refusal = (JoinResult, &'static str);
+/// Why an asker may not join a match now, as the rows and the JOIN answer
+/// say it, and in words for the log.
+type Refusal = (JoinCode, &'static str);
 
 /// An asker a match would take now ([`Core::join_fit`]).
 pub(super) struct Fit {
@@ -139,6 +173,19 @@ pub(super) struct Fit {
     pub strength: i32,
     pub lead: [i64; 2],
     pub dramatic: bool,
+    /// Placed by the maintenance rule, not the balance rule.
+    pub maintenance: bool,
+}
+
+impl Fit {
+    /// What the log's lines say of the rule that placed it.
+    fn by(&self) -> &'static str {
+        if self.maintenance {
+            ", maintenance rule"
+        } else {
+            ""
+        }
+    }
 }
 
 impl Core<'_> {
@@ -151,16 +198,17 @@ impl Core<'_> {
     }
 
     /// Why `who` may not join any match now, whatever the match: the
-    /// rule's second point but the place it may have had in the match.
-    fn cannot_join(&self, who: &Who) -> Option<&'static str> {
+    /// rule's second point but the place it may have had in the match. The
+    /// first reasons of all ([`Core::join_fit`]).
+    fn cannot_join(&self, who: &Who) -> Option<Refusal> {
         let Some(player) = self.player(who.addr) else {
-            return Some("not in the lobby");
+            return Some((JoinCode::Unknown, "not in the lobby"));
         };
         if player.queued_since.is_some() {
-            return Some("it waits in the queue");
+            return Some((JoinCode::InQueue, "it waits in the queue"));
         }
         if player.in_match.is_some() || player.connect.is_some() {
-            return Some("it is in a match");
+            return Some((JoinCode::InMatch, "it is in a match"));
         }
         if self
             .store
@@ -168,7 +216,7 @@ impl Core<'_> {
             .pool_of_account(who.account_id)
             .is_some()
         {
-            return Some("it has a place in a match");
+            return Some((JoinCode::InMatch, "it has a place in a match"));
         }
         if self
             .store
@@ -176,20 +224,64 @@ impl Core<'_> {
             .of(who.account_id)
             .is_some_and(|squad| squad.members.len() > 1)
         {
-            return Some("it is in a squad");
+            return Some((JoinCode::InSquad, "it is in a squad"));
         }
         if self.pool_for_sessions([who.session_id]) != Some(QueuePool::GrowingRoster) {
-            return Some("its game does not join matches being played");
+            return Some((
+                JoinCode::Outdated,
+                "its game does not join matches being played",
+            ));
         }
         if self.would_refuse_outdated(who) {
-            return Some("its game is outdated");
+            return Some((JoinCode::Outdated, "its game is outdated"));
         }
         None
     }
 
+    /// Why a running match takes no player now, when
+    /// [`Core::late_admission`] says it does not: the rule's first point.
+    /// A match of rosters that do not grow, or of fixed teams, never does;
+    /// otherwise the match server's word on it tells a match too near its
+    /// end, one not in play yet and one in play with time left, which
+    /// admits nobody while a joiner is on its way in.
+    fn not_admitting(&self, running: &Running, now: Instant) -> Refusal {
+        if running.pool != QueuePool::GrowingRoster || running.fixed_teams {
+            return (JoinCode::NoLateJoiners, "it takes no late joiners");
+        }
+        let ticket = running.ticket.match_id;
+        if self.host.admission_remaining(ticket, now).is_some() {
+            return (JoinCode::EndsSoon, "it ends too soon");
+        }
+        match self.host.live(ticket, now) {
+            None => (JoinCode::Unknown, "it does not admit players now"),
+            Some(live)
+                if live
+                    .time_left
+                    .is_some_and(|left| left <= policy::JOIN_CUTOFF) =>
+            {
+                (JoinCode::EndsSoon, "it ends too soon")
+            }
+            Some(live) if live.played.is_none() => (JoinCode::NotStarted, "it is not in play yet"),
+            Some(_) => (
+                JoinCode::AnotherJoining,
+                "it admits nobody now (a joiner on its way in)",
+            ),
+        }
+    }
+
+    /// When the maintenance starts (Unix seconds), while the maintenance
+    /// rule is in force: one is planned and it is [`MAINTENANCE_WINDOW`]
+    /// minutes away or less (0 once its time has come).
+    fn maintenance_near(&self) -> Option<u64> {
+        let minutes = self.store.minutes_to_maintenance()?;
+        (minutes <= MAINTENANCE_WINDOW)
+            .then(|| self.store.maintenance_at())
+            .flatten()
+    }
+
     /// Whether `who` may join the running match `id` now, and where it
-    /// would go: the module's rule. A place held for `who` itself is no
-    /// other player's.
+    /// would go: the module's rule, its reasons checked in the module's
+    /// order. A place held for `who` itself is no other player's.
     pub(super) fn join_fit(
         &self,
         who: &Who,
@@ -197,54 +289,92 @@ impl Core<'_> {
         running: &Running,
         now: Instant,
     ) -> Result<Fit, Refusal> {
-        let ticket = running.ticket.match_id;
-        if self.late_admission(running, now).is_none() {
-            return Err((JoinResult::Gone, "it does not admit players now"));
+        if let Some(refusal) = self.cannot_join(who) {
+            return Err(refusal);
         }
-        if let Some(why) = self.cannot_join(who) {
-            return Err((JoinResult::Busy, why));
+        let ticket = running.ticket.match_id;
+        let Some(remaining) = self.late_admission(running, now) else {
+            return Err(self.not_admitting(running, now));
+        };
+        if self.is_held(ticket, Some(who.account_id), now) {
+            return Err((
+                JoinCode::AnotherJoining,
+                "a place is held in it for another player",
+            ));
         }
         let Some(formed) = self.store.matchmaking().formed_match(id) else {
-            return Err((JoinResult::Gone, "the queue has no such match"));
+            return Err((JoinCode::Unknown, "the queue has no such match"));
         };
         if formed
             .seats
             .iter()
             .any(|seat| seat.player.account_id == who.account_id)
         {
-            return Err((JoinResult::Busy, "it had a place in this match"));
-        }
-        if self.is_held(ticket, Some(who.account_id), now) {
-            return Err((JoinResult::Full, "a place is held in it for another player"));
+            return Err((JoinCode::HadPlace, "it had a place in this match"));
         }
         let level = self.level_of(who.account_id, quests::now());
         let strength = self.strength_of(who.account_id, level);
         let live = self.host.live(ticket, now);
         let (sides, rule) = self.late_rule(running, live.as_ref());
+        let worth = Worth {
+            players: 1,
+            strength: i64::from(strength),
+        };
+        let fit = |placement: LatePlacement, maintenance: bool| {
+            let team = placement.assignments.first().map_or(0, |(_, team)| *team);
+            Fit {
+                placement,
+                team,
+                strength,
+                lead: rule.lead,
+                dramatic: rule.dramatic,
+                maintenance,
+            }
+        };
+        if let Some(maintenance_at) = self.maintenance_near() {
+            // When its time limit ends it, in whole seconds rounded up.
+            let ends =
+                quests::now() + remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+            if ends + MAINTENANCE_MARGIN.as_secs() > maintenance_at {
+                return Err((
+                    JoinCode::AfterMaintenance,
+                    "it ends after the maintenance starts, maintenance rule",
+                ));
+            }
+            let Some(placement) = policy::place_weaker(sides, worth, &rule) else {
+                return Err((
+                    JoinCode::NoPlace,
+                    "its weaker side is full or it has no room, maintenance rule",
+                ));
+            };
+            return Ok(fit(placement, true));
+        }
         let joiner = Joiner {
-            worth: Worth {
-                players: 1,
-                strength: i64::from(strength),
-            },
+            worth,
             waited_out: false,
         };
         let Some(placement) = policy::place_late(sides, &[joiner], &rule) else {
-            return Err((JoinResult::Full, "no side takes it now"));
+            // A joiner who had waited out its patience would go in: it is
+            // the rule that keeps an even match even that says no.
+            let waited = Joiner {
+                waited_out: true,
+                ..joiner
+            };
+            if policy::place_late(sides, &[waited], &rule).is_some() {
+                return Err((
+                    JoinCode::Balanced,
+                    "the sides would count less alike with it",
+                ));
+            }
+            return Err((JoinCode::NoPlace, "no side takes it now"));
         };
         if placement.apart_after.abs() >= placement.apart_before.abs() {
             return Err((
-                JoinResult::Full,
+                JoinCode::Balanced,
                 "the sides would count no more alike with it",
             ));
         }
-        let team = placement.assignments.first().map_or(0, |(_, team)| *team);
-        Ok(Fit {
-            placement,
-            team,
-            strength,
-            lead: rule.lead,
-            dramatic: rule.dramatic,
-        })
+        Ok(fit(placement, false))
     }
 
     /// The match the lobby made whose players are sent to it with
@@ -294,9 +424,9 @@ impl Core<'_> {
             .listing
             .match_of(key)
             .and_then(|match_id| Some((match_id, self.running_of(match_id)?)));
-        let (result, said) = match target {
+        let (code, said) = match target {
             None => (
-                JoinResult::Gone,
+                JoinCode::Unknown,
                 format!(
                     "{}: JOIN key {key}: gone (no match this lobby made and runs has it)",
                     who.name
@@ -304,12 +434,12 @@ impl Core<'_> {
             ),
             Some((match_id, id)) => {
                 let fit = self.join_fit(who, id, &self.matches[&id], now);
-                let (result, why) = match &fit {
-                    Ok(fit) => (JoinResult::Ok, format!(" (team {})", fit.team)),
-                    Err((result, why)) => (*result, format!(" ({why})")),
+                let (code, why) = match &fit {
+                    Ok(fit) => (JoinCode::Yes, format!(" (team {}{})", fit.team, fit.by())),
+                    Err((code, why)) => (*code, format!(" ({why}; code {})", *code as u8)),
                 };
                 let sides = self.join_sides(id, fit.as_ref().ok(), now);
-                if result == JoinResult::Ok {
+                if code == JoinCode::Yes {
                     self.holds.insert(
                         who.account_id,
                         Hold {
@@ -320,17 +450,17 @@ impl Core<'_> {
                     );
                 }
                 (
-                    result,
+                    code,
                     format!(
                         "{}: JOIN match {match_id:#x} (key {key}): {}{why}{sides}",
                         who.name,
-                        result.word()
+                        code.result().word()
                     ),
                 )
             }
         };
         log::info!("{said}");
-        self.send_made(who.addr, lobby::join_answer(result, key));
+        self.send_made(who.addr, lobby::join_answer(code, key));
     }
 
     /// Play from a player with a place held for its JOIN (`hold`, live):
@@ -355,7 +485,8 @@ impl Core<'_> {
         };
         let fit = match self.join_fit(who, id, &self.matches[&id], now) {
             Ok(fit) => fit,
-            Err((_, why)) => {
+            Err((code, why)) => {
+                let why = format!("{why}; code {}", code as u8);
                 let sides = self.join_sides(id, None, now);
                 log::info!(
                     "{}: Play with a place held in match {match_id:#x} (key {key}): refused \
@@ -394,16 +525,18 @@ impl Core<'_> {
         if !admitted {
             log::info!(
                 "{}: Play with a place held in match {match_id:#x} (key {key}): refused (the \
-                 match server did not take it){sides}; not queued",
-                who.name
+                 match server did not take it{}){sides}; not queued",
+                who.name,
+                fit.by()
             );
             self.deny(who.addr, id::PLAY, JOIN_REFUSED);
             return;
         }
         log::info!(
-            "{}: Play with a place held in match {match_id:#x} (key {key}): in, team {}{sides}",
+            "{}: Play with a place held in match {match_id:#x} (key {key}): in, team {}{}{sides}",
             who.name,
-            fit.team
+            fit.team,
+            fit.by()
         );
         if let Some(account) = self.store.account(who.account_id) {
             account.locked().play = Some(player);

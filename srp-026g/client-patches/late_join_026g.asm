@@ -146,7 +146,7 @@ query_players:
     ret
 
 times 576-($-$$) db 0xcc
-; The camera's projection (patch 21; 0x242900, slot 0 of every camera's
+; The camera's projection (patch 22; 0x242900, slot 0 of every camera's
 ; vtable) jumps here at its first instruction. ecx = the camera, [esp+4] =
 ; the matrix to fill, [esp+8] = the viewport's size; `ret 8`, eax = the
 ; matrix, as the original. The original passes the matrix builder 0xEEE30

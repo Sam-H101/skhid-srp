@@ -8,8 +8,9 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `1953321ca045718c2e7411f0442dbee0394e2c808a5d53a0cc076e880f606d0c` (patch revision 11); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `29e8269344c0b46ae384e97ce9c0a3639f1eba4ea95307b308bded44133e1200`. Revision 10 was `c43bfd8a…f85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
-| Revision 5 to 11 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen, and patch 20: a spawn gives the new kit's weapons the time of their last tick, and at a change of kit the fire mode, ammunition, chamber, aim and recoil, a new weapon has, where those were what the kit's last life left in the games that played it; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. Revision 11 adds patch 21, a field-of-view setting (the video options' slider bound to `uro_fov`, which the camera follows, a scope's view staying the original's); a camera is not in what a match computes, so it is expected to play with 10, and a server need not ask for it. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet; 11 is not either.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `3943fe6ebc2c3dc3788d3533401766fc7e79c856d235d520ce8e93ed54de1146` (patch revision 11); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `8aea6cb41e3df47c6568ea51f593fc0bd76410285c3367cb13aa5db4aa0e3d43`. Revision 10 was `c43bfd8a…ef85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen, and patch 20: a spawn gives the new kit's weapons the time of their last tick, and at a change of kit the fire mode, ammunition, chamber, aim and recoil, a new weapon has, where those were what the kit's last life left in the games that played it; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
+| Revision 11 | Revision 10 with patch 21: Team Deathmatch's death handler counts a death after the rule's own end (match.md section 28; below), and patch 22, a field-of-view setting (the video options' slider bound to `uro_fov`, which the camera follows, a scope's view staying the original's; a camera is not in what a match computes). With patch 21 alone, made as the download is (`--server=skhid.link:1234`) it was `b728a80c62a8da6b0dca46de55236d1e7c4b010190f9c0fddf884e0c998d6ece`, without a server `985ca3410f024a9e391a8f6fd5750295d6c0add8185fc244245c15371400b75a`; both differ from revision 10 made the same way in six bytes (file 0x3054F1), the revision byte and the PE checksum, and in nothing else (compared byte by byte). It does not play with 10 or before (they part at the first death after a team is out), so **a server asks for 11 (`SRP_MIN_PATCH_REVISION=11`), put up with the ZIP**. **Not in a download yet.** The handler was run outside the game (`run_tdm_rule.ps1`); a game was not |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -33,7 +34,7 @@ published.
 | `late_join_026g.section.bin`, `late_join_026g.section.json` | That code built, which `patch_026g.py` reads, and beside it where the C functions are that the assembly calls and what built it (gcc 13.2.0, GNU ld 2.41.90, NASM 2.16.01). The same tools give the same bytes; another C compiler gives other bytes that do the same, so the file is kept, not rebuilt for a release |
 | `late_join_026g.py` | Builds those two files (`--write-bin`), says whether they are what the sources give on this machine (`--check-bin`), or builds an exe straight from the sources for work on the code. Needs nasm, a C compiler for x86 and GNU ld |
 | `check_late_join_026g.py`, `test_late_join_runtime_026g.c` | Checks of the late-join code: the first runs the patched machine code on made-up objects (needs Unicorn 2.1.4), the second the C bookkeeping under the sanitizers |
-| `check_fov_026g.py` | Runs the original and patch 21's camera projection, the game's matrix builder included, and compares the matrices (needs Unicorn) |
+| `check_fov_026g.py` | Runs the original and patch 22's camera projection, the game's matrix builder included, and compares the matrices (needs Unicorn) |
 | `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
@@ -278,7 +279,7 @@ game assets are generated locally and are not checked in.
 ## Field-of-view slider
 
 `fov_slider_026g.py` puts a "FOV:" slider under gamma in Settings →
-Graphics. The exe side is patch 21 (patch revision 11): the game's video
+Graphics. The exe side is patch 22 (patch revision 11): the game's video
 option 7, a "FOV" slider labelled `st_fov_option` in all five languages, is
 bound to `uro_fov`, which the camera follows. `Settings.as` maps the option
 to `_slider_fov`, but the stock menu places no slider for it; this build
@@ -310,7 +311,7 @@ option 7 names a console variable that does not exist. Without this
 archive, revision 11 still has the setting (`uro_fov 80` in the console or
 `user.cfg`), just no slider. `test_fov_slider.py` checks the build's
 refusals without game files. Checked live in the lobby and in a match on a
-local server (with an earlier form of patch 21): the slider shows "FOV:"
+local server (with an earlier form of patch 22): the slider shows "FOV:"
 under gamma, changes the view and is saved to `user.cfg`. Not included in release overlays.
 
 ## What each patch does
@@ -1014,7 +1015,38 @@ is in no world while he is away), the other items' own timers (artefacts,
 medkits, oxygen tanks: none differed in the saved worlds), a weapon's state
 machine and scope. Evidence: `../docs/notes/client_patch.md` section 3.20.
 
-### 21. A field-of-view setting (patch revision 11)
+### 21. Team Deathmatch's rule counts a death after its own end (patch revision 11)
+
+Seen live on 2026-10-14/15 (match.md section 28): in two matches a team ran
+out of tickets, its players died one by one and one dead player of the team
+stayed in the rule's alive mask for the rest of the match, so the match
+ran to the time limit though the team was out. The rule's death handler
+(`tdm_rule_core` event 1, 0x316090) returns at once when its completion
+time (+0x12C) is set; the end test sets it when a team has no tickets and
+no player alive; it is not serialized, so a rollback over the death that
+completed the rule leaves it set and the replay of that death is skipped
+(the same as patch 9 for the batteries).
+
+**The patch.** The `jnz` at 0x3160F1 (six bytes) after `cmp dword
+[esi+12Ch],-1` becomes six nops: every death is counted (the ticket, the
+alive mask, the respawn flag, the end test, which sets the time again,
+later). Nothing else reads the time; the match's end is the server's, which
+reads the alive mask.
+
+**Not compatible with 10 or before:** a game of 10 does not count the death
+and a game of 11 does, so they part at the first death after a team is out.
+A server asks for 11 together with the ZIP.
+
+Checked: `selftest_026g.py` check 22. `run_tdm_rule.ps1` (32-bit PowerShell)
+copies the handler, its recount and its end test out of an exe to their own
+addresses and plays two teams of two through a team's last death, a rollback
+(tickets and masks loaded, not the time) and the replay: the original and
+the build without the late join keep the dead player in the mask and count
+no later death (what the live matches showed); revision 11 clears the bit
+again and counts the later death. **Not run: a game.** Evidence:
+`../docs/notes/client_patch.md` section 3.21.
+
+### 22. A field-of-view setting (patch revision 11)
 
 The game already had most of a FOV setting. The video options' constructor
 (0x262929) makes option 7, a float slider of snap 1 labelled
@@ -1062,11 +1094,10 @@ least for a value out of range or not a number: a wrong `uro_fov` in
 `user.cfg` gives 50, as a wrong `sensitivity` gives 0.01.
 
 **Revisions.** A camera is not in what a match computes, and the 65-degree
-constant has no other reader: 10 and 11 are expected to play together, and
-a server need not ask for 11. Two games of 11 at different FOVs played one
-match (below); a game of 10 with one of 11 has not.
+constant has no other reader; two games of 11 at different FOVs played one
+match (below). Revision 11 as a whole does not play with 10 (patch 21).
 
-Checked: `selftest_026g.py` check 22 (the two sites in place and the hook in
+Checked: `selftest_026g.py` check 23 (the two sites in place and the hook in
 the original, the build and the build without the late join; the strings
 and the console variable they name; `fov_projection`'s read of uro_fov, its
 blend and constants, its call, its XMM registers and return; the original's

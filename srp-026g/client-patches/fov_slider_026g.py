@@ -5,7 +5,7 @@ Builds a NEW resources.db; the input is never modified:
 
     python fov_slider_026g.py <resources.db> <new resources.db> --ffdec <ffdec.jar>
 
-The exe side is patch 21 of patch_026g.py (patch revision 11): the game's
+The exe side is patch 22 of patch_026g.py (patch revision 11): the game's
 video option 7, a "FOV" slider, is bound to `uro_fov`, which the camera
 follows. The stock menu has no instance of that slider; this build compiles
 fov_slider/SrpFovSlider.as into main_menu.swf, which adds one below gamma.
