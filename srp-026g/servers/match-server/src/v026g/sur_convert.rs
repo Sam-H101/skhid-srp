@@ -131,6 +131,8 @@ pub struct Report {
     /// Late joiners whose install was not found in the worlds: the key
     /// frames before their entry are left out.
     pub installs_not_found: Vec<u8>,
+    /// Key frames left out because a joiner's install was not found.
+    pub dropped_unsure_key_frames: usize,
     /// Key frames given zero bytes for joiners not installed yet.
     pub padded_key_frames: usize,
     pub worlds_complete: usize,
@@ -610,6 +612,18 @@ pub fn convert(
     // world from before an install is given those bytes here, or every
     // object of the viewer reads out of step (docs/notes/replay_sur.md).
     let installs = find_installs(&chosen, &entered, initial, &mut report);
+    // A joiner whose install was not found: a key frame from before its
+    // entry may lack its objects' bytes, and is left out.
+    let unsure_until = entered
+        .keys()
+        .filter(|(_, place)| report.installs_not_found.contains(place))
+        .map(|&(time, _)| time)
+        .max();
+    if let Some(until) = unsure_until {
+        let before = times.len();
+        times.retain(|&time| time == first_world || time >= until);
+        report.dropped_unsure_key_frames = before - times.len();
+    }
     let mut frames = Vec::new();
     for &time in &times {
         // Where the reading goes on: the first record after the world's time.

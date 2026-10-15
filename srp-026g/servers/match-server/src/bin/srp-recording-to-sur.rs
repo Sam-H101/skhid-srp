@@ -138,8 +138,12 @@ fn main() -> ExitCode {
         .map(|(t, k, p)| format!("{k}{p}@{t}"))
         .collect();
     println!(
-        "late joiners: {}; installs (world ms, objects): {:?}; not found: {:?}; key frames padded: {}",
-        report.late_joiners, report.installs, report.installs_not_found, report.padded_key_frames
+        "late joiners: {}; installs (world ms, objects): {:?}; not found: {:?}; key frames padded: {}, left out: {}",
+        report.late_joiners,
+        report.installs,
+        report.installs_not_found,
+        report.padded_key_frames,
+        report.dropped_unsure_key_frames
     );
     println!("roster events: {}", roster.join(" "));
     println!("inputs per minute: {:?}", report.inputs_per_minute);
