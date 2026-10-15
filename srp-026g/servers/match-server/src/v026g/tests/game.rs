@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use std::collections::BTreeSet;
 
@@ -780,6 +781,49 @@ fn a_resync_wrong_soon_after_a_few_right_reports_is_done_again_at_once() {
         bench.clients[2].sim.salt_from = Some((loaded + 300, 7));
     }
     assert!(at[1] - at[0] < 6_000, "{at:?}");
+}
+
+/// When player 2 is resynced, `count` times: each world right for 3 s past
+/// its load, then wrong again.
+fn resyncs_after_agreed(settings: Settings, count: u32) -> Vec<u64> {
+    let mut bench = Bench::new(3, MAP_BATTERIES, settings);
+    bench.join_all();
+    settle(&mut bench);
+    bench.run(3_000);
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    let mut at = Vec::new();
+    for resyncs in 1..=count {
+        assert!(
+            bench.until(40_000, |bench| bench.game().resyncs(2) == resyncs),
+            "resync {resyncs}"
+        );
+        at.push(bench.ms);
+        assert!(bench.until(5_000, |bench| bench.clients[2].model.syncs == resyncs + 1));
+        let loaded = bench.clients[2].clock();
+        bench.clients[2].sim.salt_from = Some((loaded + 3_000, 7));
+    }
+    at
+}
+
+#[test]
+fn a_new_desync_after_a_resync_that_agreed_waits_the_short_interval() {
+    let at = resyncs_after_agreed(Settings::default(), 2);
+    let gap = at[1] - at[0];
+    assert!((5_000..8_000).contains(&gap), "{at:?}");
+    // The setting at 15 s is the old rule.
+    let mut settings = Settings::default();
+    settings.timing.resync_after_agreed = Duration::from_secs(15);
+    let at = resyncs_after_agreed(settings, 2);
+    assert!(at[1] - at[0] >= 15_000, "{at:?}");
+}
+
+#[test]
+fn a_game_resynced_four_times_in_a_minute_waits_the_whole_interval() {
+    let at = resyncs_after_agreed(Settings::default(), 5);
+    let gaps: Vec<u64> = at.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(gaps[..3].iter().all(|gap| *gap < 8_000), "{gaps:?}");
+    assert!(gaps[3] >= 15_000, "{gaps:?}");
 }
 
 #[test]
@@ -3007,7 +3051,6 @@ fn live(bench: &Bench) -> crate::v026g::LiveMatch {
 #[test]
 fn the_registry_says_how_a_match_stands_while_it_runs() {
     use crate::v026g::{LiveMatch, LivePhase, LiveStanding};
-    use std::time::Duration;
     use survarium::v026g::match_msgs::snapshot::Tdm;
     let mut bench = Bench::new(3, MAP_TDM, Settings::default());
     // Made, and no client has come: the whole roster is expected, by team
