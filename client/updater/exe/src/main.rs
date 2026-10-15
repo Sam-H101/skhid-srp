@@ -416,10 +416,11 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Err(message) => return Done::Failed(message),
     };
     let done = overlay(session, layout, &server);
-    // The resource step is best effort: whatever it does, the overlay's
-    // result stands. It runs at every start the game may be played after,
-    // and with the server only when the server answered. When this updater
-    // or the launcher was replaced, the new ones start at once and do it.
+    // The resource step is best effort unless its plan is required: then
+    // it must be in place before the game is played. It runs at every start
+    // the game may be played after, and with the server only when the
+    // server answered. When this updater or the launcher was replaced, the
+    // new ones start at once and do it.
     let server = match &done {
         Done::UpToDate | Done::Installed { restart: false } => Some(&server),
         Done::Offline(_) => None,
@@ -431,8 +432,13 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         }
         Done::Stopped | Done::Failed(_) => return done,
     };
-    resources::run(session, layout, server, read_installed(layout).as_ref());
-    done
+    // A required plan (it grows the game's resources.db) that is not in
+    // place keeps PLAY off: a new exe with an old db crashes.
+    match resources::run(session, layout, server, read_installed(layout).as_ref()) {
+        resources::Outcome::Ready => done,
+        resources::Outcome::Stopped => Done::Stopped,
+        resources::Outcome::Blocked(message) => Done::Failed(message),
+    }
 }
 
 /// The overlay: the Skhid files of the server's archive (and the original
