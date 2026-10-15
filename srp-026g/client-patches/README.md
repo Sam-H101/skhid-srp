@@ -37,6 +37,7 @@ published.
 | `check_fov_026g.py` | Runs the original and patch 22's camera projection, the game's matrix builder included, and compares the matrices (needs Unicorn) |
 | `pickup_below_026g.asm`, `pickup_below_026g.section.bin` | The source of patch 23's code and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_pickup_below_026g.py` | Runs the original and patch 23's use scan on made-up ray hits (needs Unicorn) |
+| `replay_seek_026g.asm`, `replay_seek_026g.section.bin` | The source of patch 26's code (a replay's seek empties the weapons' sound queues) and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
@@ -1149,6 +1150,35 @@ scan on made-up hits (it says nothing about what the real collision world
 returns). Run in a game (2026-10-15, two games on Keln): a battery stuck
 under the floor was picked up, with a test build that called the base
 `get_transform` directly. **Not run:** this revision's exe; Windows.
+
+### 24 to 26. The replay viewer (patch revision 11)
+
+Three fixes for watching a `.sur` replay (`../docs/notes/replay_sur.md`). None
+of them changes what a match computes, so they have no revision of their own.
+`../docs/notes/client_patch.md` section 3.24 has the details.
+
+- **24. The camera follows its player into another kit.** In first or third
+  person, the replay died at the watched player's first respawn into another
+  kit. The replay client's "is this place mine" slot now points at a thunk
+  in int3 padding (0x242A69) that answers "the place the camera is on", so
+  the camera re-attaches as a live game's does.
+- **25. A weapon with a full sound queue drops the new sound.** A weapon's
+  delayed sounds (64 items) asserted when full, which killed a replay about
+  50 s after a seek. A cave in int3 padding (0x835A20) checks for a full
+  queue and takes the game's own drop exit. This is in live games too, where
+  a full queue also killed the game.
+- **26. A replay's seek empties the weapons' sound queues.** After a seek,
+  sounds waited behind the old timeline's (late reloads) and the
+  re-simulated ones came all at once. At a user seek, `seek_clear`
+  (`replay_seek_026g.asm` at `.srp`+A00h) empties every client weapon's queue
+  and fx history as the weapon's destructor does. A live game never runs
+  the seek.
+
+Checked: `selftest_026g.py` (`test_replay_reattach`, `test_sound_queue`,
+`test_seek_clear`); `check_late_join_026g.py` runs the seek's end on made-up
+places, kits and weapons. Run in a game (2026-10-15, the replay of a 10-player
+match, first person, with seeks back and forth): no crash past the old crash
+points, sounds on time after seeks.
 
 ## Not ported, not done
 

@@ -1768,6 +1768,110 @@ def first_world_fails(original, changed):
         raise AssertionError(f"first_world passes with {name}")
 
 
+SEEK_GAME, SEEK_WORLD, SEEK_OBJECTS = 0x4200000, 0x4210000, 0x4240000
+CLIENT_WEAPON_ITEM_VTABLE = 0xA0422C
+
+
+def seek_tail(data, places, user_seek=True, target=725000):
+    """The end of the replay's seek (0x1EE39F..0x1EE3B5: after the clock is
+    set to the target) on a made-up game and world. `places` is a list of
+    three kits each, a kit None or a list of 23 slots, a slot None, "weapon"
+    (a client weapon whose queue holds a trivial functor, a functor with a
+    manager and an empty one, and whose fx history has entries) or "other"
+    (an item of another class with the same layout). Returns (the managers'
+    calls, [(queue begin, end, fx write index, fx oldest index)] of each
+    weapon or other item, the game's two stores)."""
+    machine = Machine(data)
+    uc = machine.uc
+    uc.mem_map(SEEK_GAME, 0x10000)
+    uc.mem_map(SEEK_WORLD, 0x20000)
+    uc.mem_map(SEEK_OBJECTS, 0x200000)
+    manager = SEEK_OBJECTS                              # a functor manager: cdecl (in, out, op)
+    uc.mem_write(manager, b"\xc3")
+    managers = SEEK_OBJECTS + 0x10                      # [manager table] = manager
+    machine.write(managers, manager)
+    calls = []
+
+    def visit(uc, address, size, _):
+        if address == manager:
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            calls.append((machine.read(esp + 4), machine.read(esp + 8), machine.read(esp + 12)))
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    free = SEEK_OBJECTS + 0x1000
+    machine.write(SEEK_GAME + 0x4D64, SEEK_WORLD)
+    array = SEEK_WORLD + 0x100
+    machine.write(SEEK_WORLD + 0x18650, array)
+    machine.write(SEEK_WORLD + 0x18654, array + 0x30 * len(places))
+    items = []
+    for p, kits in enumerate(places):
+        for k, slots in enumerate(kits):
+            if slots is None:
+                machine.write(array + 0x30 * p + 4 * k, 0)
+                continue
+            player, inventory = free, free + 0x200
+            free += 0x400
+            machine.write(array + 0x30 * p + 4 * k, player)
+            machine.write(player + 0x10C, inventory)
+            for s, kind in enumerate(slots):
+                if kind is None:
+                    machine.write(inventory + 0x10C + 4 * s, 0)
+                    continue
+                weapon = free
+                free += 0x2000
+                item = weapon + 0x10
+                machine.write(inventory + 0x10C + 4 * s, item)
+                machine.write(item, CLIENT_WEAPON_ITEM_VTABLE if kind == "weapon" else 0xA04174)
+                begin = weapon + 0xA08
+                for i, functor in enumerate((0xA0B860 | 1, managers, 0)):
+                    machine.write(begin + 0x38 * i, functor)
+                machine.write(weapon + 0x9FC, begin)
+                machine.write(weapon + 0xA00, begin + 3 * 0x38)
+                machine.write(weapon + 0xA04, begin + 64 * 0x38)
+                machine.write(weapon + 0x828, 7)
+                machine.write(weapon + 0x82C, 2)
+                items.append(weapon)
+    uc.reg_write(UC_X86_REG_ESI, SEEK_GAME)
+    uc.reg_write(UC_X86_REG_EDI, target)
+    uc.reg_write(UC_X86_REG_EBX, 0x12345600 | (0 if user_seek else 1))
+    uc.reg_write(UC_X86_REG_EBP, 0x5EED)
+    uc.reg_write(UC_X86_REG_ESP, STACK)
+    uc.emu_start(0x1EE39F, 0x1EE3B5, count=200000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x1EE3B5
+    assert uc.reg_read(UC_X86_REG_ESP) == STACK
+    assert (uc.reg_read(UC_X86_REG_ESI), uc.reg_read(UC_X86_REG_EDI), uc.reg_read(UC_X86_REG_EBP)) == \
+        (SEEK_GAME, target, 0x5EED)
+    state = [(machine.read(w + 0x9FC), machine.read(w + 0xA00), machine.read(w + 0x828), machine.read(w + 0x82C))
+             for w in items]
+    return calls, items, state, (machine.read(SEEK_GAME + 0x4EC), machine.read(SEEK_GAME + 0x57C))
+
+
+def seek_clear(original, changed):
+    """A replay's user seek empties every client weapon's delayed sounds and
+    fx history (patch_026g.py, SEEK_CLEAR_HOOK) as ~weapon does, and touches
+    nothing else; a key frame in play (bl = 1) and the original leave them."""
+    weapon_slots = ["weapon", None, "other"] + [None] * 17 + ["weapon", None, "weapon"]
+    layouts = ([], [[None, None, None]], [[weapon_slots, None, ["other"] + [None] * 22]],
+               [[weapon_slots, weapon_slots, weapon_slots]] * 3 + [[None, weapon_slots, None]] * 17)
+    for places in layouts:
+        for data, user_seek in ((changed, True), (changed, False), (original, True)):
+            calls, items, state, stores = seek_tail(data, places, user_seek)
+            assert stores == ((725000 - 1000, 725000 - 1000) if user_seek else (0, 0)), stores
+            cleared = data is changed and user_seek
+            kinds = [kind for kits in places for slots in kits if slots for kind in slots if kind]
+            assert len(kinds) == len(items)
+            for kind, weapon, (begin, end, write, oldest) in zip(kinds, items, state):
+                if cleared and kind == "weapon":
+                    assert (begin, end, write, oldest) == (weapon + 0xA08, weapon + 0xA08, 2, 2)
+                else:
+                    assert (begin, end, write, oldest) == (weapon + 0xA08, weapon + 0xA08 + 3 * 0x38, 7, 2)
+            # The one functor with a manager is destroyed (op 2, on its own
+            # storage), once per cleared weapon; nothing is invoked.
+            expected = [(w + 0xA08 + 0x38 + 8,) * 2 + (2,) for kind, w in zip(kinds, items) if kind == "weapon"] \
+                if cleared else []
+            assert calls == expected, (calls, expected)
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -1791,6 +1895,7 @@ def check(original, nasm):
     kit_state_fails(original, changed)
     first_world(original, changed)
     first_world_fails(original, changed)
+    seek_clear(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1832,7 +1937,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); the new kit's weapons' kept state at a spawn: the time of the last tick at every spawn, the fire mode, ammunition, chamber, aim and recoil at a change of kit, alike in a game that played the kit and one that loaded a world, nothing else changed (and the original and five broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); the new kit's weapons' kept state at a spawn: the time of the last tick at every spawn, the fire mode, ammunition, chamber, aim and recoil at a change of kit, alike in a game that played the kit and one that loaded a world, nothing else changed (and the original and five broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); a replay's user seek empties every client weapon's sound queue and fx history as ~weapon does, a key frame in play and the original do not; ABI; PE checksum and certificate")
 
 
 def main():

@@ -266,6 +266,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.pickup_bin(), "rb").read(),
           f"{os.path.basename(P.pickup_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SEEK_CLEAR_VA:#x}",
+                        os.path.join(HERE, "replay_seek_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.seek_clear_bin(), "rb").read(),
+          f"{os.path.basename(P.seek_clear_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -916,7 +923,11 @@ def late_join_sites():
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
         [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1])),
-         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1])), (P.TDM_DEATHS[0], len(P.TDM_DEATHS[1]))] + \
+         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1])), (P.TDM_DEATHS[0], len(P.TDM_DEATHS[1])),
+         (P.REPLAY_REATTACH_THUNK[0], len(P.REPLAY_REATTACH_THUNK[1])),
+         (P.SOUND_QUEUE_CAVE_SITE[0], len(P.SOUND_QUEUE_CAVE_SITE[1])),
+         (P.SOUND_QUEUE_HOOK[0], len(P.SOUND_QUEUE_HOOK[1])),
+         (P.SEEK_CLEAR_HOOK[0], len(P.SEEK_CLEAR_HOOK[1]))] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites()
 
 
@@ -1625,6 +1636,172 @@ def test_first_load(original, image, before):
           "two calls" + "".join(f"\n          {a:#x}" for a in found))
 
 
+def test_replay_reattach(original, image, before):
+    """A replay's camera follows its player into another kit (patch
+    revision 11, REPLAY_REATTACH): replay_network_client's slot +0x54 is
+    a thunk to is_player_current 0x242A40 in that function's int3 padding;
+    the build without the late join keeps both."""
+    stock = Image(original)
+    va, old, new = P.REPLAY_REATTACH_THUNK
+    slot, slot_old, slot_new = P.REPLAY_REATTACH_SLOT
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new,
+          f"{va:#x}: seven int3 in the original and the build without the late join, the thunk in this one")
+    rows = [text for _, _, text in ndisasm(image.read(va, len(new)), va)]
+    check(rows == ["mov eax,ecx", "jmp 0x242a40"], f"{va:#x}: `mov eax,ecx` / `jmp 0x242a40`: {rows}")
+    target = [text for _, _, text in ndisasm(stock.read(0x242A40, 0x29), 0x242A40)]
+    check(target == ["mov eax,[eax+0x4]", "test eax,eax", "jz 0x242a64", "mov ecx,0x119190", "test ecx,ecx",
+                     "jz 0x242a64", "mov dl,[eax+0x114]", "cmp dl,[esp+0x4]", "jnz 0x242a64", "mov eax,0x1",
+                     "ret 0x4", "xor eax,eax", "ret 0x4"],
+          "is_player_current 0x242A40: the client in eax, the attached player at +4, its place (+0x114) against "
+          "the one pushed, `ret 4`; the padding after it is the thunk's")
+    # Nothing aims into the padding: rel8 and rel32 branch bytes of .text,
+    # and 4-byte values anywhere in the file.
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    inside = lambda target: va <= target < va + len(old)
+    hits = []
+    for at in range(va - P.TEXT_VA - 0x90, va - P.TEXT_VA + len(old) + 0x90):
+        op = text[at]
+        if (op == 0xEB or 0x70 <= op <= 0x7F or 0xE0 <= op <= 0xE3) and inside(P.TEXT_VA + at + 2 + struct.unpack_from("<b", text, at + 1)[0]):
+            hits.append(f"{P.TEXT_VA + at:#x} rel8")
+    for opcode, size in ((bytes([0xE8]), 5), (bytes([0xE9]), 5), (bytes([0x0F]), 6)):
+        at = text.find(opcode)
+        while at != -1:
+            if at + size <= len(text) and (size == 5 or 0x80 <= text[at + 1] <= 0x8F):
+                target = (P.TEXT_VA + at + size + struct.unpack_from("<i", text, at + size - 4)[0]) & 0xFFFFFFFF
+                if inside(target):
+                    hits.append(f"{P.TEXT_VA + at:#x} rel32")
+            at = text.find(opcode, at + 1)
+    for target in range(va, va + len(old)):
+        if original.find(struct.pack("<I", target)) != -1:
+            hits.append(f"{target:#x} as a value")
+    check(not hits, "no branch bytes or pointer values aim into the padding" + "".join(", " + h for h in hits))
+    check(stock.read(slot, 4) == slot_old and before.read(slot, 4) == slot_old and image.read(slot, 4) == slot_new,
+          f"{slot:#x}: 0x54e10 (`xor al,al` / `ret 4`) in the original and the build without, {va:#x} in this one")
+    check([text for _, _, text in ndisasm(stock.read(0x54E10, 5), 0x54E10)] == ["xor al,al", "ret 0x4"],
+          "0x54E10 is `xor al,al` / `ret 4`")
+    check(rtti_name(stock, 0x9FF344)[0] == ".?AVreplay_network_client@survarium@@",
+          "the vtable at 0x9FF344 is replay_network_client's")
+    relocated = lambda img: [rva for kind, rva in img.relocations().values() if kind == 3 and rva == slot]
+    check(relocated(stock) and relocated(image), f"the slot {slot:#x} keeps its base relocation")
+    under = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not under, "no base relocation under the thunk")
+
+
+def branches_into(original, lo, hi):
+    """Where .text's rel8/rel32 branch bytes, or 4-byte values anywhere in
+    the file, aim into lo..hi-1."""
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    inside = lambda target: lo <= target < hi
+    hits = []
+    for at in range(lo - P.TEXT_VA - 0x90, hi - P.TEXT_VA + 0x90):
+        op = text[at]
+        if (op == 0xEB or 0x70 <= op <= 0x7F or 0xE0 <= op <= 0xE3) and inside(P.TEXT_VA + at + 2 + struct.unpack_from("<b", text, at + 1)[0]):
+            hits.append(f"{P.TEXT_VA + at:#x} rel8")
+    for opcode, size in ((bytes([0xE8]), 5), (bytes([0xE9]), 5), (bytes([0x0F]), 6)):
+        at = text.find(opcode)
+        while at != -1:
+            if at + size <= len(text) and (size == 5 or 0x80 <= text[at + 1] <= 0x8F):
+                target = (P.TEXT_VA + at + size + struct.unpack_from("<i", text, at + size - 4)[0]) & 0xFFFFFFFF
+                if inside(target):
+                    hits.append(f"{P.TEXT_VA + at:#x} rel32")
+            at = text.find(opcode, at + 1)
+    for target in range(lo, hi):
+        if original.find(struct.pack("<I", target)) != -1:
+            hits.append(f"{target:#x} as a value")
+    return hits
+
+
+def test_sound_queue(original, image, before):
+    """A weapon's full sound queue drops the new sound (patch revision 11,
+    SOUND_QUEUE): delayed_callbacks_queue::add 0x2454A0 jumps after its
+    drain to a cave in int3 padding, which goes to the game's own drop exit
+    when the queue is full; the build without the late join keeps both."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    for va, old, new in (P.SOUND_QUEUE_HOOK, P.SOUND_QUEUE_CAVE_SITE):
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(new)) == new,
+              f"{va:#x}: the original's bytes in the original and the build without the late join, the new ones in this one")
+    check(rows(image, P.SOUND_QUEUE_HOOK_VA, 5) == ["jmp 0x835a20"], "0x2454C1: `jmp 0x835a20`")
+    check(rows(image, P.SOUND_QUEUE_CAVE_VA, len(P.SOUND_QUEUE_CAVE)) ==
+          ["mov ecx,[esi+0x4]", "cmp ecx,[esi+0x8]", "jnc 0x835a2f", "mov eax,[esi]", "jmp 0x2454c6", "jmp 0x24569a"],
+          "the cave: the queue's end against its capacity end; full -> 0x24569A, else the two instructions and back")
+    start, size = P.SOUND_QUEUE_PADDING
+    run = stock.read(start - 1, size + 2)
+    check(run[0] == 0xC3 and run[1:-1] == bytes.fromhex("cc") * size and run[-1] == 0x55
+          and start <= P.SOUND_QUEUE_CAVE_VA and P.SOUND_QUEUE_CAVE_VA + len(P.SOUND_QUEUE_CAVE) <= start + size,
+          "the cave lies in 42 int3 between a `ret` and a `push ebp`")
+    check(rows(stock, 0x2454B0, 0x18) == ["mov esi,[esp+0x19c]", "push edi", "push ebx", "push esi", "mov edi,eax",
+                                          "call 0x245860", "mov eax,[esi]", "mov ecx,[esi+0x4]", "xor edx,edx"],
+          "add: esi = the queue, its drain (which takes its two arguments off), then the queue's begin and end")
+    between = rows(stock, 0x2454C6, 0x2454F7 - 0x2454C6)
+    check(between[-1] == "jnz near 0x245691" and not [r for r in between if ("push" in r or "pop" in r or "esp," in r) and r != "lea esp,[esp+0x0]"],
+          "no push, pop or esp change (but a `lea esp,[esp+0]` filler) from 0x2454C6 to the chain branch: 0x245691 and 0x24569A have the hook's esp")
+    check(rows(stock, 0x245691, 0x9) == ["cmp edx,[esp+0x1a4]", "jna 0x2456e1"],
+          "0x245691: chain length against the cap; past it falls into 0x24569A")
+    check(rows(stock, 0x24569A, 0xC) == ["mov edi,[esp+0x1ac]", "cmp dword [edi],byte +0x0", "jnz 0x2456c0"]
+          and rows(stock, 0x2456C0, 0x14) == ["mov eax,[edi]", "push byte +0x0", "and eax,byte -0x2",
+                                              "mov ecx,[eax+0x4]", "push ebx", "add edi,byte +0x8", "push edi",
+                                              "call ecx", "add esp,byte +0xc"],
+          "0x24569A: the functor from the frame, called with flag 0")
+    check(rows(stock, 0x2456D4, 0xD) == ["pop edi", "pop esi", "pop ebp", "pop ebx", "add esp,0x18c", "ret 0x18"],
+          "then add's own epilogue, `ret 18h`")
+    check(rows(stock, 0x297E20, 0xD) == ["push ebp", "mov ebp,esp", "and esp,byte -0x8", "sub esp,byte +0x74",
+                                         "cmp byte [ebp+0x14],0x0"],
+          "the sound player 0x297E20 looks at its flag first")
+    check(rows(stock, 0x245AD5, 0x9) == ["mov eax,[ebx+0x4]", "push esi", "cmp eax,[ebx+0x8]", "jc 0x245b33"],
+          "push_back 0x245AD0 asserts on the same two fields, end against capacity end")
+    hits = branches_into(original, P.SOUND_QUEUE_HOOK_VA + 1, P.SOUND_QUEUE_HOOK_VA + 5) + \
+        branches_into(original, start, start + size)
+    check(not hits, "no branch bytes or pointer values aim inside the hook or into the padding" + "".join(", " + h for h in hits))
+    for va, old, _ in (P.SOUND_QUEUE_HOOK, P.SOUND_QUEUE_CAVE_SITE):
+        under = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+        check(not under, f"no base relocation under {va:#x}")
+
+
+def test_seek_clear(original, image, before):
+    """A replay's user seek empties every client weapon's delayed sounds
+    (patch revision 11, SEEK_CLEAR_HOOK): the site, that only the replay
+    reaches it, and seek_clear as the image has it. check_late_join_026g.py
+    runs it on made-up places, kits and weapons."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    va, old, offset, _ = P.SEEK_CLEAR_HOOK
+    cave = P.SEEK_CLEAR_VA + offset
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and rows(image, va, 6) == [f"jmp {cave:#x}", "nop"],
+          f"{va:#x}: `lea eax,[edi-0x3e8]` in the original and the build without the late join, `jmp {cave:#x}` here")
+    check(rows(stock, 0x1EE2E0, 6) == ["mov eax,[esi+0x53c8]"],
+          "the seek 0x1EE2E0 starts from the replay reader [game+53C8h]")
+    check(rows(stock, 0x1EE38B, 0x2A) == ["call 0x1ee4a0", "push edi", "push esi", "call 0x1edef0", "push edi",
+                                          "mov eax,esi", "call 0x1ee4a0", "test bl,bl", "jnz 0x1ee3b5",
+                                          "lea eax,[edi-0x3e8]", "mov [esi+0x4ec],eax", "mov [esi+0x57c],eax"],
+          "set_time_in_ms(key frame), the re-simulation, set_time_in_ms(target), then a user seek's own part")
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    callers = []
+    for opcode in (0xE8, 0xE9):
+        at = text.find(bytes([opcode]))
+        while at != -1:
+            if at + 5 <= len(text) and (P.TEXT_VA + at + 5 + struct.unpack_from("<i", text, at + 1)[0]) & 0xFFFFFFFF == 0x1EE2E0:
+                callers.append(P.TEXT_VA + at)
+            at = text.find(bytes([opcode]), at + 1)
+    check(sorted(callers) == [0x1EF8C0, 0x233E2F],
+          "the seek's only callers: the replay seek functor 0x1EF8C0 and the replay movie's slider 0x233E2F")
+    check(original.count(struct.pack("<I", 0xA0422C)) == 2 and rows(stock, 0x24365C, 7) == ["mov dword [ebx+0x10],0xa0422c"],
+          "0xA0422C, the client weapon's item vtable, is written by its constructor (and destructor) alone")
+    check(rows(stock, 0x2438BC, 0x1A)[:6] == ["mov eax,[esi+0x9fc]", "lea edi,[esi+0xa00]", "push edi",
+                                              "call 0x245c50", "mov edx,[esi+0x9fc]", "mov [edi],edx"],
+          "~weapon empties the queue as seek_clear does: 0x245C50 on begin..&end, then end = begin")
+    hits = branches_into(original, va + 1, va + len(old))
+    check(not hits, "no branch bytes or pointer values aim inside the hook" + "".join(", " + h for h in hits))
+    under = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not under, f"no base relocation under {va:#x}")
+    code = rows(image, cave, 0x97)
+    check(code[:3] == ["pusha", f"call {cave + 6:#x}", "pop ebp"]
+          and code[3] == f"add ebp,{(0xA0422C - (cave + 6)) & 0xFFFFFFFF:#x}"
+          and "call 0x245c50" in code and code[-3:] == ["popa", "lea eax,[edi-0x3e8]", "jmp 0x1ee3a9"],
+          "seek_clear: the vtable found relative to itself, 0x245C50 for the functors, the lea and back to 0x1EE3A9")
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -1646,14 +1823,18 @@ def test_late_join(original, without, server, source):
           f".srp: virtual {vsize:#x} = one page and the {len(code)} bytes of late-join code, file {raw:#x}+{rsize:#x}")
     body = bytes(data[raw:raw + rsize])
     pickup = open(P.pickup_bin(), "rb").read()
+    seek = open(P.seek_clear_bin(), "rb").read()
     check(body[:len(first_page)] == first_page
           and set(body[len(first_page):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
-          and set(body[P.PICKUP_OFFSET + len(pickup):P.LATE_JOIN_OFFSET]) <= {0xCC}
+          and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
+          and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"pickup code at +{P.PICKUP_OFFSET:#x}, the code follows, then int3 padding")
+          f"pickup code at +{P.PICKUP_OFFSET:#x} and the seek code at +{P.SEEK_CLEAR_OFFSET:#x}, "
+          f"the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
           and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
@@ -1680,6 +1861,7 @@ def test_late_join(original, without, server, source):
     # Every byte before .srp's file data, against the build without.
     ranges = [(P.file_offset(va), size) for va, size in late_join_sites()]
     ranges.append((P.data_file_offset(P.CLOCK_FACTOR_VA), 4))
+    ranges.append((image.offset(P.REPLAY_REATTACH_SLOT[0]), 4))
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
@@ -1782,6 +1964,9 @@ def test_late_join(original, without, server, source):
     test_kit_state(original, image, before)
     test_first_load(original, image, before)
     test_tdm_deaths(original, image, before)
+    test_replay_reattach(original, image, before)
+    test_sound_queue(original, image, before)
+    test_seek_clear(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
