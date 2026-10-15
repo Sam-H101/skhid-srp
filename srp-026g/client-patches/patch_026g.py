@@ -279,7 +279,9 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # setting (FOV_PATCHES and FOV_PROJECTION_HOOK below): the video options'
 # slider is bound to uro_fov, from 50 to 100, which the camera's angle
 # follows unaimed; through a scope the angle is the original's. A camera is
-# not in what a match computes.
+# not in what a match computes. And a battery under the floor one stands
+# on can be picked up (PICKUP_* below): a use is in what a match computes,
+# so this too parts a game of 11 from an older one.
 REVISION = 11
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -662,6 +664,20 @@ FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
 FOV_MINIMUM_RELOC = 0x85AE0D
 FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
 
+# A battery under the floor (patch 23, pickup_below_026g.asm at
+# PICKUP_VA): client_patch.md section 3.23.
+PICKUP_OFFSET = 0x800
+PICKUP_VA = SECTION_VA + PICKUP_OFFSET
+PICKUP_ACROSS = 1.0
+PICKUP_FRAME = (0x2D84C9, bytes.fromhex("83ec34"), bytes.fromhex("83ec3c"))
+PICKUP_HOOKS = (
+    (0x2D84E9, bytes.fromhex("d905d810a700"), 0, 0xE8),          # the ray's length: reach
+    (0x2D861C, bytes.fromhex("240a3c0a744b"), 32, 0xE9),         # a wall or a floor: solid
+    (0x2D85BE, bytes.fromhex("8b45088b168b5230"), 64, 0xE9),     # a usable object: candidate
+)
+# The one address in what is replaced: the distance's, in the reach hook.
+PICKUP_RELOC = 0x2D84EB
+
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
 RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
@@ -674,10 +690,13 @@ def late_join_state_va(code):
     return (end + 0xFFF) // 0x1000 * 0x1000
 
 
+def hook_bytes(base, va, expected, offset, opcode):
+    """The bytes a hook site gets: the call or jump to base+offset and nops."""
+    return bytes([opcode]) + struct.pack("<i", base + offset - va - 5) + b"\x90" * (len(expected) - 5)
+
+
 def late_join_hook(va, expected, offset, opcode):
-    """The bytes a hook site gets: the call or jump and nops."""
-    target = LATE_JOIN_VA + offset
-    return bytes([opcode]) + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
+    return hook_bytes(LATE_JOIN_VA, va, expected, offset, opcode)
 
 HOOKS = [
     # network_client::on_match_ready, ebx = network_client: mov ebx,[ebx+1F1C48h]
@@ -988,9 +1007,20 @@ def build(original, mode, code=None, server=None, late_join=None):
         va, expected, _ = FOV_MINIMUM
         if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
             sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
+        pickup = open(pickup_bin(), "rb").read()
+        if len(cave) > PICKUP_OFFSET or PICKUP_OFFSET + len(pickup) > LATE_JOIN_OFFSET:
+            sys.exit("the upload code and the pickup code do not fit before the late join")
+        patch(data, *PICKUP_FRAME)
+        sites = [(PICKUP_FRAME[0], PICKUP_FRAME[0] + len(PICKUP_FRAME[1]))]
+        for va, expected, offset, opcode in PICKUP_HOOKS:
+            patch(data, va, expected, hook_bytes(PICKUP_VA, va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        if neutralize_relocs(data, sites) != [PICKUP_RELOC]:
+            sys.exit("the base relocations under the pickup sites are not where they were read")
 
     if mode == "section":
         if late_join is not None:
+            cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
         if late_join is not None:
@@ -1010,7 +1040,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "and the state a new weapon has where a game could not know the kit's last life, "
                      "a first world's kit choices are the world's and in time order, "
                      "a Team Deathmatch rule counts a death after its own end, "
-                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's"
+                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's, "
+                     f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across)"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1021,6 +1052,10 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
+def pickup_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "pickup_below_026g.section.bin")
 
 
 def late_join_bin():

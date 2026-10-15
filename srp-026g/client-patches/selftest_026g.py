@@ -124,6 +124,11 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     registration stores 50.0 as the least, the most stays the float 100 at
     0xA710D0; the build without the late join keeps all three; no branch or
     address aims inside the two sites rewritten in place.
+24. the same build: a battery under the floor (patch 23). The scan's
+    frame and its three hooks; the code (.srp+800h) leaves only back to the
+    scan and calls only a battery's get_transform (vtable+44h; only
+    batteries' vtables have victory_item_core::can_use at +30h); nothing
+    aims inside the four sites.
 """
 
 import ctypes
@@ -254,6 +259,13 @@ def test_bins():
                                check=True, timeout=60)
                 fresh = open(out, "rb").read()
             check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.PICKUP_VA:#x}",
+                        os.path.join(HERE, "pickup_below_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.pickup_bin(), "rb").read(),
+          f"{os.path.basename(P.pickup_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -905,7 +917,12 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
         [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1])),
          (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1])), (P.TDM_DEATHS[0], len(P.TDM_DEATHS[1]))] + \
-        [(va, len(old)) for va, old, _ in P.FOV_PATCHES]
+        [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites()
+
+
+def pickup_sites():
+    """[(address, length)] of patch 23's sites: the frame and the three hooks."""
+    return [(P.PICKUP_FRAME[0], len(P.PICKUP_FRAME[1]))] + [(va, len(old)) for va, old, _, _ in P.PICKUP_HOOKS]
 
 
 def test_late_join_bin():
@@ -1073,6 +1090,15 @@ def aimed_inside(original, va, size, near):
     return found + [va + i for i in range(1, size) if original.find(struct.pack("<I", va + i)) != -1]
 
 
+def starts_instruction(source, at):
+    """Whether `at` starts an instruction of the function around it, read
+    from the function's start (after the int3 before it)."""
+    start = at
+    while source.read(start - 1, 1) != b"\xcc" or start % 16:
+        start -= 1
+    return at in {address for address, _, _ in ndisasm(source.read(start, at - start + 16), start)}
+
+
 def test_pregame_progress(original, image, before):
     """Check 18: the hud draws the team points while a match counts down."""
     source = Image(original)
@@ -1171,7 +1197,8 @@ def test_fov(original, image, before):
     was = [text for _, _, text in ndisasm(source.read(va, rest), va)]
     calls = lambda texts: [branch_target(text) for text in texts if text.startswith("call")]
     check(calls(texts) == calls(was) == [0xEEE30] and returns(texts[-1]) == "ret 0x8"
-          and f"fld dword [0x{P.FOV_VALUE:x}]" in texts and "fcmovb st1" in texts
+          and f"fld dword [0x{P.FOV_VALUE:x}]" in [t.replace("[dword 0x", "[0x") for t in texts]  # ndisasm 2.x spells [dword 0x..]
+          and "fcmovb st1" in texts
           and not any("xmm" in text and "xmm0" not in text for text in texts)
           and data == struct.pack("<4f", 0.25, 1.3333334, 65.0, 0.017453292),
           "fov_projection reads uro_fov, takes max(0, (z - 0.25) / 0.75) (0.25, 4/3, 65 and pi/180 after its code), "
@@ -1190,20 +1217,59 @@ def test_fov(original, image, before):
           and struct.unpack("<f", source.read(0xA710D0, 4))[0] == 100.0,
           f"uro_fov's registration stores {P.FOV_MIN:g} as its least (+44h); its most stays the float 100 at 0xA710D0")
 
-    def instruction(at):
-        """Whether `at` starts an instruction of the function around it, read
-        from the function's start (after the int3 before it)."""
-        start = at
-        while source.read(start - 1, 1) != b"\xcc" or start % 16:
-            start -= 1
-        return at in {address for address, _, _ in ndisasm(source.read(start, at - start + 16), start)}
-
     # A rel8 byte is a branch only where the function's own instructions
     # have one; the others are bytes of other instructions.
     found = [hit for va, old, _ in P.FOV_PATCHES for hit in aimed_inside(original, va, len(old), 0x82)
-             if not (va <= hit < va + len(old)) and instruction(hit)]
+             if not (va <= hit < va + len(old)) and starts_instruction(source, hit)]
     check(not found, "no rel32 branch of .text, no rel8 branch near them (read as the functions' instructions) and "
           "no 4-byte value aims inside the two sites rewritten in place" + "".join(f"\n          {a:#x}" for a in found))
+
+
+# A battery's usable-object vtables: can_use at +30h, get_transform at +44h.
+BATTERY_VTABLES = {0xA13E8C: b".?AVvictory_item_core@survarium@@", 0xA0437C: b".?AVvictory_item@survarium@@"}
+
+
+def test_pickup(original, image, before):
+    """Check 24: a battery under the floor one stands on (patch 23)."""
+    source = Image(original)
+    word = lambda blob, at: struct.unpack("<I", blob.read(at, 4))[0]
+    va, old, new = P.PICKUP_FRAME
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(new)) == new,
+          f"{va:#x}: the scan's frame grows by 8 (sub esp,34h -> 3Ch); the build without the late join keeps it")
+    for va, old, offset, opcode in P.PICKUP_HOOKS:
+        rows = [text for _, _, text in ndisasm(image.read(va, len(old)), va)]
+        check(source.read(va, len(old)) == old and before.read(va, len(old)) == old
+              and rows[0].split()[0] == ("call" if opcode == 0xE8 else "jmp")
+              and branch_target(rows[0]) == P.PICKUP_VA + offset and set(rows[1:]) <= {"nop"},
+              f"{va:#x}: {rows[0]} (+{offset}) and nops; the original and the build without the late join keep it")
+    code = open(P.pickup_bin(), "rb").read()
+    rows = ndisasm(image.read(P.PICKUP_VA, len(code)), P.PICKUP_VA)
+    outside = sorted({branch_target(text) for _, _, text in rows
+                      if branch_target(text) is not None
+                      and not P.PICKUP_VA <= branch_target(text) < P.PICKUP_VA + len(code)})
+    check(image.read(P.PICKUP_VA, len(code)) == code and outside == [0x2D85C6, 0x2D85FC, 0x2D8622]
+          and [text for _, _, text in rows if text.startswith("call")] == ["call [edx+0x44]"]
+          and struct.unpack("<f", source.read(0xA710D8, 4))[0] == 2.0
+          and code[-4:] == struct.pack("<f", P.PICKUP_ACROSS ** 2),
+          f"the code at {P.PICKUP_VA:#x} is the .bin; it leaves only to the scan (0x2D85C6, 0x2D85FC, 0x2D8622), "
+          f"calls only get_transform (vtable+44h); the distance (0xA710D8) is 2.0; across, {P.PICKUP_ACROSS:g} m")
+    string = lambda at: source.read(at, 64).split(b"\0")[0]
+    klass = lambda vtable: string(word(source, word(source, vtable - 4) + 12) + 8)
+    can_use = struct.pack("<I", 0x300710)
+    at, holders = original.find(can_use), []
+    while at != -1:
+        holders += [P.IMAGE_BASE + rva + at - raw for _, rva, _, raw, rsize, _ in source.sections if raw <= at < raw + rsize]
+        at = original.find(can_use, at + 1)
+    check(sorted(holders) == sorted(vtable + 0x30 for vtable in BATTERY_VTABLES)
+          and all(klass(vtable) == name and word(source, vtable + 0x44) == 0x246ED0
+                  for vtable, name in BATTERY_VTABLES.items())
+          and source.read(0x246ED0, 8) == bytes.fromhex("83e914e9") + struct.pack("<i", 0x300A20 - 0x246ED8),
+          "victory_item_core::can_use (0x300710) is at +30h of victory_item_core's and victory_item's usable "
+          "vtables and nowhere else; their +44h, get_transform, is the battery's (sub ecx,14h; jmp 0x300A20)")
+    found = [hit for va, size in pickup_sites() for hit in aimed_inside(original, va, size, 0x82)
+             if not (va <= hit < va + size) and starts_instruction(source, hit)]
+    check(not found, "no rel32 branch of .text, no rel8 branch near them and no 4-byte value aims inside the "
+          "four sites" + "".join(f"\n          {a:#x}" for a in found))
 
 
 # The respawn rules' vtables: player_respawn_rule_base, _core, the client's
@@ -1579,12 +1645,15 @@ def test_late_join(original, without, server, source):
           and raw == old_sections[-1][3],
           f".srp: virtual {vsize:#x} = one page and the {len(code)} bytes of late-join code, file {raw:#x}+{rsize:#x}")
     body = bytes(data[raw:raw + rsize])
+    pickup = open(P.pickup_bin(), "rb").read()
     check(body[:len(first_page)] == first_page
-          and set(body[len(first_page):P.LATE_JOIN_OFFSET]) <= {0xCC}
+          and set(body[len(first_page):P.PICKUP_OFFSET]) <= {0xCC}
+          and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
+          and set(body[P.PICKUP_OFFSET + len(pickup):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
-          f"its first page is the build's without the late join ({len(first_page)} bytes, then int3), "
-          "the code follows, then int3 padding")
+          f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
+          f"pickup code at +{P.PICKUP_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
           and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
@@ -1616,8 +1685,8 @@ def test_late_join(original, without, server, source):
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
     # The entries of the relocation table that are disabled (scene::remove_model's
-    # branch, uro_fov's least).
-    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC}
+    # branch, uro_fov's least, the pickup's distance).
+    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC, P.PICKUP_RELOC}
     ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
                if kind == 3 and va in disabled]
     allowed = bytearray(raw)
@@ -1682,15 +1751,15 @@ def test_late_join(original, without, server, source):
     sites = [(va, va + size) for va, size in late_join_sites()]
     under = lambda relocations: [va for kind, va in relocations.values()
                                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
-    # The sites with an address in them: scene::remove_model's branch and the
-    # field-of-view setting's two in place.
-    with_address = {P.REMOVE_MODEL_VA} | {va for va, _, _ in P.FOV_PATCHES}
+    # The sites with an address in them: scene::remove_model's branch, the
+    # field-of-view setting's two in place and the pickup's distance.
+    fov_sites = {va for va, _, _ in P.FOV_PATCHES}
+    with_address = {P.REMOVE_MODEL_VA, P.PICKUP_HOOKS[0][0]} | fov_sites
     kept = [(lo, hi) for lo, hi in sites if lo not in with_address]
     under_kept = [va for kind, va in Image(original).relocations().values()
                   if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in kept)]
     under_fov = sorted(va for kind, va in Image(original).relocations().values()
-                       if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites
-                                            if lo in with_address - {P.REMOVE_MODEL_VA}))
+                       if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites if lo in fov_sites))
     option = P.FOV_OPTION_NAME[0] + 1
     now, was = image.relocations(), before.relocations()
     differing = sorted(key for key in set(now) | set(was) if now.get(key) != was.get(key))
@@ -1699,7 +1768,8 @@ def test_late_join(original, without, server, source):
           and under_fov == sorted({option, P.FOV_MINIMUM_RELOC})
           and any(kind == 3 and va == option for kind, va in now.values()),
           "no base relocation is under a late-join site but those of scene::remove_model's branch "
-          f"({P.REMOVE_MODEL_VA + 2:#x}) and of uro_fov's least ({P.FOV_MINIMUM_RELOC:#x}), which are disabled, "
+          f"({P.REMOVE_MODEL_VA + 2:#x}), of uro_fov's least ({P.FOV_MINIMUM_RELOC:#x}) and of the pickup's "
+          f"distance ({P.PICKUP_RELOC:#x}), which are disabled, "
           f"and of the field-of-view option's name "
           f"({option:#x}, an address for an address), which stays; the rest of the table is the build's without it")
 
@@ -1707,6 +1777,7 @@ def test_late_join(original, without, server, source):
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
     test_fov(original, image, before)
+    test_pickup(original, image, before)
     test_weapon_random(original, image, before)
     test_kit_state(original, image, before)
     test_first_load(original, image, before)
