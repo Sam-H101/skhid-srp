@@ -366,7 +366,15 @@ What the client does (PROVEN):
   one with no history item before it. `move_input` 0x27D2D0 is new (0xEF).
 
 *(server, may move)* A tick is final 250 ms after it (`HORIZON_MS`).
-`SRP_LATE_INPUTS=discard` (default, what 0.21d does): the owner gets 0xF1 /
+`SRP_LATE_INPUTS=relay` (default since 2026-10-15): a late input is relayed
+at its own tick while every other game in the simulation can still take it
+into its history: its lateness under 425 ms less the largest usual round
+trip of those games (`late_relay_reach`); the owner gets no answer (it keeps
+the input, as all do). Past that, as `discard`. Why: a drop order to a slow
+line came past the owner's own history, and the owner kept the input nobody
+else had (live, 2026-10-15: 58 of 215 desyncs). A world is still right: a
+game uploads its tick 500 ms back, as its hash, and the input reached it
+before that. `SRP_LATE_INPUTS=discard` (what 0.21d does): the owner gets 0xF1 /
 0xF2, nothing is relayed. `SRP_LATE_INPUTS=move`: the input goes to the
 first open tick, the owner gets 0xEF / 0xF0, the others the relay. `move` is
 a GUESS at the original server and was never tried on a client.
@@ -474,7 +482,7 @@ From `servers/match-server/src/v026g/mod.rs`, read once at start:
 
 | Setting | Default | Does |
 |---|---|---|
-| `SRP_LATE_INPUTS` | `discard` | `discard` or `move` (above) |
+| `SRP_LATE_INPUTS` | `relay` | `relay`, `discard` or `move` (above) |
 | `SRP_CLOCK_CORRECTION` | `on` | `off`: no 0xE7 |
 | `SRP_CHECK_INITIAL_WORLD` | `on` | `off`: take a first world that already has statistics in it (for when the reader, not the world, is wrong) |
 | `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where uploaded worlds are saved; `off` or empty for none |

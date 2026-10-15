@@ -510,6 +510,10 @@ const WORLD_LIFETIME: Duration = Duration::from_millis(1750);
 /// were all lost in 250 ms still had a few hundred ms of use (live,
 /// 2026-10-14).
 const RELAY_USEFUL_MS: u32 = 500;
+/// A late input is relayed at its tick (`LateInputs::Relay`) only when it
+/// reaches every other game this much before that game's history has
+/// passed its tick: room for a copy lost on the way.
+const LATE_RELAY_MARGIN_MS: u32 = 75;
 /// A drop order (0xF1/0xF2, 0xEF/0xF0) is sent again for this long after
 /// it is queued. Its owner's world time is not known here (its inputs are
 /// late because its clock or its line is), and one that comes after the
@@ -686,6 +690,9 @@ struct Peer {
     inputs_received: u32,
     inputs_late: u32,
     inputs_discarded: u32,
+    /// Its inputs that came after the server's horizon and were relayed at
+    /// their tick all the same (`LateInputs::Relay`).
+    inputs_relayed_late: u32,
     inputs_moved: u32,
     /// Inputs with a rotation no client makes: not relayed.
     inputs_refused: u32,
@@ -1162,6 +1169,7 @@ impl Game {
             held: Vec::new(),
             held_until: now,
             inputs_discarded: 0,
+            inputs_relayed_late: 0,
             inputs_moved: 0,
             inputs_refused: 0,
             resyncs: 0,
@@ -2891,6 +2899,7 @@ impl Game {
         let clock = self.clock(now);
         let id = self.id;
         let late_inputs = self.settings.late_inputs;
+        let reach = self.late_relay_reach(index);
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
@@ -2960,24 +2969,33 @@ impl Game {
         }
         let mut relayed = input;
         let mut relayed_time = time;
-        if time + HORIZON_MS <= clock {
-            // Final already: everyone else has played that tick without it.
-            let run = peer.discard_run.get_or_insert(DiscardRun {
-                since: now,
-                count: 0,
-                worst_ms: 0,
-            });
-            run.count += 1;
-            run.worst_ms = run.worst_ms.max(late);
-        }
         forget_placed(&mut peer.placed, clock);
-        match place(
+        let placing = place(
             late_inputs,
             clock,
             time,
             &peer.placed,
             clock.saturating_sub(behind),
-        ) {
+            reach,
+        );
+        if time + HORIZON_MS <= clock {
+            if placing == Placing::Keep {
+                // Past the horizon, but every other game can still take it
+                // at its tick (`late_relay_reach`).
+                peer.inputs_relayed_late += 1;
+            } else {
+                // Final already: everyone else has played that tick
+                // without it.
+                let run = peer.discard_run.get_or_insert(DiscardRun {
+                    since: now,
+                    count: 0,
+                    worst_ms: 0,
+                });
+                run.count += 1;
+                run.worst_ms = run.worst_ms.max(late);
+            }
+        }
+        match placing {
             Placing::Keep => {}
             Placing::Discard => {
                 peer.inputs_discarded += 1;
@@ -3029,6 +3047,7 @@ impl Game {
         }
         let clock = self.clock(now);
         let late_inputs = self.settings.late_inputs;
+        let reach = self.late_relay_reach(index);
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
@@ -3060,6 +3079,7 @@ impl Game {
             time,
             &peer.placed_profiles,
             clock.saturating_sub(behind),
+            reach,
         ) {
             Placing::Keep => {}
             Placing::Discard => {
@@ -3097,6 +3117,42 @@ impl Game {
     /// the simulation, and to those loading a snapshot (their sync's
     /// inputs went out with it, `send_sync`, or with their replay,
     /// `send_replay`; what comes since goes as it comes, kept until acked).
+    /// How far behind the match clock an input of `index` may be and still
+    /// be relayed at its tick (`LateInputs::Relay`): every other game in
+    /// the simulation must have it before its history is
+    /// [`RELAY_USEFUL_MS`] past the tick. A relay takes a way to a game,
+    /// and a game's clock runs about a way ahead of the match clock (its
+    /// inputs reach the server about at their tick), so it is two ways of
+    /// its usual round trip, and [`LATE_RELAY_MARGIN_MS`] more. A game
+    /// that enters gets relays only after its load, from the others' worlds
+    /// and its replay, which hold such an input once it is relayed (an
+    /// upload is of its game's tick 500 ms back, as its hash: a relay that
+    /// reached that game in its history is in it).
+    fn late_relay_reach(&self, index: usize) -> u32 {
+        let mut reach = RELAY_USEFUL_MS - LATE_RELAY_MARGIN_MS;
+        for (other, peer) in self.peers.iter().enumerate() {
+            if other == index || self.is_bot(other) || self.waiting_entry(other) {
+                continue;
+            }
+            let Some(peer) = peer else {
+                continue;
+            };
+            let simulating = match peer.stage {
+                Stage::Live => true,
+                Stage::Syncing { entering, .. }
+                | Stage::Timing { entering, .. }
+                | Stage::WaitingSnapshot { entering, .. } => !entering,
+                _ => false,
+            };
+            if simulating {
+                let round_trip = usual_round_trip(&peer.round_trips, peer.round_trip);
+                reach =
+                    reach.min((RELAY_USEFUL_MS - LATE_RELAY_MARGIN_MS).saturating_sub(round_trip));
+            }
+        }
+        reach
+    }
+
     fn relay_to_others(&mut self, index: usize, what: &Relayed, time: u32, now: Instant) {
         let message = relay(index, what);
         let clock = self.clock(now);
@@ -4888,17 +4944,22 @@ enum Placing {
 ///   leaves the other, while 0xF1 would remove both and leave the others
 ///   with an input the owner no longer has.
 ///
-/// With `LateInputs::Discard` a late input is dropped, as by 0.21d.
+/// With `LateInputs::Discard` a late input is dropped, as by 0.21d. With
+/// `LateInputs::Relay` it stays at its tick while it is less than `reach`
+/// ms behind the match clock (every other game can still take it:
+/// `Game::late_relay_reach`), and is dropped past that.
 fn place(
     late_inputs: LateInputs,
     clock: u32,
     time: u32,
     placed: &VecDeque<(u32, u32)>,
     owner_clock: u32,
+    reach: u32,
 ) -> Placing {
     let late = time + HORIZON_MS <= clock;
-    if late_inputs == LateInputs::Discard {
-        return if late {
+    if late_inputs != LateInputs::Move {
+        let relayed = late_inputs == LateInputs::Relay && clock < time + reach;
+        return if late && !relayed {
             Placing::Discard
         } else {
             Placing::Keep
@@ -5328,7 +5389,7 @@ fn input_summary(peer: &Peer) -> String {
          and discarded, {} moved, {} refused for their rotation, the latest {} ms, resynced {} \
          times, started once more after its first world {} times, round trip {} ms, {} messages \
          to it sent again, our seq skipped ahead {} times, {} of {} relays and roster changes \
-         never acked",
+         never acked, {} relayed late at their tick",
         peer.inputs_received,
         peer.inputs_late,
         peer.inputs_discarded,
@@ -5341,7 +5402,8 @@ fn input_summary(peer: &Peer) -> String {
         peer.transport.resent(),
         peer.transport.skips(),
         peer.relays_lost,
-        peer.relays_lost + peer.relays_acked
+        peer.relays_lost + peer.relays_acked,
+        peer.inputs_relayed_late
     )
 }
 
@@ -5766,17 +5828,17 @@ mod tests {
     fn a_late_input_is_dropped_or_moved_to_the_first_open_tick() {
         let none = VecDeque::new();
         let at = |clock: u32, time: u32, placed: &VecDeque<(u32, u32)>| {
-            place(LateInputs::Move, clock, time, placed, clock)
+            place(LateInputs::Move, clock, time, placed, clock, 0)
         };
         // In time: stays, with either setting.
         assert_eq!(at(1_000, 800, &none), Placing::Keep);
         assert_eq!(
-            place(LateInputs::Discard, 1_000, 800, &none, 1_000),
+            place(LateInputs::Discard, 1_000, 800, &none, 1_000, 0),
             Placing::Keep
         );
         // At 1000 ms the ticks up to 750 are final: 800 is the first open.
         assert_eq!(
-            place(LateInputs::Discard, 1_000, 750, &none, 1_000),
+            place(LateInputs::Discard, 1_000, 750, &none, 1_000, 0),
             Placing::Discard
         );
         assert_eq!(at(1_000, 600, &none), Placing::Move(800));
@@ -5795,11 +5857,11 @@ mod tests {
         // The owner's clock runs behind (just resynced): the open tick is
         // not in its past, where it could still make an input.
         assert_eq!(
-            place(LateInputs::Move, 1_000, 600, &none, 820),
+            place(LateInputs::Move, 1_000, 600, &none, 820, 0),
             Placing::Discard
         );
         assert_eq!(
-            place(LateInputs::Move, 1_000, 600, &none, 850),
+            place(LateInputs::Move, 1_000, 600, &none, 850, 0),
             Placing::Move(800)
         );
         // Too many of its ticks taken: dropped.
@@ -5813,23 +5875,23 @@ mod tests {
         // time, and must not stay there, nor be dropped.
         let moved = VecDeque::from([(600, 800)]);
         assert_eq!(
-            place(LateInputs::Move, 1_000, 800, &moved, 1_000),
+            place(LateInputs::Move, 1_000, 800, &moved, 1_000, 0),
             Placing::Move(850)
         );
         // Also when the owner's clock is behind, or a later one is in.
         assert_eq!(
-            place(LateInputs::Move, 1_000, 800, &moved, 700),
+            place(LateInputs::Move, 1_000, 800, &moved, 700, 0),
             Placing::Move(850)
         );
         let chain = VecDeque::from([(600, 800), (850, 850)]);
         assert_eq!(
-            place(LateInputs::Move, 1_000, 800, &chain, 1_000),
+            place(LateInputs::Move, 1_000, 800, &chain, 1_000, 0),
             Placing::Move(900)
         );
         // An input in time that an earlier, moved one went past follows it.
         let past = VecDeque::from([(600, 850)]);
         assert_eq!(
-            place(LateInputs::Move, 1_050, 830, &past, 1_050),
+            place(LateInputs::Move, 1_050, 830, &past, 1_050, 0),
             Placing::Move(880)
         );
     }
