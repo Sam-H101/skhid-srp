@@ -22,6 +22,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use survarium::v026g::dictionary::Dictionary;
+use survarium::v026g::item_params::item_params;
 use survarium::v026g::lzma2;
 use survarium::v026g::maps;
 use survarium::v026g::match_msgs::snapshot;
@@ -65,8 +66,16 @@ const DEFAULT_KEY_FRAME_EVERY_MS: u32 = 10_000;
 /// The world kept for a late joiner is the first one this long after its
 /// entry: the item must be later than the entry's tick.
 const LATE_JOINER_WORLD_AFTER_MS: u32 = 300;
-/// How long before its entry a late joiner's install is looked for.
+/// How long before its entry a late joiner's install is looked for when
+/// no 0xE4 with its place was seen.
 const INSTALL_WINDOW_MS: u32 = 60_000;
+/// A late joiner's install is looked for from this long before the first
+/// 0xE4 that had its place (the recording's clock less the offset).
+const OFFER_SLACK_MS: u32 = 1_000;
+/// A world is the one before it with zero bytes put in front when, past
+/// those bytes, at least this many bytes (or the whole of the world before)
+/// agree with the world before, and more than without them.
+const MIN_SHIFTED_PREFIX: usize = 8;
 
 /// What the caller chooses.
 #[derive(Clone, Debug)]
@@ -125,12 +134,17 @@ pub struct Report {
     pub roster: u8,
     /// Places that entered beyond the roster the first 0xE4 had.
     pub late_joiners: usize,
-    /// `(world time, objects)`: where a late joiner's grenades and traps
-    /// first are in the uploaded worlds, and how many.
-    pub installs: Vec<(u32, usize)>,
-    /// Late joiners whose install was not found in the worlds: the key
-    /// frames before their entry are left out.
-    pub installs_not_found: Vec<u8>,
+    /// `(place, world time, objects)` of each late place with grenades or
+    /// traps: how many its kits have (one game object each) and the first
+    /// world that has them.
+    pub installs: Vec<(u8, u32, usize)>,
+    /// Late places whose install was not found in the worlds, or not for
+    /// sure: the key frames from their first 0xE4 to their entry are left
+    /// out.
+    pub installs_unsure: Vec<u8>,
+    /// Installs whose world is exactly the one before with zero bytes in
+    /// front; each agrees with the count of its place(s).
+    pub installs_exact: usize,
     /// Key frames left out because a joiner's install was not found.
     pub dropped_unsure_key_frames: usize,
     /// Key frames given zero bytes for joiners not installed yet.
@@ -274,6 +288,8 @@ pub fn convert(
     let mut worlds: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
     // The 0xE4 streams (without the index byte), by roster.
     let mut options: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
+    // The options of each roster, and when a 0xE4 of it first went out.
+    let mut rosters: BTreeMap<u8, (u32, static_info::MatchOptions)> = BTreeMap::new();
 
     for record in records {
         if record.kind != IN && record.kind != OUT {
@@ -352,6 +368,9 @@ pub fn convert(
                         let roster = parsed.players.len() as u8;
                         place.roster = roster;
                         options.entry(roster).or_insert_with(|| whole[1..].to_vec());
+                        let clock = (i64::from(record.at_ms) - offset).max(0) as u32;
+                        let first = rosters.entry(roster).or_insert((clock, parsed));
+                        first.0 = first.0.min(clock);
                     }
                     continue;
                 }
@@ -611,19 +630,15 @@ pub fn convert(
     // bytes put in front of the saved objects (client_patch.md 3.14). A
     // world from before an install is given those bytes here, or every
     // object of the viewer reads out of step (docs/notes/replay_sur.md).
-    let installs = find_installs(&chosen, &entered, initial, &mut report);
-    // A joiner whose install was not found: a key frame from before its
-    // entry may lack its objects' bytes, and is left out.
-    let unsure_until = entered
-        .keys()
-        .filter(|(_, place)| report.installs_not_found.contains(place))
-        .map(|&(time, _)| time)
-        .max();
-    if let Some(until) = unsure_until {
-        let before = times.len();
-        times.retain(|&time| time == first_world || time >= until);
-        report.dropped_unsure_key_frames = before - times.len();
-    }
+    let joiners = late_places(&rosters, &entered, initial, &mut report);
+    let (installs, unsure) = find_installs(&chosen, &joiners, &mut report);
+    // A key frame from while a joiner's install is not known may lack its
+    // objects' bytes or have them: it is left out.
+    let before = times.len();
+    times.retain(|&time| {
+        time == first_world || !unsure.iter().any(|&(from, to)| from <= time && time <= to)
+    });
+    report.dropped_unsure_key_frames = before - times.len();
     let mut frames = Vec::new();
     for &time in &times {
         // Where the reading goes on: the first record after the world's time.
@@ -679,67 +694,267 @@ pub fn convert(
     Ok((file, report))
 }
 
-/// A late joiner's grenades and traps put into the recorded games.
+/// The game objects a profile's kits put into the world core's list: one
+/// for each grenade of a grenade stack and for each trap of a trap stack, in
+/// every kit (the kit's bind 0x2D75B0 binds each of the slot's kits; the
+/// grenade item's bind 0x309EC0 adds each grenade of its stack, the trap
+/// item's 0x3067A0 each trap; client_patch.md 3.14). A stack's number is
+/// the kit slot's count, as the client binds it.
+pub fn kit_objects(profile: &static_info::MatchProfile) -> usize {
+    profile
+        .kits
+        .iter()
+        .flat_map(|kit| kit.slots.iter().flatten())
+        .filter(|&&(index, _)| {
+            profile
+                .items
+                .get(usize::from(index))
+                .and_then(|item| item_params(item.dict_id))
+                .is_some_and(|params| matches!(params.kind, "grenade" | "trap"))
+        })
+        .map(|&(_, count)| usize::from(count))
+        .sum()
+}
+
+/// A place beyond the first roster, as the viewer binds it from chunk 1.
+struct LatePlace {
+    place: u8,
+    /// Its kits' grenades and traps ([`kit_objects`]).
+    objects: usize,
+    /// The 0xE4s did not all give it the same number.
+    count_unsure: bool,
+    /// Its install is not before this: its first 0xE4, less a slack.
+    from: u32,
+    /// Its first entry; `None`: it never entered.
+    entry: Option<u32>,
+}
+
+/// The places of the largest roster beyond the first one. A place's
+/// profile never changes (appended places are never reused, `registry`),
+/// so the largest roster's is the one the recorded games installed.
+fn late_places(
+    rosters: &BTreeMap<u8, (u32, static_info::MatchOptions)>,
+    entered: &BTreeMap<(u32, u8), ()>,
+    initial: u8,
+    report: &mut Report,
+) -> Vec<LatePlace> {
+    let Some((_, (_, options))) = rosters.iter().next_back() else {
+        return Vec::new();
+    };
+    let mut places = Vec::new();
+    for (index, profile) in options
+        .players
+        .iter()
+        .enumerate()
+        .skip(usize::from(initial))
+    {
+        let place = index as u8;
+        let objects = kit_objects(profile);
+        let counts: Vec<usize> = rosters
+            .values()
+            .filter_map(|(_, other)| other.players.get(index))
+            .map(kit_objects)
+            .collect();
+        let count_unsure = counts.iter().any(|&count| count != objects);
+        if count_unsure {
+            report.notes.push(format!(
+                "place {place}: the 0xE4s give its kits {counts:?} grenades and traps"
+            ));
+        }
+        let entry = entered
+            .keys()
+            .find(|&&(_, p)| p == place)
+            .map(|&(time, _)| time);
+        let offered = rosters
+            .iter()
+            .filter(|&(&roster, _)| roster > place)
+            .map(|(_, (time, _))| time.saturating_sub(OFFER_SLACK_MS))
+            .min();
+        let from = match (offered, entry) {
+            (Some(offered), Some(entry)) => offered.min(entry),
+            (Some(offered), None) => offered,
+            (None, Some(entry)) => entry.saturating_sub(INSTALL_WINDOW_MS),
+            (None, None) => 0,
+        };
+        places.push(LatePlace {
+            place,
+            objects,
+            count_unsure,
+            from,
+            entry,
+        });
+    }
+    places
+}
+
+/// A late place's grenades and traps put into the recorded games.
 struct Install {
     /// The first world that has them.
     at: u32,
     objects: usize,
 }
 
-/// For each late joiner, the first world whose game objects are the world
-/// before it with zero bytes in front: the install, and how many objects
-/// (0 for a place with no grenade or trap: the objects did not grow).
-/// Looked for between 60 s before the entry and the entry.
+/// How many zero bytes `after`'s game objects have in front of `before`'s,
+/// and whether the rest is `before` exactly. The rest may differ further
+/// on (a grenade thrown, a door opened in the same seconds), so it is
+/// enough that past the zeros at least [`MIN_SHIFTED_PREFIX`] bytes agree,
+/// and more than without them.
+fn front_zeros(before: &[u8], after: &[u8]) -> Option<(usize, bool)> {
+    let grown = after.len().checked_sub(before.len()).filter(|&n| n > 0);
+    if let Some(n) = grown
+        && after[..n].iter().all(|&b| b == 0)
+        && after[n..] == *before
+    {
+        return Some((n, true));
+    }
+    let prefix = |a: &[u8], b: &[u8]| a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let unshifted = prefix(after, before);
+    let leading = after.iter().take_while(|&&b| b == 0).count();
+    let (zeros, shifted) = (1..=leading)
+        .map(|n| (n, prefix(&after[n..], before)))
+        .max_by_key(|&(n, agree)| (agree, std::cmp::Reverse(n)))?;
+    (shifted > unshifted && shifted >= MIN_SHIFTED_PREFIX.min(before.len()))
+        .then_some((zeros, false))
+}
+
+/// Where each late place's grenades and traps first are in the worlds:
+/// between two worlds in a row whose game objects are the first one's with
+/// as many zero bytes in front as the place's kits have objects, after its
+/// first 0xE4 and by the first world after its entry. Two places installed
+/// at once share one such step, with the sum of their objects.
+///
+/// Returns the installs and the spans `(from, to)` (both in) of the places
+/// whose install is not known for sure: no such step or more than one, a
+/// step back (a world without the bytes after one with them), or an exact
+/// step no place's count explains (then the counts are wrong). Their key
+/// frames in the span are to be left out; before it the bytes are missing,
+/// after it (past the entry) they are there.
 fn find_installs(
     chosen: &BTreeMap<u32, Vec<u8>>,
-    entered: &BTreeMap<(u32, u8), ()>,
-    initial: u8,
+    places: &[LatePlace],
     report: &mut Report,
-) -> Vec<Install> {
-    let objects = |body: &Vec<u8>| snapshot::Sections::walk(body).map(|s| s.objects.to_vec());
-    let mut installs = Vec::new();
-    let mut joins: Vec<(u32, u8)> = entered
-        .keys()
-        .filter(|&&(_, place)| place >= initial)
-        .copied()
+) -> (Vec<Install>, Vec<(u32, u32)>) {
+    let worlds: Vec<(u32, &[u8])> = chosen
+        .iter()
+        .filter_map(|(&time, body)| Some((time, snapshot::Sections::walk(body)?.objects)))
         .collect();
-    joins.sort_unstable();
-    for (entry, place) in joins {
-        let window: Vec<(u32, Option<Vec<u8>>)> = chosen
-            .range(entry.saturating_sub(INSTALL_WINDOW_MS)..=entry)
-            .map(|(&time, body)| (time, objects(body)))
-            .collect();
-        let mut found = None;
-        let mut unchanged = false;
-        for pair in window.windows(2) {
-            let (Some(before), Some(after)) = (&pair[0].1, &pair[1].1) else {
-                continue;
-            };
-            if after.len() > before.len() {
-                let grown = after.len() - before.len();
-                if after[..grown].iter().all(|&b| b == 0) && after[grown..] == before[..] {
-                    found = Some(Install {
-                        at: pair[1].0,
-                        objects: grown,
-                    });
-                }
-            } else if after == before {
-                unchanged = true;
-            }
-        }
-        // A joiner already counted by an earlier join's window is not
-        // counted twice.
-        match found {
-            Some(install) if !installs.iter().any(|i: &Install| i.at == install.at) => {
-                report.installs.push((install.at, install.objects));
-                installs.push(install);
-            }
-            Some(_) => {}
-            None if unchanged => report.installs.push((entry, 0)),
-            None => report.installs_not_found.push(place),
+    // (time of the later world, zeros, exact), and the steps back.
+    let mut steps: Vec<(u32, usize, bool)> = Vec::new();
+    let mut backs: Vec<u32> = Vec::new();
+    for pair in worlds.windows(2) {
+        let ((_, before), (at, after)) = (pair[0], pair[1]);
+        if let Some((zeros, exact)) = front_zeros(before, after) {
+            steps.push((at, zeros, exact));
+        } else if front_zeros(after, before).is_some() {
+            backs.push(at);
         }
     }
-    installs
+    // The span a place's step is looked for in.
+    let span = |place: &LatePlace| {
+        let to = place.entry.map_or(u32::MAX, |entry| {
+            chosen.range(entry + 1..).next().map_or(entry, |(&t, _)| t)
+        });
+        (place.from, to)
+    };
+    let mut claimed = vec![false; steps.len()];
+    let mut found: Vec<Option<u32>> = vec![None; places.len()];
+    for (j, place) in places.iter().enumerate() {
+        if place.objects == 0 || place.count_unsure {
+            continue;
+        }
+        let (from, to) = span(place);
+        let candidates: Vec<usize> = (0..steps.len())
+            .filter(|&i| !claimed[i] && from < steps[i].0 && steps[i].0 <= to)
+            .filter(|&i| steps[i].1 == place.objects)
+            .collect();
+        if let [i] = candidates[..] {
+            claimed[i] = true;
+            found[j] = Some(steps[i].0);
+        }
+    }
+    // Places installed at once.
+    for (i, &(at, zeros, _)) in steps.iter().enumerate() {
+        if claimed[i] {
+            continue;
+        }
+        let together: Vec<usize> = (0..places.len())
+            .filter(|&j| found[j].is_none() && places[j].objects > 0 && !places[j].count_unsure)
+            .filter(|&j| {
+                let (from, to) = span(&places[j]);
+                from < at && at <= to
+            })
+            .collect();
+        let sum: usize = together.iter().map(|&j| places[j].objects).sum();
+        if together.len() > 1 && sum == zeros {
+            claimed[i] = true;
+            for j in together {
+                found[j] = Some(at);
+            }
+        }
+    }
+    let mut unsure: Vec<bool> = places
+        .iter()
+        .zip(&found)
+        .map(|(place, found)| place.count_unsure || (place.objects > 0 && found.is_none()))
+        .collect();
+    // An exact step no count explains: the counts of the places it could
+    // be are wrong.
+    for (i, &(at, zeros, exact)) in steps.iter().enumerate() {
+        if !exact {
+            continue;
+        }
+        if claimed[i] {
+            report.installs_exact += 1;
+            continue;
+        }
+        let mut blamed = false;
+        for (j, place) in places.iter().enumerate() {
+            let (from, to) = span(place);
+            if from < at && at <= to {
+                unsure[j] = true;
+                blamed = true;
+            }
+        }
+        report.notes.push(format!(
+            "the worlds got {zeros} zero bytes in front of the game objects at {at} ms, \
+             which no late place's grenades and traps are{}",
+            if blamed {
+                ""
+            } else {
+                " (no late place was due then)"
+            }
+        ));
+    }
+    // A step back while a place's install is due: the worlds of games that
+    // had installed it and of games that had not take turns.
+    for (j, place) in places.iter().enumerate() {
+        let (from, to) = span(place);
+        if place.objects > 0 && backs.iter().any(|&at| from < at && at <= to) {
+            unsure[j] = true;
+        }
+    }
+    let mut installs = Vec::new();
+    let mut spans = Vec::new();
+    for (j, place) in places.iter().enumerate() {
+        if unsure[j] {
+            report.installs_unsure.push(place.place);
+            let to = place.entry.unwrap_or(u32::MAX);
+            spans.push((place.from, to));
+            if place.objects > 0 {
+                installs.push(Install {
+                    at: to.saturating_add(1),
+                    objects: place.objects,
+                });
+            }
+        } else if let Some(at) = found[j] {
+            report.installs.push((place.place, at, place.objects));
+            installs.push(Install {
+                at,
+                objects: place.objects,
+            });
+        }
+    }
+    (installs, spans)
 }
 
 /// `body` with `count` zero bytes in front of its game objects.
@@ -797,6 +1012,7 @@ pub fn tick_of(time: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use survarium::v026g::dictionary::PROFILE_SLOTS;
     use survarium::v026g::match_msgs::static_info::{
         MatchItem, MatchKit, MatchOptions, MatchProfile, NO_PROTECTION, SCORE_EVENTS, StaticInfo,
     };
@@ -1056,5 +1272,211 @@ mod tests {
         let inputs = inputs_of(&file);
         assert!(inputs.contains(&(1150, 0, 0x40)), "{inputs:?}");
         assert!(inputs.contains(&(1150, 1, 0x41)), "{inputs:?}");
+    }
+
+    fn item(name: &str) -> u16 {
+        Dictionary::shared().item_named(name).unwrap().dict_id
+    }
+
+    /// A kit slot that takes `dict_id`, other than those `taken`.
+    fn slot_for(dict_id: u16, taken: &[usize]) -> usize {
+        (0..PROFILE_SLOTS)
+            .find(|&slot| !taken.contains(&slot) && Dictionary::shared().fits(dict_id, slot as u8))
+            .unwrap()
+    }
+
+    /// Two grenades and a trap in the first kit, the same two grenades in
+    /// the second: five game objects, though the stacks hold 10 and 7.
+    fn armed(name: &str, team: u8) -> MatchProfile {
+        let (grenade, trap) = (item("rgd-5"), item("base_trap"));
+        let stack = |dict_id: u16, count: u32| MatchItem {
+            instance_id: 100 + u32::from(dict_id),
+            dict_id,
+            condition_or_stack: count,
+            ..MatchItem::default()
+        };
+        let grenades = slot_for(grenade, &[]);
+        let traps = slot_for(trap, &[grenades]);
+        let mut first = MatchKit::empty(1, "a");
+        first.slots[grenades] = Some((0, 2));
+        first.slots[traps] = Some((1, 1));
+        let mut second = MatchKit::empty(2, "b");
+        second.slots[grenades] = Some((0, 2));
+        MatchProfile {
+            kits: vec![first, second],
+            items: vec![stack(grenade, 10), stack(trap, 7)],
+            ..profile(name, team)
+        }
+    }
+
+    #[test]
+    fn a_kit_has_a_game_object_for_each_grenade_and_trap_of_its_slots() {
+        assert_eq!(kit_objects(&armed("c", 0)), 5);
+        assert_eq!(kit_objects(&profile("a", 0)), 0);
+    }
+
+    #[test]
+    fn zero_bytes_in_front_are_found_past_later_changes() {
+        let before: Vec<u8> = [4, 0xFF].into_iter().chain(1..=20).collect();
+        let with = |zeros: usize, rest: &[u8]| [vec![0; zeros], rest.to_vec()].concat();
+        assert_eq!(front_zeros(&before, &with(3, &before)), Some((3, true)));
+        // A grenade thrown further on: a byte changed, eight more.
+        let mut changed = before.clone();
+        changed[15] = 2;
+        changed.splice(16..16, [9; 8]);
+        assert_eq!(front_zeros(&before, &with(3, &changed)), Some((3, false)));
+        assert_eq!(front_zeros(&before, &before), None);
+        assert_eq!(front_zeros(&before, &changed), None);
+        // Objects that begin with zero bytes already.
+        let zeros_first = with(2, &before);
+        assert_eq!(
+            front_zeros(&zeros_first, &with(1, &zeros_first)),
+            Some((1, true))
+        );
+        // Too little agrees past the zeros.
+        let mut early = with(1, &before);
+        early[5] = 0x55;
+        assert_eq!(front_zeros(&before, &early), None);
+    }
+
+    /// A world with no player and `objects`.
+    fn world(objects: &[u8]) -> Vec<u8> {
+        snapshot::Sections {
+            active_clients_mask: 0,
+            players: &[],
+            bullets: &[],
+            statistics: &[],
+            objects,
+            physics: &[],
+            rules: &[],
+            effects: &[],
+        }
+        .to_body()
+        .unwrap()
+    }
+
+    /// The first world's objects, before a late joiner's install.
+    fn map_objects() -> Vec<u8> {
+        [4, 0xFF].into_iter().chain(1..=20).collect()
+    }
+
+    /// [`recording`] whose roster grows: place 2 ([`armed`]) is offered at
+    /// match time 18 700 ms and enters at 25 000 ms; the worlds every 5 s
+    /// get `zeros` zero bytes in front of their objects at 20 050 ms, and a
+    /// grenade of the map thrown at once unless `exact`.
+    fn late_recording(zeros: usize, exact: bool) -> Vec<Record> {
+        let mut records: Vec<Record> = recording().into_iter().filter(|r| r.kind != IN).collect();
+        let mut header: serde_json::Value = serde_json::from_slice(&records[0].bytes).unwrap();
+        header["growing_roster"] = true.into();
+        records[0].bytes = serde_json::to_vec(&header).unwrap();
+        let map = survarium::v026g::maps::playable().next().unwrap();
+        let options = MatchOptions {
+            players: vec![profile("a", 0), profile("b", 1), armed("c", 0)],
+            map_id: map.id,
+            match_id: 1,
+            match_level: 1,
+            score_weights: [0.0; SCORE_EVENTS],
+        };
+        let info = StaticInfo::new(&options, Dictionary::shared()).unwrap();
+        for place in 0..3u8 {
+            records.push(datagram(
+                OUT,
+                place,
+                20_000,
+                0xE4,
+                Some(1),
+                &info.payload(place).unwrap(),
+            ));
+        }
+        // Tick 500 is byte 244.
+        for place in 0..2u8 {
+            records.push(datagram(OUT, place, 26_400, 0xE9, None, &[244, 2]));
+        }
+        let before = map_objects();
+        let mut after = vec![0; zeros];
+        after.extend(&before);
+        if !exact {
+            let last = after.len() - 1;
+            after[last] = 0x77;
+        }
+        for time in (50..=30_050u32).step_by(5_000) {
+            let objects = if time < 20_050 { &before } else { &after };
+            for chunk in upload::split(time, &world(objects)).unwrap() {
+                records.push(datagram(IN, 0, 1_300 + time + 500, 0xE0, None, &chunk));
+            }
+        }
+        records
+    }
+
+    /// `(time, game objects)` of every key frame of a file.
+    fn key_frame_objects(file: &[u8]) -> Vec<(u32, Vec<u8>)> {
+        let chunks = sur::chunks(file).unwrap();
+        let frames = chunks
+            .iter()
+            .find(|(id, _)| *id == sur::chunk::KEY_FRAMES)
+            .unwrap()
+            .1;
+        let table = lzma2::unpack(&frames[2..], 1 << 20).unwrap();
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < table.len() {
+            let len = usize::from(u16::from_le_bytes([table[at], table[at + 1]]));
+            let data = &table[at + 6..at + 6 + len];
+            let time = u32::from_le_bytes(data[..4].try_into().unwrap());
+            out.push((
+                time,
+                snapshot::Sections::walk(&data[4..])
+                    .unwrap()
+                    .objects
+                    .to_vec(),
+            ));
+            at += 6 + len;
+        }
+        out
+    }
+
+    #[test]
+    fn key_frames_before_a_late_install_get_the_joiners_objects_counted_from_its_kits() {
+        let (file, report) =
+            convert(&late_recording(5, false), b"config", Settings::default()).unwrap();
+        assert_eq!(report.roster_events.last(), Some(&(25_000, 'E', 2)));
+        assert_eq!(report.installs, [(2, 20_050, 5)]);
+        assert_eq!(report.installs_exact, 0);
+        assert!(report.installs_unsure.is_empty());
+        assert_eq!(report.dropped_unsure_key_frames, 0);
+        assert_eq!(report.padded_key_frames, 2);
+        let padded = [vec![0; 5], map_objects()].concat();
+        let frames = key_frame_objects(&file);
+        let times: Vec<u32> = frames.iter().map(|f| f.0).collect();
+        assert_eq!(times, [50, 10_050, 20_050, 30_050]);
+        for (time, objects) in &frames[..2] {
+            assert_eq!(*objects, padded, "{time}");
+        }
+        for (time, objects) in &frames[2..] {
+            assert_eq!(objects[..5], [0; 5], "{time}");
+            assert_eq!(objects.len(), padded.len(), "{time}");
+        }
+    }
+
+    #[test]
+    fn an_install_no_kit_count_explains_leaves_out_the_key_frames_while_it_was_due() {
+        let (file, report) =
+            convert(&late_recording(4, true), b"config", Settings::default()).unwrap();
+        assert!(report.installs.is_empty());
+        assert_eq!(report.installs_unsure, [2]);
+        assert!(
+            report.notes.iter().any(|n| n.contains("4 zero bytes")),
+            "{:?}",
+            report.notes
+        );
+        // From the 0xE4 that offered place 2 (17 700 ms) to its entry.
+        assert_eq!(report.dropped_unsure_key_frames, 1);
+        let frames = key_frame_objects(&file);
+        let times: Vec<u32> = frames.iter().map(|f| f.0).collect();
+        assert_eq!(times, [50, 10_050, 30_050]);
+        // Before the span the viewer's five objects are given; after the
+        // entry the world is as the games had it.
+        assert_eq!(frames[0].1, [vec![0; 5], map_objects()].concat());
+        assert_eq!(frames[2].1, [vec![0; 4], map_objects()].concat());
     }
 }

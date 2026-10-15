@@ -138,10 +138,11 @@ fn main() -> ExitCode {
         .map(|(t, k, p)| format!("{k}{p}@{t}"))
         .collect();
     println!(
-        "late joiners: {}; installs (world ms, objects): {:?}; not found: {:?}; key frames padded: {}, left out: {}",
+        "late joiners: {}; installs (place, world ms, objects): {:?}, {} exact; not sure: {:?}; key frames padded: {}, left out: {}",
         report.late_joiners,
         report.installs,
-        report.installs_not_found,
+        report.installs_exact,
+        report.installs_unsure,
         report.padded_key_frames,
         report.dropped_unsure_key_frames
     );
