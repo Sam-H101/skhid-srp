@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add a working field-of-view slider to the 0.26g video settings.
+"""Add a working field-of-view slider to the 0.26g Settings → Graphics tab.
 
 Two builds, each writing a NEW file; inputs are never modified:
 
@@ -191,7 +191,7 @@ def main():
         shutil.copyfileobj(source, output, 8 * 1024 * 1024)
         output.seek(MOVIE_OFFSET)
         output.write(movie)
-    print(f"Created {args.output}: FOV slider in video settings")
+    print(f"Created {args.output}: FOV slider in Settings → Graphics")
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ package
                 tabs._slider_fov = slider;
                 content.addChild(slider);
             }
-            // Script-added children survive frame changes; show it on video only.
+            // Script-added children survive frame changes; show it on Graphics only.
             slider.visible = video;
         }
 
