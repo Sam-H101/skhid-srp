@@ -47,5 +47,8 @@ fn main() {
             println!("items {items:3}: {line}");
         }
     }
-    println!("times {:?}", files.iter().map(|file| file.0 / 1000).collect::<Vec<_>>());
+    println!(
+        "times {:?}",
+        files.iter().map(|file| file.0 / 1000).collect::<Vec<_>>()
+    );
 }

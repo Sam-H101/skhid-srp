@@ -12,8 +12,15 @@ fn main() {
     let count: usize = args.next().unwrap().parse().unwrap();
     let body = std::fs::read(file).unwrap();
     let decoded = snapshot::decode(time, &body, count, map.mode, 0).expect("decode");
-    let tdm = decoded.rules.as_ref().and_then(|rules| rules.tdm).expect("tdm");
-    println!("tickets {:?} alive mask {:020b}", tdm.tickets, tdm.alive_players_mask);
+    let tdm = decoded
+        .rules
+        .as_ref()
+        .and_then(|rules| rules.tdm)
+        .expect("tdm");
+    println!(
+        "tickets {:?} alive mask {:020b}",
+        tdm.tickets, tdm.alive_players_mask
+    );
     for block in players::blocks(&body).expect("blocks") {
         let reads: Vec<(usize, bool, bool)> = (0..400)
             .filter_map(|items| {

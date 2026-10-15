@@ -12,9 +12,12 @@ fn main() {
     // Optional: each roster place's team as digits, to test the elimination
     // check (a team with no tickets, no respawn flag, nobody queued and
     // every place of it in the alive mask dead by its block).
-    let teams: Option<Vec<u8>> = std::env::args()
-        .nth(3)
-        .map(|digits| digits.bytes().map(|digit| digit.wrapping_sub(b'0')).collect());
+    let teams: Option<Vec<u8>> = std::env::args().nth(3).map(|digits| {
+        digits
+            .bytes()
+            .map(|digit| digit.wrapping_sub(b'0'))
+            .collect()
+    });
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -49,17 +52,25 @@ fn main() {
             .unwrap()
             .kills_deaths
             .iter()
-            .map(|record| format!("{}:{}:{}", record.kills, record.deaths, u8::from(record.online)))
+            .map(|record| {
+                format!(
+                    "{}:{}:{}",
+                    record.kills,
+                    record.deaths,
+                    u8::from(record.online)
+                )
+            })
             .collect();
         let out = teams.as_ref().map(|teams| {
             let rules = decoded.rules.as_ref().unwrap();
-            let queued: Vec<u8> = rules
-                .respawn
-                .as_ref()
-                .map_or(Vec::new(), |respawn| respawn.times.iter().map(|time| time.0).collect());
+            let queued: Vec<u8> = rules.respawn.as_ref().map_or(Vec::new(), |respawn| {
+                respawn.times.iter().map(|time| time.0).collect()
+            });
             let blocks = players::blocks(&body).unwrap_or_default();
             let dead = |place: usize| {
-                let Some(block) = blocks.iter().find(|block| usize::from(block.place) == place)
+                let Some(block) = blocks
+                    .iter()
+                    .find(|block| usize::from(block.place) == place)
                 else {
                     return true;
                 };

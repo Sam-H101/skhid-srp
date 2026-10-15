@@ -85,6 +85,7 @@ public static class Tdm
         {
             IntPtr memory = VirtualAlloc((IntPtr)0x310000, (UIntPtr)0x10000, 0x3000, 0x40);
             if (memory.ToInt32() != 0x310000) throw new Exception("0x310000 is not free in this process");
+            // Only one exe a process (see the end of the script).
             mapped = true;
         }
         Marshal.Copy(file, From - TextVa + TextFile, (IntPtr)From, Length);
@@ -166,4 +167,21 @@ public static class Tdm
 }
 '@
 
-foreach ($exe in $Exes) { [Tdm]::Run((Resolve-Path $exe).Path) }
+# 0x310000 is not always free in a process (about one start in five here):
+# each exe runs in a process of its own, started again while the address is
+# taken.
+if ($env:SRP_TDM_RULE_CHILD) {
+    try { [Tdm]::Run($Exes[0]) }
+    catch { if ($_.Exception.InnerException.Message -like "*is not free*") { exit 3 }; throw }
+    exit 0
+}
+$self = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$env:SRP_TDM_RULE_CHILD = "1"
+foreach ($exe in $Exes) {
+    $path = (Resolve-Path $exe).Path
+    for ($try = 1; ; $try++) {
+        & $self -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath $path
+        if ($LASTEXITCODE -ne 3) { break }
+        if ($try -ge 20) { throw "0x310000 was taken in 20 processes" }
+    }
+}
