@@ -45,6 +45,10 @@
 //! - `SRP_RESTORE_LIMIT=<n>` (default 0, no limit): disconnect a client
 //!   that is out of sync again after `n` resyncs in a row with no report
 //!   of its that agreed in between;
+//! - `SRP_RESYNC_AFTER_AGREED_SECONDS` (default 5, 3 to 15; 15 = the old
+//!   rule): the least time between two resyncs of a client when its last
+//!   one was agreed with; after one that was not, it stays 15 s, and a
+//!   client resynced 4 times within a minute waits 15 s too;
 //! - `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10): how long a playing
 //!   client may send nothing before it is taken as gone. A game window
 //!   out of focus can stall for long (another server saw 58 s under
@@ -148,6 +152,12 @@ pub(crate) struct Timing {
     pub divergence_confirm_max: Duration,
     /// The least time between two resyncs of one client.
     pub resync_interval: Duration,
+    /// ... once its last resync has been agreed with
+    /// (`SRP_RESYNC_AFTER_AGREED_SECONDS`): that world took, and a new
+    /// disagreement is a new desync, not a loop. Never more than
+    /// `resync_interval`, and back to it for a client resynced
+    /// `game.rs::RESYNCS_PER_MINUTE` times within a minute.
+    pub resync_after_agreed: Duration,
     /// A mode rule that has its end reports it this long after (match ms).
     pub end_delay_ms: u32,
     /// After the end the clients get this long to hear it.
@@ -171,6 +181,7 @@ impl Default for Timing {
             divergence_confirm_ms: 1_000,
             divergence_confirm_max: Duration::from_secs(3),
             resync_interval: Duration::from_secs(15),
+            resync_after_agreed: Duration::from_secs(5),
             end_delay_ms: survarium::v026g::match_msgs::rules::END_DELAY_MS,
             linger: Duration::from_secs(5),
             final_wait: Duration::from_secs(7),
@@ -286,6 +297,15 @@ impl Settings {
                             4,
                         )
                         .clamp(2, 5),
+                    )),
+                    // 15 for the old rule: the interval after any resync.
+                    resync_after_agreed: Duration::from_secs(u64::from(
+                        parse_number(
+                            "SRP_RESYNC_AFTER_AGREED_SECONDS",
+                            var("SRP_RESYNC_AFTER_AGREED_SECONDS").as_deref(),
+                            5,
+                        )
+                        .clamp(3, 15),
                     )),
                     ..Timing::default()
                 }
