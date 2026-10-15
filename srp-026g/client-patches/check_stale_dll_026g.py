@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run patch 27's sign-in check (stale_dll_026g.asm) in the default build
+"""Run patch 25's sign-in check (stale_dll_026g.asm) in the default build
 on made-up machines.
 
     python check_stale_dll_026g.py <original survarium.exe>
