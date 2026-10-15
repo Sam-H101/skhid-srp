@@ -754,6 +754,34 @@ fn a_resync_that_did_not_take_is_done_again_at_once_twice_at_most() {
     assert!(at[3] - at[2] >= 15_000, "{at:?}");
 }
 
+/// Live, 2026-10-15: a game agreed for one or two reports after its world
+/// and was wrong 105 and 261 ms after it; those right reports took the
+/// quick redo away, and it waited 12.7 and 14.3 s for its next resync. A
+/// right report inside [`LOAD_WRONG_MS`] of the load no longer says the
+/// world took.
+#[test]
+fn a_resync_wrong_soon_after_a_few_right_reports_is_done_again_at_once() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    bench.run(3_000);
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    let mut at = Vec::new();
+    for resyncs in 1..=2u32 {
+        assert!(
+            bench.until(30_000, |bench| bench.game().resyncs(2) == resyncs),
+            "resync {resyncs}"
+        );
+        at.push(bench.ms);
+        assert!(bench.until(5_000, |bench| bench.clients[2].model.syncs == resyncs + 1));
+        // Right for a few ticks past its world, then wrong again.
+        let loaded = bench.clients[2].clock();
+        bench.clients[2].sim.salt_from = Some((loaded + 300, 7));
+    }
+    assert!(at[1] - at[0] < 6_000, "{at:?}");
+}
+
 #[test]
 fn a_snapshot_that_does_not_arrive_goes_again_as_the_next_generation() {
     let mut bench = Bench::new(1, MAP_BATTERIES, Settings::default());
@@ -1130,6 +1158,51 @@ fn a_player_back_in_the_match_enters_for_the_others_first() {
     assert_eq!(bench.clients[0].model.syncs, 1);
     assert_eq!(bench.clients[1].model.syncs, 1);
     settle(&mut bench);
+    bench.assert_no_faults();
+}
+
+/// Live, 2026-10-15: a player back in was put 306 ms behind the match clock
+/// (its snapshot + `SYNC_LEAD_MS`) while the other games had its player
+/// since its entry; its inputs of the first second came 250-400 ms late,
+/// 9 were dropped at the edge of its history and it was out of step 2 s
+/// after its load. Now its game goes at the match clock, as a resynced
+/// one's, and its inputs reach the other in time.
+#[test]
+fn a_player_back_in_the_match_starts_at_the_match_clock() {
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    // The other's uploads come late: the world the player back in starts
+    // from is older than the lead.
+    bench.one_way = vec![150, 0];
+    bench.join_all();
+    settle(&mut bench);
+    bench.clients[1].drop_link();
+    assert!(bench.until(500, |bench| bench.clients[0].left() == [1]));
+    bench.run(2_000);
+    bench.restart(1);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |bench| bench.clients[1].model.options.is_some()));
+    bench.clients[1].ready();
+    assert!(bench.until(5_000, |bench| !set_times(&bench.clients[1]).is_empty()));
+    let arrived = bench.clock();
+    let client = &bench.clients[1];
+    let at = first(client, |message| {
+        matches!(message, ServerMessage::SetTime { .. })
+    })
+    .unwrap();
+    let ServerMessage::SetTime { match_time, .. } = client.taken[at] else {
+        unreachable!()
+    };
+    assert!(match_time + 20 >= arrived, "{match_time} {arrived}");
+    assert!(bench.until(10_000, |bench| bench.stages() == "LL"));
+    // An input it makes at once on its own clock is the other's, and is
+    // never dropped.
+    let input = bench.clients[1].input(0, 0x5);
+    bench.run(1_000);
+    assert!(bench.clients[0].relays_of(1).contains(&input));
+    assert!(discards(&bench.clients[1]).is_empty());
+    bench.run_long(15_000);
+    assert_eq!(bench.clients[0].model.syncs, 1);
+    assert_eq!(bench.clients[1].model.syncs, 1);
     bench.assert_no_faults();
 }
 
@@ -2440,6 +2513,51 @@ fn a_resynced_clients_inputs_are_relayed_throughout_and_their_answers_wait_for_i
     assert!(client.relays_of(2).is_empty());
     assert_eq!(bench.game().generation(2), Some(1));
     assert_eq!(bench.game().resyncs(2), 1);
+    bench.assert_no_faults();
+}
+
+/// Live, 2026-10-15: only agreed worlds were kept, so an out-of-step game's
+/// world could never be compared with the others'. A player found out of
+/// step is asked for its world ahead of its resync's 0xE5; it is kept to
+/// look at, and nobody starts from it. Twice a player at most.
+#[test]
+fn a_player_out_of_step_is_asked_for_its_world_ahead_of_its_resync() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    bench.run(3_000);
+    let asked_before = bench.clients[2].upload_requests;
+    let from = bench.clients[2].clock();
+    bench.clients[2].sim.salt_from = Some((from, 7));
+    assert!(until_playing(&mut bench, 20_000, |bench| {
+        bench.game().resyncs(2) == 1
+    }));
+    let is_set_time =
+        |message: &ServerMessage| matches!(message, ServerMessage::SetTime { generation: 1, .. });
+    assert!(until_playing(&mut bench, 2_000, |bench| {
+        first(&bench.clients[2], is_set_time).is_some()
+    }));
+    // The request went ahead of the 0xE5 of its resync.
+    let client = &bench.clients[2];
+    let set_time = first(client, is_set_time).unwrap();
+    assert!(
+        client.taken[..set_time]
+            .iter()
+            .rev()
+            .take(20)
+            .any(|message| matches!(message, ServerMessage::UploadRequest)),
+        "{:?}",
+        &client.taken[set_time.saturating_sub(5)..=set_time]
+    );
+    assert!(client.upload_requests > asked_before);
+    assert!(until_playing(&mut bench, 5_000, |bench| bench.stages() == "LLL"));
+    assert_eq!(bench.game().wrong_worlds(2), (1, false));
+    // Its world was nobody's start: the others never went again, and it
+    // is right from its resync on.
+    bench.clients[2].sim.salt_from = None;
+    bench.run_long(15_000);
+    assert_eq!(bench.game().resyncs(2), 1);
+    assert_eq!(bench.game().resyncs(0) + bench.game().resyncs(1), 0);
     bench.assert_no_faults();
 }
 
