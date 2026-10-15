@@ -548,7 +548,7 @@ A battery dropped by a dying carrier can end up under the floor, out of reach fo
 - **Revision 11.** A use is in what a match computes: a game with it takes a battery an older game leaves. Patch 21 already makes a server ask for 11.
 - **Builds** (revision 11 with §3.21 and §3.22): sha256 `bdb78f957e490548a7971041d197b600502b57b5f15365b60b8d25e379af3b29` (no server), `355c83e70eb6495ab530111b40398765ff558ff5a951f7cebb4a5dc2fde2a89e` (`--server=skhid.link:1234`). Against §3.22's build: the frame byte, the three hooks, one relocation entry, the PE checksum and the code at `.srp`+800h (compared byte by byte).
 - **Checked:** `selftest_026g.py` check 24 and the late join's byte and relocation checks; `check_pickup_below_026g.py` (31 scans of made-up hits, the original and the build).
-- **Run in a game** (2026-10-15, two games on Keln, a test build with the same rule that called 0x2F8440 directly instead of vtable+44h): a battery stuck under the floor was picked up. **Not run:** this build; Windows. Not known: which hits the real collision world returns for a battery inside geometry.
+- **Run in a game** (2026-10-15, two games on Keln, this build): a battery stuck under the floor was picked up. **Not run:** Windows. Not known: which hits the real collision world returns for a battery inside geometry.
 
 ## 4. Mode 3 batteries: not needed in 0.26g
 

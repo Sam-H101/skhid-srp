@@ -1146,9 +1146,8 @@ Checked: `selftest_026g.py` check 24 (the sites, the code and where it
 leaves to, the battery's vtables), the relocation and byte checks of the
 late join; `check_pickup_below_026g.py` runs the original and the build's
 scan on made-up hits (it says nothing about what the real collision world
-returns). Run in a game (2026-10-15, two games on Keln): a battery stuck
-under the floor was picked up, with a test build that called the base
-`get_transform` directly. **Not run:** this revision's exe; Windows.
+returns). Run in a game (2026-10-15, two games on Keln, this build): a
+battery stuck under the floor was picked up. **Not run:** Windows.
 
 ## Not ported, not done
 
