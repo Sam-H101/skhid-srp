@@ -338,7 +338,11 @@ gold. The window has:
 Typing in either field updates the other. Silver goes by whole gold: a silver
 amount that is not a multiple of the rate is evened out when the field is
 left, and on Exchange. The texts are in all five game languages; the language
-is the one of the client's own "Cancel".
+is the one of the client's own "Cancel" (`st_cancel`; in German the game's
+file says "Abrechnen"). "Silver" is the game's own word, read live
+(`regular_money`, `st_regular_money`); "Gold" is the game's `st_premium_money_name`,
+copied, as the movie has no key for it; the rest are the window's own words,
+the game having none for them.
 
 It is the stock window (`MessageMoneyExchange`, symbol `SrvMessageExchangeSkinned`)
 with the stock pieces moved: its 9-slice background made 300 x 300, its buttons
@@ -359,8 +363,9 @@ which the server reads as `BuyPremium` (`requests::BUY_PREMIUM`). So the server
 must be released first; an older server refuses such an amount as more gold
 than the account has.
 
-The input is the **live** lobby region (sha256 `8a98cf0d…`, the lobby with the
-matches list), not the retail movie, either as a whole `resources.db` or as
+The input is a lobby region with the matches list (sha256 `8a98cf0d…`, live
+since 14 Oct, or `48c3439f…`, with the JOIN reasons and the match level; the
+exchange changes other classes than the list's), not the retail movie, either as a whole `resources.db` or as
 the entry file of `--resource-region=lobby_menu=<file>`. The output is of the
 same kind:
 

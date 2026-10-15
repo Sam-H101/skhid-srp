@@ -27,9 +27,13 @@ import login_hint_026g as hint
 # Retail build 2777: resources-db list -> flash_movies/lobby_menu.swf.
 MOVIE_OFFSET = 19165044
 MOVIE_SIZE = 38985769
-# The live region the players have (make_client_026g.py's lobby_menu target),
-# not the retail movie: that one lacks the matches list.
-MOVIE_SHA256 = "8a98cf0df2c7c3c22c95c0ae80d310a0cfe234d84d3bca47d681a29f3a51456e"
+# The lobby regions with the matches list (make_client_026g.py's lobby_menu
+# targets), not the retail movie: that one lacks the list. The exchange
+# changes other classes than the list's (BottomPanel), so either takes it.
+MOVIE_SHA256S = {
+    "8a98cf0df2c7c3c22c95c0ae80d310a0cfe234d84d3bca47d681a29f3a51456e": "live since 14 Oct",
+    "48c3439f350d3d2aec4e6472d03970d6313026f7fdf35024b5009ce922bde37f": "JOIN reasons and match level",
+}
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
 HERE = Path(__file__).resolve().parent / "exchange"
 
@@ -38,7 +42,7 @@ def build_movie(original, ffdec, java, javac, work):
     digest = hashlib.sha256(original).hexdigest()
     if digest == RETAIL_SHA256:
         raise ValueError("This is the retail lobby movie; patch the live region (with the matches list)")
-    if digest != MOVIE_SHA256:
+    if digest not in MOVIE_SHA256S:
         raise ValueError("Not the live build 2777 lobby movie (or already patched)")
     version, header, tags = hint.unpack(original)
     # Keep Scaleform graphics out of the editor: transplant only the edited ABC.

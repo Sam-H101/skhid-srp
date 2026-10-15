@@ -293,6 +293,16 @@ package
 
         private function say(key:String):String
         {
+            // The game's own word where the movie can read it: "Silver" is
+            // st_regular_money (flash key regular_money). TEXT keeps the
+            // same words, from the game's files, for a client without it.
+            if (key == "silver")
+            {
+                var silver:String = LocalizationData.getName("regular_money");
+                // getName gives "#regular_money" for a key it does not have.
+                if (silver && silver.charAt(0) != "#")
+                    return silver;
+            }
             return TEXT[key][_lang];
         }
 
