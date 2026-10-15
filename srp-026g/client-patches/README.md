@@ -1267,15 +1267,15 @@ stops it ("Resources archive is corrupted"). Patch 24 makes verify_sign's
 call of `verify_sign_impl` at 0x135D3 (`E8 D8 F6 FF FF`) `xor eax,eax` and
 three nops (`31 C0 90 90 90`): 0 is that function's "good signature", and
 the `add esp,10h` after the call still takes its four arguments off. The
-game then checks nothing of the archive: what it loads is what the updater
-wrote, and the updater checks everything it writes by sha256. What is
-signed and the call site: `../docs/notes/client_patch.md` section 0.1.
+game then checks no signature of the archive: what it loads is what the
+updater wrote, and the updater checks everything it writes by sha256. What
+is signed and the call site: `../docs/notes/client_patch.md` section 0.1.
 
 Revision 12 checked the table with Skhid's key instead (a 413-byte routine
 at 0xC00 of `.srp`, a signer and the public key in this folder). Revision 14
 drops it: anyone can patch a check out of their own exe, so it protected
-nothing the updater's sha256 checks do not. Checked: `selftest_026g.py` check 25 (`test_db_signature`). **Not run: a
-game.**
+nothing the updater's sha256 checks do not. Checked: `selftest_026g.py`
+check 25 (`test_db_signature`). **Not run: a game.**
 
 ### 25. The sign-in reports a stale shell_32.dll in the temporary folder (patch revision 13)
 

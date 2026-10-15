@@ -55,8 +55,10 @@ How names were found:
   the "survarium.com" certificate from the exe's own Authenticode signature,
   and 0x12A10 checks its chain for today. The certificate ran out on
   2015-06-06. Patch: 0x12A10 `83 EC 2C` → `31 C0 C3`. **PROVEN live** (the
-  only live-proven fact here). The signature blob must stay readable: the
-  file table of `resources.db` is still verified with its key.
+  only live-proven fact here). The signature blob must stay readable:
+  verify_sign takes the certificate out of it first and fails without it,
+  also in the default build since patch revision 14, which skips the check
+  of the `resources.db` file table with its key (client_patch.md §0.1).
   client_patch.md §0.
 - The login server key is **`-server=host:port`** (key object 0xA9C550), not
   `-client=`. With no key and no replay key the game stops: "Game server

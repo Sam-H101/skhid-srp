@@ -48,8 +48,10 @@ Patches:
   The certificate expired on 2015-06-06, so the chain is "not time valid"
   and every stock 0.26g client stops with "Resources archive is
   corrupted". The patch skips only the chain check; the file table
-  signature is still verified, so the signature blob must stay readable
-  (see --cave=section below);
+  signature is still verified (except in the default build since patch
+  revision 14, below). verify_sign takes the certificate out of the
+  signature blob before either check and fails without it, so the blob
+  must stay readable in every build (see --cave=section below);
 - the single-instance check (0x124F9 `jz fail` -> two nops), so several
   clients run on one PC;
 - the minimum VRAM check (0x106411 `jae` -> `jmp`), skipping the fatal
