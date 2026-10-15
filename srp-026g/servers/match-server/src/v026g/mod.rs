@@ -116,6 +116,16 @@ pub enum LateInputs {
     /// exist for nothing else); not tried live, and not the default: the
     /// owner keeps 0.21d's discard, which is live-proven there.
     Move,
+    /// The default (since 2026-10-15): relayed at its own tick, as one in
+    /// time, while every other game can still take it into its history
+    /// (its tick 500 ms back, `RELAY_USEFUL_MS`) by its way there and back
+    /// (`game.rs::late_relay_reach`); else discarded as with `Discard`.
+    /// The owner then needs no answer: it keeps the input, as everyone
+    /// does. Discarding it sent the owner a drop order that came past its
+    /// own history on the very lines that made inputs late, and the owner
+    /// kept the input nobody else had (live, 2026-10-15: 58 of 215
+    /// desyncs had such a drop just before).
+    Relay,
 }
 
 /// The waits a test may want shorter. The defaults are the 0.21d server's.
@@ -194,7 +204,7 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            late_inputs: LateInputs::Discard,
+            late_inputs: LateInputs::Relay,
             resync_world_only: false,
             restore_limit: 0,
             clock_correction: true,
@@ -299,13 +309,15 @@ fn parse_late_inputs(value: Option<&str>) -> LateInputs {
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
     {
-        None | Some("") | Some("discard") => LateInputs::Discard,
+        None | Some("") | Some("relay") => LateInputs::Relay,
+        Some("discard") => LateInputs::Discard,
         Some("move") => LateInputs::Move,
         Some(other) => {
             log::error!(
-                "SRP_LATE_INPUTS is `{other}`; it must be `discard` or `move`. Using discard"
+                "SRP_LATE_INPUTS is `{other}`; it must be `relay`, `discard` or `move`. Using \
+                 relay"
             );
-            LateInputs::Discard
+            LateInputs::Relay
         }
     }
 }

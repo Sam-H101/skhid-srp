@@ -124,10 +124,11 @@ fn what_the_clients_could_not_hold_is_refused_when_the_match_is_made() {
 
 #[test]
 fn the_settings_and_their_defaults() {
-    assert_eq!(parse_late_inputs(None), LateInputs::Discard);
+    assert_eq!(parse_late_inputs(None), LateInputs::Relay);
+    assert_eq!(parse_late_inputs(Some("relay")), LateInputs::Relay);
     assert_eq!(parse_late_inputs(Some("discard")), LateInputs::Discard);
     assert_eq!(parse_late_inputs(Some(" Move ")), LateInputs::Move);
-    assert_eq!(parse_late_inputs(Some("drop")), LateInputs::Discard);
+    assert_eq!(parse_late_inputs(Some("drop")), LateInputs::Relay);
     assert_eq!(parse_number("X", None, 10), 10);
     assert_eq!(parse_number("X", Some(" 120 "), 10), 120);
     assert_eq!(parse_number("X", Some("long"), 10), 10);

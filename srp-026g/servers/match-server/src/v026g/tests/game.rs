@@ -387,6 +387,44 @@ fn a_late_input_is_dropped_when_the_setting_says_so() {
     bench.assert_no_faults();
 }
 
+/// The default: an input past the server's horizon that every other game
+/// can still take into its history goes to them at its own tick, and its
+/// owner, who keeps it, is told nothing. (Dropped, the owner's drop order
+/// came past its own history on the slow lines that made inputs late, and
+/// it kept an input nobody else had: live, 2026-10-15.)
+#[test]
+fn a_late_input_the_others_can_still_take_is_relayed_at_its_tick() {
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    let late = bench.clients[0].input(-350, 0x1);
+    bench.run(100);
+    assert!(discards(&bench.clients[0]).is_empty());
+    assert_eq!(bench.clients[1].relays_of(0), [late]);
+    bench.assert_no_faults();
+}
+
+/// ... but not when one of them could not: its round trip and a margin
+/// leave less than the input's lateness before its history passes the
+/// tick. Then it is dropped, as before.
+#[test]
+fn a_late_input_a_far_game_could_not_take_is_dropped() {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    // The third game: 150 ms each way, a 300 ms round trip: an input more
+    // than 125 ms late reaches it past its history.
+    bench.one_way = vec![0, 0, 150];
+    bench.join_all();
+    settle(&mut bench);
+    bench.run(3_000);
+    // 300 ms late: past the horizon, and past what the far game leaves.
+    let late = bench.clients[0].input(-300, 0x1);
+    bench.run(500);
+    assert_eq!(discards(&bench.clients[0]), [late.time]);
+    assert!(bench.clients[1].relays_of(0).is_empty());
+    assert!(bench.clients[2].relays_of(0).is_empty());
+    bench.assert_no_faults();
+}
+
 #[test]
 fn a_profile_input_is_relayed_once() {
     let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
@@ -2271,7 +2309,13 @@ fn release(bench: &mut Bench, holding: &AtomicBool) {
 
 #[test]
 fn a_resynced_clients_inputs_are_relayed_throughout_and_their_answers_wait_for_its_world() {
-    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    // Late inputs dropped, as `discard` does: the answer is what is looked
+    // at (relayed, a late one needs none).
+    let settings = Settings {
+        late_inputs: LateInputs::Discard,
+        ..Settings::default()
+    };
+    let mut bench = Bench::new(3, MAP_BATTERIES, settings);
     let holding = hold(&mut bench, 2, &[id::INPUT_RELAY]);
     // It plays on while it waits for a world: its inputs go to the others.
     let (made, _) = resync_third(&mut bench, &holding, Some(20));

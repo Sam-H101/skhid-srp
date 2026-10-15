@@ -182,7 +182,7 @@ Each is an escape hatch for one thing not proven against a live client.
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_LATE_INPUTS` | `discard` | `move`: move late inputs (0xEF/0xF0) instead of telling the sender to drop them (0xF1/0xF2) |
+| `SRP_LATE_INPUTS` | `relay` | `relay`: a late input goes to the others at its tick while every other game can still take it, else as `discard`; `discard`: tell the sender to drop it (0xF1/0xF2); `move`: move it (0xEF/0xF0) |
 | `SRP_CLOCK_CORRECTION` | on | `off`: no 0xE7 (the 0xDB clock field is LIKELY) |
 | `SRP_CHECK_INITIAL_WORLD` | on | `off`: take a first world that already has statistics in it |
 | `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` | 10 | A playing client silent this long is gone. A client that loads its level has 60 s, or this if it is longer (since 2026-10-12) |
