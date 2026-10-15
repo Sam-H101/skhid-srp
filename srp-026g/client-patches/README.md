@@ -315,7 +315,10 @@ archive, revision 11 still has the setting (`uro_fov 80` in the console or
 `user.cfg`), just no slider. `test_fov_slider.py` checks the build's
 refusals without game files. Checked live in the lobby and in a match on a
 local server (with an earlier form of patch 22): the slider shows "FOV:"
-under gamma, changes the view and is saved to `user.cfg`. Not included in release overlays.
+under gamma, changes the view and is saved to `user.cfg`. In the players'
+download from revision 11: `make_client_026g.py --resource-region=main_menu=<entry>`,
+where the entry is the movie's 1 194 596 bytes at offset 17 970 448 of the
+built resources.db; the updater writes it into the player's db.
 
 ## What each patch does
 
