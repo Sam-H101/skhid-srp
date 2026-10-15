@@ -50,8 +50,13 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         }
         return;
     }
+    // A battery no way leads to now (inside a hazard) is left for later.
     for (battery, state) in cx.view.batteries.iter().enumerate() {
-        if matches!(state, BatteryState::Free(_)) && cx.battery_at(battery).is_some() {
+        if matches!(state, BatteryState::Free(_))
+            && cx
+                .battery_at(battery)
+                .is_some_and(|at| cx.reachable(at, false))
+        {
             out.extend(cx.candidate(
                 PlayKind::Collect,
                 TargetRef::Battery(battery),
@@ -101,6 +106,10 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
                 TargetRef::Battery(b) if matches!(cx.view.batteries.get(b), Some(BatteryState::Free(_)))
             ) {
                 return Step::Failed("someone took it");
+            }
+            // A hazard switched on round it (the cloud's energy rose).
+            if !cx.reachable(at, false) {
+                return Step::Failed("no way to it");
             }
             if cx.me.feet.distance_xz(at) <= num("reach_m") {
                 *state = State::Take {
@@ -165,5 +174,98 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             }
             Step::Continue(intent)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mapdata::{Rotation, Shape, ShapeKind, Vec3, Zone, ZoneKind};
+
+    use super::*;
+    use crate::v026g::bots::plays::tests::Scenario;
+    use crate::v026g::bots::tactics::Tactics;
+    use crate::v026g::bots::view::Mode;
+
+    /// The field with a toxic zone (always on) of radius `r` round
+    /// (25, 0, 32).
+    fn with_toxic(r: f32) -> Scenario {
+        let mut s = Scenario::field(Mode::Batteries);
+        let world = crate::v026g::bots::tactics::tests::field_with(|map| {
+            map.zones.push(Zone {
+                kind: ZoneKind::Damage,
+                name: "toxic".into(),
+                team: -1,
+                position: Vec3::new(25.0, 0.0, 32.0),
+                damage_type: "toxic".into(),
+                damage: None,
+                shapes: vec![Shape {
+                    kind: ShapeKind::Sphere,
+                    center: Vec3::new(25.0, 1.0, 32.0),
+                    rotation: Rotation::IDENTITY,
+                    half: Vec3::new(r, r, r),
+                }],
+            });
+        });
+        s.tactics = Tactics::new(world, 1.0);
+        s.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+        s
+    }
+
+    fn collects(s: &Scenario) -> Vec<TargetRef> {
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        out.iter()
+            .filter(|c| c.kind == PlayKind::Collect)
+            .map(|c| c.target)
+            .collect()
+    }
+
+    /// A battery inside a zone the bots keep out of is no candidate (it
+    /// stood still on it before); one beside it is.
+    #[test]
+    fn a_battery_inside_a_hazard_is_left_and_one_outside_is_taken() {
+        let mut s = with_toxic(4.0);
+        s.battery(BatteryState::Free(Vec3::new(25.0, 0.0, 32.0)));
+        s.battery(BatteryState::Free(Vec3::new(25.0, 0.0, 15.0)));
+        assert_eq!(collects(&s), vec![TargetRef::Battery(1)]);
+        assert!(
+            s.tactics
+                .route(
+                    Vec3::new(10.0, 0.0, 10.0),
+                    Vec3::new(25.0, 0.0, 32.0),
+                    s.view.clock,
+                    Some(0)
+                )
+                .is_none(),
+            "no route to the one left"
+        );
+        // A battery on the marked edge of a zone (1 m, the margin 1 m): a
+        // floor let through leads to it, so it is taken.
+        let mut s = with_toxic(1.0);
+        s.battery(BatteryState::Free(Vec3::new(25.0, 0.0, 30.1)));
+        let edge = s
+            .tactics
+            .world
+            .grid
+            .locate(Vec3::new(25.0, 0.0, 30.1), 3.0)
+            .unwrap();
+        assert!(!s.tactics.allowed(edge, s.view.clock, Some(0), false));
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
+    }
+
+    /// Fetching a battery a hazard closes round: the play gives up at once
+    /// instead of standing till `give_up_s`.
+    #[test]
+    fn a_fetch_gives_up_when_no_way_leads_to_the_battery() {
+        let mut s = with_toxic(4.0);
+        s.battery(BatteryState::Free(Vec3::new(25.0, 0.0, 32.0)));
+        let target = TargetRef::Battery(0);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Failed("no way to it")
+        );
     }
 }

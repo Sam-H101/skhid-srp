@@ -432,13 +432,13 @@ mod tests {
     fn world_of(walls: &[[[Vec3; 3]; 2]]) -> Arc<World> {
         Arc::new(World {
             map: mapdata::MapData::default(),
-            grid: mapdata::WalkGrid::build(
+            grid: Arc::new(mapdata::WalkGrid::build(
                 &[],
                 [0.0, 0.0, 1.0, 1.0],
                 0.25,
                 mapdata::Body::default(),
-            ),
-            sight: RayTree::from_corners(walls.iter().flatten().copied()),
+            )),
+            sight: Arc::new(RayTree::from_corners(walls.iter().flatten().copied())),
         })
     }
 

@@ -47,11 +47,12 @@ fn spawn_heights(map: &MapData) -> Vec<f32> {
 
 fn grid(map: &MapData, cell: f32, body: Body) -> WalkGrid {
     let t = Instant::now();
-    let grid = WalkGrid::build(
+    let grid = WalkGrid::build_kept(
         &map.walker_triangles(),
         map.play_area(mapdata::AREA_MARGIN),
         cell,
         body,
+        &map.grid_seeds(),
     );
     eprintln!(
         "grid of {cell} m: {} floors in {:.2} s",
@@ -280,4 +281,208 @@ fn weather_projects_share_geometry() {
             }
         }
     }
+}
+
+/// Every world in `SRP_MAPDATA_DIR` builds the same twice, and its digests
+/// (`project,floors,grid,sight`) go to `SRP_DIGESTS_OUT` when set: the
+/// baseline that a world read from a file, shared or stored more compactly
+/// must match (`docs/notes/player_bots_mapdata.md` §6).
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR"]
+fn every_world_builds_the_same_twice() {
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no map files in {}", dir.display());
+    let mut lines = vec!["project,floors,grid,sight".to_owned()];
+    for path in &files {
+        let build = || {
+            let map = MapData::read(path).unwrap();
+            World::build(map, mapdata::CELL, Body::default())
+        };
+        let t = Instant::now();
+        let world = build();
+        let seconds = t.elapsed().as_secs_f32();
+        let (grid, sight) = (world.grid.digest(), world.sight.digest());
+        let again = build();
+        assert_eq!(again.grid.digest(), grid, "{}", world.map.project);
+        assert_eq!(again.sight.digest(), sight, "{}", world.map.project);
+        eprintln!(
+            "{}: {} floors, built in {seconds:.2} s, grid {grid:016x}, sight {sight:016x}",
+            world.map.project,
+            world.grid.len()
+        );
+        lines.push(format!(
+            "{},{},{grid:016x},{sight:016x}",
+            world.map.project,
+            world.grid.len()
+        ));
+    }
+    if let Some(out) = std::env::var_os("SRP_DIGESTS_OUT") {
+        std::fs::write(out, lines.join("\n") + "\n").unwrap();
+    }
+}
+
+/// Every world's grid and tree written to `SRP_BUILT_DIR` (by key, once
+/// per geometry) read back the same, and how long a read takes against a
+/// build.
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR and SRP_BUILT_DIR"]
+fn every_world_reads_back_from_its_built_files() {
+    let (Some(dir), Some(out)) = (
+        std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from),
+        std::env::var_os("SRP_BUILT_DIR").map(std::path::PathBuf::from),
+    ) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    let (mut built_s, mut read_s, mut bytes) = (0.0, 0.0, 0u64);
+    for path in &files {
+        let map = MapData::read(path).unwrap();
+        let walker = map.walker_triangles();
+        let area = map.play_area(mapdata::AREA_MARGIN);
+        let body = Body::default();
+        let seeds = map.grid_seeds();
+        let grid_key = mapdata::grid_key(&walker, area, mapdata::CELL, body, &seeds);
+        let bullet = map.bullet_triangles();
+        let sight_key = mapdata::sight_key(&bullet);
+        let grid_path = out.join(mapdata::built::grid_file_name(grid_key));
+        let sight_path = out.join(mapdata::built::sight_file_name(sight_key));
+        let t = Instant::now();
+        let grid = WalkGrid::build_kept(&walker, area, mapdata::CELL, body, &seeds);
+        let sight = RayTree::build(&bullet);
+        let build = t.elapsed().as_secs_f32();
+        if !grid_path.is_file() {
+            grid.write(&grid_path, grid_key).unwrap();
+        }
+        if !sight_path.is_file() {
+            sight.write(&sight_path, sight_key).unwrap();
+        }
+        let t = Instant::now();
+        let read_grid = WalkGrid::read(&grid_path, grid_key).unwrap();
+        let read_sight = RayTree::read(&sight_path, sight_key).unwrap();
+        let read = t.elapsed().as_secs_f32();
+        assert_eq!(read_grid.digest(), grid.digest(), "{}", map.project);
+        assert_eq!(read_sight.digest(), sight.digest(), "{}", map.project);
+        built_s += build;
+        read_s += read;
+        bytes += std::fs::metadata(&grid_path).unwrap().len()
+            + std::fs::metadata(&sight_path).unwrap().len();
+        eprintln!(
+            "{}: built in {build:.2} s, read in {read:.2} s (grid {grid_key:016x}, sight {sight_key:016x})",
+            map.project
+        );
+    }
+    let on_disk: u64 = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    eprintln!(
+        "{} projects: built in {built_s:.1} s, read in {read_s:.1} s; files {} MB on disk",
+        files.len(),
+        on_disk >> 20
+    );
+    let _ = bytes;
+}
+
+/// Each world's kept grid is its whole grid less floors no body gets to:
+/// every kept floor is a floor of the whole at the same place, with the
+/// same headroom and links; every floor the seeds reach in the whole is
+/// kept; and how many go and what memory that saves, per map.
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR"]
+fn kept_grids_are_the_whole_grids_less_floors_no_body_gets_to() {
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
+    let (mut whole_bytes, mut kept_bytes) = (0usize, 0usize);
+    for path in &files {
+        let map = MapData::read(path).unwrap();
+        let walker = map.walker_triangles();
+        let area = map.play_area(mapdata::AREA_MARGIN);
+        let body = Body::default();
+        let seeds = map.grid_seeds();
+        let whole = WalkGrid::build(&walker, area, mapdata::CELL, body);
+        let kept = WalkGrid::build_kept(&walker, area, mapdata::CELL, body, &seeds);
+        let of: std::collections::HashMap<_, NodeId> = (0..whole.len() as NodeId)
+            .map(|f| (key(whole.position(f)), f))
+            .collect();
+        let mut present = vec![false; whole.len()];
+        for k in 0..kept.len() as NodeId {
+            let f = of[&key(kept.position(k))];
+            present[f as usize] = true;
+            assert_eq!(kept.headroom(k), whole.headroom(f));
+            let links = |g: &WalkGrid, a: NodeId| -> Vec<_> {
+                g.links(a)
+                    .map(|(b, kind)| (key(g.position(b)), kind))
+                    .collect()
+            };
+            assert_eq!(links(&kept, k), links(&whole, f), "{}", map.project);
+        }
+        // What the seeds reach in the whole is kept.
+        let starts: Vec<NodeId> = seeds.iter().filter_map(|&s| whole.locate(s, 3.0)).collect();
+        let mut seen = vec![false; whole.len()];
+        let mut queue = starts.clone();
+        for &s in &starts {
+            seen[s as usize] = true;
+        }
+        while let Some(a) = queue.pop() {
+            assert!(
+                present[a as usize],
+                "{}: a reached floor dropped",
+                map.project
+            );
+            for (b, _) in whole.links(a) {
+                if !seen[b as usize] {
+                    seen[b as usize] = true;
+                    queue.push(b);
+                }
+            }
+        }
+        // A seed finds the same floor in both.
+        for &s in &seeds {
+            assert_eq!(
+                whole.locate(s, 3.0).map(|f| key(whole.position(f))),
+                kept.locate(s, 3.0).map(|k| key(kept.position(k))),
+                "{}",
+                map.project
+            );
+        }
+        whole_bytes += whole.memory_bytes();
+        kept_bytes += kept.memory_bytes();
+        eprintln!(
+            "{}: {} floors, {} kept ({:.0} %), {:.1} MB to {:.1} MB",
+            map.project,
+            whole.len(),
+            kept.len(),
+            100.0 * kept.len() as f64 / whole.len().max(1) as f64,
+            whole.memory_bytes() as f64 / 1e6,
+            kept.memory_bytes() as f64 / 1e6
+        );
+    }
+    eprintln!(
+        "all {} projects: {:.0} MB to {:.0} MB",
+        files.len(),
+        whole_bytes as f64 / 1e6,
+        kept_bytes as f64 / 1e6
+    );
 }

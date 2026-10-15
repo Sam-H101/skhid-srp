@@ -77,7 +77,10 @@
 //!   map is built on a thread of its own the first time a match asks for
 //!   it, and `SRP_MAPDATA_KEEP` (default 1) built maps are kept besides
 //!   those running matches hold. Without it, or without the map's file,
-//!   bots keep their script;
+//!   bots keep their script. `SRP_MAPDATA_BUILT=<dir>` (default
+//!   `<SRP_MAPDATA_DIR>/built`; `off`: build at each load): where the
+//!   built grids, sight trees and tactics are kept and read back
+//!   (`mapdata::built`);
 //! - `SRP_BOTS_GIVE_WAY=on|off` (default `on`): whether one of the
 //!   server's own bots of a side leaves the match when a late joiner comes
 //!   onto that side and it needs the room (`game/driven.rs`, `give_way`).
@@ -301,6 +304,7 @@ impl Settings {
                     var("SRP_MAPDATA_KEEP").as_deref(),
                     bots::maps::KEEP as u32,
                 ),
+                var("SRP_MAPDATA_BUILT").as_deref(),
             ),
             bots_give_way: parse_switch(
                 "SRP_BOTS_GIVE_WAY",
@@ -402,15 +406,36 @@ fn parse_snapshot_dir(value: Option<&str>) -> Option<PathBuf> {
 }
 
 /// `SRP_MAPDATA_DIR`: unset, empty or `off` for none; `keep` built worlds
-/// kept (`SRP_MAPDATA_KEEP`).
-fn parse_mapdata_dir(value: Option<&str>, keep: u32) -> Option<Arc<bots::maps::Maps>> {
+/// kept (`SRP_MAPDATA_KEEP`); the built files in `built`
+/// (`SRP_MAPDATA_BUILT`: unset or empty for `<dir>/built`, `off` for none).
+fn parse_mapdata_dir(
+    value: Option<&str>,
+    keep: u32,
+    built: Option<&str>,
+) -> Option<Arc<bots::maps::Maps>> {
     let dir = value
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("off"))?;
+    let built = match built.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) if value.eq_ignore_ascii_case("off") => None,
+        Some(value) => Some(std::path::PathBuf::from(value)),
+        None => Some(std::path::Path::new(dir).join(bots::maps::BUILT_DIR)),
+    };
     if std::path::Path::new(dir).is_dir() {
-        log::info!("Bot maps from {dir}, {} kept built", keep.max(1));
+        let files = match &built {
+            Some(built) => built.display().to_string(),
+            None => "none (built at each load)".into(),
+        };
+        log::info!(
+            "Bot maps from {dir}, {} kept built; built files in {files}",
+            keep.max(1)
+        );
     } else {
         log::warn!("SRP_MAPDATA_DIR is `{dir}`, which is no directory; bots will have no maps");
     }
-    Some(bots::maps::Maps::with_keep(Some(dir.into()), keep as usize))
+    Some(bots::maps::Maps::configured(
+        Some(dir.into()),
+        keep as usize,
+        built,
+    ))
 }

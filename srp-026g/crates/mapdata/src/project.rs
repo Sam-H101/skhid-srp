@@ -589,6 +589,17 @@ impl MapData {
         out
     }
 
+    /// Where a body is known to get to, for [`crate::WalkGrid::build_kept`]:
+    /// every spawn, battery, container and charging station (an objective
+    /// a body takes from a floor no spawn reaches still keeps its floor).
+    pub fn grid_seeds(&self) -> Vec<Vec3> {
+        let mut seeds: Vec<Vec3> = self.spawns.iter().map(|s| s.position).collect();
+        seeds.extend(self.battery_spawners.iter().map(|b| b.item));
+        seeds.extend(self.containers.iter().map(|c| c.position));
+        seeds.extend(self.stations.iter().copied());
+        seeds
+    }
+
     /// The walker world: what the walking body stands on and bumps into.
     pub fn walker_triangles(&self) -> Vec<Triangle> {
         self.triangles(CollisionFilter::WALKER)

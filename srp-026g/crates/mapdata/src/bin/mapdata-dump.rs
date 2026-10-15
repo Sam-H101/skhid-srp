@@ -115,24 +115,31 @@ fn stats(map: MapData, cell: f32) {
     let place = t.elapsed().as_secs_f32();
     let area = map.play_area(mapdata::AREA_MARGIN);
     let t = Instant::now();
-    let (grid, built) = mapdata::WalkGrid::build_with_stats(&walker, area, cell, Body::default());
+    let (grid, built) = mapdata::WalkGrid::build_kept_with_stats(
+        &walker,
+        area,
+        cell,
+        Body::default(),
+        &map.grid_seeds(),
+    );
     let grid_time = t.elapsed().as_secs_f32();
     let t = Instant::now();
     let sight = mapdata::RayTree::build(&bullet);
     let sight_time = t.elapsed().as_secs_f32();
     println!(
         "  placed {} walker + {} bullet triangles in {place:.2} s; grid {}x{} of {cell} m: \
-         {} floors, {} after erosion, {:.1} MB, {grid_time:.2} s; sight tree {:.1} MB, {sight_time:.2} s",
+         {} floors, {} after erosion, {} kept, {:.1} MB, {grid_time:.2} s; sight tree {:.1} MB, {sight_time:.2} s",
         walker.len(),
         bullet.len(),
         grid.dimensions().0,
         grid.dimensions().1,
         built.floors,
         built.floors_after_erosion,
+        built.floors_kept,
         grid.memory_bytes() as f64 / 1e6,
         sight.memory_bytes() as f64 / 1e6,
     );
-    let world = World { map, grid, sight };
+    let world = World::assemble(map, grid.into(), sight.into());
     let spawns: Vec<(i32, Option<u32>)> = world
         .map
         .spawns
