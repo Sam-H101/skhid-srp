@@ -568,7 +568,9 @@ impl Core<'_> {
     /// `count` is the most the window wants; the header counts them all.
     ///
     /// `join` is the asker's own: whether its JOIN would put it into the
-    /// match at once (`join`, [`Core::join_fit`]). Cheap enough to be asked
+    /// match at once, and if not why (`join`, [`Core::join_fit`];
+    /// [`lobby::JoinCode::Unknown`] for a match the lobby did not make).
+    /// `match_level` is the match's, as its rewards take it. Cheap enough to be asked
     /// by every open window every few seconds: one look at the match
     /// server's registry, and for a match that takes players its admission,
     /// its sides and what the asker counts for.
@@ -628,9 +630,12 @@ impl Core<'_> {
                         .played
                         .filter(|_| each.phase == Phase::Playing)
                         .map(|played| played.as_secs().min(u32::MAX.into()) as u32),
-                    join: running
-                        .is_some_and(|(&id, running)| self.join_fit(who, id, running, now).is_ok()),
+                    join: running.map_or(lobby::JoinCode::Unknown, |(&id, running)| {
+                        self.join_fit(who, id, running, now)
+                            .map_or_else(|(code, _)| code, |_| lobby::JoinCode::Yes)
+                    }),
                     key,
+                    match_level: Some(each.match_level),
                 }
             })
             .collect();

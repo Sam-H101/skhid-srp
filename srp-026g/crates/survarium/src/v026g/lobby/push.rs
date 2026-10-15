@@ -747,7 +747,9 @@ pub const JOIN_KEY_MAX: u32 = 99_999_999;
 pub const MATCHES_NOW_ROWS: usize = 32;
 /// The first field of the header row of [`matches_now`]: the version of
 /// the rows' format. M2 appended the listing key to M1's rows and made
-/// `join` the asker's own.
+/// `join` the asker's own; it later made `join` a [`JoinCode`] (1 still
+/// "may join") and appended the match level, both additive, so the header
+/// stayed `M2`.
 pub const MATCHES_NOW_VERSION: &str = "M2";
 /// The first field of the row of [`join_answer`].
 pub const JOIN_ANSWER_VERSION: &str = "J1";
@@ -779,17 +781,92 @@ pub struct MatchNow {
     pub score: Option<[u16; 2]>,
     /// Whole seconds since play began; `None` writes `-`: it has not.
     pub played: Option<u32>,
-    /// The player who asked would be put into it at once by its JOIN
-    /// button (the lobby's rule; the row is the asker's own).
-    pub join: bool,
+    /// Whether the player who asked would be put into it at once by its
+    /// JOIN button ([`JoinCode::Yes`]), and if not why (the lobby's rule;
+    /// the row is the asker's own).
+    pub join: JoinCode,
     /// The lobby's listing number of the match, 1 to [`JOIN_KEY_MAX`]:
     /// stable for the match's life and not its match id. What a JOIN
     /// request names the match by ([`JOIN_START`]).
     pub key: u32,
+    /// The match's level as its rewards take it (the row of
+    /// `match_levels_dict`, fixed when the match is made); `None` writes
+    /// `-`: not known.
+    pub match_level: Option<u16>,
+}
+
+/// Whether an asker may join a match by its JOIN button now, and if not
+/// why: the `join` field of a [`matches_now`] row and the last field of a
+/// [`join_answer`]. The numbers are the movie's; a movie takes a number it
+/// does not know as [`JoinCode::Unknown`], and the movie of M2's first
+/// version reads 1 as "on" and anything else as "off".
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinCode {
+    /// No reason given: a match this lobby did not make, a key no match
+    /// has, a match that is over.
+    Unknown = 0,
+    /// May join now (the balance rule, or the maintenance rule).
+    Yes = 1,
+    /// The sides would count no more alike with the asker: "Teams are
+    /// already balanced".
+    Balanced = 2,
+    /// No side takes the asker (a side full, no room, the sizes rule; in
+    /// the maintenance rule the weaker side full): "No free place in this
+    /// match".
+    NoPlace = 3,
+    /// Another player is joining: a place is held in it for another, or
+    /// the match server admits nobody now while it plays with time left
+    /// (a joiner on its way in).
+    AnotherJoining = 4,
+    /// Not in play yet: the movie shows the phase's word instead.
+    NotStarted = 5,
+    /// Too little left to play (`JOIN_CUTOFF` or less): "Match ends soon".
+    EndsSoon = 6,
+    /// The match takes no late joiners (rosters that do not grow, fixed
+    /// teams): "This match takes no new players".
+    NoLateJoiners = 7,
+    /// The asker is in a match, sent to one, or has a place in one: "You
+    /// are already in a match".
+    InMatch = 8,
+    /// The asker is in a squad with others: "Leave your squad first".
+    InSquad = 9,
+    /// The asker's game is outdated, or does not join matches being
+    /// played: "Update your game".
+    Outdated = 10,
+    /// The asker had a place in this match already: "You already played in
+    /// this match".
+    HadPlace = 11,
+    /// A maintenance is near, and the match ends after it starts: "Ends
+    /// after the maintenance".
+    AfterMaintenance = 12,
+    /// The asker waits in the queue (it pressed Play and is searching):
+    /// "Leave the search first".
+    InQueue = 13,
+}
+
+impl JoinCode {
+    /// What the JOIN answer's second field says of this code, for a movie
+    /// that reads only that ([`JoinResult`]).
+    pub fn result(self) -> JoinResult {
+        match self {
+            Self::Yes => JoinResult::Ok,
+            Self::Balanced | Self::NoPlace | Self::AnotherJoining => JoinResult::Full,
+            Self::Unknown
+            | Self::NotStarted
+            | Self::EndsSoon
+            | Self::NoLateJoiners
+            | Self::AfterMaintenance => JoinResult::Gone,
+            Self::InQueue | Self::InMatch | Self::InSquad | Self::Outdated | Self::HadPlace => {
+                JoinResult::Busy
+            }
+        }
+    }
 }
 
 /// What a JOIN request ([`JOIN_START`]) came to: the second field of
-/// [`join_answer`]'s row.
+/// [`join_answer`]'s row, for the movies that do not read its code
+/// ([`JoinCode::result`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinResult {
     /// A place is held for the asker for a few seconds: its Play now puts
@@ -798,10 +875,11 @@ pub enum JoinResult {
     /// The match does not take the asker at once any more (another took
     /// the place, the sides count alike now, a side is full).
     Full,
-    /// The match is over, the key is no match's, or it stopped admitting.
+    /// The match is over, the key is no match's, it stopped admitting or
+    /// does not take late joiners, or it ends after a maintenance.
     Gone,
-    /// The asker cannot join now (in the queue, in a squad, an old game,
-    /// it had a place in the match).
+    /// The asker cannot join now (in the queue or a match, in a squad, an
+    /// old game, it had a place in the match).
     Busy,
 }
 
@@ -831,11 +909,13 @@ impl JoinResult {
 ///   `name = "M2;<total>"`, `place = MATCHES_START`. `total` is the matches
 ///   open now, which may be more than the rows that follow.
 /// - row `i` from 1, a match: `place = MATCHES_START + i`, `name =
-///   "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>;<key>"`
+///   "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>;<key>;<match_level>"`
 ///   ([`MatchNow`]): ASCII decimal numbers with `;` between them, `-` for a
-///   score or a time there is none of, `join` 1 or 0. The movie ignores
-///   fields after the ones it knows, so a later version may append (M1
-///   ended at `join`; a movie of M1 reads M2's rows as it read those).
+///   score, a time or a match level there is none of, `join` a
+///   [`JoinCode`] (1 "may join"). The movie ignores fields after the ones
+///   it knows, so a later version may append (M1 ended at `join`; a movie
+///   of M1 reads M2's rows as it read those, and the first M2 movie, which
+///   ended at `key`, reads `join` 1 as on and any other code as off).
 ///
 /// At most [`MATCHES_NOW_ROWS`] matches.
 ///
@@ -843,7 +923,7 @@ impl JoinResult {
 /// (0x271EB0) copies each name into a 64-byte field of its stack with no
 /// check of the length. Every name goes through `elo_rows`, which cuts it
 /// to [`limits::NAME`] as it does a player's; and with the widest number
-/// in every field a match's name is 53 bytes, so nothing is ever cut. The
+/// in every field a match's name is 60 bytes, so nothing is ever cut. The
 /// client hands the rows to the movie as they are (the place a whole u32)
 /// and looks at them nowhere else: it keeps none and compares no name.
 /// Its sender of the `3B` (0x270070) has no condition of the ranking
@@ -862,7 +942,7 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
             None => ["-".to_owned(), "-".to_owned()],
         };
         row(format!(
-            "{};{};{};{};{};{score0};{score1};{};{};{}",
+            "{};{};{};{};{};{score0};{score1};{};{};{};{}",
             each.level,
             each.mode,
             each.phase as u8,
@@ -870,8 +950,10 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
             each.players[1],
             each.played
                 .map_or("-".to_owned(), |seconds| seconds.to_string()),
-            u8::from(each.join),
-            each.key
+            each.join as u8,
+            each.key,
+            each.match_level
+                .map_or("-".to_owned(), |level| level.to_string())
         ))
     }));
     let placed: Vec<(u32, &Ranked)> = rows
@@ -883,14 +965,21 @@ pub fn matches_now(total: u32, matches: &[MatchNow]) -> Result<ServerMessage, Wi
 }
 
 /// `91` as the answer to a JOIN request (`3B 00 <JOIN_START + key>
-/// <count>`): one row, `name = "J1;<result>;<key>"` ([`JoinResult::word`]),
-/// `place = JOIN_START`, rating and change 0. **srp's own**, like
-/// [`matches_now`], and as safe for the client: a name of 20 bytes at the
-/// most, the place a whole u32 the movie tells apart from a ranking row
-/// (at least [`MATCHES_START`]).
-pub fn join_answer(result: JoinResult, key: u32) -> Result<ServerMessage, WireError> {
+/// <count>`): one row, `name = "J1;<result>;<key>;<code>"` (`result` the
+/// code's [`JoinResult::word`], [`JoinCode::result`]; `code` the
+/// [`JoinCode`], 1 with `ok`), `place = JOIN_START`, rating and change 0.
+/// The first M2 movie reads the first three fields and ignores the code.
+/// **srp's own**, like [`matches_now`], and as safe for the client: a name
+/// of 19 bytes at the most for a key the lobby gives (21 for any u32), the
+/// place a whole u32 the movie tells apart from a ranking row (at least
+/// [`MATCHES_START`]).
+pub fn join_answer(code: JoinCode, key: u32) -> Result<ServerMessage, WireError> {
     let row = Ranked {
-        name: format!("{JOIN_ANSWER_VERSION};{};{key}", result.word()),
+        name: format!(
+            "{JOIN_ANSWER_VERSION};{};{key};{}",
+            code.result().word(),
+            code as u8
+        ),
         rating: 0,
         rating_before: 0,
     };

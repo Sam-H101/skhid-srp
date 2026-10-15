@@ -2750,6 +2750,7 @@ fn the_registry_says_how_a_match_stands_while_it_runs() {
             played: None,
             time_left: None,
             standing: None,
+            match_level: 3,
         }
     );
     // One of three is in: the countdown waits for the second.
