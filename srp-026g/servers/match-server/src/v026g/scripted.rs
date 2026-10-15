@@ -428,6 +428,11 @@ pub struct Client {
     /// horizon tick of that moment. With the stock 100 ms interval the two
     /// are the same about every second time; this is that case every time.
     pub uploads_hashed_tick: bool,
+    /// Does not answer 0xF6 (as if its pool guard skipped every request).
+    pub no_uploads: bool,
+    /// Its datagrams ack nothing (as a game's acks that name only its
+    /// newest few seqs miss most of a burst).
+    pub mute_acks: bool,
     /// Does not answer 0xE5 (as if the answer were lost).
     pub mute_time_replies: bool,
     /// Acks as the real game was seen to (live, 2026-10-13): a pure ack
@@ -436,6 +441,9 @@ pub struct Client {
     /// here acks at once and deep, which a game does only while it sends
     /// its inputs.
     pub slow_acks: bool,
+    /// Its datagrams ack only the newest this many server seqs (the game
+    /// acks the newest 6 between its datagram and the server's last ack).
+    pub ack_depth: Option<u32>,
     /// Datagrams from the server for which this is true are lost.
     pub lose: Option<Lose>,
     /// `-hash_check_interval_in_ms`: 50 with the full client patch (the
@@ -484,8 +492,11 @@ impl Client {
             frozen_at: None,
             simulates: true,
             uploads_hashed_tick: false,
+            no_uploads: false,
+            mute_acks: false,
             mute_time_replies: false,
             slow_acks: false,
+            ack_depth: None,
             lose: None,
             hash_interval_ms: 50,
             hash_last_sent: 0,
@@ -650,12 +661,19 @@ impl Client {
     }
 
     fn datagram(&mut self, body: &[u8]) -> Vec<u8> {
-        let (rseq, bits, tail) = match self.received.newest() {
-            Some(newest) => (
-                newest,
-                self.received.bits(),
-                if self.slow_acks { 1 } else { 4 },
-            ),
+        let (rseq, bits, tail) = match self.received.newest().filter(|_| !self.mute_acks) {
+            Some(newest) => match self.ack_depth {
+                Some(depth) => (
+                    newest,
+                    self.received.bits() & (u128::MAX << (128 - depth.clamp(1, 7))),
+                    0,
+                ),
+                None => (
+                    newest,
+                    self.received.bits(),
+                    if self.slow_acks { 1 } else { 4 },
+                ),
+            },
             None => (0xFF, 0, 0),
         };
         let (ack0, tail_bytes) = ack::encode(bits, tail, false);
@@ -921,7 +939,7 @@ impl Client {
             ServerMessage::UploadRequest => {
                 self.upload_requests += 1;
                 // Silently not answered without an event-horizon world.
-                if let Some(horizon) = self.horizon() {
+                if let Some(horizon) = self.horizon().filter(|_| !self.no_uploads) {
                     let time = if self.uploads_hashed_tick {
                         self.last_hashed
                     } else {

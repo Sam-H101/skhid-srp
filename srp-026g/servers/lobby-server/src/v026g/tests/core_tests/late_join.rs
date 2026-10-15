@@ -313,6 +313,7 @@ fn a_player_alone_goes_to_the_side_that_trails() {
                 points: Some(points),
                 kills: [0, 0],
                 played: Some(Duration::from_secs(200)),
+                time_left: None,
                 giving_way: 0,
             },
         );
@@ -387,6 +388,7 @@ fn the_side_that_trails_by_a_dramatic_lead_gets_two_players() {
                 points: Some([lead, 0]),
                 kills: [0, 0],
                 played: Some(Duration::from_secs(400)),
+                time_left: None,
                 giving_way: 0,
             },
         );
@@ -462,6 +464,7 @@ fn the_log_gets_the_sides_of_a_match_being_played_each_minute() {
             points: Some([2, 1]),
             kills: [7, 5],
             played: Some(Duration::from_secs(61)),
+            time_left: None,
             giving_way: 0,
         },
     );

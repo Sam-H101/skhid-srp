@@ -163,10 +163,7 @@ A port that is not a number stops srp at start.
 | `SRP_GROWING_POPULATION_EXPONENT` | 1 | Which of several matches being played a player joins: the one with the highest (players with it)^this x minutes left |
 | `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
 | `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
-| `SRP_PATCH_REVISION_CHECK` | off | `warn`: a game whose exe says a patch revision under `SRP_MIN_PATCH_REVISION` is told in the general chat how to update. `refuse`: its Play and clan-team Play are also refused, with a message box (`patch_check.rs`). The late-join exe (0x80) and the test bots are never refused |
-| `SRP_MIN_PATCH_REVISION` | 4 | The least patch revision of a game that plays, when the check is on |
-| `SRP_OUTDATED_TEXT` | `st_login_menu_status_invalid_version` | What the refusal's message box shows: a text key of the game (the default is its "You're using an outdated version of the game.", in the player's language) or a sentence of up to 255 bytes, shown as it is |
-| `SRP_UPDATE_HINT` | a sentence naming `Skhid.bat` | The chat line that says how to update, to that player alone; empty: no line. Set your own to name your page |
+| `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start. (`SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT` and `SRP_OUTDATED_TEXT` are gone) |
 | `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and when a match starts (`Match found: Alice, Bob vs Carol`) |
 | `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
 | `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
@@ -182,7 +179,7 @@ Each is an escape hatch for one thing not proven against a live client.
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_LATE_INPUTS` | `discard` | `move`: move late inputs (0xEF/0xF0) instead of telling the sender to drop them (0xF1/0xF2) |
+| `SRP_LATE_INPUTS` | `relay` | `relay`: a late input goes to the others at its tick while every other game can still take it, else as `discard`; `discard`: tell the sender to drop it (0xF1/0xF2); `move`: move it (0xEF/0xF0) |
 | `SRP_CLOCK_CORRECTION` | on | `off`: no 0xE7 (the 0xDB clock field is LIKELY) |
 | `SRP_CHECK_INITIAL_WORLD` | on | `off`: take a first world that already has statistics in it |
 | `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` | 10 | A playing client silent this long is gone. A client that loads its level has 60 s, or this if it is longer (since 2026-10-12) |
@@ -191,6 +188,7 @@ Each is an escape hatch for one thing not proven against a live client.
 | `SRP_COMPRESS_STATE` | on | `off`: the world (0xE8) goes to the clients as it is, not as LZMA2 (since 2026-10-13; `docs/notes/match.md` section 27) |
 | `SRP_BOTS_GIVE_WAY` | on | `off`: the server's own bots (`SRP_SERVER_BOTS`, testing only) stay to the end; on, one of a side leaves (0xEA) when a late joiner comes onto that side and it would otherwise be the larger one (`game/driven.rs`; a roster place is never freed by it) |
 | `SRP_ENTRY_STATE_SECONDS` | 4 | How long the first world of a game that has none yet is kept on its way before its sync starts over; 2 to 5, and less for an old snapshot (the ticks on the wire reach 6.35 s from the clock the game waits at). A game that plays is resynced within 1.75 s |
+| `SRP_RELAY_PACK_MS` | 15 | How long a relay or a drop order may wait for others to share its datagram (at most 50; 0: each goes at once). Anything else queued, a full datagram or an ack due sends them at once (since 2026-10-14; `docs/notes/transport.md` section 11.1) |
 
 ### Test bots (testing only; `crates/session/src/v026g/bots.rs`)
 
@@ -370,7 +368,7 @@ OPEN-ISSUES.md, "0.26g"):
 |---|---|
 | Login | Sign-in, registration on first sign-in, wrong password, bans with the game's ban reasons, limits, closed registration, wrong build |
 | Lobby account | The sign-in push in the order the client needs; inventory with its three "spent" lists; kits (three, the third with premium), move, autobuy flag, active kit, kit names |
-| Shop | Buy, sell, repair, gold for silver (`47 04`); sellers by reputation level |
+| Shop | Buy, sell, repair, gold for silver and (srp's lobby exchange) silver for gold (`47 04`); sellers by reputation level |
 | Skills | Set, reset for silver or gold |
 | Quests | Choosing a faction, daily quests, progress and pay after a match |
 | Queue and matches | Play alone or as a squad, leave, rejoin after a new sign-in (`MatchRegistry::reseat`) |
@@ -517,8 +515,13 @@ has none), the launcher's ten local pages, and `Skhid.bat` and `Skhid.sh`
 beside `game`, the one file a player starts. Build the Rust programs first with
 `../client/bugtrap/build.sh` and `../client/updater/build.sh`; the overlay
 builder includes them by default.
-`--pack-zip` creates the player archive directly instead of a folder, with exactly
-those files (23; seven with `--no-launcher`) and no source, symbols or tests.
+The default exe (patch revision 12) starts only with the Skhid-signed
+`resources.db`, so it is built with `--resource-grow=<grow.json>
+--resources-out=<folder>` (resource-porter's `pack release`), which the
+updater installs before PLAY. `--pack-zip` creates the player
+archive directly instead of a folder, with exactly those files (24 with the
+plan; seven with `--no-launcher --no-late-join`) and no source, symbols or
+tests.
 `--check` writes nothing. The same input gives the same archive byte for byte:
 the updater installs whenever the archive the site offers has another checksum.
 The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the

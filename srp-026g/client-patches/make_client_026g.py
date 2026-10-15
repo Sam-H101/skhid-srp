@@ -22,6 +22,10 @@ USAGE
         [--resource-region=<name>=<entry file> ...  --resources-out=<folder>]
                                      have the updater rewrite a known entry of
                                      resources.db in place (see RESOURCE REGIONS)
+        [--resource-grow=<manifest.json>  --resources-out=<folder>]
+                                     have the updater grow resources.db: a new
+                                     file table and new entries appended (see
+                                     GROWING RESOURCES.DB)
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
@@ -111,6 +115,36 @@ RESOURCE REGIONS
     offered. Without --resource-region the archive is as before, byte for
     byte.
 
+GROWING RESOURCES.DB
+
+    --resource-grow=<manifest.json> (once) adds new entries to the player's
+    game/resources.db: the manifest (written by resource-porter) names a head
+    (the bytes [offset, offset + size) of the db as shipped, its file table,
+    rewritten to name the new entries) and a tail (the new entries' bytes,
+    appended at the db's end):
+
+        {"format": "skhid-db-grow 1", "path": "game/resources.db",
+         "original_size": <db as shipped>, "new_size": <db grown>,
+         "head": {"name": "file_table", "offset": 0, "size": <n>,
+                  "file": "head.bin", "original_sha256": "...",
+                  "target_sha256": "..."},
+         "tail": {"name": "new_items", "file": "tail.bin",
+                  "sha256": "..."}}
+
+    (files relative to the manifest). Every size and checksum is checked,
+    against the source game's resources.db too. The head starts at 0: the
+    db's header, the new file table and its signature by Skhid's key
+    (sign_resources_026g.py). The default exe (patch revision 12) starts with
+    that resources.db alone and every other exe with the original one alone,
+    so the default exe ships exactly when --resource-grow is given. The plan
+    then has the head
+    as a region and a `tail` line naming it (plan format 2), and is
+    *required*: the updater keeps PLAY off until the db holds the tail, the
+    head and every other region of the plan, and puts the db back as
+    shipped when it cannot finish (client/updater/README.md, "Resources").
+    The head's, its original's and the tail's blobs go into
+    --resources-out=<folder> with the regions' ones.
+
 A player unpacks the overlay into an empty folder, or into the game's folder
 (the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
@@ -122,6 +156,7 @@ updater downloads the original game from its pinned mirror when it is missing.
 """
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -129,6 +164,7 @@ import zipfile
 import zlib
 
 import patch_026g as P
+import sign_resources_026g as S
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "launcher"))
@@ -172,6 +208,9 @@ RESOURCES_DB = "game/resources.db"
 # offset and size in the file (the file table's pos_in_db and size_in_db) and
 # the sha256 of their original bytes.
 RESOURCE_REGIONS = {
+    # The settings menu, for fov_slider_026g.py's "FOV:" slider (patch 22);
+    # it ends where lobby_menu begins.
+    "main_menu": (17970448, 1194596, "0ff118a85b53f69eb65f36b0f5996bdbdc12ec5068440e4d4d4dd6ece49481a4"),
     "lobby_menu": (19165044, 38985769, "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"),
     "login_menu": (58150813, 3508744, "805ea5f872402d0b8c4abceed4f8cabf5ed50b7d62d5c3fc45f58f6d64e982cf"),
 }
@@ -277,9 +316,100 @@ def resource_regions(source, chosen):
     return lines, blobs
 
 
+GROW_FORMAT = "skhid-db-grow 1"
+
+
+def resource_grow(source, manifest_path, region_lines=()):
+    """The plan's head region and tail lines, and the blobs to upload, for a
+    grow manifest: every size and checksum checked, the head's original
+    against the source game's resources.db."""
+    import json
+    folder = os.path.dirname(os.path.abspath(manifest_path))
+    try:
+        manifest = json.loads(Path(manifest_path).read_text())
+    except (OSError, ValueError) as e:
+        sys.exit(f"{manifest_path}: cannot read the grow manifest ({e})")
+    if not isinstance(manifest, dict) or manifest.get("format") != GROW_FORMAT:
+        sys.exit(f"{manifest_path}: not a {GROW_FORMAT!r} manifest")
+    if manifest.get("path") != RESOURCES_DB:
+        sys.exit(f"{manifest_path}: grows {manifest.get('path')!r}; only {RESOURCES_DB} can be grown")
+    try:
+        head, tail = manifest["head"], manifest["tail"]
+        original_size, new_size = int(manifest["original_size"]), int(manifest["new_size"])
+        offset, size = int(head["offset"]), int(head["size"])
+        names = (str(head["name"]), str(tail["name"]))
+        head_file, tail_file = head["file"], tail["file"]
+        expected = (head["original_sha256"], head["target_sha256"], tail["sha256"])
+    except (KeyError, TypeError, ValueError) as e:
+        sys.exit(f"{manifest_path}: incomplete grow manifest ({e!r})")
+    for name in names:
+        if not name or len(name) > 64 or not all(c.isascii() and (c.isalnum() or c in "._-") for c in name):
+            sys.exit(f"{manifest_path}: {name!r} is not a plan name (letters, digits, . _ -)")
+    if names[0].lower() == names[1].lower() or any(
+            line.split(" ")[-1].lower() in (names[0].lower(), names[1].lower()) for line in region_lines):
+        sys.exit(f"{manifest_path}: the names {names} are taken")
+    db = os.path.join(source, "resources.db")
+    try:
+        db_size = os.path.getsize(db)
+    except OSError as e:
+        sys.exit(f"{db}: cannot read the game's resources.db ({e})")
+    if db_size != original_size:
+        sys.exit(f"{db}: {db_size} bytes; the manifest grows a db of {original_size}")
+    if not (0 <= offset and 0 < size and offset + size <= original_size < new_size):
+        sys.exit(f"{manifest_path}: the head [{offset}, {offset + size}) or the sizes do not fit")
+    if offset != 0:
+        sys.exit(f"{manifest_path}: the head starts at {offset}; it must start at 0, where the db's "
+                 "header, file table and the table's signature are")
+    for line in region_lines:
+        _, _, _, other_offset, other_size, *_ = line.split(" ")
+        if offset < int(other_offset) + int(other_size) and int(other_offset) < offset + size:
+            sys.exit(f"{manifest_path}: the head overlaps the region {line.split(' ')[-1]}")
+    try:
+        built_head = Path(folder, head_file).read_bytes()
+        built_tail = Path(folder, tail_file).read_bytes()
+    except OSError as e:
+        sys.exit(f"{manifest_path}: cannot read a file it names ({e})")
+    with open(db, "rb") as file:
+        file.seek(offset)
+        original = file.read(size)
+    checks = [
+        (len(built_head) == size, f"{head_file}: {len(built_head)} bytes, the head has {size}"),
+        (sha256(original) == expected[0],
+         f"{db}: the head at {offset} is not the manifest's original: not the build it was made for"),
+        (sha256(built_head) == expected[1], f"{head_file}: not the manifest's head (sha256)"),
+        (expected[0] != expected[1], f"{head_file}: the head is the original: nothing to change"),
+        (len(built_tail) == new_size - original_size,
+         f"{tail_file}: {len(built_tail)} bytes; the db grows by {new_size - original_size}"),
+        (sha256(built_tail) == expected[2], f"{tail_file}: not the manifest's tail (sha256)"),
+    ]
+    for ok, message in checks:
+        if not ok:
+            sys.exit(message)
+    try:
+        signer = S.which_key(*S.read_table(io.BytesIO(built_head))[1:])
+    except ValueError as e:
+        sys.exit(f"{head_file}: not the head of a resources.db ({e})")
+    if signer != "skhid":
+        sys.exit(f"{head_file}: its file table is signed by {signer or 'neither key'}, not Skhid's; "
+                 f"the exe of patch revision {P.REVISION} would not start (sign_resources_026g.py sign)")
+    lines = [
+        f"region {RESOURCES_DB} {original_size} {offset} {size} {expected[0]} {expected[1]} {names[0]}",
+        f"tail {RESOURCES_DB} {original_size} {new_size} {expected[2]} {names[1]} {names[0]}",
+    ]
+    blobs = {expected[1]: built_head, expected[0]: original, expected[2]: built_tail}
+    return lines, blobs
+
+
 def resources_plan(lines):
-    """The plan's text (write_plan in client/updater/logic/src/resources.rs)."""
-    return "".join(line + "\r\n" for line in ["skhid-resources 1", *lines, "end"]).encode("ascii")
+    """The plan's text (write_plan in client/updater/logic/src/resources.rs):
+    format 2 when it grows a file (an older updater must not write the
+    table without its tail), else format 1."""
+    version = 2 if any(line.startswith("tail ") for line in lines) else 1
+    regions = [line for line in lines if line.startswith("region ")]
+    regions.sort(key=lambda line: int(line.split(" ")[3]))
+    rest = [line for line in lines if not line.startswith("region ")]
+    return "".join(line + "\r\n" for line in
+                   [f"skhid-resources {version}", *regions, *rest, "end"]).encode("ascii")
 
 
 def write_blobs(folder, blobs, check):
@@ -341,7 +471,21 @@ def bat(server, localization, embedded=False):
         "rem It must run from this folder (game\\binaries\\x86): the game finds",
         "rem ..\\..\\resources\\ssl\\survarium_login_server.crt from where it is started.",
         'cd /d "%~dp0"',
+        "rem A release that grows resources.db must be in place first: the game",
+        "rem with the new exe and the old db crashes. The updater checks it (it",
+        "rem reads only; no updater beside this file, as without the launcher: no check).",
+        'if not exist "updater_skhid.exe" goto play',
+        '"updater_skhid.exe" ready',
+        "if errorlevel 1 goto not_ready",
+        ":play",
         'start "" ' + launch_line("%SERVER%", "%LANGUAGE%", embedded),
+        "exit /b 0",
+        ":not_ready",
+        "echo Skhid has not finished updating the game's files (game\\resources.db),",
+        "echo so the game is not started. Start Skhid.bat (the launcher): it finishes",
+        "echo the update. Details: game\\binaries\\x86\\updater_skhid.log",
+        "pause",
+        "exit /b 1",
         "",
     ]
     return "\r\n".join(lines).encode("ascii")
@@ -515,7 +659,7 @@ def main():
     launcher, updater_path, site = True, UPDATER_EXE, None
     extractor_path = EXTRACTOR_EXE
     late_join = True
-    regions, resources_out = [], None
+    regions, resources_out, grow = [], None, None
     for option in options:
         if option == "--check":
             check = True
@@ -548,6 +692,12 @@ def main():
             if any(name == other for other, _ in regions):
                 sys.exit(f"{option}: {name} is given twice")
             regions.append((name, path))
+        elif option.startswith("--resource-grow="):
+            if grow is not None:
+                sys.exit(f"{option}: --resource-grow is given twice")
+            grow = option[len("--resource-grow="):]
+            if not grow:
+                sys.exit(f"{option}: --resource-grow=<manifest.json>")
         elif option.startswith("--resources-out="):
             resources_out = os.path.abspath(option[len("--resources-out="):])
         else:
@@ -561,16 +711,29 @@ def main():
     if not check and os.path.lexists(output):
         if archive or not os.path.isdir(output) or os.listdir(output):
             sys.exit(f"{output}: output already exists; use a new ZIP or an empty folder")
-    if regions and not launcher:
-        sys.exit("--resource-region needs the updater: leave out --no-launcher")
-    if regions and not resources_out:
-        sys.exit("--resource-region needs --resources-out=<folder> for the blobs the server is to offer")
-    if resources_out and not regions:
-        sys.exit("--resources-out is for --resource-region")
+    if (regions or grow) and not launcher:
+        sys.exit(f"{'--resource-grow' if grow else '--resource-region'} needs the updater: "
+                 "leave out --no-launcher")
+    if (regions or grow) and not resources_out:
+        sys.exit(f"{'--resource-grow' if grow else '--resource-region'} needs --resources-out=<folder> "
+                 "for the blobs the server is to offer")
+    if resources_out and not (regions or grow):
+        sys.exit("--resources-out is for --resource-region or --resource-grow")
     if resources_out and (inside(resources_out, source) or inside(resources_out, os.path.dirname(source))):
         sys.exit(f"{resources_out}: the blobs' folder must be outside the game folder {os.path.dirname(source)}")
     # Checked before anything is written.
     region_lines, blobs = resource_regions(source, regions) if regions else ([], {})
+    if grow:
+        grow_lines, grow_blobs = resource_grow(source, grow, region_lines)
+        region_lines = region_lines + grow_lines
+        blobs.update(grow_blobs)
+    # The default exe starts only with the Skhid-signed resources.db that
+    # --resource-grow ships, every other exe only with the original one.
+    if (mode == "section" and late_join) != bool(grow):
+        sys.exit(f"the default exe (patch revision {P.REVISION}) starts only with the resources.db "
+                 "--resource-grow ships, and every other exe (--no-late-join, --cert-only, --cave=) only "
+                 "with the original one: give the default exe --resource-grow (which needs the launcher), "
+                 "or build another exe")
 
     bugtrap = read_bugtrap(bugtrap_path)
 

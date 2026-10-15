@@ -142,6 +142,8 @@ fn a_genuinely_new_player_waits_for_resources_then_gets_a_post_barrier_snapshot(
     assert_eq!(bench.game().resyncs(0), 0);
     assert_eq!(bench.game().resyncs(1), 0);
     assert_eq!(bench.game().resyncs(2), 0);
+    // Right from its first report: its world was never asked for.
+    assert_eq!(bench.clients[place].upload_requests, 0);
     bench.assert_no_faults();
 }
 
@@ -313,16 +315,20 @@ fn snapshot_delivery_is_not_enough_the_newcomer_must_demonstrate_catchup() {
     // Its wrong world must not count as a vote against the existing world.
     bench.clients[place].no_hashes = false;
     bench.clients[place].sim.salt_from = Some((0, 7));
-    bench.run(3_000);
+    bench.run(1_000);
     assert!(!bench.clients[0].entered().contains(&(place as u8)));
     assert_eq!(bench.game().resyncs(0), 0);
     assert_eq!(bench.game().resyncs(1), 0);
-    bench.clients[place].sim.salt_from = None;
-    assert!(bench.until(2_000, |b| {
+    // Wrong for a second, it is started once more, and that world (the
+    // scripted game's salt goes with a load) is right.
+    assert!(bench.until(8_000, |b| {
         b.clients
             .iter()
             .all(|c| c.entered().contains(&(place as u8)))
     }));
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.game().resyncs(0), 0);
+    assert_eq!(bench.game().resyncs(1), 0);
     bench.assert_no_faults();
 }
 
@@ -550,9 +556,16 @@ fn failed_catchup_times_out_without_entering_or_voting_against_existing_players(
     let place = reserve(&mut bench);
     bench.clients[place].no_hashes = true;
     bench.join(place);
-    bench.clients[place].sim.salt_from = Some((0, 7));
+    // Its world has objects the others' have not, also after a load.
+    bench.clients[place].sim.late_objects_from = Some((0, 7));
     bench.clients[place].no_hashes = false;
+    // Started once more, once only, with 30 s more to catch up in.
     bench.run_long(61_000);
+    assert!(!bench.clients[place].disconnected);
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.clients[place].upload_requests, 1);
+    bench.run_long(30_000);
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
     assert!(bench.clients[place].disconnected);
     assert!(bench.registry.seat(session_of(place)).is_none());
     assert!(!bench.clients[0].entered().contains(&(place as u8)));
@@ -560,6 +573,56 @@ fn failed_catchup_times_out_without_entering_or_voting_against_existing_players(
         assert_eq!(bench.clients[index].model.syncs, 1);
         assert_eq!(bench.game().resyncs(index), 0);
     }
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_newcomer_wrong_from_its_world_on_is_saved_and_started_once_more() {
+    let dir = std::env::current_exe()
+        .unwrap()
+        .with_file_name(format!("joiner-worlds-{}", std::process::id()));
+    let settings = Settings {
+        snapshot_dir: Some(dir.clone()),
+        ..Settings::default()
+    };
+    let mut bench = Bench::growing(2, MAP_BATTERIES, settings);
+    bench.join_all();
+    bench.run_long(25_000);
+    let place = reserve(&mut bench);
+    bench.clients[place].no_hashes = true;
+    bench.join(place);
+    let uploads = bench.clients[place].uploads;
+    // Its world is not the others' from its first report on.
+    bench.clients[place].sim.salt_from = Some((0, 7));
+    bench.clients[place].no_hashes = false;
+    assert!(bench.until(5_000, |b| b.clients[place].upload_requests == 1));
+    assert!(!bench.clients[0].entered().contains(&(place as u8)));
+    assert_eq!(bench.clients[place].snapshots().len(), 1);
+    // Its world comes, and is saved, not counted: no report of it is kept
+    // to judge the others by.
+    assert!(bench.until(1_000, |b| b.clients[place].uploads == uploads + 1));
+    bench.run(50);
+    assert_eq!(bench.game().hash_reports_of(place), 0);
+    // Started once more from a world from then on (the scripted game's
+    // salt goes with a load), it is right and enters.
+    assert!(bench.until(10_000, |b| {
+        b.clients
+            .iter()
+            .all(|c| c.entered().contains(&(place as u8)))
+    }));
+    assert_eq!(bench.clients[place].snapshots().len(), 2);
+    assert_eq!(bench.clients[place].upload_requests, 1);
+    for index in 0..2 {
+        assert_eq!(bench.clients[index].model.syncs, 1);
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    let saved: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(&format!("_p{place}_joiner_")))
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(saved.len(), 1, "{saved:?}");
     bench.assert_no_faults();
 }
 
@@ -774,6 +837,137 @@ fn a_reserved_group_enters_on_one_tick_after_every_member_catches_up() {
     bench.assert_no_faults();
 }
 
+/// A group of newcomers reserved together (as the lobby's late placement
+/// does, `join_running_group`): their clients, not connected.
+fn reserve_group(bench: &mut Bench, count: usize) -> Vec<usize> {
+    let first = bench.clients.len();
+    let places: Vec<usize> = (first..first + count).collect();
+    bench
+        .registry
+        .join_running_group(
+            bench.match_id,
+            places.iter().map(|place| player(*place)).collect(),
+        )
+        .unwrap();
+    for place in &places {
+        bench.clients.push(Client::growing(
+            session_of(*place),
+            first + count,
+            MAP_BATTERIES,
+        ));
+        bench
+            .addrs
+            .push(SocketAddr::from(([127, 0, 0, 1], 40_000 + *place as u16)));
+    }
+    places
+}
+
+#[test]
+fn a_group_member_whose_game_never_comes_is_left_out_and_the_rest_enter() {
+    let mut bench = running();
+    let places = reserve_group(&mut bench, 2);
+    // Only the first comes; it catches up at once, and waits for the other.
+    bench.join(places[0]);
+    bench.run_long(15_000);
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    // 20 s after the reservation the other is let go: the first enters
+    // (2 v 1 then, as the sides may be).
+    assert!(bench.until(8_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(places[0] as u8)))
+    }));
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    assert!(bench.registry.seat(session_of(places[1])).is_none());
+    assert!(bench.registry.seat(session_of(places[0])).is_some());
+    bench.run(3_000);
+    for index in 0..2 {
+        assert_eq!(bench.clients[index].model.syncs, 1);
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_member_started_once_more_gives_its_caught_up_group_its_extra_time() {
+    let mut bench = running();
+    let reserved = bench.ms;
+    let places = reserve_group(&mut bench, 2);
+    bench.join(places[0]);
+    // The second's world is not the others' from its first report on: it
+    // is started once more, with 30 s more to catch up in.
+    bench.clients[places[1]].no_hashes = true;
+    bench.join(places[1]);
+    bench.clients[places[1]].sim.salt_from = Some((0, 7));
+    bench.clients[places[1]].no_hashes = false;
+    assert!(bench.until(10_000, |b| b.clients[places[1]].upload_requests == 1));
+    // From then on it reports nothing for a while.
+    bench.clients[places[1]].no_hashes = true;
+    assert!(bench.until(5_000, |b| b.clients[places[1]].snapshots().len() == 2));
+    // The first caught up long ago; it waits past its own 60 s, for as
+    // long as the second may take.
+    while bench.ms < reserved + 65_000 {
+        bench.step(25);
+    }
+    for place in &places {
+        assert!(!bench.clients[*place].disconnected, "{place}");
+        assert!(bench.registry.seat(session_of(*place)).is_some(), "{place}");
+    }
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    // The second catches up: both enter.
+    bench.clients[places[1]].no_hashes = false;
+    assert!(bench.until(10_000, |b| {
+        b.clients[..2].iter().all(|c| {
+            places
+                .iter()
+                .all(|place| c.entered().contains(&(*place as u8)))
+        })
+    }));
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_group_member_that_leaves_is_left_out_and_the_rest_enter() {
+    let mut bench = running();
+    let places = reserve_group(&mut bench, 2);
+    bench.clients[places[1]].no_hashes = true;
+    for place in &places {
+        bench.join(*place);
+    }
+    // The second leaves before it is in; the first waits for it a while.
+    bench.clients[places[1]].leave();
+    bench.run_long(10_000);
+    assert!(!bench.clients[0].entered().contains(&(places[0] as u8)));
+    assert!(bench.until(15_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(places[0] as u8)))
+    }));
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    bench.assert_no_faults();
+}
+
+#[test]
+fn a_part_of_a_group_that_would_unbalance_the_sides_does_not_enter_alone() {
+    // Three in play, 2 v 1; the group is one for each side.
+    let mut bench = Bench::growing(3, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    bench.run_long(25_000);
+    assert!(bench.game().admitting());
+    let places = reserve_group(&mut bench, 2);
+    assert_eq!(places, [3, 4]);
+    // The one for the side that has fewer never comes: the other alone
+    // would make it 3 v 1.
+    bench.join(places[1]);
+    bench.run_long(30_000);
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    // So it waits out its time.
+    bench.run_long(31_000);
+    assert!(bench.clients[places[1]].disconnected);
+    assert!(!bench.clients[0].entered().contains(&(places[1] as u8)));
+    bench.assert_no_faults();
+}
+
 #[test]
 fn group_reservation_validates_every_member_before_changing_any_seat() {
     let bench = running();
@@ -805,17 +999,21 @@ fn group_reservation_validates_every_member_before_changing_any_seat() {
 }
 
 #[test]
-fn one_group_member_failing_catchup_rejects_the_whole_group() {
+fn a_group_member_failing_catchup_is_left_out_and_the_rest_get_their_entry_check() {
     let mut bench = running();
     reserve_pair(&mut bench);
     bench.clients[3].no_hashes = true;
     bench.run_long(61_000);
-    for place in 2..4 {
-        assert!(bench.clients[place].disconnected);
-        assert!(bench.registry.seat(session_of(place)).is_none());
-        assert!(!bench.clients[0].entered().contains(&(place as u8)));
-    }
-    assert_eq!(&bench.stages()[..2], "LL");
+    // The member that never caught up is let go at the group's deadline ...
+    assert!(bench.clients[3].disconnected);
+    assert!(bench.registry.seat(session_of(3)).is_none());
+    assert!(!bench.clients[0].entered().contains(&3));
+    // ... and the one that did is not let go with it unchecked: the group
+    // is smaller, and the sides 2 v 1 are no further apart than one
+    // player, so it enters (`entry_keeps_balance`).
+    assert!(!bench.clients[2].disconnected);
+    assert!(bench.clients[0].entered().contains(&2));
+    assert_eq!(&bench.stages()[..3], "LLL");
     assert_eq!(bench.clients[0].model.syncs, 1);
     bench.assert_no_faults();
 }
@@ -884,6 +1082,56 @@ fn reserve_with_one_game_still_installing(bench: &mut Bench) -> (usize, Prepare)
     assert!(bench.until(1_000, |b| !b.clients[1].prepares.is_empty()));
     let prepare = bench.clients[1].prepares[0].clone();
     (place, prepare)
+}
+
+#[test]
+fn a_roster_change_while_a_newcomers_world_is_on_its_way_reaches_it_after_the_world() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use udp_transport::wire;
+    use udp_transport::{Direction, Table};
+    let mut bench = running_three();
+    let place = reserve(&mut bench);
+    // The newcomer's world is held up on its way.
+    let holding = Arc::new(AtomicBool::new(true));
+    let held = holding.clone();
+    bench.clients[place].lose = Some(Box::new(move |datagram| {
+        held.load(Ordering::Relaxed)
+            && wire::parse(Table::Match, Direction::ToClient, datagram, 20).is_ok_and(|parsed| {
+                parsed
+                    .messages
+                    .iter()
+                    .any(|message| message.id == id::SNAPSHOT)
+            })
+    }));
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    assert!(bench.until(8_000, |b| b.stages().ends_with('s')));
+    // A player leaves meanwhile. The newcomer gets it after its world: the
+    // client's 0xEA handler crashes before its load (live, 2026-10-14).
+    bench.clients[2].leave();
+    bench.run(300);
+    holding.store(false, Ordering::Relaxed);
+    assert!(bench.until(8_000, |b| {
+        b.clients[..2]
+            .iter()
+            .all(|c| c.entered().contains(&(place as u8)))
+    }));
+    let taken = &bench.clients[place].taken;
+    let left = taken
+        .iter()
+        .position(|message| matches!(message, ServerMessage::PlayerLeft { player: 2, .. }))
+        .expect("the leave");
+    let world = taken
+        .iter()
+        .position(|message| matches!(message, ServerMessage::Snapshot { .. }))
+        .unwrap();
+    assert!(left > world, "{left} {world}");
+    for index in 0..2 {
+        assert_eq!(bench.game().resyncs(index), 0);
+    }
+    assert_eq!(bench.clients[place].snapshots().len(), 1);
+    bench.assert_no_faults();
 }
 
 #[test]

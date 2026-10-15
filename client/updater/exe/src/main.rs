@@ -416,10 +416,11 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Err(message) => return Done::Failed(message),
     };
     let done = overlay(session, layout, &server);
-    // The resource step is best effort: whatever it does, the overlay's
-    // result stands. It runs at every start the game may be played after,
-    // and with the server only when the server answered. When this updater
-    // or the launcher was replaced, the new ones start at once and do it.
+    // The resource step is best effort unless its plan is required: then
+    // it must be in place before the game is played. It runs at every start
+    // the game may be played after, and with the server only when the
+    // server answered. When this updater or the launcher was replaced, the
+    // new ones start at once and do it.
     let server = match &done {
         Done::UpToDate | Done::Installed { restart: false } => Some(&server),
         Done::Offline(_) => None,
@@ -431,8 +432,13 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         }
         Done::Stopped | Done::Failed(_) => return done,
     };
-    resources::run(session, layout, server, read_installed(layout).as_ref());
-    done
+    // A required plan (it grows the game's resources.db) that is not in
+    // place keeps PLAY off: a new exe with an old db crashes.
+    match resources::run(session, layout, server, read_installed(layout).as_ref()) {
+        resources::Outcome::Ready => done,
+        resources::Outcome::Stopped => Done::Stopped,
+        resources::Outcome::Blocked(message) => Done::Failed(message),
+    }
 }
 
 /// The overlay: the Skhid files of the server's archive (and the original
@@ -623,6 +629,8 @@ struct Options {
     pipe_name: Option<String>,
     /// The original's `copy` action: nothing to do here.
     copy: bool,
+    /// `ready`: only whether the game's files are updated (play_skhid.bat).
+    ready: bool,
     quiet: bool,
 }
 
@@ -650,9 +658,10 @@ fn options() -> Result<Options, String> {
             .cloned()
     };
     match action.to_ascii_lowercase().as_str() {
-        "check" => Ok(Options {
+        action @ ("check" | "ready") => Ok(Options {
             pipe_name: None,
             copy: false,
+            ready: action == "ready",
             quiet: rest
                 .iter()
                 .any(|argument| argument.eq_ignore_ascii_case("quiet")),
@@ -660,11 +669,13 @@ fn options() -> Result<Options, String> {
         "update" | "full_update" => Ok(Options {
             pipe_name: pipe_name(),
             copy: false,
+            ready: false,
             quiet: false,
         }),
         "copy" => Ok(Options {
             pipe_name: pipe_name(),
             copy: true,
+            ready: false,
             quiet: false,
         }),
         _ => Err(text::usage()),
@@ -696,6 +707,22 @@ fn run() -> u32 {
             return exit::FAILED;
         }
     };
+    if options.ready {
+        // Read only: no lock, no server, no pipe.
+        return match resources::ready(&layout) {
+            Ok(()) => {
+                log!("exit 0");
+                exit::OK
+            }
+            Err(message) => {
+                log!("FAILED: {message}");
+                if !options.quiet {
+                    message_box(&message);
+                }
+                exit::FAILED
+            }
+        };
+    }
     let pipe = match &options.pipe_name {
         Some(name) => match Pipe::connect(name) {
             Ok(pipe) => Some(pipe),

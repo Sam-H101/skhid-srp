@@ -13,6 +13,7 @@ mod driven;
 mod game;
 mod late_join;
 mod late_join_edge_cases;
+mod resync_gate;
 mod sockets;
 mod units;
 
@@ -100,6 +101,13 @@ pub struct Bench {
     addrs: Vec<SocketAddr>,
     start: Instant,
     pub ms: u64,
+    /// Each place's one-way delay, both ways, in ms (none if not given).
+    pub one_way: Vec<u64>,
+    /// Datagrams on a delayed way: when they arrive, the place, whether to
+    /// the server, the bytes.
+    in_air: Vec<(u64, usize, bool, Vec<u8>)>,
+    /// The wall-clock time spent in the server's `poll`.
+    pub server_busy: Duration,
 }
 
 impl Bench {
@@ -209,6 +217,9 @@ impl Bench {
                 .collect(),
             start,
             ms: 0,
+            one_way: Vec::new(),
+            in_air: Vec::new(),
+            server_busy: Duration::ZERO,
         }
     }
 
@@ -232,18 +243,51 @@ impl Bench {
         self.addrs[place] = SocketAddr::from(([127, 0, 0, 1], port));
     }
 
-    /// `ms` pass: the clients send, the server answers.
+    /// `ms` pass: the clients send, the server answers. A place with a
+    /// one-way delay (`one_way`) has its datagrams arrive that much later
+    /// either way.
     pub fn step(&mut self, ms: u64) {
         self.ms += ms;
         let now = self.now();
+        self.land(true, now);
         for (place, client) in self.clients.iter_mut().enumerate() {
+            let delay = self.one_way.get(place).copied().unwrap_or(0);
             for datagram in client.poll(self.ms) {
-                self.server.receive(self.addrs[place], &datagram, now);
+                if delay == 0 {
+                    self.server.receive(self.addrs[place], &datagram, now);
+                } else {
+                    self.in_air.push((self.ms + delay, place, true, datagram));
+                }
             }
         }
-        for (addr, datagram) in self.server.poll(now) {
+        let busy = Instant::now();
+        let out = self.server.poll(now);
+        self.server_busy += busy.elapsed();
+        for (addr, datagram) in out {
             // A client that is gone hears nothing.
             if let Some(place) = self.addrs.iter().position(|each| *each == addr) {
+                let delay = self.one_way.get(place).copied().unwrap_or(0);
+                if delay == 0 {
+                    self.clients[place].receive(&datagram);
+                } else {
+                    self.in_air.push((self.ms + delay, place, false, datagram));
+                }
+            }
+        }
+        self.land(false, now);
+    }
+
+    /// The delayed datagrams due by now, to the server or to the clients.
+    fn land(&mut self, to_server: bool, now: Instant) {
+        let ms = self.ms;
+        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.in_air)
+            .into_iter()
+            .partition(|(at, _, up, _)| *at <= ms && *up == to_server);
+        self.in_air = rest;
+        for (_, place, _, datagram) in due {
+            if to_server {
+                self.server.receive(self.addrs[place], &datagram, now);
+            } else {
                 self.clients[place].receive(&datagram);
             }
         }

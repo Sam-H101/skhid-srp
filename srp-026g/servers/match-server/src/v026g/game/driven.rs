@@ -513,7 +513,7 @@ impl Game {
                 continue;
             };
             let at = grid_up(clock + ROSTER_LEAD_MS).max(owed.after + TICK_MS);
-            self.roster_change(None, bot, false, at);
+            self.roster_change(None, bot, false, at, now);
             self.drives[bot] = None;
             log::info!(
                 "Match {:#x}: player {bot} (the server's bot) gives its place up to player \
@@ -676,7 +676,7 @@ impl Game {
                     continue;
                 }
                 let at = grid_up(clock + ROSTER_LEAD_MS);
-                self.roster_change(None, index, true, at);
+                self.roster_change(None, index, true, at, now);
                 if let Some(drive) = self.drives[index].as_mut() {
                     drive.entered(at);
                 }
@@ -722,7 +722,7 @@ impl Game {
         }
         for (index, time, input) in due {
             let what = Relayed::Input(input);
-            self.relay_to_others(index, &what, time);
+            self.relay_to_others(index, &what, time, now);
             self.inputs.push((time, index, what));
         }
     }

@@ -45,6 +45,10 @@
 //! - `SRP_RESTORE_LIMIT=<n>` (default 0, no limit): disconnect a client
 //!   that is out of sync again after `n` resyncs in a row with no report
 //!   of its that agreed in between;
+//! - `SRP_RESYNC_AFTER_AGREED_SECONDS` (default 5, 3 to 15; 15 = the old
+//!   rule): the least time between two resyncs of a client when its last
+//!   one was agreed with; after one that was not, it stays 15 s, and a
+//!   client resynced 4 times within a minute waits 15 s too;
 //! - `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10): how long a playing
 //!   client may send nothing before it is taken as gone. A game window
 //!   out of focus can stall for long (another server saw 58 s under
@@ -65,6 +69,9 @@
 //!   (default 6, late joiners counted) have entered it; kept files over
 //!   `SRP_RECORD_MAX_MB` (default 5000) together go oldest first
 //!   ([`record`]);
+//! - `SRP_RELAY_PACK_MS` (default 15, at most 50; 0 = off): how long a
+//!   relay or a drop order may wait for others to share its datagram
+//!   (`udp_transport::Config::gather`, transport.md section 11.1);
 //! - `SRP_MAPDATA_DIR=<dir>` (default off): the `<project>.mapdata` files
 //!   (`mapdata-dump`) the server's own bots path on ([`bots::maps`]); a
 //!   map is built on a thread of its own the first time a match asks for
@@ -84,6 +91,8 @@ pub mod drive;
 mod game;
 /// Match recordings (`SRP_RECORD_DIR`) and their reader.
 pub mod record;
+pub mod sur;
+pub mod sur_convert;
 mod registry;
 mod server;
 
@@ -100,6 +109,8 @@ pub use scripted as test_client;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use udp_transport::{Config, Table};
 
 pub use registry::{
     CreateError, DRAW, JoinError, LiveMatch, LivePhase, LiveStanding, MatchEnd, MatchPlayer,
@@ -125,6 +136,16 @@ pub enum LateInputs {
     /// exist for nothing else); not tried live, and not the default: the
     /// owner keeps 0.21d's discard, which is live-proven there.
     Move,
+    /// The default (since 2026-10-15): relayed at its own tick, as one in
+    /// time, while every other game can still take it into its history
+    /// (its tick 500 ms back, `RELAY_USEFUL_MS`) by its way there and back
+    /// (`game.rs::late_relay_reach`); else discarded as with `Discard`.
+    /// The owner then needs no answer: it keeps the input, as everyone
+    /// does. Discarding it sent the owner a drop order that came past its
+    /// own history on the very lines that made inputs late, and the owner
+    /// kept the input nobody else had (live, 2026-10-15: 58 of 215
+    /// desyncs had such a drop just before).
+    Relay,
 }
 
 /// The waits a test may want shorter. The defaults are the 0.21d server's.
@@ -147,6 +168,12 @@ pub(crate) struct Timing {
     pub divergence_confirm_max: Duration,
     /// The least time between two resyncs of one client.
     pub resync_interval: Duration,
+    /// ... once its last resync has been agreed with
+    /// (`SRP_RESYNC_AFTER_AGREED_SECONDS`): that world took, and a new
+    /// disagreement is a new desync, not a loop. Never more than
+    /// `resync_interval`, and back to it for a client resynced
+    /// `game.rs::RESYNCS_PER_MINUTE` times within a minute.
+    pub resync_after_agreed: Duration,
     /// A mode rule that has its end reports it this long after (match ms).
     pub end_delay_ms: u32,
     /// After the end the clients get this long to hear it.
@@ -170,6 +197,7 @@ impl Default for Timing {
             divergence_confirm_ms: 1_000,
             divergence_confirm_max: Duration::from_secs(3),
             resync_interval: Duration::from_secs(15),
+            resync_after_agreed: Duration::from_secs(5),
             end_delay_ms: survarium::v026g::match_msgs::rules::END_DELAY_MS,
             linger: Duration::from_secs(5),
             final_wait: Duration::from_secs(7),
@@ -195,6 +223,8 @@ pub(crate) struct Settings {
     pub snapshot_dir: Option<PathBuf>,
     /// `SRP_RECORD_DIR`: the match recordings, if any.
     pub record: Option<record::RecordSettings>,
+    /// `SRP_RELAY_PACK_MS`: the match link's `Config::gather`.
+    pub pack: Duration,
     /// `SRP_MAPDATA_DIR`: the bots' maps, shared by every match.
     pub maps: Option<Arc<bots::maps::Maps>>,
     /// `SRP_BOTS_GIVE_WAY`: the server's bots give their place up to late
@@ -206,7 +236,7 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            late_inputs: LateInputs::Discard,
+            late_inputs: LateInputs::Relay,
             resync_world_only: false,
             restore_limit: 0,
             clock_correction: true,
@@ -214,6 +244,7 @@ impl Default for Settings {
             compress_state: true,
             snapshot_dir: None,
             record: None,
+            pack: Config::for_table(Table::Match).gather,
             maps: None,
             bots_give_way: true,
             timing: Timing::default(),
@@ -257,6 +288,12 @@ impl Settings {
             ),
             snapshot_dir: parse_snapshot_dir(var("SRP_SNAPSHOT_DIR").as_deref()),
             record: record::RecordSettings::from_env(),
+            pack: match var("SRP_RELAY_PACK_MS") {
+                Some(value) => Duration::from_millis(u64::from(
+                    parse_number("SRP_RELAY_PACK_MS", Some(&value), 15).min(50),
+                )),
+                None => Config::for_table(Table::Match).gather,
+            },
             maps: parse_mapdata_dir(
                 var("SRP_MAPDATA_DIR").as_deref(),
                 parse_number(
@@ -297,6 +334,15 @@ impl Settings {
                         )
                         .clamp(2, 5),
                     )),
+                    // 15 for the old rule: the interval after any resync.
+                    resync_after_agreed: Duration::from_secs(u64::from(
+                        parse_number(
+                            "SRP_RESYNC_AFTER_AGREED_SECONDS",
+                            var("SRP_RESYNC_AFTER_AGREED_SECONDS").as_deref(),
+                            5,
+                        )
+                        .clamp(3, 15),
+                    )),
                     ..Timing::default()
                 }
             },
@@ -319,13 +365,15 @@ fn parse_late_inputs(value: Option<&str>) -> LateInputs {
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
     {
-        None | Some("") | Some("discard") => LateInputs::Discard,
+        None | Some("") | Some("relay") => LateInputs::Relay,
+        Some("discard") => LateInputs::Discard,
         Some("move") => LateInputs::Move,
         Some(other) => {
             log::error!(
-                "SRP_LATE_INPUTS is `{other}`; it must be `discard` or `move`. Using discard"
+                "SRP_LATE_INPUTS is `{other}`; it must be `relay`, `discard` or `move`. Using \
+                 relay"
             );
-            LateInputs::Discard
+            LateInputs::Relay
         }
     }
 }

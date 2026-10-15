@@ -6,7 +6,24 @@ The original instructions run against small fixture objects. Per-player
 statistics codecs and the animation bind method are intercepted. Both a
 synthetic binder and the native binder with weapon inventories are exercised;
 the bounded profile wrapper executes the native constructor and decoder with
-only CRT memcpy intercepted. These tests establish profile decoding, capacity,
+only CRT memcpy intercepted. The statistics handler's start_match, on_event
+and deserialize run on a made-up handler: a newcomer's scoreboard score
+through rollbacks, in the original and in the build. The respawn rule's
+spawn runs on a made-up rule and place (its calls intercepted) for two
+games, one whose weapons of the new kit were drawn from and one whose are at
+the constructor's 1: the build gives both the same random states, the ones
+patch_026g.weapon_random_state names, after the player's initialize and
+before it is put into the world, and nothing else; the original leaves them
+apart; copies with one thing broken fail. The same spawn on a kit one
+game played (its weapons as a last life leaves them) and another loaded a
+world since: in the build the new kit's weapons have, at the initialize,
+-1 as their last tick and, at a change of kit, a new weapon's fire mode,
+ammunition, chamber, aim and recoil, alike in both games. The block of a game's first
+world (0x2D0FF2..0x2D105E) runs with the game's own allocator on made-up
+lists, then the places' own tick (0x321790): in the build the entries are
+in time order and the kit choice is the world's, so the next kit after each
+tick is the one the games that played the match have; in the original a
+choice relayed for later is hidden by the kit in use. These tests establish profile decoding, capacity,
 calling convention and ID allocation, not a playable late join.
 """
 import argparse
@@ -17,7 +34,7 @@ import struct
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
 from unicorn.x86_const import (
     UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDI,
-    UC_X86_REG_ESI, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_EBP,
+    UC_X86_REG_ESI, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_EBP, UC_X86_REG_XMM0,
 )
 
 import late_join_026g as patch
@@ -980,6 +997,881 @@ def native_direct_match(data, session):
             assert m.uc.reg_read(reg) == value
 
 
+HANDLER, CORE, OPTIONS, FUNCTION = 0x4000000, 0x4010000, 0x4040000, 0x40B0000
+HANDLER_VTABLE = 0xA0755C
+
+
+def map_constants(machine, data, addresses):
+    """Map, from the file, the pages of these addresses outside .text."""
+    sections = patch.base.Headers(data).sections(data)
+    for address in addresses:
+        page = address & ~4095
+        for _, rva, size, raw, raw_size, _ in sections:
+            start = patch.base.IMAGE_BASE + rva
+            if start <= page < start + max(size, raw_size):
+                try:
+                    machine.uc.mem_map(page, 4096)
+                except Exception:  # mapped already (an executable section)
+                    break
+                at = raw + page - start
+                machine.uc.mem_write(page, bytes(data[at:at + min(4096, max(0, raw_size - (page - start)))]))
+                break
+
+
+def scoreboard(data, roster, newcomer, rollbacks):
+    """The game's own base_game_statistics_handler (patch_026g.py,
+    STATISTICS_COUNT): start_match through its vtable slot +3Ch, a newcomer
+    the way lj_native_install adds it (the roster and the shared live count
+    raised), one tick in which a starting place and the newcomer each kill,
+    told through the shared statistics' callback (0x26DEA0, slot +44h, as
+    shared_statistics does after adding the kill to the record), then
+    `rollbacks` times: the state before that tick loaded through deserialize
+    (slot +34h; the shared statistics' reader intercepted, the records put
+    back) and the tick simulated again. The hud is a function that keeps
+    what it is told, its cells first holding a score of an earlier match.
+    Returns (scores kept, the handler's count, places told at the start,
+    the hud's cells)."""
+    machine = Machine(data)
+    uc = machine.uc
+    map_constants(machine, data, (HANDLER_VTABLE, 0xA70884, 0xA2D774, 0x927A44))
+    uc.mem_map(HANDLER, 0x4000)
+    uc.mem_map(CORE, 0x1A000)
+    uc.mem_map(OPTIONS, 0x58000)
+    uc.mem_map(FUNCTION, 0x2000)
+    invoker = FUNCTION + 0x1000
+    uc.mem_write(invoker, b"\xc3")                     # cdecl (functor, place, score): ret
+    machine.write(FUNCTION + 4, invoker)              # boost::function's invoker
+    machine.write(HANDLER, HANDLER_VTABLE)
+    machine.write(HANDLER + 0x3218, FUNCTION)          # the hud's score-changed callback
+    uc.mem_write(OPTIONS + 0x577B5, bytes([roster]))
+    weights = [0.0] * 28
+    weights[0], weights[15] = 10.0, 2.5                 # kill, headshot kill
+    uc.mem_write(OPTIONS + 0x577BC, struct.pack("<28f", *weights))
+    hud, told = {place: 953 for place in range(20)}, []
+
+    def visit(uc, address, size, _):
+        if address == invoker:
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            assert machine.read(esp + 4) == HANDLER + 0x3220
+            place, score = machine.read(esp + 8) & 0xFF, machine.read(esp + 12) & 0xFFFF
+            hud[place] = score
+            told.append(place)
+        elif address == 0x2F5BE0:                       # shared_statistics::deserialize
+            assert uc.reg_read(UC_X86_REG_ESI) == HANDLER + 8
+            uc.mem_write(HANDLER + 8, saved)
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            uc.reg_write(UC_X86_REG_EIP, machine.read(esp))
+            uc.reg_write(UC_X86_REG_ESP, esp + 4)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    slot = lambda offset: machine.read(HANDLER_VTABLE + offset)
+
+    def run(address, args):
+        uc.reg_write(UC_X86_REG_ECX, HANDLER)
+        machine.start(address, args=args, count=200000)
+        assert uc.reg_read(UC_X86_REG_ESP) == STACK + 4 + 4 * len(args)
+
+    run(slot(0x3C), (CORE, OPTIONS))                   # start_match
+    assert machine.read(CORE + 0x18FA8) == HANDLER
+    assert uc.mem_read(HANDLER + 0x31E8, 1)[0] == roster   # the shared live count: the roster
+    at_start = list(told)
+    # The late join (late_join_install_026g.c): the roster and the shared
+    # statistics' live count take the newcomer.
+    uc.mem_write(OPTIONS + 0x577B5, bytes([newcomer + 1]))
+    uc.mem_write(HANDLER + 8 + 0x31E0, bytes([newcomer + 1]))
+    saved = bytes(uc.mem_read(HANDLER + 8, 20 * 0x1F8))
+
+    def tick():
+        for place, event in ((0, 0), (newcomer, 0), (newcomer, 15)):
+            record = HANDLER + 8 + place * 0x1F8 + event * 6
+            count = struct.unpack("<H", uc.mem_read(record, 2))[0]
+            uc.mem_write(record, struct.pack("<H", count + 1))
+            uc.reg_write(UC_X86_REG_ECX, HANDLER)
+            machine.start(0x26DEA0, args=(place, event, 1), count=200000)
+            assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16   # on_event: ret 0Ch
+
+    tick()
+    for _ in range(rollbacks):
+        run(slot(0x34), (0x12345678, 0))               # deserialize: the state before the tick
+        tick()
+    scores = list(struct.unpack("<20H", uc.mem_read(HANDLER + 0x31F0, 40)))
+    # Past the start the hud is told of the two places that score alone.
+    assert set(told[len(at_start):]) <= {0, newcomer}, told[len(at_start):]
+    return scores, uc.mem_read(HANDLER + 0x3240, 1)[0], at_start, hud
+
+
+def statistics_scores(original, changed):
+    """A newcomer's scoreboard score in the original and in the build."""
+    for roster, newcomer in ((5, 5), (1, 1), (8, 9), (19, 19)):
+        for rollbacks in (0, 1, 3):
+            # A kill (10) and a headshot (2.5) are 13 a tick, rounded by
+            # event or once.
+            scores, count, at_start, hud = scoreboard(original, roster, newcomer, rollbacks)
+            assert count == roster and at_start == list(range(roster)), (count, at_start)
+            # The fault: a starting place's score is worked out again at the
+            # state loaded, the newcomer's tick is added once more for every
+            # rollback, and the cells of places past the roster keep an
+            # earlier match's score until they are told one.
+            assert scores[0] == 10 and scores[newcomer] == 13 * (rollbacks + 1), (roster, newcomer, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13 * (rollbacks + 1)
+            assert all(hud[place] == 953 for place in range(roster, 20) if place != newcomer)
+            scores, count, at_start, hud = scoreboard(changed, roster, newcomer, rollbacks)
+            assert count == 20 and at_start == list(range(20)), (count, at_start)
+            # The build: every place worked out again at every state loaded,
+            # and every cell told a 0 at the start.
+            assert scores[0] == 10 and scores[newcomer] == 13, (roster, newcomer, rollbacks, scores)
+            assert hud[0] == 10 and hud[newcomer] == 13
+            assert all(hud[place] == 0 and scores[place] == 0 for place in range(1, 20) if place != newcomer)
+
+
+HUD, GAME, PLAYER = 0x4100000, 0x4110000, 0x4120000
+# update_ui's calls between the countdown's test and the players' rows:
+# (name, what `ret` takes off the stack).
+HUD_CALLS = {0x236AD0: ("show_pregame", 0), 0x236B50: ("set_pregame", 4), 0x236A00: ("set_match_time", 4),
+             0x2375C0: ("tip", 16), 0x2364C0: ("set_game_progress", 16), 0x236610: ("set_last_players", 12),
+             0x236C30: ("set_respawn_time", 4), 0xE0210: ("destroy_player", 0)}
+
+
+def hud_update(data, countdown, mode, tip_shown):
+    """game_world_ui::update_ui (0x23B200) from its test of the countdown
+    flag (0x23B307) to the players' rows (0x23B421), the game's own
+    instructions on a made-up hud whose state has changed; the functions it
+    calls are taken at their entry, written down with what they were given,
+    and returned from as they return. Returns (the calls, esp, ebp and edi
+    at the rows, the player's count before and after)."""
+    machine = Machine(data)
+    uc = machine.uc
+    uc.mem_map(HUD, 0x1000)
+    uc.mem_map(GAME, 0x10000)
+    uc.mem_map(PLAYER, 0x10000)
+    uc.mem_write(HUD + 0x15C, bytes([0xFF if countdown else 0]))   # the timelimit rule's flag
+    uc.mem_write(HUD + 0x370, bytes([1 if tip_shown else 0]))
+    machine.write(HUD + 0x20, mode)
+    machine.write(HUD + 0x28, 123000)                   # match time
+    machine.write(HUD + 0x2C, 0)                        # respawn time: nobody waits for one
+    machine.write(HUD + 0xB0, 15)                       # countdown seconds
+    uc.mem_write(HUD + 0xB4, struct.pack("<HH", 150, 149))   # the state's team points
+    uc.mem_write(HUD + 0xB8, bytes([5, 4]))             # Team Deathmatch's alive counts
+    machine.write(HUD + 0x18, GAME)
+    machine.write(GAME + 0x9C, GAME + 0x1000)           # the network client
+    machine.write(GAME + 0x1000 + 0x53AC, GAME + 0x2000)
+    machine.write(GAME + 0x2004, PLAYER)                # the current player
+    machine.write(PLAYER + 0xD0, 1)
+    machine.write(PLAYER + 0x6B8, PLAYER + 0x1000)      # its profile
+    machine.write(PLAYER + 0x1000 + 0x45EC, 1)          # its team
+    calls = []
+
+    def visit(uc, address, size, _):
+        if address not in HUD_CALLS:
+            return
+        name, pops = HUD_CALLS[address]
+        esp = uc.reg_read(UC_X86_REG_ESP)
+        args = [machine.read(esp + 4 + 4 * i) for i in range(pops // 4)]
+        calls.append((name, uc.reg_read(UC_X86_REG_EAX) & (0xFF if name == "show_pregame" else 0xFFFFFFFF), args))
+        uc.reg_write(UC_X86_REG_EIP, machine.read(esp))
+        uc.reg_write(UC_X86_REG_ESP, esp + 4 + pops)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    uc.reg_write(UC_X86_REG_EDI, HUD)
+    uc.reg_write(UC_X86_REG_EBP, 0x5A5A5A5A)            # the state's hash, stored after the rows
+    uc.reg_write(UC_X86_REG_ESP, STACK)
+    uc.emu_start(0x23B307, 0x23B421, count=10000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x23B421
+    return (calls, uc.reg_read(UC_X86_REG_ESP), uc.reg_read(UC_X86_REG_EBP), uc.reg_read(UC_X86_REG_EDI),
+            machine.read(PLAYER + 0xD0))
+
+
+def pregame_progress(original, changed):
+    """patch_026g.py's PREGAME_PROGRESS: what the hud is told while a match
+    counts down, and while it is played, in the original and in the build."""
+    def matches(calls, wanted):
+        # (name, eax, arguments); None: whatever it was.
+        return len(calls) == len(wanted) and all(
+            name == w_name and (w_eax is None or eax == w_eax) and (w_args is None or args == w_args)
+            for (name, eax, args), (w_name, w_eax, w_args) in zip(calls, wanted))
+
+    for mode in (4, 3, 2):
+        for tip_shown in (False, True):
+            # The team points of the state and the player's team, the alive
+            # counts (Team Deathmatch only) with the team in eax, the respawn
+            # time (0) in eax.
+            drawn = [("set_game_progress", None, [HUD, 150, 149, 1])]
+            if mode == 4:
+                drawn.append(("set_last_players", 1, [HUD, 5, 4]))
+            drawn.append(("set_respawn_time", 0, [HUD]))
+            tip = [] if tip_shown else [("tip", None, None)]
+            play = tip + [("show_pregame", 0, []), ("set_match_time", 123000, [HUD])] + drawn
+            for data in (original, changed):
+                calls, esp, ebp, edi, count = hud_update(data, False, mode, tip_shown)
+                assert matches(calls, play), calls
+                assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+            # The countdown: the original shows it alone; the build then the
+            # team points, the last players and the respawn time as play
+            # does, without the match time and the tip, with the stack, the
+            # hash, the hud and the player's count as play leaves them.
+            shown = [("show_pregame", 1, []), ("set_pregame", None, [HUD])]
+            calls, esp, ebp, edi, count = hud_update(original, True, mode, tip_shown)
+            assert matches(calls, shown), calls
+            assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+            calls, esp, ebp, edi, count = hud_update(changed, True, mode, tip_shown)
+            assert matches(calls, shown + drawn), calls
+            assert (esp, ebp, edi, count) == (STACK, 0x5A5A5A5A, HUD, 1)
+
+
+RULE, SPAWN_CORE, SPAWN_PLACES, SPAWN_PLAYERS, ARMS, STUBS = (
+    0x4400000, 0x4410000, 0x4430000, 0x4440000, 0x4460000, 0x4480000)
+# The vtables of the client's weapon and of weapon_core (at +0 and at the
+# item, +10h), of a plain inventory item, and a made-up one whose +70h is the
+# grenade item's bind.
+WEAPON_VTABLES = ((0xA04174, 0xA0422C), (0xA11094, 0xA1114C))
+PLAIN_ITEM_VTABLE, GRENADE_ITEM_BIND = 0xA1395C, 0x309EC0
+SPAWN_STUBS = {"kit_changed": 4, "statistics": 16, "initialize": 16, "damage_model": 0, "activate": 4}
+
+
+def spawn(data, place, old_kit, new_kit, time, states, protection=0, fields=None, observe=None):
+    """The respawn rule's spawn (0x316DA0, the game's own instructions, with
+    the hook of the build if it has one) on a made-up rule, world and place:
+    three kits, each with a weapon in slots 7 and 10 (the client's class
+    for kits 0 and 2, weapon_core's for kit 1) whose random states are
+    `states[kit]`, an ammunition item (a plain inventory item) in slot 8 and
+    a grenade item in slot 13. The functions it calls (the view's kit change,
+    the statistics, the player's initialize and activate, the damage model)
+    are written down and returned from. Returns (the weapons' states after
+    it, as they were at initialize and at activate, the calls, a check of
+    everything else). `fields` {kit: {weapon offset: (size, value)}} is
+    written into both weapons of a kit first; with `observe` (a dict) the
+    weapons' bytes are put into it before the spawn, at the initialize and
+    after the spawn."""
+    m = Machine(data)
+    uc = m.uc
+    map_constants(m, data, (WEAPON_VTABLES[0][1], WEAPON_VTABLES[1][1], PLAIN_ITEM_VTABLE))
+    for base, size in ((RULE, 0x1000), (SPAWN_CORE, 0x1A000), (SPAWN_PLACES, 0x1000),
+                       (SPAWN_PLAYERS, 0x8000), (ARMS, 0x20000), (STUBS, 0x1000)):
+        uc.mem_map(base, size)
+    stub = {name: STUBS + 0x100 * i for i, name in enumerate(SPAWN_STUBS)}
+    for name, pops in SPAWN_STUBS.items():
+        if name == "damage_model":       # returns a pointer to the damage model's pointer
+            uc.mem_write(stub[name], b"\xb8" + struct.pack("<I", STUBS + 0x800) + b"\xc3")
+            m.write(STUBS + 0x800, STUBS + 0x900)
+        else:
+            uc.mem_write(stub[name], b"\xc2" + struct.pack("<H", pops))
+    rule_vtable, statistics, player_vtable, damage_vtable = STUBS + 0x600, STUBS + 0x680, STUBS + 0x700, STUBS + 0x780
+    m.write(rule_vtable + 0x60, stub["kit_changed"])
+    m.write(statistics, statistics + 0x10)
+    m.write(statistics + 0x10 + 0x2C, stub["statistics"])
+    m.write(player_vtable + 0x1C, stub["initialize"])
+    m.write(player_vtable + 0x20, stub["activate"])
+    m.write(damage_vtable + 8, stub["damage_model"])
+    m.write(RULE, rule_vtable)
+    m.write(RULE + 0x134, SPAWN_CORE)
+    m.write(RULE + 0x138 + place * 4, time)
+    m.write(SPAWN_CORE + 0x18458, SPAWN_PLACES)
+    m.write(SPAWN_CORE + 0x18FA8, statistics)
+    entry = SPAWN_PLACES + place * 0x30
+    weapons, others = {}, []
+    for kit in range(3):
+        player = SPAWN_PLAYERS + kit * 0x2000
+        inventory = player + 0x1000
+        m.write(entry + kit * 4, player)
+        m.write(player, player_vtable)
+        m.write(player + 0x108, damage_vtable)
+        m.write(player + 0x10C, inventory)
+        uc.mem_write(player + 0x114, bytes([place, kit]))
+        for index, slot in enumerate((7, 10)):
+            weapon = ARMS + kit * 0x4000 + index * 0x1000
+            primary, item = WEAPON_VTABLES[kit % 2]
+            m.write(weapon, primary)
+            m.write(weapon + 0x10, item)
+            m.write(weapon + 0x5BC, states[kit][index])
+            for offset, (size, value) in (fields or {}).get(kit, {}).items():
+                uc.mem_write(weapon + offset, value.to_bytes(size, "little"))
+            m.write(inventory + 0x10C + slot * 4, weapon + 0x10)
+            weapons[kit, slot] = weapon
+        ammunition, grenades = ARMS + 0xC000 + kit * 0x1000, ARMS + 0x18000 + kit * 0x1000
+        m.write(ammunition, PLAIN_ITEM_VTABLE)
+        m.write(grenades, grenades + 0x800)
+        m.write(grenades + 0x800 + 0x70, GRENADE_ITEM_BIND)
+        m.write(inventory + 0x10C + 8 * 4, ammunition)
+        m.write(inventory + 0x10C + 13 * 4, grenades)
+        others += [ammunition, grenades]
+    uc.mem_write(entry + 0xC, bytes([old_kit, new_kit]))
+    point = STUBS + 0xA00
+    uc.mem_write(point + 8, struct.pack("<4f", 1.5, -2.0, 3.25, 0.75))   # position, yaw
+    m.write(point + 0x20, protection)
+    random_state = lambda: {key: m.read(weapon + 0x5BC) for key, weapon in weapons.items()}
+    others_before = [bytes(uc.mem_read(item, 0x1000)) for item in others]
+    calls, at_initialize, at_activate = [], {}, {}
+    weapon_bytes = lambda: {key: bytes(uc.mem_read(weapon, 0x1000)) for key, weapon in weapons.items()}
+    if observe is not None:
+        observe["before"] = weapon_bytes()
+
+    def visit(uc, address, size, _):
+        for name, at in stub.items():
+            if address == at:
+                esp = uc.reg_read(UC_X86_REG_ESP)
+                args = [m.read(esp + 4 + 4 * i) for i in range(SPAWN_STUBS[name] // 4)]
+                calls.append((name, uc.reg_read(UC_X86_REG_ECX), args))
+                if name == "initialize":
+                    at_initialize.update(random_state())
+                    if observe is not None:
+                        observe["initialize"] = weapon_bytes()
+                elif name == "activate":
+                    at_activate.update(random_state())
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    kept = {UC_X86_REG_EBX: 0x11111111, UC_X86_REG_ESI: 0x22222222, UC_X86_REG_EDI: 0x33333333,
+            UC_X86_REG_EBP: 0x44444444}
+    for register, value in kept.items():
+        uc.reg_write(register, value)
+    uc.reg_write(UC_X86_REG_ECX, RULE)
+    # The rule's tick passes the place as a byte in a register whose upper
+    # bytes are what they were (0x316994).
+    m.start(0x316DA0, args=(0xABCDEF00 | place, point, time), count=20000)
+    new_player = SPAWN_PLAYERS + new_kit * 0x2000
+    if observe is not None:
+        observe["after"] = weapon_bytes()
+    rest = (uc.reg_read(UC_X86_REG_ESP) == STACK + 16
+            and all(uc.reg_read(register) == value for register, value in kept.items())
+            and list(uc.mem_read(entry + 0xC, 2)) == [new_kit, new_kit]
+            and m.read(RULE + 0x138 + place * 4) == 0xFFFFFFFF
+            and (not protection or m.read(STUBS + 0x900 + 0x32C) == (time + protection) & 0xFFFFFFFF)
+            and [bytes(uc.mem_read(item, 0x1000)) for item in others] == others_before)
+    # (name, this, arguments); a byte argument is the low byte of its word.
+    byte, word = 0xFF, 0xFFFFFFFF
+    wanted = ([("kit_changed", RULE, [(place, byte)]),
+               ("statistics", statistics, [(time, word), (place, byte), (old_kit, byte), (new_kit, byte)])]
+              if old_kit != new_kit else [])
+    wanted.append(("initialize", new_player, [(time, word), (point + 8, word),
+                                              (struct.unpack("<I", struct.pack("<f", 0.75))[0], word), (0, word)]))
+    if protection:
+        wanted.append(("damage_model", new_player + 0x108, []))
+    wanted.append(("activate", new_player, [(1, word)]))
+    calls_right = len(calls) == len(wanted) and all(
+        name == w_name and this == w_this and len(args) == len(w_args)
+        and all(arg & mask == value for arg, (value, mask) in zip(args, w_args))
+        for (name, this, args), (w_name, w_this, w_args) in zip(calls, wanted))
+    return random_state(), at_initialize, at_activate, calls_right, rest
+
+
+def uniform_draws(data, state, count=4):
+    """The game's own uniform_01 on minstd_rand (0x2AB6E0, esi = the
+    engine, as the spread's normal distribution 0x2E4850 calls it): the
+    first `count` draws from `state`, as the bits of the floats."""
+    m = Machine(data)
+    map_constants(m, data, (0xA2D9E0, 0xA2D790))
+    m.uc.mem_map(STUBS, 0x1000)
+    m.write(STUBS, state)
+    draws = []
+    for _ in range(count):
+        m.uc.reg_write(UC_X86_REG_ESI, STUBS)
+        m.start(0x2AB6E0, count=2000)
+        draws.append(m.uc.reg_read(UC_X86_REG_XMM0) & 0xFFFFFFFF)
+    return draws, m.read(STUBS)
+
+
+def weapon_random(original, changed):
+    """patch_026g.py's WEAPON_RANDOM: what the respawn rule's spawn leaves
+    in the random states of the new kit's weapons, in the original and in
+    the build, for two games of one match: one that played the kit before
+    (its weapons drawn from), one that loaded a world since (its weapons at
+    the constructor's 1)."""
+    played = {0: (0x0BADF00D, 0x1234567), 1: (0x7FFFFFFE, 48271), 2: (0x3C6EF372, 0x2545F491)}
+    loaded = {kit: (1, 1) for kit in range(3)}
+    for place, old_kit, new_kit, time, protection in ((0, 0, 1, 21750, 0), (3, 1, 1, 148800, 3000),
+                                                      (8, 2, 0, 729200, 0), (19, 0, 2, 0xFFFFFFCE, 2000)):
+        for data in (original, changed):
+            game = {}
+            for name, states in (("played", played), ("loaded", loaded)):
+                after, at_initialize, at_activate, calls_right, rest = spawn(
+                    data, place, old_kit, new_kit, time, states, protection)
+                assert calls_right and rest, (name, place, old_kit, new_kit)
+                before = {(kit, slot): states[kit][index] for kit in range(3) for index, slot in enumerate((7, 10))}
+                # Nothing but the new kit's weapons, and nothing before the
+                # player's initialize returned.
+                assert at_initialize == before
+                assert all(after[key] == before[key] for key in before if key[0] != new_kit)
+                game[name] = after
+                if data is changed:
+                    for slot in (7, 10):
+                        state = patch.base.weapon_random_state(place, new_kit, slot, time)
+                        assert 1 <= state <= 0x7FFFFFFE
+                        assert after[new_kit, slot] == at_activate[new_kit, slot] == state, (name, slot, after)
+                else:
+                    assert after == before
+            mine = [game["played"][new_kit, slot] for slot in (7, 10)]
+            theirs = [game["loaded"][new_kit, slot] for slot in (7, 10)]
+            draws = [uniform_draws(data, state)[0] for state in mine + theirs]
+            if data is changed:
+                # The two games agree, and the game's own draws from it too.
+                assert mine == theirs and draws[:2] == draws[2:]
+                assert mine[0] != mine[1]
+            else:
+                assert mine != theirs and draws[:2] != draws[2:]
+    # The two weapons of a kit, the three kits, the places and the times of
+    # spawns give other states.
+    states = {patch.base.weapon_random_state(place, kit, slot, time)
+              for place in range(20) for kit in range(3) for slot in (7, 10) for time in (0, 50, 100, 21750, 900000)}
+    assert len(states) == 20 * 3 * 2 * 5
+    # The draws of the engine from a state it gets: minstd_rand's.
+    draws, state = uniform_draws(changed, 1, 3)
+    assert state == pow(48271, 3, 0x7FFFFFFF)
+
+
+def weapon_random_fails(original, changed):
+    """weapon_random given the original as the build, and given copies of
+    the build with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, rva, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.WEAPON_RANDOM_OFFSET
+    code = bytes(changed[cave:cave + 0x80])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "slot 10 left out (the slots end at 10)": broken(bytes.fromhex("83ff17"), bytes.fromhex("83ff0a")),
+        "the time left out": broken(bytes.fromhex("69d5b179379e"), bytes.fromhex("69d3b179379e")),
+        "every item taken for a weapon": broken(bytes.fromhex("395870753e"), bytes.fromhex("3958709090")),
+    }
+    for name, data in copies.items():
+        try:
+            weapon_random(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"weapon_random passes with {name}")
+
+
+# A weapon of a kit's last life, as it can be when the kit is not current:
+# the time of its last tick, the fire mode and ammunition kind the player
+# chose; the magazine 0 as the removal before a spawn leaves it (0x2E18E0);
+# and, for the safety resets, values a weapon in hand had (aim, recoil,
+# chamber, +5ECh, +5F5h, +5A8h), LIKELY never left so by the removal (the
+# random state is weapon_random's).
+USED_WEAPON = {0x5A4: (4, 58700), 0x5A8: (4, 61250), 0x5B1: (1, 1), 0x5B2: (1, 1), 0x5E5: (1, 0), 0x5E6: (1, 2),
+               0x5E8: (1, 1), 0x5EC: (4, 3), 0x5F1: (1, 1), 0x5F5: (1, 1), 0x5FC: (4, 0x3E99999A),
+               0x600: (4, 0x3F000000), 0x604: (4, 0xBDCCCCCD), 0x608: (4, 0x3C23D70A), 0x60C: (4, 61200)}
+
+
+def field_value(blob, offset, size):
+    return int.from_bytes(blob[offset:offset + size], "little")
+
+
+def kit_state(original, changed):
+    """patch_026g.py's KIT_STATE: the respawn rule's spawn on a kit that
+    one game played (its weapons as USED_WEAPON) and another loaded a world
+    since (its weapons as the constructor leaves them). In the build, at
+    the initialize, both games' weapons of the new kit have -1 as the time
+    of their last tick, and at a spawn into another kit every field of
+    KIT_STATE_FIELDS at the constructor's value; at a spawn into the same
+    kit (whose player is in every world, so the games have it alike) the
+    rest is kept. Nothing else of any weapon changes but the random state
+    weapon_random gives, the other kits' weapons not at all."""
+    fresh = {offset: (size, value) for offset, size, value in patch.base.KIT_STATE_FIELDS}
+    fresh[patch.base.KIT_STATE_TICK_FIELD] = (4, 0xFFFFFFFF)
+    assert sorted(fresh) == sorted(USED_WEAPON) and all(fresh[o][0] == USED_WEAPON[o][0] for o in fresh)
+    assert all(fresh[o][1] != USED_WEAPON[o][1] for o in fresh if o != 0x5E5)
+    states = {kit: (1, 1) for kit in range(3)}
+    reset = set(fresh)
+    changed_bytes = lambda offsets: {o + i for o in offsets for i in range(fresh[o][0])} | set(range(0x5BC, 0x5C0))
+    for place, old_kit, new_kit, time, protection in ((0, 0, 1, 21750, 0), (3, 1, 1, 148800, 3000),
+                                                      (8, 2, 0, 729200, 0), (19, 0, 2, 0xFFFFFFCE, 2000),
+                                                      (5, 2, 2, 564750, 0)):
+        for data in (original, changed):
+            game = {}
+            for name in ("played", "loaded"):
+                # A respawn into the same kit: that kit's player is in every
+                # world, so a game that loaded one has it as the others do.
+                new_kit_fields = USED_WEAPON if name == "played" or old_kit == new_kit else fresh
+                fields = {kit: (USED_WEAPON if name == "played" else fresh) for kit in range(3)}
+                fields[new_kit] = new_kit_fields
+                observe = {}
+                _, _, _, calls_right, rest = spawn(data, place, old_kit, new_kit, time, states, protection,
+                                                   fields, observe)
+                assert calls_right and rest, (name, place, old_kit, new_kit)
+                for key, before in observe["before"].items():
+                    at, after = observe["initialize"][key], observe["after"][key]
+                    kit, slot = key
+                    # The initialize is given the weapons as they end: nothing
+                    # but weapon_random's state changes after it.
+                    assert at[:0x5BC] == after[:0x5BC] and at[0x5C0:] == after[0x5C0:]
+                    if kit != new_kit:
+                        assert after == before, (name, key)
+                        continue
+                    differ = {i for i in range(0x1000) if after[i] != before[i]}
+                    if data is changed:
+                        wanted = reset if old_kit != new_kit else {patch.base.KIT_STATE_TICK_FIELD}
+                        assert differ <= changed_bytes(wanted), (name, key, sorted(differ))
+                        for offset, (size, value) in fresh.items():
+                            if offset in wanted:
+                                assert field_value(at, offset, size) == value, (name, key, hex(offset))
+                            else:
+                                assert field_value(at, offset, size) == field_value(before, offset, size)
+                    else:
+                        assert differ <= set(range(0x5BC, 0x5C0)), (name, key, sorted(differ))
+                game[name] = {key: blob[:0x5BC] + blob[0x5C0:] for key, blob in observe["after"].items()
+                              if key[0] == new_kit}
+            if data is changed:
+                assert game["played"] == game["loaded"], (place, old_kit, new_kit)
+            elif old_kit != new_kit:
+                assert game["played"] != game["loaded"]
+
+
+def kit_state_fails(original, changed):
+    """kit_state given the original as the build, and copies of the build
+    with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, rva, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.KIT_STATE_OFFSET
+    code = bytes(changed[cave:cave + 0x90])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "slot 10 left out (the slots end at 10)": broken(bytes.fromhex("83ff17"), bytes.fromhex("83ff0a")),
+        "the change of kit read from the wrong place": broken(bytes.fromhex("3a44243c"), bytes.fromhex("3a442438")),
+        "the fire mode left out": broken(bytes.fromhex("66896a41"), bytes.fromhex("90909090")),
+        "every spawn taken for a change of kit": broken(bytes.fromhex("0f95c0"), bytes.fromhex("b00190")),
+        "the time of the last tick left out": broken(bytes.fromhex("830aff"), bytes.fromhex("909090")),
+    }
+    for name, data in copies.items():
+        try:
+            kit_state(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"kit_state passes with {name}")
+
+
+LOAD_CORE, LOAD_LISTS, LOAD_NODES, LOAD_PLACES, LOAD_STACK = 0x4600000, 0x4620000, 0x4640000, 0x4660000, 0x4680000
+NODE_SIZE = 0x40
+
+
+def first_load(data, places, time, pool_room=64):
+    """The block of a game's first world (0x2D0FF2..0x2D105E, the game's own
+    instructions and its two calls, patched or not) on a made-up core and
+    world: `places` = {place: (kit in use, the world's next kit, the kit
+    choices there are, the inputs there are)}, each list [(time, value)]
+    oldest first, as the network's sorted inserts leave them; the nodes
+    come from the game's own allocator (0x1FCB60 with 0x2D48B0 and the
+    pool's 0x5A540) on a pool of `pool_room` nodes for each list. Then the
+    game's own tick of each place (0x321790) for the ticks from the world's
+    time on. Returns {place: (kit choices, inputs, every list walked both
+    ways, the next kit after each tick)}."""
+    m = Machine(data)
+    uc = m.uc
+    for base, size in ((LOAD_CORE, 0x19000), (LOAD_LISTS, 0x20000), (LOAD_NODES, 0x20000),
+                       (LOAD_PLACES, 0x4000), (LOAD_STACK - 0x1000, 0x2000)):
+        uc.mem_map(base, size)
+    uc.mem_map(0x2260000, 0x1000)                 # 0x5A540's debug flag (0x22601BB): off
+    m.write(LOAD_CORE + 0x18458, LOAD_PLACES)
+    m.write(LOAD_CORE + 0x2FCC, LOAD_LISTS)
+    m.write(LOAD_CORE + 0x89D8, LOAD_LISTS + 0x8000)
+    free = [LOAD_NODES]
+
+    def pool_for(header):
+        """A pool of its own for the list at `header` (+10h), its free list
+        strung through the nodes' first word."""
+        pool = header + 0x100
+        nodes = [free[0] + NODE_SIZE * i for i in range(pool_room)]
+        free[0] += NODE_SIZE * pool_room
+        for node, after in zip(nodes, nodes[1:] + [0]):
+            m.write(node, after)
+        m.write(header + 0x10, pool)
+        m.write(pool + 0x20, nodes[0])
+        m.write(pool + 0x24, 0)
+        m.write(pool + 0x28, pool_room)
+        return pool
+
+    def fill(header, entries, inputs):
+        pool = pool_for(header)
+        previous = 0
+        for at, value in entries:
+            node = m.read(pool + 0x20)
+            m.write(pool + 0x20, m.read(node))
+            m.write(pool + 0x24, m.read(pool + 0x24) + 1)
+            uc.mem_write(node, bytes(NODE_SIZE))
+            m.write(node + 4, previous)
+            m.write(node + 0x20, at)
+            if inputs:
+                m.write(node + 8, value)
+                m.write(node + 0xC, value ^ 0x5A5A5A5A)
+            else:
+                uc.mem_write(node + 8, bytes([value]))
+            if previous:
+                m.write(previous, node)
+            else:
+                m.write(header + 4, node)
+            m.write(header + 8, node)
+            previous = node
+        m.write(header, len(entries))
+
+    mask = 0
+    for place, (in_use, chosen, kits, inputs) in places.items():
+        mask |= 1 << place
+        entry = LOAD_PLACES + place * 0x30
+        for kit in range(3):
+            player = LOAD_PLACES + 0x1000 + place * 0x100 + kit * 0x40
+            m.write(entry + kit * 4, player)
+        uc.mem_write(entry + 0xC, bytes([in_use, chosen]))
+        m.write(entry + 0x28, LOAD_CORE)
+        uc.mem_write(entry + 0x2C, bytes([place]))
+        # The player in use: its kit byte and its input, mapped apart.
+        player = 0x46A0000 + place * 0x1000
+        try:
+            uc.mem_map(player, 0x1000)
+        except Exception:
+            pass
+        m.write(entry + in_use * 4, player)
+        uc.mem_write(player + 0x115, bytes([in_use]))
+        m.write(player + 0x32C, 0x1000 + place)
+        m.write(player + 0x330, 0x2000 + place)
+        fill(LOAD_LISTS + place * 0x480, inputs, True)
+        fill(LOAD_LISTS + 0x8000 + place * 0x480, kits, False)
+    # The frame of 0x2D0B70 at 0x2D0FF2: [ebp+8] the core, [esp+14h] the
+    # history item (its time at +C0BB0h), esi the mask left to do.
+    uc.mem_map(0x4700000, 0xC1000)
+    m.write(0x4700000 + 0xC0BB0, time)
+    frame = LOAD_STACK
+    m.write(frame + 8, LOAD_CORE)
+    esp = LOAD_STACK - 0x80
+    m.write(esp + 0x14, 0x4700000)
+    uc.reg_write(UC_X86_REG_ESP, esp)
+    uc.reg_write(UC_X86_REG_EBP, frame)
+    uc.reg_write(UC_X86_REG_ESI, mask)
+    uc.reg_write(UC_X86_REG_EDI, 0x77777777)
+    uc.emu_start(0x2D0FF2, 0x2D105E, count=200000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x2D105E and uc.reg_read(UC_X86_REG_ESP) == esp
+    assert uc.reg_read(UC_X86_REG_EBP) == frame and uc.reg_read(UC_X86_REG_ESI) == 0
+
+    def walk(header, inputs):
+        forward, node, before = [], m.read(header + 4), 0
+        while node:
+            assert m.read(node + 4) == before and len(forward) < 1000
+            value = (m.read(node + 8), m.read(node + 0xC)) if inputs else uc.mem_read(node + 8, 1)[0]
+            forward.append((m.read(node + 0x20), value))
+            before, node = node, m.read(node)
+        linked = m.read(header + 8) == before and m.read(header) == len(forward)
+        return forward, linked
+
+    out = {}
+    for place in places:
+        kits, kits_linked = walk(LOAD_LISTS + 0x8000 + place * 0x480, False)
+        inputs, inputs_linked = walk(LOAD_LISTS + place * 0x480, True)
+        entry = LOAD_PLACES + place * 0x30
+        chosen = []
+        for tick in range(time, time + 400, 50):
+            uc.reg_write(UC_X86_REG_ECX, entry)
+            m.start(0x321790, args=(0, tick, 0), count=2000)
+            assert uc.reg_read(UC_X86_REG_ESP) == STACK + 16
+            chosen.append(uc.mem_read(entry + 0xD, 1)[0])
+        out[place] = (kits, inputs, kits_linked and inputs_linked, chosen)
+    return out
+
+
+def next_kits(entries, chosen, time):
+    """What a game that played the match has as the place's next kit after
+    each tick from `time` on: the world's choice at `time`, then the newest
+    entry at or before the tick (every kit is there)."""
+    out = []
+    for tick in range(time, time + 400, 50):
+        older = [value for at, value in entries if at <= tick]
+        if older and older[-1] < 3:
+            chosen = older[-1]
+        out.append(chosen)
+    return out
+
+
+def first_world(original, changed):
+    """patch_026g.py's FIRST_LOAD: the entries of a first world, in the
+    original and in the build, against what the games that played the match
+    have."""
+    time = 300050
+    cases = {
+        # The newcomer case: a kit chosen before the world (2, the world's
+        # next kit) and one relayed for later (1, at +100 ms); kit 0 in use.
+        3: (0, 2, [(time - 200, 2), (time + 100, 1)], [(time - 100, 7), (time + 50, 8)]),
+        # A first world of a match: nothing in the lists, the next kit the
+        # one in use.
+        0: (1, 1, [], []),
+        # An entry of the world's very time, and only older ones.
+        8: (2, 0, [(time - 50, 1), (time, 0)], [(time, 9)]),
+        # Every entry newer than the world.
+        19: (1, 0, [(time + 50, 2), (time + 150, 1)], [(time + 50, 3)]),
+    }
+    for data, build in ((original, False), (changed, True)):
+        for room in (64, 2):          # 2: the pool full, its oldest node given back
+            if room == 2 and not build:
+                continue
+            got = first_load(data, {p: c for p, c in cases.items() if room == 64 or p in (0, 19)}, time, room)
+            for place, (kits, inputs, linked, chosen) in got.items():
+                in_use, world_next, had_kits, had_inputs = cases[place]
+                assert linked, place
+                current = (0x1000 + place, 0x2000 + place)
+                if build:
+                    full = room == 2 and len(had_kits) >= 2
+                    kept_kits = had_kits[1:] if full else had_kits
+                    kept_inputs = had_inputs
+                    # In time order; the world's entry at its time.
+                    want_kits = sorted([e for e in kept_kits if e[0] != time] + [(time, world_next)])
+                    want_inputs = sorted([(at, (v, v ^ 0x5A5A5A5A)) for at, v in kept_inputs if at != time]
+                                         + [(time, current)])
+                    assert kits == want_kits, (place, kits, want_kits)
+                    assert inputs == want_inputs, (place, inputs, want_inputs)
+                    # The next kit as every other game has it.
+                    assert chosen == next_kits(kept_kits, world_next, time), (place, chosen)
+                elif place == 3:
+                    # The fault: the kit in use at the newest end, after the
+                    # choice relayed for later, which it hides from then on.
+                    assert kits == had_kits + [(time, in_use)], kits
+                    assert chosen != next_kits(had_kits, world_next, time) and set(chosen) == {in_use}, chosen
+                elif place == 0:
+                    assert kits == [(time, in_use)] and inputs == [(time, current)]
+    # With nothing newer and the next kit the one in use, the build's lists
+    # are the original's.
+    case = {0: (1, 1, [(time - 100, 1)], [(time - 50, 4)])}
+    assert first_load(original, case, time)[0][:2] == first_load(changed, case, time)[0][:2]
+
+
+def first_world_fails(original, changed):
+    """first_world given the original as the build, and copies of the build
+    with one thing broken each, must fail."""
+    image = patch.base.Headers(changed)
+    _, _, _, raw, _, _ = image.sections(changed)[-2]
+    cave = raw + patch.base.LATE_JOIN_OFFSET + patch.base.FIRST_LOAD_INPUT_HOOK[2]
+    code = bytes(changed[cave:cave + 0xC0])
+
+    def broken(old, new):
+        at = code.index(old)
+        copy = bytearray(changed)
+        copy[cave + at:cave + at + len(old)] = new
+        return bytes(copy)
+
+    copies = {
+        "the original": original,
+        "the kit in use for the world's choice": broken(bytes.fromhex("8a580d"), bytes.fromhex("8a580c")),
+        "at the newest end (as the game's own)": broken(bytes.fromhex("394a207205"), bytes.fromhex("394a20eb05")),
+        "an entry of the same time not found": broken(bytes.fromhex("394820743272"), bytes.fromhex("394820909072")),
+    }
+    for name, data in copies.items():
+        try:
+            first_world(original, data)
+        except AssertionError:
+            continue
+        raise AssertionError(f"first_world passes with {name}")
+
+
+SEEK_GAME, SEEK_WORLD, SEEK_OBJECTS = 0x4200000, 0x4210000, 0x4240000
+CLIENT_WEAPON_ITEM_VTABLE = 0xA0422C
+
+
+def seek_tail(data, places, user_seek=True, target=725000):
+    """The end of the replay's seek (0x1EE39F..0x1EE3B5: after the clock is
+    set to the target) on a made-up game and world. `places` is a list of
+    three kits each, a kit None or a list of 23 slots, a slot None, "weapon"
+    (a client weapon whose queue holds a trivial functor, a functor with a
+    manager and an empty one, and whose fx history has entries) or "other"
+    (an item of another class with the same layout). Returns (the managers'
+    calls, [(queue begin, end, fx write index, fx oldest index)] of each
+    weapon or other item, the game's two stores)."""
+    machine = Machine(data)
+    uc = machine.uc
+    uc.mem_map(SEEK_GAME, 0x10000)
+    uc.mem_map(SEEK_WORLD, 0x20000)
+    uc.mem_map(SEEK_OBJECTS, 0x200000)
+    manager = SEEK_OBJECTS                              # a functor manager: cdecl (in, out, op)
+    uc.mem_write(manager, b"\xc3")
+    managers = SEEK_OBJECTS + 0x10                      # [manager table] = manager
+    machine.write(managers, manager)
+    calls = []
+
+    def visit(uc, address, size, _):
+        if address == manager:
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            calls.append((machine.read(esp + 4), machine.read(esp + 8), machine.read(esp + 12)))
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    free = SEEK_OBJECTS + 0x1000
+    machine.write(SEEK_GAME + 0x4D64, SEEK_WORLD)
+    array = SEEK_WORLD + 0x100
+    machine.write(SEEK_WORLD + 0x18650, array)
+    machine.write(SEEK_WORLD + 0x18654, array + 0x30 * len(places))
+    items = []
+    for p, kits in enumerate(places):
+        for k, slots in enumerate(kits):
+            if slots is None:
+                machine.write(array + 0x30 * p + 4 * k, 0)
+                continue
+            player, inventory = free, free + 0x200
+            free += 0x400
+            machine.write(array + 0x30 * p + 4 * k, player)
+            machine.write(player + 0x10C, inventory)
+            for s, kind in enumerate(slots):
+                if kind is None:
+                    machine.write(inventory + 0x10C + 4 * s, 0)
+                    continue
+                weapon = free
+                free += 0x2000
+                item = weapon + 0x10
+                machine.write(inventory + 0x10C + 4 * s, item)
+                machine.write(item, CLIENT_WEAPON_ITEM_VTABLE if kind == "weapon" else 0xA04174)
+                begin = weapon + 0xA08
+                for i, functor in enumerate((0xA0B860 | 1, managers, 0)):
+                    machine.write(begin + 0x38 * i, functor)
+                machine.write(weapon + 0x9FC, begin)
+                machine.write(weapon + 0xA00, begin + 3 * 0x38)
+                machine.write(weapon + 0xA04, begin + 64 * 0x38)
+                machine.write(weapon + 0x828, 7)
+                machine.write(weapon + 0x82C, 2)
+                items.append(weapon)
+    uc.reg_write(UC_X86_REG_ESI, SEEK_GAME)
+    uc.reg_write(UC_X86_REG_EDI, target)
+    uc.reg_write(UC_X86_REG_EBX, 0x12345600 | (0 if user_seek else 1))
+    uc.reg_write(UC_X86_REG_EBP, 0x5EED)
+    uc.reg_write(UC_X86_REG_ESP, STACK)
+    uc.emu_start(0x1EE39F, 0x1EE3B5, count=200000)
+    assert uc.reg_read(UC_X86_REG_EIP) == 0x1EE3B5
+    assert uc.reg_read(UC_X86_REG_ESP) == STACK
+    assert (uc.reg_read(UC_X86_REG_ESI), uc.reg_read(UC_X86_REG_EDI), uc.reg_read(UC_X86_REG_EBP)) == \
+        (SEEK_GAME, target, 0x5EED)
+    state = [(machine.read(w + 0x9FC), machine.read(w + 0xA00), machine.read(w + 0x828), machine.read(w + 0x82C))
+             for w in items]
+    return calls, items, state, (machine.read(SEEK_GAME + 0x4EC), machine.read(SEEK_GAME + 0x57C))
+
+
+def seek_clear(original, changed):
+    """A replay's user seek empties every client weapon's delayed sounds and
+    fx history (patch_026g.py, SEEK_CLEAR_HOOK) as ~weapon does, and touches
+    nothing else; a key frame in play (bl = 1) and the original leave them."""
+    weapon_slots = ["weapon", None, "other"] + [None] * 17 + ["weapon", None, "weapon"]
+    layouts = ([], [[None, None, None]], [[weapon_slots, None, ["other"] + [None] * 22]],
+               [[weapon_slots, weapon_slots, weapon_slots]] * 3 + [[None, weapon_slots, None]] * 17)
+    for places in layouts:
+        for data, user_seek in ((changed, True), (changed, False), (original, True)):
+            calls, items, state, stores = seek_tail(data, places, user_seek)
+            assert stores == ((725000 - 1000, 725000 - 1000) if user_seek else (0, 0)), stores
+            cleared = data is changed and user_seek
+            kinds = [kind for kits in places for slots in kits if slots for kind in slots if kind]
+            assert len(kinds) == len(items)
+            for kind, weapon, (begin, end, write, oldest) in zip(kinds, items, state):
+                if cleared and kind == "weapon":
+                    assert (begin, end, write, oldest) == (weapon + 0xA08, weapon + 0xA08, 2, 2)
+                else:
+                    assert (begin, end, write, oldest) == (weapon + 0xA08, weapon + 0xA08 + 3 * 0x38, 7, 2)
+            # The one functor with a manager is destroyed (op 2, on its own
+            # storage), once per cleared weapon; nothing is invoked.
+            expected = [(w + 0xA08 + 0x38 + 8,) * 2 + (2,) for kind, w in zip(kinds, items) if kind == "weapon"] \
+                if cleared else []
+            assert calls == expected, (calls, expected)
+
+
 def check(original, nasm):
     assert hashlib.sha256(original).hexdigest() == patch.base.EXE_SHA256
     changed = patch.build(original, nasm)
@@ -995,6 +1887,15 @@ def check(original, nasm):
     native_query(changed)
     native_profile(changed)
     native_histories(changed)
+    statistics_scores(original, changed)
+    pregame_progress(original, changed)
+    weapon_random(original, changed)
+    weapon_random_fails(original, changed)
+    kit_state(original, changed)
+    kit_state_fails(original, changed)
+    first_world(original, changed)
+    first_world_fails(original, changed)
+    seek_clear(original, changed)
     for debug in (0, 0xff):
         m = Machine(changed)
         m.uc.reg_write(UC_X86_REG_EAX, BASE)
@@ -1036,7 +1937,7 @@ def check(original, nasm):
     assert struct.unpack_from("<I", changed, h.size_of_image_at)[0] >= rva + size
     name, rva, size, _, raw_size, flags = h.sections(changed)[-1]
     assert name.startswith(b".srpd") and size == 4096 and raw_size == 0 and flags == 0xC0000080
-    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; ABI; PE checksum and certificate")
+    print("PASS: native preparation/install/ACK/cleanup fixture; query/callback ABI; bounded profile decoding; history capacity; statistics loops; fixed masks; capability; native weapon binding; stable animation IDs; slot and weapon IDs; a slot's grenades and traps in front of the saved objects, and in the states to roll back to; an untouched grenade and trap save and load as one zero byte; a newcomer's scoreboard score through rollbacks, and every hud cell at a match's start; the hud during a countdown and during play; the new kit's weapons' random states at a spawn, alike in a game that drew from them and in one that loaded a world (and the original and three broken copies failing it); the new kit's weapons' kept state at a spawn: the time of the last tick at every spawn, the fire mode, ammunition, chamber, aim and recoil at a change of kit, alike in a game that played the kit and one that loaded a world, nothing else changed (and the original and five broken copies failing it); a first world's inputs and kit choices in time order, the kit choice the world's, the next kit after each tick as the games that played have it (and the original and three broken copies failing it); a replay's user seek empties every client weapon's sound queue and fx history as ~weapon does, a key frame in play and the original do not; ABI; PE checksum and certificate")
 
 
 def main():

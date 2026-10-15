@@ -30,6 +30,12 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425000 snapshot_upload_026g.asm -o snapshot_upload_026g.section.bin
         nasm -f bin -DCAVE=0x325A60  snapshot_upload_026g.asm -o snapshot_upload_026g.hash-mismatch.bin
     (both .bin files are checked in; --bin=<file> names another one).
+    The resources.db signature code comes from db_signature_026g.asm:
+        nasm -f bin -DCAVE=0xA425C00 db_signature_026g.asm -o db_signature_026g.section.bin
+    (checked in; it embeds resources_db_key_026g.der).
+    The stale shell_32.dll check comes from stale_dll_026g.asm:
+        nasm -f bin -DCAVE=0xA425E00 stale_dll_026g.asm -o stale_dll_026g.section.bin
+    (checked in).
     The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -137,6 +143,40 @@ Patches:
   there), lets go of the model and returns when the model is not in the
   scene (a jump at 0x14FF9B to the function's end): that killed a game
   whose join the server gave up (seen on the test server);
+- the weapons' random state at a spawn (patch revision 10, with the late
+  join, client_patch.md section 3.18). A weapon's random state (its shots'
+  spread) was 1 from its constructor and set by nothing but the load of a
+  world, which holds the current kit's player alone: a game that loaded one
+  during a match had the other kits' weapons at 1, the others had them
+  drawn from, and a respawn into such a kit put it out of step. The
+  respawn rule's spawn (0x316DA0) calls into the new code at 0x316EA0,
+  after the new kit's player is initialised and before it is put into the
+  world: each weapon of its inventory gets a state from its place, kit,
+  slot and the spawn's time, the same in every game. And a game's first
+  world of a match puts each place's input and kit choice into the place's
+  lists in time order (calls at 0x2D1050 and 0x2D1055), the kit choice
+  being the one the world made for the next spawn, not the kit in use;
+- Team Deathmatch's rule counts a death after its own end (patch revision
+  11, with the late join, client_patch.md section 3.21). tdm_rule_core's
+  death handler 0x316090 returned at once when the rule's completion time
+  (+0x12C) was set; the time is not serialized, so a rollback over the
+  death that completed the rule left it set and the replay of that death
+  was skipped: one dead player of the team that was out stayed in the alive
+  mask, the server saw a player alive and the match ran to the time limit
+  (match.md section 28). The `jnz` at 0x3160F1 becomes six nops, as the
+  battery rule's does;
+- the resources.db file table is checked with Skhid's key instead of the
+  survarium.com certificate's (patch revision 12, client_patch.md section
+  0.1): verify_sign's call of verify_sign_impl at 0x135D3 goes to
+  db_signature_026g.asm at 0xC00 of `.srp`, which makes it once with a
+  certificate context whose key is resources_db_key_026g.der. The game
+  starts only with the resources.db the updater installs; any other is
+  "Resources archive is corrupted";
+- the sign-in reports a stale shell_32.dll in the temporary folder (patch
+  revision 13, client_patch.md section 3.25): sign_in_on_connected's
+  `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
+  stale_dll_026g.asm at 0xE00 of `.srp`, which writes both, with byte 8 of
+  the version field 80h, or 81h when %TEMP%\\shell_32.dll exists;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -230,7 +270,53 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # 8: the game's clock is brought to the match clock at 30 % instead of 5 %
 # (CLOCK_FACTOR below). Nothing a match computes: 7 and 8 play together,
 # and the match server times its corrections by the revision a game says.
-REVISION = 8
+# 9: the statistics handler keeps the scoreboard's score of all twenty
+# places (LATE_JOIN_PATCHES, start_match). In 5 to 8 a newcomer's score was
+# added again at every rollback over its events, and its row showed a
+# score of an earlier match until its first. And the hud draws the team
+# points while a match counts down (PREGAME_PROGRESS); the original kept
+# the last match's until play began. Neither is saved in the world or
+# hashed: 7, 8 and 9 play together.
+# 10: every spawn gives each weapon of the new kit a random state every game
+# works out alike (WEAPON_RANDOM below). In 9 and before a game that loaded
+# a world during a match kept the other kits' weapons at the constructor's
+# 1, and a respawn into such a kit put it out of step at once. What a match
+# computes changes from a match's first spawn: a game of 10 and an older one
+# part there, so a server asks for 10. With it, a game's first world of a
+# match puts each place's input and kit choice where their time puts them in
+# the place's lists, the kit choice being the one the world has made for the
+# next spawn (FIRST_LOAD below): in 9 and before a newcomer could respawn a
+# player in another kit than the other games did.
+# 11: Team Deathmatch's rule counts a death after its own end (TDM_DEATHS
+# below). In 10 and before a rollback over the deciding death left the
+# rule's completion time set, the replay skipped the death, and one dead
+# player of the team that was out stayed in the alive mask: the match the
+# server reads never ended before the time limit. What a match computes
+# changes at the first death after a team is out: a game of 11 and an
+# older one part there, so a server asks for 11. With it, a field-of-view
+# setting (FOV_PATCHES and FOV_PROJECTION_HOOK below): the video options'
+# slider is bound to uro_fov, from 50 to 100, which the camera's angle
+# follows unaimed; through a scope the angle is the original's. A camera is
+# not in what a match computes. And a battery under the floor one stands
+# on can be picked up (PICKUP_* below): a use is in what a match computes,
+# so this too parts a game of 11 from an older one.
+# Also in 11, for the replay viewer (docs/notes/replay_sur.md): a replay's
+# camera follows the player it is on into another kit (REPLAY_REATTACH
+# below; a replay watched in first or third person died at that player's
+# first respawn into another kit), a weapon's full sound queue drops the new
+# sound (SOUND_QUEUE below; a replay died about 50 s after a seek), and a
+# replay's seek empties the weapons' sound queues (SEEK_CLEAR below; sounds
+# played late after a seek). Nothing a match computes: no revision of their
+# own (owner, 2026-10-15).
+# 12: the game starts only with a resources.db whose file table Skhid's key
+# signed, the one the updater installs (DB_SIGNATURE below); a retail one
+# stops it. Nothing a match computes: 11 and 12 play together. A server that
+# sells items only that resources.db has asks for 12: a game that says 12
+# has started with it.
+# 13: the sign-in reports whether %TEMP%\shell_32.dll exists (STALE_DLL
+# below), in byte 8 of the version field. Nothing a match computes: 12 and
+# 13 play together.
+REVISION = 13
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -252,6 +338,53 @@ GATHER_EVENTS = (0x313A62, bytes.fromhex("0f85d3000000"), b"\x90" * 6)
 # completion no container can be used any more) -> the mov byte becomes nops.
 GATHER_LOCK = (0x313B34, bytes.fromhex("c6816001000000"), b"\x90" * 7)
 GATHER = (GATHER_EVENTS, GATHER_LOCK)
+
+# tdm_rule_core's death handler 0x316090 (event 1): `cmp dword
+# [esi+12Ch],-1` / `jnz 3161DDh` (once the rule has set its completion time,
+# +12Ch, no death is counted: not the ticket, not the player's leaving the
+# alive mask) -> the jnz becomes nops, as for the battery rule above. The
+# completion time is not serialized (the constructor's 0x31601D is the only
+# write of -1), so a rollback over the death that completed the rule keeps
+# it, and the replay of that death is skipped (match.md section 28).
+TDM_DEATHS = (0x3160F1, bytes.fromhex("0f85e6000000"), b"\x90" * 6)
+
+# replay_network_client's "is this place mine" (vtable 0x9FF344, slot +0x54
+# at 0x9FF398) is 0x54E10, `xor al,al` / `ret 4`. The client respawn rule's
+# kit change (0x2678E0) asks it and re-attaches the camera to the place's
+# new kit object when it says yes, as the live client's 0x27B550 does for
+# its own place; the replay never did, kept drawing the old kit's object as
+# the one watched and gave the new one's weapon a HUD of 0 + 0x2E4
+# (weapon::draw 0x24502B). The slot gets a thunk in the int3 padding after
+# is_player_current 0x242A40 (the client in eax, the place on the stack,
+# `ret 4`): `mov eax,ecx` / `jmp 242A40h`, so "mine" is "the place the
+# camera is on". The slot keeps its base relocation.
+REPLAY_REATTACH_THUNK = (0x242A69, bytes.fromhex("cc") * 7, bytes.fromhex("8bc1e9d0ffffff"))
+REPLAY_REATTACH_SLOT = (0x9FF398, struct.pack("<I", 0x54E10), struct.pack("<I", 0x242A69))
+
+# A weapon's delayed sounds (delayed_callbacks_queue<64>, weapon+9FCh:
+# begin, end, capacity end; 0x38 bytes an item) are emptied by nothing but
+# the weapon's destructor. Each id keeps one item for good and a chain of up
+# to 2 or 4 waiting ones; a seek moves the game clock and leaves the queue
+# as it was. Its add (0x2454A0: drain, then look for the id's chain) pushes
+# without looking, and push_back (0x245AD0) asserts at 64 (0x245B32: seen
+# in a replay, about 50 s after a seek). After the drain, at 0x2454C1, `mov
+# eax,[esi]` / `mov ecx,[esi+4]` (esi = the queue) becomes a jump to the
+# cave in int3 padding after a function that ends at 0x835A15: with the
+# queue full it goes to 0x24569A, the game's own exit for a sound past its
+# chain's cap (the same frame: it calls the functor with flag 0, which the
+# sound player 0x297E20 takes as "do not play", and returns `ret 18h`; the
+# queue is not touched); otherwise it does the two instructions and goes
+# back to 0x2454C6. A weapon with a full queue drops its new sounds until it
+# drains, where the game died. Sounds only: nothing a match computes.
+SOUND_QUEUE_HOOK_VA, SOUND_QUEUE_RETURN, SOUND_QUEUE_DROP = 0x2454C1, 0x2454C6, 0x24569A
+SOUND_QUEUE_CAVE_VA = 0x835A20
+SOUND_QUEUE_PADDING = (0x835A16, 42)          # the int3 run the cave is in
+SOUND_QUEUE_CAVE = (bytes.fromhex("8b4e04" "3b4e08" "7307" "8b06")
+                    + bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_RETURN - (SOUND_QUEUE_CAVE_VA + 15))
+                    + bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_DROP - (SOUND_QUEUE_CAVE_VA + 20)))
+SOUND_QUEUE_CAVE_SITE = (SOUND_QUEUE_CAVE_VA, bytes.fromhex("cc") * len(SOUND_QUEUE_CAVE), SOUND_QUEUE_CAVE)
+SOUND_QUEUE_HOOK = (SOUND_QUEUE_HOOK_VA, bytes.fromhex("8b068b4e04"),
+                    bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_CAVE_VA - (SOUND_QUEUE_HOOK_VA + 5)))
 
 # vfs::mounter::finish 0x469F0, the last step of every mount: `mov
 # eax,[eax+34h]` (the mount's root) / `test eax,eax` / `jnz 46B0Fh`, then
@@ -291,6 +424,37 @@ SECTION_CHARACTERISTICS = 0x60000020          # code, execute, read (as .text)
 
 CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
 
+# vostok::crypt::verify_sign 0x13310, after the survarium.com certificate
+# was found and its chain check (CERT, 0x12A10) passed: `mov eax,esi` /
+# `call 12CB0h` (verify_sign_impl: eax = the certificate's context, four
+# cdecl arguments: the file table, its size, the signature, its size; 0 for
+# a good signature) / `add esp,10h`. The call goes to verify_skhid
+# (db_signature_026g.asm), at DB_SIGNATURE_OFFSET in the first page of
+# `.srp`: after the upload code, the default-server stub and the address
+# (0x21D at most), the pickup code (PICKUP_OFFSET, 0x800) and the replay's
+# seek code (SEEK_CLEAR_OFFSET, 0xA00); the late join begins at the next
+# page. build() checks that none of them overlaps. The rel32 holds no
+# address: no base relocation is under it.
+DB_SIGNATURE_VA, DB_SIGNATURE_IMPL = 0x135D3, 0x12CB0
+DB_SIGNATURE_OFFSET = 0xC00
+DB_SIGNATURE_ENTRY = SECTION_VA + DB_SIGNATURE_OFFSET
+DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"),
+                b"\xE8" + struct.pack("<i", DB_SIGNATURE_ENTRY - DB_SIGNATURE_VA - 5))
+
+# sign_in_on_connected 0x380800, where it finishes the 12-byte version field
+# (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
+# `mov [edi+0Ch],dl` (the EULA byte). Both become a call of
+# stale_dll_026g.asm and a nop; the code there does both after its check,
+# with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
+# of `.srp`, after the resources.db signature code (DB_SIGNATURE_OFFSET);
+# build() checks that they do not overlap. The two instructions hold no
+# address: no base relocation is under them.
+STALE_DLL_VA = 0x380889
+STALE_DLL_OFFSET = 0xE00
+STALE_DLL_ENTRY = SECTION_VA + STALE_DLL_OFFSET
+STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
+             b"\xE8" + struct.pack("<i", STALE_DLL_ENTRY - STALE_DLL_VA - 5) + b"\x90")
+
 # The late join (client_patch.md section 3.11). Its code is the second page
 # of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
 # entries are at fixed offsets, then the C code. The first page stays what
@@ -305,6 +469,141 @@ LATE_JOIN_STATE_NAME = b".srpd\0\0\0"
 LATE_JOIN_STATE_SIZE = 0x1000
 LATE_JOIN_STATE_CHARACTERISTICS = 0xC0000080   # uninitialized data, read, write
 
+# base_game_statistics_handler (the network client's, +1EE8D8h; vtable
+# 0xA0755C) keeps the scoreboard's score of each place, `m_scores[20]` at
+# +31F0h, which the world does not save. on_event (0x26DB80, slot +44h, on
+# every statistics event) adds the event's points to any place's score;
+# recalculate_scores (0x26DC30), which deserialize (0x26DB60, slot +34h)
+# runs after every state a game loads, works them out again from the
+# statistics, and start_match (0x26D8D0, slot +3Ch) tells the hud all of
+# them, both for as many places as the handler's count, +3240h. start_match
+# copies that count from the roster of the start (options+577B5h); the late
+# join raises the roster and the shared statistics' live count (+31E8h) but
+# not this one. So a newcomer's score was never worked out again: every
+# rollback over its events added them once more (2.7 to 4 times its score
+# in a match of ten, seen live), and its hud cell kept the score a player
+# of an earlier match had had in that place until its first. With twenty, every
+# place is worked out again at every state loaded, and start_match tells
+# the hud a 0 for every place at a match's start. Places with no player
+# have zero statistics: a score of 0, told once. The live count beside it
+# stays the roster's. `mov al,[edx+577B5h]` -> `mov al,14h`.
+STATISTICS_START_MATCH_VA = 0x26D8D0
+STATISTICS_COUNT = (0x26D8F3, bytes.fromhex("8a82b5770500"), b"\xb0\x14" + b"\x90" * 4)
+
+# A weapon's random state (weapon_core+5BCh: boost's minstd_rand, x * 48271
+# mod 2^31-1, drawn from by its shots' spread alone, 0x2E1D50 and 0x2E2120)
+# is 1 from the constructor (0x2DF429), comes out of a world in deserialize
+# (0x2E34C1), and is set by nothing else: not at a respawn, which keeps the
+# kit's weapon objects. A place has a player object for each of its three
+# kits, and a world holds only the current one's (0x3218E0). So a game that
+# loaded a world during a match (a newcomer, a resynced game) had every other
+# kit's weapons at 1 where the games that played them had drawn from them,
+# and a respawn into such a kit put that game out of step at once (seen live:
+# match 0x1ce45cbe, six desyncs of its newcomers on the kit timeline); so
+# did a rollback over a respawn into another kit, which loads the current
+# kit's player alone. The respawn rule's spawn (0x316DA0, slot +5Ch of every
+# respawn rule; its tick 0x316820 spawns every player, a match's first spawn
+# too, in every game and in every replay of a tick) makes the new kit
+# current (0x316DE3), initialises its player (vtable+1Ch: the inventory from
+# the profile, a weapon in hand) and puts it into the world (vtable+20h).
+# Between the two, at 0x316EA0 (`mov edx,[esi]` / `mov eax,[edx+20h]`, the
+# load of that call; esi = the player, ebp = the spawn's time), a call into
+# weapon_random_hook (late_join_026g.asm) gives each weapon of the player's
+# inventory a state from its place, kit, slot and the spawn's time, in
+# 1..2^31-2, then does the two instructions. A weapon is an item whose
+# vtable+70h is weapon_core's bind 0x2E30F0, which only the vtables of
+# weapon_core and the client's weapon hold.
+WEAPON_RANDOM_VA, WEAPON_RANDOM_OFFSET = 0x316EA0, 3712
+WEAPON_RANDOM_HOOK = (WEAPON_RANDOM_VA, bytes.fromhex("8b168b4220"), WEAPON_RANDOM_OFFSET, 0xE8)
+WEAPON_SPAWN_VA = 0x316DA0                    # the respawn rule's spawn
+WEAPON_BIND_VA = 0x2E30F0                     # weapon_core's bind, vtable+70h of its item
+WEAPON_RANDOM_FIELD = 0x5BC                   # weapon_core's random state
+WEAPON_RANDOM_MODULUS = 0x7FFFFFFF
+
+
+def weapon_random_state(place, kit, slot, time):
+    """The state weapon_random_hook gives a weapon at a spawn."""
+    h = ((((place & 0xFF) << 16 | (kit & 0xFF) << 8 | slot) * 0x85EBCA6B)
+         ^ (time * 0x9E3779B1)) & 0xFFFFFFFF
+    return (h ^ h >> 15) % (WEAPON_RANDOM_MODULUS - 1) + 1
+
+
+# The same spawn, before the initialize: at 0x316E57 (`mov edx,[esi]` /
+# `mov edx,[edx+1Ch]`, the load of the initialize's call; esi = the new
+# kit's player, [esp+10h] the kit before, [esp+18h] the new kit, as
+# 0x316E02/0x316E06 put them) a call into kit_state_hook
+# (late_join_026g.asm). Each weapon of the inventory gets -1 (the
+# constructor's) as m_last_tick_time_in_ms (+5A4h): only the weapon in hand
+# is ticked, and the activation (0x2E2A30) the initialize runs for the
+# weapon it puts in hand sets the field to the spawn's time before any tick.
+# At a spawn into another kit than the one before, the fields a weapon keeps
+# through deaths and that the initialize and the activation do not set
+# again, or set only for the weapon in hand, get the constructor's values
+# (0x2DF0D0): KIT_STATE_FIELDS. A respawn into the same kit keeps them: that
+# kit's player is in every world.
+KIT_STATE_VA, KIT_STATE_OFFSET = 0x316E57, 3168
+KIT_STATE_HOOK = (KIT_STATE_VA, bytes.fromhex("8b168b521c"), KIT_STATE_OFFSET, 0xE8)
+KIT_STATE_TICK_FIELD = 0x5A4                  # m_last_tick_time_in_ms, -1 at every spawn
+# (weapon offset, size, the constructor's value) set at a spawn into another kit
+KIT_STATE_FIELDS = (
+    (0x5A8, 4, 0xFFFFFFFF),                   # m_ammo_switch_time_in_ms
+    (0x5B1, 1, 0), (0x5B2, 1, 0),             # m_current_ammo_id, m_next_ammo_id
+    (0x5E5, 1, 0), (0x5E6, 1, 0),             # m_ammo_in_magazine, m_fire_queue_type
+    (0x5E8, 1, 0),                            # m_aimed
+    (0x5EC, 4, 6),
+    (0x5F1, 1, 0),                            # m_is_round_chambered
+    (0x5F5, 1, 0),                            # m_need_to_auto_reload
+    (0x5FC, 4, 0), (0x600, 4, 0), (0x604, 4, 0), (0x608, 4, 0),   # 0.0
+    (0x60C, 4, 0xFFFFFFFF),
+)
+
+
+# A game's first world of a match (game_world_core::deserialize 0x2D0B70,
+# the block 0x2D0FE3..0x2D105C while the world is still frozen: every game's
+# at a match's start, a newcomer's, a game's that comes back) gives each
+# place of the world an input and a kit choice at the world's time: `call
+# 0x2d4ab0` at 0x2D1050 (the current player's input, +32Ch/+330h, into the
+# place's input list, core+2FCCh) and `call 0x2d4b50` at 0x2D1055 (a kit
+# choice into core+89D8h), edi -> {core, the world's time, place}. Both put
+# their entry at the newest end of the list when it has none of that time,
+# even after newer entries (inputs and kit choices relayed between the
+# server's 0xE5 and the world), where every other writer keeps the lists in
+# time order (the network's 0x1FB42A and 0x1FBF00 insert through 0x2D4850).
+# And the kit choice was the kit in use (player+115h), not the one the world
+# has chosen for the next spawn (place+0Dh, read from the world at 0x2D2A37).
+# Each tick 0x321790 sets the place's next kit from the newest entry at or
+# before the tick, looked for from the newest end: the world's choice, or a
+# choice relayed for later, was replaced by the kit in use, and the newcomer
+# respawned that player in another kit than the other games (reported by
+# the analysis of the matches after 0x1ce45cbe for joins that were never let
+# in). The two calls go to first_load_input and first_load_kit
+# (late_join_026g.asm): the same entries, the kit choice being place+0Dh,
+# put before the oldest newer entry (0x2D4850), an entry of that time given
+# the value as before. With no newer entry the lists end as the game's own
+# left them, but for the kit choice's value.
+FIRST_LOAD_INPUT_HOOK = (0x2D1050, bytes.fromhex("e85b3a0000"), 3840, 0xE8)
+FIRST_LOAD_KIT_HOOK = (0x2D1055, bytes.fromhex("e8f63a0000"), 3920, 0xE8)
+FIRST_LOAD_DESERIALIZE_VA = 0x2D0B70
+
+# The replay's seek (game 0x1EE2E0: esi = game, edi = the target; it starts
+# from the replay reader [game+53C8h], which only -match_replay sets, and its
+# callers are the replay movie's slider and the replay's queued seeks) sets
+# the clock to a key frame, re-simulates to the target and sets the clock to
+# the target; a weapon's delayed sounds (weapon+9FCh, SOUND_QUEUE) keep the
+# times of the old timeline, and the re-simulated ones all come due at once:
+# sounds late by the seek's distance, a burst, a queue that fills. For a
+# user seek only (`test bl,bl` / `jnz 1EE3B5h`, a key frame in play takes the
+# jnz), `lea eax,[edi-3E8h]` at 0x1EE3A3 becomes a jump to seek_clear
+# (replay_seek_026g.asm at SEEK_CLEAR_VA, after the pickup code): every
+# client weapon (item vtable 0xA0422C) in the 23
+# inventory slots of each place's three kits has its queue's functors
+# destroyed (0x245C50, which plays nothing), the queue emptied, and its fx
+# history (weapon+828h, the duplicate check) emptied, as ~weapon 0x243790
+# does; then the lea, and back. A live game never runs the seek.
+SEEK_CLEAR_OFFSET = 0xA00
+SEEK_CLEAR_VA = SECTION_VA + SEEK_CLEAR_OFFSET
+SEEK_CLEAR_HOOK = (0x1EE3A3, bytes.fromhex("8d8718fcffff"), 0, 0xE9)
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -318,6 +617,9 @@ LATE_JOIN_PATCHES = (
     # kd_stats_rule: all twenty entries of its array, which the constructor
     # zeroes. `mov dl,[ecx+577B5h]` -> `mov dl,14h`.
     (0x3237B4, bytes.fromhex("8a91b5770500"), b"\xb2\x14" + b"\x90" * 4),
+    # base_game_statistics_handler::start_match: all twenty scores
+    # (STATISTICS_COUNT above).
+    STATISTICS_COUNT,
     # shared_statistics::serialize and deserialize: twenty records, not the
     # live count (which rewards and event handlers go on reading).
     # `cmp [esi+31E0h],bl` / `cmp bl,[esi+31E0h]` -> `cmp bl,14h`.
@@ -329,6 +631,17 @@ LATE_JOIN_PATCHES = (
 # Calls and jumps into the new code: (address, the original's bytes, the
 # entry's offset in the code, 0xE8 call or 0xE9 jmp); the rest of the
 # original's bytes become nops.
+# The camera's projection (patch 22, FOV_PATCHES below): its first
+# instruction, `fld dword [ecx+8Ch]`, jumps to fov_projection, which does the
+# whole projection with the angle of the field-of-view setting.
+FOV_PROJECTION_VA = 0x242900
+FOV_PROJECTION_OFFSET = 576
+FOV_PROJECTION_HOOK = (FOV_PROJECTION_VA, bytes.fromhex("d9818c000000"), FOV_PROJECTION_OFFSET, 0xE9)
+# The original's whole body, which the self-test reads (int3 after it).
+FOV_PROJECTION_BODY = bytes.fromhex(
+    "d9818c0000008b442408f30f1000f30f5e4004568b74240883ec0cd95c2408"
+    "d98188000000d95c2404f30f110424f30f108190000000f30f5905ecd9a200"
+    "e8edc4eaff83c40c8bc65ec20800cccccccc")
 LATE_JOIN_HOOKS = (
     (0x2CBF9B, bytes.fromhex("e860c10000"), 3072, 0xE8),         # a player's animations: register_animations
     (0x2D3880, bytes.fromhex("e89bdf0400"), 0, 0xE8),            # a slot's ids: bind_slot
@@ -340,6 +653,11 @@ LATE_JOIN_HOOKS = (
     (0x219E60, bytes.fromhex("558bec83e4f8"), 2432, 0xE9),       # network_client's destructor: client_destroyed_hook
     (0x23572B, bytes.fromhex("8b8c2498000000"), 3456, 0xE9),     # the hud's lists of players, made again: lists_hook
     (0x39E52, bytes.fromhex("f30f7e00660fd64704"), 3520, 0xE9),  # a box that is no box, in the tree: box_hook
+    WEAPON_RANDOM_HOOK,                                          # a spawn's weapons' random state: weapon_random_hook
+    KIT_STATE_HOOK,                                              # a spawn's weapons' kept state: kit_state_hook
+    FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
+    FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
+    FOV_PROJECTION_HOOK,                                         # the camera's angle: fov_projection
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -403,6 +721,85 @@ CLOCK_FACTOR_MIN_VA, CLOCK_FACTOR_MAX_VA = 0x91A8F0, 0x927A44
 DATA_VA, DATA_FILE, DATA_FILE_SIZE = 0xA5E000, 0xA4C400, 0x92200
 CLOCK_FACTOR_PATCH = (CLOCK_FACTOR_VA, struct.pack("<f", CLOCK_FACTOR_ORIGINAL), struct.pack("<f", CLOCK_FACTOR))
 
+# game_world_ui::update_ui (0x23B200), when the hud's state has changed:
+# while the match waits or counts down (state+138h, the timelimit rule's)
+# it shows the countdown (0x236AD0, 0x236B50) and jumps past the rest to the
+# players' rows (0x23B328 -> 0x23B421); otherwise it shows the match time
+# (0x236A00) and goes on at 0x23B383: the team points (0x2364C0,
+# `root.set_game_progress`), in Team Deathmatch the last players
+# (0x236610, `root.set_last_players`), and the respawn time (0x236C30,
+# `root.set_respawn_time`). The rules fill the state's points every tick,
+# the countdown too (tdm 0x316430: the tickets; gather 0x3140C0: the
+# points), so they are the match's own then, but the hud kept the bars of
+# the match before until play began (seen: 63 and 53, the last match's end,
+# under "Awaiting match start"). The jump goes on to 0x23B383 instead: the
+# same three, with the match time and the start's tip left out. During the
+# countdown the respawn time is 0 (no player waits for one: the saved
+# worlds of a real match), which shows an empty text, and the hud movie
+# hides the last players while a team has tickets (HUD.as,
+# set_game_progress): nothing but the bars changes, and they are drawn as
+# play would draw them a few seconds later. Both paths reach 0x23B383 with
+# the stack and the registers the code after it reads alike. The jump's
+# rel32 holds no address. `jmp 0x23b421` -> `jmp 0x23b383`.
+PREGAME_PROGRESS_VA, PREGAME_PROGRESS_TARGET = 0x23B328, 0x23B383
+PREGAME_PROGRESS = (PREGAME_PROGRESS_VA, bytes.fromhex("e9f4000000"),
+                    b"\xE9" + struct.pack("<i", PREGAME_PROGRESS_TARGET - PREGAME_PROGRESS_VA - 5))
+
+# A field-of-view setting (patch 22). The video options' constructor
+# (0x262929) makes option 7, a float slider of snap 1 labelled
+# `st_fov_option` in all five languages, and names its console variable by
+# `mov eax,offset "fov"` (0x262930; "fov" at 0xA0659C, read nowhere else).
+# No console variable is called "fov", so the slider was never shown (the
+# menu has no instance of it either: fov_slider_026g.py adds one to
+# main_menu.swf). `uro_fov` (float at 0xA6FA28, 65.0, saved in user.cfg; the
+# console variable at 0xAA6510, its name "uro_fov" at 0xA281D0) is
+# registered with the range 0 to 100 and read by nothing. The option now
+# names it: the instruction's relocation (0x262931) stays active, an
+# address for an address.
+FOV_OPTION_NAME = (0x262930, bytes.fromhex("b89c65a000"), b"\xb8" + struct.pack("<I", 0xA281D0))
+FOV_VALUE = 0xA6FA28
+# The camera's projection (FOV_PROJECTION_HOOK above; 0x242900, slot 0 of
+# the vtables of game_camera, lobby_camera, free_fly_camera, demo_camera and
+# player_input_handler): far, near and the viewport's aspect on the stack,
+# xmm0 = the zoom (this+90h) * 1.134464 (65 degrees in radians, the float at
+# 0xA2D9EC, read here alone), then the matrix builder 0xEEE30, `ret 8`. The
+# zoom is set at every frame by 0x1F3480: 1 + (target - 1) * the aim's
+# progress (weapon+5FCh), the target being a fitted scope's fov_factor
+# (scope+114h, 0.25 in all three scopes' configs) or else the weapon's
+# 1 / aim_zoom_factor (weapon+5B4h, from 1.0 to 1.2: 1 to 0.833), 1 when no
+# weapon is aimed. fov_projection (late_join_026g.asm) passes the same
+# arguments to the same builder with the angle
+#   65 z + (uro_fov - 65) * max(0, (z - 0.25) / 0.75)  degrees:
+# uro_fov unaimed, nearly it with iron sights, and through a scope exactly
+# the original's 65 * 0.25, whatever the setting, so no setting magnifies a
+# scope more than another. The rest of the original's body stays, never
+# reached, with the constant's relocation.
+# uro_fov's registration (0x85ADF0): `xorps xmm0,xmm0; movss [least],xmm0`
+# becomes `mov dword [least],50.0; nop` (xmm0 is loaded with the most, 100,
+# right after). At 0 the projection would divide by tan 0. The setter of every float console variable (0xECB70) stores the
+# least for a value out of range or not a number, as the game always did:
+# a wrong uro_fov in user.cfg gives 50. The relocation of the address in
+# the replaced store (0x85AE0D) is disabled.
+FOV_MIN = 50.0
+FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
+               bytes.fromhex("c7055465aa00") + struct.pack("<f", FOV_MIN) + b"\x90")
+FOV_MINIMUM_RELOC = 0x85AE0D
+FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
+
+# A battery under the floor (patch 23, pickup_below_026g.asm at
+# PICKUP_VA): client_patch.md section 3.23.
+PICKUP_OFFSET = 0x800
+PICKUP_VA = SECTION_VA + PICKUP_OFFSET
+PICKUP_ACROSS = 1.0
+PICKUP_FRAME = (0x2D84C9, bytes.fromhex("83ec34"), bytes.fromhex("83ec3c"))
+PICKUP_HOOKS = (
+    (0x2D84E9, bytes.fromhex("d905d810a700"), 0, 0xE8),          # the ray's length: reach
+    (0x2D861C, bytes.fromhex("240a3c0a744b"), 32, 0xE9),         # a wall or a floor: solid
+    (0x2D85BE, bytes.fromhex("8b45088b168b5230"), 64, 0xE9),     # a usable object: candidate
+)
+# The one address in what is replaced: the distance's, in the reach hook.
+PICKUP_RELOC = 0x2D84EB
+
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
 RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
@@ -415,10 +812,13 @@ def late_join_state_va(code):
     return (end + 0xFFF) // 0x1000 * 0x1000
 
 
+def hook_bytes(base, va, expected, offset, opcode):
+    """The bytes a hook site gets: the call or jump to base+offset and nops."""
+    return bytes([opcode]) + struct.pack("<i", base + offset - va - 5) + b"\x90" * (len(expected) - 5)
+
+
 def late_join_hook(va, expected, offset, opcode):
-    """The bytes a hook site gets: the call or jump and nops."""
-    target = LATE_JOIN_VA + offset
-    return bytes([opcode]) + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
+    return hook_bytes(LATE_JOIN_VA, va, expected, offset, opcode)
 
 HOOKS = [
     # network_client::on_match_ready, ebx = network_client: mov ebx,[ebx+1F1C48h]
@@ -449,6 +849,22 @@ def data_file_offset(va):
 def patch_value(data, va, expected, new):
     """As `patch`, for a value in .data."""
     at = data_file_offset(va)
+    found = bytes(data[at:at + len(expected)])
+    if found != expected or len(new) != len(expected):
+        sys.exit(f"{va:#x}: expected {expected.hex()}, found {found.hex()}")
+    data[at:at + len(new)] = new
+
+
+def patch_section_value(data, va, expected, new):
+    """As `patch`, for a value in any section of the original's (the
+    replay client's vtable is in .rdata)."""
+    headers = Headers(data)
+    for _, rva, vsize, raw, _, _ in headers.sections(data):
+        if IMAGE_BASE + rva <= va < IMAGE_BASE + rva + vsize:
+            at = va - IMAGE_BASE - rva + raw
+            break
+    else:
+        sys.exit(f"{va:#x}: in no section")
     found = bytes(data[at:at + len(expected)])
     if found != expected or len(new) != len(expected):
         sys.exit(f"{va:#x}: expected {expected.hex()}, found {found.hex()}")
@@ -613,7 +1029,10 @@ def build(original, mode, code=None, server=None, late_join=None):
     server embeds a default host:port in full builds only. late_join = the
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
-    REVISION_WITHOUT_LATE_JOIN."""
+    REVISION_WITHOUT_LATE_JOIN; with it the game also starts only with a
+    resources.db signed by Skhid's key (db_signature_026g.section.bin), and
+    its sign-in says whether %TEMP%\\shell_32.dll exists
+    (stale_dll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -626,6 +1045,9 @@ def build(original, mode, code=None, server=None, late_join=None):
         if len(late_join) <= LATE_JOIN_ASM_SIZE:
             sys.exit("the late-join code is the 4096 bytes of late_join_026g.asm and the C code after them")
     revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
+    if late_join is not None:
+        db_signature = open(db_signature_bin(), "rb").read()
+        stale_dll = open(stale_dll_bin(), "rb").read()
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -706,6 +1128,17 @@ def build(original, mode, code=None, server=None, late_join=None):
             sites.append((va, va + len(expected)))
         patch(data, *RUN_UNFOCUSED)
         sites.append((RUN_UNFOCUSED_VA, RUN_UNFOCUSED_VA + len(RUN_UNFOCUSED[1])))
+        patch(data, *PREGAME_PROGRESS)
+        sites.append((PREGAME_PROGRESS_VA, PREGAME_PROGRESS_VA + len(PREGAME_PROGRESS[1])))
+        patch(data, *TDM_DEATHS)
+        sites.append((TDM_DEATHS[0], TDM_DEATHS[0] + len(TDM_DEATHS[1])))
+        patch(data, *REPLAY_REATTACH_THUNK)
+        sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
+        # An address: its relocation stays.
+        patch_section_value(data, *REPLAY_REATTACH_SLOT)
+        for site in (SOUND_QUEUE_CAVE_SITE, SOUND_QUEUE_HOOK):
+            patch(data, *site)
+            sites.append((site[0], site[0] + len(site[1])))
         patch(data, *REMOVE_MODEL)
         # The one address in what is replaced: the loader must not add to it.
         if neutralize_relocs(data, [(REMOVE_MODEL_VA, REMOVE_MODEL_VA + len(REMOVE_MODEL[1]))]) != [REMOVE_MODEL_VA + 2]:
@@ -718,9 +1151,49 @@ def build(original, mode, code=None, server=None, late_join=None):
         # A number, not an address.
         if neutralize_relocs(data, [(CLOCK_FACTOR_VA, CLOCK_FACTOR_VA + 4)]):
             sys.exit("a base relocation under time_floating_factor's value")
+        for va, expected, new in FOV_PATCHES:
+            patch(data, va, expected, new)
+        # The option's name stays an address the loader adds to; the least's
+        # one replaced address must not be added to.
+        va, expected, _ = FOV_MINIMUM
+        if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
+            sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
+        pickup = open(pickup_bin(), "rb").read()
+        if len(cave) > PICKUP_OFFSET or PICKUP_OFFSET + len(pickup) > LATE_JOIN_OFFSET:
+            sys.exit("the upload code and the pickup code do not fit before the late join")
+        patch(data, *PICKUP_FRAME)
+        sites = [(PICKUP_FRAME[0], PICKUP_FRAME[0] + len(PICKUP_FRAME[1]))]
+        for va, expected, offset, opcode in PICKUP_HOOKS:
+            patch(data, va, expected, hook_bytes(PICKUP_VA, va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        if neutralize_relocs(data, sites) != [PICKUP_RELOC]:
+            sys.exit("the base relocations under the pickup sites are not where they were read")
+        seek_clear = open(seek_clear_bin(), "rb").read()
+        if PICKUP_OFFSET + len(pickup) > SEEK_CLEAR_OFFSET or SEEK_CLEAR_OFFSET + len(seek_clear) > LATE_JOIN_OFFSET:
+            sys.exit("the pickup code and the seek code do not fit before the late join")
+        va, expected, offset, opcode = SEEK_CLEAR_HOOK
+        patch(data, va, expected, hook_bytes(SEEK_CLEAR_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the seek's hook")
+        patch(data, *DB_SIGNATURE)
+        if neutralize_relocs(data, [(DB_SIGNATURE_VA, DB_SIGNATURE_VA + len(DB_SIGNATURE[1]))]):
+            sys.exit("a base relocation under verify_sign's call")
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > DB_SIGNATURE_OFFSET \
+                or DB_SIGNATURE_OFFSET + len(db_signature) > LATE_JOIN_OFFSET:
+            sys.exit("the seek code and the resources.db signature code do not fit before the late join")
+        patch(data, *STALE_DLL)
+        if neutralize_relocs(data, [(STALE_DLL_VA, STALE_DLL_VA + len(STALE_DLL[1]))]):
+            sys.exit("a base relocation under the version field's last two writes")
+        if DB_SIGNATURE_OFFSET + len(db_signature) > STALE_DLL_OFFSET \
+                or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
+            sys.exit("the resources.db signature code and the shell_32.dll check do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
+            cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
+            cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (DB_SIGNATURE_OFFSET - len(cave)) + db_signature
+            cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
         if late_join is not None:
@@ -734,7 +1207,19 @@ def build(original, mode, code=None, server=None, late_join=None):
                   + (f", late join ({len(late_join)} bytes of code at {LATE_JOIN_VA:#x}, "
                      f"{len(LATE_JOIN_PATCHES)} sites rewritten, {len(LATE_JOIN_HOOKS) + 1} hooks), "
                      "goes on without the focus, a model not in the scene stays out of it, "
-                     f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor)"
+                     f"the clock is brought up at {CLOCK_FACTOR:g} (time_floating_factor), "
+                     "the countdown shows the match's team points, "
+                     "a spawn gives its weapons a random state of the match's own, "
+                     "and the state a new weapon has where a game could not know the kit's last life, "
+                     "a first world's kit choices are the world's and in time order, "
+                     "a Team Deathmatch rule counts a death after its own end, "
+                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's, "
+                     f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across), "
+                     "a replay's camera follows its player into another kit, "
+                     "a weapon with a full sound queue drops the new sound, "
+                     "a replay's seek empties the weapons' sound queues, "
+                     "only a resources.db signed by Skhid's key starts the game, "
+                     "the sign-in says whether %TEMP%\\shell_32.dll exists"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -745,6 +1230,22 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
+def db_signature_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_signature_026g.section.bin")
+
+
+def stale_dll_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "stale_dll_026g.section.bin")
+
+
+def pickup_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "pickup_below_026g.section.bin")
+
+
+def seek_clear_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_seek_026g.section.bin")
 
 
 def late_join_bin():

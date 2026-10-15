@@ -258,6 +258,9 @@ pub struct LiveMatch {
     pub time_left: Option<Duration>,
     /// `None` until a world was trusted.
     pub standing: Option<LiveStanding>,
+    /// The row of `match_levels_dict` its rewards are multiplied by
+    /// ([`MatchSetup::match_level`]), fixed when it was made.
+    pub match_level: u16,
 }
 
 #[derive(Default)]
@@ -752,6 +755,7 @@ impl MatchRegistry {
                 played: None,
                 time_left: None,
                 standing: None,
+                match_level: formed.match_level,
             };
         };
         let since = now.saturating_duration_since(live.at);
@@ -770,6 +774,7 @@ impl MatchRegistry {
                 winner: standing.winner,
                 age: age + since,
             }),
+            match_level: formed.match_level,
         }
     }
 

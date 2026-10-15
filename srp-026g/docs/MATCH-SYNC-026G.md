@@ -111,8 +111,19 @@ The danger: 0xE5 is sent once. A lost 0xE5(g) followed by a delivered
    at a time; and to a game that waits for its first world the others'
    inputs go every 50 ms, many in a datagram (match.md §27).
 
-Between the first 0xE5 and the 0xE8, a client being resynced runs its old
-world on the new clock for about a round trip (LIKELY harmless).
+Between the first 0xE5 and the 0xE8 a client being resynced **goes on**
+on its new clock: seen live (match.md §30), it sends new own inputs every
+50 ms and 0xDF reports for the whole load, never for a tick at or before
+its newest own input. Its history is cleared; whether it takes
+0xF1/0xF2/0xEF/0xF0 then is not settled. Its input lists are rings of 27
+per player: a world loaded more than about 1.2 s after its snapshot plays
+the earliest inputs wrong. For a client resynced while it plays the server
+therefore sends, after the 0xDB, the others' inputs and the roster changes
+since the snapshot, and the world (0xE5 again and 0xE8) only once all of
+that is acked, its parts again every round trip + 50 ms (120 ms at least);
+a world not loaded 1.2 s after its snapshot goes again from a fresh one
+(three times at most); the answers to the client's own inputs wait for the
+load. match.md §30.
 
 ## Snapshots
 
@@ -141,8 +152,9 @@ u16 len + game effect player   (new in 0.26g)
   item's time). snapshot_rules.md §2.2, §3.3.
 - The order of the rules inside the rules section is LIKELY, not proven;
   the reader does not depend on it.
-- The input lists survive a resync (0xE8 loads with mode 1): LIKELY.
-  match.md §5.2.
+- The input lists survive a resync (0xE8 loads with mode 1), and an own
+  input node at or before the snapshot's time is never played again:
+  PROVEN. match.md §17, §30.
 
 **Uploads** (the patch; client_patch.md §3.2, §3.4):
 
@@ -264,7 +276,18 @@ once.
 - A client whose reports disagree with the others' is resynced, each time
   with the next generation. The disagreement must last 1 s of match time
   (`divergence_confirm_ms`), or 3 s on the wall clock; at most one resync of
-  a client per 15 s (`resync_interval`).
+  a client per 15 s (`resync_interval`), or per 5 s once its last resync
+  was agreed with past the load (`resync_after_agreed`,
+  `SRP_RESYNC_AFTER_AGREED_SECONDS`), but 15 s again for a client resynced 4
+  times within a minute (`RESYNCS_PER_MINUTE`). A resynced client wrong from its
+  first reports after the world (within 1.5 s of it going, `LOAD_WRONG_MS`)
+  is resynced again at once, twice in a row at most (`QUICK_REDOS`); a
+  report that agrees inside that time does not stop it. Its wrong world is
+  asked for just ahead of the resync and saved as kind `wrong`, 2 a player
+  and 8 a match at most.
+- A player back in the match (in the others' worlds since its entry) is put
+  at the match clock by its first world, as a resynced client is, and its
+  inputs are taken while that world is on its way.
 - Who is wrong (`judge`): the majority's CRC is right. With no majority, a
   client known to be out of step is wrong; else the side with the better
   links is right, if it clearly outweighs the rest (`TRUST_MARGIN`); else
@@ -272,13 +295,46 @@ once.
   nobody is named.
 - **Out of step by the transport:** a relay, discard or roster change that
   was never acked in its 250 ms marks the client as having missed that tick.
-  A lost 0xE9 / 0xEA is also sent once more.
+  A lost 0xE9 / 0xEA is also sent once more. An own input the client was
+  told to drop (0xF1 / 0xF2) counts as well. Either names the client in a
+  tie only for a tick less than 1 s before the disputed one, or before the
+  start of the disagreement it is in (`MISSED_RECENT_MS`): an older miss
+  changed nothing.
 - A resynced client's unjudged reports are dropped; reports count only from
   clients in the simulation (both fixed after tests resynced a healthy
   client).
 - A resync or a newcomer starts only from a **fresh** snapshot: ≤ 700 ms old
-  (`RESYNC_FRESH_MS`); after 3 s of waiting ≤ 1500 ms (`FRESH_SNAPSHOT_MS`);
-  after 20 s the newest there is, if the one-byte ticks still reach it.
+  (`RESYNC_FRESH_MS`); a newcomer after 3 s of waiting ≤ 1500 ms
+  (`FRESH_SNAPSHOT_MS`); after 20 s the newest there is, if the one-byte
+  ticks still reach it.
+- **A client resynced while it plays** (match.md §30): its own inputs are
+  relayed all the way, as any client's; its clock is put at the match clock
+  as the 0xE5 arrives and past its newest own input; after its 0xDB it gets
+  the replay, and its world goes only once that is acked and from a
+  snapshot at most 1000 ms old (`RESYNC_WORLD_MAX_AGE_MS`), and again from a
+  fresh one if not loaded 1200 ms after its snapshot (`RESYNC_LOAD_BY_MS`,
+  three times at most), or as soon as a player has more inputs after the
+  snapshot than the game keeps (27, `INPUT_RING`; 26 for a world still on
+  its way). An unchecked upload is started from only when another client
+  reported its hash too. An answer to an own input (drop or move) waits from
+  its first 0xE5 to its load; after it, it goes if the input is still in the
+  game's history, else the sync is done again from a snapshot past it.
+- **A newcomer wrong from its first report** (match.md §31): after 1 s of
+  reports against the majority its world is asked for and saved (kind
+  `joiner`), and it is started once more, once, with 30 s more to catch up.
+- A world whose parts were not acked counts as loaded once the client
+  reports, for a tick past the snapshot, the majority's hash (its acks name
+  only its newest few seqs). A resync's 0xE5 never puts the game's clock
+  back: a game whose clock went back made its inputs of those ticks once
+  more, with other contents. A relay acked so late that the game moved it
+  keeps that client's next resync on a snapshot past it. A tie of two
+  reports never ends a standing disagreement. 0xE7 goes again until
+  acked. A first world gets the others' roster changes before it, and
+  while it is on its way. All match.md §30.
+- **A late-join group** (match.md §32) enters together; a member whose game
+  is not connected for 20 s, or whose time runs out, is left out, and the
+  rest enter without it if the sides stay within one player (or no further
+  apart than before).
 - **Never from a world more than 5 s old while others play**
   (`TICK_REACH_MS`): the client's clock would be more than 127 ticks from
   the others' and every relay would be read at a wrong tick. (0.21d, with
@@ -319,7 +375,15 @@ What the client does (PROVEN):
   one with no history item before it. `move_input` 0x27D2D0 is new (0xEF).
 
 *(server, may move)* A tick is final 250 ms after it (`HORIZON_MS`).
-`SRP_LATE_INPUTS=discard` (default, what 0.21d does): the owner gets 0xF1 /
+`SRP_LATE_INPUTS=relay` (default since 2026-10-15): a late input is relayed
+at its own tick while every other game in the simulation can still take it
+into its history: its lateness under 425 ms less the largest usual round
+trip of those games (`late_relay_reach`); the owner gets no answer (it keeps
+the input, as all do). Past that, as `discard`. Why: a drop order to a slow
+line came past the owner's own history, and the owner kept the input nobody
+else had (live, 2026-10-15: 58 of 215 desyncs). A world is still right: a
+game uploads its tick 500 ms back, as its hash, and the input reached it
+before that. `SRP_LATE_INPUTS=discard` (what 0.21d does): the owner gets 0xF1 /
 0xF2, nothing is relayed. `SRP_LATE_INPUTS=move`: the input goes to the
 first open tick, the owner gets 0xEF / 0xF0, the others the relay. `move` is
 a GUESS at the original server and was never tried on a client.
@@ -329,16 +393,27 @@ a GUESS at the original server and was never tried on a client.
 | Constant (`v026g/game.rs`, `mod.rs`) | Value | Meaning |
 |---|---|---|
 | `HORIZON_MS` | 250 | A tick is final this long after it |
-| `SYNC_LEAD_MS` | 350 | A client starts its clock this far past its snapshot |
+| `SYNC_LEAD_MS` | 350 | A client that enters while others play starts its clock this far past its snapshot |
+| `RESYNC_ONE_WAY_MAX_MS` | 250 | A resynced client's clock is put this far past the match clock at most (half its round trip) |
+| `RESYNC_WORLD_MAX_AGE_MS` | 1000 | A resynced client's world goes only from a snapshot this fresh |
+| `REPLAY_ACK_WAIT` | 3 s | A resync's replay not acked in this is done again |
+| `RESYNC_LOAD_BY_MS` / `SLOW_LOADS_REDONE` | 1200 / 3 | A resync world not acked this long after its snapshot (plus the ack's way) goes again from a fresh one, this many times a resync |
+| `INPUT_RING` / `INPUT_RING_SAFE` | 27 / 26 | A resync world loaded with more inputs of one player after its snapshot (or on its way with this many) goes again from a fresh one, within `SLOW_LOADS_REDONE` |
+| `LOAD_WRONG_MS` / `QUICK_REDOS` | 1500 / 2 | A resynced client wrong this soon after its world went is resynced again without `resync_interval`, this many times in a row |
+| `MISSED_RECENT_MS` | 1000 | A missed relay or dropped own input names a client in a tie only this close before the disputed tick (or the start of its disagreement) |
+| `RESYNC_CLOCK_MARGIN_MS` | 100 | A resynced client's clock goes this far past its own (when measured) and past its newest input seen |
+| `RESYNC_WORLD_RESEND_MIN` | 120 ms | A resync world's parts go again every round trip + 50 ms, this at least (0xE8's own pace 500 ms) |
+| `JOINER_ABSENT` (`late_join.rs`) | 20 s | A late-join group member not connected this long is left out |
+| `ANSWER_REACH_MS` | 450 | An answer held while a client loaded goes after the load for an input this far behind its clock at most |
 | `SET_TIME_EVERY` / `MAX_SET_TIMES` | 150 ms / 5 | 0xE5 repeats until 0xDB; then the snapshot goes anyway |
 | `RESYNC_FRESH_MS` / `RESYNC_FRESH_WAIT` | 700 / 3 s | How fresh a start snapshot must be |
 | `FRESH_SNAPSHOT_MS` | 1500 | After the wait |
 | `TICK_REACH_MS` | 5000 | Never start from an older world while others play |
 | `RESYNC_REQUEST_GAP` | 1 s | Ask for an upload again this often |
-| `RESYNC_UPLOAD_AFTER_MS` | 350 | Ask a resync's upload this long after the client's last relayed input |
 | `REJOIN_UPLOAD_AFTER_MS` | 600 | After a returning player's entry |
 | `divergence_confirm_ms` / `_max` | 1000 / 3 s | Disagreement must last this long |
 | `resync_interval` | 15 s | At most one resync of a client |
+| `resync_after_agreed` / `RESYNCS_PER_MINUTE` | 5 s / 4 | The least time between resyncs once the last one was agreed with; 15 s again after 4 within a minute |
 | `hash_settle_ms` | 2500 | Hash reports are judged once this old |
 | `refresh` | 5 s | How often a running match asks for a fresh world |
 | `CANDIDATE_WAIT` | 3 s | An upload waits this long for the reports that check it |
@@ -417,12 +492,13 @@ From `servers/match-server/src/v026g/mod.rs`, read once at start:
 
 | Setting | Default | Does |
 |---|---|---|
-| `SRP_LATE_INPUTS` | `discard` | `discard` or `move` (above) |
+| `SRP_LATE_INPUTS` | `relay` | `relay`, `discard` or `move` (above) |
 | `SRP_CLOCK_CORRECTION` | `on` | `off`: no 0xE7 |
 | `SRP_CHECK_INITIAL_WORLD` | `on` | `off`: take a first world that already has statistics in it (for when the reader, not the world, is wrong) |
 | `SRP_SNAPSHOT_DIR` | `logs/snapshots` | Where uploaded worlds are saved; `off` or empty for none |
 | `SRP_COMPRESS_STATE` | `on` | `off`: 0xE8 goes as it is, not as LZMA2 (match.md §27) |
 | `SRP_ENTRY_STATE_SECONDS` | 4 | A game's first world is kept on its way this long (2 to 5) before its sync starts over; less where its snapshot is old, so that the ticks of the inputs relayed meanwhile stay within 127 of the clock the game waits at |
+| `SRP_RELAY_PACK_MS` | 15 | Relays and drop orders wait this long (at most 50, 0 = off) for others to share their datagram (transport.md §11.1) |
 | `SRP_BOT_ACCOUNTS` | not set | **Testing only.** The accounts that are test bots (read by `srp`, marked by the lobby on a match's places): above, "Test bots" |
 | `SRP_PACKET_LOG=<dir>` | off | Every datagram in and out, one file a connection (`crates/udp-transport`). **Set it for every live test** |
 | `SRP_BIND_HOST`, `SRP_PUBLIC_HOST`, `SRP_MATCH_PORT` (1236), `SRP_MATCH_BIND`, `SRP_MATCH_PUBLIC_HOST` | 127.0.0.1 | The address (`crates/vostok/src/config.rs`) |
@@ -460,7 +536,7 @@ plain reliables (E3, F3..F5).
 
 - `SRP_PACKET_LOG`: the packet capture (Wireshark is not installed).
 - `SRP_SNAPSHOT_DIR`: saved worlds, with their kind (`unreadable` among
-  them).
+  them; `wrong`: a game's own world as it was found out of step).
 - `servers/srp/tests/v026g_end_to_end.rs`: the real servers with two
   scripted clients through a whole match. Its clients report every tick's
   hash and skip the countdown, so it proves the servers agree with each

@@ -48,6 +48,11 @@ fn main() {
         log::error!("srp: {error}");
         std::process::exit(1);
     }
+    // A minimum revision it can't read stops it, rather than let older games in.
+    if let Err(error) = lobby_server::v026g::min_patch_revision_from_env() {
+        log::error!("srp: {error}");
+        std::process::exit(1);
+    }
 
     let gather = match session::gather_window_from_env() {
         Ok(gather) => gather,

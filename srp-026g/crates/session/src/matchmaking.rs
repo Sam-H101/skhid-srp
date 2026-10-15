@@ -285,13 +285,11 @@ pub struct Matchmaking {
 
 impl Matchmaking {
     pub fn new(gather: Duration) -> Self {
+        let (growing_min_players, growing_gather) = growing_start_rules_from_env();
         Self {
             inner: Mutex::new(Inner {
-                growing_gather: env_number("SRP_GROWING_GATHER_SECONDS")
-                    .map_or(policy::GATHER_WINDOW, Duration::from_secs),
-                growing_min_players: env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
-                    .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
-                    .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
+                growing_gather,
+                growing_min_players,
                 population_exponent: env_number::<f64>("SRP_GROWING_POPULATION_EXPONENT")
                     .filter(|p| p.is_finite() && *p > 0.0 && *p <= 8.0)
                     .unwrap_or(1.0),
@@ -844,12 +842,21 @@ impl Matchmaking {
         true
     }
 
-    /// The match is over: its seats are free.
+    /// The match is over: its seats are free. A session that gave its seat
+    /// up and sits in another match keeps being told of that one: clearing
+    /// it sent the game to the match it was already playing again (it
+    /// reloaded it, or started a match nobody simulated).
     pub fn end_match(&self, match_id: u32) {
         let mut inner = self.inner.locked();
         if let Some(seats) = inner.matches.remove(&match_id) {
             for seat in seats {
-                inner.told.remove(&seat.player.session_id);
+                let session_id = seat.player.session_id;
+                if inner.given_up.contains(&(match_id, seat.player.account_id))
+                    || inner.seat_of_session(session_id).is_some()
+                {
+                    continue;
+                }
+                inner.told.remove(&session_id);
             }
         }
         inner.given_up.retain(|(id, _)| *id != match_id);
@@ -1419,10 +1426,23 @@ pub fn leveled_start_rules_from_env() -> (usize, Duration, Duration) {
     )
 }
 
-/// A number from the environment; `None` if it is unset or bad.
 /// `SRP_GROWING_MIN_PLAYERS` when unset.
 pub const DEFAULT_GROWING_MIN_PLAYERS: usize = 2;
 
+/// What the growing queue (the games of patch revision 5 or later) is set
+/// to, for the pages that tell the players: the fewest players a new match
+/// starts with (`SRP_GROWING_MIN_PLAYERS`), and how long after that many
+/// wait it starts (`SRP_GROWING_GATHER_SECONDS`). A full match starts at once.
+pub fn growing_start_rules_from_env() -> (usize, Duration) {
+    (
+        env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
+            .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
+            .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
+        env_number("SRP_GROWING_GATHER_SECONDS").map_or(policy::GATHER_WINDOW, Duration::from_secs),
+    )
+}
+
+/// A number from the environment; `None` if it is unset or bad.
 fn env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name)
         .ok()
@@ -2220,11 +2240,16 @@ mod tests {
         };
         assert_ne!(second, FIRST_MATCH_ID);
         assert_eq!(matchmaking.match_count(), 2);
+        matchmaking.mark_told(2);
+        matchmaking.mark_told(3);
 
         // The match it left ends: nothing of it is left, and the new seat
-        // stands.
+        // stands. It was sent to the new match and is not sent again (a
+        // second "goes to match" made its game load that match once more).
         matchmaking.end_match(FIRST_MATCH_ID);
         assert_eq!(matchmaking.seat(2).map(|(id, _)| id), Some(second));
+        assert!(matchmaking.is_told(2));
+        assert!(matchmaking.is_told(3));
         // In the new match it has a seat to give up like any other.
         assert_eq!(matchmaking.give_up_seat(player(2).account_id), Some(second));
     }

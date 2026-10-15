@@ -55,14 +55,23 @@ SECTION_VA = IMAGE_BASE + SECTION_RVA           # 0x49A000, the CAVE of the .bin
 SECTION_CHARACTERISTICS = 0x60000020            # code, execute, read (as .text)
 
 # launcher_values_026g.bin: the code, then three zero-filled ASCII slots.
-BIN_SIZE = 480
-SLOTS = {"exe_name": (224, 32), "arguments": (256, 160), "server": (416, 64)}
+BIN_SIZE = 560
+SLOTS = {"exe_name": (304, 32), "arguments": (336, 160), "server": (496, 64)}
 
 # registry_key::get_string: push ebp / mov ebp,esp / push ecx / lea eax,[esi+esi]
 # become a jump to the code of the new section and two nops; the code comes
 # back to 0x1402E for every name it does not answer itself.
 GET_STRING = (0x14027, bytes.fromhex("558bec518d0436"))
 GET_STRING_BACK = 0x1402E
+
+# launcher::execute, the message loop's body: cmp dword [ebp-1Ch],113h
+# becomes a jump to `enter_key` of the .bin and two nops. Enter presses PLAY
+# there; every other message comes back to the jne after the cmp, and Enter
+# goes on to launcher::on_message_processed as a handled message does.
+ENTER_KEY = (0x14EF0, bytes.fromhex("817de413010000"))
+ENTER_KEY_AT = 224                              # its offset in the .bin
+ENTER_KEY_BACK = 0x14EF7
+ENTER_KEY_DONE = 0x14F26
 
 # (VA, original bytes, new bytes, what): code and read-only data, in place.
 PATCHES = [
@@ -238,6 +247,17 @@ def utf16(text):
     return text.encode("utf-16-le")
 
 
+def enter_key_targets(code):
+    """Where `enter_key` of the .bin goes on to: (after Enter pressed PLAY,
+    for every other message). Its replaced `cmp` and the jump back follow
+    the jump of the first."""
+    other = code.index(ENTER_KEY[1] + b"\xE9", ENTER_KEY_AT)
+    done, back = other - 5, other + len(ENTER_KEY[1])
+    if code[done] != 0xE9:
+        sys.exit("launcher_values_026g.bin: no jump before enter_key's replaced instruction")
+    return tuple(SECTION_VA + at + 5 + struct.unpack_from("<i", code, at + 1)[0] for at in (done, back))
+
+
 def add_section(data, content):
     """Takes the Authenticode signature off (it cannot be right for a changed
     file, and the launcher never reads it) and appends the .skhid section in
@@ -350,12 +370,24 @@ def build(original, code, site=DEFAULT_SITE, game_exe=DEFAULT_GAME_EXE, argument
         sys.exit("launcher_values_026g.bin does not come back to get_string "
                  f"(was it assembled with -DCAVE={SECTION_VA:#x}?)")
 
+    # The message loop goes through `enter_key`.
+    va, expected = ENTER_KEY
+    if any(va <= at + 3 and at < va + len(expected) for at in relocations):
+        sys.exit(f"{va:#x}: a relocation overlaps the Enter key's hook")
+    if code[ENTER_KEY_AT:ENTER_KEY_AT + 7] != bytes.fromhex("817de400010000"):
+        sys.exit(f"launcher_values_026g.bin: enter_key is not at {ENTER_KEY_AT}")
+    hook = b"\xE9" + struct.pack("<i", SECTION_VA + ENTER_KEY_AT - va - 5) + b"\x90" * (len(expected) - 5)
+    image.patch(va, expected, hook, "launcher::execute, the message loop")
+    if enter_key_targets(code) != (ENTER_KEY_DONE, ENTER_KEY_BACK):
+        sys.exit("launcher_values_026g.bin does not come back to the message loop "
+                 f"(was it assembled with -DCAVE={SECTION_VA:#x}?)")
+
     data = add_section(image.data, bytes(section))
     headers = P.Headers(data)
     struct.pack_into("<I", data, headers.checksum_at, P.pe_checksum(data, headers.checksum_at))
     return data, (f"runs in place, no hardware warnings, no service, {len(PATCHES)} code sites, "
                   f"the installer's values from {len(code)} bytes of new code in .skhid at {SECTION_VA:#x}, "
-                  f"site {site}, PLAY starts {game_exe} {arguments}, updater {UPDATER_NAME}, "
+                  f"site {site}, PLAY (or Enter) starts {game_exe} {arguments}, updater {UPDATER_NAME}, "
                   f"local pages in {PAGES_DIR}, {sum(1 for r in RECTS if r[3] == GONE)} buttons removed, "
                   "signature removed")
 

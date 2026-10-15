@@ -296,6 +296,11 @@ struct SignIn {
     /// The version field is 12 bytes, the text and zeros; the patch puts
     /// this into byte 7, past the zero that ends a text of six letters.
     patch_revision: u8,
+    /// 0.26g: byte 8 of the version field (`client_patch.md` §3.25). A game
+    /// of patch revision 13 or later reports here what it saw of one known
+    /// cheat; 0 from any older exe. Bit 0 (1): a stale shell_32.dll in the
+    /// temporary folder. Bit 7 (0x80): the check ran. Only logged.
+    cheat_flags: u8,
     /// 0.21d: 1 when the player signs in from the EULA window.
     from_eula_window: bool,
     /// 0.21d: the place in the online queue it rejoins, `u32::MAX` for none.
@@ -309,10 +314,10 @@ fn parse_sign_in(message: &[u8]) -> SignIn {
     let field = version;
     let version = field.split(|&byte| byte == 0).next().unwrap_or_default();
     // Only past the text's own zero, and only in a whole field.
-    let patch_revision = if field.len() == 12 && version.len() < 7 {
-        field[7]
+    let (patch_revision, cheat_flags) = if field.len() == 12 && version.len() < 7 {
+        (field[7], field[8])
     } else {
-        0
+        (0, 0)
     };
     let (from_eula_window, queue_order_id) = match *rest {
         [eula, a, b, c, d] => (eula != 0, u32::from_le_bytes([a, b, c, d])),
@@ -322,6 +327,7 @@ fn parse_sign_in(message: &[u8]) -> SignIn {
         user_name: String::from_utf8_lossy(&message[1..name_end]).into_owned(),
         version: String::from_utf8_lossy(version).into_owned(),
         patch_revision,
+        cheat_flags,
         from_eula_window,
         queue_order_id,
     }
@@ -667,6 +673,7 @@ mod tests {
                 user_name: "player@e2e.invalid".into(),
                 version: "0.21d".into(),
                 patch_revision: 0,
+                cheat_flags: 0,
                 from_eula_window: true,
                 queue_order_id: 7,
             }
@@ -679,6 +686,7 @@ mod tests {
                 user_name: "a@b".into(),
                 version: "0.100b".into(),
                 patch_revision: 0,
+                cheat_flags: 0,
                 from_eula_window: false,
                 queue_order_id: u32::MAX,
             }
@@ -694,20 +702,25 @@ mod tests {
             sign_in.push(0);
             sign_in.extend(u32::MAX.to_le_bytes());
             let sign_in = parse_sign_in(&sign_in);
-            (sign_in.version, sign_in.patch_revision)
+            (sign_in.version, sign_in.patch_revision, sign_in.cheat_flags)
         };
         // The stock field, and what the patched `sign_in_on_connected`
         // 0x3807D0 makes of it: the text is the same.
-        assert_eq!(read(b"0.26g0\0\0\0\0\0\0"), ("0.26g0".into(), 0));
-        assert_eq!(read(b"0.26g0\0\x01\0\0\0\0"), ("0.26g0".into(), 1));
-        assert_eq!(read(b"0.26g0\0\x02\0\0\0\0"), ("0.26g0".into(), 2));
-        // A text that reaches byte 7 keeps it: no revision.
-        assert_eq!(read(b"0.26g001\0\0\0\0"), ("0.26g001".into(), 0));
-        assert_eq!(read(b"0.26g00\0\x01\0\0\0"), ("0.26g00".into(), 0));
+        assert_eq!(read(b"0.26g0\0\0\0\0\0\0"), ("0.26g0".into(), 0, 0));
+        assert_eq!(read(b"0.26g0\0\x01\0\0\0\0"), ("0.26g0".into(), 1, 0));
+        assert_eq!(read(b"0.26g0\0\x02\0\0\0\0"), ("0.26g0".into(), 2, 0));
+        // Revision 13 also sets byte 8 (the cheat check, §3.25): 0x80 ran,
+        // 0x81 ran and found the stale shell_32.dll.
+        assert_eq!(read(b"0.26g0\0\x0d\x80\0\0\0"), ("0.26g0".into(), 13, 0x80));
+        assert_eq!(read(b"0.26g0\0\x0d\x81\0\0\0"), ("0.26g0".into(), 13, 0x81));
+        // A text that reaches byte 7 keeps it: no revision, no flags.
+        assert_eq!(read(b"0.26g001\0\0\0\0"), ("0.26g001".into(), 0, 0));
+        assert_eq!(read(b"0.26g00\0\x01\0\0\0"), ("0.26g00".into(), 0, 0));
         // 0.100b's field is shorter than 12 bytes.
         let mut old = vec![3];
         old.extend(b"a@b0.100b\0\0");
         assert_eq!(parse_sign_in(&old).patch_revision, 0);
+        assert_eq!(parse_sign_in(&old).cheat_flags, 0);
     }
 
     #[test]

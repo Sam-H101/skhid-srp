@@ -28,7 +28,7 @@ your own copy, and the patched exe is made from it.
 | File | What |
 |---|---|
 | `patch_launcher_026g.py` | Builds the patched launcher from the original. Python 3, nothing else |
-| `launcher_values_026g.asm`, `.bin` | The one piece of new code (224 bytes and three text slots): the values the launcher used to read from the installer's registry key, worked out from where the launcher is. Assembling the source again gives the same bytes |
+| `launcher_values_026g.asm`, `.bin` | The new code (304 bytes and three text slots): the values the launcher used to read from the installer's registry key, worked out from where the launcher is; and Enter pressing PLAY. Assembling the source again gives the same bytes |
 | `launcher_pages.py` | The ten small pages the launcher shows from its own folder while the server's page loads and when it cannot be loaded |
 | `selftest_launcher_026g.py` | Builds it in memory and checks it: every changed byte is one named below, the PE is well formed, the hook and its way back, the addresses, the relocations, no old address left, the `.asm` gives the `.bin` |
 | `../make_client_026g.py` | Puts all of it into the players' ZIP (the default; `--no-launcher` leaves it out) |
@@ -76,7 +76,7 @@ installs whenever the ZIP's checksum changes.
 3. If not: the bar fills while the ZIP is downloaded ("... left", speed),
    then "Extracting file ..." for each file, then PLAY. If the launcher
    itself was among the files, its window closes and opens again by itself.
-4. PLAY starts `survarium_skhid.exe -localization=<language>
+4. PLAY (or Enter) starts `survarium_skhid.exe -localization=<language>
    -mt_allocator=768 -minimum_resources_memory_size=768` from
    `game\binaries\x86`, and the launcher closes.
 5. The language menu (EN, RU, UA, DE, PL) changes the launcher's texts and
@@ -306,7 +306,8 @@ to `game\binaries\x86\updater_skhid.log`. Nothing is half installed.
 | Not enough disk space | "Not enough free disk space for the update in <folder>: N MB needed, M MB free." |
 | The game folder cannot be written (Program Files, read-only) | "Cannot write <file>: Access is denied (error 5). Move the game out of Program Files or start the launcher as administrator; an antivirus can block it too." |
 | A file is held by another program (the game is running) | "Cannot replace <file>: ... (error 32). Nothing was changed. Another program holds the file: close the game and try again." |
-| The resource step fails (the game is running, a blob is missing or damaged on the server, the disk is full, another build of the game) | Nothing: no box, PLAY as usual, the game as it was (or, after a failed write, with its original bytes put back). The reason is in the log after `resources:`; it is tried again at the next start |
+| The resource step fails (the game is running, a blob is missing or damaged on the server, the disk is full, another build of the game) | For a plan that only rewrites entries in place: nothing: no box, PLAY as usual, the game as it was (or, after a failed write, with its original bytes put back). The reason is in the log after `resources:`; it is tried again at the next start |
+| ...for a plan that grows `resources.db` (new items: a `tail`) | Status "Error", PLAY stays off, the db put back as shipped, and a box that says what to do: close the game, free disk space, delete a db of another build, check the connection, or send `updater_skhid.log` (`../../../client/updater/README.md`, "Resources"). The next start repairs it |
 | `updater_skhid.exe` is missing | The launcher's own box: "Cannot start updater_skhid.exe. Copy the files again." |
 | The launcher is closed during an update | The updater stops; nothing was changed, or everything was |
 | The updater is started from another folder than `game\binaries\x86` | "The updater must be in the game's folder game\binaries\x86 ..." |
@@ -431,7 +432,25 @@ found: `../../docs/notes/launcher.md`.
   "Cannot start updater_skhid.exe. Copy the files again."; the title of the
   updater's error box "Updater error:" (0x3EF80) becomes "Skhid updater".
 
-### 11. The file itself
+### 11. Enter presses PLAY
+
+- **Where:** the message loop of `launcher::execute`: its first
+  instruction, `cmp dword [ebp-1Ch],113h` at 0x14EF0, becomes a jump to
+  `enter_key` in the new section and two `nop`s
+  (`81 7D E4 13 01 00 00` → `E9 <rel32> 90 90`).
+- **Why:** the original window takes no keys; PLAY was mouse only.
+- **How:** for a `WM_KEYDOWN` of `VK_RETURN` that is not a repeat, the new
+  code reads the form shown (`[launcher+2DC4h]`) and PLAY's click callback
+  (`form+638h`, with its argument at `form+63Ch`). `set_play_button_active`
+  (0x1B5E9) sets them to `launch_survarium` and the form while PLAY is
+  enabled and to 0 while it is not, and a click calls exactly that pair
+  (0x1275B). So Enter does what a click on PLAY does, and nothing while PLAY
+  is off. The key is looked at before `TranslateMessage`, so it works
+  wherever the focus is, the server's page included; the Enter that pressed
+  PLAY is not handed on. Every other message runs the replaced `cmp` and
+  goes back to 0x14EF7.
+
+### 12. The file itself
 
 - The Authenticode signature is taken off: it cannot be right for a changed
   file, and the launcher never reads it (unlike the game exe). The `.skhid`

@@ -1,12 +1,20 @@
 [build]
 target = "i686-pc-windows-msvc"
+# The workspace's target folder would be ../target; the exe stays where the
+# tools look for it.
+target-dir = "target"
 
 [target.i686-pc-windows-msvc]
 linker = "rust-lld"
 # The manifest says "as the user who started it". Without one, Windows takes
 # a 32-bit program with "update" in its name for an installer and asks for
 # administrator rights before it starts.
+#
+# Reproducible, as ../../bugtrap: /Brepro stamps the exe with a hash of its
+# content, and /DEBUG:NONE writes no PDB (it would name the build folder).
 rustflags = [
+    "-C", "link-arg=/Brepro",
+    "-C", "link-arg=/DEBUG:NONE",
     "-C", "link-arg=/ENTRY:entry",
     "-C", "link-arg=/NODEFAULTLIB",
     "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.0",

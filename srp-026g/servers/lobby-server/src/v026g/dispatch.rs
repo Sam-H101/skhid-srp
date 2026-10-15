@@ -78,7 +78,7 @@ impl Core<'_> {
             M::AfterSignIn { .. } => {}
 
             M::Play { kit_id } => self.play(who, kit_id, now),
-            M::ClanPlay { kit_id } => self.clan_play(who, kit_id, now),
+            M::ClanPlay { kit_id } => self.clan_play(who, kit_id),
             M::Leave { left_match, .. } => self.leave(who, left_match),
 
             // ---- queries ----
@@ -296,13 +296,11 @@ impl Core<'_> {
             M::Repair { item_id, payment } => self.repair(who, item_id, payment),
             M::ExchangePremium { amount } => {
                 let exchanged = rules::exchange_premium(&mut who.account.locked(), amount);
-                match exchanged {
-                    Ok(_) => {
-                        self.send_made(addr, lobby::permitted_shop_event(4));
-                        self.push_account(who);
-                    }
-                    Err(error) => self.deny(addr, id::SHOP, error.text_key()),
-                }
+                self.exchanged(who, exchanged);
+            }
+            M::BuyPremium { gold } => {
+                let bought = rules::buy_premium(&mut who.account.locked(), gold);
+                self.exchanged(who, bought);
             }
             // The premium shop (`shop`). `47 02` with a match id is the
             // results screen's "buy premium": the match's premium half is
@@ -433,7 +431,6 @@ impl Core<'_> {
                 if let Some(player) = self.player_mut(addr) {
                     player.channel_ids = channel_ids;
                 }
-                self.hint_outdated(who, now);
             }
             M::ImportantRead { message_id, answer } => self.important_read(who, message_id, answer),
         }
@@ -456,6 +453,21 @@ impl Core<'_> {
         if changed {
             self.push_account(who);
             self.squads_dirty = true;
+        }
+    }
+
+    /// The answer to `47 04`, either way: `83 47 04`, then the account with
+    /// its new silver and gold; or the game's text for the refusal.
+    fn exchanged(&mut self, who: &Who, result: Result<u32, rules::ActionError>) {
+        match result {
+            Ok(_) => {
+                self.send_made(who.addr, lobby::permitted_shop_event(4));
+                self.push_account(who);
+            }
+            Err(error) => {
+                log::info!("{}: exchange refused: {error}", who.name);
+                self.deny(who.addr, id::SHOP, error.text_key());
+            }
         }
     }
 
@@ -568,7 +580,9 @@ impl Core<'_> {
     /// `count` is the most the window wants; the header counts them all.
     ///
     /// `join` is the asker's own: whether its JOIN would put it into the
-    /// match at once (`join`, [`Core::join_fit`]). Cheap enough to be asked
+    /// match at once, and if not why (`join`, [`Core::join_fit`];
+    /// [`lobby::JoinCode::Unknown`] for a match the lobby did not make).
+    /// `match_level` is the match's, as its rewards take it. Cheap enough to be asked
     /// by every open window every few seconds: one look at the match
     /// server's registry, and for a match that takes players its admission,
     /// its sides and what the asker counts for.
@@ -628,9 +642,12 @@ impl Core<'_> {
                         .played
                         .filter(|_| each.phase == Phase::Playing)
                         .map(|played| played.as_secs().min(u32::MAX.into()) as u32),
-                    join: running
-                        .is_some_and(|(&id, running)| self.join_fit(who, id, running, now).is_ok()),
+                    join: running.map_or(lobby::JoinCode::Unknown, |(&id, running)| {
+                        self.join_fit(who, id, running, now)
+                            .map_or_else(|(code, _)| code, |_| lobby::JoinCode::Yes)
+                    }),
                     key,
+                    match_level: Some(each.match_level),
                 }
             })
             .collect();

@@ -527,6 +527,223 @@ fn a_match_exchange_with_a_client_that_joins_its_messages() {
     match_exchange(BAD, 20, true);
 }
 
+// ------------------------------------------- a late datagram, a lap back
+
+/// A match link driven by hand, 20 ms a step: one relay a step, so that
+/// each step is one server datagram, numbered by `emitted`.
+struct Pair {
+    server: Transport,
+    model: ClientModel,
+    start: Instant,
+    step: u32,
+    emitted: usize,
+    relays: Vec<(u64, Vec<u8>)>,
+}
+
+impl Pair {
+    fn new() -> Self {
+        let start = Instant::now();
+        let mut server = Transport::new(Table::Match, start);
+        server.set_roster_size(20);
+        let mut model = ClientModel::new(Table::Match);
+        model.mask_bytes = 3;
+        model.send(0xD8, &[1, 2, 3, 4, 0]);
+        for datagram in model.poll(start) {
+            server.receive(&datagram, start);
+        }
+        Self {
+            server,
+            model,
+            start,
+            step: 0,
+            emitted: 0,
+            relays: Vec::new(),
+        }
+    }
+
+    fn now(&self) -> Instant {
+        self.start + Duration::from_millis(20) * self.step
+    }
+
+    /// The next step's server datagrams, with their numbers, not yet
+    /// delivered; with a relay queued first if `relay`.
+    fn server_step(&mut self, relay: bool) -> Vec<(usize, Vec<u8>)> {
+        self.step += 1;
+        let now = self.now();
+        if relay {
+            let mut payload = self.step.to_le_bytes().to_vec();
+            payload.extend([0xEB; 6]);
+            let serial = self.server.send(0xEB, &payload).unwrap();
+            self.relays.push((serial, payload));
+        }
+        self.server
+            .poll(now)
+            .into_iter()
+            .map(|datagram| {
+                self.emitted += 1;
+                (self.emitted - 1, datagram)
+            })
+            .collect()
+    }
+
+    fn to_model(&mut self, datagram: &[u8]) {
+        let now = self.now();
+        self.model.receive(datagram, now);
+        assert!(self.model.faults.is_empty(), "{:?}", self.model.faults);
+    }
+
+    fn model_step(&mut self) -> Vec<Vec<u8>> {
+        let now = self.now();
+        self.model.poll(now)
+    }
+
+    fn to_server(&mut self, datagram: &[u8]) {
+        let now = self.now();
+        self.server.receive(datagram, now);
+    }
+
+    /// Steps with everything delivered until nothing is left to send.
+    fn settle(&mut self) {
+        for _ in 0..2000 {
+            for (_, datagram) in self.server_step(false) {
+                self.to_model(&datagram);
+            }
+            for datagram in self.model_step() {
+                self.to_server(&datagram);
+            }
+            if self.server.backlog() == 0 && self.step % 50 == 0 {
+                return;
+            }
+        }
+        panic!("not settled");
+    }
+
+    /// Every relay reached the game or is reported lost, and none is
+    /// reported delivered that the game lacks.
+    fn check(&self) {
+        let mut lost = 0;
+        for (serial, payload) in &self.relays {
+            let arrived = self.model.delivered.contains(&(0xEB, payload.clone()));
+            assert!(
+                arrived || self.server.is_lost(*serial),
+                "relay {serial} vanished"
+            );
+            assert!(
+                !self.server.is_delivered(*serial) || arrived,
+                "relay {serial} reported delivered, never arrived"
+            );
+            lost += usize::from(self.server.is_lost(*serial));
+        }
+        assert!(lost < self.relays.len() / 2, "{lost} relays lost");
+    }
+}
+
+/// One server datagram (`held`) reaches the game after `later` others.
+fn late_datagram(held: usize, later: usize) -> Pair {
+    let mut pair = Pair::new();
+    let mut stash = None;
+    while pair.emitted < held + later + 300 {
+        for (number, datagram) in pair.server_step(true) {
+            if number == held {
+                stash = Some(datagram);
+                continue;
+            }
+            pair.to_model(&datagram);
+            if number == held + later {
+                pair.to_model(&stash.take().expect("held back"));
+            }
+        }
+        for datagram in pair.model_step() {
+            pair.to_server(&datagram);
+        }
+    }
+    pair.settle();
+    pair.check();
+    pair
+}
+
+#[test]
+fn a_datagram_a_lap_late_makes_our_seq_skip_to_the_games() {
+    // 129 to 255 later, the game takes it for its newest (1 to 127 ahead
+    // of its newest); 128 later, when it is the lower number (seq 44
+    // against 172). (Far over 200 later, ours under that seq go out
+    // before its echo comes back: no skip, see the transport note.)
+    for later in [129, 160, 200, 128] {
+        let pair = late_datagram(300, later);
+        assert_eq!(pair.server.skips(), 1, "{later} later");
+    }
+    // 128 later as the higher number (144 against 16): delivered, not
+    // recorded; the game's newest stays, and so does our seq.
+    let pair = late_datagram(400, 128);
+    assert_eq!(pair.server.skips(), 0);
+    // Under a lap: an older datagram the game records as such.
+    let pair = late_datagram(300, 100);
+    assert_eq!(pair.server.skips(), 0);
+}
+
+#[test]
+fn a_late_game_datagram_does_not_make_our_seq_skip() {
+    // A game datagram that arrives after 140 of ours echoes a seq that
+    // reads as one a lap ahead; but it is not the game's newest.
+    let mut pair = Pair::new();
+    let mut stash = None;
+    let mut model_sent = 0;
+    while pair.emitted < 600 {
+        for (_, datagram) in pair.server_step(true) {
+            pair.to_model(&datagram);
+        }
+        for datagram in pair.model_step() {
+            model_sent += 1;
+            if model_sent == 60 {
+                stash = Some((pair.emitted, datagram));
+                continue;
+            }
+            pair.to_server(&datagram);
+        }
+        let emitted = pair.emitted;
+        if let Some((_, datagram)) = stash.take_if(|(at, _)| emitted >= *at + 140) {
+            pair.to_server(&datagram);
+        }
+    }
+    pair.settle();
+    pair.check();
+    assert_eq!(pair.server.skips(), 0);
+}
+
+#[test]
+fn a_game_that_heard_nothing_for_a_lap_does_not_make_our_seq_skip() {
+    // Nothing of ours reaches the game while it goes on sending: its
+    // datagrams echo its true newest, which our seq leaves 128 and more
+    // behind (data stops at 100, its datagrams' acks go on). Skipping to
+    // it would read its window of old datagrams as acks of the newer
+    // ones under the same seqs. (Driven by hand: the model of the client
+    // could not send so long unheard, nor wait so long.)
+    let (mut server, start) = super::connect_match();
+    let at = |step: u32| start + Duration::from_millis(20) * step;
+    let mut game_seq = 0u8;
+    let mut echoed = 0;
+    for step in 1..=300u32 {
+        server.send(0xF4, &[step as u8, 1]).unwrap();
+        let datagrams = server.poll(at(step));
+        assert_eq!(datagrams.len(), 1);
+        echoed = datagrams[0][0];
+        game_seq = game_seq.wrapping_add(1);
+        server.receive(&super::flow(game_seq, echoed, &[]), at(step));
+    }
+    let mut unheard = Vec::new();
+    let mut emitted = 0;
+    let mut step = 300;
+    while emitted < 140 {
+        step += 1;
+        unheard.push(server.send(0xF4, &[step as u8, 2]).unwrap());
+        emitted += server.poll(at(step)).len();
+        game_seq = game_seq.wrapping_add(1);
+        server.receive(&super::flow(game_seq, echoed, &[]), at(step));
+    }
+    assert_eq!(server.skips(), 0);
+    assert!(unheard.iter().all(|serial| !server.is_delivered(*serial)));
+}
+
 // ------------------------------------------------- order and split joins
 
 /// Feed the server's datagrams to a fresh model in the order given by

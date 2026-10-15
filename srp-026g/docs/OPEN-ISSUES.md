@@ -320,3 +320,134 @@ them. `notes/match.md` §28 has the evidence and the choices,
   - The change is in the server's code alone: no client patch, no
     revision, nothing for a player to install, and nothing a server in use
     does otherwise.
+
+## 0.26g, added 2026-10-14: a newcomer's score on the scoreboard
+
+- **Done 2026-10-14, in the code (patch revision 9), not in a download:
+  the others' scoreboard (Tab) counted a newcomer's score again at every
+  rollback.** Seen on the players' server (match 0x57b21c79): every one of
+  five newcomers 2.7 to 4 times its score on the scoreboard of a player of
+  the start, and one with no kill at 953. The game's statistics handler
+  works a score out again after every state it loads only for the places
+  of the roster of the start, which the late join does not raise; it adds
+  each event as it comes for any place, so a rollback over a newcomer's
+  kill added the kill once more. PROVEN in the code (`notes/client_patch.md`
+  §3.16), the game's own code run with Unicorn before and after the patch.
+  - Only the scoreboard during a match: the results screen, the rewards and
+    the quests are the server's and were right.
+  - Revision 9 keeps all twenty places in that count (six bytes). It plays
+    with 7 and 8; a server need not ask for it. Not run in a game yet.
+
+## 0.26g, added 2026-10-15: a Team Deathmatch that does not end when a team is out
+
+- **Done 2026-10-15, in the code (patch revision 11), not in a download: a
+  Team Deathmatch ran to the time limit though a team had no tickets and no
+  player alive.** Seen on the players' server in two matches of twenty
+  places (0x1f07c8fb, 0x7ce977cb): one dead player of the team that was out
+  stayed in the rule's alive mask, so the server's end test (`tdm_finished`)
+  never held. The rule's death handler skips every death once its completion
+  time is set, and a rollback does not take the time back (the same as the
+  tenth battery, `notes/match.md` section 26); revision 11 counts them
+  (six bytes, `notes/client_patch.md` section 3.21, `notes/match.md` section
+  28). Does not play with 10 or before: a server asks for 11 with the ZIP.
+  Run outside the game for the handler (`client-patches/run_tdm_rule.ps1`),
+  not in a game. Open: a server that reads a team as out from its blocks
+  would end such a match for every revision (`notes/match.md` section 28,
+  option 1, not built).
+
+## 0.26g, added 2026-10-14: the team points during the countdown
+
+- **Done 2026-10-14, in the same revision 9, not in a download: the team
+  points under "Awaiting match start" were the last match's.** The game's
+  hud skips their drawing while a match waits or counts down, though the
+  rules fill the new match's numbers all along (the original game's code,
+  so it was so before srp's patches too). Revision 9 draws them then as
+  play does (one jump, five bytes; `notes/client_patch.md` §3.17). Not run
+  in a game yet.
+
+## 0.26g, added 2026-10-14: a newcomer out of step after a respawn
+
+- **Done 2026-10-14, in the code (patch revision 10), not in a download: a
+  game that loaded a world during a match went out of step when a player
+  respawned into a kit he had used before that load.** Seen on the
+  players' server (match 0x1ce45cbe): six short desyncs of its four
+  newcomers, each at a respawn into such a kit. A weapon's random state
+  (the spread of its shots) was 1 from its constructor and changed only by
+  shots and by the load of a world, and a world holds the current kit's
+  player alone: the newcomer had the other kits' weapons at 1, the games
+  that had played them had them drawn from. The same happened in any game
+  after a rollback over a respawn into another kit. PROVEN in the code and
+  in the saved worlds (`notes/client_patch.md` §3.18).
+  - Revision 10 gives every weapon of the new kit, at every spawn (a
+    match's first too), a state worked out from its place, kit, slot and
+    the spawn's time: the same in every game. The game's own spawn run with
+    Unicorn on made-up objects; not run in a game yet.
+  - **It changes what a match computes from a match's first spawn: games of
+    10 and of 9 or before part there.** The release needs
+    `SRP_MIN_PATCH_REVISION=10` together with the ZIP, as on the players'
+    server. The
+    server needs no change: its clock factor takes 8 to 0x7F as fast and the
+    late join takes 5 and later. A late-join exe built by hand (`0x80`) is
+    not refused and does not have it.
+  - Not covered: the single-player respawn rule (the test mode
+    `loopback_client` alone) spawns another way and keeps the old state.
+  - The other cause of that match's desyncs (inputs made while a resync
+    world loads) is the server's and is not touched here.
+
+## 0.26g, added 2026-10-14: a newcomer that respawns a player in the wrong kit
+
+- **Done 2026-10-14, in the same revision 10, not in a download: a game's
+  first world of a match could make it respawn a player in another kit than
+  the other games.** Reported by the analysis of the matches after
+  0x1ce45cbe: of fifteen late joins five were out of step from their first
+  tick and never let in; for two, a newcomer's world with one player's next
+  kit changed gave its reported hash byte for byte (LIKELY a third). The
+  first world gives each place an entry at its time in the lists of inputs
+  and of kit choices: the kit choice was the kit in use, not the world's
+  choice for the next spawn, and both went at the newest end even after
+  newer entries relayed before the world. PROVEN in the code
+  (`notes/client_patch.md` §3.19), the game's own code run with Unicorn
+  before and after the patch.
+  - Revision 10 puts the world's choice, and both entries in time order.
+    A kit chosen before a match's first world is now kept by every game of
+    10 (the original reset it to the kit in use in every game alike).
+  - Not run in a game; the hash reproduction was not run with the new exe.
+    Whether the two other never-admitted joins had this cause is open.
+
+## 0.26g, added 2026-10-14: a weapon's state that a respawn kept
+
+- **Done 2026-10-14, in the same revision 10, not in a download: a respawn
+  into a kit used before a game's world could still part the games after
+  the random state of revision 10.** Seen in the evening matches of
+  2026-10-14 (0x47d5fa35: twelve games out of step at two respawns;
+  0x3c67147b; 0x4301ed65, where the random states were equal): the saved
+  worlds differ in the slot-10 weapon's `m_last_tick_time_in_ms`, -1 in the
+  games that had loaded a world, the time of its last use in the others.
+  A weapon also keeps the fire mode and the ammunition kind the player
+  chose through deaths and spawns; a world holds the current kit alone. PROVEN in the code and in
+  the saved worlds (`notes/client_patch.md` §3.20).
+  - Revision 10 now gives every weapon of the new kit -1 as its last tick at
+    every spawn, and at a spawn into another kit the constructor's fire
+    mode and ammunition kind (and, as a safety, LIKELY no-ops, magazine,
+    chamber, aim and recoil), before the initialize. For players exactly
+    two things change, after a respawn into another kit (kept at a respawn
+    into the same kit): the kit's fire mode and its ammunition kind are
+    forgotten. Edge case: with kind 0's rounds used up and another kind
+    left, the weapon spawns empty and switches only at an input with action
+    bit 20h or 40h (which keys: NOT PROVEN). No ammunition is lost or added.
+    The game's own spawn run with Unicorn; not run in a game.
+  - NOT PROVEN edge case: rounds in a magazine of a weapon with no
+    ammunition item would be dropped by the reset; no way to load such a
+    magazine was found.
+  - **Open: a player who leaves and comes back.** The place's profile (the
+    storage of stacks, the conditions kept in it) and its kits' objects are
+    in no world while he is away: the games that saw him leave keep them as
+    they were, the games that loaded a world meanwhile build them anew
+    (0x47d5fa35: seven games out of step at the return of two players; the
+    majority was the newer games, so the older ones were resynced). Needs a
+    decision: reset a returning place's profile to its static values in
+    every game (he gets his storage back; the server's count of what he
+    used would be short), or let worlds carry the profiles of the places
+    that are away (a world format change).
+  - Open, not seen apart in any saved world: the own timers of artefacts,
+    medkits and oxygen tanks, a weapon's state machine and scope.

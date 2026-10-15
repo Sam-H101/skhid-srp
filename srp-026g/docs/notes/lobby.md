@@ -255,7 +255,7 @@ UI `fill_char_info` 0x224420: `points_available = level − Σpoints`, `points_u
 
 #### 2.16.1 The matches now and JOIN, on `3B` / 0x91: srp's own, not the original server's
 
-**An extension of srp. It needs srp's changed lobby movie (`lobby_menu.swf`) and no change of the exe; a stock game never asks and is never sent it.** The movie's "matches now" window lists the matches being played, as the launcher's page does, each with a JOIN button. It asks with the ranking page's own request and reads the ranking's own reply, so the exe carries both as it is. The format is version M2 (M1, pull request 54, was the list without JOIN).
+**An extension of srp. It needs srp's changed lobby movie (`lobby_menu.swf`) and no change of the exe; a stock game never asks and is never sent it.** The movie's "matches now" window lists the matches being played, as the launcher's page does, each with a JOIN button. It asks with the ranking page's own request and reads the ranking's own reply, so the exe carries both as it is. The format is version M2 (M1, pull request 54, was the list without JOIN). M2 was later extended without a new header (2026-10-15): `join` became a code that says why JOIN is off, each row got the match level, the JOIN answer got the code as a 4th field, and near a maintenance a maintenance rule decides JOIN. Every change is additive: the first M2 movie reads `join == 1` as on and any other number as off, ignores fields past `key`, and ignores the answer's 4th field.
 
 Requests: the movie calls `ExternalInterface.call("request_players_range", start, count)`, which the game sends as `3B 00 <start u32> <count u8>` (`lobby_requests.md`). Both arguments are `int`-typed (the game reads the raw low 32 and low 8 bits; a Number argument arrives as 0).
 
@@ -267,7 +267,7 @@ Requests: the movie calls `ExternalInterface.call("request_players_range", start
 Reply to the list: one ordinary `91`, rating and change 0 in every row. The movie tells it from a ranking page by the first row's place (`PlayerRanking.fillPlayers`: `rows[0].place >= 2000000000` goes to the window and leaves `_requestList` and the page's cache alone).
 
 - Row 0, the header, always there (an empty list is not no answer): `name = "M2;<total>"`, `place = 2 000 000 000`. `total` is the matches open now, which may be more than the rows that follow. (M1 had `M1;`; the movie takes either.)
-- Row `i` from 1, a match, the oldest first: `place = 2 000 000 000 + i`, `name = "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>;<key>"`. ASCII decimal numbers with `;` between them; 53 bytes at the most (39 for a real match), within the 63 of the name. The movie ignores fields after the ones it knows, so a later version may append; a movie of M1 reads an M2 row as it read an M1 row.
+- Row `i` from 1, a match, the oldest first: `place = 2 000 000 000 + i`, `name = "<level>;<mode>;<phase>;<team0>;<team1>;<score0>;<score1>;<played>;<join>;<key>;<match_level>"`. ASCII decimal numbers with `;` between them; 60 bytes at the most (43 for a real match), within the 63 of the name. The movie ignores fields after the ones it knows, so a later version may append; a movie of M1 reads an M2 row as it read an M1 row. Example: `1;4;2;4;3;88;78;380;2;17;3` (Rudnya, Team Deathmatch, in play, 4 v 3, 88 to 78, 380 s played, JOIN off because the teams are already balanced, key 17, match level 3).
 
 | field | meaning |
 |---|---|
@@ -276,45 +276,76 @@ Reply to the list: one ordinary `91`, rating and change 0 in every row. The movi
 | team0, team1 | each team's players who have not left; before the countdown the ones still to come count too |
 | score0, score1 | batteries home (modes 2, 3) or tickets left (mode 4), of a match in play and from a world no older than 60 s; `-` for both otherwise |
 | played | whole seconds since play began; `-` before it has |
-| join | 1 when **this asker** would be put into the match at once by its JOIN (the rule below), else 0. The rows are the asker's own |
+| join | a code (table below): 1 when **this asker** would be put into the match at once by its JOIN (the rule below), else why not. The rows are the asker's own |
 | key | the lobby's listing key of the match, 1 to 99 999 999: given when the lobby makes the match (or first lists one it did not make) and kept for the match's life; not the match id. The keys of a lobby start at a number taken from the time, so a window left open across a restart of srp does not name another match by an old key |
+| match_level | the match's level as its rewards take it (`MatchSetup::match_level`, the row of `match_levels_dict`, fixed when it is made), decimal; `-` when not known. The movie shows it with the game's word `level` |
 
 No player name, account id or match id is in it.
 
-Reply to a JOIN: one `91` with one row, `name = "J1;<result>;<key>"`, `place = 2 100 000 000`, rating and change 0. It is decided at the click:
+The codes of `join` (and of the JOIN answer's 4th field). A movie takes a code it does not know as 0. The movie's texts are its own (five languages); the English ones:
+
+| code | the server's reason (`JoinCode`) | movie text (en) |
+|---|---|---|
+| 0 | no reason given: a match this lobby did not make, a key no match has, the match server says nothing of the match | (nothing) |
+| 1 | may join now (the balance rule, or the maintenance rule) | (JOIN on) |
+| 2 | the sides would count no more alike with the asker (also: a player alone would make an even match uneven, which the balance rule waits to do) | Teams are already balanced |
+| 3 | no side takes the asker: a side full, no roster place left, the sizes rule; under the maintenance rule the weaker side full | No free place in this match |
+| 4 | another player is joining: another player's place is held in it, or the match server admits nobody while the match is in play with time left (a joiner on its way in) | Another player is joining |
+| 5 | not in play yet | (the phase word, "waiting" / "starting") |
+| 6 | 120 s or less left (`JOIN_CUTOFF`), or the match is over | Match ends soon |
+| 7 | the match takes no late joiners: rosters that do not grow, fixed teams | This match takes no new players |
+| 8 | the asker is in a match, sent to one, or has a place in one | You are already in a match |
+| 9 | the asker is in a squad with others | Leave your squad first |
+| 10 | the asker's game does not join matches being played, or the server refuses its Play for its revision | Update your game |
+| 11 | the asker had a place in this match already | You already played in this match |
+| 12 | maintenance rule: the match ends after the maintenance starts (or less than a minute before) | Ends after the maintenance |
+| 13 | the asker waits in the queue (it pressed Play and is searching) | Leave the search first |
+
+Of the reasons that apply the server says the first in this order (the owner's of 2026-10-15): the asker's own that block every match, which the player must act on first (13, 8, 9, 10: a queued player sees 13 on every row, also of a match that does not admit or whose sides count alike), then the match's own, which hold for everyone (7, 5, 6, 4), then the asker's place of old in this match (11), then the maintenance (12), then the placement (3, 2). A match the lobby did not make says 0. The movie shows every reason in the yellow of the "starting" word.
+
+Reply to a JOIN: one `91` with one row, `name = "J1;<result>;<key>;<code>"`, `place = 2 100 000 000`, rating and change 0; for example `J1;full;17;2`. `code` is the table's above (`ok` has 1); a movie that knows it shows the code's text on its message line instead of the result's generic text for codes 2 to 13. `result` is the code's, for the first M2 movie, which reads only the first three fields: 1 `ok`; 2, 3, 4 `full`; 0, 5, 6, 7, 12 `gone`; 8, 9, 10, 11, 13 `busy`. It is decided at the click:
 
 | result | meaning |
 |---|---|
 | `ok` | a place is held for the asker for 10 s; its Play now puts it into the match. The movie closes the window and presses Play (`play_button_clicked`) |
-| `full` | the match does not take the asker at once now: another player's place is held in it, the sides count alike, no side takes it |
-| `gone` | no match being played has the key, or the match does not admit players now (the match server takes nobody: not in play, near its end, a joiner on its way in) |
-| `busy` | the asker cannot join now: in the queue, in a match or with a place in one, in a squad with others, a game that does not join matches being played or that the server refuses Play for its revision, or it had a place in this match |
+| `full` | the match does not take the asker at once now: another player is joining (its place is held, or it is on its way in), the sides count alike, no side takes it (codes 2, 3, 4) |
+| `gone` | no match being played has the key, the match takes no late joiners, it is not in play yet or near its end, or it ends after a near maintenance (codes 0, 5, 6, 7, 12) |
+| `busy` | the asker cannot join now: in the queue, in a match or with a place in one, in a squad with others, a game that does not join matches being played or that the server refuses Play for its revision, or it had a place in this match (codes 8 to 11, 13) |
 
 The rule, for asker A and match X (`join.rs`, `Core::join_fit`; the owner's of 2026-10-14: JOIN only where the player goes in at once with no wait, by the balance rule, and only to make a match that is uneven by value more even, counting the player's own value; a 3 v 4 that counts alike takes nobody):
 
 1. X admits now (`play.rs` `late_admission`: growing rosters, teams not fixed, the match server admits, more than 120 s left, no earlier joiner on its way in), and the queue has X.
-2. A is in the lobby (not in the queue, not in or sent to a match, no place in one), in no squad with others, its game plays in growing rosters, `refuse_outdated` would not refuse its Play, and A never had a place in X.
+2. A is in the lobby (not in the queue, not in or sent to a match, no place in one), in no squad with others, its game plays in growing rosters, and A never had a place in X. (With `SRP_MIN_PATCH_REVISION` set, an older game is never in the lobby: `patch_check.rs`.)
 3. No other player's place is held in X now.
 4. `matchmaking_policy::place_late(the sides now, [A alone: what A counts for as the queue counts it (Core::strength_of), not waited out], the late-join rule)` puts A on a side, and the sides then count strictly more alike than without A: `|apart after| < |apart before|`, apart being what side 0 counts less side 1 (players, strengths, lead; `matchmaking.md` §9.2).
 
-Several at once, and one hold per match. The lobby is one thread that reads one message at a time, so clicks are decided one after another, each against the places held before it. The match server takes one batch of joiners at a time: a reservation closes its admission (`MatchRegistry::join_running_group`), and the game opens it again only once every admission has entered the match. A second player's place in the same match could never be taken within its 10 s, so while one place is held the match is `full` (and `join` 0) for everyone else; the queue's late joins (`fill_running_matches`) pass it by too. After the first joiner is in and the match admits again, the next asker is decided anew. A hold ends with its 10 s, a JOIN of the same player (granted or not: it replaces the hold), its Play, or the player's link.
+The maintenance rule (the owner's of 2026-10-15). While a maintenance is planned and the minutes to it, the number `9F` carries (`SessionStore::minutes_to_maintenance`), are 30 or fewer, the clients have Play off; JOIN then still takes a player into a match that will be over before the maintenance starts, even where that makes the sides less even. Point 4 of the rule is then replaced:
+
+- X's time limit ends (now + the match server's `admission_remaining`) at least 60 s (`MAINTENANCE_MARGIN`) before the maintenance starts; otherwise code 12.
+- `matchmaking_policy::place_weaker(the sides now, A's worth, the late-join rule)` puts A on the side that counts for less (players × player value + strengths + lead; of two alike the one with fewer players; of two alike in that too side 0), if that side has fewer than `capacity` players and the match has room; otherwise code 3. No "more alike" check, no sizes rule, no patience, nothing of a dramatic lead.
+
+Points 1 to 3 (the match's admission, the asker's checks, no other player's hold) stay, and so do the 10 s hold, Play from the hold (checked again by the same rule: a maintenance moved nearer refuses it, not queued) and never the queue. Outside the window nothing of it applies, and a match that ends after a maintenance more than 30 minutes away is not refused for that. The queue's own late joins (`fill_running_matches`) do not use it. The log's JOIN and Play-from-hold lines say `maintenance rule` when it placed the player (or refused it for 12 or its weaker side).
+
+Client check (original 0.26g exe, 2026-10-15): the movie's Play press works while the button is off for the maintenance. The AS callback `play_button_clicked` (0x28C320) tests only the lobby state (0x270660), the clan mode (+0x1EE6D4) and the profile count before it sends `2F`; the maintenance minutes (lobby_menu+0x30D8) are read in only 6 places of the whole exe, all in `update_play_button_state` (0x21FE92, 0x21FFAC) and the `9F` handlers (0x21CB45, 0x225E92, 0x225F27, 0x225F78). So `ok` followed by the movie's `play_button_clicked` sends Play during the window.
+
+Several at once, and one hold per match. The lobby is one thread that reads one message at a time, so clicks are decided one after another, each against the places held before it. The match server takes one batch of joiners at a time: a reservation closes its admission (`MatchRegistry::join_running_group`), and the game opens it again only once every admission has entered the match. A second player's place in the same match could never be taken within its 10 s, so while one place is held the match is `full` (and `join` 4) for everyone else; the queue's late joins (`fill_running_matches`) pass it by too. After the first joiner is in and the match admits again, the next asker is decided anew. A hold ends with its 10 s, a JOIN of the same player (granted or not: it replaces the hold), its Play, or the player's link.
 
 Play (`2F`) with a place held: the hold is used up, whatever comes of it. The rule is checked again; if the match still takes the player it goes in at once by the queue's own late-join steps: `Matchmaking::append_player` (the checks of `append_batch`, for a player who is in no queue) seats it only once the match server reserved the place (`MatchHost::join_running`), then "match found" and `82` as for any Play, and the log's "late join" line. Never another match, never a new one: otherwise the Play is refused with `84 2F 00 st_cant_change_ready_state` ("Error changing readiness status.", the game's text for a Play-like press it could not carry out, which srp already gives a clan team's ready) and the player is not queued. A Play with no place held (or one whose 10 s ran out) is the ordinary Play, as before.
 
-The log: one line for each JOIN, `<name>: JOIN match 0x… (key k): ok (team t); sides a v b, counting X v Y; with it c v d, counting X' v Y'` (or `full` / `gone` / `busy` with the reason, and the sides now), and one for each Play with a place held: `<name>: Play with a place held in match 0x… (key k): in, team t; …` or `refused (<reason>); not queued`.
+The log: one line for each JOIN, `<name>: JOIN match 0x… (key k): ok (team t); sides a v b, counting X v Y; with it c v d, counting X' v Y'` (`ok (team t, maintenance rule)` under the maintenance rule; or `full` / `gone` / `busy` with the reason and `code n`, and the sides now), and one for each Play with a place held: `<name>: Play with a place held in match 0x… (key k): in, team t; …` (`in, team t, maintenance rule; …`) or `refused (<reason>; code n); not queued`.
 
 What the exe does with it (PROVEN in the original 0.26g exe, client trace of 2026-10-14):
 
 - The sender of `3B`, 0x270070, writes `3B 00 u32 u8` as it is called: it has no condition of the ranking page's, so the start goes out whole.
-- The `91` reader 0x271EB0 copies each row's name into a 64-byte field of its stack **with no check of the length: 63 bytes are a hard limit**. The writer cuts every name to 63 as it does a player's (`elo_rows`); the widest list row the fields' types allow is 53 bytes, a JOIN row 20.
+- The `91` reader 0x271EB0 copies each row's name into a 64-byte field of its stack **with no check of the length: 63 bytes are a hard limit**. The writer cuts every name to 63 as it does a player's (`elo_rows`); the widest list row the fields' types allow is 60 bytes (tested), a JOIN row 19 for a key the lobby gives (21 for any u32).
 - The rows reach the movie as `place` = uint (the u32 whole), `ranking` = uint from the u16, `ranking_diff` = signed int from the i16. Nothing else in the client looks at them: no cache, no compare of names, no log.
 - The movie does not run during a match, so no game asks while it plays.
 
-Where it comes from: the match server's registry (`MatchRegistry::live_matches`), the source of the launcher's page too. Which match is listed and which score is told is one rule for both (`session::v026g::matches_now`). A match the lobby did not make itself (the lobby was started again while it went on) is listed with a key and `join` 0, and its JOIN is `gone`.
+Where it comes from: the match server's registry (`MatchRegistry::live_matches`), the source of the launcher's page too. Which match is listed and which score is told is one rule for both (`session::v026g::matches_now`). A match the lobby did not make itself (the lobby was started again while it went on) is listed with a key and `join` 0, and its JOIN is `gone` (code 0). The match level comes from there too (`LiveMatch::match_level`); the lobby tells a match near its end from one with a joiner on its way in by the match server's time left (`LiveView::time_left`; zero once the match is over).
 
 An srp from before M1 answers the reserved start as a ranking page past the last row: an empty `91` (`91 00`), with no header; the window takes no header within about 6 s as "no matches". An srp of M1 answers a JOIN with nothing; the movie takes no answer within 6 s as "no answer".
 
-Code: `push.rs` `matches_now` / `join_answer`, `dispatch.rs` `reserved_ranking` / `matches_now`, `join.rs`, `play.rs` `play` / `fill_running_matches`, `session::Matchmaking::append_player`. Tests: `lobby/tests/writers.rs` `the_matches_now_are_ranking_rows_with_reserved_places` and `a_join_is_answered_with_one_row_at_the_join_start`, `core_tests/matches_now_tests.rs`, `core_tests/join_tests.rs`, and two of `v026g_end_to_end.rs` (the list in the first; `a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once`).
+Code: `push.rs` `matches_now` / `join_answer` / `JoinCode`, `dispatch.rs` `reserved_ranking` / `matches_now`, `join.rs`, `play.rs` `play` / `fill_running_matches`, `session::Matchmaking::append_player`, `session::matchmaking_policy::place_weaker`. Tests: `lobby/tests/writers.rs` `the_matches_now_are_ranking_rows_with_reserved_places` and `a_join_is_answered_with_one_row_at_the_join_start`, `core_tests/matches_now_tests.rs`, `core_tests/join_tests.rs`, and two of `v026g_end_to_end.rs` (the list in the first; `a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once`).
 
 ### 2.17 0x94 account services (old 0x36 0F) — PROVEN 0x2714D0 (0.21d 0x19E358)
 `u8 n`, n × 10 bytes {`u8 type`, `u8 skipped`, `u32 a`, `u32 b` (skipped)}. Only type 0 is used: premium = true, hours = a → `root.set_premium_state` 0x227D80 (`st_less_then_hour`, `%d %s` hours/days). **Types 1..4 (faction loyalty bonuses → `set_faction_bonus`) are no longer read: the loyalty display is gone.** The 0.21d 8-entry stack overflow hazard is gone with it.

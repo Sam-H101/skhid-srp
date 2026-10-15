@@ -11,15 +11,16 @@ use survarium::v026g::lobby::{JOIN_KEY_MAX, JOIN_START, MATCHES_NOW_ROWS, MATCHE
 use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
 
 use super::*;
-use crate::v026g::OpenMatch;
 use crate::v026g::join::Listing;
+use crate::v026g::{LiveView, OpenMatch};
 
 /// Team Deathmatch and batteries on Rudnya (level 1).
 const RUDNYA_TDM: u8 = 117;
 const RUDNYA_BATTERIES: u8 = 61;
 
 /// A match in play the lobby did not make: four against three, 88 tickets
-/// to 78 in a world four seconds old, played for 6 min 20 s.
+/// to 78 in a world four seconds old, played for 6 min 20 s, of match
+/// level 3.
 pub(super) fn playing(match_id: u32) -> OpenMatch {
     OpenMatch {
         match_id,
@@ -28,6 +29,7 @@ pub(super) fn playing(match_id: u32) -> OpenMatch {
         players: [4, 3],
         standing: Some(([88, 78], Duration::from_secs(4))),
         played: Some(Duration::from_secs(6 * 60 + 20)),
+        match_level: 3,
     }
 }
 
@@ -125,6 +127,7 @@ fn the_list_says_how_far_each_match_is_and_names_nobody() {
             // No battery yet: nothing to tell, whatever the world says.
             standing: Some(([0, 0], Duration::ZERO)),
             played: None,
+            match_level: 7,
         },
         OpenMatch {
             match_id: 0x54,
@@ -133,27 +136,29 @@ fn the_list_says_how_far_each_match_is_and_names_nobody() {
             players: [5, 5],
             standing: None,
             played: None,
+            match_level: 0,
         },
         stale,
     ];
     // The header counts the four that are open; each row is a place on.
     // The level, the mode, the phase, the teams, the score, the seconds
     // played, whether it takes the asker (none of these is one the lobby
-    // made, so none does), and the match's listing key: given as the lobby
-    // first lists it, one for each match listed.
+    // made, so none does, and none says why: code 0), the match's listing
+    // key (given as the lobby first lists it, one for each match listed),
+    // and its match level.
     assert_eq!(
         asked(&mut world, alice, 32),
         [
             ("M2;4".to_owned(), MATCHES_START),
-            ("1;4;2;4;3;88;78;380;0;1".to_owned(), MATCHES_START + 1),
-            ("1;2;1;2;2;-;-;-;0;2".to_owned(), MATCHES_START + 2),
-            ("1;4;0;5;5;-;-;-;0;3".to_owned(), MATCHES_START + 3),
-            ("1;4;2;4;3;-;-;380;0;4".to_owned(), MATCHES_START + 4),
+            ("1;4;2;4;3;88;78;380;0;1;3".to_owned(), MATCHES_START + 1),
+            ("1;2;1;2;2;-;-;-;0;2;7".to_owned(), MATCHES_START + 2),
+            ("1;4;0;5;5;-;-;-;0;3;0".to_owned(), MATCHES_START + 3),
+            ("1;4;2;4;3;-;-;380;0;4;3".to_owned(), MATCHES_START + 4),
         ]
     );
     // A score as old as it may be is still told; the keys stay.
     world.host.listed.locked()[4].standing = Some(([40, 71], SCORE_AGE));
-    assert_eq!(rows(&mut world, alice, 32)[3], "1;4;2;4;3;40;71;380;0;4");
+    assert_eq!(rows(&mut world, alice, 32)[3], "1;4;2;4;3;40;71;380;0;4;3");
 
     // No more rows than asked for, the oldest matches; the header still
     // counts them all.
@@ -161,8 +166,8 @@ fn the_list_says_how_far_each_match_is_and_names_nobody() {
         asked(&mut world, alice, 2),
         [
             ("M2;4".to_owned(), MATCHES_START),
-            ("1;4;2;4;3;88;78;380;0;1".to_owned(), MATCHES_START + 1),
-            ("1;2;1;2;2;-;-;-;0;2".to_owned(), MATCHES_START + 2),
+            ("1;4;2;4;3;88;78;380;0;1;3".to_owned(), MATCHES_START + 1),
+            ("1;2;1;2;2;-;-;-;0;2;7".to_owned(), MATCHES_START + 2),
         ]
     );
     assert_eq!(
@@ -171,7 +176,7 @@ fn the_list_says_how_far_each_match_is_and_names_nobody() {
     );
     // A match that went keeps no key; the others keep theirs.
     world.host.listed.locked().remove(0);
-    assert_eq!(rows(&mut world, alice, 1), ["1;2;1;2;2;-;-;-;0;2"]);
+    assert_eq!(rows(&mut world, alice, 1), ["1;2;1;2;2;-;-;-;0;2;7"]);
     assert_eq!(world.core.listing.match_of(1), None);
     assert_eq!(world.core.listing.match_of(2), Some(0x53));
     // And never more than the answer holds, whatever is asked for. Every
@@ -183,7 +188,7 @@ fn the_list_says_how_far_each_match_is_and_names_nobody() {
     assert_eq!(
         all[MATCHES_NOW_ROWS],
         (
-            "1;4;2;4;3;88;78;380;0;36".to_owned(),
+            "1;4;2;4;3;88;78;380;0;36;3".to_owned(),
             MATCHES_START + MATCHES_NOW_ROWS as u32
         )
     );
@@ -218,10 +223,11 @@ fn counts(world: &World, index: usize) -> i32 {
     world.core.strength_of(account, level)
 }
 
-/// The match rows' `join` and `key` the lobby answers the asker now. The
-/// request is handled at once, with no round of the clock: nothing else of
-/// the lobby runs in between (no pass puts a waiting player into a match).
-pub(super) fn joins_now(world: &mut World, index: usize) -> Vec<(bool, u32)> {
+/// The match rows' `join` code and `key` the lobby answers the asker now
+/// (1: it may join; any other: why not). The request is handled at once,
+/// with no round of the clock: nothing else of the lobby runs in between
+/// (no pass puts a waiting player into a match).
+pub(super) fn joins_now(world: &mut World, index: usize) -> Vec<(u8, u32)> {
     let rows = answered(world, index, MATCHES_START, 32);
     let [list] = &rows[..] else {
         panic!("not one list: {rows:?}");
@@ -230,8 +236,8 @@ pub(super) fn joins_now(world: &mut World, index: usize) -> Vec<(bool, u32)> {
         .iter()
         .map(|(name, _)| {
             let fields: Vec<&str> = name.split(';').collect();
-            assert_eq!(fields.len(), 10, "{name}");
-            (fields[8] == "1", fields[9].parse().unwrap())
+            assert_eq!(fields.len(), 11, "{name}");
+            (fields[8].parse().unwrap(), fields[9].parse().unwrap())
         })
         .collect()
 }
@@ -328,22 +334,23 @@ fn the_join_of_a_row_is_on_only_where_the_asker_makes_an_uneven_match_more_even(
     // Carol among them makes it four against four that count nearly
     // alike: on, under the key the match got when it was made.
     set_sides(&mut world, id, [0, 0]);
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
     // Asking changed nothing: nobody was put anywhere.
     assert_eq!(world.host.made.locked()[0].1.players.len(), 7);
     assert_eq!(world.core.matches[&id].seats.len(), 7);
     assert_eq!(world.store.matchmaking().queued_players(), 0);
 
     // Three against four that count alike: one of the three counts for a
-    // player more. Not uneven by value, so nobody joins it, on either side.
+    // player more. Not uneven by value, so nobody joins it, on either side:
+    // "teams are already balanced" (2).
     let mut strength = [0; 2];
     strength[usize::from(three)] = player;
     set_sides(&mut world, id, strength);
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(2, 1)]);
     // Less than that: still uneven, and Carol makes it more even.
     strength[usize::from(three)] = player / 4;
     set_sides(&mut world, id, strength);
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
 
     // An asker so strong that the sides would count further apart with it
     // than without: off. The same match, the same moment, a weaker asker:
@@ -359,47 +366,79 @@ fn the_join_of_a_row_is_on_only_where_the_asker_makes_an_uneven_match_more_even(
         "{}",
         counts(&world, strong)
     );
-    assert_eq!(joins_now(&mut world, strong), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, strong), [(2, 1)]);
     world.account(strong).balance = session::v026g::balance::Balance {
         rating: 1_000,
         matches: 1_000,
     };
     assert!(counts(&world, strong) < player);
-    assert_eq!(joins_now(&mut world, strong), [(true, 1)]);
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, strong), [(1, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
 
-    // The match server does not admit now (a joiner before is on its way
-    // in): off for everyone.
-    world.host.admitting.locked().remove(&ticket);
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
-    world.host.admitting.locked().insert(ticket);
-    // Too near its end: the cutoff of a late join.
+    // The match server does not admit now: off for everyone, and why is
+    // its word on the match. In play with time left: a joiner before is on
+    // its way in (4). Its time near the end (6). Not in play yet (5). It
+    // says nothing (0).
     let cutoff = session::matchmaking_policy::JOIN_CUTOFF;
+    world.host.admitting.locked().remove(&ticket);
+    let in_play = LiveView {
+        present: 0x7F,
+        played: Some(Duration::from_secs(300)),
+        time_left: Some(Duration::from_secs(600)),
+        ..LiveView::default()
+    };
+    world.host.live.locked().insert(ticket, in_play);
+    assert_eq!(joins_now(&mut world, carol), [(4, 1)]);
+    let near_end = LiveView {
+        time_left: Some(cutoff),
+        ..in_play
+    };
+    world.host.live.locked().insert(ticket, near_end);
+    assert_eq!(joins_now(&mut world, carol), [(6, 1)]);
+    let countdown = LiveView {
+        played: None,
+        ..in_play
+    };
+    world.host.live.locked().insert(ticket, countdown);
+    assert_eq!(joins_now(&mut world, carol), [(5, 1)]);
+    world.host.live.locked().remove(&ticket);
+    assert_eq!(joins_now(&mut world, carol), [(0, 1)]);
+    world.host.admitting.locked().insert(ticket);
+    // Too near its end: the cutoff of a late join (6).
     world.host.remaining.locked().insert(ticket, cutoff);
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(6, 1)]);
     world.host.remaining.locked().remove(&ticket);
-    // The side Carol would go to has all the players a side may have.
+    // The side Carol would go to has all the players a side may have: "no
+    // free place" (3).
     world.core.settings.team_size = 3;
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(3, 1)]);
     world.core.settings.team_size = 10;
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
 
-    // A player in the queue: off. (It pressed Play while the match did not
-    // admit, so nothing put it in.)
+    // A player in the queue: off, "leave the search first" (13). (It
+    // pressed Play while the match did not admit, so nothing put it in.)
+    // Its own reason comes first, before any of the match: also while the
+    // match does not admit, and while its sides count alike.
     world.host.admitting.locked().remove(&ticket);
     world.ask(carol, request::play(1));
     assert_eq!(world.store.matchmaking().queued_players(), 1);
+    assert_eq!(joins_now(&mut world, carol), [(13, 1)]);
     world.host.admitting.locked().insert(ticket);
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(13, 1)]);
+    strength[usize::from(three)] = player;
+    set_sides(&mut world, id, strength);
+    assert_eq!(joins_now(&mut world, carol), [(13, 1)]);
+    set_sides(&mut world, id, [0, 0]);
     world.host.admitting.locked().remove(&ticket);
     world.ask(carol, request::leave(1, false));
     assert_eq!(world.store.matchmaking().queued_players(), 0);
     world.host.admitting.locked().insert(ticket);
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
 
-    // A player of the match: off. And once it has left it by its own word
-    // and is back in the lobby: still off, a place is never given twice.
-    assert_eq!(joins_now(&mut world, players[0]), [(false, 1)]);
+    // A player of the match: off, "you are already in a match" (8). And
+    // once it has left it by its own word and is back in the lobby: still
+    // off, a place is never given twice (11).
+    assert_eq!(joins_now(&mut world, players[0]), [(8, 1)]);
     let left = world.ids[players[0]].0;
     assert!(world.store.matchmaking().give_up_seat(left).is_some());
     world.ask(players[0], request::leave(1, true));
@@ -412,32 +451,26 @@ fn the_join_of_a_row_is_on_only_where_the_asker_makes_an_uneven_match_more_even(
             .is_none()
     );
     assert_eq!(world.store.matchmaking().pool_of_account(left), None);
-    assert_eq!(joins_now(&mut world, players[0]), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, players[0]), [(11, 1)]);
 
-    // A game too old to join a match being played: off.
+    // A game too old to join a match being played: off (10).
     let old = world.connect("Old");
-    assert_eq!(joins_now(&mut world, old), [(false, 1)]);
-    // A game the server refuses Play for its revision: off; one it only
-    // warns: on.
-    world.core.settings.min_patch_revision = PATCH_REVISION + 1;
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Refuse;
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Warn;
-    assert_eq!(joins_now(&mut world, carol), [(true, 1)]);
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Off;
+    assert_eq!(joins_now(&mut world, old), [(10, 1)]);
 
-    // In a squad with another player: off for both.
+    // In a squad with another player: off for both (9).
     let alice = growing(&mut world, "Alice");
     let bob = growing(&mut world, "Bob");
-    assert_eq!(joins_now(&mut world, alice), [(true, 1)]);
+    assert_eq!(joins_now(&mut world, alice), [(1, 1)]);
     form_squad(&mut world, alice, bob);
     assert!(world.store.squads().of(world.ids[alice].0).is_some());
-    assert_eq!(joins_now(&mut world, alice), [(false, 1)]);
-    assert_eq!(joins_now(&mut world, bob), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, alice), [(9, 1)]);
+    assert_eq!(joins_now(&mut world, bob), [(9, 1)]);
 
-    // A match of fixed teams takes nobody.
+    // A match of fixed teams takes nobody (7); a player in a squad is told
+    // of its squad first, its own reason before the match's.
     world.core.matches.get_mut(&id).unwrap().fixed_teams = true;
-    assert_eq!(joins_now(&mut world, carol), [(false, 1)]);
+    assert_eq!(joins_now(&mut world, carol), [(7, 1)]);
+    assert_eq!(joins_now(&mut world, alice), [(9, 1)]);
     world.assert_clean();
 }
 
@@ -454,19 +487,25 @@ fn a_match_of_games_that_cannot_grow_takes_nobody() {
         players: [1, 1],
         ..playing(ticket)
     }];
-    // Whatever the match server says of it.
+    // Whatever the match server says of it: a game of growing rosters is
+    // told the match takes no new players (7).
     world.host.admitting.locked().insert(ticket);
-    assert_eq!(rows(&mut world, carol, 32), ["1;4;2;1;1;88;78;380;0;1"]);
-    // A player in the queue may ask too, and stays in it.
+    let dave = growing(&mut world, "Dave");
+    assert_eq!(rows(&mut world, dave, 32), ["1;4;2;1;1;88;78;380;7;1;3"]);
+    // A stock game is told of its game first (10).
+    assert_eq!(rows(&mut world, carol, 32), ["1;4;2;1;1;88;78;380;10;1;3"]);
+    // A player in the queue may ask too, and stays in it; it is told of
+    // the queue first (13).
     world.ask(carol, request::play(1));
     assert_eq!(world.store.matchmaking().queued_players(), 1);
-    assert_eq!(rows(&mut world, carol, 32), ["1;4;2;1;1;88;78;380;0;1"]);
+    assert_eq!(rows(&mut world, carol, 32), ["1;4;2;1;1;88;78;380;13;1;3"]);
     assert_eq!(world.store.matchmaking().queued_players(), 1);
-    // Its JOIN is answered "gone": such a match takes nobody late. Nothing
-    // is held, and the player still waits.
+    // Its JOIN is answered "busy": it is in the queue (13; the match
+    // would take nobody late either). Nothing is held, and the player
+    // still waits.
     assert_eq!(
         answered(&mut world, carol, JOIN_START + 1, 1),
-        [[("J1;gone;1".to_owned(), JOIN_START)]]
+        [[("J1;busy;1;13".to_owned(), JOIN_START)]]
     );
     assert_eq!(world.store.matchmaking().queued_players(), 1);
     assert!(world.core.holds.is_empty());
@@ -592,5 +631,63 @@ fn the_ranking_page_is_answered_as_ever_and_the_list_touches_nothing_of_it() {
     assert_eq!(first_page(&mut world), before);
     world.ask(alice, request::ranking(1, 1));
     assert_eq!(world.take(alice), second);
+    world.assert_clean();
+}
+
+/// Near a planned maintenance (30 minutes or less) the rows say per match
+/// whether it ends a minute or more before the maintenance starts: those
+/// take the asker on their weaker side by value (1) where the balance rule
+/// would not (2), the others say "ends after the maintenance" (12). A match
+/// the lobby did not make says no reason (0) as ever. The match level is
+/// each row's last field.
+#[test]
+fn near_a_maintenance_the_rows_say_which_matches_end_before_it() {
+    let mut world = World::new(Duration::ZERO);
+    world.core.listing = Listing::new(0);
+    let names = ["P1", "P2", "P3", "P4", "P5", "P6", "P7"];
+    let (ticket, id, _) = match_of(&mut world, &names);
+    let carol = growing(&mut world, "Carol");
+    let (four, three) = larger_and_smaller(&world, id);
+    // The three count for three players more: the four are the weaker.
+    let player = world.core.settings.balance.player_value();
+    let mut strength = [0; 2];
+    strength[usize::from(three)] = 3 * player;
+    set_sides(&mut world, id, strength);
+    world.host.listed.locked().push(playing(0x51));
+    let teams = |world: &World| world.host.listed.locked()[0].players;
+    let [team0, team1] = teams(&world);
+    assert_eq!(team0 + team1, 7);
+    let row = |code: u8| format!("1;4;2;{team0};{team1};88;78;380;{code};1;3");
+    let other = "1;4;2;4;3;88;78;380;0;2;3";
+
+    assert_eq!(rows(&mut world, carol, 32), [row(2).as_str(), other]);
+    let unix = session::v026g::quests::now();
+    // Planned in 20 minutes; the match ends in 10 (the test host's
+    // default): JOIN on.
+    world.store.set_maintenance(Some(unix + 20 * 60));
+    assert_eq!(rows(&mut world, carol, 32), [row(1).as_str(), other]);
+    // It ends in 25 minutes: after the maintenance.
+    world
+        .host
+        .remaining
+        .locked()
+        .insert(ticket, Duration::from_secs(25 * 60));
+    assert_eq!(rows(&mut world, carol, 32), [row(12).as_str(), other]);
+    // Planned in 45 minutes: Play is on, the balance rule as ever.
+    world.store.set_maintenance(Some(unix + 45 * 60));
+    assert_eq!(rows(&mut world, carol, 32), [row(2).as_str(), other]);
+    // In 20 again, the match ending in 10: Carol's JOIN and Play put her
+    // on the four's side, five against three.
+    world.store.set_maintenance(Some(unix + 20 * 60));
+    world.host.remaining.locked().remove(&ticket);
+    assert_eq!(
+        answered(&mut world, carol, JOIN_START + 1, 1),
+        [[("J1;ok;1;1".to_owned(), JOIN_START)]]
+    );
+    world.ask(carol, request::play(1));
+    assert_eq!(sent_to_match(&world.take(carol)), Some((ticket, four)));
+    let seats = &world.core.matches[&id].seats;
+    assert_eq!(seats.iter().filter(|seat| seat.1 == four).count(), 5);
+    world.store.set_maintenance(None);
     world.assert_clean();
 }

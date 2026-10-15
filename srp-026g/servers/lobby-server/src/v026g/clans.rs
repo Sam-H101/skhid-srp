@@ -914,10 +914,7 @@ impl Core<'_> {
 
     /// `30 <kit>`: clan-team Play, for the team's commander and lineup:
     /// `83 30`, on which the client toggles its ready state.
-    pub(super) fn clan_play(&mut self, who: &Who, kit_id: u32, now: Instant) {
-        if self.refuse_outdated(who, id::CLAN_PLAY, now) {
-            return;
-        }
+    pub(super) fn clan_play(&mut self, who: &Who, kit_id: u32) {
         let unix = quests::now();
         let checked = {
             let mut account = who.account.locked();

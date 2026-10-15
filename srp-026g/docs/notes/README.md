@@ -34,6 +34,7 @@ given), LIKELY or GUESS.
 | [modes_maps.md](modes_maps.md) | Maps, game modes, map ids, rule classes, match settings now in data |
 | [data.md](data.md) | `resources.db`: items, skills, drops, quests, item configs |
 | [client_patch.md](client_patch.md) | Porting the srp client patch, the function map |
+| [replay_sur.md](replay_sur.md) | The client's own replay file (`.sur`, `-match_replay`): its layout, and `srp-recording-to-sur`, which makes one from a match recording |
 | [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
 | [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
@@ -104,11 +105,10 @@ Every setting has a default; none is needed on a dev PC.
   goes after the first (the second for a player in a match), and its
   session waits the third for the client to connect again (transport.md
   §6.1).
-- `SRP_PATCH_REVISION_CHECK` (default off; `warn`, `refuse`),
-  `SRP_MIN_PATCH_REVISION` (default 4), `SRP_OUTDATED_TEXT`, `SRP_UPDATE_HINT`:
-  a game whose exe says an older patch revision is told in the general chat
-  how to update and, with `refuse`, does not play (client_patch.md §6,
-  lobby_requests.md §4.2).
+- `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255 stops
+  srp): a game whose exe says an older patch revision is refused at its
+  sign-in (0x22) and its sessions from before a restart in the lobby
+  (client_patch.md §6).
 - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none): lines in
   the general chat when somebody joins or leaves the search and when a match
   starts, with whom (social.md §9.7).
@@ -165,6 +165,8 @@ Every setting has a default; none is needed on a dev PC.
     (match.md §27);
   - `SRP_ENTRY_STATE_SECONDS` (default 4, 2 to 5): how long a game's first
     world is kept on its way;
+  - `SRP_RELAY_PACK_MS` (default 15, at most 50, 0 = off): how long relays
+    and drop orders wait to share a datagram (transport.md §11.1);
   - `SRP_MATCH_CLIENT_TIMEOUT_SECONDS` (default 10): raise it (60–120)
     when two clients run on one PC, a window out of focus can stall.
 

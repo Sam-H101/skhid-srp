@@ -76,11 +76,9 @@
 //! - `SRP_SQUADS` (default on), `SRP_SQUADS_OFF_TEXT`: with `off` nobody
 //!   is invited to a squad, and the one who tries is told so in a message
 //!   box (`social.rs`);
-//! - `SRP_PATCH_REVISION_CHECK` (default off; `warn`, `refuse`),
-//!   `SRP_MIN_PATCH_REVISION` (default 4), `SRP_OUTDATED_TEXT`,
-//!   `SRP_UPDATE_HINT`: a game older than that patch revision is told in
-//!   the general chat how to update and, with `refuse`, does not play
-//!   (`patch_check`);
+//! - `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255
+//!   stops srp): a game older than that patch revision is refused at its
+//!   sign-in, and its sessions from before in the lobby (`patch_check`);
 //! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
 //!   lines in the general chat when somebody joins or leaves the search and
 //!   when a match starts, with whom (`queue_chat.rs`);
@@ -142,6 +140,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE;
 use session::v026g::GameAccounts;
 use session::v026g::balance::Weights;
 use session::v026g::rewards::Results;
@@ -150,7 +149,7 @@ use survarium::v026g::lobby::ServerMessage;
 use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
-pub use patch_check::PatchCheck;
+pub use patch_check::min_patch_revision_from_env;
 pub use play::{
     LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, OpenMatch, match_profile,
 };
@@ -218,19 +217,10 @@ pub struct Settings {
     /// The sender name of those lines (`SRP_QUEUE_CHAT_NAME`, default
     /// none: the client then shows the line with no name).
     pub queue_chat_name: String,
-    /// Whether a game older than `min_patch_revision` is told to update,
-    /// and whether its Play is refused (`SRP_PATCH_REVISION_CHECK`,
-    /// default off; `patch_check`).
-    pub patch_check: PatchCheck,
-    /// The least patch revision of a game that plays
-    /// (`SRP_MIN_PATCH_REVISION`).
+    /// The least patch revision of a game let in, 0 for any: an older one
+    /// is refused at its sign-in, and its sessions from before in the lobby
+    /// (`SRP_MIN_PATCH_REVISION`; `patch_check`).
     pub min_patch_revision: u8,
-    /// What the refused Play shows in its message box: a text key of the
-    /// game, or a sentence (`SRP_OUTDATED_TEXT`).
-    pub outdated_text: String,
-    /// The line in the general chat that says how to update
-    /// (`SRP_UPDATE_HINT`; empty: no line).
-    pub update_hint: String,
     /// What a player counts for when the sides of a match are made
     /// (`SRP_BALANCE_*`; `session::v026g::balance`).
     pub balance: Weights,
@@ -342,40 +332,11 @@ impl Settings {
         let queue_chat_name = var("SRP_QUEUE_CHAT_NAME")
             .map(|name| name.trim().chars().take(20).collect())
             .unwrap_or_default();
-        let patch_check = match var("SRP_PATCH_REVISION_CHECK") {
-            Some(value) => PatchCheck::parse(&value).unwrap_or_else(|| {
-                log::error!(
-                    "SRP_PATCH_REVISION_CHECK is `{value}`; it must be off, warn or refuse. \
-                     Using off"
-                );
-                PatchCheck::Off
-            }),
-            None => PatchCheck::Off,
-        };
-        let min_patch_revision = match var("SRP_MIN_PATCH_REVISION") {
-            Some(value) => value.trim().parse().unwrap_or_else(|_| {
-                log::error!(
-                    "SRP_MIN_PATCH_REVISION is `{value}`; it must be a number from 0 to 255. \
-                     Using {}",
-                    patch_check::DEFAULT_MIN_PATCH_REVISION
-                );
-                patch_check::DEFAULT_MIN_PATCH_REVISION
-            }),
-            None => patch_check::DEFAULT_MIN_PATCH_REVISION,
-        };
-        // A text the client reads into 256 bytes (`lobby::limits::TEXT`).
-        let outdated_text = var("SRP_OUTDATED_TEXT")
-            .map(|text| text.trim().to_owned())
-            .filter(|text| !text.is_empty() && text.len() <= 255)
-            .unwrap_or_else(|| patch_check::DEFAULT_OUTDATED_TEXT.to_owned());
-        let update_hint = var("SRP_UPDATE_HINT")
-            .map(|hint| hint.trim().to_owned())
-            .unwrap_or_else(|| patch_check::DEFAULT_UPDATE_HINT.to_owned());
-        if patch_check != PatchCheck::Off {
-            log::info!(
-                "Patch revision check: {patch_check:?}, a game plays from revision \
-                 {min_patch_revision}"
-            );
+        // srp checked it before it started anything.
+        let min_patch_revision =
+            patch_check::min_patch_revision_from_env().unwrap_or_else(|error| panic!("{error}"));
+        if min_patch_revision > 0 {
+            log::info!("Games older than patch revision {min_patch_revision} are refused");
         }
         let weight = |name: &str, default: f64| match var(name) {
             Some(value) => parse_weight(&value).unwrap_or_else(|| {
@@ -468,10 +429,7 @@ impl Settings {
             squads_off_text,
             queue_chat,
             queue_chat_name,
-            patch_check,
             min_patch_revision,
-            outdated_text,
-            update_hint,
             bind: config.bind_addr(),
             public_host: config.public_host.clone(),
             local_peers: config.local_peers,
@@ -501,10 +459,7 @@ impl Settings {
             team_size: DEFAULT_TEAM_SIZE,
             queue_chat: true,
             queue_chat_name: String::new(),
-            patch_check: PatchCheck::Off,
-            min_patch_revision: patch_check::DEFAULT_MIN_PATCH_REVISION,
-            outdated_text: patch_check::DEFAULT_OUTDATED_TEXT.to_owned(),
-            update_hint: patch_check::DEFAULT_UPDATE_HINT.to_owned(),
+            min_patch_revision: 0,
             balance: Weights::default(),
             late_join_patience: DEFAULT_LATE_JOIN_PATIENCE,
             squads: true,
@@ -520,9 +475,6 @@ impl Settings {
 pub const DEFAULT_SQUADS_OFF_TEXT: &str = "Squads are switched off on this server.";
 
 /// A `SRP_BALANCE_*` number: 0 to 1000.
-/// `SRP_LATE_JOIN_PATIENCE_SECONDS` when unset.
-pub const DEFAULT_LATE_JOIN_PATIENCE: Duration = Duration::from_secs(60);
-
 fn parse_weight(value: &str) -> Option<f64> {
     value
         .trim()

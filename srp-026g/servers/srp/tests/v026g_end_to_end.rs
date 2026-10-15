@@ -706,8 +706,9 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     // ranking's request and the start no ranking page has: the header with
     // the count, then the match: Rudnya (level 1), Team Deathmatch (mode
     // 4), its countdown running (phase 1), a player a team, no score and no
-    // time played before play, the asker not taken into it (it is in it),
-    // and the match's listing key.
+    // time played before play, the asker not taken into it (and why: it is
+    // in that match, code 8), the match's listing key, and its match level
+    // (the mean of its players' levels: 0 for new accounts).
     alice.take();
     alice.ask(request::ranking(survarium::v026g::lobby::MATCHES_START, 32));
     until(
@@ -725,11 +726,17 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     assert_eq!(list.len(), 2);
     assert_eq!(list[0], ("M2;1".to_owned(), 2_000_000_000, 0, 0));
     assert_eq!((list[1].1, list[1].2, list[1].3), (2_000_000_001, 0, 0));
-    let key = list[1]
-        .0
-        .strip_prefix("1;4;1;1;1;-;-;-;0;")
-        .and_then(|key| key.parse::<u32>().ok())
-        .unwrap_or_else(|| panic!("{}", list[1].0));
+    let fields: Vec<&str> = list[1].0.split(';').collect();
+    assert_eq!(fields.len(), 11, "{}", list[1].0);
+    assert_eq!(
+        (&fields[..9], fields[10]),
+        (&["1", "4", "1", "1", "1", "-", "-", "-", "8"][..], "0"),
+        "{}",
+        list[1].0
+    );
+    let key = fields[9]
+        .parse::<u32>()
+        .unwrap_or_else(|_| panic!("{}", list[1].0));
     assert!((1..=survarium::v026g::lobby::JOIN_KEY_MAX).contains(&key));
 
     // ---- 9. The match ends by its mode's rule: Bob's team has no tickets
@@ -1892,6 +1899,7 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
     assert_eq!(&fields[..5], ["1", "4", "2", "1", "1"], "{}", list[1].0);
     assert_eq!(fields[8], "1", "JOIN is on: {}", list[1].0);
     let key: u32 = fields[9].parse().unwrap();
+    assert_eq!(fields.len(), 11, "{}", list[1].0);
 
     // Both press it at once: Charlie's place is held, Dave's is not.
     let join_answer = |game: &Game| {
@@ -1911,8 +1919,9 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
         |games| games[2..].iter().all(|g| join_answer(g).is_some()),
     );
     let answers = [join_answer(&charlie).unwrap(), join_answer(&dave).unwrap()];
-    let ok = format!("J1;ok;{key}");
-    let full = format!("J1;full;{key}");
+    let ok = format!("J1;ok;{key};1");
+    // Another player is joining (4).
+    let full = format!("J1;full;{key};4");
     // The lobby reads one message at a time; either may come first.
     assert!(
         answers == [ok.clone(), full.clone()] || answers == [full.clone(), ok.clone()],
@@ -1936,7 +1945,8 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
     assert_eq!(ticket(&first), Some(match_id));
     assert_eq!(stack.registry.match_count(), 1);
     assert_eq!(stack.store.matchmaking().queued_players(), 0);
-    // While it is on its way in the match server admits nobody.
+    // While it is on its way in the match server admits nobody: the match
+    // is in play with time left, so another player is joining (4).
     second.take();
     second.ask(request::ranking(JOIN_START + key, 1));
     until(
@@ -1945,7 +1955,7 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
         "the second JOIN answer",
         |games| join_answer(games[3]).is_some(),
     );
-    assert_eq!(join_answer(&second).unwrap(), format!("J1;gone;{key}"));
+    assert_eq!(join_answer(&second).unwrap(), full);
 
     // It enters the match as any late joiner.
     first.connect_to_match(stack.match_addr);
@@ -1969,7 +1979,8 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
     );
     // Once it is in, the match admits again; with the joiner on Bob's side
     // a fourth player would make the sides two against two, or one against
-    // three: neither, and the second is told the match is full.
+    // three: neither, and the second is told the match is full: the sides
+    // would count no more alike with it (2).
     let deadline = Instant::now() + SOON;
     loop {
         second.take();
@@ -1981,8 +1992,8 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
             |games| join_answer(games[3]).is_some(),
         );
         let answer = join_answer(&second).unwrap();
-        if answer != format!("J1;gone;{key}") {
-            assert_eq!(answer, full);
+        if answer != full {
+            assert_eq!(answer, format!("J1;full;{key};2"));
             break;
         }
         assert!(Instant::now() < deadline, "the match never admitted again");

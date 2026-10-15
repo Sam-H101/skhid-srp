@@ -11,7 +11,8 @@ Checks:
     image ended, the checksum right, no signature left, nothing after the
     last section;
  3. the jump in registry_key::get_string lands on the new code, and the new
-    code comes back to the byte after the replaced instructions;
+    code comes back to the byte after the replaced instructions; the same
+    for the Enter key's jump in the message loop;
  4. the three addresses the launcher opens are the site's, where their
     operands point, and the operands are still relocated;
  5. no relocation touches a changed instruction (but the two disabled ones);
@@ -45,6 +46,7 @@ def ranges_of_the_patch(original, patched, section_size):
         allowed.append((image.offset(va, 1), len(bytes.fromhex(new)), what))
     allowed.append((image.offset(L.NO_VERSION[0], 1), len(bytes.fromhex(L.NO_VERSION[2])), "no version"))
     allowed.append((image.offset(L.GET_STRING[0], 1), len(L.GET_STRING[1]), "get_string hook"))
+    allowed.append((image.offset(L.ENTER_KEY[0], 1), len(L.ENTER_KEY[1]), "Enter key hook"))
     for va, old, new, what in L.STRINGS:
         allowed.append((image.offset(va, 1), len(L.utf16(old)), what))
     for va, old in L.EMPTIED:
@@ -126,6 +128,16 @@ def main():
     check(3, jump[0] == 0xE9 and jump[5:] == b"\x90\x90" and target == L.SECTION_VA
           and back == L.GET_STRING_BACK == L.GET_STRING[0] + len(L.GET_STRING[1]),
           f"get_string jumps to {target:#x}, the new code comes back to {back:#x}")
+    at = image.offset(L.ENTER_KEY[0], 7)
+    jump = patched[at:at + 7]
+    target = L.ENTER_KEY[0] + 5 + struct.unpack_from("<i", jump, 1)[0]
+    done, back = L.enter_key_targets(section)
+    check("3a", jump[0] == 0xE9 and jump[5:] == b"\x90\x90" and target == L.SECTION_VA + L.ENTER_KEY_AT
+          and section[L.ENTER_KEY_AT:L.ENTER_KEY_AT + 7] == bytes.fromhex("817de400010000")
+          and back == L.ENTER_KEY_BACK == L.ENTER_KEY[0] + len(L.ENTER_KEY[1])
+          and done == L.ENTER_KEY_DONE,
+          f"the message loop jumps to {target:#x}, the new code comes back to {back:#x} "
+          f"and, after Enter, to {done:#x}")
     slots = {}
     for slot, (start, size) in L.SLOTS.items():
         slots[slot] = section[start:start + size].split(b"\0")[0].decode("ascii")
@@ -145,7 +157,8 @@ def main():
           "; ".join(f"{what}: {text}" for what, text, _, _ in opened))
 
     # 5. Relocations and changed code.
-    code_ranges = [(va, len(bytes.fromhex(new))) for va, _, new, _ in L.PATCHES] + [(L.GET_STRING[0], 7)]
+    code_ranges = [(va, len(bytes.fromhex(new))) for va, _, new, _ in L.PATCHES] + [(L.GET_STRING[0], 7),
+                                                                                      (L.ENTER_KEY[0], 7)]
     overlapping = [hex(at) for at in relocations for va, length in code_ranges if va <= at + 3 and at < va + length]
     no_version = L.NO_VERSION[0]
     still = [hex(at) for at in relocations if no_version <= at + 3 and at < no_version + 12]
