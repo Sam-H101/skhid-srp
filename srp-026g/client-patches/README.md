@@ -1323,9 +1323,10 @@ names the archive, and why nothing else does: `../docs/notes/client_patch.md`
 section 0.2.
 
 Checked: `selftest_026g.py` check 27 (`test_archive_path`), and check 15's
-layout of `.srp`'s first page. **Not run: a game.** Every tool outside the
-exe (the updater, the play scripts, `make_client_026g.py`) still takes
-`resources.db` as the file the game reads.
+layout of `.srp`'s first page. **Not run: a game.** The updater builds `resources_skhid.db` and the play
+scripts check it before they start the game (`../../client/updater/README.md`,
+"The game's database"); `make_client_026g.py` puts the list of patches into
+every ZIP with the launcher, an empty one too, so the file is always made.
 
 ## Not ported, not done
 
