@@ -320,6 +320,68 @@ download from revision 11: `make_client_026g.py --resource-region=main_menu=<ent
 where the entry is the movie's 1 194 596 bytes at offset 17 970 448 of the
 built resources.db; the updater writes it into the player's db.
 
+## Lobby exchange, silver and gold both ways
+
+`exchange_026g.py` turns the lobby's gold-for-silver window into an exchange
+both ways. The gold box at the top of the lobby ("Get Gold", which asked to
+open the online store) opens it to buy gold; the silver box opens it to sell
+gold. The window has:
+
+- **Pay**: an amount, the coin and its name, the balance;
+- a **v^** button that swaps the two currencies (the old Receive amount
+  becomes the new Pay amount);
+- **Receive**, the same way;
+- the rate under them, Pay first: "100 Silver = 1 Gold" or "1 Gold = 100 Silver";
+- "Not enough silver" / "Not enough gold" in red, with the Exchange button
+  greyed out, when the Pay amount is more than the balance.
+
+Typing in either field updates the other. Silver goes by whole gold: a silver
+amount that is not a multiple of the rate is evened out when the field is
+left, and on Exchange. The texts are in all five game languages; the language
+is the one of the client's own "Cancel" (`st_cancel`; in German the game's
+file says "Abrechnen"). "Silver" is the game's own word, read live
+(`regular_money`, `st_regular_money`); "Gold" is the game's `st_premium_money_name`,
+copied, as the movie has no key for it; the rest are the window's own words,
+the game having none for them.
+
+It is the stock window (`MessageMoneyExchange`, symbol `SrvMessageExchangeSkinned`)
+with the stock pieces moved: its 9-slice background made 300 x 300, its buttons
+and title. The panels are drawn as the stock stepper's dark box, the coins are
+`CoinsIcon2`, the swap is a `SrvButtonScale` (the skin of EXCHANGE / CANCEL)
+with two arrows drawn on it. The texts take the font of the stock title
+(bold Calibri from the font library, embedded): the movie's own plain
+"Calibri" has two glyphs, and text in it shows as squares. Five methods
+change, in two ABC blocks: the window's constructor (builds the layout, so the
+size is final when `Message` centres it; the swap button is added in
+`configUI`, after that, or the window opens in the corner), `configUI` and
+`onMessageAccept`, and `StatusPanel.onPremiumMoneyAddClick` /
+`onRegulatMoneyAddClick`. The exe is not
+changed: the window calls the game's `exchange_premium_money`, which sends `47 04`
+with the u32 it is given. Gold for silver sends the gold, as the stock window
+did; silver for gold sends `0x40000000` + the gold (`SrpExchange.BUY_GOLD`),
+which the server reads as `BuyPremium` (`requests::BUY_PREMIUM`). So the server
+must be released first; an older server refuses such an amount as more gold
+than the account has.
+
+The input is a lobby region with the matches list (sha256 `8a98cf0d…`, live
+since 14 Oct, or `48c3439f…`, with the JOIN reasons and the match level; the
+exchange changes other classes than the list's), not the retail movie, either as a whole `resources.db` or as
+the entry file of `--resource-region=lobby_menu=<file>`. The output is of the
+same kind:
+
+```sh
+python exchange_026g.py <lobby_menu.swf entry> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+The checks are those of the login hint: the input's sha256, every other method
+and tag byte for byte, the entry's size and CRC kept. The build is
+deterministic. Tests: `python -m unittest test_exchange`.
+
+Checked in a local lobby under Wine (2026-10-15, against this branch's
+server): the window opens centred, shows both directions with their balances
+and rate, the swap button works, and gold bought with silver reaches the top
+bar. Not in release overlays yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each

@@ -578,6 +578,26 @@ pub fn exchange_premium(account: &mut Account, gold: u32) -> Result<u32, ActionE
     Ok(silver)
 }
 
+/// `47 04` from srp's exchange window: silver for gold, at the same rate.
+/// Returns the silver paid.
+pub fn buy_premium(account: &mut Account, gold: u32) -> Result<u32, ActionError> {
+    if gold == 0 {
+        return Err(ActionError::BadCount);
+    }
+    let silver = gold
+        .checked_mul(PREMIUM_EXCHANGE_RATE)
+        .ok_or(ActionError::BadCount)?;
+    if silver > account.generic_money {
+        return Err(ActionError::NotEnoughMoney);
+    }
+    account.premium_money = account
+        .premium_money
+        .checked_add(gold)
+        .ok_or(ActionError::BadCount)?;
+    account.generic_money -= silver;
+    Ok(silver)
+}
+
 /// `48 00`: the account's whole set of skills. The set must keep the
 /// tree's rules ([`SkillsTree::validate`]) and take no point back: the
 /// skills window only adds, a reset is `48 01`.
@@ -1639,6 +1659,31 @@ mod tests {
             Err(ActionError::BadCount)
         );
         assert_eq!(service_prices().premium_exchange_rate, 100);
+    }
+
+    #[test]
+    fn gold_is_bought_at_the_rate() {
+        let mut account = account();
+        account.generic_money = 1_000;
+        account.premium_money = 2;
+        assert_eq!(buy_premium(&mut account, 3), Ok(300));
+        assert_eq!(account.generic_money, 700);
+        assert_eq!(account.premium_money, 5);
+        assert_eq!(
+            buy_premium(&mut account, 8),
+            Err(ActionError::NotEnoughMoney)
+        );
+        assert_eq!(account.generic_money, 700);
+        assert_eq!(buy_premium(&mut account, 0), Err(ActionError::BadCount));
+        // More gold than silver could ever pay for, and a full gold balance.
+        assert_eq!(
+            buy_premium(&mut account, u32::MAX),
+            Err(ActionError::BadCount)
+        );
+        account.generic_money = u32::MAX;
+        account.premium_money = u32::MAX;
+        assert_eq!(buy_premium(&mut account, 1), Err(ActionError::BadCount));
+        assert_eq!(account.generic_money, u32::MAX);
     }
 
     #[test]

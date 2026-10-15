@@ -296,13 +296,11 @@ impl Core<'_> {
             M::Repair { item_id, payment } => self.repair(who, item_id, payment),
             M::ExchangePremium { amount } => {
                 let exchanged = rules::exchange_premium(&mut who.account.locked(), amount);
-                match exchanged {
-                    Ok(_) => {
-                        self.send_made(addr, lobby::permitted_shop_event(4));
-                        self.push_account(who);
-                    }
-                    Err(error) => self.deny(addr, id::SHOP, error.text_key()),
-                }
+                self.exchanged(who, exchanged);
+            }
+            M::BuyPremium { gold } => {
+                let bought = rules::buy_premium(&mut who.account.locked(), gold);
+                self.exchanged(who, bought);
             }
             // The premium shop (`shop`). `47 02` with a match id is the
             // results screen's "buy premium": the match's premium half is
@@ -456,6 +454,21 @@ impl Core<'_> {
         if changed {
             self.push_account(who);
             self.squads_dirty = true;
+        }
+    }
+
+    /// The answer to `47 04`, either way: `83 47 04`, then the account with
+    /// its new silver and gold; or the game's text for the refusal.
+    fn exchanged(&mut self, who: &Who, result: Result<u32, rules::ActionError>) {
+        match result {
+            Ok(_) => {
+                self.send_made(who.addr, lobby::permitted_shop_event(4));
+                self.push_account(who);
+            }
+            Err(error) => {
+                log::info!("{}: exchange refused: {error}", who.name);
+                self.deny(who.addr, id::SHOP, error.text_key());
+            }
         }
     }
 

@@ -49,6 +49,11 @@ pub mod id {
 /// The slot id that means "the inventory" in a move and a purchase.
 pub const INVENTORY_SLOT: u8 = 100;
 
+/// Added to the amount of `47 04` by srp's exchange window when it buys gold
+/// with silver (`SrpExchange.BUY_GOLD`). The stock window sends only gold
+/// for silver, and no account has this much gold.
+pub const BUY_PREMIUM: u32 = 0x4000_0000;
+
 /// One entry of `46 00`: `relocate_item_descr`, 16 bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Relocation {
@@ -273,8 +278,12 @@ pub enum ClientMessage {
         item_id: u32,
         payment: RepairPayment,
     },
-    /// `47 04`: LIKELY gold for silver.
+    /// `47 04`: gold for silver (the stock window).
     ExchangePremium { amount: u32 },
+    /// `47 04` with [`BUY_PREMIUM`] added: silver for so much gold. srp's
+    /// own: its exchange window (`client-patches/exchange`) sends it; the
+    /// stock client has no way to.
+    BuyPremium { gold: u32 },
     /// `47 05`.
     AcceptPremiumWithBonuses {
         a0: u32,
@@ -717,7 +726,12 @@ fn parse_shop(r: &mut Reader<'_>) -> Result<ClientMessage, ParseError> {
             };
             M::Repair { item_id, payment }
         }
-        0x04 => M::ExchangePremium { amount: r.u32()? },
+        0x04 => match r.u32()? {
+            amount if amount >= BUY_PREMIUM => M::BuyPremium {
+                gold: amount - BUY_PREMIUM,
+            },
+            amount => M::ExchangePremium { amount },
+        },
         0x05 => M::AcceptPremiumWithBonuses {
             a0: r.u32()?,
             a1: r.f32()?,
