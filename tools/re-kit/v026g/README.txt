@@ -1,41 +1,54 @@
 Survarium v0.26g executable labels
 
-Condensed game and engine function information for inspecting and patching
-v0.26g build 2777. Names come from comparison with the v0.21d EXE/PDB.
-Vendor-library entries are omitted.
+Game and engine function names for inspecting and patching v0.26g build 2777.
+Names come from comparison with the v0.21d EXE/PDB and from qualified names
+in the v0.26g executable's own diagnostics. Vendor-library entries are omitted.
 
-Files
-  functions.json       Qualified names mapped to lists of preferred VAs.
-  functions.info.json  VA/RVA, file offset, entry bytes, name provenance and caveats.
-  abi.json             Target register/stack inputs, local RET cleanup and notes.
-  identity.json        Exact executable/PDB hashes, image bases and PE sections.
-  lookup.py            Search names and display their addresses and ABI.
+Files (tab-separated, one header line; va is a preferred-image VA)
+  functions.tsv    va, status, ref_021d, name   Reviewed names.
+  inferred.tsv     va, status, ref_021d, name   Unreviewed names.
+  abi.tsv          va, name, source, ret_cleanup, result
+  abi_inputs.tsv   va, name, location, role, basis
+  identity.json    Exact executable/PDB hashes, image bases and PE sections.
+  lookup.py        Search by name or address; prints RVA, file offset and ABI.
+
+status
+  reviewed, verified  Checked by hand against the v0.21d body.
+  observed            A v0.26g diagnostic name, peer-reviewed against its body.
+  inferred-high, inferred-medium
+                      Translation-unit order and body likeness. Not reviewed
+                      and without ABI rows; check the code before patching.
+ref_021d is the matched v0.21d address; empty for observed names. An address
+with several names, or a name at several addresses, has several rows.
+
+ABI rows
+  source       manual (hand analysis, per name) or auto (machine scan, name
+               empty, applies to the whole body).
+  ret_cleanup  Bytes popped by RET; several values if RETs differ; empty if
+               not observed. A tail jump can move cleanup elsewhere.
+  result       Return location and meaning, when observed.
+  location     ECX, EAX, ...; "entry ESP+4" is the first stack slot above the
+               return address.
+  basis        observed (original data flow), inferred (from the matching
+               v0.21d algorithm) or auto.
+No row is a complete contract: clobbers, preservation and exceptions are not
+established. LTO changes calling conventions, so use these locations, not a
+source prototype. Body extents are not established either; a label is not a
+safe patch length.
 
 Usage (Python 3, from the repository root)
   python tools/re-kit/v026g/lookup.py stage_screen_image
   python tools/re-kit/v026g/lookup.py 'vostok::render::ui::renderer::draw_text' --exact
-  python tools/re-kit/v026g/lookup.py draw_triangles --runtime-base 0x400000
+  python tools/re-kit/v026g/lookup.py 0x00379930 --runtime-base 0x400000
+  python tools/re-kit/v026g/lookup.py draw_triangles --reviewed
 
-Supply --runtime-base only when the loaded module base is known. Preferred
-VAs use image base 0x10000; RVA = preferred VA - image base, and runtime VA =
-loaded base + RVA. Use file_offset for on-disk bytes. The lookup does not
-validate a running process or executable against identity.json.
+RVA = va - 0x10000; runtime address = loaded module base + RVA. Supply
+--runtime-base only when the loaded base is known. --reviewed leaves out
+inferred.tsv.
 
-Data conventions
-Names map to address lists because overloads and multiple bodies can share
-a PDB name. The information and ABI files are keyed by preferred VA. Several
-names can share one body; keep the qualified name when choosing an ABI entry.
-
-LTO changes calling conventions. Use the documented target input registers
-and entry-stack locations, not a source prototype. Multiple ABI contracts
-can provide complementary observations. complete_contract=false means some
-arguments, clobbers, results or other behavior remain unestablished. Automated
-observations identify incoming machine values without assigning semantic roles.
-An empty local RET list does not imply zero cleanup; a tail jump can transfer
-that responsibility to another function. Reviewed tail jumps are not exhaustive.
-Entry bytes and heuristic boundaries do not establish a safe patch length.
-Read per-function notes, unknowns and evidence_caveats before relying on a label.
-
-Detailed evidence, reviews, unresolved candidates, binaries and audit history
-are kept separately in private/function-map/. These condensed files can be
-queried without that archive. Reusable analysis tools live in ../common/.
+Adding labels
+New labels go in as rows. ../common/scripts/fold_inferred_labels.py adds a
+function-map export (inferred.json, target-*-inferred.json and
+target-observed.json) to these files. Evidence, reviews, low-confidence
+candidates and audit history stay in private/function-map/. Reusable analysis
+tools live in ../common/.
