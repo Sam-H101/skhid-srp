@@ -734,3 +734,71 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   protected nothing, and the updater already checks every byte it writes by
   sha256. The 413 bytes at `.srp`+C00h are int3 padding again; the
   shell_32.dll check stays at +E00h. Not run in a game.
+
+### 0.2 The archive's file name: the game opens resources_skhid.db (patch revision 14, README patch 27, 2026-10-15)
+
+The stock `resources.db` stays as shipped; the updater (a later change)
+makes `resources_skhid.db` next to it, the original with the server's content
+patches applied, and the game must open that one. Read in the exe [V]:
+
+- **The name is built in one place.** No string of the exe is
+  `resources.db` (none in ASCII or UTF-16, and none in the other exes and
+  DLLs of `binaries/x86` or the stock launcher). The start-up mount
+  (0x14B80; after the `-tests` folder and the user folder `user_data`, the
+  physical mount at 0x14DED) allocates a `mount_by_config_helper` (0x150
+  bytes, 0x14E82) and constructs it (0xE7D20, called at 0x14E8A): it copies
+  the mount callback 0x147E0 into the helper's first member (0x28F040) and
+  "resources" (0x9DB880, `mov ecx,9DB880h` at 0xE7D36) into its name at
+  +20h (260-byte buffer). 0xE7D90 then formats the archive's path with
+  `push 9E705Ch` ("../../%s.db") at 0xE7DAD and that name into a 260-byte
+  stack buffer (0x18190), and mounts it with the name as mount point
+  (`query_mount_archive` 0xE7EF0 → 0x105510, which copies the path, the
+  mount point and the helper as the callback). "../../%s.db" has no other
+  reference in the file (one HIGHLOW relocation, 0xE7DAE); "resources" has
+  others, all of them the log channel and option category "resources"
+  (0xF0D4B, 0xF0DC4, four option descriptors in .data), not a file.
+- **Not names, but they read the ".db"**: `windows_hdd_file_system::open`
+  (0x40000) keeps the handle of a file whose path ends in ".db" (0x9DE5A0,
+  tested at 0x4008C and 0x40160 with the ends-with 0x40590) and gives it
+  back for the next open of such a path. A new name must still end in
+  ".db". The other user of 0x40590 (0x119800) strips a suffix of its own
+  (0x9EBC90).
+- **The replay viewer** is the same exe and start (`-match_replay`); it
+  mounts the archive through the same path. `../../resources` (0x18BB0)
+  and `resources/tests` are development getters and the `-tests` mount; no
+  physical folder is mounted in the archive's place when it fails.
+- **The patch** (`ARCHIVE_PATH_SITE`, full builds with the late join, i.e.
+  revision 14): the imm32 of `push 9E705Ch` at 0xE7DAD (file 0xD71AE,
+  `5C 70 9E 00`) becomes 0xA425C00 (`00 5C 42 0A`), where `.srp`+C00h holds
+  `../../%s_skhid.db` and its zero (18 bytes, file 0xC4B600; revision 12's
+  signature code was there, int3 since revision 14). The game opens
+  `<game>\resources_skhid.db` and mounts it as "resources", as it did
+  `resources.db`; nothing of the exe names `resources.db` any more. The
+  relocation at 0xE7DAE stays active: the new value is an address of the
+  image too, and a rebased image moves both. The string is in `.srp`
+  (code, read and execute), which the game only reads here. "../../" is
+  relative to `binaries\x86`, as before: the file is in the folder of
+  `resources.db`.
+- **When `resources_skhid.db` is missing** (static, not run): the archive
+  mounter's open (0x42F50 → 0x42B10, open existing, read, no assertion on
+  failure: the third field of its request is 0) fails, the mount's state
+  (+44h) is 0, its run function (0x42F0F) drops the mount from the result
+  before `mounter::finish` (0x469F0) calls the callbacks, and 0x147E0 finds
+  no mount and calls the fatal error 0x113580 with "Cannot mount resources.
+  Please reinstall the application and try again." (0x9DB7A0), the same
+  routine that shows "Resources archive is corrupted" (0x432E1, seen live:
+  §0). So the game stops at start with that text and never reads
+  `resources.db` (the only path it knows is the new one). Patch 10's
+  `MOUNT_NO_ROOT` does not change this: the result has no mount at all.
+- **Checked** (`selftest_026g.py` check 27, `test_archive_path`): the push
+  in the original and in the build without the late join, and in this
+  one; the 18 bytes between int3; the name "resources" from the helper's
+  constructor, a path of 24 bytes in the 260-byte buffer, ending in ".db";
+  0x9E705C named by the push alone in the original and nowhere in the
+  build; the relocation active in both; no branch or address into the
+  push; check 15 places it between the seek code and the shell_32.dll
+  check without overlap. **Not run in a game.**
+- **Outside the exe**, every tool still takes `resources.db` as the file the
+  game reads (the updater's plans and its "close the game" check, the play
+  scripts' check of an unfinished update, `make_client_026g.py`'s regions
+  and grow head, the launcher's README): changing them is the next change.

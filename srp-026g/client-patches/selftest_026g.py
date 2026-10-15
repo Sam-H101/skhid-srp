@@ -146,6 +146,17 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     GetTempPathA and shell_32.dll and nothing else. Check 11 works out its
     field: byte 8 the check's. The build without the late join keeps the
     original instructions.
+27. the same build: the archive the game opens. mount_by_config_helper's
+    mount (0xE7D90) pushes the path's format at 0xE7DAD: `push 0x9e705c`
+    ("../../%s.db", named by nothing else) in the original and the build
+    without the late join, `push` .srp+C00h in this one, which holds
+    exactly "../../%s_skhid.db" and its zero between int3 (no overlap with
+    the seek code before it or the shell_32.dll check after it: check 15);
+    the helper's constructor gives "resources" as the name, so the game
+    opens ../../resources_skhid.db, which fits the 260-byte buffer and
+    still ends in ".db"; the build names 0x9E705C nowhere; the imm32's
+    relocation stays active in both; no branch or address aims inside the
+    push.
 """
 
 import ctypes
@@ -1689,6 +1700,56 @@ def test_db_signature(original, image, before):
           "no base relocation under the call, no branch or address aims inside it" + "".join(f"\n          {a:#x}" for a in found))
 
 
+# mount_by_config_helper's mount of the archive (0xE7D90..0xE7E75), which
+# formats the path; its constructor (0xE7D20..0xE7D81) names it.
+ARCHIVE_MOUNT = (0xE7D90, 0xE7E75)
+ARCHIVE_HELPER = (0xE7D20, 0xE7D81)
+
+
+def test_archive_path(original, image, before):
+    """Check 27: the archive the game opens is resources_skhid.db."""
+    va, old, new = P.ARCHIVE_PATH_SITE
+    stock = Image(original)
+    string = P.ARCHIVE_PATH_STRING_VA
+    # ndisasm spells a push of an imm32 `push dword 0x...`.
+    push = lambda blob: [text.replace("dword ", "") for _, _, text in ndisasm(blob.read(va, 5), va)]
+    cstring = lambda blob, at: bytes(blob.read(at, 64)).split(b"\0")[0]
+    check(push(stock) == [f"push {P.ARCHIVE_PATH_ORIGINAL:#x}"] and push(image) == [f"push {string:#x}"]
+          and image.read(va, len(new)) == new and before.read(va, len(old)) == old
+          and cstring(stock, P.ARCHIVE_PATH_ORIGINAL) == b"../../%s.db",
+          f"{va:#x}: the path's format is `push {string:#x}` where the original pushes "
+          f"{P.ARCHIVE_PATH_ORIGINAL:#x} (\"../../%s.db\"); the build without the late join keeps it")
+    check(image.read(string, len(P.ARCHIVE_PATH)) == P.ARCHIVE_PATH
+          and image.read(string - 1, 1) == b"\xCC" and image.read(string + len(P.ARCHIVE_PATH), 1) == b"\xCC",
+          f"{string:#x} (.srp+{P.ARCHIVE_PATH_OFFSET:#x}) holds exactly {P.ARCHIVE_PATH!r}, int3 on both sides")
+    # The %s: the helper's constructor copies "resources" into its name
+    # (+20h), which the mount formats with and mounts the archive as.
+    helper = [text for _, _, text in ndisasm(stock.read(ARCHIVE_HELPER[0], ARCHIVE_HELPER[1] - ARCHIVE_HELPER[0]),
+                                             ARCHIVE_HELPER[0])]
+    name = 0x9DB880
+    path = (P.ARCHIVE_PATH[:-1] % P.ARCHIVE_NAME.encode("ascii")).decode("ascii")
+    check(f"mov ecx,{name:#x}" in helper and "lea edi,[esi+0x20]" in helper
+          and cstring(stock, name) == P.ARCHIVE_NAME.encode("ascii")
+          and path == "../../resources_skhid.db" and len(path) < 0x104
+          and cstring(stock, 0x9DE5A0) == b".db" and path.endswith(".db"),
+          f"the name it is formatted with is {P.ARCHIVE_NAME!r} ({name:#x}): the game opens {path} "
+          "(in the 260-byte buffer), and the name still ends in \".db\", as windows_hdd_file_system::open "
+          "tests to keep the archive's handle")
+    # The one reference to "../../%s.db" in the original is this push; the
+    # build names it nowhere.
+    refs = lambda data: [m.start() for m in re.finditer(re.escape(struct.pack("<I", P.ARCHIVE_PATH_ORIGINAL)), bytes(data))]
+    check(refs(original) == [P.file_offset(va) + 1] and refs(image.data) == [],
+          f"the original names {P.ARCHIVE_PATH_ORIGINAL:#x} at {va + 1:#x} alone; the build names it nowhere")
+    relocations = lambda blob: [v for kind, v in blob.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    start, end = ARCHIVE_MOUNT
+    found = aimed_inside(original, va, len(old), 0)
+    found += [address for address, _, text in ndisasm(stock.read(start, end - start), start)
+              if (target := branch_target(text)) is not None and va < target < va + len(old)]
+    check(relocations(stock) == [va + 1] and relocations(image) == [va + 1] and not found,
+          f"the base relocation of the imm32 ({va + 1:#x}) stays active, an address for an address; no branch "
+          "or address aims inside the push" + "".join(f"\n          {a:#x}" for a in found))
+
+
 def test_stale_dll(original, image, before):
     r"""Check 26: the sign-in says whether %TEMP%\shell_32.dll exists."""
     va, old, new = P.STALE_DLL
@@ -1923,6 +1984,7 @@ def test_late_join(original, without, server, source):
     pieces = [(0, len(first_page), "the build without the late join's first page"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
+              (P.ARCHIVE_PATH_OFFSET, len(P.ARCHIVE_PATH), "the archive's name"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
@@ -1934,13 +1996,16 @@ def test_late_join(original, without, server, source):
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
-          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.ARCHIVE_PATH_OFFSET]) <= {0xCC}
+          and body[P.ARCHIVE_PATH_OFFSET:P.ARCHIVE_PATH_OFFSET + len(P.ARCHIVE_PATH)] == P.ARCHIVE_PATH
+          and set(body[P.ARCHIVE_PATH_OFFSET + len(P.ARCHIVE_PATH):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"pickup code at +{P.PICKUP_OFFSET:#x}, the seek code at +{P.SEEK_CLEAR_OFFSET:#x} and the "
+          f"pickup code at +{P.PICKUP_OFFSET:#x}, the seek code at +{P.SEEK_CLEAR_OFFSET:#x}, the archive's "
+          f"name at +{P.ARCHIVE_PATH_OFFSET:#x} and the "
           f"shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
@@ -1972,6 +2037,7 @@ def test_late_join(original, without, server, source):
     ranges.append((image.offset(P.REPLAY_REATTACH_SLOT[0]), 4))
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
                (P.file_offset(P.DB_SIGNATURE_VA), len(P.DB_SIGNATURE[1])), (P.file_offset(P.STALE_DLL_VA), len(P.STALE_DLL[1])),
+               (P.file_offset(P.ARCHIVE_PATH_VA) + 1, 4),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
@@ -2077,6 +2143,7 @@ def test_late_join(original, without, server, source):
     test_sound_queue(original, image, before)
     test_seek_clear(original, image, before)
     test_db_signature(original, image, before)
+    test_archive_path(original, image, before)
     test_stale_dll(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")

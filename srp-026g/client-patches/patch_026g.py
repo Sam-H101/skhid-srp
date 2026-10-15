@@ -169,6 +169,11 @@ Patches:
   at 0x135D3 becomes `xor eax,eax` and three nops, verify_sign_impl's
   "good signature", so a game starts with an archive of new files. (Revision
   12 checked it with Skhid's key instead; 14 drops that code);
+- the archive the game opens is resources_skhid.db (patch revision 14,
+  client_patch.md section 0.2): the push of the path's format "../../%s.db"
+  at 0xE7DAD names "../../%s_skhid.db" at 0xC00 of `.srp` instead, so the
+  game opens resources_skhid.db next to resources.db and never resources.db;
+  without it the game stops at start ("Cannot mount resources");
 - the sign-in reports a stale shell_32.dll in the temporary folder (patch
   revision 13, client_patch.md section 3.25): sign_in_on_connected's
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
@@ -312,8 +317,10 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # below), in byte 8 of the version field. Nothing a match computes: 12 and
 # 13 play together.
 # 14: the resources.db signature is not checked at all (DB_SIGNATURE below):
-# a retail archive and one with new files both start the game. Nothing a
-# match computes: 13 and 14 play together.
+# a retail archive and one with new files both start the game. And the
+# archive it opens is resources_skhid.db, which the updater makes from
+# resources.db (ARCHIVE_PATH_SITE below). Nothing a match computes: 13 and
+# 14 play together.
 REVISION = 14
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -435,14 +442,37 @@ CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
 DB_SIGNATURE_VA, DB_SIGNATURE_IMPL = 0x135D3, 0x12CB0
 DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"), bytes.fromhex("31c0909090"))
 
+# The archive's file name (patch 27, client_patch.md section 0.2). The game
+# names its archive in one place: the start-up mount (0x14E8A) makes a
+# mount_by_config_helper (0xE7D20) whose name is "resources" (0x9DB880, also
+# the archive's mount point), and 0xE7D90 formats the archive's path with
+# `push 9E705Ch` ("../../%s.db") at 0xE7DAD into a 260-byte buffer, then
+# mounts it (query_mount_archive 0xE7EF0). The push's imm32 becomes the
+# address of "../../%s_skhid.db" at ARCHIVE_PATH_OFFSET of `.srp`, where
+# revision 12's signature code was: the game opens
+# <game>\resources_skhid.db, mounted as "resources" as before, and never
+# resources.db. The name still ends in ".db", which
+# windows_hdd_file_system::open (0x40000) tests to keep the archive's handle.
+# The imm32's base relocation (0xE7DAE) stays active: the new value is an
+# address of the image too. A missing file fails the mount (no assertion: the
+# open asks for none), and the mount's callback 0x147E0 stops the game with
+# "Cannot mount resources. Please reinstall the application and try again."
+ARCHIVE_PATH_VA, ARCHIVE_PATH_ORIGINAL = 0xE7DAD, 0x9E705C
+ARCHIVE_PATH_OFFSET = 0xC00
+ARCHIVE_PATH_STRING_VA = SECTION_VA + ARCHIVE_PATH_OFFSET
+ARCHIVE_PATH = b"../../%s_skhid.db\0"
+ARCHIVE_NAME = "resources"                    # the %s, at 0x9DB880
+ARCHIVE_PATH_SITE = (ARCHIVE_PATH_VA, b"\x68" + struct.pack("<I", ARCHIVE_PATH_ORIGINAL),
+                     b"\x68" + struct.pack("<I", ARCHIVE_PATH_STRING_VA))
+
 # sign_in_on_connected 0x380800, where it finishes the 12-byte version field
 # (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
 # `mov [edi+0Ch],dl` (the EULA byte). Both become a call of
 # stale_dll_026g.asm and a nop; the code there does both after its check,
 # with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
-# of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET; 0xC00 to
-# 0xE00 held revision 12's signature code); build() checks that they do not
-# overlap. The two instructions hold no address: no base relocation is
+# of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET) and the
+# archive's name (ARCHIVE_PATH_OFFSET, 0xC00, where revision 12's signature
+# code was); build() checks that they do not overlap. The two instructions hold no address: no base relocation is
 # under them.
 STALE_DLL_VA = 0x380889
 STALE_DLL_OFFSET = 0xE00
@@ -1025,7 +1055,7 @@ def build(original, mode, code=None, server=None, late_join=None):
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
     REVISION_WITHOUT_LATE_JOIN; with it the game also checks no resources.db
-    signature, and its sign-in says whether %TEMP%\\shell_32.dll exists
+    signature, opens resources_skhid.db in its place, and its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
@@ -1174,14 +1204,18 @@ def build(original, mode, code=None, server=None, late_join=None):
         patch(data, *STALE_DLL)
         if neutralize_relocs(data, [(STALE_DLL_VA, STALE_DLL_VA + len(STALE_DLL[1]))]):
             sys.exit("a base relocation under the version field's last two writes")
-        if SEEK_CLEAR_OFFSET + len(seek_clear) > STALE_DLL_OFFSET \
+        patch(data, *ARCHIVE_PATH_SITE)
+        # Not neutralized: the relocation of this address must stay active.
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > ARCHIVE_PATH_OFFSET \
+                or ARCHIVE_PATH_OFFSET + len(ARCHIVE_PATH) > STALE_DLL_OFFSET \
                 or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
-            sys.exit("the seek code and the shell_32.dll check do not fit before the late join")
+            sys.exit("the seek code, the archive's name and the shell_32.dll check do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (ARCHIVE_PATH_OFFSET - len(cave)) + ARCHIVE_PATH
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
@@ -1208,6 +1242,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a weapon with a full sound queue drops the new sound, "
                      "a replay's seek empties the weapons' sound queues, "
                      "no resources.db signature check, "
+                     "the archive opened is resources_skhid.db, "
                      "the sign-in says whether %TEMP%\\shell_32.dll exists"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))

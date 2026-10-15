@@ -60,6 +60,14 @@ How names were found:
   also in the default build since patch revision 14, which skips the check
   of the `resources.db` file table with its key (client_patch.md §0.1).
   client_patch.md §0.
+- **The archive's path is built in one place**: `mount_by_config_helper`
+  formats `"../../%s.db"` (0x9E705C, pushed at 0xE7DAD, its only
+  reference) with the name "resources" and mounts it as "resources"; no
+  string of the exe is `resources.db`. A missing archive stops the game at
+  start with "Cannot mount resources. Please reinstall the application and
+  try again." (0x9DB7A0, from the mount callback 0x147E0; static, not run).
+  Since patch revision 14 the push names `"../../%s_skhid.db"` in `.srp`:
+  the game opens `resources_skhid.db`. client_patch.md §0.2.
 - The login server key is **`-server=host:port`** (key object 0xA9C550), not
   `-client=`. With no key and no replay key the game stops: "Game server
   hasn't been specified" (0x9FA990). There is no default address.
