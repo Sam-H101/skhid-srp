@@ -59,6 +59,7 @@ servers one port.
 | `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
 | `scripts/client-patch-026g/` | `patch_026g.py` (the client patch), `selftest_026g.py`, `make_client_026g.py` (the players' overlay) |
 | `scripts/gen-data-026g/` | How the embedded data was taken from the 0.26g `resources.db` |
+| `crates/resources-db` | Reads `resources.db` and its patches (`resources.db.patch_<n>`), lays them over one another as the game mounts them, and `srp-game-data` builds the server's game data from them: the `gameplay/` files and the project markers, with what it was made of (`resources.db`, each patch with its URL). Not read by `srp` yet. `crates/resources-db/README.md` |
 
 ## How a player gets into a match
 

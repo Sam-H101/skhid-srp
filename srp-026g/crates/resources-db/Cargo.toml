@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "resources-db"
+version.workspace = true
+edition.workspace = true
+description = "Reads the game's resources.db archive and its patches, lays them over one another as the game mounts them, and builds the server's game data from them"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# The sha256 of each archive, named in the server's game data.
+sha2 = { workspace = true }
+
+[lints]
+workspace = true
