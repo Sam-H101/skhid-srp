@@ -293,8 +293,9 @@ python check_fov_slider_026g.py /original/survarium.exe
 Both builds are needed: the stock exe has no `fov` variable, and the stock
 menu has no slider. Inputs are only read; an existing output is refused.
 
-The exe is the default full build of `patch_026g.py` (patch revision
-`REVISION`, with the late join) plus three changes:
+The exe is the default full build of `patch_026g.py` (patch revision 10
+now, with the late join; the FOV exe reports the same revision) plus three
+changes:
 - option 7 is bound to `uro_fov` (0x262931);
 - the camera projection 0x242900 computes `zoom × uro_fov × π / 180`
   instead of `zoom × 1.134464`. It takes the same arguments and calls the
