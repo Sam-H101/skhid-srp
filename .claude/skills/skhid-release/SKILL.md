@@ -153,10 +153,11 @@ local test with a real game. Nobody receives it; the live host never stores it.
    `release.json`, and the new `lobby_menu` target (stock size and CRC). Then
    the ZIP as above, with `--resource-grow=<out>/grow.json` and
    `--resource-region=lobby_menu=<out>/lobby_menu-region.bin`.
-3. **The server version**, `server-game-data.db`, built next to the ZIP from
-   stock + the ZIP's plan. srp loads it and refuses to start when it doesn't
-   match the plan of the ZIP it serves. Items need no server code; only
-   special rules do (e.g. a shop exception by item name in `prices.rs`).
+3. **The server version**, `server-game-data.db`, built by `make_client`
+   next to the ZIP from stock + the ZIP's plan (`srp-game-data extract`).
+   srp loads it and refuses to start when it doesn't match the plan of the ZIP
+   it serves. Items need no server code; only special rules do (e.g. a shop
+   exception by item name in `prices.rs`).
 4. **Test**: locally (the full db written, a real game, a local srp on the
    server version), then the test server (a ZIP built with
    `--server=$SKHID_TEST_GAME_SERVER`).
@@ -187,6 +188,18 @@ What keeps it safe (one supported version; never silently broken):
   cuts the tail and restores the head). Once players own a new item, removing
   it from the server is not a rollback (unknown item ids): fix forward.
 
+## The server version of every ZIP
+
+srp reads its game data from `download/server-game-data.db` and starts only
+when that file was made from the ZIP it serves, so **every ZIP has its server
+version, content or not** (`srp-game-data extract --db "$SKHID_STOCK_DB"
+--zip <ZIP> --blobs <its blobs> --out server-game-data.db`; `make_client`
+writes it with a grow manifest, and a ZIP of regions only needs the command).
+It is a release output like the ZIP: never committed. It goes up with the
+blobs, is archived with the ZIP, and its sha256 is recorded with the ZIP's.
+`srp-game-data check --data <file> --zip <ZIP>` says whether a pair matches.
+The test server serves its own ZIP, so it needs its own server version.
+
 ## Check before it goes out
 
 - The build is deterministic: the same inputs give the same ZIP. Diff it
@@ -215,14 +228,19 @@ What keeps it safe (one supported version; never silently broken):
 
 1. Show the owner the diff summary and get a yes.
 2. Blobs (if any) → `download/resources/`, mode 644; fetch each back over HTTPS.
-   For new content, the server version goes up now too.
-3. Archive the current ZIP:
+3. Archive the current pair:
    `cp download/Survarium-0.26g-srp-files.zip old-downloads/Survarium-0.26g-srp-files-<UTC YYYYMMDD-HHMM>-<label>.zip`
+   and `cp download/server-game-data.db old-downloads/server-game-data-<same stamp>-<label>.db`.
 4. Upload to `download/Survarium-0.26g-srp-files.zip.tmp`, check its sha256 on
    the host, `chmod 644`, then `mv` over the live name (atomic: the server
    never sees a half-written ZIP).
 5. `curl -s $SKHID_SITE/api/client-files` shows the new sha256 and size. Note
-   the UTC time.
+   the UTC time. When the release changes the ZIP's plan (regions, content),
+   srp must restart on the new server version: upload it as
+   `download/server-game-data.db.tmp`, check its sha256, and in the window
+   `mv` it over the live name right before `docker compose up -d` (the running
+   srp has already read its data; a restart with the old file and the new ZIP
+   would refuse to start).
 6. Server deploy, when part of the release: copy the changed `srp-026g` source
    into `$SKHID_LIVE_DIR` keeping `.env`, `download/`, `old-*`;
    `docker compose build srp26`; the maintenance window; with no match
@@ -230,7 +248,9 @@ What keeps it safe (one supported version; never silently broken):
    `docker compose ps`, `docker compose logs --tail=50 srp26`, `/api/stats`.
 7. Record it in a PR: `CHANGELOG-SKHID-026G.md` (players' wording, the UTC
    time of step 5, "update required" when gated) and the download's sha256 and
-   size where `client-patches/README.md` lists it.
+   size, with its server version's sha256, where `client-patches/README.md`
+   lists the downloads.
 
 Rollback: `mv` the archived ZIP back (the updater installs any ZIP whose
-checksum differs, older ones too).
+checksum differs, older ones too), and its archived server version with it
+before srp next restarts.
