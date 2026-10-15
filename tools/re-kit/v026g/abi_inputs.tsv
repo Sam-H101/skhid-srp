@@ -1,6 +1,11 @@
 va	name	location	role	basis
 0x00014650	vostok::render::one_way_render_channel::owner_initialize	ECX	channel receiver	observed
 0x00014710	vostok::render::one_way_render_channel::owner_finalize	ECX	channel receiver	observed
+0x000147e0	on_mounted_resources	entry ESP+4	mount_ptr holder (engine_world+2C0h)	observed
+0x000147e0	on_mounted_resources	entry ESP+8	second bound pointer (engine_world+2D4h)	observed
+0x000147e0	on_mounted_resources	entry ESP+12	pointer to the result mount_ptr	observed
+0x000148b0	on_mounted_user_data	entry ESP+4	mount_ptr holder	observed
+0x000148b0	on_mounted_user_data	entry ESP+8	pointer to the result mount_ptr	observed
 0x0001ef10	vostok::render::one_way_render_channel::one_way_render_channel	ESI	channel receiver	observed
 0x0001ef10	vostok::render::one_way_render_channel::one_way_render_channel	EAX	allocator pointer	observed
 0x0001f090	vostok::render::one_way_render_channel::~one_way_render_channel	ESI	channel receiver	observed
@@ -382,6 +387,65 @@ va	name	location	role	basis
 0x00040f00	vostok::fs_new::windows_hdd_file_system::find_close	stack+4	low handle word	observed
 0x000411e0	vostok::fs_new::physical_path_info_data::physical_path_info_data	ESI	path-info-data destination	observed
 0x000411e0	vostok::fs_new::physical_path_info_data::physical_path_info_data	EDI	path-info-data source	observed
+0x00042d30	vostok::vfs::archive_mounter::archive_mounter	EDI	archive_mounter storage	observed
+0x00042d30	vostok::vfs::archive_mounter::archive_mounter	EAX	forwarded to mounter::mounter 0x466F0	observed
+0x00042d30	vostok::vfs::archive_mounter::archive_mounter	ECX	forwarded to mounter::mounter 0x466F0	observed
+0x00043320	vostok::vfs::archive_mounter::mount_fat	ESI	archive_mounter	observed
+0x00043320	vostok::vfs::archive_mounter::mount_fat	entry ESP+4	archive mount root	observed
+0x00043320	vostok::vfs::archive_mounter::mount_fat	entry ESP+8	parent folder	observed
+0x00044760	vostok::vfs::query_mount_arguments::query_mount_arguments	EAX	arguments	observed
+0x00044bd0	vostok::vfs::query_mount_arguments::mount_archive	EDI	arguments to fill	observed
+0x00045140	vostok::vfs::vfs_hashset::find_no_branch_lock	EAX	constant 1 from the path overload	observed
+0x00045270	vostok::vfs::vfs_hashset::find_no_branch_lock	ESI	path text	observed
+0x000452e0	vostok::vfs::vfs_hashset::find_no_lock	EAX	path text	observed
+0x000452e0	vostok::vfs::vfs_hashset::find_no_lock	entry ESP+4	vfs_hashset	observed
+0x000452e0	vostok::vfs::vfs_hashset::find_no_lock	entry ESP+8	check locks flag	observed
+0x00045440	vostok::vfs::vfs_hashset::insert	EDI	path hash	observed
+0x00045440	vostok::vfs::vfs_hashset::insert	entry ESP+4	vfs_hashset	observed
+0x00045440	vostok::vfs::vfs_hashset::insert	entry ESP+8	node	observed
+0x00045440	vostok::vfs::vfs_hashset::insert	entry ESP+12	mount id (its address is the predicate)	observed
+0x00045490	vostok::vfs::vfs_hashset::erase	entry ESP+4	vfs_hashset	observed
+0x00045490	vostok::vfs::vfs_hashset::erase	entry ESP+8	path hash	observed
+0x00045490	vostok::vfs::vfs_hashset::erase	entry ESP+12	node	observed
+0x000454d0	vostok::vfs::vfs_hashset::replace	EDI	path hash	observed
+0x000454d0	vostok::vfs::vfs_hashset::replace	entry ESP+4	vfs_hashset	observed
+0x000454d0	vostok::vfs::vfs_hashset::replace	entry ESP+8	new node	observed
+0x000454d0	vostok::vfs::vfs_hashset::replace	entry ESP+12	replaced node	observed
+0x000454d0	vostok::vfs::vfs_hashset::replace	entry ESP+16	mount id (its address is the predicate)	observed
+0x00045530	vostok::vfs::vfs_hashset::skip_nodes_with_wrong_path	EAX	first node of the bucket chain	observed
+0x00045530	vostok::vfs::vfs_hashset::skip_nodes_with_wrong_path	entry ESP+4	path text	observed
+0x000455f0	vostok::vfs::vfs_hashset::equal_range	ESI	path text	observed
+0x00045660	vostok::vfs::vfs_hashset::equal_range	entry ESP+4	vfs_hashset	observed
+0x00045660	vostok::vfs::vfs_hashset::equal_range	entry ESP+8	output pair	observed
+0x00045660	vostok::vfs::vfs_hashset::equal_range	entry ESP+12	path text	observed
+0x00045660	vostok::vfs::vfs_hashset::equal_range	entry ESP+16	path hash	observed
+0x00045660	vostok::vfs::vfs_hashset::equal_range	entry ESP+20	lock type	observed
+0x000457f0	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::erase	EAX	hash	observed
+0x000457f0	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::erase	ESI	multiset	observed
+0x000457f0	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::erase	EDX	node to unlink	observed
+0x000458c0	vostok::vfs::mount_id_of_node<1>	EAX	node	observed
+0x00045900	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>	EAX	hash	observed
+0x00045900	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>	entry ESP+4	multiset	observed
+0x00045900	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>	entry ESP+8	node to insert	observed
+0x00045900	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>	entry ESP+12	pointer to the predicate (u32 mount id at +0)	observed
+0x00047840	vostok::vfs::mounter::find_parent_to_link	entry ESP+12	candidate for link	observed
+0x00047840	vostok::vfs::mounter::find_parent_to_link	entry ESP+16	parent folder	observed
+0x00047af0	vostok::vfs::mounter::find_overlapped_and_parent_to_link	ECX	node being merged	observed
+0x00047af0	vostok::vfs::mounter::find_overlapped_and_parent_to_link	EAX	path hash	observed
+0x00047d00	vostok::vfs::mounter::find_topmost_overlapper	ECX	path string (c_str at +0)	observed
+0x00047d00	vostok::vfs::mounter::find_topmost_overlapper	EAX	path hash	observed
+0x00047d00	vostok::vfs::mounter::find_topmost_overlapper	entry ESP+4	mounter	observed
+0x00047d00	vostok::vfs::mounter::find_topmost_overlapper	entry ESP+8	node	observed
+0x00047db0	vostok::vfs::mounter::merge_node_with_tree	EAX	parent folder	observed
+0x00047db0	vostok::vfs::mounter::merge_node_with_tree	entry ESP+4	mounter	observed
+0x00047db0	vostok::vfs::mounter::merge_node_with_tree	entry ESP+8	node	observed
+0x0004aa80	vostok::vfs::transfer_children::find_first_and_last_overlapper	ECX	path string (c_str at +0)	observed
+0x0004aa80	vostok::vfs::transfer_children::find_first_and_last_overlapper	EAX	path hash	observed
+0x0004aa80	vostok::vfs::transfer_children::find_first_and_last_overlapper	entry ESP+4	transfer_children	observed
+0x0004aa80	vostok::vfs::transfer_children::find_first_and_last_overlapper	entry ESP+16	child	observed
+0x0004ad50	vostok::vfs::transfer_children::transfer_children	ECX	transfer_children	observed
+0x0004ad50	vostok::vfs::transfer_children::transfer_children	entry ESP+4	vfs_hashset (stored at +0)	observed
+0x0004fbd0	vostok::vfs::physical_path_mounter::mount_root	entry ESP+4	physical_path_mounter	observed
 0x0005afe0	vostok::sound::sound_instance_proxy_internal::stop	ECX	sound_instance_proxy_internal receiver	inferred
 0x000621b0	vostok::render::animated_model_instance_cook::delete_resource	entry ESP+4	resource value; immediately dereferenced	observed
 0x00067089		entry ESP+4		auto
@@ -493,6 +557,15 @@ va	name	location	role	basis
 0x000e5160	vostok::memory::doug_lea_allocator::call_free	entry ESP+4	allocation pointer	observed
 0x000e51a0	vostok::memory::doug_lea_allocator::total_size	ECX	allocator owner	observed
 0x000e5270	vostok::memory::doug_lea_allocator::allocated_size	ECX	allocator owner	observed
+0x000e7d20	vostok::resources::mount_by_config_helper::mount_by_config_helper	EAX	helper storage	observed
+0x000e7d20	vostok::resources::mount_by_config_helper::mount_by_config_helper	ECX	callback to copy (boost::function; copied by 0x28F040)	observed
+0x000e7d90	vostok::resources::mount_by_config_helper::query_db	EDI	helper	observed
+0x000e7e80	vostok::resources::query_mount_physical	ESI	allocator	observed
+0x000e7e80	vostok::resources::query_mount_physical	entry ESP+4	virtual path	observed
+0x000e7e80	vostok::resources::query_mount_physical	entry ESP+8	physical path	observed
+0x000e7e80	vostok::resources::query_mount_physical	entry ESP+12	descriptor	observed
+0x000e7e80	vostok::resources::query_mount_physical	entry ESP+16	flag argument	observed
+0x000e7e80	vostok::resources::query_mount_physical	entry ESP+20	callback	observed
 0x000eb600	vostok::memory::doug_lea_allocator::usable_size_impl	entry ESP+4	allocation pointer	observed
 0x000f1850	vostok::resources::unmanaged_resource::~unmanaged_resource	ECX	unmanaged_resource receiver	inferred
 0x000f6df0	vostok::memory::writer_base::`scalar deleting destructor'	ECX	writer_base owner	observed
@@ -508,6 +581,7 @@ va	name	location	role	basis
 0x000f6f70	vostok::memory::writer::write	entry ESP+8	byte count	observed
 0x000f70e0	vostok::memory::writer::seek	ECX	writer owner	observed
 0x000f70e0	vostok::memory::writer::seek	entry ESP+4	new position	observed
+0x000f8480	vostok::resources::resources_manager::add_fs_task	EAX	fs task	observed
 0x000fef60	vostok::render::renderer_cook::destroy_resource	entry ESP+4	resource pointer	observed
 0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	ECX	network-world receiver	observed
 0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	entry ESP+4..+35	32-byte by-value callback aggregate	observed

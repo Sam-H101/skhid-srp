@@ -1,6 +1,8 @@
 va	status	ref_021d	name
 0x00014650	reviewed	0x00013315	vostok::render::one_way_render_channel::owner_initialize
 0x00014710	reviewed	0x000133ca	vostok::render::one_way_render_channel::owner_finalize
+0x000147e0	reviewed	0x00013457	on_mounted_resources
+0x000148b0	reviewed	0x000134bd	on_mounted_user_data
 0x0001ef10	reviewed	0x00019675	vostok::render::one_way_render_channel::one_way_render_channel
 0x0001f090	reviewed	0x000197ce	vostok::render::one_way_render_channel::~one_way_render_channel
 0x0001f2c0	reviewed	0x000199ef	vostok::render::one_way_render_channel::owner_push_back
@@ -124,6 +126,30 @@ va	status	ref_021d	name
 0x00040eb0	reviewed	0x0002ff71	vostok::fs_new::windows_hdd_file_system::find_next
 0x00040f00	reviewed	0x0002ffb2	vostok::fs_new::windows_hdd_file_system::find_close
 0x000411e0	reviewed	0x00030153	vostok::fs_new::physical_path_info_data::physical_path_info_data
+0x00042d30	reviewed	0x000379fa	vostok::vfs::archive_mounter::archive_mounter
+0x00043320	reviewed	0x00037db4	vostok::vfs::archive_mounter::mount_fat
+0x00044760	reviewed	0x000315a8	vostok::vfs::query_mount_arguments::query_mount_arguments
+0x00044bd0	reviewed	0x0003180a	vostok::vfs::query_mount_arguments::mount_archive
+0x00045140	reviewed	0x00031b28	vostok::vfs::vfs_hashset::find_no_branch_lock
+0x00045270	reviewed	0x00031bc3	vostok::vfs::vfs_hashset::find_no_branch_lock
+0x000452e0	reviewed	0x00031c0f	vostok::vfs::vfs_hashset::find_no_lock
+0x00045440	reviewed	0x00031cd6	vostok::vfs::vfs_hashset::insert
+0x00045490	reviewed	0x00031d19	vostok::vfs::vfs_hashset::erase
+0x000454d0	reviewed	0x00031d50	vostok::vfs::vfs_hashset::replace
+0x00045530	reviewed	0x00031d9c	vostok::vfs::vfs_hashset::skip_nodes_with_wrong_path
+0x000455f0	reviewed	0x00031e00	vostok::vfs::vfs_hashset::equal_range
+0x00045660	reviewed	0x00031e4d	vostok::vfs::vfs_hashset::equal_range
+0x000457f0	reviewed	0x00031f81	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::erase
+0x000458c0	reviewed	0x0003201e	vostok::vfs::mount_id_of_node<1>
+0x00045900	reviewed	0x00032047	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>
+0x00047840	reviewed	0x00039da3	vostok::vfs::mounter::find_parent_to_link
+0x00047af0	reviewed	0x00039f3a	vostok::vfs::mounter::find_overlapped_and_parent_to_link
+0x00047d00	reviewed	0x0003a087	vostok::vfs::mounter::find_topmost_overlapper
+0x00047db0	reviewed	0x0003a127	vostok::vfs::mounter::merge_node_with_tree
+0x0004aa80	reviewed	0x000335dc	vostok::vfs::transfer_children::find_first_and_last_overlapper
+0x0004abc0	reviewed	0x000336a7	vostok::vfs::transfer_children::transfer_child
+0x0004ad50	reviewed	0x00033799	vostok::vfs::transfer_children::transfer_children
+0x0004fbd0	reviewed	0x000370d8	vostok::vfs::physical_path_mounter::mount_root
 0x0005afe0	reviewed	0x00041479	vostok::sound::sound_instance_proxy_internal::stop
 0x000621b0	reviewed	0x000e7398	vostok::render::animated_model_instance_cook::delete_resource
 0x00067089	verified	0x000499ac	vorbis_synthesis_restart
@@ -160,6 +186,9 @@ va	status	ref_021d	name
 0x000e5160	reviewed	0x000b09a3	vostok::memory::doug_lea_allocator::call_free
 0x000e51a0	reviewed	0x000b09b3	vostok::memory::doug_lea_allocator::total_size
 0x000e5270	reviewed	0x000b0a10	vostok::memory::doug_lea_allocator::allocated_size
+0x000e7d20	reviewed	0x000b2c8f	vostok::resources::mount_by_config_helper::mount_by_config_helper
+0x000e7d90	reviewed	0x000b2ce8	vostok::resources::mount_by_config_helper::query_db
+0x000e7e80	reviewed	0x000b2e0b	vostok::resources::query_mount_physical
 0x000eb600	reviewed	0x000b5394	vostok::memory::doug_lea_allocator::usable_size_impl
 0x000f1850	reviewed	0x000baae3	vostok::resources::unmanaged_resource::~unmanaged_resource
 0x000f6df0	reviewed	0x000be768	vostok::memory::writer_base::`scalar deleting destructor'
@@ -169,6 +198,7 @@ va	status	ref_021d	name
 0x000f6f00	reviewed	0x000be86a	vostok::memory::writer::~writer
 0x000f6f70	reviewed	0x000be8ac	vostok::memory::writer::write
 0x000f70e0	reviewed	0x000be9b4	vostok::memory::writer::seek
+0x000f8480	reviewed	0x000bf5af	vostok::resources::resources_manager::add_fs_task
 0x000fef60	reviewed	0x000cc531	vostok::render::renderer_cook::destroy_resource
 0x001104b0	reviewed	0x000d01b6	vostok::network::network_world::set_on_dispatch_callbacks
 0x00110620	reviewed	0x000d02c0	vostok::network::network_world::network_world
