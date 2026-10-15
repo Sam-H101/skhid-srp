@@ -338,6 +338,23 @@ them. `notes/match.md` §28 has the evidence and the choices,
   - Revision 9 keeps all twenty places in that count (six bytes). It plays
     with 7 and 8; a server need not ask for it. Not run in a game yet.
 
+## 0.26g, added 2026-10-15: a Team Deathmatch that does not end when a team is out
+
+- **Done 2026-10-15, in the code (patch revision 11), not in a download: a
+  Team Deathmatch ran to the time limit though a team had no tickets and no
+  player alive.** Seen on the players' server in two matches of twenty
+  places (0x1f07c8fb, 0x7ce977cb): one dead player of the team that was out
+  stayed in the rule's alive mask, so the server's end test (`tdm_finished`)
+  never held. The rule's death handler skips every death once its completion
+  time is set, and a rollback does not take the time back (the same as the
+  tenth battery, `notes/match.md` section 26); revision 11 counts them
+  (six bytes, `notes/client_patch.md` section 3.21, `notes/match.md` section
+  28). Does not play with 10 or before: a server asks for 11 with the ZIP.
+  Run outside the game for the handler (`client-patches/run_tdm_rule.ps1`),
+  not in a game. Open: a server that reads a team as out from its blocks
+  would end such a match for every revision (`notes/match.md` section 28,
+  option 1, not built).
+
 ## 0.26g, added 2026-10-14: the team points during the countdown
 
 - **Done 2026-10-14, in the same revision 9, not in a download: the team
