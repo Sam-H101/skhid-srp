@@ -156,7 +156,12 @@ survarium_skhid.exe -localization=english -server=<host>:<login port> -mt_alloca
 ```
 
 Or let `make_client_026g.py` do all of it, without touching the game folder.
-First build the crash reporter with `../../client/bugtrap/build.sh`, then:
+`bugtrap.dll` and `updater_skhid.exe` build reproducibly: the same commit and
+toolchain give the same files in any folder, so a release builds them afresh
+instead of copying the last download's (`../../client/check-reproducible.sh`
+checks it; the downloads listed above were made with `--bugtrap=` naming a
+kept DLL). First build the crash reporter with `../../client/bugtrap/build.sh`,
+then:
 
 ```
 python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--localization=ukrainian] [--check]
