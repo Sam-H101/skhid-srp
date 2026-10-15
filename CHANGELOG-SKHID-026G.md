@@ -9,10 +9,22 @@ release that made it what it is now.
 
 ---
 
+## 15 Oct, 20:02 — Fewer and shorter desyncs, outdated games stopped at sign-in
+
+- **An outdated game is stopped at sign-in** with the game's own "You're
+  using an outdated version of the game." message, before it reaches the
+  lobby. Start `Skhid.bat`: the launcher updates the game. Games older than
+  update 11 are refused.
+- **Fewer desyncs:** a player who comes back into a match they left no longer
+  goes out of step right after, and a game whose fix did not take is put back
+  again at once more reliably.
+- **Shorter desyncs:** a player who goes out of step again a little while
+  after a fix that worked is put back in about 5 seconds instead of up to 15.
+
 ## 15 Oct, 15:39 — Game update 11: FOV setting, exchange both ways, Team Deathmatch end, batteries under the floor (update required)
 
 Start `Skhid.bat` and the launcher updates the game by itself. An older game
-can no longer play: Play tells you to update.
+can no longer play.
 
 - **Field of view:** a new "FOV:" slider under gamma in Settings → Graphics,
   from 50 to 100 (the game's view was fixed at 65). Iron sights stay close to
@@ -43,7 +55,7 @@ can no longer play: Play tells you to update.
 ## 14 Oct, 21:26 — Fewer desyncs (update required)
 
 Start `Skhid.bat` and the launcher updates the game by itself. An older game
-can no longer play: Play tells you to update.
+can no longer play.
 
 - **Back in step faster.** A player who went out of step is put back in one
   go; before, the game often fell out of step again right away, over and over
@@ -117,10 +129,6 @@ kept and can be put back).
   odd number of players the stronger players make the side with one fewer.
   A match with fewer than 4 players moves nobody's hidden rating (such a match
   says little about how teams should be made).
-- **Outdated games are refused at Play** with the game's own "outdated version"
-  message and a chat line saying what to do: close the game and start
-  `Skhid.bat`, which updates it. From this release games older than update 7
-  are refused.
 
 ## 14 Oct, 00:44 — Game update 6: three faults when someone joins a match
 
