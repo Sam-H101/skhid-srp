@@ -877,6 +877,32 @@ fn the_match_profile_carries_the_skills_modifiers() {
     );
 }
 
+/// A kit against the covered-slots rule (one saved before it: the Duty
+/// exoskeleton over a mask) is never loaded in a match: what the match gets
+/// is what the lobby's rule lets be worn.
+#[test]
+fn a_kit_with_a_covered_slot_filled_is_not_loaded_in_a_match() {
+    let mut account = Account::new("Alice");
+    let suit = account.add_item(1805, 100);
+    let mask = account.add_item(1810, 100);
+    let slot = |item_id| Some(session::v026g::KitSlot { item_id, count: 1 });
+    account.kits[0].slots[3] = slot(suit);
+    assert_eq!(
+        crate::v026g::match_profile(&account, 0, 0, 1_000).kits[0].state,
+        0
+    );
+    account.kits[0].slots[1] = slot(mask);
+    assert_eq!(
+        crate::v026g::match_profile(&account, 0, 0, 1_000).kits[0].state,
+        2
+    );
+    account.uncover_kits();
+    assert_eq!(
+        crate::v026g::match_profile(&account, 0, 0, 1_000).kits[0].state,
+        0
+    );
+}
+
 /// A spawn with a kit that has no weapon ends every game of the match
 /// (`match_profile`): such a kit is never loaded in one, whoever may use
 /// it in the lobby.

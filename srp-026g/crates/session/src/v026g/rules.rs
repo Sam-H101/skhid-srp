@@ -20,7 +20,7 @@
 //! goes with which weapon. The client's lobby checks both before it sends.
 
 use survarium::v026g::dictionary::Dictionary;
-use survarium::v026g::item_params::{item_params, shop_unit};
+use survarium::v026g::item_params::{covered_slots, item_params, shop_unit};
 use survarium::v026g::lobby::requests::{INVENTORY_SLOT, Relocation, RepairPayment};
 use survarium::v026g::lobby::{
     Bought, CONDITION_UNIT, FULL_CONDITION, Repaired, ServicePrices, limits,
@@ -100,6 +100,8 @@ pub enum ActionError {
     NoWeapon,
     /// A weapon of the kit has no ammo in its slots.
     NoAmmo,
+    /// An item of the kit is worn in a slot another worn item covers.
+    CoveredSlot,
 }
 
 impl ActionError {
@@ -111,7 +113,8 @@ impl ActionError {
             | Self::KitNeedsPremium
             | Self::NoSuchItem
             | Self::NotInSlot
-            | Self::WrongSlot => "st_cannot_relocate_item",
+            | Self::WrongSlot
+            | Self::CoveredSlot => "st_cannot_relocate_item",
             Self::NotSold | Self::SellerLevel { .. } | Self::BadCount | Self::BadFaction => {
                 "st_cannot_buy_item"
             }
@@ -217,6 +220,27 @@ fn relocate(
     kit_index: usize,
     moves: &[Relocation],
 ) -> Result<(), ActionError> {
+    relocate_covering(account, dictionary, kit_index, moves, &covered_slots)
+}
+
+/// [`relocate`] with the slots each item covers when worn given
+/// ([`covered_slots`]).
+///
+/// An item that covers other slots (a whole suit worn in the back slot,
+/// whose `data.additional_model_slots` are the helmet, mask, torso, legs,
+/// gloves and boots) is worn alone in them: putting it on takes whatever is
+/// in them off, to the inventory, and putting anything into one of them
+/// takes the suit off. The client's paperdoll locks those cells while the
+/// suit is worn (`InventoryItem`), so it does not ask otherwise. A slot so
+/// emptied counts as taken by this request: a later move of the same
+/// request may name it as the source of the item it held.
+fn relocate_covering(
+    account: &mut Account,
+    dictionary: &Dictionary,
+    kit_index: usize,
+    moves: &[Relocation],
+    covered: &dyn Fn(u16) -> &'static [u8],
+) -> Result<(), ActionError> {
     let mut slots = account.kits[kit_index].slots;
     // The item this request took out of each slot.
     let mut taken = [None; KIT_SLOTS];
@@ -265,6 +289,27 @@ fn relocate(
                 item_id: owned.item_id,
                 count,
             });
+            for &slot in covered(owned.dict_id) {
+                let slot = usize::from(slot);
+                if slot != target
+                    && let Some(held) = slots.get_mut(slot).and_then(Option::take)
+                {
+                    taken[slot] = Some(held.item_id);
+                }
+            }
+            for other in 0..KIT_SLOTS {
+                let Some(held) = slots[other].filter(|_| other != target) else {
+                    continue;
+                };
+                let worn = account
+                    .inventory
+                    .iter()
+                    .find(|item| item.item_id == held.item_id);
+                if worn.is_some_and(|item| covered(item.dict_id).contains(&(target as u8))) {
+                    slots[other] = None;
+                    taken[other] = Some(held.item_id);
+                }
+            }
         }
     }
     let kit = &mut account.kits[kit_index];
@@ -720,7 +765,8 @@ const WEAPON_SLOTS: [usize; 2] = [7, 10];
 const AMMO_SLOTS: [usize; 8] = [8, 9, 11, 12, 19, 20, 21, 22];
 
 /// `2F`: whether the account may enter a battle with a kit: the kit must be
-/// its own and usable, hold a weapon, and each weapon must have its
+/// its own and usable, wear nothing in a slot another worn item covers
+/// ([`Account::covered_items`]), hold a weapon, and each weapon must have its
 /// category's `minimum_count` of rounds that fit it, in the kit and owned.
 /// This is the client's own check before Play (0x2F7DA0, PROVEN; corrected
 /// 2026-10-12 after the first live session, where the server asked for a
@@ -736,6 +782,11 @@ pub fn check_play(account: &Account, kit_id: u32, now: u64) -> Result<(), Action
         return Err(ActionError::KitNeedsPremium);
     }
     let kit = &account.kits[index];
+    // Never a kit the lobby's rule would not have let be: the match gets
+    // it as not loaded (`match_profile`).
+    if !account.covered_items(kit).is_empty() {
+        return Err(ActionError::CoveredSlot);
+    }
     let dictionary = Dictionary::shared();
     let mut weapons = 0;
     for weapon_slot in WEAPON_SLOTS {
@@ -794,7 +845,7 @@ const _: () = assert!(limits::KITS * limits::KIT_SLOTS == limits::ACCOUNT_ITEMS)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v026g::account::{Item, PREMIUM_KIT_INDEX};
+    use crate::v026g::account::{Item, Kit, PREMIUM_KIT_INDEX};
     use survarium::v026g::loadouts;
 
     const NOW: u64 = 1_000;
@@ -878,6 +929,305 @@ mod tests {
         for error in errors {
             assert!(known.contains(&error.text_key()), "{error}");
         }
+    }
+
+    /// Any back item standing in for a whole suit (as the Duty exoskeleton:
+    /// back slot, covering the other six armour slots).
+    fn suit_covers(suit: u16) -> impl Fn(u16) -> &'static [u8] {
+        move |dict_id| {
+            if dict_id == suit {
+                &[0, 1, 2, 4, 5, 6]
+            } else {
+                &[]
+            }
+        }
+    }
+
+    /// An owned item of the stock that fits `slot`, other than `but`.
+    fn owned_for(account: &mut Account, slot: u8, but: u16) -> Item {
+        let dictionary = Dictionary::shared();
+        let dict_id = dictionary
+            .items
+            .iter()
+            .find(|item| {
+                !item.is_stack && item.dict_id != but && dictionary.fits(item.dict_id, slot)
+            })
+            .unwrap()
+            .dict_id;
+        let item_id = account.add_item(dict_id, 100);
+        account.item(item_id).unwrap().clone()
+    }
+
+    fn put_on(account: &mut Account, covers: &dyn Fn(u16) -> &'static [u8], moves: &[Relocation]) {
+        relocate_covering(account, Dictionary::shared(), 0, moves, covers).unwrap();
+    }
+
+    #[test]
+    fn a_suit_is_worn_alone_in_the_slots_it_covers() {
+        let mut account = account();
+        let suit = owned_for(&mut account, 3, 0);
+        let covers = suit_covers(suit.dict_id);
+        let helmet = owned_for(&mut account, 0, suit.dict_id);
+        let torso = owned_for(&mut account, 2, suit.dict_id);
+        put_on(
+            &mut account,
+            &covers,
+            &[
+                relocation(&helmet, INVENTORY_SLOT, 0, 1),
+                relocation(&torso, INVENTORY_SLOT, 2, 1),
+            ],
+        );
+        let pistol = account.kits[0].slots[7];
+        assert!(pistol.is_some());
+        // On: the helmet and the torso go to the inventory, still owned.
+        put_on(
+            &mut account,
+            &covers,
+            &[relocation(&suit, INVENTORY_SLOT, 3, 1)],
+        );
+        let slots = account.kits[0].slots;
+        assert_eq!(slots[3].map(|held| held.item_id), Some(suit.item_id));
+        for covered in [0, 1, 2, 4, 5, 6] {
+            assert!(slots[covered].is_none(), "slot {covered}");
+        }
+        assert_eq!(slots[7], pistol);
+        assert!(account.item(helmet.item_id).is_some() && account.item(torso.item_id).is_some());
+        // Its weight counts once.
+        let pistol_weight =
+            account.kit_weight(&account.kits[0]) - item_params(suit.dict_id).unwrap().weight;
+        assert!(
+            (0.0..2.0).contains(&pistol_weight),
+            "{pistol_weight}"
+        );
+        // A weapon slot is not covered.
+        let pistol_item = account.item(pistol.unwrap().item_id).unwrap().clone();
+        put_on(&mut account, &covers, &[relocation(&pistol_item, 7, 10, 1)]);
+        assert_eq!(
+            account.kits[0].slots[3].map(|held| held.item_id),
+            Some(suit.item_id)
+        );
+        // Anything worn in a covered slot takes the suit off.
+        put_on(
+            &mut account,
+            &covers,
+            &[relocation(&helmet, INVENTORY_SLOT, 0, 1)],
+        );
+        let slots = account.kits[0].slots;
+        assert!(slots[3].is_none());
+        assert_eq!(slots[0].map(|held| held.item_id), Some(helmet.item_id));
+        // An ordinary back item is worn beside the rest.
+        let back = owned_for(&mut account, 3, suit.dict_id);
+        put_on(
+            &mut account,
+            &covers,
+            &[relocation(&back, INVENTORY_SLOT, 3, 1)],
+        );
+        assert_eq!(
+            account.kits[0].slots[0].map(|held| held.item_id),
+            Some(helmet.item_id)
+        );
+    }
+
+    #[test]
+    fn a_suit_request_may_also_name_the_slots_it_emptied() {
+        let mut account = account();
+        let suit = owned_for(&mut account, 3, 0);
+        let covers = suit_covers(suit.dict_id);
+        let helmet = owned_for(&mut account, 0, suit.dict_id);
+        put_on(
+            &mut account,
+            &covers,
+            &[relocation(&helmet, INVENTORY_SLOT, 0, 1)],
+        );
+        // The client may send the covered items' moves after the suit's.
+        put_on(
+            &mut account,
+            &covers,
+            &[
+                relocation(&suit, INVENTORY_SLOT, 3, 1),
+                relocation(&helmet, 0, INVENTORY_SLOT, 1),
+            ],
+        );
+        assert!(account.kits[0].slots[0].is_none());
+        assert_eq!(
+            account.kits[0].slots[3].map(|held| held.item_id),
+            Some(suit.item_id)
+        );
+    }
+
+    #[test]
+    fn the_slots_an_item_covers_are_its_configs() {
+        // 0.26g's four helmets with a built-in mask cover the mask's slot,
+        // and the Duty exoskeleton the six armour slots but its own.
+        let dictionary = Dictionary::shared();
+        let covering: Vec<(&str, &[u8])> = dictionary
+            .items
+            .iter()
+            .filter(|item| !covered_slots(item.dict_id).is_empty())
+            .map(|item| (item.name.as_str(), covered_slots(item.dict_id)))
+            .collect();
+        assert_eq!(covering.len(), 5, "{covering:?}");
+        for (name, slots) in covering {
+            let expected: &[u8] = if name == "duty_exo_back" {
+                &[0, 1, 2, 4, 5, 6]
+            } else {
+                &[1]
+            };
+            assert_eq!(slots, expected, "{name}");
+        }
+    }
+
+    /// The Duty exoskeleton of the release, owned.
+    fn owned_exo(account: &mut Account) -> Item {
+        let item_id = account.add_item(1805, 100);
+        account.item(item_id).unwrap().clone()
+    }
+
+    const EXO_COVERS: [u8; 6] = [0, 1, 2, 4, 5, 6];
+
+    #[test]
+    fn the_duty_exoskeleton_empties_every_slot_it_covers_and_weighs_once() {
+        let mut account = account();
+        let suit = owned_exo(&mut account);
+        let mut worn = Vec::new();
+        for slot in EXO_COVERS {
+            let item = owned_for(&mut account, slot, suit.dict_id);
+            move_items(
+                &mut account,
+                1,
+                &[relocation(&item, INVENTORY_SLOT, slot, 1)],
+                NOW,
+            )
+            .unwrap();
+            worn.push(item);
+        }
+        // The stock helmet picked may cover the mask's slot: whatever is
+        // worn now, the exoskeleton takes it all off.
+        let before = account.kits[0].slots;
+        let weapons = account.kit_weight(&Kit {
+            slots: std::array::from_fn(|slot| before[slot].filter(|_| slot >= 7)),
+            ..account.kits[0].clone()
+        });
+        move_items(
+            &mut account,
+            1,
+            &[relocation(&suit, INVENTORY_SLOT, 3, 1)],
+            NOW,
+        )
+        .unwrap();
+        let slots = account.kits[0].slots;
+        assert_eq!(slots[3].map(|held| held.item_id), Some(suit.item_id));
+        for slot in EXO_COVERS {
+            assert!(slots[usize::from(slot)].is_none(), "slot {slot}");
+        }
+        for item in &worn {
+            assert!(account.item(item.item_id).is_some(), "still owned");
+        }
+        // One item in one slot: its weight counts once, 35 kg.
+        let weight = account.kit_weight(&account.kits[0]);
+        assert!(
+            (weight - weapons - 35.0).abs() < 0.001,
+            "{weight} {weapons}"
+        );
+        assert!(account.covered_items(&account.kits[0]).is_empty());
+    }
+
+    #[test]
+    fn anything_worn_in_a_slot_the_exoskeleton_covers_takes_it_off() {
+        for slot in EXO_COVERS {
+            let mut account = account();
+            let suit = owned_exo(&mut account);
+            move_items(
+                &mut account,
+                1,
+                &[relocation(&suit, INVENTORY_SLOT, 3, 1)],
+                NOW,
+            )
+            .unwrap();
+            let item = owned_for(&mut account, slot, suit.dict_id);
+            move_items(
+                &mut account,
+                1,
+                &[relocation(&item, INVENTORY_SLOT, slot, 1)],
+                NOW,
+            )
+            .unwrap();
+            let slots = account.kits[0].slots;
+            assert!(slots[3].is_none(), "slot {slot}");
+            assert_eq!(
+                slots[usize::from(slot)].map(|held| held.item_id),
+                Some(item.item_id)
+            );
+            assert!(account.item(suit.item_id).is_some());
+            assert!(account.covered_items(&account.kits[0]).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_kit_against_the_rule_does_not_play() {
+        // A kit saved before the rule, as it would come from srp.db: the
+        // exoskeleton over a mask.
+        let mut account = account();
+        let suit = owned_exo(&mut account);
+        let mask = owned_for(&mut account, 1, suit.dict_id);
+        assert!(check_play(&account, 1, NOW).is_ok());
+        account.kits[0].slots[3] = Some(KitSlot {
+            item_id: suit.item_id,
+            count: 1,
+        });
+        account.kits[0].slots[1] = Some(KitSlot {
+            item_id: mask.item_id,
+            count: 1,
+        });
+        assert_eq!(account.covered_items(&account.kits[0]), [1]);
+        assert_eq!(check_play(&account, 1, NOW), Err(ActionError::CoveredSlot));
+        assert_eq!(account.uncover_kits(), 1);
+        assert!(check_play(&account, 1, NOW).is_ok());
+    }
+
+    #[test]
+    fn the_duty_exoskeleton_is_worn_alone() {
+        let mut account = account();
+        let owned = |account: &mut Account, dict_id: u16| {
+            let item_id = account.add_item(dict_id, 100);
+            account.item(item_id).unwrap().clone()
+        };
+        let suit = owned(&mut account, 1805);
+        let balaclava = owned(&mut account, 1810);
+        move_items(
+            &mut account,
+            1,
+            &[relocation(&balaclava, INVENTORY_SLOT, 1, 1)],
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            account.kits[0].slots[1].map(|held| held.item_id),
+            Some(balaclava.item_id)
+        );
+        // On: the balaclava goes to the inventory.
+        move_items(
+            &mut account,
+            1,
+            &[relocation(&suit, INVENTORY_SLOT, 3, 1)],
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            account.kits[0].slots[3].map(|held| held.item_id),
+            Some(suit.item_id)
+        );
+        assert!(account.kits[0].slots[1].is_none());
+        // The balaclava back on takes the suit off.
+        move_items(
+            &mut account,
+            1,
+            &[relocation(&balaclava, INVENTORY_SLOT, 1, 1)],
+            NOW,
+        )
+        .unwrap();
+        assert!(account.kits[0].slots[3].is_none());
+        assert!(account.item(suit.item_id).is_some());
     }
 
     #[test]

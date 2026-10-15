@@ -144,7 +144,15 @@ impl GameAccounts {
         let mut dirty = HashSet::new();
         for (account_id, mut account) in loaded {
             let kept = account.clone();
-            if account.repair() {
+            // Kits saved before the covered-slots rule: said once, apart.
+            let uncovered = account.uncover_kits();
+            if uncovered > 0 {
+                log::warn!(
+                    "0.26g account {account_id}: {uncovered} items were worn in slots another \
+                     worn item covers; taken off to the inventory"
+                );
+            }
+            if account.repair() || uncovered > 0 {
                 log::warn!("0.26g account {account_id} was not consistent; repaired");
                 dirty.insert(account_id);
             }
@@ -580,6 +588,92 @@ mod tests {
         assert!(store.is_dirty(5));
         assert_eq!(store.flush(), 1);
         assert_eq!(repository.get(5).unwrap().active_kit, 1);
+    }
+
+    /// An item of `cfg_name`'s config, owned by `account`, worn in `slot`
+    /// of its first kit as a kit saved before the covered-slots rule.
+    fn worn(account: &mut Account, cfg_name: &str, slot: usize) -> u32 {
+        let dictionary = survarium::v026g::dictionary::Dictionary::shared();
+        let item = dictionary
+            .items
+            .iter()
+            .find(|item| item.cfg_name == cfg_name)
+            .unwrap_or_else(|| panic!("{cfg_name}"));
+        assert!(
+            dictionary.fits(item.dict_id, slot as u8),
+            "{cfg_name} in {slot}"
+        );
+        let item_id = account.add_item(item.dict_id, 100);
+        account.kits[0].slots[slot] = Some(KitSlot { item_id, count: 1 });
+        item_id
+    }
+
+    #[test]
+    fn kits_saved_against_the_covered_slots_rule_are_mended_at_load() {
+        let mut repository = MemoryGameRepository::default();
+        // The Duty exoskeleton over a helmet, a mask and a torso.
+        let mut exo = Account::new("Alice");
+        let suit = worn(
+            &mut exo,
+            "gameplay/items/armour/back/duty_exo_026.options",
+            3,
+        );
+        let helmet = worn(
+            &mut exo,
+            "gameplay/items/armour/helmet/blackmarket_helmet_1.options",
+            0,
+        );
+        let mask = worn(&mut exo, "gameplay/items/armour/mask/bandit_026.options", 1);
+        let torso = worn(
+            &mut exo,
+            "gameplay/items/armour/torso/scavenger_torso_1.options",
+            2,
+        );
+        let pistol = exo.kits[0].slots[7];
+        repository.save(5, &exo).unwrap();
+        // The Zubr UM-4 helmet, which has its mask built in, over a mask.
+        let mut zubr = Account::new("Bob");
+        let zubr_helmet = worn(
+            &mut zubr,
+            "gameplay/items/armour/helmet/renesanse_helmet_6.options",
+            0,
+        );
+        let zubr_mask = worn(
+            &mut zubr,
+            "gameplay/items/armour/mask/bandit_026.options",
+            1,
+        );
+        repository.save(6, &zubr).unwrap();
+
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        {
+            let account = store.get(5).unwrap();
+            let account = account.locked();
+            let slots = account.kits[0].slots;
+            assert_eq!(slots[3].map(|held| held.item_id), Some(suit));
+            for covered in [0, 1, 2, 4, 5, 6] {
+                assert!(slots[covered].is_none(), "slot {covered}");
+            }
+            assert_eq!(slots[7], pistol);
+            for item in [helmet, mask, torso] {
+                assert!(account.item(item).is_some(), "taken off, still owned");
+            }
+            assert!(account.kits[0].revision > exo.kits[0].revision);
+        }
+        {
+            let account = store.get(6).unwrap();
+            let account = account.locked();
+            let slots = account.kits[0].slots;
+            assert_eq!(slots[0].map(|held| held.item_id), Some(zubr_helmet));
+            assert!(slots[1].is_none());
+            assert!(account.item(zubr_mask).is_some());
+        }
+        assert!(store.is_dirty(5) && store.is_dirty(6));
+        assert_eq!(store.flush(), 2);
+        assert!(repository.get(5).unwrap().kits[0].slots[0].is_none());
+        // Mended once: loaded again, there is nothing to do.
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        assert!(!store.is_dirty(5) && !store.is_dirty(6));
     }
 
     #[test]
