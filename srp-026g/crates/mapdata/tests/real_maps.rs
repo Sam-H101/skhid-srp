@@ -281,3 +281,49 @@ fn weather_projects_share_geometry() {
         }
     }
 }
+
+/// Every world in `SRP_MAPDATA_DIR` builds the same twice, and its digests
+/// (`project,floors,grid,sight`) go to `SRP_DIGESTS_OUT` when set: the
+/// baseline that a world read from a file, shared or stored more compactly
+/// must match (`docs/notes/player_bots_mapdata.md` §6).
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR"]
+fn every_world_builds_the_same_twice() {
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no map files in {}", dir.display());
+    let mut lines = vec!["project,floors,grid,sight".to_owned()];
+    for path in &files {
+        let build = || {
+            let map = MapData::read(path).unwrap();
+            World::build(map, mapdata::CELL, Body::default())
+        };
+        let t = Instant::now();
+        let world = build();
+        let seconds = t.elapsed().as_secs_f32();
+        let (grid, sight) = (world.grid.digest(), world.sight.digest());
+        let again = build();
+        assert_eq!(again.grid.digest(), grid, "{}", world.map.project);
+        assert_eq!(again.sight.digest(), sight, "{}", world.map.project);
+        eprintln!(
+            "{}: {} floors, built in {seconds:.2} s, grid {grid:016x}, sight {sight:016x}",
+            world.map.project,
+            world.grid.len()
+        );
+        lines.push(format!(
+            "{},{},{grid:016x},{sight:016x}",
+            world.map.project,
+            world.grid.len()
+        ));
+    }
+    if let Some(out) = std::env::var_os("SRP_DIGESTS_OUT") {
+        std::fs::write(out, lines.join("\n") + "\n").unwrap();
+    }
+}

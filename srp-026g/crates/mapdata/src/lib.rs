@@ -35,6 +35,7 @@
 //! ```
 
 mod config;
+pub mod digest;
 pub mod format;
 pub mod grid;
 pub mod library;

@@ -28,6 +28,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::digest::Digest;
 use crate::library::WalkerBehaviour;
 use crate::math::Vec3;
 use crate::project::Triangle;
@@ -428,6 +429,47 @@ impl WalkGrid {
     /// Bytes the grid holds.
     pub fn memory_bytes(&self) -> usize {
         self.start.len() * 4 + self.len() * (4 + 4 + 4 + 32 + 8 + 4)
+    }
+
+    /// What the grid answers, as one number ([`crate::digest`]): its frame
+    /// and body, the cells' floors, and each floor's height, ceiling,
+    /// piece and links as (target, kind). Equal digests, equal answers.
+    pub fn digest(&self) -> u64 {
+        let mut digest = Digest::new();
+        for value in [self.x0, self.z0, self.cell] {
+            digest.f32(value);
+        }
+        digest.len(self.nx);
+        digest.len(self.nz);
+        let body = self.body;
+        for value in [
+            body.step,
+            body.stand_height,
+            body.crouch_height,
+            body.radius,
+            body.min_ground_normal_y,
+            body.max_drop,
+            body.max_jump,
+        ] {
+            digest.f32(value);
+        }
+        digest.len(self.start.len());
+        self.start.iter().for_each(|&first| digest.u32(first));
+        digest.len(self.len());
+        for node in 0..self.len() {
+            digest.u32(self.cell_of[node]);
+            digest.f32(self.height[node]);
+            digest.f32(self.ceiling[node]);
+            digest.u32(self.piece[node]);
+            for d in 0..8 {
+                let to = self.links[node][d];
+                digest.u32(to);
+                if to != NONE {
+                    digest.u32(self.kinds[node][d] as u32);
+                }
+            }
+        }
+        digest.finish()
     }
 
     /// The block of `block` cells a side that `node` lies in.
@@ -979,6 +1021,31 @@ pub(crate) mod tests {
         tris.extend(wall_x(15.0, 7.0, 12.0, 3.0));
         WalkGrid::build(&tris, [0.0, 0.0, 30.0, 12.0], 0.25, Body::default())
     }
+
+    /// The build gives the same grid every time, and the digest is pinned:
+    /// a change to the build or to the digest fails here until the pin
+    /// (and any stored grid it would make stale) is updated on purpose.
+    #[test]
+    fn the_build_and_its_digest_are_fixed() {
+        let grid = two_rooms();
+        assert_eq!(grid.digest(), two_rooms().digest());
+        assert_eq!(grid.digest(), PINNED_TWO_ROOMS);
+        // Any answer changes it.
+        let mut moved = two_rooms();
+        moved.height[0] += 0.001;
+        assert_ne!(moved.digest(), grid.digest());
+        let mut relinked = two_rooms();
+        let d = (0..8).find(|&d| relinked.links[0][d] != NONE).unwrap();
+        relinked.kinds[0][d] = LinkKind::Jump;
+        assert_ne!(relinked.digest(), grid.digest());
+        // A link that goes nowhere has no kind to tell.
+        let mut unlinked = two_rooms();
+        let d = (0..8).find(|&d| unlinked.links[0][d] == NONE).unwrap();
+        unlinked.kinds[0][d] = LinkKind::Drop;
+        assert_eq!(unlinked.digest(), grid.digest());
+    }
+
+    const PINNED_TWO_ROOMS: u64 = 11_945_545_835_143_266_436;
 
     fn quad(min: Vec3, max_x: f32, max_z: f32, walker: WalkerBehaviour) -> [Triangle; 2] {
         let y = min.y;

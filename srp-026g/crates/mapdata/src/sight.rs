@@ -4,6 +4,7 @@
 //! Built by median splits on the widest axis of the triangles' centres, four
 //! triangles a leaf. A test stops at the first hit.
 
+use crate::digest::Digest;
 use crate::math::Vec3;
 use crate::project::Triangle;
 
@@ -77,6 +78,31 @@ impl RayTree {
     pub fn memory_bytes(&self) -> usize {
         self.nodes.len() * std::mem::size_of::<Node>()
             + self.triangles.len() * std::mem::size_of::<Prepared>()
+    }
+
+    /// What the tree answers, as one number ([`crate::digest`]): every
+    /// node's box and children, every triangle as the ray test sees it.
+    pub fn digest(&self) -> u64 {
+        fn vec3(digest: &mut Digest, v: Vec3) {
+            digest.f32(v.x);
+            digest.f32(v.y);
+            digest.f32(v.z);
+        }
+        let mut digest = Digest::new();
+        digest.len(self.nodes.len());
+        for node in &self.nodes {
+            vec3(&mut digest, node.min);
+            vec3(&mut digest, node.max);
+            digest.u32(node.first_or_right);
+            digest.u32(node.count);
+        }
+        digest.len(self.triangles.len());
+        for triangle in &self.triangles {
+            vec3(&mut digest, triangle.a);
+            vec3(&mut digest, triangle.e1);
+            vec3(&mut digest, triangle.e2);
+        }
+        digest.finish()
     }
 
     /// Whether nothing lies between `a` and `b` (both excluded by 1 cm).
@@ -268,6 +294,37 @@ mod tests {
         assert!((t - 5.0).abs() < 1e-5);
         assert_eq!(tree.ray_cast(eye, Vec3::new(0.0, 0.0, 1.0), 4.0), None);
     }
+
+    /// The build gives the same tree every time, and the digest is pinned
+    /// ([`crate::grid`]'s test says why).
+    #[test]
+    fn the_build_and_its_digest_are_fixed() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let corners: Vec<[Vec3; 3]> = (0..500)
+            .map(|_| {
+                let c = Vec3::new(next() * 50.0, next() * 10.0, next() * 50.0);
+                [
+                    c,
+                    c + Vec3::new(next(), next(), next()),
+                    c + Vec3::new(next(), next(), next()),
+                ]
+            })
+            .collect();
+        let tree = RayTree::from_corners(corners.clone());
+        assert_eq!(tree.digest(), RayTree::from_corners(corners.clone()).digest());
+        assert_eq!(tree.digest(), PINNED_FIELD);
+        let mut moved = RayTree::from_corners(corners);
+        moved.triangles[7].e1.y += 0.001;
+        assert_ne!(moved.digest(), tree.digest());
+    }
+
+    const PINNED_FIELD: u64 = 8_340_484_153_156_595_831;
 
     #[test]
     fn the_tree_agrees_with_testing_every_triangle() {
