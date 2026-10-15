@@ -7,9 +7,11 @@
 //! - the events (chunk 2): what the server relayed to the players (0xEB,
 //!   0xEC, 0xED, 0xEE, 0xF3, 0xE9, 0xEA), every message of every place put
 //!   together, a copy of an event dropped. Its tick byte is read against the
-//!   match clock the recording's own times give (as a client does, with the
-//!   clock the sender had); an event the clock puts in the future is a copy
-//!   of an older one that came 12.8 s late, and is dropped;
+//!   match clock the recording's own times give, at the time the server sent
+//!   the event: the first copy of the same message to any place (a copy to a
+//!   place whose link is backed up goes out seconds later, and a tick byte
+//!   read more than 6.35 s from its own time is read as another tick); an
+//!   event the clock still puts in the future is dropped;
 //! - the key frames (chunk 3): the worlds the clients uploaded (0xE0
 //!   chunks), the same upload of several clients as one when they agree,
 //!   thinned to what the client can hold;
@@ -22,6 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::lzma2;
 use survarium::v026g::maps;
+use survarium::v026g::match_msgs::snapshot;
 use survarium::v026g::match_msgs::static_info;
 use survarium::v026g::match_msgs::upload::{Chunk, Pushed, Reassembler};
 use survarium::v026g::match_msgs::{mask_bytes, tick_time};
@@ -36,19 +39,45 @@ use super::sur::{
 /// An event the clock puts this far ahead of the recording is dropped: the
 /// server itself refuses inputs more than 2.5 s ahead.
 const FUTURE_SLACK_MS: u32 = 1_000;
-/// The match clock is the recording's time less an offset; the offset is
-/// worked out from the notes that carry both.
+/// A copy of a relay is a sign that its place's link is backed up when no
+/// other place got the same message (id and payload) within `BEHIND_MS`
+/// before it (or `NEAR_AFTER_MS` after), but another place got it within
+/// `LOOKBACK_MS` before. The server sends an event to every other place at
+/// once, so on sound links the copies of one event are a few hundred ms
+/// apart (a resend: under 1.1 s in every sample). The same bytes come back
+/// 12.8 s later at the earliest; a copy that meets them then is read as
+/// that later event, which has the same value: a copy of it.
+const BEHIND_MS: u32 = 2_000;
+const NEAR_AFTER_MS: u32 = 1_000;
+const LOOKBACK_MS: u32 = 60_000;
+/// Every copy a place gets this long before or after a sign that its link
+/// is backed up is dropped: the copies of a backlog more than 6 s old are
+/// read as other ticks, and match nothing in the window. The other places
+/// got the same events on time.
+const LAG_HOLD_MS: u32 = 15_000;
+/// Bit 31 of a relayed actions mask is a flag the client splits off before
+/// the input goes to the world (0xEB/0xEC 0x318479, 0xED/0xEE 0x27C501);
+/// the replay passes the record's u64 as it is with the flag 0 (0x1EE2A1),
+/// so left in, the bit would be an action.
+const INPUT_FLAG: u32 = 1 << 31;
+/// The least gap between two key frames, unless the caller gives one.
 const DEFAULT_KEY_FRAME_EVERY_MS: u32 = 10_000;
 /// The world kept for a late joiner is the first one this long after its
 /// entry: the item must be later than the entry's tick.
 const LATE_JOINER_WORLD_AFTER_MS: u32 = 300;
 
 /// What the caller chooses.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Settings {
     pub coding: Coding,
     /// The least gap between two key frames; larger if 128 would not do.
     pub key_frame_every_ms: u32,
+    /// Key frames at these times are left out (for finding what the
+    /// client chokes on).
+    pub drop_key_frames: Vec<u32>,
+    /// Only the first world as a key frame (the replay is never put
+    /// right).
+    pub first_key_frame_only: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +85,8 @@ impl Default for Settings {
         Self {
             coding: Coding::Packed,
             key_frame_every_ms: DEFAULT_KEY_FRAME_EVERY_MS,
+            drop_key_frames: Vec::new(),
+            first_key_frame_only: false,
         }
     }
 }
@@ -78,6 +109,14 @@ pub struct Report {
     pub input_copies: usize,
     pub input_conflicts: usize,
     pub dropped_future: usize,
+    /// Relay copies dropped because their place's link was backed up, by
+    /// place; and the messages none of whose copies was kept.
+    pub lagging_copies: BTreeMap<u8, usize>,
+    pub messages_lost: usize,
+    /// Inputs whose actions mask had the flag bit (cleared).
+    pub flagged_inputs: usize,
+    /// The match let players in late: the masks of 0xED/0xEE are of 20.
+    pub growing_roster: bool,
     pub profiles: usize,
     pub entered: usize,
     pub left: usize,
@@ -91,6 +130,9 @@ pub struct Report {
     pub start_ms: u32,
     pub end_ms: u32,
     pub key_frames: Vec<u32>,
+    /// The size of each key frame's parts: players, bullets, statistics,
+    /// objects, physics, rules, effects (`None`: the world did not walk).
+    pub key_frame_parts: Vec<(u32, Option<[usize; 7]>)>,
     /// `(time, 'E' entered / 'L' left, place)`.
     pub roster_events: Vec<(u32, char, u8)>,
     /// Inputs in each minute of the match.
@@ -198,6 +240,7 @@ pub fn convert(
         map: head["map"].as_str().unwrap_or("?").to_string(),
         mode: head["mode"].as_u64().unwrap_or(0),
         places: head["places"].as_array().map_or(0, Vec::len),
+        growing_roster: head["growing_roster"].as_bool().unwrap_or(false),
         ..Report::default()
     };
     let offset = clock_offset(records).unwrap_or(0);
@@ -205,6 +248,12 @@ pub fn convert(
     let dictionary = Dictionary::shared();
 
     let mut places: HashMap<u8, PlaceState> = HashMap::new();
+    // The relays, by message: (id, mask bytes, payload) -> id in `sent`;
+    // when and to which place each copy went, to read them once it is
+    // known which places' links were backed up.
+    let mut messages: HashMap<(u8, usize, Vec<u8>), usize> = HashMap::new();
+    let mut sent: Vec<Vec<(u32, u8)>> = Vec::new();
+    let mut copies: Vec<(u32, u8, usize)> = Vec::new();
     // Events by (time, player), the first copy kept.
     let mut inputs: BTreeMap<(u32, u8), InputValue> = BTreeMap::new();
     let mut profiles: BTreeMap<(u32, u8), u8> = BTreeMap::new();
@@ -219,7 +268,6 @@ pub fn convert(
             continue;
         }
         let place = places.entry(record.place).or_default();
-        let clock = (i64::from(record.at_ms) - offset).max(0) as u32;
         if record.kind == IN {
             report.datagrams_in += 1;
             let Ok(datagram) = wire::parse(Table::Match, Direction::ToServer, &record.bytes, 0)
@@ -248,16 +296,16 @@ pub fn convert(
             continue;
         }
         report.datagrams_out += 1;
-        let parsed = wire::parse(
-            Table::Match,
-            Direction::ToClient,
-            &record.bytes,
-            if place.roster == 0 {
-                0
-            } else {
-                mask_bytes(place.roster)
-            },
-        );
+        // A match that lets players in late sends its masks for 20 from
+        // the start (`Game::snapshot_players`).
+        let mask_len = if report.growing_roster {
+            mask_bytes(MAX_PLAYERS as u8)
+        } else if place.roster == 0 {
+            0
+        } else {
+            mask_bytes(place.roster)
+        };
+        let parsed = wire::parse(Table::Match, Direction::ToClient, &record.bytes, mask_len);
         let datagram = match parsed {
             Ok(datagram) => datagram,
             Err(error) => {
@@ -293,74 +341,133 @@ pub fn convert(
                         place.roster = roster;
                         options.entry(roster).or_insert_with(|| whole[1..].to_vec());
                     }
+                    continue;
                 }
                 // A 0xEA to the leaver itself is its farewell (match.md: the
                 // server closes the game with it, at tick 0 when the game
                 // never loaded); the others' copies are the leave.
-                0xEA if payload.len() == 2 && payload[1] == record.place => {}
-                0xE9 | 0xEA if payload.len() == 2 => {
-                    let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
-                        continue;
-                    };
-                    let key = (time, payload[1]);
-                    if message.id == 0xE9 {
-                        entered.entry(key).or_insert(());
-                    } else {
-                        left.entry(key).or_insert(());
-                    }
-                }
-                0xEB if payload.len() == 10 => {
-                    let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
-                        continue;
-                    };
-                    keep_input(&mut inputs, &mut report, time, payload[1], &payload[2..10]);
-                }
-                0xEC if payload.len() == 11 => {
-                    let Some(time) = resolve(payload[0], payload[1], clock, &mut report) else {
-                        continue;
-                    };
-                    keep_input(&mut inputs, &mut report, time, payload[2], &payload[3..11]);
-                }
-                0xED | 0xEE => {
-                    let precise = message.id == 0xEE;
-                    let head = if precise { 2 } else { 1 };
-                    let mask_len = mask_bytes(place.roster);
-                    if payload.len() < head + mask_len {
-                        continue;
-                    }
-                    let ms = if precise { payload[1] } else { 0 };
-                    let Some(time) = resolve(payload[0], ms, clock, &mut report) else {
-                        continue;
-                    };
-                    let mask = &payload[head..head + mask_len];
-                    let players: Vec<u8> = (0..(mask_len * 8) as u8)
-                        .filter(|p| mask[usize::from(p / 8)] & (1 << (p % 8)) != 0)
-                        .collect();
-                    let n = players.len();
-                    let rest = &payload[head + mask_len..];
-                    if rest.len() < 8 * n {
-                        continue;
-                    }
-                    let (actions, rest) = rest.split_at(4 * n);
-                    let (rot_x, rot_y) = rest.split_at(2 * n);
-                    for (i, &player) in players.iter().enumerate() {
-                        let mut bytes = [0u8; 8];
-                        bytes[0..2].copy_from_slice(&rot_x[2 * i..2 * i + 2]);
-                        bytes[2..4].copy_from_slice(&rot_y[2 * i..2 * i + 2]);
-                        bytes[4..8].copy_from_slice(&actions[4 * i..4 * i + 4]);
-                        keep_input(&mut inputs, &mut report, time, player, &bytes);
-                    }
-                }
-                0xF3 if payload.len() == 3 => {
-                    let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
-                        continue;
-                    };
-                    profiles.entry((time, payload[1])).or_insert(payload[2]);
-                }
-                _ => {}
+                0xEA if payload.len() == 2 && payload[1] == record.place => continue,
+                // The relays, read below.
+                0xE9 | 0xEA if payload.len() == 2 => {}
+                0xEB if payload.len() == 10 => {}
+                0xEC if payload.len() == 11 => {}
+                0xED | 0xEE => {}
+                0xF3 if payload.len() == 3 => {}
+                _ => continue,
+            }
+            let next = sent.len();
+            let id = *messages
+                .entry((message.id, mask_len, payload.to_vec()))
+                .or_insert(next);
+            if id == next {
+                sent.push(Vec::new());
+            }
+            sent[id].push((record.at_ms, record.place));
+            copies.push((record.at_ms, record.place, id));
+        }
+    }
+
+    // The signs of a backed-up link: a copy well behind the same message
+    // to another place.
+    let mut by_id: Vec<(u8, usize, &[u8])> = vec![(0, 0, &[]); sent.len()];
+    for ((message_id, mask_len, payload), &id) in &messages {
+        by_id[id] = (*message_id, *mask_len, payload);
+    }
+    let mut behind: BTreeMap<u8, Vec<u32>> = BTreeMap::new();
+    for times in &mut sent {
+        times.sort_unstable();
+        for &(at_ms, place) in times.iter() {
+            let from = times.partition_point(|&(t, _)| t + LOOKBACK_MS < at_ms);
+            let to = times.partition_point(|&(t, _)| t <= at_ms + NEAR_AFTER_MS);
+            let others = || times[from..to].iter().filter(|&&(_, other)| other != place);
+            if others().any(|&(t, _)| t + BEHIND_MS < at_ms)
+                && !others().any(|&(t, _)| t + BEHIND_MS >= at_ms)
+            {
+                behind.entry(place).or_default().push(at_ms);
             }
         }
     }
+    for signs in behind.values_mut() {
+        signs.sort_unstable();
+    }
+    let lagging = |place: u8, at_ms: u32| {
+        behind.get(&place).is_some_and(|signs| {
+            let next = signs.partition_point(|&t| t + LAG_HOLD_MS < at_ms);
+            signs.get(next).is_some_and(|&t| t <= at_ms + LAG_HOLD_MS)
+        })
+    };
+    let mut kept = vec![false; sent.len()];
+    for &(at_ms, place, id) in &copies {
+        if lagging(place, at_ms) {
+            *report.lagging_copies.entry(place).or_default() += 1;
+            continue;
+        }
+        kept[id] = true;
+        let clock = (i64::from(at_ms) - offset).max(0) as u32;
+        let (message_id, mask_len, payload) = by_id[id];
+        match message_id {
+            0xE9 | 0xEA => {
+                let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
+                    continue;
+                };
+                let key = (time, payload[1]);
+                if message_id == 0xE9 {
+                    entered.entry(key).or_insert(());
+                } else {
+                    left.entry(key).or_insert(());
+                }
+            }
+            0xEB => {
+                let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
+                    continue;
+                };
+                keep_input(&mut inputs, &mut report, time, payload[1], &payload[2..10]);
+            }
+            0xEC => {
+                let Some(time) = resolve(payload[0], payload[1], clock, &mut report) else {
+                    continue;
+                };
+                keep_input(&mut inputs, &mut report, time, payload[2], &payload[3..11]);
+            }
+            0xED | 0xEE => {
+                let precise = message_id == 0xEE;
+                let head = if precise { 2 } else { 1 };
+                if payload.len() < head + mask_len {
+                    continue;
+                }
+                let ms = if precise { payload[1] } else { 0 };
+                let Some(time) = resolve(payload[0], ms, clock, &mut report) else {
+                    continue;
+                };
+                let mask = &payload[head..head + mask_len];
+                let players: Vec<u8> = (0..(mask_len * 8) as u8)
+                    .filter(|p| mask[usize::from(p / 8)] & (1 << (p % 8)) != 0)
+                    .collect();
+                let n = players.len();
+                let rest = &payload[head + mask_len..];
+                if rest.len() < 8 * n {
+                    continue;
+                }
+                let (actions, rest) = rest.split_at(4 * n);
+                let (rot_x, rot_y) = rest.split_at(2 * n);
+                for (i, &player) in players.iter().enumerate() {
+                    let mut bytes = [0u8; 8];
+                    bytes[0..2].copy_from_slice(&rot_x[2 * i..2 * i + 2]);
+                    bytes[2..4].copy_from_slice(&rot_y[2 * i..2 * i + 2]);
+                    bytes[4..8].copy_from_slice(&actions[4 * i..4 * i + 4]);
+                    keep_input(&mut inputs, &mut report, time, player, &bytes);
+                }
+            }
+            0xF3 => {
+                let Some(time) = resolve(payload[0], 0, clock, &mut report) else {
+                    continue;
+                };
+                profiles.entry((time, payload[1])).or_insert(payload[2]);
+            }
+            _ => unreachable!("only relays are kept"),
+        }
+    }
+    report.messages_lost = kept.iter().filter(|kept| !**kept).count();
 
     report.inputs = inputs.len();
     report.profiles = profiles.len();
@@ -429,7 +536,8 @@ pub fn convert(
         events.entry(time).or_insert_with(|| Event::at(time)).leave |= 1 << player;
     }
 
-    // The replay starts with the first world; events before it are cut.
+    // The replay starts with the first world (50 ms in every sample, the
+    // time a fresh world core has, 0x2D0765), or with an event before it.
     let start = first_world.min(events.keys().next().copied().unwrap_or(first_world));
     report.start_ms = start;
     let last_event = events.keys().next_back().copied().unwrap_or(start);
@@ -481,6 +589,10 @@ pub fn convert(
     times.sort_unstable();
     times.dedup();
     times.truncate(MAX_KEY_FRAMES);
+    times.retain(|time| !settings.drop_key_frames.contains(time));
+    if settings.first_key_frame_only {
+        times.truncate(1);
+    }
     let mut frames = Vec::new();
     for &time in &times {
         // Where the reading goes on: the first record after the world's time.
@@ -490,6 +602,23 @@ pub fn convert(
             .map_or(body.len(), |record| record.offset);
         frames.push(KeyFrame::new(time, &chosen[&time], offset));
     }
+    report.key_frame_parts = times
+        .iter()
+        .map(|time| {
+            let parts = snapshot::Sections::walk(&chosen[time]).map(|s| {
+                [
+                    s.players.len(),
+                    s.bullets.len(),
+                    s.statistics.len(),
+                    s.objects.len(),
+                    s.physics.len(),
+                    s.rules.len(),
+                    s.effects.len(),
+                ]
+            });
+            (*time, parts)
+        })
+        .collect();
     report.key_frames = times;
 
     let parts = Parts {
@@ -522,12 +651,16 @@ fn keep_input(
     player: u8,
     bytes: &[u8],
 ) {
+    let actions = u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes"));
     let value = InputValue {
         rotation: bytes[0..4].try_into().expect("4 bytes"),
-        actions: u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes")),
+        actions: actions & !INPUT_FLAG,
     };
     match inputs.get(&(time, player)) {
         None => {
+            if actions & INPUT_FLAG != 0 {
+                report.flagged_inputs += 1;
+            }
             inputs.insert((time, player), value);
         }
         Some(known) if *known == value => report.input_copies += 1,
@@ -677,6 +810,8 @@ mod tests {
             let settings = Settings {
                 coding,
                 key_frame_every_ms: 10_000,
+                drop_key_frames: Vec::new(),
+                first_key_frame_only: false,
             };
             let (file, report) = convert(&records, config, settings).unwrap();
             assert_eq!(report.clock_offset_ms, 1300);
@@ -722,5 +857,83 @@ mod tests {
                 .collect();
             assert_eq!(leaves, [(2000, 2)]);
         }
+    }
+
+    /// `(time, player, actions)` of every input in a file.
+    fn inputs_of(file: &[u8]) -> Vec<(u32, u8, u32)> {
+        let chunks = sur::chunks(file).unwrap();
+        let body = lzma2::unpack(chunks[2].1, 1 << 20).unwrap();
+        sur::read_body(&body)
+            .unwrap()
+            .iter()
+            .flat_map(|r| {
+                r.event
+                    .inputs
+                    .iter()
+                    .map(move |i| (r.event.time, i.0, i.1.actions))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_copy_from_a_backed_up_link_is_not_read_as_another_tick() {
+        let mut records = recording();
+        // Player 0's input of 1050 ms (tick 21) reaches place 0 18.6 s
+        // after place 1 got it: read against that clock its tick byte is
+        // 13 850 ms, a time the server never meant.
+        records.push(datagram(
+            OUT,
+            0,
+            21_000,
+            0xEB,
+            None,
+            &relay(21, 0, [5, 6, 7, 8], 0x20),
+        ));
+        let (file, report) = convert(&records, b"config", Settings::default()).unwrap();
+        assert_eq!(
+            inputs_of(&file),
+            [(1000, 1, 0x10), (1007, 1, 0x30), (1050, 0, 0x20)]
+        );
+        assert_eq!(report.lagging_copies, BTreeMap::from([(0, 1)]));
+        assert_eq!(report.messages_lost, 0);
+        assert_eq!(report.input_conflicts, 0);
+    }
+
+    #[test]
+    fn the_flag_bit_of_an_input_is_not_an_action() {
+        let mut records = recording();
+        records.push(datagram(
+            OUT,
+            0,
+            2470,
+            0xEB,
+            None,
+            &relay(22, 1, [1, 2, 3, 4], 0x8000_0010),
+        ));
+        let (file, report) = convert(&records, b"config", Settings::default()).unwrap();
+        assert!(inputs_of(&file).contains(&(1100, 1, 0x10)));
+        assert_eq!(report.flagged_inputs, 1);
+    }
+
+    #[test]
+    fn a_growing_roster_reads_masks_of_twenty() {
+        let mut records = recording();
+        let mut header: serde_json::Value = serde_json::from_slice(&records[0].bytes).unwrap();
+        header["growing_roster"] = true.into();
+        records[0].bytes = serde_json::to_vec(&header).unwrap();
+        // 0xED at tick 23: players 0 and 1, a mask of three bytes, the
+        // actions, then the first and the second halves of the rotations.
+        let mut payload = vec![23, 0b11, 0, 0];
+        payload.extend(0x40u32.to_le_bytes());
+        payload.extend(0x41u32.to_le_bytes());
+        payload.extend([1, 2, 5, 6]);
+        payload.extend([3, 4, 7, 8]);
+        records.push(datagram(OUT, 0, 2480, 0xED, None, &payload));
+        let (file, report) = convert(&records, b"config", Settings::default()).unwrap();
+        assert!(report.growing_roster);
+        assert_eq!(report.unparsed, 0, "{:?}", report.unparsed_why);
+        let inputs = inputs_of(&file);
+        assert!(inputs.contains(&(1150, 0, 0x40)), "{inputs:?}");
+        assert!(inputs.contains(&(1150, 1, 0x41)), "{inputs:?}");
     }
 }

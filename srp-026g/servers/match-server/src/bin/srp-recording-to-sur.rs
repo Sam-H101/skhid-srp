@@ -44,6 +44,13 @@ fn main() -> ExitCode {
     if let Some(every) = value("--every").and_then(|v| v.parse().ok()) {
         settings.key_frame_every_ms = every;
     }
+    settings.first_key_frame_only = args.iter().any(|arg| arg == "--first-key-frame-only");
+    if let Some(list) = value("--drop-key-frames") {
+        settings.drop_key_frames = list
+            .split(',')
+            .filter_map(|t| t.trim().parse().ok())
+            .collect();
+    }
     let records = match record::read(Path::new(input)) {
         Ok(records) => records,
         Err(error) => {
@@ -89,14 +96,25 @@ fn main() -> ExitCode {
         report.datagrams_out, report.datagrams_in, report.unparsed, report.clock_offset_ms
     );
     println!(
-        "events: {} inputs ({} copies dropped, {} conflicts, {} dropped as future), {} kit choices, {} entered, {} left",
+        "events: {} inputs ({} copies dropped, {} conflicts, {} dropped as future, {} flagged), {} kit choices, {} entered, {} left",
         report.inputs,
         report.input_copies,
         report.input_conflicts,
         report.dropped_future,
+        report.flagged_inputs,
         report.profiles,
         report.entered,
         report.left
+    );
+    println!(
+        "relay copies dropped from places whose link was backed up: {:?} (place: copies); messages with no copy kept: {}; masks of {}",
+        report.lagging_copies,
+        report.messages_lost,
+        if report.growing_roster {
+            "20 (growing roster)"
+        } else {
+            "the roster"
+        }
     );
     println!(
         "worlds: {} uploads complete, {} item times, {} times where clients disagreed; first {:?}",
@@ -124,6 +142,13 @@ fn main() -> ExitCode {
     println!("inputs per minute: {:?}", report.inputs_per_minute);
     if !report.unparsed_why.is_empty() {
         println!("not parsed: {:?}", report.unparsed_why);
+    }
+    if args.iter().any(|arg| arg == "--sections") {
+        for (time, parts) in &report.key_frame_parts {
+            println!(
+                "key frame {time}: players, bullets, statistics, objects, physics, rules, effects = {parts:?}"
+            );
+        }
     }
     for note in &report.notes {
         println!("note: {note}");
