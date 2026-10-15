@@ -845,6 +845,7 @@ dependencies = [
  "binary-config-parser",
  "log",
  "lzma-rust2",
+ "resources-db",
  "serde",
 ]
 

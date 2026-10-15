@@ -1,19 +1,17 @@
 //! What srp needs from each 0.26g item's own config
-//! (`gameplay/items/**.options` in 0.26g's `resources.db`;
-//! `docs/notes/data.md` §4): its level and matchmaking level,
-//! faction, weight, rarity, wear and repair values, and for ammo its clip.
-//! The table is generated from the game's files by
-//! `scripts/gen-data-026g/gen_data.py`; an item without a field has 0.
+//! (`gameplay/items/**.options` of the players' `resources.db`,
+//! [`super::game_data`]; `docs/notes/data.md` §4): its level and
+//! matchmaking level, faction, weight, rarity, wear and repair values, for
+//! ammo its clip, and the profile slots it covers when worn. Derived from
+//! the configs when first used ([`all`]); an item without a field has 0.
 //!
 //! Against 0.21d: `drop_value` and `clips_in_bag` are gone (ammo has
 //! `required_bags`), and `item_level` came here from the dictionary.
 
-mod table;
+use binary_config_parser::tree::{ConfigError, ConfigValue};
 
-pub use table::{
-    AMMO_BAGS_COUNT, ITEM_PARAMS, MAX_CARRIED_WEIGHT, MIN_CARRIED_WEIGHT, POCKET_SLOT_SIZE,
-    POCKET_SLOTS_COUNT,
-};
+use super::dictionary::Dictionary;
+use super::game_data::{GameData, GameDataError};
 
 /// One item's parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,14 +57,271 @@ pub struct ItemParams {
     pub modification: u32,
     /// The modifications the item always has.
     pub default_modifications: &'static [u32],
+    /// The profile slots it covers when worn (`data.additional_model_slots`,
+    /// [`model_slot`]): a kit that wears it has nothing in them. A helmet
+    /// with a built-in mask covers the mask's; the Duty exoskeleton, worn in
+    /// the back slot, all six others.
+    pub covered_slots: &'static [u8],
+}
+
+/// What `gameplay/players/default.player` says of what a player carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerLimits {
+    /// `player.stamina_params.max_carried_weight`.
+    pub max_carried_weight: f32,
+    /// `player.stamina_params.min_carried_weight`.
+    pub min_carried_weight: f32,
+    /// `player.ammo_bags_count`.
+    pub ammo_bags_count: u32,
+    /// `player.pocket_slots_count`.
+    pub pocket_slots_count: u32,
+    /// `player.pocket_slot_size`.
+    pub pocket_slot_size: u32,
+}
+
+/// Its path in the archive.
+pub const PLAYER_PATH: &str = "gameplay/players/default.player";
+
+impl PlayerLimits {
+    pub fn from_config(config: &ConfigValue) -> Result<Self, ConfigError> {
+        let player = config.req("player")?;
+        let stamina = player.req("stamina_params")?;
+        Ok(Self {
+            max_carried_weight: float(Some(stamina), "max_carried_weight")?,
+            min_carried_weight: float(Some(stamina), "min_carried_weight")?,
+            ammo_bags_count: int(Some(player), "ammo_bags_count")?,
+            pocket_slots_count: int(Some(player), "pocket_slots_count")?,
+            pocket_slot_size: int(Some(player), "pocket_slot_size")?,
+        })
+    }
+}
+
+/// The players' limits ([`super::game_data`]), read once.
+pub fn player() -> &'static PlayerLimits {
+    static SHARED: std::sync::OnceLock<PlayerLimits> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        let config = ConfigValue::parse(super::game_data::file(PLAYER_PATH));
+        config
+            .and_then(|config| PlayerLimits::from_config(&config))
+            .expect("the player's config reads")
+    })
+}
+
+/// Every item's parameters, by `dict_id`: one row for each item of the
+/// dictionary, from its config ([`derive`]).
+pub fn all() -> &'static [ItemParams] {
+    static SHARED: std::sync::OnceLock<Vec<ItemParams>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        derive(super::game_data::shared(), Dictionary::shared()).expect("the item configs read")
+    })
+}
+
+/// One row for each item of `dictionary`, by `dict_id`, from its config in
+/// `data` (`cfg_name`), which each must have.
+pub fn derive(data: &GameData, dictionary: &Dictionary) -> Result<Vec<ItemParams>, GameDataError> {
+    let mut rows = Vec::with_capacity(dictionary.items.len());
+    for item in &dictionary.items {
+        let path = item.cfg_name.as_str();
+        let config = super::game_data::config(data, path)?.ok_or_else(|| {
+            GameDataError(format!(
+                "item {} `{}` has no {path}",
+                item.dict_id, item.name
+            ))
+        })?;
+        let row = ItemParams::from_config(item.dict_id, &config)
+            .map_err(|cause| GameDataError(format!("{path}: {}", cause.0)))?;
+        rows.push(row);
+    }
+    rows.sort_by_key(|row| row.dict_id);
+    if let Some(pair) = rows.windows(2).find(|w| w[0].dict_id == w[1].dict_id) {
+        return Err(GameDataError(format!(
+            "dict_id {} is in items_dict twice",
+            pair[0].dict_id
+        )));
+    }
+    Ok(rows)
+}
+
+/// A number of a config table, as the game reads one: an integer, a float
+/// cut to one, or a boolean; a missing one 0.
+fn int<T: TryFrom<i32>>(table: Option<&ConfigValue>, key: &str) -> Result<T, ConfigError> {
+    let number = match table.and_then(|table| table.get(key)) {
+        None => 0,
+        Some(value) => value
+            .as_i32()
+            .ok_or_else(|| ConfigError(format!("`{key}` is not a number")))?,
+    };
+    T::try_from(number).map_err(|_| ConfigError(format!("`{key}` = {number} is out of range")))
+}
+
+fn float(table: Option<&ConfigValue>, key: &str) -> Result<f32, ConfigError> {
+    match table.and_then(|table| table.get(key)) {
+        None => Ok(0.0),
+        Some(ConfigValue::Boolean(value)) => Ok(f32::from(u8::from(*value))),
+        Some(value) => value
+            .as_f32()
+            .ok_or_else(|| ConfigError(format!("`{key}` is not a number"))),
+    }
+}
+
+fn flag(table: Option<&ConfigValue>, key: &str) -> Result<bool, ConfigError> {
+    match table.and_then(|table| table.get(key)) {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ConfigError(format!("`{key}` is not a boolean"))),
+    }
+}
+
+/// A list of numbers, each in range of `T`.
+fn numbers<T: TryFrom<i32>>(list: &ConfigValue, key: &str) -> Result<Vec<T>, ConfigError> {
+    list.children()
+        .into_iter()
+        .map(|value| {
+            let number = value
+                .as_i32()
+                .ok_or_else(|| ConfigError(format!("`{key}` holds a non-number")))?;
+            T::try_from(number)
+                .map_err(|_| ConfigError(format!("`{key}` holds {number}, out of range")))
+        })
+        .collect()
+}
+
+/// A slice that lives as long as the process: the configs are read once.
+fn leak<T>(list: Vec<T>) -> &'static [T] {
+    if list.is_empty() {
+        &[]
+    } else {
+        Box::leak(list.into_boxed_slice())
+    }
+}
+
+impl ItemParams {
+    /// The row of an item's config (`gameplay/items/**.options`):
+    /// `parameters.*` by the same names (`type` is `kind`), a missing one 0,
+    /// the config's own `default_modifications`, and the slots of
+    /// `data.additional_model_slots`. The strings and lists are leaked: the
+    /// rows live as long as the process.
+    pub fn from_config(dict_id: u16, config: &ConfigValue) -> Result<Self, ConfigError> {
+        let p = config.get("parameters");
+        let kind = match p.and_then(|p| p.get("type")) {
+            None => "",
+            Some(value) => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| ConfigError("`parameters.type` is not a string".into()))?;
+                Box::leak(text.to_owned().into_boxed_str())
+            }
+        };
+        // A stack's `rarity` is pairs of counts, anything else's levels.
+        let rarity = p.and_then(|p| p.get("rarity"));
+        let rows = rarity.map(ConfigValue::children).unwrap_or_default();
+        let (gear_rarity, stack_rarity) = match rows.first() {
+            Some(ConfigValue::Indexed(_) | ConfigValue::Named(_)) => {
+                let pairs = rows
+                    .iter()
+                    .map(|row| match numbers::<u32>(row, "parameters.rarity")?[..] {
+                        [least, most] => Ok((least, most)),
+                        _ => Err(ConfigError(
+                            "a `parameters.rarity` row is not a pair".into(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (Vec::new(), pairs)
+            }
+            Some(_) => (
+                numbers(rarity.expect("rows"), "parameters.rarity")?,
+                Vec::new(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        let default_modifications = match config.get("default_modifications") {
+            Some(list) => numbers(list, "default_modifications")?,
+            None => Vec::new(),
+        };
+        Ok(Self {
+            dict_id,
+            kind,
+            faction: int(p, "faction")?,
+            faction_affinity: int(p, "faction_affinity")?,
+            item_level: int(p, "item_level")?,
+            match_making_level: int(p, "match_making_level")?,
+            base_rarity_level: int(p, "base_rarity_level")?,
+            gear_rarity: leak(gear_rarity),
+            stack_rarity: leak(stack_rarity),
+            weight: float(p, "weight")?,
+            drop_weight: int(p, "drop_weight")?,
+            degrade_per_use: float(p, "degrade_per_use")?,
+            degrade_per_match: float(p, "degrade_per_match")?,
+            degrade_per_death: float(p, "degrade_per_death")?,
+            reliability: float(p, "reliability")?,
+            repair_cost_ratio: float(p, "repair_cost_ratio")?,
+            clip_size: int(p, "clip_size")?,
+            clip_weight: float(p, "clip_weight")?,
+            required_bags: int(p, "required_bags")?,
+            magazine_capacity: int(p, "magazine_capacity")?,
+            double_handed: flag(p, "double_handed")?,
+            fills_whole_pocket: flag(p, "fills_whole_pocket")?,
+            modification: int(p, "modification")?,
+            default_modifications: leak(default_modifications),
+            covered_slots: leak(covered_slots_of(config)?),
+        })
+    }
+}
+
+/// The profile slot `data.additional_model_slots` names: the slots whose
+/// models an item's own models replace. Profile slots 0..=6 are helmet,
+/// mask, torso, back, legs, gloves and boots ([`super::loadouts`]).
+pub fn model_slot(name: &str) -> Option<u8> {
+    Some(match name {
+        "helmet" => 0,
+        "mask" => 1,
+        "torso" => 2,
+        "back" => 3,
+        "pants" | "legs" => 4,
+        "gloves" => 5,
+        "boots" => 6,
+        _ => return None,
+    })
+}
+
+/// The profile slots a config covers (`data.additional_model_slots`,
+/// [`model_slot`]), in its order, each once.
+pub fn covered_slots_of(config: &ConfigValue) -> Result<Vec<u8>, ConfigError> {
+    let Some(list) = config
+        .get("data")
+        .and_then(|data| data.get("additional_model_slots"))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut slots = Vec::new();
+    for value in list.children() {
+        let name = value.as_str().ok_or_else(|| {
+            ConfigError("`data.additional_model_slots` holds a non-string".into())
+        })?;
+        let slot = model_slot(name).ok_or_else(|| {
+            ConfigError(format!(
+                "`data.additional_model_slots` names `{name}`, no profile slot"
+            ))
+        })?;
+        if !slots.contains(&slot) {
+            slots.push(slot);
+        }
+    }
+    Ok(slots)
+}
+
+/// The profile slots `dict_id` covers when worn.
+pub fn covered_slots(dict_id: u16) -> &'static [u8] {
+    item_params(dict_id).map_or(&[], |params| params.covered_slots)
 }
 
 /// The parameters of `dict_id`, if it is an item.
 pub fn item_params(dict_id: u16) -> Option<&'static ItemParams> {
-    ITEM_PARAMS
-        .binary_search_by_key(&dict_id, |item| item.dict_id)
+    let all = all();
+    all.binary_search_by_key(&dict_id, |item| item.dict_id)
         .ok()
-        .map(|index| &ITEM_PARAMS[index])
+        .map(|index| &all[index])
 }
 
 /// The units of `dict_id` one step of the shop's slider buys or sells: a
@@ -107,8 +362,9 @@ mod tests {
     #[test]
     fn every_dictionary_item_has_parameters() {
         let dictionary = Dictionary::shared();
-        assert_eq!(ITEM_PARAMS.len(), 384);
-        assert!(ITEM_PARAMS.windows(2).all(|w| w[0].dict_id < w[1].dict_id));
+        // 0.26g's 384, and the Duty exoskeleton and the Bandit balaclava.
+        assert_eq!(all().len(), 386);
+        assert!(all().windows(2).all(|w| w[0].dict_id < w[1].dict_id));
         for item in &dictionary.items {
             let params = item_params(item.dict_id).unwrap();
             // A stack has counts for its rarity, anything else levels.
@@ -126,10 +382,11 @@ mod tests {
 
     #[test]
     fn the_carry_limit_is_the_players_config() {
-        assert_eq!(MAX_CARRIED_WEIGHT, 30.0);
-        assert_eq!(MIN_CARRIED_WEIGHT, 20.0);
-        assert_eq!(AMMO_BAGS_COUNT, 3);
-        assert_eq!((POCKET_SLOTS_COUNT, POCKET_SLOT_SIZE), (1, 1));
+        let player = player();
+        assert_eq!(player.max_carried_weight, 30.0);
+        assert_eq!(player.min_carried_weight, 20.0);
+        assert_eq!(player.ammo_bags_count, 3);
+        assert_eq!((player.pocket_slots_count, player.pocket_slot_size), (1, 1));
     }
 
     #[test]
@@ -185,13 +442,14 @@ mod tests {
         // Money has five rarities, [`super::super::drops`].
         assert_eq!(item_params(214).unwrap().stack_rarity.len(), 5);
         assert_eq!(item_params(215).unwrap().stack_rarity[4], (50, 50));
-        // Armour comes with its modifications.
+        // Armour comes with its modifications: 83 of 0.26g's, and the
+        // release's Duty exoskeleton.
         assert!(
-            ITEM_PARAMS
+            all()
                 .iter()
                 .filter(|params| !params.default_modifications.is_empty())
                 .count()
-                == 83
+                == 84
         );
     }
 
@@ -208,5 +466,33 @@ mod tests {
         assert!((carried_weight(5, 3) - 0.9).abs() < 1e-6);
         assert_eq!(carried_weight(3, 1), 3.4);
         assert_eq!(carried_weight(9999, 5), 0.0);
+    }
+
+    #[test]
+    fn the_release_items_are_read_from_their_configs() {
+        // The Duty exoskeleton, worn in the back slot over all six others.
+        let duty = item_params(1805).unwrap();
+        assert_eq!(duty.kind, "arm_back");
+        assert_eq!((duty.item_level, duty.match_making_level), (15, 15));
+        assert_eq!((duty.weight, duty.faction), (35.0, 3));
+        assert_eq!(duty.default_modifications, [1030, 1050, 1170, 1040]);
+        assert_eq!(duty.covered_slots, [0, 1, 2, 4, 5, 6]);
+        assert_eq!(covered_slots(1805), [0, 1, 2, 4, 5, 6]);
+        // The Bandit balaclava, a mask.
+        let mask = item_params(1810).unwrap();
+        assert_eq!(mask.kind, "arm_mask");
+        assert_eq!((mask.item_level, mask.weight), (3, 0.5));
+        assert!(mask.covered_slots.is_empty());
+        // 0.26g's own helmets with a built-in mask cover the mask's slot.
+        let dictionary = Dictionary::shared();
+        let covering: Vec<&str> = all()
+            .iter()
+            .filter(|params| !params.covered_slots.is_empty() && params.dict_id != 1805)
+            .map(|params| dictionary.item(params.dict_id).unwrap().name.as_str())
+            .collect();
+        assert_eq!(covering.len(), 4, "{covering:?}");
+        for params in all().iter().filter(|params| params.dict_id != 1805) {
+            assert!(params.covered_slots.iter().all(|&slot| slot == 1));
+        }
     }
 }

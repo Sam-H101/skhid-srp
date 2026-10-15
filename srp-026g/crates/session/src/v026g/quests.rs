@@ -98,7 +98,7 @@ fn grenades_available_in_store(account: &Account) -> bool {
 /// qualify, and any seller may unlock the quest regardless of its faction.
 fn artifact_containers_available_in_store(account: &Account) -> bool {
     let modifications = Modifications::shared();
-    item_params::ITEM_PARAMS.iter().any(|item| {
+    item_params::all().iter().any(|item| {
         let has_container = item
             .default_modifications
             .iter()
@@ -378,10 +378,14 @@ mod tests {
     fn stores_without_artifact_containers_do_not_unlock_artifact_quests() {
         let mut account = quest_account(4, 0, kind::FIND_ARTEFACTS);
         account.add_reputation(2, reputation_for(2, 5));
-        account.add_reputation(3, reputation_for(3, 10));
+        account.add_reputation(3, reputation_for(3, 9));
         // These stores offer backpacks and pockets, but no artifact slots.
         assert!(refresh(&mut account, 1_000, &mut Rng::new(1)).is_empty());
         assert!(account.quests.is_empty());
+        // Renaissance's rank 10 sells the Duty exoskeleton, whose own
+        // modifications hold an artefact.
+        account.add_reputation(3, reputation_for(3, 10) - reputation_for(3, 9));
+        assert!(!refresh(&mut account, 1_001, &mut Rng::new(1)).is_empty());
     }
 
     #[test]

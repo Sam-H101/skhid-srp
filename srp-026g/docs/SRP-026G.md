@@ -49,7 +49,7 @@ servers one port.
 | Crate / module | Does |
 |---|---|
 | `crates/udp-transport` | The 0.26g reliable UDP transport, shared by the lobby and the match server: the per-message delivery table, split messages, ordered and unique channels, the packet log (`SRP_PACKET_LOG`) |
-| `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs (`resources/binary-config-examples/*_026g*`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
+| `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs, read at start from the server's game data of the release the players run (`SRP_GAME_DATA`; `game_data`, `tables`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
 | `crates/session` | Shared with 0.21d: accounts by user name, argon2id passwords, sessions, the queue (`matchmaking.rs`), squads, bans, limits, `srp.db` |
 | `crates/session/src/v026g/` | The 0.26g account (`account`: money, gold, premium time, experience and level, skills, reputations, three kits, inventory, quests), the lobby's actions (`rules`), `quests`, the account as messages (`wire`), match rewards (`rewards`), and its tables in the same `srp.db` (`persist`: `g26_*`, versioned on their own in `g26_meta`). `GameAccounts` is the store. `clans`, `extras`, `premium`, `bonus`, `items_rules`, `pay` (the match pay rule), `matchmaking` (a player's level, the map choice) |
 | `servers/login-server/src/v026g.rs` | The TLS sign-in. First sign-in of a name registers it. Bans, limits, closed registration, the game's own status codes |
@@ -58,7 +58,8 @@ servers one port.
 | `servers/srp/src/v026g.rs` | Joins them: `Stack` (the three servers and the session collector, each on a supervised thread), `RegistryHost` (lobby → match server), `Settler` (match result → rewards → database → lobby), `WebLink` (web page → lobby) |
 | `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
 | `scripts/client-patch-026g/` | `patch_026g.py` (the client patch), `selftest_026g.py`, `make_client_026g.py` (the players' overlay) |
-| `scripts/gen-data-026g/` | How the embedded data was taken from the 0.26g `resources.db` |
+| `crates/resources-db` | Reads `resources.db`, lays the players' update plan over it in memory (`plan`), and makes the server's game data of a release (`server`, `srp-game-data`) |
+| `resources/game-026g/` | The server's game data of the release the players run: the game data of tests and tools |
 
 ## How a player gets into a match
 

@@ -43,8 +43,8 @@
 
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
-const SKILLS_TREE: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/skills_tree_026g.options");
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/skills/skills_tree.options";
 
 /// The player modifiers a kit carries.
 pub const MODIFIERS: usize = 68;
@@ -234,11 +234,11 @@ fn parse_skill(skill: &ConfigValue) -> Result<Skill, ConfigError> {
 }
 
 impl SkillsTree {
-    /// The tree the 0.26g client ships, parsed once.
+    /// The players' skills tree ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<SkillsTree> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::parse(SKILLS_TREE).expect("the embedded 0.26g skills tree parses")
+            Self::parse(super::game_data::file(PATH)).expect("the skills tree parses")
         })
     }
 

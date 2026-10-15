@@ -64,8 +64,8 @@ use super::dictionary::Dictionary;
 use super::item_params::{ItemParams, item_params, shop_unit};
 pub use crate::v021d::drops::Rng;
 
-const DROPS: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/drops_026g.options");
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/drops/drops.options";
 
 /// The category that stands for no drop.
 pub const NOTHING: u8 = 0;
@@ -193,7 +193,9 @@ fn parse_table(table: &ConfigValue) -> Result<DropTable, ConfigError> {
 impl Drops {
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Drops> = std::sync::OnceLock::new();
-        SHARED.get_or_init(|| Self::parse(DROPS).expect("the embedded 0.26g drop tables parse"))
+        SHARED.get_or_init(|| {
+            Self::parse(super::game_data::file(PATH)).expect("the drop tables parse")
+        })
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, ConfigError> {
@@ -524,6 +526,29 @@ mod tests {
         assert_eq!(generic.candidates(dictionary, 28, 3)[0].dict_id, 214);
         assert_eq!(generic.candidates(dictionary, 29, 3)[0].dict_id, 215);
         assert!(generic.candidates(dictionary, 0, 3).is_empty());
+    }
+
+    #[test]
+    fn the_duty_exoskeleton_is_sold_only() {
+        // Sold, never dropped (owner, 2026-10-15): in no table at any
+        // level. The Bandit balaclava drops as the stock mask it is made
+        // from (its weight, 110).
+        let dictionary = Dictionary::shared();
+        let drops = Drops::shared();
+        assert_eq!(item_params(1805).unwrap().drop_weight, 0);
+        assert_eq!(item_params(1810).unwrap().drop_weight, 110);
+        let category = dictionary.item(1805).unwrap().category;
+        for table in [&drops.generic, &drops.new_player, &drops.daily_bonus, &drops.drop_card] {
+            for level in 0..=20 {
+                assert!(
+                    table
+                        .nearest_candidates(dictionary, category, level)
+                        .iter()
+                        .all(|params| params.dict_id != 1805),
+                    "level {level}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The 0.26g static dictionary, read from the game's own file
-//! (`gameplay/db_static_dictionaries` in 0.26g's `resources.db`;
-//! `docs/notes/data.md` §2).
+//! (`gameplay/db_static_dictionaries` of the players' `resources.db`,
+//! [`super::game_data`]; `docs/notes/data.md` §2).
 //!
 //! Against 0.21d: an item has `base_cost` where it had `item_level` (the
 //! level moved to the item's own config, [`super::item_params`]); the
@@ -15,8 +15,8 @@ use binary_config_parser::tree::{ConfigError, ConfigValue};
 
 pub use crate::dictionary::{Category, Faction, FactionLevel, PROFILE_SLOTS};
 
-const STATIC_DICTIONARIES: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/db_static_dictionaries_026g");
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/db_static_dictionaries";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -129,11 +129,11 @@ fn rows<T>(
 }
 
 impl Dictionary {
-    /// The dictionary the 0.26g client ships, parsed once.
+    /// The players' dictionary ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Dictionary> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::parse(STATIC_DICTIONARIES).expect("the embedded 0.26g dictionaries parse")
+            Self::parse(super::game_data::file(PATH)).expect("the dictionary parses")
         })
     }
 
@@ -311,14 +311,17 @@ mod tests {
     #[test]
     fn reads_the_026g_dictionary() {
         let dictionary = Dictionary::shared();
-        assert_eq!(dictionary.items.len(), 384);
+        // 0.26g's 384, and the release's Duty exoskeleton (1805) and Bandit
+        // balaclava (1810) (`resources/game-026g/`).
+        assert_eq!(dictionary.items.len(), 386);
         assert_eq!(dictionary.categories.len(), 29);
         assert_eq!(dictionary.slot_restrictions.len(), 77);
         assert_eq!(dictionary.factions.len(), 6);
         assert_eq!(dictionary.bundles.len(), 14);
         assert_eq!(dictionary.maps.len(), 89);
         assert_eq!(dictionary.match_levels.len(), 21);
-        assert_eq!(dictionary.items.last().unwrap().dict_id, 737);
+        assert_eq!(dictionary.items.last().unwrap().dict_id, 1810);
+        assert_eq!(dictionary.items[383].dict_id, 737);
 
         let ak = dictionary.item(3).unwrap();
         assert_eq!(ak.name, "ak_74m");
@@ -338,9 +341,11 @@ mod tests {
     #[test]
     fn items_per_category_are_those_of_the_dump() {
         let dictionary = Dictionary::shared();
+        // 0.26g's, and the release's balaclava (a mask, 2) and Duty
+        // exoskeleton (worn in the back slot, 4).
         #[rustfmt::skip]
         let expected = [
-            (1, 14), (2, 8), (3, 24), (4, 10), (5, 23), (6, 14), (7, 17), (8, 15), (9, 9),
+            (1, 14), (2, 9), (3, 24), (4, 11), (5, 23), (6, 14), (7, 17), (8, 15), (9, 9),
             (10, 10), (11, 1), (12, 3), (13, 10), (14, 8), (15, 10), (16, 2), (17, 5), (18, 8),
             (19, 2), (20, 9), (21, 1), (22, 3), (23, 0), (24, 2), (25, 50), (26, 120), (27, 4),
             (28, 1), (29, 1),
