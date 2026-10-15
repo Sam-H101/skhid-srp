@@ -115,6 +115,10 @@ pub struct LiveView {
     pub kills: [u16; 2],
     /// Since play began. `None` before it has, and after the end.
     pub played: Option<Duration>,
+    /// Until the time limit ends it, known from the countdown on; zero
+    /// once the match is over. What tells a match near its end from one
+    /// that admits nobody for a joiner on its way in (`join`).
+    pub time_left: Option<Duration>,
 }
 
 /// A match as the match server has it now, for the players' list of the
@@ -136,6 +140,9 @@ pub struct OpenMatch {
     pub standing: Option<([u16; 2], Duration)>,
     /// Since play began.
     pub played: Option<Duration>,
+    /// [`MatchSetup::match_level`]: the row of `match_levels_dict` its
+    /// rewards are multiplied by.
+    pub match_level: u16,
 }
 
 /// One roster place: the index in [`MatchSetup::players`] is the player's

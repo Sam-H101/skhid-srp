@@ -150,6 +150,15 @@ Patches:
   world of a match puts each place's input and kit choice into the place's
   lists in time order (calls at 0x2D1050 and 0x2D1055), the kit choice
   being the one the world made for the next spawn, not the kit in use;
+- Team Deathmatch's rule counts a death after its own end (patch revision
+  11, with the late join, client_patch.md section 3.21). tdm_rule_core's
+  death handler 0x316090 returned at once when the rule's completion time
+  (+0x12C) was set; the time is not serialized, so a rollback over the
+  death that completed the rule left it set and the replay of that death
+  was skipped: one dead player of the team that was out stayed in the alive
+  mask, the server saw a player alive and the match ran to the time limit
+  (match.md section 28). The `jnz` at 0x3160F1 becomes six nops, as the
+  battery rule's does;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -260,7 +269,14 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # the place's lists, the kit choice being the one the world has made for the
 # next spawn (FIRST_LOAD below): in 9 and before a newcomer could respawn a
 # player in another kit than the other games did.
-REVISION = 10
+# 11: Team Deathmatch's rule counts a death after its own end (TDM_DEATHS
+# below). In 10 and before a rollback over the deciding death left the
+# rule's completion time set, the replay skipped the death, and one dead
+# player of the team that was out stayed in the alive mask: the match the
+# server reads never ended before the time limit. What a match computes
+# changes at the first death after a team is out: a game of 11 and an
+# older one part there, so a server asks for 11.
+REVISION = 11
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -282,6 +298,15 @@ GATHER_EVENTS = (0x313A62, bytes.fromhex("0f85d3000000"), b"\x90" * 6)
 # completion no container can be used any more) -> the mov byte becomes nops.
 GATHER_LOCK = (0x313B34, bytes.fromhex("c6816001000000"), b"\x90" * 7)
 GATHER = (GATHER_EVENTS, GATHER_LOCK)
+
+# tdm_rule_core's death handler 0x316090 (event 1): `cmp dword
+# [esi+12Ch],-1` / `jnz 3161DDh` (once the rule has set its completion time,
+# +12Ch, no death is counted: not the ticket, not the player's leaving the
+# alive mask) -> the jnz becomes nops, as for the battery rule above. The
+# completion time is not serialized (the constructor's 0x31601D is the only
+# write of -1), so a rollback over the death that completed the rule keeps
+# it, and the replay of that death is skipped (match.md section 28).
+TDM_DEATHS = (0x3160F1, bytes.fromhex("0f85e6000000"), b"\x90" * 6)
 
 # vfs::mounter::finish 0x469F0, the last step of every mount: `mov
 # eax,[eax+34h]` (the mount's root) / `test eax,eax` / `jnz 46B0Fh`, then
@@ -885,6 +910,8 @@ def build(original, mode, code=None, server=None, late_join=None):
         sites.append((RUN_UNFOCUSED_VA, RUN_UNFOCUSED_VA + len(RUN_UNFOCUSED[1])))
         patch(data, *PREGAME_PROGRESS)
         sites.append((PREGAME_PROGRESS_VA, PREGAME_PROGRESS_VA + len(PREGAME_PROGRESS[1])))
+        patch(data, *TDM_DEATHS)
+        sites.append((TDM_DEATHS[0], TDM_DEATHS[0] + len(TDM_DEATHS[1])))
         patch(data, *REMOVE_MODEL)
         # The one address in what is replaced: the loader must not add to it.
         if neutralize_relocs(data, [(REMOVE_MODEL_VA, REMOVE_MODEL_VA + len(REMOVE_MODEL[1]))]) != [REMOVE_MODEL_VA + 2]:
@@ -917,7 +944,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "the countdown shows the match's team points, "
                      "a spawn gives its weapons a random state of the match's own, "
                      "and the state a new weapon has where a game could not know the kit's last life, "
-                     "a first world's kit choices are the world's and in time order"
+                     "a first world's kit choices are the world's and in time order, "
+                     "a Team Deathmatch rule counts a death after its own end"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
