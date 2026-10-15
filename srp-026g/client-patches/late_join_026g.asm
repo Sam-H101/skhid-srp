@@ -146,67 +146,54 @@ query_players:
     ret
 
 times 576-($-$$) db 0xcc
-; The replay's seek 0x1EE2E0 (esi=game, edi=target; only a replay has the
-; reader it starts from), after set_time_in_ms(target) and only for a user
-; seek (`test bl,bl` / `jnz`): replaces `lea eax,[edi-3E8h]` at 0x1EE3A3.
-; Every client weapon of every place's three kits gets its delayed sounds
-; (weapon+9FCh) and its fx history (weapon+828h) emptied as ~weapon 0x243790
-; does: the old timeline's sounds and the re-simulation's burst are dropped.
-seek_clear:
-    pushad
-    call .pc
-.pc:
-    pop ebp
-    add ebp, 0xa0422c-.pc           ; the client weapon's item vtable, rebased
-    mov eax, [esi+0x4d64]           ; the world
-    push dword [eax+0x18654]        ; places end
-    mov ebx, [eax+0x18650]          ; first place, 30h each
-.place:
-    cmp ebx, [esp]
-    jae .done
-    xor ecx, ecx                    ; kit 0..2
-.kit:
-    mov eax, [ebx+ecx*4]
-    test eax, eax
-    jz .next_kit
-    mov eax, [eax+0x10c]            ; the player's inventory
-    test eax, eax
-    jz .next_kit
-    xor edi, edi                    ; slot 0..22
-.slot:
-    mov esi, [eax+edi*4+0x10c]      ; an item: weapon+10h
-    test esi, esi
-    jz .next_slot
-    cmp [esi], ebp
-    jne .next_slot                  ; not a client weapon
+; The camera's projection (patch 22; 0x242900, slot 0 of every camera's
+; vtable) jumps here at its first instruction. ecx = the camera, [esp+4] =
+; the matrix to fill, [esp+8] = the viewport's size; `ret 8`, eax = the
+; matrix, as the original. The original passes the matrix builder 0xEEE30
+; far (+8Ch), near (+88h), the aspect and xmm0 = z * 65 degrees, z being the
+; zoom (+90h): 1 not aimed, 1/aim_zoom_factor with iron sights and a scope's
+; fov_factor (0.25) aimed, slid by the aim's progress (0x1F3480). Here the
+; angle in degrees is
+;   65 z + (uro_fov - 65) * max(0, (z - 0.25) / 0.75):
+; uro_fov unaimed, nearly it with iron sights, the original's 65 * 0.25
+; through a 4x scope whatever the setting, and between them a slide that
+; follows the aim. Only xmm0 of the XMM registers is written, as before.
+fov_projection:
+    mov eax, [esp+8]
+    push esi
+    mov esi, [esp+8]
+    push dword [ecx+0x8c]
+    push dword [ecx+0x88]
     push eax
-    push ecx
-    lea edx, [esi+0x9f0]            ; &end (weapon+A00h)
-    push edx
-    mov eax, [esi+0x9ec]            ; begin (weapon+9FCh)
-    call 0x245c50                   ; destroys the functors, plays nothing
-    add esp, 4
-    mov eax, [esi+0x9ec]
-    mov [esi+0x9f0], eax            ; end = begin
-    mov eax, [esi+0x81c]
-    mov [esi+0x818], eax            ; fx history: write index = oldest
-    pop ecx
-    pop eax
-.next_slot:
-    inc edi
-    cmp edi, 23
-    jb .slot
-.next_kit:
-    inc ecx
-    cmp ecx, 3
-    jb .kit
-    add ebx, 0x30
-    jmp .place
-.done:
-    pop eax
-    popad
-    lea eax, [edi-0x3e8]            ; what the jump replaces
-    jmp 0x1ee3a9
+    fld dword [ecx+0x90]
+    fld st0
+    fsub dword [fov_scope]
+    fldz
+    fcomi st0, st1
+    fcmovb st0, st1
+    fstp st1
+    fmul dword [fov_blend]
+    fld dword [0xA6FA28]
+    fsub dword [fov_stock]
+    fmulp st1, st0
+    fxch st1
+    fmul dword [fov_stock]
+    faddp st1, st0
+    fmul dword [fov_radians]
+    fstp dword [esp]
+    movss xmm0, [esp]
+    fld dword [eax]
+    fdiv dword [eax+4]
+    fstp dword [esp]
+    call 0xEEE30
+    add esp, 12
+    mov eax, esi
+    pop esi
+    ret 8
+fov_scope:   dd 0.25
+fov_blend:   dd 1.3333334
+fov_stock:   dd 65.0
+fov_radians: dd 0.017453292
 
 times 768-($-$$) db 0xcc
 ; Native boost member callback: ecx=context, [esp+4]=queries_result.

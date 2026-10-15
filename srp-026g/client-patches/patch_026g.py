@@ -275,14 +275,21 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # player of the team that was out stayed in the alive mask: the match the
 # server reads never ended before the time limit. What a match computes
 # changes at the first death after a team is out: a game of 11 and an
-# older one part there, so a server asks for 11.
-# Also in 11: a replay's camera follows the player it is on into another
-# kit (REPLAY_REATTACH below). Before it a replay watched in first or third
-# person died at that player's first respawn into another kit
-# (docs/notes/replay_sur.md). Only the replay client changes, nothing a
-# match computes: no revision of its own (owner, 2026-10-15). So is a
-# weapon's full sound queue (SOUND_QUEUE below), which killed a replay
-# about 50 s after a seek: the new sound is dropped instead.
+# older one part there, so a server asks for 11. With it, a field-of-view
+# setting (FOV_PATCHES and FOV_PROJECTION_HOOK below): the video options'
+# slider is bound to uro_fov, from 50 to 100, which the camera's angle
+# follows unaimed; through a scope the angle is the original's. A camera is
+# not in what a match computes. And a battery under the floor one stands
+# on can be picked up (PICKUP_* below): a use is in what a match computes,
+# so this too parts a game of 11 from an older one.
+# Also in 11, for the replay viewer (docs/notes/replay_sur.md): a replay's
+# camera follows the player it is on into another kit (REPLAY_REATTACH
+# below; a replay watched in first or third person died at that player's
+# first respawn into another kit), a weapon's full sound queue drops the new
+# sound (SOUND_QUEUE below; a replay died about 50 s after a seek), and a
+# replay's seek empties the weapons' sound queues (SEEK_CLEAR below; sounds
+# played late after a seek). Nothing a match computes: no revision of their
+# own (owner, 2026-10-15).
 REVISION = 11
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -530,12 +537,15 @@ FIRST_LOAD_DESERIALIZE_VA = 0x2D0B70
 # sounds late by the seek's distance, a burst, a queue that fills. For a
 # user seek only (`test bl,bl` / `jnz 1EE3B5h`, a key frame in play takes the
 # jnz), `lea eax,[edi-3E8h]` at 0x1EE3A3 becomes a jump to seek_clear
-# (late_join_026g.asm): every client weapon (item vtable 0xA0422C) in the 23
+# (replay_seek_026g.asm at SEEK_CLEAR_VA, after the pickup code): every
+# client weapon (item vtable 0xA0422C) in the 23
 # inventory slots of each place's three kits has its queue's functors
 # destroyed (0x245C50, which plays nothing), the queue emptied, and its fx
 # history (weapon+828h, the duplicate check) emptied, as ~weapon 0x243790
 # does; then the lea, and back. A live game never runs the seek.
-SEEK_CLEAR_HOOK = (0x1EE3A3, bytes.fromhex("8d8718fcffff"), 576, 0xE9)
+SEEK_CLEAR_OFFSET = 0xA00
+SEEK_CLEAR_VA = SECTION_VA + SEEK_CLEAR_OFFSET
+SEEK_CLEAR_HOOK = (0x1EE3A3, bytes.fromhex("8d8718fcffff"), 0, 0xE9)
 
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
@@ -564,6 +574,17 @@ LATE_JOIN_PATCHES = (
 # Calls and jumps into the new code: (address, the original's bytes, the
 # entry's offset in the code, 0xE8 call or 0xE9 jmp); the rest of the
 # original's bytes become nops.
+# The camera's projection (patch 22, FOV_PATCHES below): its first
+# instruction, `fld dword [ecx+8Ch]`, jumps to fov_projection, which does the
+# whole projection with the angle of the field-of-view setting.
+FOV_PROJECTION_VA = 0x242900
+FOV_PROJECTION_OFFSET = 576
+FOV_PROJECTION_HOOK = (FOV_PROJECTION_VA, bytes.fromhex("d9818c000000"), FOV_PROJECTION_OFFSET, 0xE9)
+# The original's whole body, which the self-test reads (int3 after it).
+FOV_PROJECTION_BODY = bytes.fromhex(
+    "d9818c0000008b442408f30f1000f30f5e4004568b74240883ec0cd95c2408"
+    "d98188000000d95c2404f30f110424f30f108190000000f30f5905ecd9a200"
+    "e8edc4eaff83c40c8bc65ec20800cccccccc")
 LATE_JOIN_HOOKS = (
     (0x2CBF9B, bytes.fromhex("e860c10000"), 3072, 0xE8),         # a player's animations: register_animations
     (0x2D3880, bytes.fromhex("e89bdf0400"), 0, 0xE8),            # a slot's ids: bind_slot
@@ -579,7 +600,7 @@ LATE_JOIN_HOOKS = (
     KIT_STATE_HOOK,                                              # a spawn's weapons' kept state: kit_state_hook
     FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
     FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
-    SEEK_CLEAR_HOOK,                                             # a replay's user seek: seek_clear
+    FOV_PROJECTION_HOOK,                                         # the camera's angle: fov_projection
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -667,6 +688,61 @@ PREGAME_PROGRESS_VA, PREGAME_PROGRESS_TARGET = 0x23B328, 0x23B383
 PREGAME_PROGRESS = (PREGAME_PROGRESS_VA, bytes.fromhex("e9f4000000"),
                     b"\xE9" + struct.pack("<i", PREGAME_PROGRESS_TARGET - PREGAME_PROGRESS_VA - 5))
 
+# A field-of-view setting (patch 22). The video options' constructor
+# (0x262929) makes option 7, a float slider of snap 1 labelled
+# `st_fov_option` in all five languages, and names its console variable by
+# `mov eax,offset "fov"` (0x262930; "fov" at 0xA0659C, read nowhere else).
+# No console variable is called "fov", so the slider was never shown (the
+# menu has no instance of it either: fov_slider_026g.py adds one to
+# main_menu.swf). `uro_fov` (float at 0xA6FA28, 65.0, saved in user.cfg; the
+# console variable at 0xAA6510, its name "uro_fov" at 0xA281D0) is
+# registered with the range 0 to 100 and read by nothing. The option now
+# names it: the instruction's relocation (0x262931) stays active, an
+# address for an address.
+FOV_OPTION_NAME = (0x262930, bytes.fromhex("b89c65a000"), b"\xb8" + struct.pack("<I", 0xA281D0))
+FOV_VALUE = 0xA6FA28
+# The camera's projection (FOV_PROJECTION_HOOK above; 0x242900, slot 0 of
+# the vtables of game_camera, lobby_camera, free_fly_camera, demo_camera and
+# player_input_handler): far, near and the viewport's aspect on the stack,
+# xmm0 = the zoom (this+90h) * 1.134464 (65 degrees in radians, the float at
+# 0xA2D9EC, read here alone), then the matrix builder 0xEEE30, `ret 8`. The
+# zoom is set at every frame by 0x1F3480: 1 + (target - 1) * the aim's
+# progress (weapon+5FCh), the target being a fitted scope's fov_factor
+# (scope+114h, 0.25 in all three scopes' configs) or else the weapon's
+# 1 / aim_zoom_factor (weapon+5B4h, from 1.0 to 1.2: 1 to 0.833), 1 when no
+# weapon is aimed. fov_projection (late_join_026g.asm) passes the same
+# arguments to the same builder with the angle
+#   65 z + (uro_fov - 65) * max(0, (z - 0.25) / 0.75)  degrees:
+# uro_fov unaimed, nearly it with iron sights, and through a scope exactly
+# the original's 65 * 0.25, whatever the setting, so no setting magnifies a
+# scope more than another. The rest of the original's body stays, never
+# reached, with the constant's relocation.
+# uro_fov's registration (0x85ADF0): `xorps xmm0,xmm0; movss [least],xmm0`
+# becomes `mov dword [least],50.0; nop` (xmm0 is loaded with the most, 100,
+# right after). At 0 the projection would divide by tan 0. The setter of every float console variable (0xECB70) stores the
+# least for a value out of range or not a number, as the game always did:
+# a wrong uro_fov in user.cfg gives 50. The relocation of the address in
+# the replaced store (0x85AE0D) is disabled.
+FOV_MIN = 50.0
+FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
+               bytes.fromhex("c7055465aa00") + struct.pack("<f", FOV_MIN) + b"\x90")
+FOV_MINIMUM_RELOC = 0x85AE0D
+FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
+
+# A battery under the floor (patch 23, pickup_below_026g.asm at
+# PICKUP_VA): client_patch.md section 3.23.
+PICKUP_OFFSET = 0x800
+PICKUP_VA = SECTION_VA + PICKUP_OFFSET
+PICKUP_ACROSS = 1.0
+PICKUP_FRAME = (0x2D84C9, bytes.fromhex("83ec34"), bytes.fromhex("83ec3c"))
+PICKUP_HOOKS = (
+    (0x2D84E9, bytes.fromhex("d905d810a700"), 0, 0xE8),          # the ray's length: reach
+    (0x2D861C, bytes.fromhex("240a3c0a744b"), 32, 0xE9),         # a wall or a floor: solid
+    (0x2D85BE, bytes.fromhex("8b45088b168b5230"), 64, 0xE9),     # a usable object: candidate
+)
+# The one address in what is replaced: the distance's, in the reach hook.
+PICKUP_RELOC = 0x2D84EB
+
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
 RUN_UNFOCUSED = (RUN_UNFOCUSED_VA, bytes.fromhex("8b53088b42308d4b08ffd084c07423"),
@@ -679,10 +755,13 @@ def late_join_state_va(code):
     return (end + 0xFFF) // 0x1000 * 0x1000
 
 
+def hook_bytes(base, va, expected, offset, opcode):
+    """The bytes a hook site gets: the call or jump to base+offset and nops."""
+    return bytes([opcode]) + struct.pack("<i", base + offset - va - 5) + b"\x90" * (len(expected) - 5)
+
+
 def late_join_hook(va, expected, offset, opcode):
-    """The bytes a hook site gets: the call or jump and nops."""
-    target = LATE_JOIN_VA + offset
-    return bytes([opcode]) + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
+    return hook_bytes(LATE_JOIN_VA, va, expected, offset, opcode)
 
 HOOKS = [
     # network_client::on_match_ready, ebx = network_client: mov ebx,[ebx+1F1C48h]
@@ -1009,9 +1088,35 @@ def build(original, mode, code=None, server=None, late_join=None):
         # A number, not an address.
         if neutralize_relocs(data, [(CLOCK_FACTOR_VA, CLOCK_FACTOR_VA + 4)]):
             sys.exit("a base relocation under time_floating_factor's value")
+        for va, expected, new in FOV_PATCHES:
+            patch(data, va, expected, new)
+        # The option's name stays an address the loader adds to; the least's
+        # one replaced address must not be added to.
+        va, expected, _ = FOV_MINIMUM
+        if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
+            sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
+        pickup = open(pickup_bin(), "rb").read()
+        if len(cave) > PICKUP_OFFSET or PICKUP_OFFSET + len(pickup) > LATE_JOIN_OFFSET:
+            sys.exit("the upload code and the pickup code do not fit before the late join")
+        patch(data, *PICKUP_FRAME)
+        sites = [(PICKUP_FRAME[0], PICKUP_FRAME[0] + len(PICKUP_FRAME[1]))]
+        for va, expected, offset, opcode in PICKUP_HOOKS:
+            patch(data, va, expected, hook_bytes(PICKUP_VA, va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        if neutralize_relocs(data, sites) != [PICKUP_RELOC]:
+            sys.exit("the base relocations under the pickup sites are not where they were read")
+        seek_clear = open(seek_clear_bin(), "rb").read()
+        if PICKUP_OFFSET + len(pickup) > SEEK_CLEAR_OFFSET or SEEK_CLEAR_OFFSET + len(seek_clear) > LATE_JOIN_OFFSET:
+            sys.exit("the pickup code and the seek code do not fit before the late join")
+        va, expected, offset, opcode = SEEK_CLEAR_HOOK
+        patch(data, va, expected, hook_bytes(SEEK_CLEAR_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the seek's hook")
 
     if mode == "section":
         if late_join is not None:
+            cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
+            cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
         if late_join is not None:
@@ -1031,6 +1136,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "and the state a new weapon has where a game could not know the kit's last life, "
                      "a first world's kit choices are the world's and in time order, "
                      "a Team Deathmatch rule counts a death after its own end, "
+                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's, "
+                     f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across), "
                      "a replay's camera follows its player into another kit, "
                      "a weapon with a full sound queue drops the new sound, "
                      "a replay's seek empties the weapons' sound queues"
@@ -1044,6 +1151,14 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
+def pickup_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "pickup_below_026g.section.bin")
+
+
+def seek_clear_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_seek_026g.section.bin")
 
 
 def late_join_bin():

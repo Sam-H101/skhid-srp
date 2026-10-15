@@ -137,7 +137,9 @@ The viewer binds every place of chunk 1 at its start, so its list of game object
 
 ## 8. Two crashes of the viewer, fixed in the client (2026-10-15, patch revision 11)
 
-`client_patch.md` 3.22 has both fixes.
+`client_patch.md` 3.24 has the fixes (patches 24 to 26 in `client-patches/README.md`).
 - **First or third person, at the watched player's first respawn into another kit.** The camera stayed on the old kit's object, and `weapon::draw` died. Revision 11 re-attaches it. Run: followed past such a kit change.
-- **About 50 s after a seek, at normal speed.** A weapon's delayed-sound queue (64 items) overflowed. Revision 11 drops the new sound when it is full. Not yet run.
-- **Late sounds after a seek** (reloads more than footsteps; LIKELY what was heard). The queued sounds kept their times from before the seek, and new copies waited behind them. Revision 11 empties every weapon's queue at a user seek, in the replay only. Run with Unicorn, not yet in the game.
+- **About 50 s after a seek, at normal speed.** A weapon's delayed-sound queue (64 items) overflowed. Revision 11 drops the new sound when it is full.
+- **Late sounds after a seek** (reloads more than footsteps; LIKELY what was heard). The queued sounds kept their times from before the seek, and new copies waited behind them. Revision 11 empties every weapon's queue at a user seek, in the replay only.
+
+Run 2026-10-15 (revision 11 test exe, 0x3cf24270, first person, seeks back and forth): no crash, sounds on time after the seeks.
