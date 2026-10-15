@@ -38,10 +38,12 @@ chmod -R u+rwX,go+rX,go-w "$SRC/srp-026g"
 rev=$(git -C "$SRC" rev-parse --short HEAD)
 echo "main is $rev: $(git -C "$SRC" log -1 --format=%s)"
 
-# The build sees the repository's 0.26g folder and nothing of the host. The
-# compose file is the host's own copy, not the checkout's: what a container
-# may reach on the host is not decided by the repository.
-docker build --tag srp-026g:latest "$SRC/srp-026g"
+# The build sees the repository's 0.26g folder and the updater's logic
+# (crates/resources-db reads the players' update plan with it), and nothing
+# of the host. The compose file is the host's own copy, not the checkout's:
+# what a container may reach on the host is not decided by the repository.
+docker build --tag srp-026g:latest \
+    --build-context updater_logic="$SRC/client/updater/logic" "$SRC/srp-026g"
 compose up -d --no-build --remove-orphans
 docker image prune --force >/dev/null
 

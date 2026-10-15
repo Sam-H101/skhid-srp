@@ -115,6 +115,44 @@ on 2026-10-12 (grep `SRP_` in `crates` and `servers`).
 
 A port that is not a number stops srp at start.
 
+### Game data
+
+srp takes every table of game data from the `resources.db` the players run,
+once, before anything else (`crates/survarium/src/v026g/game_data.rs`): from
+the server's game data of the release, the files of that archive it reads
+(`gameplay/` and the project markers), which `srp-game-data extract` takes
+from 0.26g's own archive with the update plan of the players' download laid
+over it (`crates/resources-db`, `server`), each checked against the players'
+file table. From its `gameplay/` files it derives the dictionary, every item's parameters and
+the slots it covers, what it may be modified with, the game modes, the
+player's carry limits, and the modification, craft, reroll, drop, quest,
+skill, award and test-profile files (`tables.rs` checks them against each
+other). So it cannot know an item, or a value of one, the players' game
+does not. What the game's files do not say stays in code: the shop's
+exceptions (`prices.rs`), a project's respawn points, the bundles.
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_GAME_DATA` | unset | The server's game data of the release (`server-game-data.db`, which `make_client_026g.py` writes beside the players' ZIP). **Required**: without it srp does not start |
+| `SRP_DOWNLOAD_FILE` | unset | The players' download (also the web page's, below): `SRP_GAME_DATA` must name its plan (`game/binaries/x86/updater_skhid.resources`). Unset or no such file: data of no plan |
+
+The data names the plan it was made for (`srp/provenance`: the plan's
+sha256 and its `resources.db` lines), and srp refuses to start unless it is
+the plan of the download: the server cannot run with data other than what
+the players install. A wrong file, or an item config the dictionary names
+but the data lacks, stops srp at start with the reason. It is read once: a
+new download whose plan changes `resources.db` goes out with its data and a
+restart (`DEPLOY.md`, "The game's files"). Tests and tools read
+`resources/game-026g/players.db`, the server's game data of the release the
+players run.
+
+An item whose `data.additional_model_slots` names other armour slots is
+worn alone in them (`crates/session/src/v026g/rules.rs`): putting it on
+takes their items off, putting anything into one of them takes it off. The
+Duty exoskeleton, worn in the back slot, covers the six others; 0.26g's
+helmets with a built-in mask cover the mask's slot. A kit saved against
+that rule is mended when the accounts load, and never plays.
+
 ### Data and logs
 
 | Variable | Default | What |
@@ -430,9 +468,15 @@ not prove the notes agree with the client. Format only the files you touched
 
 ```
 cd srp-026g        (the certificates are read from .\certs)
+cargo run --release -p resources-db --bin srp-game-data -- extract --db <the game folder>\game\resources.db --out game-data.db
+set SRP_GAME_DATA=game-data.db
 cargo run -p srp
 survarium_srp.exe -localization=ukrainian -splash_screen=0 -server=127.0.0.1:1234 -mt_allocator=768 -minimum_resources_memory_size=768
 ```
+
+The game data of an installed game with no Skhid release over it is that
+of no plan, which srp takes with no `SRP_DOWNLOAD_FILE`; with a release's
+ZIP, use the `server-game-data.db` made beside it.
 
 The two memory keys are different arenas (read in the exe 2026-10-12):
 `-mt_allocator=<MiB>` is the global multithreaded allocator (option object

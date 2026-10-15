@@ -38,7 +38,12 @@ SRP_WEB_TRUST_PROXY=off
 # SRP_TEST_SERVER=on
 
 # The download the home page offers: a zip in ./download, or a https link.
+# srp also reads the update plan in that zip: the server's game data
+# below must be made for it.
 # SRP_DOWNLOAD_FILE=/srv/srp/download/Survarium-0.26g-srp-files.zip
+# The server's game data of the release (server-game-data.db, made beside
+# the zip by make_client_026g.py). srp does not start without it.
+# SRP_GAME_DATA=/srv/srp/download/server-game-data.db
 # Where the original game is had (the compose file's default is the web
 # archive's copy of build 2777).
 # SRP_GAME_URL=

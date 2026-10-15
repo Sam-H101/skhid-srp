@@ -52,15 +52,19 @@ use the game's own 1234, 1235, 1236.
    says) into `./download`, or set `SRP_DOWNLOAD_URL`. A zip made with
    resource regions comes with blobs: they go into `./download/resources/`
    first (`client-patches/launcher/README.md`, "Putting it on a server").
-4. `docker compose config` (checks the file and the settings), then
+4. Put the server's game data of that download (`server-game-data.db`,
+   made beside the ZIP: "The game's files" below) into `./download` too.
+   srp takes its game data from it and does not start without it.
+5. `docker compose config` (checks the file and the settings), then
    `docker compose build srp26`, then `docker compose up -d srp26`.
-5. For HTTPS on the web page, on a host whose port 443 is free: point a
+6. For HTTPS on the web page, on a host whose port 443 is free: point a
    domain at the host, set `SRP_WEB_DOMAIN` (several names: commas between
    them, the whole in quotes) and `SRP_WEB_TRUST_PROXY=on`,
    then `docker compose --profile tls up -d`.
-6. Check: `docker compose ps` shows the container healthy (the check opens
+7. Check: `docker compose ps` shows the container healthy (the check opens
    the web page's port; the game ports are UDP), and the log's first lines
-   say which servers started on which ports.
+   say which servers started on which ports, and where the game data was
+   read from (`game data: ...`).
 
 Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 (`client-patches/README.md`).
@@ -76,6 +80,8 @@ Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 | `SRP26_WEB_PORT` | The web page's port on the host's 127.0.0.1 (default 8098) |
 | `SRP26_HTTPS_PORT` | caddy's port (default 443) |
 | `SRP26_DOWNLOAD_DIR` | The folder with the download (default `./download`) |
+| `SRP_GAME_DATA` | The server's game data of the release (default `/srv/srp/download/server-game-data.db`: `./download/server-game-data.db` on the host) |
+| `SRP26_UPDATER_LOGIC` | Where the build finds `client/updater/logic` (default `../client/updater/logic`, beside `srp-026g` in this repository). A host that has a copy of `srp-026g` only copies that folder too, and names it here. The build needs BuildKit's `additional_contexts` (Docker Compose 2.17 or newer) |
 | `SRP26_CPUS`, `SRP26_MEMORY` | The container's limits (1 CPU, 512 MB) |
 | `SRP_ADMIN_TOKEN`, `SRP_ADMIN_PATH`, `SRP_ADMIN_IPS`, `SRP_WEB_TRUST_PROXY`, `SRP_WEB_DOMAIN` | The admin page and the web page, as for 0.21d: the admin page is on only with a token and a path, for the listed addresses only |
 | `SRP_DOWNLOAD_FILE`, `SRP_DOWNLOAD_URL`, `SRP_DOWNLOAD_SHA256`, `SRP_GAME_URL`, `SRP_OTHER_SERVER_URL`, `SRP_TEST_SERVER` | The home page's download, where the original game is had, the link to another server of ours, and `on` for a test server: every page then says that it is one and names the other server as the players' |
@@ -102,6 +108,31 @@ gets the lobby's sign-in, whose price list names every item sold.
 Left out (or 0), every game is let in; a value that is not a number from 0
 to 255 stops srp at start. `SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT`
 and `SRP_OUTDATED_TEXT` are no more read: take them out of `.env`.
+
+## The game's files
+
+srp takes every table of game data from the server's game data of the
+release the players run (`SRP-026G.md`, "Game data"): a file of a few MB
+(`server-game-data.db`), the files of the players' `resources.db` it reads,
+which `make_client_026g.py` writes beside the ZIP it makes (with
+`srp-game-data extract`, where 0.26g's `resources.db` is: the release
+machine). The host keeps it in the download folder, beside the ZIP:
+
+    /opt/srp-026g/download/server-game-data.db    (SRP_GAME_DATA=/srv/srp/download/server-game-data.db)
+
+It names the plan of the ZIP it was made for, and srp refuses to start
+unless that is the plan of the ZIP it hands out (`SRP_DOWNLOAD_FILE`): the
+server cannot run with data other than what the players install. The
+message says which plans they are and how to make the data again. The host
+needs neither 0.26g's `resources.db` (6.3 GB) nor the blobs to run srp.
+
+- **It is read once, at start.** A download that changes `resources.db` (new
+  items, maps) goes out in one maintenance window, in this order: the blobs
+  into `download/resources/`, `server-game-data.db`, the ZIP, the restart.
+  `srp-game-data check --data <file> --zip <ZIP>` says whether the two
+  belong together before the restart.
+- **Every release that changes `resources.db` has its own.** A ZIP without
+  its data (or the data without its ZIP) stops srp at start.
 
 ## Data, logs, backups
 

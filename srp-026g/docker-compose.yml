@@ -26,7 +26,13 @@
 name: srp26
 services:
   srp26:
-    build: .
+    build:
+      context: .
+      # The players' update plan is read by the updater's own code
+      # (crates/resources-db): client/updater/logic of this repository, or
+      # where SRP26_UPDATER_LOGIC says on a host that has srp-026g only.
+      additional_contexts:
+        updater_logic: ${SRP26_UPDATER_LOGIC:-../client/updater/logic}
     image: srp-026g:latest
     restart: unless-stopped
     environment:
@@ -49,6 +55,10 @@ services:
       # (5 at a time), read-only from ./download (SRP26_DOWNLOAD_DIR), or a
       # https link; and its checksum.
       - SRP_DOWNLOAD_FILE=${SRP_DOWNLOAD_FILE:-/srv/srp/download/Survarium-0.26g-srp-files.zip}
+      # The server's game data of the release (server-game-data.db, made
+      # beside the players' zip): srp takes its data from it, and refuses to
+      # start unless it was made for the plan of the zip above.
+      - SRP_GAME_DATA=${SRP_GAME_DATA:-/srv/srp/download/server-game-data.db}
       # Where the original game is had (the page's first step). The download
       # above is only the files that go over it.
       - SRP_GAME_URL=${SRP_GAME_URL:-https://archive.org/download/vostok_engine_v0.26g0_build_2777_internal_id_1104_jan_14_2015/survarium_full_026g0.7z}

@@ -16,6 +16,11 @@ COPY crates crates
 COPY servers servers
 COPY scripts scripts
 COPY resources/binary-config-examples resources/binary-config-examples
+COPY resources/game-026g resources/game-026g
+# crates/resources-db reads the players' update plan with the updater's own
+# code, at ../client/updater/logic of the repository: the compose file's
+# second context, updater_logic.
+COPY --from=updater_logic . /client/updater/logic
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
