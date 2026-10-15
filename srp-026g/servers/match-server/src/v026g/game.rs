@@ -187,6 +187,28 @@ const REPLAY_REDONE: u32 = 3;
 const RESYNC_LOAD_BY_MS: u32 = 1_200;
 /// ... this many times a resync at most: then a slower load is taken.
 const SLOW_LOADS_REDONE: u32 = 3;
+/// The entries a game keeps of each player's inputs (its rings, match.md
+/// section 30): a world loaded when some player has more inputs than this
+/// after the snapshot is played wrong from its first tick, whatever the
+/// time. Live, 2026-10-15: one player's precise inputs put 32 in 1.1 s,
+/// under [`RESYNC_LOAD_BY_MS`]; and loads acked 1.5 to 2.4 s after their
+/// snapshot were all wrong, after the time rule had given up on them.
+const INPUT_RING: usize = 27;
+/// A resynced game whose reports are wrong from this soon after its world
+/// went (`judge_from`) is resynced again without the wait between resyncs
+/// ([`QUICK_REDOS`] times in a row at most): the world did not take (it
+/// was loaded past a ring, or relays came while the load held the game and
+/// were moved).
+const LOAD_WRONG_MS: u32 = 1_500;
+/// How many resyncs in a row, none followed by a right report, may be
+/// done again at once.
+const QUICK_REDOS: u32 = 2;
+/// A world still on its way is done again once some player has this many
+/// inputs after its snapshot (counted to the match clock, what the game
+/// will have when the world gets there). With one input a tick that is
+/// 1.3 s, after [`RESYNC_LOAD_BY_MS`]: this rule is for the players with
+/// precise inputs, more than one a tick.
+const INPUT_RING_SAFE: usize = 26;
 /// The parts of a resynced client's world go again this long after their
 /// last way out, at least (0xE8's own pace is 500 ms; a burst of lost parts
 /// made loads of 1.4 to 1.6 s live, 2026-10-14) ...
@@ -275,6 +297,14 @@ const INPUTS_KEPT_MS: u32 = 60_000;
 const MAX_DOUBTFUL_DUMPS: u32 = 40;
 /// Ticks a client is known to have missed, the latest ones.
 const MISSED_KEPT: usize = 64;
+/// A tie names a client out of step only for a tick it missed, or an own
+/// input it was told to drop, this close before the disputed tick or
+/// before the start of the disagreement it is in: what it lacks shows at
+/// once (a lost relay is wrong from its own tick). An older one changed
+/// nothing, or it would have been resynced since; on a long
+/// line some relay is always unacked, and the old rule named such a client
+/// in every tie (live, 2026-10-15: 22 of 38 ties, the wrong one in them).
+const MISSED_RECENT_MS: u32 = 1_000;
 /// Plausibility: a player's kills at most one per this long, plus one.
 const MIN_MS_PER_KILL: u32 = 2_000;
 /// Plausibility: batteries home at most one per this long, plus one.
@@ -691,6 +721,10 @@ struct Peer {
     /// Ticks whose relay, discard or roster change it never acked since it
     /// last started from a snapshot: it lacks what the others have.
     missed: VecDeque<u32>,
+    /// Ticks of its own inputs it was told to drop (0xF1) since it last
+    /// started from a snapshot, the latest [`MISSED_KEPT`]: a game whose
+    /// drop order came past its history keeps an input nobody else has.
+    discarded: VecDeque<u32>,
     in_flight: VecDeque<InFlight>,
     relays_acked: u32,
     relays_lost: u32,
@@ -1145,6 +1179,7 @@ impl Game {
             load_reports: Vec::new(),
             correction_ends: None,
             missed: VecDeque::new(),
+            discarded: VecDeque::new(),
             in_flight: VecDeque::new(),
             relays_acked: 0,
             relays_lost: 0,
@@ -1540,10 +1575,17 @@ impl Game {
         let relayed_last = self.own_relayed_last(index, clock);
         // The initial world's time: the clock started on it.
         let first_time = self.clock_start.map(|(_, at)| at);
-        let recent = self.recent.as_ref().filter(|_| {
+        // An upload not yet checked, only when another game reported its
+        // hash too: no majority contradicting it is not enough (three games
+        // at three CRCs contradict nobody; a back-in started from the wrong
+        // one of them, 2026-10-14). With one game simulating its own word
+        // is all there is.
+        let recent = self.recent.as_ref().filter(|recent| {
             self.admissions[index]
                 .as_ref()
                 .is_none_or(Admission::entered)
+                && (self.live() <= 1
+                    || self.vouchers(recent.time, snapshot::crc(&recent.body)) >= 2)
         });
         [self.snapshot.as_ref(), recent]
             .into_iter()
@@ -1577,6 +1619,24 @@ impl Game {
                 *from == index && *at > after && matches!(what, Relayed::Input(_))
             })
             .map(|(at, _, _)| *at)
+    }
+
+    /// The most inputs any one player has for ticks after `after`, up to
+    /// `upto`: what a game loading a world of `after` must still hold in
+    /// that player's ring ([`INPUT_RING`]).
+    fn ring_fill(&self, after: u32, upto: u32) -> usize {
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        for (at, from, what) in self
+            .inputs
+            .iter()
+            .rev()
+            .take_while(|(at, _, _)| *at + 4 * HORIZON_MS > after)
+        {
+            if *at > after && *at <= upto && matches!(what, Relayed::Input(_)) {
+                *counts.entry(*from).or_default() += 1;
+            }
+        }
+        counts.into_values().max().unwrap_or(0)
     }
 
     fn own_relayed_last(&self, index: usize, clock: u32) -> Option<u32> {
@@ -2515,6 +2575,7 @@ impl Game {
             );
         }
         peer.missed.clear();
+        peer.discarded.clear();
         peer.in_flight.clear();
         // Its reports up to now are of the world it leaves.
         peer.diverged = None;
@@ -2920,6 +2981,10 @@ impl Game {
             Placing::Keep => {}
             Placing::Discard => {
                 peer.inputs_discarded += 1;
+                if peer.discarded.len() == MISSED_KEPT {
+                    peer.discarded.pop_front();
+                }
+                peer.discarded.push_back(time);
                 answer_owner(
                     peer,
                     Answer::input(ServerMessage::DiscardInput { time: input.time }, time, None),
@@ -2998,6 +3063,10 @@ impl Game {
         ) {
             Placing::Keep => {}
             Placing::Discard => {
+                if peer.discarded.len() == MISSED_KEPT {
+                    peer.discarded.pop_front();
+                }
+                peer.discarded.push_back(time);
                 answer_owner(
                     peer,
                     Answer::profile(ServerMessage::DiscardProfileInput { tick }, time, None),
@@ -3540,9 +3609,10 @@ impl Game {
     }
 
     /// With no majority: the clients known to be out of step at `time` (a
-    /// relay, discard or roster change for a tick up to it never reached
-    /// them) as wrong and the others as right, if all the others agree
-    /// with each other and none of the known ones does.
+    /// relay, discard or roster change for a tick shortly before it never
+    /// reached them, or an own input of theirs was dropped then:
+    /// [`MISSED_RECENT_MS`]) as wrong and the others as right, if all the
+    /// others agree with each other and none of the known ones does.
     fn missed_verdict(
         &self,
         time: u32,
@@ -3550,9 +3620,18 @@ impl Game {
     ) -> Option<(Vec<usize>, Vec<usize>)> {
         let (mut wrong, mut right): (Vec<usize>, Vec<usize>) =
             reports.keys().copied().partition(|index| {
-                self.peers[*index]
-                    .as_ref()
-                    .is_some_and(|peer| peer.missed.iter().any(|tick| *tick <= time))
+                self.peers[*index].as_ref().is_some_and(|peer| {
+                    // Near the disputed tick, or near the start of the
+                    // disagreement it is in since (it may wait for its
+                    // resync for seconds, and stays the one named).
+                    let since = peer.diverged.as_ref().map(|divergence| divergence.first);
+                    let recent = |tick: &u32| {
+                        *tick <= time
+                            && (*tick + MISSED_RECENT_MS > time
+                                || since.is_some_and(|first| *tick + MISSED_RECENT_MS > first))
+                    };
+                    peer.missed.iter().any(recent) || peer.discarded.iter().any(recent)
+                })
             });
         let right_crcs: HashSet<u32> = right.iter().map(|index| reports[index]).collect();
         if wrong.is_empty()
@@ -3757,9 +3836,21 @@ impl Game {
             let Some(peer) = self.peers[index].as_mut() else {
                 continue;
             };
-            if peer
-                .last_resync
-                .is_some_and(|at| now.saturating_duration_since(at) < timing.resync_interval)
+            // Wrong from its first reports after a world it was resynced
+            // with: that world did not take, and waiting the interval out
+            // leaves it out of step for nothing (live, 2026-10-15: 9 to 13
+            // s more each time). Twice in a row at most: a game that no
+            // world helps keeps the interval.
+            let wrong_at_load = peer
+                .diverged
+                .as_ref()
+                .is_some_and(|divergence| divergence.first <= peer.judge_from + LOAD_WRONG_MS)
+                && peer.restores_unagreed > 0
+                && peer.restores_unagreed <= QUICK_REDOS;
+            if !wrong_at_load
+                && peer
+                    .last_resync
+                    .is_some_and(|at| now.saturating_duration_since(at) < timing.resync_interval)
             {
                 continue;
             }
@@ -4384,7 +4475,14 @@ impl Game {
                     time,
                     entering,
                 } => {
-                    let load_by = time + RESYNC_LOAD_BY_MS + one_way(peer);
+                    let way = one_way(peer);
+                    let load_by = time + RESYNC_LOAD_BY_MS + way;
+                    // The inputs after its snapshot the game will have when
+                    // the world reaches it (a relay, as the world, takes a
+                    // way to it), and had when it loaded it, seen acked
+                    // now: a way back before, the relays then a way older.
+                    let fill_on_arrival = self.ring_fill(time, clock);
+                    let fill_now = self.ring_fill(time, clock.saturating_sub(2 * way));
                     if self.load_proven(index) {
                         // Its game reports the world's own hashes: loaded,
                         // whatever came of the parts' acks.
@@ -4402,30 +4500,58 @@ impl Game {
                     let Some(peer) = self.peers[index].as_mut() else {
                         continue;
                     };
+                    let delivered = peer.transport.is_delivered(serial);
                     if peer.transport.is_lost(serial) {
                         // Not acked in its 1.75 s: dropped by the transport.
                         self.redo_sync(index, entering, "the snapshot did not arrive", now);
-                    } else if peer.transport.is_delivered(serial) {
+                    } else if delivered
+                        && peer.resync_from.is_some()
+                        && peer.slow_loads < SLOW_LOADS_REDONE
+                        && fill_now > INPUT_RING
+                    {
+                        // Loaded, but past a ring: its catch-up lacks the
+                        // first inputs after the snapshot, and its game is
+                        // wrong from its first tick. Done again at once,
+                        // not after its wrong reports and the wait between
+                        // resyncs.
+                        peer.slow_loads += 1;
+                        let why = format!(
+                            "its world of {time} ms was loaded with {fill_now} inputs of a player \
+                             after it, more than the game keeps ({INPUT_RING}; {} of \
+                             {SLOW_LOADS_REDONE} times), so again from a fresh one",
+                            peer.slow_loads
+                        );
+                        self.redo_sync(index, entering, &why, now);
+                    } else if delivered {
                         self.finish_sync(index, time, entering, now);
                     } else if peer.resync_from.is_some()
                         && peer.slow_loads < SLOW_LOADS_REDONE
-                        && clock > load_by
+                        && (clock > load_by || fill_on_arrival >= INPUT_RING_SAFE)
                     {
                         // Loaded now, the game would have lost the first
                         // inputs after the snapshot from its rings. The
                         // world on its way is of an older generation than
                         // the next 0xE5, and skipped once that is taken.
                         peer.slow_loads += 1;
-                        let why = format!(
-                            "its world of {time} ms was not loaded {RESYNC_LOAD_BY_MS} ms after \
-                             it (at {clock} ms; {} of {SLOW_LOADS_REDONE} times), so again from a \
-                             fresh one",
-                            peer.slow_loads
-                        );
+                        let why = if clock > load_by {
+                            format!(
+                                "its world of {time} ms was not loaded {RESYNC_LOAD_BY_MS} ms \
+                                 after it (at {clock} ms; {} of {SLOW_LOADS_REDONE} times), so \
+                                 again from a fresh one",
+                                peer.slow_loads
+                            )
+                        } else {
+                            format!(
+                                "its world of {time} ms is not loaded and a player has \
+                                 {fill_on_arrival} inputs after it (the game keeps {INPUT_RING}; \
+                                 {} of {SLOW_LOADS_REDONE} times), so again from a fresh one",
+                                peer.slow_loads
+                            )
+                        };
                         self.redo_sync(index, entering, &why, now);
                     } else if peer.resync_from.is_some()
                         && peer.slow_loads == SLOW_LOADS_REDONE
-                        && clock > load_by
+                        && (clock > load_by || fill_on_arrival >= INPUT_RING_SAFE)
                     {
                         // A line that loads no world in time: the slow load
                         // is taken, once said.
