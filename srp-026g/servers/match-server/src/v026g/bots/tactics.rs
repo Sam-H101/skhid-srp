@@ -28,22 +28,35 @@ pub const SPAWN_AREA_M: f32 = 20.0;
 /// A point is looked for on the grid within this, metres.
 const LOCATE_M: f32 = 3.0;
 
-/// One map's tactics for a match.
-pub struct Tactics {
+/// What one map's tactics hold for one hazard margin: the same for every
+/// match on the map, so matches share it ([`Tactics::of`]). Read-only once
+/// built; a match's own state (the anomalies' clocks, the human routes)
+/// is in [`Tactics`].
+pub struct TacticsBase {
     pub world: Arc<World>,
-    pub hazards: Hazards,
+    /// The zones and the floors they mark, every zone counting as active
+    /// (no anomalies attached): each match clones it and attaches its own.
+    hazards: Hazards,
     /// The bases' exits by map side, worked out once.
     exits: Vec<(i32, Vec<Vec3>)>,
+    /// Per floor, a bit per side (`1 << side`, sides 0-7) whose spawn area
+    /// it lies in ([`Tactics::allowed`]).
+    spawn_areas: Vec<u8>,
+    /// The grid's regions cut by the floors' labels (the zones' set and the
+    /// spawn areas), so [`Tactics::allowed`] is the same on every floor of
+    /// a region (`mapdata::regions`).
+    regions: Regions,
+}
+
+/// One map's tactics for a match: the shared [`TacticsBase`] and the
+/// match's own hazard clocks and human routes.
+pub struct Tactics {
+    base: Arc<TacticsBase>,
+    pub world: Arc<World>,
+    pub hazards: Hazards,
     /// The routes humans took on this map and mode (play 17), on its
     /// floors; empty without `SRP_BOT_ROUTES`.
     pub routes: Vec<super::routes::HumanRoute>,
-    /// Per floor, what of [`Self::allowed`] it is subject to: the zones'
-    /// set (`Hazards`) in the high bits, a bit per side (`1 << side`, sides
-    /// 0-7) whose spawn area it lies in.
-    labels: Vec<u32>,
-    /// The grid's regions cut by the labels, so [`Self::allowed`] is the
-    /// same on every floor of a region (`mapdata::regions`).
-    regions: Regions,
 }
 
 /// The label's bits for the sides' spawn areas.
@@ -90,10 +103,14 @@ pub struct Spot {
     pub score: f32,
 }
 
-impl Tactics {
-    pub fn new(world: Arc<World>, hazard_margin: f32) -> Self {
+impl TacticsBase {
+    /// Builds them: the hazard marks, the floors' labels, the regions, the
+    /// bases' exits. 0.15-0.3 s on the big maps on a fast machine, so off
+    /// the match loop.
+    pub fn build(world: Arc<World>, hazard_margin: f32) -> Self {
         let hazards = Hazards::build(&world, hazard_margin);
         let grid = &world.grid;
+        // The zones' set in the high bits, the sides' spawn areas in the low.
         let mut labels: Vec<u32> = (0..grid.len() as NodeId)
             .map(|node| u32::from(hazards.set_of(node)) << SPAWN_BITS)
             .collect();
@@ -113,25 +130,154 @@ impl Tactics {
             }
         }
         let regions = Regions::build(grid, Some(&labels));
-        let mut tactics = Self {
+        // Only the spawn areas are read from here on: the zones' set is
+        // the hazards' own.
+        let spawn_areas = labels.iter().map(|&label| label as u8).collect();
+        drop(labels);
+        let mut base = Self {
             world,
             hazards,
             exits: Vec::new(),
-            routes: Vec::new(),
-            labels,
+            spawn_areas,
             regions,
         };
         let sides: Vec<i32> = {
-            let mut sides: Vec<i32> = tactics.world.map.spawns.iter().map(|s| s.team).collect();
+            let mut sides: Vec<i32> = base.world.map.spawns.iter().map(|s| s.team).collect();
             sides.sort_unstable();
             sides.dedup();
             sides
         };
         for side in sides {
-            let exits = tactics.find_exits(side);
-            tactics.exits.push((side, exits));
+            let exits = base.find_exits(side);
+            base.exits.push((side, exits));
         }
-        tactics
+        base
+    }
+
+    /// The hazard margin it was built for.
+    pub fn margin(&self) -> f32 {
+        self.hazards.margin
+    }
+
+    /// Bytes held, beyond the world.
+    pub fn memory_bytes(&self) -> usize {
+        self.hazards.marks().memory_bytes()
+            + self.spawn_areas.len()
+            + self.regions.memory_bytes()
+            + self.exits.iter().map(|(_, exits)| exits.len() * 12).sum::<usize>()
+    }
+
+    /// What the tactics answer, as one number (`mapdata::digest`): the
+    /// zones, their marks, the spawn areas, the regions and the exits.
+    /// Equal digests, equal answers.
+    pub fn digest(&self) -> u64 {
+        let mut digest = mapdata::digest::Digest::new();
+        digest.f32(self.hazards.margin);
+        digest.u32(self.hazards.pass_ms);
+        digest.len(self.hazards.zones.len());
+        for zone in &self.hazards.zones {
+            digest.len(zone.zone);
+            for v in [zone.centre.x, zone.centre.y, zone.centre.z] {
+                digest.f32(v);
+            }
+        }
+        self.hazards.marks().digest_into(&mut digest);
+        digest.len(self.spawn_areas.len());
+        self.spawn_areas
+            .iter()
+            .for_each(|&bits| digest.u32(u32::from(bits)));
+        self.regions.digest_into(&mut digest);
+        digest.len(self.exits.len());
+        for (side, exits) in &self.exits {
+            digest.u32(*side as u32);
+            digest.len(exits.len());
+            for exit in exits {
+                for v in [exit.x, exit.y, exit.z] {
+                    digest.f32(v);
+                }
+            }
+        }
+        digest.finish()
+    }
+
+    /// [`Tactics::in_spawn_area`].
+    fn in_spawn_area(&self, point: Vec3, side: Option<i32>) -> bool {
+        self.world
+            .map
+            .spawns
+            .iter()
+            .filter(|spawn| side.is_none_or(|side| spawn.team == side))
+            .any(|spawn| spawn.position.distance_xz(point) < SPAWN_AREA_M)
+    }
+
+    fn find_exits(&self, side: i32) -> Vec<Vec3> {
+        let map = &self.world.map;
+        let ours: Vec<Vec3> = map
+            .spawns
+            .iter()
+            .filter(|s| s.team == side)
+            .map(|s| s.position)
+            .collect();
+        let theirs: Vec<Vec3> = map
+            .spawns
+            .iter()
+            .filter(|s| s.team != side)
+            .map(|s| s.position)
+            .collect();
+        let Some(target) = centroid(&theirs) else {
+            return Vec::new();
+        };
+        let mut exits: Vec<Vec3> = Vec::new();
+        for spawn in ours.iter().step_by(ours.len().div_ceil(6).max(1)) {
+            // The whole grid's search, the very cheapest way (once a map).
+            let grid = &self.world.grid;
+            let Some(route) = grid
+                .locate(*spawn, 1.5)
+                .zip(grid.locate(target, LOCATE_M))
+                .and_then(|(from, to)| {
+                    // Every zone counts as active here: no anomalies are
+                    // attached to the base.
+                    path::plan_where(grid, from, to, |node| self.hazards.allowed(node, 0))
+                })
+            else {
+                continue;
+            };
+            // The first point 30-60 m along that is out of every spawn area.
+            let mut s = 30.0;
+            while s <= 60.0_f32.min(route.length()) {
+                let point = route.point_at(s);
+                if !self.in_spawn_area(point, None) {
+                    if exits.iter().all(|e| e.distance_xz(point) > 10.0) {
+                        exits.push(point);
+                    }
+                    break;
+                }
+                s += 5.0;
+            }
+        }
+        exits
+    }
+}
+
+impl Tactics {
+    /// A match's tactics, built for it alone ([`TacticsBase::build`]).
+    pub fn new(world: Arc<World>, hazard_margin: f32) -> Self {
+        Self::of(Arc::new(TacticsBase::build(world, hazard_margin)))
+    }
+
+    /// A match's tactics on a shared base: its own copy of the zones (the
+    /// marks stay shared), no routes yet.
+    pub fn of(base: Arc<TacticsBase>) -> Self {
+        Self {
+            world: base.world.clone(),
+            hazards: base.hazards.clone(),
+            routes: Vec::new(),
+            base,
+        }
+    }
+
+    pub fn base(&self) -> &Arc<TacticsBase> {
+        &self.base
     }
 
     /// The human routes of this map and mode, put on its floors; a route
@@ -151,12 +297,7 @@ impl Tactics {
 
     /// Whether `point` is in a spawn area of `side` (any side if `None`).
     pub fn in_spawn_area(&self, point: Vec3, side: Option<i32>) -> bool {
-        self.world
-            .map
-            .spawns
-            .iter()
-            .filter(|spawn| side.is_none_or(|side| spawn.team == side))
-            .any(|spawn| spawn.position.distance_xz(point) < SPAWN_AREA_M)
+        self.base.in_spawn_area(point, side)
     }
 
     /// The map side whose spawn is nearest `point`.
@@ -188,9 +329,10 @@ impl Tactics {
         // No spawn area of another side.
         let own = 1u32 << side.clamp(0, SPAWN_BITS as i32 - 1);
         let spawn_areas = self
-            .labels
+            .base
+            .spawn_areas
             .get(node as usize)
-            .map_or(0, |l| l & ((1 << SPAWN_BITS) - 1));
+            .map_or(0, |&bits| u32::from(bits));
         spawn_areas & !own == 0
     }
 
@@ -202,12 +344,12 @@ impl Tactics {
         side: Option<i32>,
         objective: bool,
     ) -> bool {
-        self.allowed(self.regions.middle(region), time, side, objective)
+        self.allowed(self.base.regions.middle(region), time, side, objective)
     }
 
     /// The regions the routes go by.
     pub fn regions(&self) -> &Regions {
-        &self.regions
+        &self.base.regions
     }
 
     /// The route from `from` to `to` for a body of map side `side`, off
@@ -244,7 +386,7 @@ impl Tactics {
     ) -> Option<Route> {
         path::plan_in(
             &self.world.grid,
-            &self.regions,
+            &self.base.regions,
             start,
             goal,
             |node| self.allowed(node, time, side, objective) && open(node),
@@ -344,57 +486,13 @@ impl Tactics {
     /// The exits of `side`'s base: points 30-60 m out on the ways from its
     /// spawns toward the other side's, outside the spawn areas.
     pub fn exits(&self, side: i32) -> &[Vec3] {
-        self.exits
+        self.base
+            .exits
             .iter()
             .find(|(s, _)| *s == side)
             .map_or(&[], |(_, exits)| exits.as_slice())
     }
 
-    fn find_exits(&self, side: i32) -> Vec<Vec3> {
-        let map = &self.world.map;
-        let ours: Vec<Vec3> = map
-            .spawns
-            .iter()
-            .filter(|s| s.team == side)
-            .map(|s| s.position)
-            .collect();
-        let theirs: Vec<Vec3> = map
-            .spawns
-            .iter()
-            .filter(|s| s.team != side)
-            .map(|s| s.position)
-            .collect();
-        let Some(target) = centroid(&theirs) else {
-            return Vec::new();
-        };
-        let mut exits: Vec<Vec3> = Vec::new();
-        for spawn in ours.iter().step_by(ours.len().div_ceil(6).max(1)) {
-            // The whole grid's search, the very cheapest way (once a map).
-            let grid = &self.world.grid;
-            let Some(route) = grid
-                .locate(*spawn, 1.5)
-                .zip(grid.locate(target, LOCATE_M))
-                .and_then(|(from, to)| {
-                    path::plan_where(grid, from, to, |node| self.allowed(node, 0, None, false))
-                })
-            else {
-                continue;
-            };
-            // The first point 30-60 m along that is out of every spawn area.
-            let mut s = 30.0;
-            while s <= 60.0_f32.min(route.length()) {
-                let point = route.point_at(s);
-                if !self.in_spawn_area(point, None) {
-                    if exits.iter().all(|e| e.distance_xz(point) > 10.0) {
-                        exits.push(point);
-                    }
-                    break;
-                }
-                s += 5.0;
-            }
-        }
-        exits
-    }
 }
 
 fn centroid(points: &[Vec3]) -> Option<Vec3> {
@@ -502,6 +600,27 @@ pub(super) mod tests {
             assert!(!tactics.in_spawn_area(*exit, None));
             assert!(exit.distance_xz(Vec3::new(75.0, 0.0, 15.0)) < 62.0);
         }
+    }
+
+    #[test]
+    fn matches_share_one_base_and_keep_their_own_clocks() {
+        let world = field();
+        let base = Arc::new(TacticsBase::build(world.clone(), 1.0));
+        assert_eq!(base.digest(), TacticsBase::build(world, 1.0).digest());
+        assert_ne!(
+            base.digest(),
+            TacticsBase::build(base.world.clone(), 2.0).digest()
+        );
+        let (mut one, two) = (Tactics::of(base.clone()), Tactics::of(base.clone()));
+        assert!(Arc::ptr_eq(one.base(), two.base()));
+        assert_eq!(Arc::strong_count(&base), 3);
+        // One match's clock is its own.
+        one.hazards.pass_ms += 1;
+        assert_ne!(one.hazards.pass_ms, two.hazards.pass_ms);
+        // A match built alone answers as one on the shared base.
+        let alone = Tactics::new(base.world.clone(), 1.0);
+        assert_eq!(alone.base().digest(), base.digest());
+        assert_eq!(alone.exits(1), two.exits(1));
     }
 
     #[test]

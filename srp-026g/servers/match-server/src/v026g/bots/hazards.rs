@@ -27,6 +27,7 @@
 //! then and never a life.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use mapdata::{Damage, NodeId, Vec3, World, ZoneKind};
 
@@ -110,14 +111,41 @@ pub struct Hazard {
     pub activity: Activity,
 }
 
-/// The map's damage zones and the floors they cover.
-#[derive(Clone, Debug, Default)]
-pub struct Hazards {
-    pub zones: Vec<Hazard>,
+/// The floors the damage zones mark, for one margin: the same for every
+/// match on the map, so matches share them ([`Hazards`] clones hold one
+/// `Arc`).
+#[derive(Debug, Default)]
+pub struct HazardMarks {
     /// By floor: 0 none, else an index + 1 into `sets`.
     floor_set: Vec<u16>,
     /// Sets of zone indices marking a floor.
     sets: Vec<Vec<u16>>,
+}
+
+impl HazardMarks {
+    /// Bytes held.
+    pub fn memory_bytes(&self) -> usize {
+        self.floor_set.len() * 2 + self.sets.iter().map(|set| 24 + set.len() * 2).sum::<usize>()
+    }
+
+    /// Into `digest`: every floor's set and every set.
+    pub fn digest_into(&self, digest: &mut mapdata::digest::Digest) {
+        digest.len(self.floor_set.len());
+        self.floor_set.iter().for_each(|&set| digest.u32(u32::from(set)));
+        digest.len(self.sets.len());
+        for set in &self.sets {
+            digest.len(set.len());
+            set.iter().for_each(|&h| digest.u32(u32::from(h)));
+        }
+    }
+}
+
+/// The map's damage zones and the floors they cover. A clone shares the
+/// marks and copies the zones (a few dozen): a match's own clocks.
+#[derive(Clone, Debug, Default)]
+pub struct Hazards {
+    pub zones: Vec<Hazard>,
+    marks: Arc<HazardMarks>,
     pub margin: f32,
     /// How long a switching zone must stay off for [`Self::allowed`].
     pub pass_ms: u32,
@@ -198,8 +226,7 @@ impl Hazards {
         }
         Self {
             zones,
-            floor_set,
-            sets,
+            marks: Arc::new(HazardMarks { floor_set, sets }),
             margin,
             pass_ms: PASS_MS,
             anomalies: None,
@@ -209,8 +236,8 @@ impl Hazards {
 
     /// The zones marking `node`.
     pub fn zones_at(&self, node: NodeId) -> impl Iterator<Item = &Hazard> + '_ {
-        let set = match self.floor_set.get(node as usize) {
-            Some(&id) if id > 0 => self.sets[usize::from(id) - 1].as_slice(),
+        let set = match self.marks.floor_set.get(node as usize) {
+            Some(&id) if id > 0 => self.marks.sets[usize::from(id) - 1].as_slice(),
             _ => &[],
         };
         set.iter().map(|&h| &self.zones[usize::from(h)])
@@ -236,7 +263,7 @@ impl Hazards {
     /// The set of zones marking `node` (0: none); floors of one set are
     /// shut and open together.
     pub fn set_of(&self, node: NodeId) -> u16 {
-        self.floor_set.get(node as usize).copied().unwrap_or(0)
+        self.marks.floor_set.get(node as usize).copied().unwrap_or(0)
     }
 
     /// Whether no zone marks `node` at all (a place to stay).
@@ -255,7 +282,7 @@ impl Hazards {
 
     /// Floors marked, for the logs.
     pub fn marked(&self) -> usize {
-        self.floor_set.iter().filter(|&&mark| mark > 0).count()
+        self.marks.floor_set.iter().filter(|&&mark| mark > 0).count()
     }
 
     /// Whether `point` is near a zone (the floor under it is marked).
@@ -264,6 +291,11 @@ impl Hazards {
             .grid
             .locate(point, 1.0)
             .is_some_and(|node| !self.allowed(node, time))
+    }
+
+    /// The shared marks.
+    pub fn marks(&self) -> &HazardMarks {
+        &self.marks
     }
 
     /// The map's anomaly cores (`Anomalies::new(&world.map, static_seed)`)
