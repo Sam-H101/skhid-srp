@@ -145,6 +145,9 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
         // The "Marodeur" container: Black Market, rank 4 (W:8172); its
         // config says Scavengers, item level 3. PROVEN.
         ("bm_back_1", &[(BM, 4)]),
+        // The release's Bandit balaclava: Black Market, rank 2 "Fighter",
+        // as the owner set it (2026-10-15); its config says item level 3.
+        ("bandit_026_mask", &[(BM, 2)]),
         // --- Ammo (W:8170, W:8172, W:8175, W:8176; PROVEN but where
         // said) ---
         ("ammo_12mm_buck", &[(SCAV, 1), (BM, 1)]),
@@ -650,6 +653,9 @@ mod tests {
         }
         assert_eq!(sold_by("fort_17"), [(3, 2)]);
         assert_eq!(sold_by("aps"), [(4, 2)]);
+        assert_eq!(sold_by("bandit_026_mask"), [(2, 2)]);
+        // The Duty exoskeleton by the rule: Renaissance at its level 15.
+        assert_eq!(sold_by("duty_exo_back"), [(3, 10)]);
         assert_eq!(sold_by("bm_back_1"), [(2, 4)]);
         // Their neighbours go by the rule.
         assert_eq!(sold_by("scav_torso_1"), [(1, 1)]);
