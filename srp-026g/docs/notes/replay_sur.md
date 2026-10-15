@@ -140,4 +140,4 @@ The viewer binds every place of chunk 1 at its start, so its list of game object
 `client_patch.md` 3.22 has both fixes.
 - **First or third person, at the watched player's first respawn into another kit.** The camera stayed on the old kit's object, and `weapon::draw` died. Revision 11 re-attaches it. Run: followed past such a kit change.
 - **About 50 s after a seek, at normal speed.** A weapon's delayed-sound queue (64 items) overflowed. Revision 11 drops the new sound when it is full. Not yet run.
-- **Not fixed: late sounds after a backward seek** (reloads more than footsteps; LIKELY what was heard). The queued sounds keep their times from before the seek, and new copies wait behind them. Until that is fixed, sounds are only right in a run with no backward seek.
+- **Late sounds after a seek** (reloads more than footsteps; LIKELY what was heard). The queued sounds kept their times from before the seek, and new copies waited behind them. Revision 11 empties every weapon's queue at a user seek, in the replay only. Run with Unicorn, not yet in the game.

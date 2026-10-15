@@ -520,7 +520,7 @@ Reported by the analysis of the evening matches of 2026-10-14 (players' server):
 - **Builds** (revision 11, §3.18 to §3.21): 12 907 128 bytes, sha256 `985ca3410f024a9e391a8f6fd5750295d6c0add8185fc244245c15371400b75a` (no server), `b728a80c62a8da6b0dca46de55236d1e7c4b010190f9c0fddf884e0c998d6ece` (`--server=skhid.link:1234`). Against revision 10 made the same way (`c43bfd8a…ef85e`) the exe differs in the six bytes (file 0x3054F1), the revision byte (file 0x36FC66, `0A` → `0B`) and the PE checksum, and in nothing else (compared byte by byte).
 - **Not run: a game.** Not known: whether a rollback crosses the deciding death in every match (the live data say it did in both that ran a team out), and what the field +32Ch does in the 3 s after an end (not traced beyond its writers).
 
-### 3.22 Two replay crashes: the camera after a kit change, a full sound queue (found and written 2026-10-15, in patch revision 11) — PROVEN in the code; the first run in a game, the second not yet
+### 3.22 Replay fixes: the camera after a kit change, a full sound queue, sounds after a seek (found and written 2026-10-15, in patch revision 11) — PROVEN in the code; the first run in a game, the other two not yet (the seek run with Unicorn)
 
 Both came up while watching `.sur` files made from match recordings (`replay_sur.md`). Neither changes what a match computes, so neither has a revision number of its own (owner, 2026-10-15): they are in 11. A build without the late join keeps the original's bytes for both.
 
@@ -529,13 +529,20 @@ Both came up while watching `.sur` files made from match recordings (`replay_sur
   - Where: at 0x2454C1, after the drain, `8B 06 8B 4E 04` (`mov eax,[esi]` / `mov ecx,[esi+4]`, esi = the queue) becomes `jmp 835A20h`. At 0x835A20, in the 42 int3 between a `ret` (0x835A15) and the next function, 20 bytes: `mov ecx,[esi+4]` / `cmp ecx,[esi+8]` / `jae` to `jmp 24569Ah`, else `mov eax,[esi]` / `jmp 2454C6h`.
   - Why 0x24569A is safe: it is the game's own exit for a sound past its chain's cap, in the same frame. Nothing between 0x2454C6 and its branch at 0x2454F1 pushes, pops or moves esp. It calls the sound's functor with flag 0, which the sound player 0x297E20 takes as "do not play", and returns with `ret 18h`. The queue is not touched, so no chain pointer goes stale.
   - Effect: while a weapon's queue is full, its new delayed sounds are dropped until it drains, where the game used to die. This is in live games too, where a full queue also killed the game.
-  - Not fixed: sounds that play late after a backward seek. The queued items keep the times from before the seek, and each new copy of such a sound is lined up behind them. Clearing weapon+0x9FC at a user's seek would fix it; that is not designed.
+  - It also changes live games, but only where a full queue used to kill the game. The owner accepted this (2026-10-15).
+- **A replay's seek empties the weapons' sound queues** (`SEEK_CLEAR_HOOK`, `seek_clear` at offset 576 of `late_join_026g.asm`). The seek (0x1EE2E0, esi = game, edi = the target) loads a key frame, sets the clock, re-simulates to the target and sets the clock to the target. The queued sounds kept the old timeline's times, so a sound waited behind them, late by the seek's distance (reloads were heard late), and the re-simulation's sounds all came due at once.
+  - Where: for a user seek only (`test bl,bl` / `jnz`: a key frame reached in play takes the jump), `lea eax,[edi-3E8h]` at 0x1EE3A3 becomes a jump to `seek_clear`. It walks every place's three kit players and their 23 inventory slots. For every client weapon (item vtable 0xA0422C, written only by its constructor and destructor), it does what `~weapon` 0x243790 does: destroys the functors (0x245C50, which calls only a functor's manager with "destroy" and plays nothing), sets the queue's end to its begin, and empties the fx history (weapon+828h, the duplicate check). Then it runs the lea and goes back.
+  - Replay only: the seek starts from the replay reader `[game+53C8h]`, which only `-match_replay` sets. Its only callers are the replay's seek functor 0x1EF8C0 and the replay movie's slider 0x233E2F. A live game never runs it.
+  - Live clock corrections (0x27B5D7) are left alone: clearing there would drop real pending sounds, such as the rest of a reload.
+  - Not covered: a weapon in no kit's inventory slot (none found, LIKELY none exist).
+  - Run with Unicorn (`check_late_join_026g.py`, `seek_clear`): the seek's end ran on made-up places, kits and weapons. On a user seek every client weapon is emptied, its managed functor is destroyed once and nothing is invoked; items of another class, a key frame in play and the original leave everything as it was.
 - **Checked** (`selftest_026g.py`, `test_replay_reattach` and `test_sound_queue`):
   - the bytes of all three sites in the original, in the build without the late join and in this one;
   - the instructions around them;
   - that no rel8/rel32 branch or 4-byte value aims inside the hook or into either padding;
   - no base relocation under the new bytes;
-  - push_back's full test uses the same two fields as the cave.
+  - push_back's full test uses the same two fields as the cave;
+  - `test_seek_clear`: the seek's site and steps, its two callers, the vtable's two writers, the destructor's clear, and the cave's start and end.
 
 ## 4. Mode 3 batteries: not needed in 0.26g
 

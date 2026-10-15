@@ -521,6 +521,22 @@ FIRST_LOAD_INPUT_HOOK = (0x2D1050, bytes.fromhex("e85b3a0000"), 3840, 0xE8)
 FIRST_LOAD_KIT_HOOK = (0x2D1055, bytes.fromhex("e8f63a0000"), 3920, 0xE8)
 FIRST_LOAD_DESERIALIZE_VA = 0x2D0B70
 
+# The replay's seek (game 0x1EE2E0: esi = game, edi = the target; it starts
+# from the replay reader [game+53C8h], which only -match_replay sets, and its
+# callers are the replay movie's slider and the replay's queued seeks) sets
+# the clock to a key frame, re-simulates to the target and sets the clock to
+# the target; a weapon's delayed sounds (weapon+9FCh, SOUND_QUEUE) keep the
+# times of the old timeline, and the re-simulated ones all come due at once:
+# sounds late by the seek's distance, a burst, a queue that fills. For a
+# user seek only (`test bl,bl` / `jnz 1EE3B5h`, a key frame in play takes the
+# jnz), `lea eax,[edi-3E8h]` at 0x1EE3A3 becomes a jump to seek_clear
+# (late_join_026g.asm): every client weapon (item vtable 0xA0422C) in the 23
+# inventory slots of each place's three kits has its queue's functors
+# destroyed (0x245C50, which plays nothing), the queue emptied, and its fx
+# history (weapon+828h, the duplicate check) emptied, as ~weapon 0x243790
+# does; then the lea, and back. A live game never runs the seek.
+SEEK_CLEAR_HOOK = (0x1EE3A3, bytes.fromhex("8d8718fcffff"), 576, 0xE9)
+
 # Rewritten in place: (address, the original's bytes, the new ones). The
 # actual roster count stays what resources and the countdown read; only
 # what must survive a growing roster takes the fixed capacity.
@@ -563,6 +579,7 @@ LATE_JOIN_HOOKS = (
     KIT_STATE_HOOK,                                              # a spawn's weapons' kept state: kit_state_hook
     FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
     FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
+    SEEK_CLEAR_HOOK,                                             # a replay's user seek: seek_clear
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -1015,7 +1032,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a first world's kit choices are the world's and in time order, "
                      "a Team Deathmatch rule counts a death after its own end, "
                      "a replay's camera follows its player into another kit, "
-                     "a weapon with a full sound queue drops the new sound"
+                     "a weapon with a full sound queue drops the new sound, "
+                     "a replay's seek empties the weapons' sound queues"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

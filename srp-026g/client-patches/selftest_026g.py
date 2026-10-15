@@ -1584,6 +1584,50 @@ def test_sound_queue(original, image, before):
         check(not under, f"no base relocation under {va:#x}")
 
 
+def test_seek_clear(original, image, before):
+    """A replay's user seek empties every client weapon's delayed sounds
+    (patch revision 11, SEEK_CLEAR_HOOK): the site, that only the replay
+    reaches it, and seek_clear as the image has it. check_late_join_026g.py
+    runs it on made-up places, kits and weapons."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    va, old, offset, _ = P.SEEK_CLEAR_HOOK
+    cave = P.LATE_JOIN_VA + offset
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and rows(image, va, 6) == [f"jmp {cave:#x}", "nop"],
+          f"{va:#x}: `lea eax,[edi-0x3e8]` in the original and the build without the late join, `jmp {cave:#x}` here")
+    check(rows(stock, 0x1EE2E0, 6) == ["mov eax,[esi+0x53c8]"],
+          "the seek 0x1EE2E0 starts from the replay reader [game+53C8h]")
+    check(rows(stock, 0x1EE38B, 0x2A) == ["call 0x1ee4a0", "push edi", "push esi", "call 0x1edef0", "push edi",
+                                          "mov eax,esi", "call 0x1ee4a0", "test bl,bl", "jnz 0x1ee3b5",
+                                          "lea eax,[edi-0x3e8]", "mov [esi+0x4ec],eax", "mov [esi+0x57c],eax"],
+          "set_time_in_ms(key frame), the re-simulation, set_time_in_ms(target), then a user seek's own part")
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    callers = []
+    for opcode in (0xE8, 0xE9):
+        at = text.find(bytes([opcode]))
+        while at != -1:
+            if at + 5 <= len(text) and (P.TEXT_VA + at + 5 + struct.unpack_from("<i", text, at + 1)[0]) & 0xFFFFFFFF == 0x1EE2E0:
+                callers.append(P.TEXT_VA + at)
+            at = text.find(bytes([opcode]), at + 1)
+    check(sorted(callers) == [0x1EF8C0, 0x233E2F],
+          "the seek's only callers: the replay seek functor 0x1EF8C0 and the replay movie's slider 0x233E2F")
+    check(original.count(struct.pack("<I", 0xA0422C)) == 2 and rows(stock, 0x24365C, 7) == ["mov dword [ebx+0x10],0xa0422c"],
+          "0xA0422C, the client weapon's item vtable, is written by its constructor (and destructor) alone")
+    check(rows(stock, 0x2438BC, 0x1A)[:6] == ["mov eax,[esi+0x9fc]", "lea edi,[esi+0xa00]", "push edi",
+                                              "call 0x245c50", "mov edx,[esi+0x9fc]", "mov [edi],edx"],
+          "~weapon empties the queue as seek_clear does: 0x245C50 on begin..&end, then end = begin")
+    hits = branches_into(original, va + 1, va + len(old))
+    check(not hits, "no branch bytes or pointer values aim inside the hook" + "".join(", " + h for h in hits))
+    under = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not under, f"no base relocation under {va:#x}")
+    code = rows(image, cave, 0x97)
+    check(code[:3] == ["pusha", f"call {cave + 6:#x}", "pop ebp"]
+          and code[3] == f"add ebp,{(0xA0422C - (cave + 6)) & 0xFFFFFFFF:#x}"
+          and "call 0x245c50" in code and code[-3:] == ["popa", "lea eax,[edi-0x3e8]", "jmp 0x1ee3a9"],
+          "seek_clear: the vtable found relative to itself, 0x245C50 for the functors, the lea and back to 0x1EE3A9")
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -1725,6 +1769,7 @@ def test_late_join(original, without, server, source):
     test_tdm_deaths(original, image, before)
     test_replay_reattach(original, image, before)
     test_sound_queue(original, image, before)
+    test_seek_clear(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
