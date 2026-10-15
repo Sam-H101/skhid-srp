@@ -1197,7 +1197,8 @@ def test_fov(original, image, before):
     was = [text for _, _, text in ndisasm(source.read(va, rest), va)]
     calls = lambda texts: [branch_target(text) for text in texts if text.startswith("call")]
     check(calls(texts) == calls(was) == [0xEEE30] and returns(texts[-1]) == "ret 0x8"
-          and f"fld dword [0x{P.FOV_VALUE:x}]" in texts and "fcmovb st1" in texts
+          and f"fld dword [0x{P.FOV_VALUE:x}]" in [t.replace("[dword 0x", "[0x") for t in texts]  # ndisasm 2.x spells [dword 0x..]
+          and "fcmovb st1" in texts
           and not any("xmm" in text and "xmm0" not in text for text in texts)
           and data == struct.pack("<4f", 0.25, 1.3333334, 65.0, 0.017453292),
           "fov_projection reads uro_fov, takes max(0, (z - 0.25) / 0.75) (0.25, 4/3, 65 and pi/180 after its code), "
