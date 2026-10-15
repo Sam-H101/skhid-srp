@@ -4,9 +4,13 @@
 //! Built by median splits on the widest axis of the triangles' centres, four
 //! triangles a leaf. A test stops at the first hit.
 
+use std::path::Path;
+
+use crate::built;
 use crate::digest::Digest;
 use crate::math::Vec3;
 use crate::project::Triangle;
+use crate::resources::Error;
 
 /// Triangles a leaf holds at most.
 const LEAF_SIZE: usize = 4;
@@ -103,6 +107,106 @@ impl RayTree {
             vec3(&mut digest, triangle.e2);
         }
         digest.finish()
+    }
+
+    /// Writes the tree to `path` as the tree of `key` ([`crate::built`],
+    /// [`crate::sight_key`]).
+    pub fn write(&self, path: &Path, key: u64) -> Result<(), Error> {
+        built::write(path, built::SIGHT_MAGIC, key, self.digest(), |out| {
+            out.plain(&self.nodes, |node| {
+                let mut bytes = [0u8; 32];
+                let words = [
+                    node.min.x.to_bits(),
+                    node.min.y.to_bits(),
+                    node.min.z.to_bits(),
+                    node.max.x.to_bits(),
+                    node.max.y.to_bits(),
+                    node.max.z.to_bits(),
+                    node.first_or_right,
+                    node.count,
+                ];
+                for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+                    *chunk = word.to_le_bytes();
+                }
+                bytes
+            })?;
+            out.plain(&self.triangles, |triangle| {
+                let mut bytes = [0u8; 36];
+                let vs = [triangle.a, triangle.e1, triangle.e2];
+                let words = vs.iter().flat_map(|v| [v.x, v.y, v.z]).map(f32::to_bits);
+                for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+                    *chunk = word.to_le_bytes();
+                }
+                bytes
+            })
+        })
+    }
+
+    /// Reads the tree of `key` that [`Self::write`] wrote: checked node by
+    /// node, then by its digest.
+    pub fn read(path: &Path, key: u64) -> Result<Self, Error> {
+        fn words<const N: usize, const W: usize>(bytes: [u8; N]) -> [u32; W] {
+            let mut words = [0u32; W];
+            for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                *word = u32::from_le_bytes(*chunk);
+            }
+            words
+        }
+        let vec3 = |w: &[u32]| {
+            Vec3::new(
+                f32::from_bits(w[0]),
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+            )
+        };
+        built::read(
+            path,
+            built::SIGHT_MAGIC,
+            key,
+            |input| {
+                let nodes = input.plain(|bytes: [u8; 32]| {
+                    let w: [u32; 8] = words(bytes);
+                    Node {
+                        min: vec3(&w[0..3]),
+                        max: vec3(&w[3..6]),
+                        first_or_right: w[6],
+                        count: w[7],
+                    }
+                })?;
+                let triangles = input.plain(|bytes: [u8; 36]| {
+                    let w: [u32; 9] = words(bytes);
+                    Prepared {
+                        a: vec3(&w[0..3]),
+                        e1: vec3(&w[3..6]),
+                        e2: vec3(&w[6..9]),
+                    }
+                })?;
+                let tree = Self { nodes, triangles };
+                tree.check()?;
+                Ok(tree)
+            },
+            Self::digest,
+        )
+    }
+
+    /// Whether every index of a tree read from a file is in range: a
+    /// branch's children after it, a leaf's triangles in the list.
+    fn check(&self) -> Result<(), String> {
+        let (nodes, triangles) = (self.nodes.len(), self.triangles.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            let fine = if node.count == 0 {
+                let right = node.first_or_right as usize;
+                index + 1 < nodes && right > index + 1 && right < nodes
+            } else {
+                (node.first_or_right as usize)
+                    .checked_add(node.count as usize)
+                    .is_some_and(|end| end <= triangles)
+            };
+            if !fine {
+                return Err(format!("node {index} is out of range"));
+            }
+        }
+        Ok(())
     }
 
     /// Whether nothing lies between `a` and `b` (both excluded by 1 cm).
@@ -317,7 +421,10 @@ mod tests {
             })
             .collect();
         let tree = RayTree::from_corners(corners.clone());
-        assert_eq!(tree.digest(), RayTree::from_corners(corners.clone()).digest());
+        assert_eq!(
+            tree.digest(),
+            RayTree::from_corners(corners.clone()).digest()
+        );
         assert_eq!(tree.digest(), PINNED_FIELD);
         let mut moved = RayTree::from_corners(corners);
         moved.triangles[7].e1.y += 0.001;
@@ -325,6 +432,36 @@ mod tests {
     }
 
     const PINNED_FIELD: u64 = 8_340_484_153_156_595_831;
+
+    #[test]
+    fn a_written_tree_reads_back_the_same_and_a_damaged_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("srp-sight-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(crate::built::sight_file_name(3));
+        let mut corners = wall().to_vec();
+        for k in 0..20 {
+            let shift = Vec3::new(k as f32 * 3.0, 0.0, k as f32);
+            corners.extend(wall().map(|t| t.map(|v| v + shift)));
+        }
+        let tree = RayTree::from_corners(corners);
+        tree.write(&path, 3).unwrap();
+        let read = RayTree::read(&path, 3).unwrap();
+        assert_eq!(read.digest(), tree.digest());
+        let eye = Vec3::new(0.0, 1.0, -5.0);
+        assert_eq!(
+            read.visible(eye, Vec3::new(0.0, 1.0, 5.0)),
+            tree.visible(eye, Vec3::new(0.0, 1.0, 5.0))
+        );
+        assert!(RayTree::read(&path, 4).is_err());
+        let bytes = std::fs::read(&path).unwrap();
+        for at in (0..bytes.len()).step_by(13).chain([bytes.len() - 1]) {
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 0x41;
+            std::fs::write(&path, &damaged).unwrap();
+            assert!(RayTree::read(&path, 3).is_err(), "byte {at}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn the_tree_agrees_with_testing_every_triangle() {

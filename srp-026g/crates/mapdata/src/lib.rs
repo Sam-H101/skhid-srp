@@ -36,6 +36,7 @@
 //! # let _ = (next, sees);
 //! ```
 
+pub mod built;
 mod config;
 pub mod digest;
 pub mod format;
@@ -117,15 +118,7 @@ pub fn grid_key(triangles: &[Triangle], area: [f32; 4], cell: f32, body: Body) -
     for value in area.into_iter().chain([cell]) {
         digest.f32(value);
     }
-    for value in [
-        body.step,
-        body.stand_height,
-        body.crouch_height,
-        body.radius,
-        body.min_ground_normal_y,
-        body.max_drop,
-        body.max_jump,
-    ] {
+    for value in body.values() {
         digest.f32(value);
     }
     digest.finish()

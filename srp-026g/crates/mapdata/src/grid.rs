@@ -28,10 +28,12 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::built;
 use crate::digest::Digest;
 use crate::library::WalkerBehaviour;
 use crate::math::Vec3;
 use crate::project::Triangle;
+use crate::resources::Error;
 
 /// The body and how it moves. Defaults: the 0.26g client's character
 /// (`gameplay/players/default.player`; step 0xa7ab08), except the jump.
@@ -53,6 +55,33 @@ pub struct Body {
     /// The highest ledge reached by a jump. GUESS: about 1.7 m in the
     /// engine's numbers; 1.3 m keeps a margin.
     pub max_jump: f32,
+}
+
+impl Body {
+    /// Its numbers in order, for digests and files.
+    pub(crate) fn values(&self) -> [f32; 7] {
+        [
+            self.step,
+            self.stand_height,
+            self.crouch_height,
+            self.radius,
+            self.min_ground_normal_y,
+            self.max_drop,
+            self.max_jump,
+        ]
+    }
+
+    fn from_values(v: [f32; 7]) -> Self {
+        Self {
+            step: v[0],
+            stand_height: v[1],
+            crouch_height: v[2],
+            radius: v[3],
+            min_ground_normal_y: v[4],
+            max_drop: v[5],
+            max_jump: v[6],
+        }
+    }
 }
 
 impl Default for Body {
@@ -466,16 +495,7 @@ impl WalkGrid {
         }
         digest.len(self.nx);
         digest.len(self.nz);
-        let body = self.body;
-        for value in [
-            body.step,
-            body.stand_height,
-            body.crouch_height,
-            body.radius,
-            body.min_ground_normal_y,
-            body.max_drop,
-            body.max_jump,
-        ] {
+        for value in self.body.values() {
             digest.f32(value);
         }
         digest.len(self.start.len());
@@ -500,6 +520,122 @@ impl WalkGrid {
         digest.finish()
     }
 
+    /// Writes the grid to `path` as the grid of `key` ([`crate::built`],
+    /// [`crate::grid_key`]).
+    pub fn write(&self, path: &std::path::Path, key: u64) -> Result<(), Error> {
+        built::write(path, built::GRID_MAGIC, key, self.digest(), |out| {
+            for value in [self.x0, self.z0, self.cell] {
+                out.f32(value)?;
+            }
+            out.u64(self.nx as u64)?;
+            out.u64(self.nz as u64)?;
+            for value in self.body.values() {
+                out.f32(value)?;
+            }
+            out.plain(&self.start, |v| v.to_le_bytes())?;
+            out.plain(&self.cell_of, |v| v.to_le_bytes())?;
+            out.plain(&self.height, |v| v.to_bits().to_le_bytes())?;
+            out.plain(&self.ceiling, |v| v.to_bits().to_le_bytes())?;
+            out.plain(&self.to, |v| *v)?;
+            out.plain(&self.how, |v| v.to_le_bytes())?;
+            out.plain(&self.piece, |v| v.to_le_bytes())
+        })
+    }
+
+    /// Reads the grid of `key` that [`Self::write`] wrote: checked index by
+    /// index, then by its digest, so it answers as the grid written did.
+    pub fn read(path: &std::path::Path, key: u64) -> Result<Self, Error> {
+        let float = |bytes: [u8; 4]| f32::from_bits(u32::from_le_bytes(bytes));
+        built::read(
+            path,
+            built::GRID_MAGIC,
+            key,
+            |input| {
+                let (x0, z0, cell) = (input.f32()?, input.f32()?, input.f32()?);
+                let (nx, nz) = (input.u64()?, input.u64()?);
+                let mut body = [0.0; 7];
+                for value in &mut body {
+                    *value = input.f32()?;
+                }
+                let grid = Self {
+                    x0,
+                    z0,
+                    cell,
+                    nx: usize::try_from(nx).map_err(|_| "too many cells")?,
+                    nz: usize::try_from(nz).map_err(|_| "too many cells")?,
+                    body: Body::from_values(body),
+                    start: input.plain(u32::from_le_bytes)?,
+                    cell_of: input.plain(u32::from_le_bytes)?,
+                    height: input.plain(float)?,
+                    ceiling: input.plain(float)?,
+                    to: input.plain(|bytes: [u8; 8]| bytes)?,
+                    how: input.plain(u32::from_le_bytes)?,
+                    piece: input.plain(u32::from_le_bytes)?,
+                };
+                grid.check()?;
+                Ok(grid)
+            },
+            Self::digest,
+        )
+    }
+
+    /// Whether every index of a grid read from a file is in range, so no
+    /// query can panic on it.
+    fn check(&self) -> Result<(), String> {
+        let cells = self
+            .nx
+            .checked_mul(self.nz)
+            .filter(|&cells| cells > 0 && cells < i32::MAX as usize && self.nx < i32::MAX as usize)
+            .ok_or("bad dimensions")?;
+        let n = self.height.len();
+        if self.start.len() != cells + 1
+            || self.start[0] != 0
+            || self.start[cells] as usize != n
+            || self.start.windows(2).any(|w| w[0] > w[1])
+        {
+            return Err("bad cell starts".into());
+        }
+        let lengths = [
+            self.cell_of.len(),
+            self.ceiling.len(),
+            self.to.len(),
+            self.how.len(),
+            self.piece.len(),
+        ];
+        if lengths.iter().any(|&len| len != n) {
+            return Err("arrays of different lengths".into());
+        }
+        for a in 0..n {
+            let c = self.cell_of[a] as usize;
+            if c >= cells || a < self.start[c] as usize || a >= self.start[c + 1] as usize {
+                return Err(format!("floor {a} is not in its cell"));
+            }
+            if self.piece[a] as usize >= n {
+                return Err(format!("floor {a}'s piece is out of range"));
+            }
+            let (i, k) = self.cell_xz(c);
+            for (d, &(di, dk)) in DIRS.iter().enumerate() {
+                let index = self.to[a][d];
+                let bits = self.how[a] >> (4 * d);
+                if index == NO_LINK {
+                    // As packed: nothing for no link.
+                    if bits & 0xF != 0 {
+                        return Err(format!("floor {a}'s direction {d} has no link but bits"));
+                    }
+                    continue;
+                }
+                let reach = ((bits >> 2) & 3) as i32 + 1;
+                let target = self.cell_index(i + di * reach, k + dk * reach);
+                let fits =
+                    target.is_some_and(|t| u32::from(index) < self.start[t + 1] - self.start[t]);
+                if bits & 3 == 3 || !fits {
+                    return Err(format!("floor {a}'s link {d} is out of range"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The block of `block` cells a side that `node` lies in.
     pub(crate) fn block_of(&self, node: NodeId, block: usize) -> (usize, usize) {
         let (i, k) = self.cell_xz(self.cell_of[node as usize] as usize);
@@ -519,8 +655,8 @@ impl WalkGrid {
             }
             a
         }
-        for a in 0..n {
-            for &b in &wide.links[a] {
+        for (a, links) in wide.links.iter().enumerate() {
+            for &b in links {
                 if b != NONE {
                     let (ra, rb) = (find(&mut root, a as u32), find(&mut root, b));
                     if ra != rb {
@@ -1129,6 +1265,32 @@ pub(crate) mod tests {
     }
 
     const PINNED_TWO_ROOMS: u64 = 11_945_545_835_143_266_436;
+
+    #[test]
+    fn a_written_grid_reads_back_the_same_and_a_damaged_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("srp-grid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(crate::built::grid_file_name(7));
+        let grid = two_rooms();
+        grid.write(&path, 7).unwrap();
+        let read = WalkGrid::read(&path, 7).unwrap();
+        assert_eq!(read.digest(), grid.digest());
+        assert_eq!(read.memory_bytes(), grid.memory_bytes());
+        // Another key's file is not this one.
+        assert!(WalkGrid::read(&path, 8).is_err());
+        // Every byte matters: a flipped one is refused, never a panic.
+        let bytes = std::fs::read(&path).unwrap();
+        for at in (0..bytes.len()).step_by(97).chain([bytes.len() - 1]) {
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 0x41;
+            std::fs::write(&path, &damaged).unwrap();
+            assert!(WalkGrid::read(&path, 7).is_err(), "byte {at}");
+        }
+        // Cut short.
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        assert!(WalkGrid::read(&path, 7).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn quad(min: Vec3, max_x: f32, max_z: f32, walker: WalkerBehaviour) -> [Triangle; 2] {
         let y = min.y;

@@ -15,6 +15,13 @@
 //! the same every time. The maps' meshes are dropped once the grid and the
 //! tree are built: nothing reads them later.
 //!
+//! A grid or tree built is written to `<dir>/built/` by its key
+//! (`mapdata::built`), and read from there the next time instead of built:
+//! a tenth of the time, and no build peak. A file is checked index by index
+//! and by its digest, so it answers as the build would; one that fails is
+//! reported, built again and written over. The files are made by the
+//! server itself, on the host, from the same `.mapdata` files.
+//!
 //! A world holds 63-149 MB (a build peaks near twice that) and the 0.26g
 //! host has under 1 GB, so the store keeps only the last [`KEEP`] used
 //! (`SRP_MAPDATA_KEEP`) and builds one map at a time. A match holds its
@@ -38,6 +45,9 @@ use super::tuning::Tuning;
 /// matches hold. With 72 projects the next match is rarely on the last
 /// map, and a rebuild costs 0.3-0.8 s off the match thread.
 pub const KEEP: usize = 1;
+
+/// The folder under `SRP_MAPDATA_DIR` of the built grids and trees.
+pub const BUILT_DIR: &str = "built";
 
 /// Where one project's map stands.
 #[derive(Clone)]
@@ -232,22 +242,62 @@ impl Cache {
     }
 }
 
+/// Where a grid or tree came from, for the log.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Source {
+    /// Another project of the same geometry has it.
+    Shared,
+    /// Read from its built file.
+    Read,
+    /// Built now (and written, if the directory takes it).
+    Built,
+}
+
 /// How a map was made, for the log.
 struct Built {
     seconds: f32,
-    grid_shared: bool,
-    sight_shared: bool,
+    grid: Source,
+    sight: Source,
 }
 
 impl Built {
-    fn how(&self) -> &'static str {
-        match (self.grid_shared, self.sight_shared) {
-            (true, true) => "grid and sight tree shared",
-            (true, false) => "grid shared, sight tree built",
-            (false, true) => "grid built, sight tree shared",
-            (false, false) => "grid and sight tree built",
+    fn how(&self) -> String {
+        let word = |source: Source| match source {
+            Source::Shared => "shared",
+            Source::Read => "read",
+            Source::Built => "built",
+        };
+        format!("grid {}, sight tree {}", word(self.grid), word(self.sight))
+    }
+}
+
+/// The structure of `key` from its file in `built` if that reads back,
+/// else made by `build` and written there for the next time.
+fn read_or_build<T>(
+    built: Option<&Path>,
+    file_name: String,
+    read: impl FnOnce(&Path) -> Result<T, mapdata::Error>,
+    build: impl FnOnce() -> T,
+    write: impl FnOnce(&T, &Path) -> Result<(), mapdata::Error>,
+) -> (T, Source) {
+    let Some(built) = built else {
+        return (build(), Source::Built);
+    };
+    let path = built.join(file_name);
+    if path.is_file() {
+        match read(&path) {
+            Ok(value) => return (value, Source::Read),
+            Err(why) => log::warn!("Bot map file refused ({why}); built again"),
         }
     }
+    let value = build();
+    let written = std::fs::create_dir_all(built)
+        .map_err(|e| mapdata::Error(format!("{}: {e}", built.display())))
+        .and_then(|()| write(&value, &path));
+    if let Err(why) = written {
+        log::warn!("Bot map file not written ({why}); built at each load");
+    }
+    (value, Source::Built)
 }
 
 /// Reads one map, takes or builds its grid and tree, and builds its
@@ -259,40 +309,60 @@ fn build(path: &Path, cache: &Mutex<Cache>) -> Result<(TacticsBase, Built), Stri
         let (cell, body) = (mapdata::CELL, Body::default());
         let walker = map.walker_triangles();
         let area = map.play_area(mapdata::AREA_MARGIN);
+        let built = path.parent().map(|dir| dir.join(BUILT_DIR));
+        let built = built.as_deref();
         let grid_key = mapdata::grid_key(&walker, area, cell, body);
         let shared = lock(cache).grids.get(&grid_key).and_then(Weak::upgrade);
-        let grid_shared = shared.is_some();
-        let grid = shared.unwrap_or_else(|| {
-            let grid = Arc::new(WalkGrid::build(&walker, area, cell, body));
-            lock(cache).grids.insert(grid_key, Arc::downgrade(&grid));
-            grid
-        });
+        let (grid, grid_source) = match shared {
+            Some(grid) => (grid, Source::Shared),
+            None => {
+                let (grid, source) = read_or_build(
+                    built,
+                    mapdata::built::grid_file_name(grid_key),
+                    |path| WalkGrid::read(path, grid_key),
+                    || WalkGrid::build(&walker, area, cell, body),
+                    |grid, path| grid.write(path, grid_key),
+                );
+                let grid = Arc::new(grid);
+                lock(cache).grids.insert(grid_key, Arc::downgrade(&grid));
+                (grid, source)
+            }
+        };
         drop(walker);
         let bullet = map.bullet_triangles();
         let sight_key = mapdata::sight_key(&bullet);
         let shared = lock(cache).sights.get(&sight_key).and_then(Weak::upgrade);
-        let sight_shared = shared.is_some();
-        let sight = shared.unwrap_or_else(|| {
-            let sight = Arc::new(RayTree::build(&bullet));
-            lock(cache).sights.insert(sight_key, Arc::downgrade(&sight));
-            sight
-        });
+        let (sight, sight_source) = match shared {
+            Some(sight) => (sight, Source::Shared),
+            None => {
+                let (sight, source) = read_or_build(
+                    built,
+                    mapdata::built::sight_file_name(sight_key),
+                    |path| RayTree::read(path, sight_key),
+                    || RayTree::build(&bullet),
+                    |sight, path| sight.write(path, sight_key),
+                );
+                let sight = Arc::new(sight);
+                lock(cache).sights.insert(sight_key, Arc::downgrade(&sight));
+                (sight, source)
+            }
+        };
         drop(bullet);
         // The meshes are not read once the grid and the tree are built.
         map.libraries = Vec::new();
         map.placements = Vec::new();
         let world = Arc::new(World::assemble(map, grid, sight));
         let base = TacticsBase::build(world, Maps::margin());
-        (base, grid_shared, sight_shared)
+        (base, grid_source, sight_source)
     }))
     .map_err(|_| format!("{}: the build panicked", path.display()))?;
-    let (base, grid_shared, sight_shared) = built;
+    let (base, grid, sight) = built;
     Ok((
         base,
         Built {
             seconds: started.elapsed().as_secs_f32(),
-            grid_shared,
-            sight_shared,
+            grid,
+            sight,
         },
     ))
 }
@@ -490,6 +560,51 @@ mod tests {
     }
 
     #[test]
+    fn a_built_grid_and_tree_are_written_and_read_by_the_next_store() {
+        let dir = temp_dir("built");
+        let project = "tiny/day_4";
+        tiny_map(project)
+            .write(&dir.join(mapdata::format::file_name(project)))
+            .unwrap();
+        let wait = Duration::from_secs(10);
+        let first = wait_ready(&Maps::new(Some(dir.clone())), project, wait);
+        let files: Vec<String> = std::fs::read_dir(dir.join(BUILT_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert!(files.iter().any(|name| name.starts_with("grid-")));
+        assert!(files.iter().any(|name| name.starts_with("sight-")));
+        // A new store (a restart) reads them: the same grid and tree.
+        let second = wait_ready(&Maps::new(Some(dir.clone())), project, wait);
+        assert!(!Arc::ptr_eq(&first.world.grid, &second.world.grid));
+        assert_eq!(first.world.grid.digest(), second.world.grid.digest());
+        assert_eq!(first.world.sight.digest(), second.world.sight.digest());
+        assert_eq!(first.digest(), second.digest());
+        // A damaged file is built again and written over.
+        for name in &files {
+            let path = dir.join(BUILT_DIR).join(name);
+            let mut bytes = std::fs::read(&path).unwrap();
+            let middle = bytes.len() / 2;
+            bytes[middle] ^= 0x55;
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let third = wait_ready(&Maps::new(Some(dir.clone())), project, wait);
+        assert_eq!(first.digest(), third.digest());
+        for name in &files {
+            let path = dir.join(BUILT_DIR).join(name);
+            assert!(name.starts_with("grid-") || name.starts_with("sight-"));
+            let key = u64::from_str_radix(&name[name.len() - 20..name.len() - 4], 16).unwrap();
+            if name.starts_with("grid-") {
+                assert!(WalkGrid::read(&path, key).is_ok(), "{name} written over");
+            } else {
+                assert!(RayTree::read(&path, key).is_ok(), "{name} written over");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn projects_of_one_geometry_share_their_grid_and_tree() {
         let dir = temp_dir("shared");
         let write = |project: &str, map: MapData| {
@@ -507,7 +622,10 @@ mod tests {
         let day = wait_ready(&maps, "tiny/day_4", wait);
         let rain = wait_ready(&maps, "tiny/rain_4", wait);
         let evening = wait_ready(&maps, "tiny/evening_4", wait);
-        assert!(!Arc::ptr_eq(&day, &rain), "each project has its own tactics");
+        assert!(
+            !Arc::ptr_eq(&day, &rain),
+            "each project has its own tactics"
+        );
         assert_eq!(rain.world.map.project, "tiny/rain_4");
         assert!(Arc::ptr_eq(&day.world.grid, &rain.world.grid));
         assert!(Arc::ptr_eq(&day.world.sight, &rain.world.sight));

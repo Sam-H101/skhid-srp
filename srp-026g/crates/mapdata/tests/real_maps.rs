@@ -327,3 +327,70 @@ fn every_world_builds_the_same_twice() {
         std::fs::write(out, lines.join("\n") + "\n").unwrap();
     }
 }
+
+/// Every world's grid and tree written to `SRP_BUILT_DIR` (by key, once
+/// per geometry) read back the same, and how long a read takes against a
+/// build.
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR and SRP_BUILT_DIR"]
+fn every_world_reads_back_from_its_built_files() {
+    let (Some(dir), Some(out)) = (
+        std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from),
+        std::env::var_os("SRP_BUILT_DIR").map(std::path::PathBuf::from),
+    ) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    let (mut built_s, mut read_s, mut bytes) = (0.0, 0.0, 0u64);
+    for path in &files {
+        let map = MapData::read(path).unwrap();
+        let walker = map.walker_triangles();
+        let area = map.play_area(mapdata::AREA_MARGIN);
+        let body = Body::default();
+        let grid_key = mapdata::grid_key(&walker, area, mapdata::CELL, body);
+        let bullet = map.bullet_triangles();
+        let sight_key = mapdata::sight_key(&bullet);
+        let grid_path = out.join(mapdata::built::grid_file_name(grid_key));
+        let sight_path = out.join(mapdata::built::sight_file_name(sight_key));
+        let t = Instant::now();
+        let grid = WalkGrid::build(&walker, area, mapdata::CELL, body);
+        let sight = RayTree::build(&bullet);
+        let build = t.elapsed().as_secs_f32();
+        if !grid_path.is_file() {
+            grid.write(&grid_path, grid_key).unwrap();
+        }
+        if !sight_path.is_file() {
+            sight.write(&sight_path, sight_key).unwrap();
+        }
+        let t = Instant::now();
+        let read_grid = WalkGrid::read(&grid_path, grid_key).unwrap();
+        let read_sight = RayTree::read(&sight_path, sight_key).unwrap();
+        let read = t.elapsed().as_secs_f32();
+        assert_eq!(read_grid.digest(), grid.digest(), "{}", map.project);
+        assert_eq!(read_sight.digest(), sight.digest(), "{}", map.project);
+        built_s += build;
+        read_s += read;
+        bytes += std::fs::metadata(&grid_path).unwrap().len()
+            + std::fs::metadata(&sight_path).unwrap().len();
+        eprintln!(
+            "{}: built in {build:.2} s, read in {read:.2} s (grid {grid_key:016x}, sight {sight_key:016x})",
+            map.project
+        );
+    }
+    let on_disk: u64 = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    eprintln!(
+        "{} projects: built in {built_s:.1} s, read in {read_s:.1} s; files {} MB on disk",
+        files.len(),
+        on_disk >> 20
+    );
+    let _ = bytes;
+}

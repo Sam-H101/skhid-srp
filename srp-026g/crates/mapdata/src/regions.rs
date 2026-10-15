@@ -216,7 +216,13 @@ impl Regions {
     /// Into `digest` ([`crate::digest`]): every floor's region, every
     /// region's middle and links.
     pub fn digest_into(&self, digest: &mut crate::digest::Digest) {
-        for array in [&self.of, &self.middle, &self.out_start, &self.in_start, &self.inn] {
+        for array in [
+            &self.of,
+            &self.middle,
+            &self.out_start,
+            &self.in_start,
+            &self.inn,
+        ] {
             digest.len(array.len());
             array.iter().for_each(|&value| digest.u32(value));
         }
