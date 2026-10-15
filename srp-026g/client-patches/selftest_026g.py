@@ -101,6 +101,18 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     the new code reads place+0Dh, calls the game's allocator and the
     list's insert only, writes a node's value and time only and leaves to
     nowhere else; nothing aims inside the two calls.
+22. the same build: the field-of-view setting (patch 21). The video
+    options' option 7 names "uro_fov" (0x262930) where the original names
+    "fov", a string nothing else points to; "uro_fov" is the name of the
+    console variable at 0xAA6510, whose value (0xA6FA28, 65.0) only its
+    registration pointed to; the camera's projection (0x242900, slot 0 of
+    the vtables of player_input_handler, game_camera, free_fly_camera,
+    demo_camera and lobby_camera, which RTTI names) reads that value where
+    the original reads the 65-degree constant 0xA2D9EC (read nowhere else),
+    calls the same matrix builder and returns as the original (`ret 8`);
+    the registration stores 50.0 as the least, the most stays the float
+    100 at 0xA710D0; the build without the late join keeps all three; no
+    branch or address aims inside them.
 """
 
 import ctypes
@@ -837,7 +849,8 @@ def late_join_sites():
     return [(va, len(old)) for va, old, _ in P.LATE_JOIN_PATCHES] + \
         [(va, len(old)) for va, old, _, _ in P.LATE_JOIN_HOOKS] + \
         [(P.RUN_UNFOCUSED_VA, len(P.RUN_UNFOCUSED[1])), (P.REMOVE_MODEL_VA, len(P.REMOVE_MODEL[1])),
-         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1]))]
+         (P.PREGAME_PROGRESS_VA, len(P.PREGAME_PROGRESS[1]))] + \
+        [(va, len(old)) for va, old, _ in P.FOV_PATCHES]
 
 
 def test_late_join_bin():
@@ -1052,6 +1065,79 @@ def test_pregame_progress(original, image, before):
     found = aimed_inside(original, va, len(old), 0x82)
     check(not found, "no rel32 branch of .text, no rel8 branch byte near it and no 4-byte value aims inside the jump"
           + "".join(f"\n          {a:#x}" for a in found))
+
+
+# The vtables whose slot 0 is the camera's projection, by RTTI.
+FOV_VTABLES = {0xA0406C: b".?AVplayer_input_handler@survarium@@", 0xA04084: b".?AVgame_camera@survarium@@",
+               0xA047F0: b".?AVfree_fly_camera@survarium@@", 0xA0482C: b".?AVdemo_camera@survarium@@",
+               0xA09ED8: b".?AVlobby_camera@survarium@@"}
+
+
+def test_fov(original, image, before):
+    """Check 22: the field-of-view setting (patch 21)."""
+    source = Image(original)
+    pack = lambda value: struct.pack("<I", value)
+
+    def refs(value):
+        """The addresses of every 4-byte copy of `value` in the file's sections."""
+        found, at = [], original.find(pack(value))
+        while at != -1:
+            found += [P.IMAGE_BASE + rva + at - raw for _, rva, _, raw, rsize, _ in source.sections
+                      if raw <= at < raw + rsize]
+            at = original.find(pack(value), at + 1)
+        return sorted(found)
+    for va, old, new in P.FOV_PATCHES:
+        check(source.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(new)) == new,
+              f"{va:#x}: {len(old)} bytes rewritten; the original and the build without the late join keep them")
+    string = lambda blob, at: blob.read(at, 64).split(b"\0")[0]
+    name = struct.unpack("<I", P.FOV_OPTION_NAME[2][1:])[0]
+    check(string(source, 0xA0659C) == b"fov" and refs(0xA0659C) == [P.FOV_OPTION_NAME[0] + 1]
+          and string(image, name) == b"uro_fov" and source.read(0xAA6510 + 0x10, 4) == pack(name)
+          and refs(name) == [0xAA6510 + 0x10] and refs(P.FOV_VALUE) == [0x85AE24 + 6]
+          and source.read(0x85AE24, 6) == bytes.fromhex("c70550 65aa00".replace(" ", ""))
+          and struct.unpack("<f", source.read(P.FOV_VALUE, 4))[0] == 65.0,
+          "option 7 names \"uro_fov\" for \"fov\" (pointed to from there alone); \"uro_fov\" names the console variable "
+          f"at 0xAA6510, whose value ({P.FOV_VALUE:#x}, 65.0) only its registration pointed to")
+    rows = [text for _, _, text in ndisasm(image.read(P.FOV_PROJECTION_VA, len(P.FOV_PROJECTION)), P.FOV_PROJECTION_VA)]
+    was = [text for _, _, text in ndisasm(source.read(P.FOV_PROJECTION_VA, len(P.FOV_PROJECTION_ORIGINAL)),
+                                          P.FOV_PROJECTION_VA)]
+    calls = lambda texts: [branch_target(text) for text in texts if text.startswith("call")]
+    real, was_real = [text for text in rows if text != "int3"], [text for text in was if text != "int3"]
+    # ndisasm 3 spells `ret 0x8` as `ret word 0x8`.
+    returns = lambda text: text.replace("ret word ", "ret ")
+    check(calls(rows) == calls(was) == [0xEEE30] and returns(real[-1]) == returns(was_real[-1]) == "ret 0x8"
+          and "fldpi" in rows and rows[len(real):] == ["int3"] * (len(rows) - len(real))
+          and refs(0xA2D9EC) == [P.FOV_PROJECTION_RELOC] and P.FOV_PROJECTION.count(pack(P.FOV_VALUE)) == 1,
+          "the projection calls the matrix builder 0xEEE30 as the original, reads uro_fov where the original read the "
+          "65-degree constant 0xA2D9EC (read there alone), returns with `ret 0x8` and ends in int3")
+    check(all(source.read(vtable, 4) == pack(P.FOV_PROJECTION_VA)
+              and string(source, struct.unpack("<I", source.read(struct.unpack("<I", source.read(vtable - 4, 4))[0] + 12,
+                                                                  4))[0] + 8) == klass
+              for vtable, klass in FOV_VTABLES.items())
+          and refs(P.FOV_PROJECTION_VA) == sorted(FOV_VTABLES),
+          "the projection is slot 0 of the vtables of " + ", ".join(k[4:].split(b"@")[0].decode()
+                                                                   for k in FOV_VTABLES.values())
+          + " and pointed to from nowhere else")
+    least = struct.unpack("<I", P.FOV_MINIMUM[1][7:11])[0]
+    check(image.read(P.FOV_MINIMUM[0] + 2, 8) == struct.pack("<If", least, P.FOV_MIN) and least == 0xAA6510 + 0x44
+          and source.read(0x85AE11, 8) == bytes.fromhex("f30f1005d010a700")
+          and struct.unpack("<f", source.read(0xA710D0, 4))[0] == 100.0,
+          f"uro_fov's registration stores {P.FOV_MIN:g} as its least (+44h); its most stays the float 100 at 0xA710D0")
+
+    def instruction(at):
+        """Whether `at` starts an instruction of the function around it, read
+        from the function's start (after the int3 before it)."""
+        start = at
+        while source.read(start - 1, 1) != b"\xcc" or start % 16:
+            start -= 1
+        return at in {address for address, _, _ in ndisasm(source.read(start, at - start + 16), start)}
+
+    # A rel8 byte is a branch only where the function's own instructions
+    # have one; the others are bytes of other instructions.
+    found = [hit for va, old, _ in P.FOV_PATCHES for hit in aimed_inside(original, va, len(old), 0x82)
+             if not (va <= hit < va + len(old)) and instruction(hit)]
+    check(not found, "no rel32 branch of .text, no rel8 branch near them (read as the functions' instructions) and "
+          "no 4-byte value aims inside the three sites" + "".join(f"\n          {a:#x}" for a in found))
 
 
 # The respawn rules' vtables: player_respawn_rule_base, _core, the client's
@@ -1463,9 +1549,11 @@ def test_late_join(original, without, server, source):
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
-    # The entry of the relocation table that is disabled (scene::remove_model's branch).
+    # The entries of the relocation table that are disabled (scene::remove_model's
+    # branch, the field-of-view setting's two).
+    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_PROJECTION_RELOC, P.FOV_MINIMUM_RELOC}
     ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
-               if kind == 3 and va == P.REMOVE_MODEL_VA + 2]
+               if kind == 3 and va in disabled]
     allowed = bytearray(raw)
     for at, size in ranges:
         allowed[at:at + size] = b"\1" * size
@@ -1528,19 +1616,31 @@ def test_late_join(original, without, server, source):
     sites = [(va, va + size) for va, size in late_join_sites()]
     under = lambda relocations: [va for kind, va in relocations.values()
                                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
-    kept = [(lo, hi) for lo, hi in sites if lo != P.REMOVE_MODEL_VA]
+    # The sites with an address in them: scene::remove_model's branch and the
+    # field-of-view setting's three.
+    with_address = {P.REMOVE_MODEL_VA} | {va for va, _, _ in P.FOV_PATCHES}
+    kept = [(lo, hi) for lo, hi in sites if lo not in with_address]
     under_kept = [va for kind, va in Image(original).relocations().values()
                   if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in kept)]
+    under_fov = sorted(va for kind, va in Image(original).relocations().values()
+                       if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites
+                                            if lo in with_address - {P.REMOVE_MODEL_VA}))
+    option = P.FOV_OPTION_NAME[0] + 1
     now, was = image.relocations(), before.relocations()
     differing = sorted(key for key in set(now) | set(was) if now.get(key) != was.get(key))
-    check(not under_kept and len(differing) == 1 and was[differing[0]] == (3, P.REMOVE_MODEL_VA + 2)
-          and now[differing[0]][0] == 0,
-          "no base relocation is under a late-join site but the one of scene::remove_model's branch "
-          f"({P.REMOVE_MODEL_VA + 2:#x}), which is disabled; the rest of the table is the build's without it")
+    check(not under_kept and sorted(was[key][1] for key in differing) == sorted(disabled)
+          and all(was[key][0] == 3 and now[key][0] == 0 for key in differing)
+          and under_fov == sorted({option, P.FOV_PROJECTION_RELOC, P.FOV_MINIMUM_RELOC})
+          and any(kind == 3 and va == option for kind, va in now.values()),
+          "no base relocation is under a late-join site but those of scene::remove_model's branch "
+          f"({P.REMOVE_MODEL_VA + 2:#x}) and of the field-of-view setting's projection and least "
+          f"({P.FOV_PROJECTION_RELOC:#x}, {P.FOV_MINIMUM_RELOC:#x}), which are disabled, and of its option's name "
+          f"({option:#x}, an address for an address), which stays; the rest of the table is the build's without it")
 
     test_clock_factor(original, image, before)
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
+    test_fov(original, image, before)
     test_weapon_random(original, image, before)
     test_kit_state(original, image, before)
     test_first_load(original, image, before)

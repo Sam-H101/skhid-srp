@@ -1,4 +1,5 @@
-"""FOV slider checks that need neither the game exe nor its archive."""
+"""Field-of-view checks (patch 21 and the menu slider) that need neither the
+game exe nor its archive."""
 from pathlib import Path
 import struct
 import tempfile
@@ -6,31 +7,35 @@ import unittest
 from unittest import mock
 
 import fov_slider_026g as fov
+import patch_026g as P
 
 
-class FovSliderTests(unittest.TestCase):
+class FovTests(unittest.TestCase):
     def test_rewrites_keep_their_sites_size(self):
-        for _, original, new in (fov.OPTION_NAME, fov.MINIMUM):
+        for _, original, new in P.FOV_PATCHES:
             self.assertEqual(len(original), len(new))
-        self.assertEqual(len(fov.PROJECTION), len(fov.PROJECTION_ORIGINAL))
         # The original projection is followed by four int3 bytes of padding.
-        self.assertTrue(fov.PROJECTION_ORIGINAL.endswith(b"\xcc" * 4))
+        self.assertTrue(P.FOV_PROJECTION_ORIGINAL.endswith(b"\xcc" * 4))
 
-    def test_absolute_addresses_sit_where_the_relocations_move(self):
-        old, new = fov.PROJECTION_RELOC
-        self.assertEqual(fov.PROJECTION_ORIGINAL[old - fov.PROJECTION_VA:][:4], struct.pack("<I", 0xA2D9EC))
-        self.assertEqual(fov.PROJECTION[new - fov.PROJECTION_VA:][:4], struct.pack("<I", fov.URO_FOV))
-        old, new = fov.MINIMUM_RELOC
-        site, original, patched = fov.MINIMUM
-        self.assertEqual(original[old - site:][:4], struct.pack("<I", 0xAA6554))
-        self.assertEqual(patched[new - site:][:8], struct.pack("<If", 0xAA6554, fov.FOV_MIN))
+    def test_replaced_addresses_are_where_the_disabled_relocations_are(self):
+        self.assertEqual(P.FOV_PROJECTION_ORIGINAL[P.FOV_PROJECTION_RELOC - P.FOV_PROJECTION_VA:][:4],
+                         struct.pack("<I", 0xA2D9EC))
+        site, original, patched = P.FOV_MINIMUM
+        self.assertEqual(original[P.FOV_MINIMUM_RELOC - site:][:4], struct.pack("<I", 0xAA6554))
+        self.assertEqual(patched[2:10], struct.pack("<If", 0xAA6554, P.FOV_MIN))
+        # The option's name is an address for an address: its relocation stays.
+        site, original, patched = P.FOV_OPTION_NAME
+        self.assertEqual((original[0], patched[0]), (0xB8, 0xB8))
 
     def test_projection_calls_the_original_matrix_builder(self):
-        call = fov.PROJECTION.index(b"\xe8")
-        target = fov.PROJECTION_VA + call + 5 + struct.unpack_from("<i", fov.PROJECTION, call + 1)[0]
-        original = fov.PROJECTION_ORIGINAL.index(b"\xe8")
-        self.assertEqual(target, fov.PROJECTION_VA + original + 5
-                         + struct.unpack_from("<i", fov.PROJECTION_ORIGINAL, original + 1)[0])
+        call = P.FOV_PROJECTION.index(b"\xe8")
+        target = P.FOV_PROJECTION_VA + call + 5 + struct.unpack_from("<i", P.FOV_PROJECTION, call + 1)[0]
+        original = P.FOV_PROJECTION_ORIGINAL.index(b"\xe8")
+        self.assertEqual(target, P.FOV_PROJECTION_VA + original + 5
+                         + struct.unpack_from("<i", P.FOV_PROJECTION_ORIGINAL, original + 1)[0])
+
+    def test_projection_reads_uro_fov(self):
+        self.assertIn(b"\xd8\x0d" + struct.pack("<I", P.FOV_VALUE), P.FOV_PROJECTION)
 
     def test_unknown_movie_is_rejected_before_invoking_compiler(self):
         with mock.patch.object(fov.subprocess, 'run') as run:
@@ -42,10 +47,9 @@ class FovSliderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'resources.db'
             output.write_bytes(b'existing archive')
-            for argv in (['resources', 'unused', str(output), '--ffdec=unused'], ['exe', 'unused', str(output)]):
-                with mock.patch('sys.argv', ['fov_slider_026g.py'] + argv):
-                    with self.assertRaises(SystemExit):
-                        fov.main()
+            with mock.patch('sys.argv', ['fov_slider_026g.py', 'unused', str(output), '--ffdec=unused']):
+                with self.assertRaises(SystemExit):
+                    fov.main()
             self.assertEqual(output.read_bytes(), b'existing archive')
 
 
