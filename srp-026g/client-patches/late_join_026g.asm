@@ -145,6 +145,56 @@ query_players:
     pop ebp
     ret
 
+times 576-($-$$) db 0xcc
+; The camera's projection (patch 22; 0x242900, slot 0 of every camera's
+; vtable) jumps here at its first instruction. ecx = the camera, [esp+4] =
+; the matrix to fill, [esp+8] = the viewport's size; `ret 8`, eax = the
+; matrix, as the original. The original passes the matrix builder 0xEEE30
+; far (+8Ch), near (+88h), the aspect and xmm0 = z * 65 degrees, z being the
+; zoom (+90h): 1 not aimed, 1/aim_zoom_factor with iron sights and a scope's
+; fov_factor (0.25) aimed, slid by the aim's progress (0x1F3480). Here the
+; angle in degrees is
+;   65 z + (uro_fov - 65) * max(0, (z - 0.25) / 0.75):
+; uro_fov unaimed, nearly it with iron sights, the original's 65 * 0.25
+; through a 4x scope whatever the setting, and between them a slide that
+; follows the aim. Only xmm0 of the XMM registers is written, as before.
+fov_projection:
+    mov eax, [esp+8]
+    push esi
+    mov esi, [esp+8]
+    push dword [ecx+0x8c]
+    push dword [ecx+0x88]
+    push eax
+    fld dword [ecx+0x90]
+    fld st0
+    fsub dword [fov_scope]
+    fldz
+    fcomi st0, st1
+    fcmovb st0, st1
+    fstp st1
+    fmul dword [fov_blend]
+    fld dword [0xA6FA28]
+    fsub dword [fov_stock]
+    fmulp st1, st0
+    fxch st1
+    fmul dword [fov_stock]
+    faddp st1, st0
+    fmul dword [fov_radians]
+    fstp dword [esp]
+    movss xmm0, [esp]
+    fld dword [eax]
+    fdiv dword [eax+4]
+    fstp dword [esp]
+    call 0xEEE30
+    add esp, 12
+    mov eax, esi
+    pop esi
+    ret 8
+fov_scope:   dd 0.25
+fov_blend:   dd 1.3333334
+fov_stock:   dd 65.0
+fov_radians: dd 0.017453292
+
 times 768-($-$$) db 0xcc
 ; Native boost member callback: ecx=context, [esp+4]=queries_result.
 ; queries_result owns its resources through the return from this callback.
