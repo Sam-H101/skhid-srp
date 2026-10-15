@@ -30,6 +30,7 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use session::v026g::replays::Replays;
 use session::v026g::rewards::Results;
 use session::v026g::wire::{self, SignInInfo};
 use session::v026g::{Account, GameAccounts, bonus, premium, quests, tutorial};
@@ -217,6 +218,8 @@ pub(super) struct Core<'a> {
     /// The match against bots being made, by the queue's match id: what
     /// it was chosen with (`pvb`, `play::launch`).
     pub pvb_launching: HashMap<u32, super::pvb::Choice>,
+    /// "Watch replay" (`replay`): the process's replays, if srp gave them.
+    pub replays: Option<&'a Replays>,
 }
 
 impl<'a> Core<'a> {
@@ -263,6 +266,7 @@ impl<'a> Core<'a> {
             listing: super::join::Listing::new(quests::now() as u32),
             pvb_holds: HashMap::new(),
             pvb_launching: HashMap::new(),
+            replays: None,
         }
     }
 
@@ -600,9 +604,12 @@ impl<'a> Core<'a> {
         if let Some(log) = &self.packet_log {
             match log.connection(Table::Lobby, from) {
                 // The sign-in's body is the session id: all a connection
-                // shows to prove whose it is.
+                // shows to prove whose it is. A `9E` may carry a replay's
+                // download token (`replay`): never logged whole.
                 Ok(file) => transport.set_log(file.with_redaction(Box::new(|direction, id, _| {
-                    direction == Direction::ToServer && id == requests::id::SIGN_IN
+                    (direction == Direction::ToServer && id == requests::id::SIGN_IN)
+                        || (direction == Direction::ToClient
+                            && id == lobby::ServerId::VideoLink as u8)
                 }))),
                 Err(error) => log::warn!("No packet log for {from}: {error}"),
             }

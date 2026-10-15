@@ -138,6 +138,12 @@ impl Core<'_> {
                     ),
                 }
             }
+            // `3D 00 <REPLAY_ASK> <match>`: the History's "Watch replay"
+            // (`replay`); no row of a results screen has that player.
+            M::QueryPlayerDetails {
+                player_id: lobby::REPLAY_ASK,
+                match_id,
+            } => self.replay_ask(who, match_id, now),
             // `3D 00 <player> <match>`: the kits of a row of that screen,
             // for a player of the match.
             M::QueryPlayerDetails {
@@ -556,8 +562,9 @@ impl Core<'_> {
     /// JOIN button of that match (`join`), [`lobby::PVB_STATUS_START`] and
     /// a start from [`lobby::PVB_CHOOSE_BASE`] to
     /// [`lobby::PVB_CHOOSE_LAST`] with the status and the choice of a
-    /// match against bots (`pvb`); any other gets no answer. Nothing of the
-    /// ranking is read, sent or kept for them.
+    /// match against bots (`pvb`), [`lobby::REPLAY_START`] with the asker's
+    /// own "Watch replay" answer (`replay`); any other gets no answer.
+    /// Nothing of the ranking is read, sent or kept for them.
     fn reserved_ranking(&mut self, who: &Who, start: u32, count: u8, now: Instant) {
         if start == lobby::MATCHES_START {
             let list = self.matches_now(who, count, now);
@@ -570,6 +577,10 @@ impl Core<'_> {
         }
         if (lobby::PVB_CHOOSE_BASE..=lobby::PVB_CHOOSE_LAST).contains(&start) {
             self.pvb_choose(who, start, now);
+            return;
+        }
+        if start == lobby::REPLAY_START {
+            self.replay_poll(who, now);
             return;
         }
         let key = start.wrapping_sub(lobby::JOIN_START);

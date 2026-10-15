@@ -85,6 +85,8 @@ class Site:
         self.patch_redirects = {}       # n -> a Location answered with 302 in the place of the file
         self.patch_cut = {}             # n -> bytes sent of the file, its whole length announced
         self.patch_slow = 0.0           # seconds between pieces of a patch file
+        self.replays = {}               # /replays/<token>: token -> bytes
+        self.replay_answers = {}        # token -> (status, headers, body) instead
         self.requests = []
         site = self
 
@@ -185,6 +187,20 @@ class Site:
                         self.answer(status, b"")
                     else:
                         self.answer(200, site.blob_bodies.get(name, site.blobs[name]), "application/octet-stream")
+                elif self.path.startswith("/replays/"):
+                    token = self.path[len("/replays/"):]
+                    if token in site.replay_answers:
+                        status, headers, body = site.replay_answers[token]
+                        self.send_response(status)
+                        for key, value in headers.items():
+                            self.send_header(key, value)
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    elif token in site.replays:
+                        self.answer(200, site.replays[token], "application/octet-stream")
+                    else:
+                        self.answer(404, b"")
                 else:
                     self.answer(404, b"not found\n")
 

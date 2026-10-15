@@ -11,6 +11,7 @@ pub mod inflate;
 pub mod manifest;
 pub mod patches;
 pub mod pipe;
+pub mod replay;
 pub mod resources;
 pub mod sha256;
 pub mod url;

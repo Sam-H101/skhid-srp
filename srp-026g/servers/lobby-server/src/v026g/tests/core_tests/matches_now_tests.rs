@@ -7,7 +7,7 @@
 use session::QueuePool;
 use session::v026g::matches_now::{Phase, SCORE_AGE};
 use survarium::v026g::lobby::requests::ClientMessage;
-use survarium::v026g::lobby::{JOIN_KEY_MAX, JOIN_START, MATCHES_NOW_ROWS, MATCHES_START};
+use survarium::v026g::lobby::{JOIN_START, MATCHES_NOW_ROWS, MATCHES_START, REPLAY_START};
 use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
 
 use super::*;
@@ -520,13 +520,14 @@ fn a_reserved_start_the_server_does_not_know_gets_no_answer() {
     *world.host.listed.locked() = vec![playing(0x51)];
     world.take(alice);
     // Past the list and before the JOIN starts; the JOIN start itself
-    // (key 0 is no key); past the last key.
+    // (key 0 is no key); past the replay poll, the start after the last key
+    // (`replay_tests`).
     for start in [
         MATCHES_START + 1,
         MATCHES_START + 32,
         JOIN_START - 1,
         JOIN_START,
-        JOIN_START + JOIN_KEY_MAX + 1,
+        REPLAY_START + 1,
         3_000_000_000,
         u32::MAX,
     ] {

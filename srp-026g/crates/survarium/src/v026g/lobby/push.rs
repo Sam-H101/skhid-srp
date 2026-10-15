@@ -732,8 +732,10 @@ pub const MATCHES_START: u32 = 2_000_000_000;
 /// Every `start` of a `3B` from here on is srp's own and never a ranking
 /// page. The stock page asks only for indexes below the count of ranked
 /// players it was told (`PlayerRanking.request_players`), so a stock game
-/// never sends one. Besides [`MATCHES_START`] only the JOIN requests
-/// ([`JOIN_START`]) are answered; every other one gets no answer.
+/// never sends one. Besides [`MATCHES_START`] only "Player vs Bots"
+/// ([`PVB_STATUS_START`], [`PVB_CHOOSE_BASE`]), the JOIN requests
+/// ([`JOIN_START`]) and the replay poll ([`REPLAY_START`]) are answered;
+/// every other one gets no answer.
 pub const RESERVED_START: u32 = MATCHES_START;
 /// The `start` of a `3B` that is the JOIN button of a match of
 /// [`matches_now`]: `JOIN_START + key`, `key` the match's listing key
@@ -753,6 +755,17 @@ pub const MATCHES_NOW_ROWS: usize = 32;
 pub const MATCHES_NOW_VERSION: &str = "M2";
 /// The first field of the row of [`join_answer`].
 pub const JOIN_ANSWER_VERSION: &str = "J1";
+/// The `start` of a `3B` that polls for the asker's "Watch replay" answer
+/// ([`replay_answer`]): above every JOIN request.
+pub const REPLAY_START: u32 = 2_200_000_000;
+/// The `player` of a `3D 00 <player> <match>` (`victory_screen_request_
+/// player_data`) that asks for the match's replay, from the History of
+/// srp's changed lobby movie: `0xFFFF_FF01` as the movie's `uint`. No
+/// account id is that high (they are below 2^31), so no row of a results
+/// screen asks for it.
+pub const REPLAY_ASK: u32 = 0xFFFF_FF01;
+/// The first field of the row of [`replay_answer`].
+pub const REPLAY_ANSWER_VERSION: &str = "R1";
 
 /// How far a match of [`matches_now`] is: the row's `phase` field.
 #[repr(u8)]
@@ -1172,6 +1185,28 @@ pub fn pvb_choose_no(
         rating_before: 0,
     };
     elo_rows(&[(start, &row)])
+}
+
+/// `91` as the answer to a replay poll (`3B 00 <REPLAY_START> <count>`):
+/// one row, `name = "R1;<status>;<match id 8 lower hex>;<n>"`,
+/// `place = REPLAY_START`, rating and change 0 (`CONTRACT-R1`). `status`
+/// is the word of the asker's latest ask (`session::v026g::replays::
+/// Status::word`), the match the one it asked for (0 before any), the last
+/// field the replay file's size when it is ready, its place in the
+/// conversion line while preparing (1 being made now, 0 not known), else
+/// 0. The movie's
+/// `PlayerRanking.fillPlayers` routes an `R1;` header to the History, as
+/// `M2;` and `J1;` go to the matches' window. **srp's own**, as safe for
+/// the client as [`join_answer`]: 45 bytes at the most (the longest word is
+/// 12 letters, a u64 20 digits), the place a u32 the movie tells apart from
+/// a ranking row.
+pub fn replay_answer(status: &str, match_id: u32, size: u64) -> Result<ServerMessage, WireError> {
+    let row = Ranked {
+        name: format!("{REPLAY_ANSWER_VERSION};{status};{match_id:08x};{size}"),
+        rating: 0,
+        rating_before: 0,
+    };
+    elo_rows(&[(REPLAY_START, &row)])
 }
 
 /// One 20-byte `quest_instance` of 0x92.

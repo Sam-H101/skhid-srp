@@ -198,6 +198,7 @@ fn a_match_of_enough_players_is_recorded_whole_over_udp() {
             dir: dir.clone(),
             min_players,
             max_bytes: 1 << 30,
+            replays: None,
         });
         let mut net = Net::new(3, MAP_BATTERIES, settings);
         for place in 0..3 {
@@ -248,6 +249,18 @@ fn a_match_of_enough_players_is_recorded_whole_over_udp() {
         .filter(|note| note["note"] == "entered")
         .count();
     assert_eq!(entered, 3);
+    // Each place's game revision, for its replay (0: the test's sessions
+    // are not the store's), and nothing of its session or address.
+    let revisions: Vec<&serde_json::Value> = notes
+        .iter()
+        .filter(|note| note["note"] == "revision")
+        .collect();
+    assert_eq!(revisions.len(), 3, "{notes:?}");
+    for note in revisions {
+        assert_eq!(note["revision"], 0);
+        let keys: Vec<&String> = note.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["note", "place", "revision"]);
+    }
     assert!(notes.iter().any(|note| note["note"] == "clock"));
     assert!(notes.iter().any(|note| note["note"] == "result"));
     let closed = notes.last().expect("notes");

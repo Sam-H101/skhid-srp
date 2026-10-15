@@ -14,7 +14,8 @@ below).
 
 A 32-bit Windows program of about 150 KB, without the Rust standard library
 and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
-`user32.dll` (its message box) and `winhttp.dll`.
+`user32.dll` (its message box), `winhttp.dll` and `advapi32.dll` (one
+registry value read for "Watch replay").
 
 ## What it does, and does not
 
@@ -54,7 +55,8 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   does hold the game folder's path) beside itself. `updater_skhid.lock`
   prevents simultaneous installs in the same folder. The patch step writes
   its own files beside it too (listed under "Patches").
-- No BitTorrent, no listening port, no UPnP, no registry, no service, no
+- No BitTorrent, no listening port, no UPnP, no registry write (one value
+  is read: the launcher's language, for "Watch replay"), no service, no
   crash upload, no administrator rights (its manifest says `asInvoker`;
   without one Windows takes a program named "updater" for an installer and
   asks for elevation).
@@ -68,6 +70,8 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 | `updater_skhid.exe check` | a person, a script | The update without a launcher; an error is a message box |
 | `updater_skhid.exe check quiet` | a script | No box either. Exit code 0: done or nothing to do; 1: failed (the reason is in the log) |
 | `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the last patch step did not end `ready` (a new overlay since, too), or the patch files are not now what its list says (one missing, damaged, or one more); else 0 |
+| `updater_skhid.exe replay <id> <token> <sha256> <size>` | the patched game (patch revision 14) | "Watch replay": fetches one replay and starts a second game that plays it (below). A problem is a message box |
+| `updater_skhid.exe replay <id> <token> <sha256> <size> quiet` | the tests | The same with no window at all: the problem is in the log and the exit code (1) |
 
 Exit codes: 0, 1 (failed), 2 (the launcher's pipe could not be opened), 3
 (an internal error; logged).
@@ -82,6 +86,64 @@ says so and does nothing.
 | `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the earlier updaters' record of resources.db, the list of resources.db's patches) and what the restore and the patch step decide, the launcher's pipe messages, command-line splitting, the server address and a patch's. `cargo test` there runs on any host |
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
 | `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `test_db_patches.py`: the patch step and the restore, Windows or Wine. `test_game_download.py`: the original game's download. `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started; it also holds a file as the game or an antivirus does, and is the launcher's end of its pipe, for the tests under Wine |
+
+## Watch replay
+
+The lobby's History offers a replay of a match the player played. The
+server sends the game a link `replay <id> <token> <sha256> <size>`; the
+patched game (`srp-026g/client-patches`, patch 29, revision 14) starts
+`updater_skhid.exe` beside itself with that link as its arguments and does
+nothing else with it. The updater (`exe/src/replay.rs`, the rules in
+`logic/src/replay.rs`):
+
+1. Takes `replay` only as that exact word, then exactly four arguments:
+   8, 32 and 64 lower-case hex digits and 1 to 10 digits, the size 1 byte to
+   64 MiB (an optional fifth word `quiet` is the tests' no-window mode).
+   Anything else: "This replay link is not valid", nothing fetched.
+2. Holds its own lock, `updater_skhid.replay.lock`: an update and a replay
+   download never wait for each other; a second replay at the same time is
+   told "A replay is already being downloaded".
+3. Needs `survarium_skhid.exe` beside it (what PLAY starts).
+4. Asks its configured site (`updater_skhid.url`, the same rules as an
+   update: HTTPS, plain HTTP for this computer alone, no redirect followed,
+   no cookie) for `GET /replays/<token>`, into
+   `<game>\replays\srp_<id>.sur.part` (a file of exactly the link's size at
+   most), reads it back from the disk, checks its size and SHA-256, and
+   renames it to `srp_<id>.sur`. A file of that name with the right size and
+   checksum is used again without a request. A connection that fails or
+   breaks off is tried three times; a status is not (404 and 410: "expired
+   or already used"; 429 and 503: busy; any other, a 3xx too: "error <n>").
+5. Keeps the ten newest `srp_<8 hex>.sur` of that folder (the new one
+   always among them) and deletes the others and any other id's `.part`;
+   no other name there is touched.
+6. Makes the check of `updater_skhid.exe ready` (read only, the one
+   `play_skhid.bat` and `play_skhid.sh` make): while the last patch step did
+   not end `ready` (a new overlay since, too), or the patch files are not
+   now what its list says, the game is not started. The player is told that
+   Skhid has not finished updating `game\resources.db.patch_*`, to start `Skhid.bat`
+   (the launcher) and then ask for the replay again; the log has the
+   `ready: NOT READY: ...` line and `replay: FAILED (NotReady)`, the exit
+   code is 1. The replay stays in the folder, checked, for the next ask.
+7. Starts the game as the launcher's PLAY does, from `game\binaries\x86`:
+   `"<x86>\survarium_skhid.exe" -localization=<the launcher's language>
+   -mt_allocator=768 -minimum_resources_memory_size=768
+   -match_replay="<the file>"`. The game reads its command line as ANSI
+   text and a value in quotes as one value, spaces and all (read in the exe:
+   `srp-026g/docs/notes/client_patch.md` section 3.27). The path is given as
+   it is when the ANSI code page holds every character of it and it is at
+   most 259 bytes; else its short (8.3) form when that does; else the player
+   is told to move the game to a folder with Latin letters.
+
+Every problem is a message box in the launcher's language (the value
+`language` of `HKCU\Software\Vostok Games\Survarium`, 0 to 4, read only;
+English when it is not there) and a line `replay: FAILED (<problem>): <text>`
+in `updater_skhid.log`. The log names the token by its first 6 hex digits
+only. No progress is shown while the replay downloads (at most 64 MiB).
+
+The one call of the message box in the replay's code is `notify` in
+`exe/src/replay.rs`, behind `if !quiet`, and the replay returns from `run`
+before any of `main.rs`'s own calls of it: with `quiet` no window is made
+(`tests/test_replay.py`, `QuietSource`, reads the source to keep it so).
 
 ## Original game download and verification
 
@@ -332,6 +394,7 @@ SKHID_UPDATE_URL=https://test.example ./build.sh   # another default server
 (cd logic && cargo test)
 python tests/test_updater.py                 # Windows
 python tests/test_db_patches.py              # Windows or Wine (resources.db's patches, the restore)
+python tests/test_replay.py                  # Windows; the replay, in its no-window mode only
 python tests/test_game_download.py           # Windows or Wine
 SKHID_TEST_BUNDLE=<a players' zip> python tests/test_updater.py
 ```
@@ -415,6 +478,17 @@ cut short, the server down, a db of another build);
 `test_linux_launcher.py` (40, one skipped). `test_updater.py` is not run:
 it needs Windows; its tests of the in-place plans are gone with them, and
 one checks the restart after a new updater with a patch listed.
+Run on 2026-10-16 (Windows 11), "Watch replay" on top of the patch step
+(`main` decacfa): the 63 unit tests of `logic/` and the 14 tests of
+`tests/test_replay.py` pass (every updater started with `quiet`; the game a
+stand-in), among them a replay refused while the patch step did not end
+`ready` (a blocked status, none at all, a list that cannot be read) and
+while a listed patch is missing, damaged or one more is there, and played
+once the folder is the list. `tests/test_updater.py`, `tests/test_db_patches.py`
+and `tests/test_game_download.py` were not run on Windows (they start the
+updater, or `play_skhid.bat` its `ready`, without `quiet`, which can show a
+box); the update's code is unchanged but for the command line being read
+once more for the replay's word.
 
 ## Not done
 

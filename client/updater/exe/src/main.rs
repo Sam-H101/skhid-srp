@@ -25,6 +25,7 @@ mod install;
 mod log;
 mod patches;
 mod pipe;
+mod replay;
 mod resources;
 mod rt;
 mod text;
@@ -655,6 +656,11 @@ struct Options {
 /// original updater's arguments; all but the first two are of no use here),
 /// or `check [quiet]` by hand.
 fn options() -> Result<Options, String> {
+    options_of(&arguments())
+}
+
+/// The program's command line, cut into its arguments.
+fn arguments() -> Vec<String> {
     let line = win::from_wide(unsafe {
         let pointer = GetCommandLineW();
         let mut length = 0;
@@ -663,7 +669,10 @@ fn options() -> Result<Options, String> {
         }
         core::slice::from_raw_parts(pointer, length)
     });
-    let arguments = updater_logic::args::split(&line);
+    updater_logic::args::split(&line)
+}
+
+fn options_of(arguments: &[String]) -> Result<Options, String> {
     let action = arguments.get(1).map_or("", String::as_str);
     let rest = arguments.get(2..).unwrap_or(&[]);
     let no_pipe = rest
@@ -700,6 +709,12 @@ fn options() -> Result<Options, String> {
 }
 
 fn run() -> u32 {
+    // "Watch replay": started by the patched game with a replay link
+    // (`replay.rs`). Exactly this word, as the game's patch sends it.
+    let arguments = arguments();
+    if let Some((replay_arguments, quiet)) = updater_logic::replay::command(&arguments) {
+        return replay::run(replay_arguments, quiet);
+    }
     let options = options();
     let layout = match Layout::find() {
         Ok(layout) => layout,

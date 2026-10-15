@@ -13,6 +13,12 @@
 //!   `resources` beside the download file ([`resource_file`]): the originals
 //!   of the `resources.db` regions earlier updaters wrote, which the
 //!   updater fetches to put the stock db back once when it kept no copy.
+//! - `/replays/<token>` (the 0.26g page only) is the replay file of the
+//!   match a token of the lobby's "Watch replay" is for
+//!   (`session::v026g::replays`): `SRP_REPLAY_DIR/<id:08x>.sur`, named from
+//!   the token's match id alone ([`replay_file`]); anything else under
+//!   `/replays` is one and the same "not found", and an address that fails
+//!   too often is answered `429` for a while ([`Web::replay`]).
 //! - The admin page changes the silver and gold of any account, for testing.
 //!   It exists only when `SRP_ADMIN_TOKEN` and `SRP_ADMIN_PATH` (a hard to
 //!   guess name, served at `/<name>`) are set, and only for the addresses in
@@ -38,6 +44,7 @@ mod v026g;
 pub use patches::OfferedPatch;
 pub use v026g::{Game, LiveMatch, LivePhase, LiveStanding, LobbyLink, MatchCounter};
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
@@ -47,6 +54,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use session::v026g::replays::{Refused, Replays};
 use session::{Ban, LockExt, Net, SessionStore, SignInError};
 
 /// 10 000 silver for 100 gold.
@@ -240,6 +248,88 @@ fn resource_request(v026g: bool, request: &Request, download: Option<&Path>) -> 
     resource_file(&request.path, download?)
 }
 
+/// Where the replays are handed out: `/replays/<token>` (the 0.26g page;
+/// `docs/notes/replay_watch.md`).
+const REPLAYS: &str = "/replays/";
+/// Failed `/replays/` lookups an address may make in [`REPLAY_FAILURE_WINDOW`]
+/// before it is answered `429` for [`REPLAY_BLOCK`]: a token cannot be
+/// guessed (128 random bits), and cannot be scanned for either.
+const REPLAY_FAILURES: u32 = 30;
+const REPLAY_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const REPLAY_BLOCK: Duration = Duration::from_secs(60);
+/// Addresses whose failed lookups are counted, at most.
+const REPLAY_FAILURE_ADDRESSES: usize = 4096;
+/// Every `/replays/` request that does not get a file gets exactly this:
+/// one answer, the same bytes, whatever was wrong with it.
+const REPLAY_NOT_FOUND: &[u8] =
+    b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+/// A live token whose one download at a time is under way: a token holds
+/// one of the page's download slots at most, so an account
+/// `TOKENS_PER_ACCOUNT` (3) of [`MAX_DOWNLOADS`] (5).
+const REPLAY_BUSY: &[u8] = b"HTTP/1.0 503 Service Unavailable\r\nRetry-After: 10\r\n\
+    Content-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// Whether a request is the replays' to answer: its path is `/replays` or
+/// under `/replays/`. Every such request is answered by [`Web::replay`]
+/// (a file or [`REPLAY_NOT_FOUND`]), never by a page.
+fn replay_route(request: &Request) -> bool {
+    request.path == "/replays" || request.path.starts_with(REPLAYS)
+}
+
+/// The token of a `GET` or `HEAD` whose target, exactly as sent (no query,
+/// no fragment, no escape, nothing after it), is `/replays/<32 lower-case
+/// hex digits>`. Nothing of it is ever a path: the token is looked up, and
+/// the file named from its match id ([`replay_file`]).
+fn replay_token<'a>(method: &str, target: &'a str) -> Option<&'a str> {
+    if !matches!(method, "GET" | "HEAD") {
+        return None;
+    }
+    let token = target.strip_prefix(REPLAYS)?;
+    (token.len() == 32
+        && token
+            .bytes()
+            .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+    .then_some(token)
+}
+
+/// The replay file of a match: `SRP_REPLAY_DIR/<id:08x>.sur`, its name made
+/// from the match id alone (`Replays::sur_path`), and only when it is a
+/// regular file (not a link, not a folder) whose real path is in the
+/// replay folder.
+fn replay_file(replays: &Replays, match_id: u32) -> Option<PathBuf> {
+    let dir = std::fs::canonicalize(&replays.settings()?.replay_dir).ok()?;
+    let path = replays.sur_path(match_id)?;
+    if !std::fs::symlink_metadata(&path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let real = std::fs::canonicalize(&path).ok()?;
+    (real.parent() == Some(dir.as_path())).then_some(real)
+}
+
+/// The log line of a replay handed out. The `Range` is the one value of
+/// the request in it that is not checked first, and is shown escaped
+/// (`{:?}`): a header line is split at `\r\n` alone, so a bare `\n` or any
+/// other control character it carries cannot start a forged line. (The
+/// method is `GET` or `HEAD`, the token 32 hex digits, the address parsed.)
+fn replay_log_line(request: &Request, match_id: u32, token: &str) -> String {
+    format!(
+        "Replays: {} of match {match_id:#x} for {} (token {}…, range {:?})",
+        request.method,
+        request
+            .client
+            .map_or_else(|| "?".to_owned(), |ip| ip.to_string()),
+        session::v026g::replays::token_tag(token),
+        request.range
+    )
+}
+
+/// The failed `/replays/` lookups of one address.
+struct ReplayFailures {
+    count: u32,
+    since: Instant,
+    blocked_until: Option<Instant>,
+}
+
 /// The file to hand out at `/download`, if one is set and there.
 fn available_download() -> Option<&'static PathBuf> {
     CONNECT
@@ -295,6 +385,10 @@ struct Web {
     downloads: AtomicU32,
     /// Downloads of `/resources/` blobs now.
     resource_downloads: AtomicU32,
+    /// Downloads of `/replays/` files now: slots of their own.
+    replay_downloads: AtomicU32,
+    /// Failed `/replays/` lookups by address ([`REPLAY_FAILURES`]).
+    replay_failures: Mutex<HashMap<Option<IpAddr>, ReplayFailures>>,
     /// `Some`: the page of the 0.26g stack.
     game: Option<Game>,
 }
@@ -420,6 +514,8 @@ pub fn serve_on(
         connections: AtomicU32::new(0),
         downloads: AtomicU32::new(0),
         resource_downloads: AtomicU32::new(0),
+        replay_downloads: AtomicU32::new(0),
+        replay_failures: Mutex::new(HashMap::new()),
         game,
     });
     for stream in listener.incoming() {
@@ -444,7 +540,10 @@ pub fn serve_on(
 
 struct Request {
     method: String,
+    /// The target before any `?`.
     path: String,
+    /// The target exactly as sent (`/replays/` takes nothing else).
+    target: String,
     lang: Lang,
     /// `X-Forwarded-For`, as sent.
     forwarded: String,
@@ -522,6 +621,10 @@ impl Web {
         } else {
             connection
         };
+        if self.game.is_some() && replay_route(&request) {
+            self.replay(&mut stream, &request, Instant::now());
+            return;
+        }
         if request.path == "/download" && matches!(request.method.as_str(), "GET" | "HEAD") {
             if let Some(file) = available_download() {
                 self.download(&mut stream, &request, file);
@@ -574,6 +677,111 @@ impl Web {
             &self.resource_downloads,
             "application/octet-stream",
         );
+    }
+
+    /// `/replays/<token>`: the replay file of the token's match, as the
+    /// download file is handed out (a `Range` resumes), in slots of its own;
+    /// each `GET` takes one of the token's downloads, and a token has one
+    /// download under way at a time ([`REPLAY_BUSY`] for another). Anything
+    /// else, an unknown, expired or used-up token among it, is
+    /// [`REPLAY_NOT_FOUND`] and counts against the address
+    /// ([`REPLAY_FAILURES`]). A log line shows six hex digits of a token at
+    /// the most ([`replay_log_line`]).
+    fn replay(&self, stream: &mut TcpStream, request: &Request, now: Instant) {
+        if self.replay_blocked(request.client, now) {
+            let _ = stream.write_all(
+                b"HTTP/1.0 429 Too Many Requests\r\nRetry-After: 60\r\nContent-Length: 0\r\n\
+                  Connection: close\r\n\r\n",
+            );
+            return;
+        }
+        let replays = self.game.as_ref().and_then(|game| game.replays.as_deref());
+        let token = replay_token(&request.method, &request.target);
+        let taken = match replays.zip(token) {
+            Some((replays, token)) => replays
+                .take_download(token, request.method == "GET", now)
+                .map(|download| (replays, token, download)),
+            None => Err(Refused::Unknown),
+        };
+        let (replays, token, download) = match taken {
+            Ok(taken) => taken,
+            // A live token whose download is under way: one at a time, so
+            // that no account fills the slots. Not a failed lookup.
+            Err(Refused::Busy) => {
+                let _ = stream.write_all(REPLAY_BUSY);
+                return;
+            }
+            Err(Refused::Unknown) => {
+                self.replay_failed(request.client, now);
+                let _ = stream.write_all(REPLAY_NOT_FOUND);
+                return;
+            }
+        };
+        let match_id = download.match_id;
+        let Some(file) = replay_file(replays, match_id) else {
+            log::warn!(
+                "Replays: token {}… names match {match_id:#x}, whose replay is not there",
+                session::v026g::replays::token_tag(token)
+            );
+            let _ = stream.write_all(REPLAY_NOT_FOUND);
+            return;
+        };
+        log::info!("{}", replay_log_line(request, match_id, token));
+        self.send_file(
+            stream,
+            request,
+            &file,
+            &self.replay_downloads,
+            "application/octet-stream",
+        );
+        // The token's one download is over.
+        drop(download);
+    }
+
+    /// Whether an address is waiting out its failed `/replays/` lookups.
+    fn replay_blocked(&self, client: Option<IpAddr>, now: Instant) -> bool {
+        locked(&self.replay_failures)
+            .get(&client)
+            .and_then(|failures| failures.blocked_until)
+            .is_some_and(|until| now < until)
+    }
+
+    /// One failed `/replays/` lookup of an address: past [`REPLAY_FAILURES`]
+    /// in a minute it is blocked for a minute.
+    fn replay_failed(&self, client: Option<IpAddr>, now: Instant) {
+        let mut all = locked(&self.replay_failures);
+        if all.len() >= REPLAY_FAILURE_ADDRESSES && !all.contains_key(&client) {
+            all.retain(|_, failures| {
+                failures.blocked_until.is_some_and(|until| now < until)
+                    || now.saturating_duration_since(failures.since) < REPLAY_FAILURE_WINDOW
+            });
+            if all.len() >= REPLAY_FAILURE_ADDRESSES {
+                all.retain(|_, failures| failures.blocked_until.is_some_and(|until| now < until));
+            }
+        }
+        let failures = all.entry(client).or_insert(ReplayFailures {
+            count: 0,
+            since: now,
+            blocked_until: None,
+        });
+        if failures.blocked_until.is_some_and(|until| now >= until)
+            || now.saturating_duration_since(failures.since) >= REPLAY_FAILURE_WINDOW
+        {
+            *failures = ReplayFailures {
+                count: 0,
+                since: now,
+                blocked_until: None,
+            };
+        }
+        failures.count += 1;
+        if failures.count >= REPLAY_FAILURES && failures.blocked_until.is_none() {
+            failures.blocked_until = Some(now + REPLAY_BLOCK);
+            log::warn!(
+                "Replays: {} failed {REPLAY_FAILURES} lookups in a minute; answered 429 for a \
+                 minute",
+                client.map_or_else(|| "?".to_owned(), |ip| ip.to_string())
+            );
+        }
     }
 
     /// A file, whole or from a `Range`, while fewer than [`MAX_DOWNLOADS`]
@@ -1277,6 +1485,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     Some(Request {
         method,
         path,
+        target: target.to_owned(),
         lang: Lang::pick(&chosen, &accept),
         forwarded,
         range,
@@ -2242,6 +2451,11 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
+/// `/replays/` against every hostile request of `CONTRACT-R1`, and the
+/// other routes against the same list.
+#[cfg(test)]
+mod replay_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2260,6 +2474,8 @@ mod tests {
             connections: AtomicU32::new(0),
             downloads: AtomicU32::new(0),
             resource_downloads: AtomicU32::new(0),
+            replay_downloads: AtomicU32::new(0),
+            replay_failures: Mutex::new(HashMap::new()),
             game: None,
         }
     }
@@ -2268,6 +2484,7 @@ mod tests {
         Request {
             method: "POST".into(),
             path: path.into(),
+            target: path.into(),
             lang: Lang::En,
             forwarded: String::new(),
             range: String::new(),
@@ -2510,6 +2727,7 @@ mod tests {
                 &Request {
                     method: "GET".into(),
                     path: path.into(),
+                    target: path.into(),
                     lang: Lang::En,
                     forwarded: String::new(),
                     range: String::new(),
@@ -2547,6 +2765,7 @@ mod tests {
         let request = Request {
             method: "GET".into(),
             path: "/hidden".into(),
+            target: "/hidden".into(),
             lang: Lang::En,
             forwarded: String::new(),
             range: String::new(),
@@ -2732,6 +2951,15 @@ mod tests {
             format!("/download/{BLOB}"),
             format!("{blob}.zip"),
             "/resources/..".to_owned(),
+            // The replays' hostile list (`replay_tests`), here too.
+            format!("/resources/{}\\..", &BLOB[3..]),
+            format!("/resources/{}%5c", &BLOB[3..]),
+            format!("/resources/{}%00", &BLOB[3..]),
+            format!("/resources/{}\0", &BLOB[1..]),
+            format!("/resources/{BLOB}.json"),
+            format!("/resources/{BLOB}#x"),
+            format!("/resources/./{BLOB}"),
+            format!("/resources/{}", "a".repeat(2000)),
         ] {
             assert_eq!(resource_file(&path, download), None, "{path}");
         }
@@ -2853,6 +3081,7 @@ mod tests {
                     &Request {
                         method: "GET".into(),
                         path: "/".into(),
+                        target: "/".into(),
                         lang: Lang::En,
                         forwarded: String::new(),
                         range: String::new(),

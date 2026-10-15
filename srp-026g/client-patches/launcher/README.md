@@ -82,6 +82,12 @@ installs whenever the ZIP's checksum changes.
 5. The language menu (EN, RU, UA, DE, PL) changes the launcher's texts and
    the page at once, is remembered, and is the language the game starts in.
 
+"Watch replay" in the lobby's History (game patch revision 14) does not go
+through the launcher: the game starts `updater_skhid.exe replay ...`, which
+fetches the replay and starts a second `survarium_skhid.exe` with PLAY's
+arguments, the language the launcher keeps, and `-match_replay=<file>`
+(`../../../client/updater/README.md`, "Watch replay").
+
 Gone from the window: the four social buttons, CREATE ACCOUNT (an account is
 made by the first sign-in), and the settings gear (its two options, "Allow
 torrent" and the torrent port, are of the old updater). PROJECT WEBSITE

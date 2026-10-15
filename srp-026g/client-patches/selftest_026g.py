@@ -171,10 +171,25 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     exe's six texts and the resource manager's pointer and its own data
     (1.0 and three names) plus the delta in ebp; three pushad, three popad.
     check_forward_scroll_026g.py runs it.
+29. the same build: "Watch replay" (patch 29, revision 14). The lobby's
+    video_tutorial_link_clicked (0x28CDA0, entry 106 of the callback
+    names, its address in the file once, called by nothing) jumps at
+    0x28CDB6 to replay_link where the original pushes ShellExecuteA's
+    arguments; the original's body (the delay-loaded ShellExecuteA of the
+    link buffer, enable_element) and the link buffer's every use (emptied,
+    filled by 9E as UTF-8 with its zero, tested, opened) are read;
+    replay_link reaches GetModuleFileNameW, GetModuleHandleA,
+    GetProcAddress and CloseHandle through the game's own IAT slots,
+    leaves only by its return, and holds the link's pattern and the fixed
+    program name; nothing aims inside the hook and no relocation is under
+    it; its code sits at 0x220 of `.srp`, after the upload code and the
+    default server and before the patches' mount (check 15's layout).
+    check_replay_link_026g.py runs the handler on made-up links.
 """
 
 import ctypes
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -337,6 +352,13 @@ def test_bins():
                         os.path.join(HERE, "mount_patches_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
     check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.REPLAY_LINK_VA:#x}",
+                        os.path.join(HERE, "replay_link_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.replay_link_bin(), "rb").read(),
+          f"{os.path.basename(P.replay_link_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -997,7 +1019,8 @@ def late_join_sites():
          (P.REPLAY_REATTACH_THUNK[0], len(P.REPLAY_REATTACH_THUNK[1])),
          (P.SOUND_QUEUE_CAVE_SITE[0], len(P.SOUND_QUEUE_CAVE_SITE[1])),
          (P.SOUND_QUEUE_HOOK[0], len(P.SOUND_QUEUE_HOOK[1])),
-         (P.SEEK_CLEAR_HOOK[0], len(P.SEEK_CLEAR_HOOK[1]))] + \
+         (P.SEEK_CLEAR_HOOK[0], len(P.SEEK_CLEAR_HOOK[1])),
+         (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites()
 
 
@@ -2245,6 +2268,124 @@ def test_seek_clear(original, image, before):
           "seek_clear: the vtable found relative to itself, 0x245C50 for the functors, the lea and back to 0x1EE3A9")
 
 
+def imports(image):
+    """{IAT slot VA: (dll, function)} of the import table and the delay-load
+    table (its addresses are VAs in this exe)."""
+    out = {}
+    cstr = lambda va: bytes(image.data[image.offset(va):image.data.index(b"\0", image.offset(va))]).decode()
+    rva, _ = image.directory(1)
+    at = P.IMAGE_BASE + rva
+    while True:
+        lookup, _, _, name, first = struct.unpack("<5I", image.read(at, 20))
+        if not name:
+            break
+        for index in itertools.count():
+            thunk = struct.unpack("<I", image.read(P.IMAGE_BASE + (lookup or first) + 4 * index, 4))[0]
+            if not thunk:
+                break
+            if not thunk & 0x80000000:
+                out[P.IMAGE_BASE + first + 4 * index] = (cstr(P.IMAGE_BASE + name), cstr(P.IMAGE_BASE + thunk + 2))
+        at += 20
+    rva, _ = image.directory(13)
+    at = P.IMAGE_BASE + rva
+    while True:
+        attributes, name, _, iat, names, _, _, _ = struct.unpack("<8I", image.read(at, 32))
+        if not name:
+            break
+        fix = (lambda v: P.IMAGE_BASE + v) if attributes & 1 else (lambda v: v)
+        for index in itertools.count():
+            thunk = struct.unpack("<I", image.read(fix(names) + 4 * index, 4))[0]
+            if not thunk:
+                break
+            if not thunk & 0x80000000:
+                out[fix(iat) + 4 * index] = (cstr(fix(name)), cstr(fix(thunk) + 2))
+        at += 32
+    return out
+
+
+def test_replay_link(original, image, before):
+    """"Watch replay" (patch revision 14, REPLAY_LINK_HOOK): the lobby's
+    video_tutorial_link_clicked opened its link buffer with ShellExecuteA;
+    the build jumps to replay_link instead, which starts updater_skhid.exe
+    beside the exe for a replay link alone. check_replay_link_026g.py runs
+    the handler on made-up links."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    va, old, offset, _ = P.REPLAY_LINK_HOOK
+    cave = P.REPLAY_LINK_VA + offset
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and rows(image, va, 6) == [f"jmp {cave:#x}", "nop"],
+          f"{va:#x}: `push 1 / push 0 / push 0` in the original and the build without the late join, "
+          f"`jmp {cave:#x}` here")
+    check(rows(stock, P.REPLAY_LINK_HANDLER, 0x43) ==
+          ["push esi", "mov esi,ecx", "mov eax,[esi+0x9c]", "mov ecx,[eax+0x53ac]", "mov edx,[ecx]",
+           "mov eax,[edx+0x3c]", "call eax", "push byte +0x1", "push byte +0x0", "push byte +0x0",
+           "add eax,0x1e6144", "push eax", "push dword 0xa0a7e8", "push byte +0x0", "call [dword 0xaefe74]",
+           "push byte +0x1", "push dword 0xa09e20", "mov eax,esi", "call 0x22a660", "mov al,0x1", "pop esi",
+           "ret 0x4"],
+          "the handler 0x28CDA0: the lobby client through its owner's vtable+3Ch, ShellExecuteA(0, \"open\", "
+          "client+1E6144h, 0, 0, SW_SHOWNORMAL), enable_element, al = 1, `ret 4`")
+    table = imports(stock)
+    text_at = lambda at: bytes(original[stock.offset(at):original.index(b"\0", stock.offset(at))])
+    check(table.get(0xAEFE74) == ("SHELL32.dll", "ShellExecuteA") and text_at(0xA0A7E8) == b"open"
+          and text_at(0xA09E20) == b"root.statusPanel.videoTutorial",
+          "0xAEFE74 is the delay-loaded SHELL32 ShellExecuteA; 0xA0A7E8 \"open\"; 0xA09E20 the tutorial element")
+    names = struct.unpack("<I", stock.read(0x9C56C8 + 106 * 4, 4))[0]
+    found, at = [], 0
+    needle = struct.pack("<I", P.REPLAY_LINK_HANDLER)
+    while (at := original.find(needle, at)) != -1:
+        found.append(at)
+        at += 1
+    check(text_at(names) == b"video_tutorial_link_clicked"
+          and [P.TEXT_VA + at - P.TEXT_FILE for at in found] == [0x283054]
+          and rows(stock, 0x283053, 5) == ["mov eax,0x28cda0"]
+          and not [h for h in branches_into(original, P.REPLAY_LINK_HANDLER, P.REPLAY_LINK_HANDLER + 1)
+                   if h.endswith("rel32")],
+          "entry 106 of the callback names (0x9C56C8) is video_tutorial_link_clicked; the handler's address is "
+          "in the file once, the delegate's `mov eax,0x28cda0` at 0x283053; no call or jump goes to it")
+    uses = []
+    needle, at = struct.pack("<I", P.REPLAY_LINK_BUFFER), 0
+    while (at := original.find(needle, at)) != -1:
+        uses.append(P.TEXT_VA + at - P.TEXT_FILE)
+        at += 1
+    check(uses == [0x26F351, 0x271428, 0x271447, 0x2768A3, 0x28CDBD]
+          and rows(stock, 0x26F34F, 6) == ["mov [ebp+0x1e6144],bl"]
+          and rows(stock, 0x271426, 6) == ["lea edx,[ebp+0x1e6144]"]
+          and rows(stock, 0x271439, 0x13) == ["push dword 0xfde9", "call [dword 0x8701e0]",
+                                              "mov byte [eax+ebp+0x1e6144],0x0"]
+          and table.get(0x8701E0) == ("KERNEL32.dll", "WideCharToMultiByte")
+          and rows(stock, 0x2768A1, 7) == ["cmp byte [eax+0x1e6144],0x0"],
+          "the link buffer (lobby client+1E6144h): emptied at 0x26F34F, filled by 9E as UTF-8 (CP 65001) "
+          "with its zero (0x271426..0x271444), tested for empty at 0x2768A1, opened by the handler alone")
+    hits = branches_into(original, va + 1, va + len(old))
+    check(not hits, "no branch bytes or pointer values aim inside the hook" + "".join(", " + h for h in hits))
+    under = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not under, f"no base relocation under {va:#x}")
+    code = open(P.replay_link_bin(), "rb").read()
+    body = code[:code.index(b"replay ")]
+    listing = ndisasm(body, cave)
+    texts = [text for _, _, text in listing]
+    pc = cave + 6
+    slots = set()
+    for _, _, text in listing:
+        match = re.fullmatch(r"call \[ebp-0x([0-9a-f]+)\]", text)
+        if match:
+            slots.add((pc - int(match.group(1), 16)) & 0xFFFFFFFF)
+    branches = {branch_target(text) for text in texts if branch_target(text) is not None}
+    check(texts[:3] == ["pusha", f"call {pc:#x}", "pop ebp"] and texts[-4:] == ["popa", "mov al,0x1", "pop esi", "ret 0x4"]
+          and all(cave <= target < cave + len(body) for target in branches)
+          and {text for text in texts if text.startswith("call") and branch_target(text) is None}
+          == {f"call [ebp-{pc - slot:#x}]" for slot in (0x870074, 0x87003C, 0x870084, 0x870040)} | {"call edx"}
+          and {s: table.get(s) for s in slots} == {
+              0x870074: ("KERNEL32.dll", "GetModuleFileNameW"), 0x87003C: ("KERNEL32.dll", "GetModuleHandleA"),
+              0x870084: ("KERNEL32.dll", "GetProcAddress"), 0x870040: ("KERNEL32.dll", "CloseHandle")}
+          and code[len(body):] == (b"replay \x88 \xa0 \xc0 \0"
+                                   + "updater_skhid.exe\0".encode("utf-16-le") + b"kernel32.dll\0CreateProcessW\0"),
+          "replay_link: pushad, its own address in ebp, the game's GetModuleFileNameW, GetModuleHandleA, "
+          "GetProcAddress (for CreateProcessW) and CloseHandle through their IAT slots, no branch out but its "
+          "return (`popad / mov al,1 / pop esi / ret 4`); the link's pattern and the program's fixed name")
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -2271,7 +2412,9 @@ def test_late_join(original, without, server, source):
     mount_patches = open(P.mount_patches_bin(), "rb").read()
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
+    link = open(P.replay_link_bin(), "rb").read()
     pieces = [(0, len(first_page), "the build without the late join's first page"),
+              (P.REPLAY_LINK_OFFSET, len(link), "the replay link code"),
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
@@ -2283,7 +2426,9 @@ def test_late_join(original, without, server, source):
     check(not overlaps, "the first page's code does not overlap: " + ", ".join(
         f"{name} [{start:#x}, {start + size:#x})" for start, size, name in pieces) + "".join("; " + o for o in overlaps))
     check(body[:len(first_page)] == first_page
-          and set(body[len(first_page):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
+          and set(body[len(first_page):P.REPLAY_LINK_OFFSET]) <= {0xCC}
+          and body[P.REPLAY_LINK_OFFSET:P.REPLAY_LINK_OFFSET + len(link)] == link
+          and set(body[P.REPLAY_LINK_OFFSET + len(link):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
           and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
           and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
@@ -2297,7 +2442,7 @@ def test_late_join(original, without, server, source):
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
+          f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
           f"and the shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
@@ -2440,6 +2585,7 @@ def test_late_join(original, without, server, source):
     test_stale_dll(original, image, before)
     test_mount_patches(original, image, before)
     test_forward_scroll(original, image, before)
+    test_replay_link(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

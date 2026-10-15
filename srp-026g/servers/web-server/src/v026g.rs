@@ -92,6 +92,10 @@ pub struct Game {
     /// The patches of `resources.db` the players' updater is told to fetch
     /// (`GET /patches`): those the server's game data was made of.
     pub patches: Vec<crate::OfferedPatch>,
+    /// "Watch replay": the tokens the lobby gives, which `/replays/<token>`
+    /// takes (`session::v026g::replays`); `None`: every such request is
+    /// "not found".
+    pub replays: Option<Arc<session::v026g::replays::Replays>>,
 }
 
 /// The longest password the 0.26g client sends (its buffer is 48 bytes).

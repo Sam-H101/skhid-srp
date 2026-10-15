@@ -11,12 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use session::SessionStore;
+use session::v026g::replays::Replays;
 use survarium::v026g::match_msgs::{ClientMessage, id, parse_client};
 use udp_transport::{Config, Event, PacketLog, Table, Transport};
 
 use super::Settings;
 use super::game::Game;
-use super::record::Recorder;
+use super::record::{Desk, Recorder};
 use super::registry::{MatchEnd, MatchRegistry, MatchResult, PlayerResult, ResultsSink};
 
 /// How long a receive waits before the matches are advanced anyway.
@@ -100,7 +101,24 @@ pub fn run_on(
     results: impl ResultsSink + 'static,
     stop: &AtomicBool,
 ) -> io::Result<()> {
-    let settings = Settings::from_env();
+    run_on_with_replays(socket, registry, store, results, stop, None)
+}
+
+/// [`run_on`] whose recordings' writer tells `replays` of every file it
+/// keeps, drops or deletes (`SRP_REPLAY_DIR`, `super::replay`): srp's, one
+/// for the process, which its lobby and web page share.
+pub fn run_on_with_replays(
+    socket: &UdpSocket,
+    registry: Arc<MatchRegistry>,
+    store: Arc<SessionStore>,
+    results: impl ResultsSink + 'static,
+    stop: &AtomicBool,
+    replays: Option<Arc<Replays>>,
+) -> io::Result<()> {
+    let mut settings = Settings::from_env();
+    if let Some(record) = settings.record.as_mut() {
+        record.replays = replays.map(Desk);
+    }
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on UDP {}; late inputs: {:?}, clock correction: {}, initial world \
