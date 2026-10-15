@@ -1438,7 +1438,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
             "<!doctype html><html lang={code}><meta charset=utf-8>\
              <meta name=viewport content=\"width=device-width,initial-scale=1\">\
              <title>{}</title><style>{STYLE}</style>\
-             <header><span class=brand>СХІД</span>{badge}\
+             <header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
              <span class=tag>{}</span>\
              <nav><a href=\"/?lang={code}\">{}</a> <a href=\"/exchange?lang={code}\">{}</a>{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>\
              <main>{test_notice}{notice}{body}</main>\
@@ -1452,7 +1452,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     }
 }
 
-const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
+const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
 
 /// A file's size as the download button shows it.
 fn file_size(bytes: u64) -> String {
@@ -1503,23 +1503,16 @@ struct GrowingRules {
     gather: u64,
     /// A running match takes players until this much of it is left.
     cutoff: u64,
-    /// How long a player who would make an even match uneven waits.
-    patience: u64,
 }
 
 impl GrowingRules {
     fn from_env() -> Self {
         let (min_players, gather) = session::growing_start_rules_from_env();
-        let patience = std::env::var("SRP_LATE_JOIN_PATIENCE_SECONDS")
-            .ok()
-            .and_then(|value| value.trim().parse().ok())
-            .unwrap_or(session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE.as_secs());
         Self {
             team: match_team_size(),
             min_players,
             gather: gather.as_secs(),
             cutoff: session::matchmaking_policy::JOIN_CUTOFF.as_secs(),
-            patience,
         }
     }
 }
@@ -1532,75 +1525,37 @@ fn growing_rules(lang: Lang, rules: &GrowingRules, squads: bool) -> String {
         min_players,
         gather,
         cutoff,
-        patience,
     } = *rules;
     let full = team * 2;
     let cutoff_min = cutoff / 60;
-    let items = [
+    let mut items = vec![
         lang.tr(
             &format!(
-                "{min_players} players are enough to start a match: it starts {gather} s after that many are waiting. Whoever presses Play in that time goes into the same match."
+                "A match starts {gather} s after {min_players} players are waiting, or at once with {full}."
             ),
             &format!(
-                "Для початку матчу досить {min_players} гравців: він починається через {gather} с після того, як їх набралося стільки. Хто натисне «Грати» за цей час, потрапить у той самий матч."
-            ),
-        ),
-        lang.tr(
-            &format!("{full} players waiting: the match starts at once."),
-            &format!("{full} гравців чекає: матч починається одразу."),
-        ),
-        lang.tr(
-            &format!(
-                "A match that is being played takes new players until {cutoff_min} minutes of it are left, up to {team} a side. A newcomer goes to the side that makes the teams more even."
-            ),
-            &format!(
-                "Матч, що триває, приймає нових гравців, доки не лишиться {cutoff_min} хв до його кінця, до {team} на сторону. Новачок іде на ту сторону, де команди стають рівнішими."
+                "Матч починається через {gather} с, коли чекає {min_players} гравців, або одразу, коли їх {full}."
             ),
         ),
         lang.tr(
             &format!(
-                "A player who would make an even match uneven waits up to {patience} s for somebody to go in with."
+                "Join a match in progress with JOIN in the lobby's \u{ab}Matches\u{bb} window, until {cutoff_min} minutes are left, up to {team} a side."
             ),
             &format!(
-                "Гравець, через якого рівний матч став би нерівним, чекає до {patience} с, щоб хтось зайшов разом із ним."
+                "До матчу, що триває, можна долучитися кнопкою JOIN у вікні \u{ab}Матчі\u{bb} в лобі, доки не лишиться {cutoff_min} хв, до {team} на сторону."
             ),
         ),
         lang.tr(
-            &format!(
-                "The lobby's \u{ab}Matches\u{bb} window lists the matches being played (it comes with the launcher's update of the game's screens: start Skhid.bat). A match shows a JOIN button for you only if you would be put into it at once and it would make its teams more even by value, counting you: it takes players now (more than {cutoff_min} minutes left, room on a side), you are in the lobby, not searching, not in a match and not in a squad, you were never in that match, and your game is up to date. A match whose teams already count alike takes nobody."
-            ),
-            &format!(
-                "\u{ab}Матчі\u{bb} в лобі показують матчі, що тривають (вікно приходить з оновленням екранів гри через лаунчер: запустіть Skhid.bat). Кнопка JOIN біля матчу з'являється, лише якщо вас одразу поставлять у нього й це зробить його команди рівнішими за цінністю з вами: матч приймає гравців зараз (лишилося понад {cutoff_min} хв, на стороні є місце), ви в лобі, не шукаєте матч, не в матчі й не в загоні, ви ще не були в цьому матчі, а гра оновлена. Матч, команди якого вже рівні, нікого не бере."
-            ),
-        ),
-        lang.tr(
-            "JOIN takes you in with one click, with no wait. Only one player can join a match at a time, so for a few seconds others see no JOIN on it. If the match stops taking players before you are in, the game shows an error and you are not put in the search.",
-            "JOIN ставить вас у матч одним клацанням, без очікування. До матчу можна долучитися лише по одному гравцю, тож кілька секунд інші не бачать на ньому JOIN. Якщо матч перестав приймати гравців до того, як ви зайшли, гра покаже помилку, а в пошук вас не буде поставлено.",
-        ),
-        if squads {
-            lang.tr(
-                &format!(
-                    "Fewer than {min_players} players: no match starts until there are {min_players}."
-                ),
-                &format!(
-                    "Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}."
-                ),
-            )
-        } else {
-            lang.tr(
-                &format!(
-                    "Fewer than {min_players} players: no match starts until there are {min_players}. Squads are switched off: everybody queues alone."
-                ),
-                &format!(
-                    "Менше ніж {min_players} гравці: матч не починається, доки не набереться {min_players}. Загони вимкнено: кожен стає в чергу сам."
-                ),
-            )
-        },
-        lang.tr(
-            "The server makes the two sides as even as it can: by the players' gear, their level and their results in earlier matches. With an odd number of players, the stronger ones are the side with a player fewer.",
-            "Сервер ділить гравців на дві сторони якомога рівніше: за спорядженням, рівнем і результатами попередніх матчів. Якщо гравців непарна кількість, сильніші грають на стороні, де на одного гравця менше.",
+            "Teams are balanced by gear, level and past results.",
+            "Команди вирівнюються за спорядженням, рівнем і результатами минулих матчів.",
         ),
     ];
+    if !squads {
+        items.push(lang.tr(
+            "Squads are off: everyone queues alone.",
+            "Загони вимкнено: кожен стає в чергу сам.",
+        ));
+    }
     items
         .iter()
         .map(|item| format!("<li>{item}</li>"))
@@ -1765,37 +1720,33 @@ fn home(lang: Lang, stats: Stats) -> String {
     // nothing; the start script and the command line stay, folded away.
     let start = if with_launcher {
         format!(
-            "{}<p>{}</p><p><small>{}</small></p><details><summary>{}</summary><p>{}</p>{command_line}</details>",
+            "{}<p><small>{}</small></p><details><summary>{}</summary><p>{}</p>{command_line}</details>",
             if installs_game {
                 lang.tr(
-                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens. <b>The first time it gets the game itself</b>: it downloads Survarium 0.26g (2.9 GB, from Google Drive), checks it and installs it, which takes a while; no sign-in is asked for. Then choose your language at the launcher's top and press <b>PLAY</b>.",
-                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер. <b>Першого разу він сам отримує гру</b>: завантажує Survarium 0.26g (2,9 ГБ, з Google Drive), перевіряє та встановлює її, на що потрібен час; входити нікуди не треба. Потім оберіть мову вгорі вікна лаунчера й натисніть <b>PLAY</b>.",
+                    "Run <code>Skhid.bat</code> and press <b>PLAY</b>. The first time, the launcher downloads the game (2.9 GB, from Google Drive), which takes a while. It keeps itself up to date.",
+                    "Запустіть <code>Skhid.bat</code> і натисніть <b>PLAY</b>. Першого разу лаунчер завантажує гру (2,9 ГБ, з Google Drive), на що потрібен час. Оновлюється він сам.",
                 )
             } else {
                 lang.tr(
-                    "Double-click <code>Skhid.bat</code> in that folder (Windows may show it as <b>Skhid</b>). The launcher opens: choose your language at its top and press <b>PLAY</b>.",
-                    "Двічі клацніть <code>Skhid.bat</code> у цій теці (Windows може показувати його як <b>Skhid</b>). Відкриється лаунчер: оберіть мову вгорі його вікна й натисніть <b>PLAY</b>.",
+                    "Run <code>Skhid.bat</code> and press <b>PLAY</b>. The launcher keeps itself up to date.",
+                    "Запустіть <code>Skhid.bat</code> і натисніть <b>PLAY</b>. Лаунчер оновлюється сам.",
                 )
             },
-            lang.tr(
-                "From then on this is all you do: each time it starts, the launcher looks for new files of ours and installs them by itself.",
-                "Відтоді це все, що потрібно робити: під час кожного запуску лаунчер перевіряє, чи є нові наші файли, і сам їх встановлює.",
-            ),
             if installs_game {
                 lang.tr(
-                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh launcher</code> in that folder the first time, so that the game is brought; <code>bash Skhid.sh</code> starts the game alone. <code>LINUX.txt</code> in the download says what it needs.",
-                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux першого разу виконайте в цій теці <code>bash Skhid.sh launcher</code>, щоб було отримано гру; <code>bash Skhid.sh</code> запускає лише гру. Що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                    "Windows warns about an unknown publisher? Let it run.<br>Linux: <code>bash Skhid.sh launcher</code>, see <code>LINUX.txt</code>.",
+                    "Windows попереджає про невідомого видавця? Дозвольте запуск.<br>Linux: <code>bash Skhid.sh launcher</code>, див. <code>LINUX.txt</code>.",
                 )
             } else {
                 lang.tr(
-                    "If Windows warns about an unknown publisher, let it run: our files are not signed. On Linux, run <code>bash Skhid.sh</code> in that folder; <code>LINUX.txt</code> in the download says what it needs.",
-                    "Якщо Windows попереджає про невідомого видавця, дозвольте запуск: наші файли не підписані. У Linux виконайте <code>bash Skhid.sh</code> у цій теці; що для цього потрібно, сказано в <code>LINUX.txt</code> із завантаження.",
+                    "Windows warns about an unknown publisher? Let it run.<br>Linux: <code>bash Skhid.sh</code>, see <code>LINUX.txt</code>.",
+                    "Windows попереджає про невідомого видавця? Дозвольте запуск.<br>Linux: <code>bash Skhid.sh</code>, див. <code>LINUX.txt</code>.",
                 )
             },
             lang.tr("Without the launcher", "Без лаунчера"),
             lang.tr(
-                "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game alone, without looking for new files. If the game says it is outdated, start <code>Skhid.bat</code>: the launcher brings the new files.",
-                "<code>play_skhid.bat</code> у теці <code>game\\binaries\\x86</code> запускає лише гру, без перевірки нових файлів. Якщо гра каже, що її версія застаріла, запустіть <code>Skhid.bat</code>: лаунчер сам отримає нові файли.",
+                "<code>play_skhid.bat</code> in <code>game\\binaries\\x86</code> starts the game without updating it.",
+                "<code>play_skhid.bat</code> у теці <code>game\\binaries\\x86</code> запускає гру без оновлення.",
             ),
         )
     } else {
@@ -1912,8 +1863,8 @@ fn home(lang: Lang, stats: Stats) -> String {
             )
         },
         lang.tr(
-            "Built on the open source project SRP (Survarium Restoration Project), which gave this server its start: <a href=\"https://github.com/srp-survarium/srp\">github.com/srp-survarium/srp</a>.",
-            "Створено на основі open source проєкту SRP (Survarium Restoration Project), який дав початок цьому серверу: <a href=\"https://github.com/srp-survarium/srp\">github.com/srp-survarium/srp</a>."
+            "Project Discord: <a href=\"https://discord.gg/pxywZfaxRQ\">discord.gg/pxywZfaxRQ</a>",
+            "Discord проєкту: <a href=\"https://discord.gg/pxywZfaxRQ\">discord.gg/pxywZfaxRQ</a>"
         ),
         lang.tr("Early test server.", "Тестовий сервер."),
         lang.tr(
@@ -1923,24 +1874,20 @@ fn home(lang: Lang, stats: Stats) -> String {
         lang.tr("How to play", "Як зіграти"),
         if installs_game {
             format!(
-                "{}<p><small>{}</small></p><p><small>{}</small></p>",
+                "{}<p><small>{}</small></p>",
                 lang.tr(
-                    "Download our files and unpack them into a new, empty folder on a disk with about 10 GB free. <b>You do this only once:</b> the launcher in them gets the game, and later picks up updates on its own.",
-                    "Завантажте наші файли й розпакуйте їх у нову порожню теку на диску, де вільно близько 10 ГБ. <b>Це робиться лише один раз:</b> лаунчер із цих файлів сам отримує гру, а далі сам отримує оновлення."
+                    "Download our files and unpack them into an empty folder with about 10 GB free. <b>You do this only once.</b>",
+                    "Завантажте наші файли й розпакуйте їх у порожню теку, де вільно близько 10 ГБ. <b>Це робиться лише один раз.</b>"
                 ),
                 lang.tr(
-                    "Already have Survarium 0.26g (build 2777)? Unpack our files into its folder instead, the one that holds the <code>game</code> folder, and say yes when asked to replace files: nothing is downloaded again. Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.",
-                    "Уже маєте Survarium 0.26g (збірка 2777)? Тоді розпакуйте наші файли в її теку, ту, в якій лежить тека <code>game</code>, і погодьтеся замінити файли: нічого не завантажується вдруге. Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється."
-                ),
-                lang.tr(
-                    &format!("If the launcher cannot get the game (it says why), get {game_link} yourself, a .7z archive that 7-Zip opens, unpack it, and unpack our files into its folder as above."),
-                    &format!("Якщо лаунчер не може отримати гру (він скаже чому), отримайте {game_link} самі (архів .7z, відкривається 7-Zip), розпакуйте її та розпакуйте наші файли в її теку, як сказано вище.")
+                    &format!("Already have Survarium 0.26g (build 2777)? Unpack into its folder, the one with the <code>game</code> folder. Launcher can't get the game? Get {game_link} and do the same."),
+                    &format!("Уже маєте Survarium 0.26g (збірка 2777)? Розпакуйте в її теку, ту, де лежить тека <code>game</code>. Лаунчер не може отримати гру? Завантажте {game_link} і зробіть так само.")
                 ),
             )
         } else if with_launcher {
             lang.tr(
-                "Download our files and unpack them into the game's folder: the one that holds the <code>game</code> folder. Say yes when asked to replace files. <b>You do this only once:</b> later the launcher picks up updates on its own.<p><small>Two of the game's files are replaced: <code>bugtrap.dll</code> (the crash reporter) and one certificate. Keep copies of them if you want the originals back; nothing else of the game changes.</small></p>",
-                "Завантажте наші файли й розпакуйте їх у теку гри: ту, в якій лежить тека <code>game</code>. Погодьтеся замінити файли. <b>Це робиться лише один раз:</b> далі лаунчер сам отримує оновлення.<p><small>Замінюються два файли гри: <code>bugtrap.dll</code> (звіти про збої) і один сертифікат. Збережіть їхні копії, якщо хочете повернути оригінали; більше в грі нічого не змінюється.</small></p>"
+                "Download our files and unpack them into the game's folder, the one with the <code>game</code> folder, replacing files. <b>You do this only once.</b>",
+                "Завантажте наші файли й розпакуйте їх у теку гри, ту, де лежить тека <code>game</code>, із заміною файлів. <b>Це робиться лише один раз.</b>"
             )
         } else if v026g {
             lang.tr(
@@ -1951,8 +1898,8 @@ fn home(lang: Lang, stats: Stats) -> String {
             lang.tr("Download the patched game and unpack it.", "Завантажте пропатчену гру та розпакуйте її.")
         },
         lang.tr(
-            "Sign in with any user name and password. A new name is registered on its first sign-in; remember the password.",
-            "Увійдіть з будь-яким іменем і паролем. Нове ім'я реєструється під час першого входу; запам'ятайте пароль."
+            "Sign in with any name and password: a new name registers itself. Remember the password.",
+            "Увійдіть з будь-яким іменем і паролем: нове ім'я реєструється саме. Запам'ятайте пароль."
         ),
         lang.tr("How matches start", "Як починаються матчі"),
         lang.code(),
@@ -2624,35 +2571,28 @@ mod tests {
             min_players: 2,
             gather: 120,
             cutoff: 120,
-            patience: 60,
         }
     }
 
     #[test]
     fn the_growing_queue_is_told_as_it_is() {
         let en = growing_rules(Lang::En, &live_growing_rules(), false);
-        assert!(en.contains(
-            "2 players are enough to start a match: it starts 120 s after that many are waiting."
-        ));
-        assert!(en.contains("20 players waiting: the match starts at once."));
-        assert!(en.contains("until 2 minutes of it are left, up to 10 a side"));
-        assert!(en.contains("waits up to 60 s"));
-        assert!(en.contains("JOIN button for you only if you would be put into it at once"));
-        assert!(en.contains("more than 2 minutes left"));
-        assert!(en.contains("JOIN takes you in with one click"));
-        assert!(en.contains(
-            "Fewer than 2 players: no match starts until there are 2. Squads are switched off"
-        ));
+        assert!(
+            en.contains("A match starts 120 s after 2 players are waiting, or at once with 20.")
+        );
+        assert!(en.contains("JOIN"));
+        assert!(en.contains("until 2 minutes are left, up to 10 a side"));
+        assert!(en.contains("Squads are off"));
         // Nothing of the standard queue's rules is left in it.
         assert!(!en.contains("countdown"));
         assert!(!en.contains("nobody has pressed Play"));
         assert!(!en.contains('4'), "{en}");
 
         let squads = growing_rules(Lang::En, &live_growing_rules(), true);
-        assert!(!squads.contains("Squads are switched off"));
+        assert!(!squads.contains("Squads are off"));
 
         let uk = growing_rules(Lang::Uk, &live_growing_rules(), false);
-        assert!(uk.contains("Для початку матчу досить 2 гравців"));
+        assert!(uk.contains("коли чекає 2 гравців"));
         assert!(uk.contains("Загони вимкнено"));
         assert!(uk.contains("JOIN"));
         assert_eq!(en.matches("<li>").count(), uk.matches("<li>").count());
@@ -2665,14 +2605,12 @@ mod tests {
             min_players: 4,
             gather: 90,
             cutoff: 180,
-            patience: 30,
         };
         let en = growing_rules(Lang::En, &rules, true);
-        assert!(en.contains("4 players are enough to start a match: it starts 90 s after"));
-        assert!(en.contains("16 players waiting"));
-        assert!(en.contains("until 3 minutes of it are left, up to 8 a side"));
-        assert!(en.contains("waits up to 30 s"));
-        assert!(en.contains("more than 3 minutes left"));
+        assert!(
+            en.contains("A match starts 90 s after 4 players are waiting, or at once with 16.")
+        );
+        assert!(en.contains("until 3 minutes are left, up to 8 a side"));
     }
 
     #[test]
@@ -2997,17 +2935,17 @@ mod tests {
         for (lang, empty, first, have, way_out) in [
             (
                 Lang::En,
-                "into a new, empty folder on a disk with about 10 GB free",
-                "The first time it gets the game itself",
+                "into an empty folder with about 10 GB free",
+                "The first time, the launcher downloads the game",
                 "Already have Survarium 0.26g",
-                "If the launcher cannot get the game",
+                "Launcher can't get the game?",
             ),
             (
                 Lang::Uk,
-                "у нову порожню теку на диску, де вільно близько 10 ГБ",
-                "Першого разу він сам отримує гру",
+                "у порожню теку, де вільно близько 10 ГБ",
+                "Першого разу лаунчер завантажує гру",
                 "Уже маєте Survarium 0.26g",
-                "Якщо лаунчер не може отримати гру",
+                "Лаунчер не може отримати гру?",
             ),
         ] {
             let page = home(
