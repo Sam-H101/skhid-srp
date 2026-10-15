@@ -521,12 +521,20 @@ fn handle_sign_in(
     let user_name = sign_in.user_name;
     log::info!("User name: {user_name}");
     log::info!(
-        "Client version: {}, patch revision {} (from the EULA window: {}, queue order: {:#x})",
+        "Client version: {}, patch revision {}, cheat flags {:#04x} (from the EULA window: {}, \
+         queue order: {:#x})",
         sign_in.version,
         sign_in.patch_revision,
+        sign_in.cheat_flags,
         sign_in.from_eula_window,
         sign_in.queue_order_id
     );
+    // The cheat check of client_patch.md section 3.25: revision 13 and later
+    // report in byte 8 whether they saw a stale shell_32.dll in %TEMP%, a
+    // file one known cheat drops and never removes. Only logged.
+    if sign_in.cheat_flags & 0x01 != 0 {
+        log::warn!("Cheat check: {user_name} from {peer} has a stale shell_32.dll in %TEMP%");
+    }
 
     // Another build's client would misread everything after this.
     if sign_in.version != VERSION {

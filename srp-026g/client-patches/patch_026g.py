@@ -33,6 +33,9 @@ USAGE (this script never touches the source exe):
     The resources.db signature code comes from db_signature_026g.asm:
         nasm -f bin -DCAVE=0xA425C00 db_signature_026g.asm -o db_signature_026g.section.bin
     (checked in; it embeds resources_db_key_026g.der).
+    The stale shell_32.dll check comes from stale_dll_026g.asm:
+        nasm -f bin -DCAVE=0xA425E00 stale_dll_026g.asm -o stale_dll_026g.section.bin
+    (checked in).
     The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -169,6 +172,11 @@ Patches:
   certificate context whose key is resources_db_key_026g.der. The game
   starts only with the resources.db the updater installs; any other is
   "Resources archive is corrupted";
+- the sign-in reports a stale shell_32.dll in the temporary folder (patch
+  revision 13, client_patch.md section 3.25): sign_in_on_connected's
+  `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
+  stale_dll_026g.asm at 0xE00 of `.srp`, which writes both, with byte 8 of
+  the version field 80h, or 81h when %TEMP%\\shell_32.dll exists;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -305,7 +313,10 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # stops it. Nothing a match computes: 11 and 12 play together. A server that
 # sells items only that resources.db has asks for 12: a game that says 12
 # has started with it.
-REVISION = 12
+# 13: the sign-in reports whether %TEMP%\shell_32.dll exists (STALE_DLL
+# below), in byte 8 of the version field. Nothing a match computes: 12 and
+# 13 play together.
+REVISION = 13
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -429,6 +440,20 @@ DB_SIGNATURE_OFFSET = 0xC00
 DB_SIGNATURE_ENTRY = SECTION_VA + DB_SIGNATURE_OFFSET
 DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"),
                 b"\xE8" + struct.pack("<i", DB_SIGNATURE_ENTRY - DB_SIGNATURE_VA - 5))
+
+# sign_in_on_connected 0x380800, where it finishes the 12-byte version field
+# (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
+# `mov [edi+0Ch],dl` (the EULA byte). Both become a call of
+# stale_dll_026g.asm and a nop; the code there does both after its check,
+# with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
+# of `.srp`, after the resources.db signature code (DB_SIGNATURE_OFFSET);
+# build() checks that they do not overlap. The two instructions hold no
+# address: no base relocation is under them.
+STALE_DLL_VA = 0x380889
+STALE_DLL_OFFSET = 0xE00
+STALE_DLL_ENTRY = SECTION_VA + STALE_DLL_OFFSET
+STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
+             b"\xE8" + struct.pack("<i", STALE_DLL_ENTRY - STALE_DLL_VA - 5) + b"\x90")
 
 # The late join (client_patch.md section 3.11). Its code is the second page
 # of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
@@ -1005,7 +1030,9 @@ def build(original, mode, code=None, server=None, late_join=None):
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
     REVISION_WITHOUT_LATE_JOIN; with it the game also starts only with a
-    resources.db signed by Skhid's key (db_signature_026g.section.bin)."""
+    resources.db signed by Skhid's key (db_signature_026g.section.bin), and
+    its sign-in says whether %TEMP%\\shell_32.dll exists
+    (stale_dll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -1020,6 +1047,7 @@ def build(original, mode, code=None, server=None, late_join=None):
     revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
     if late_join is not None:
         db_signature = open(db_signature_bin(), "rb").read()
+        stale_dll = open(stale_dll_bin(), "rb").read()
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -1153,12 +1181,19 @@ def build(original, mode, code=None, server=None, late_join=None):
         if SEEK_CLEAR_OFFSET + len(seek_clear) > DB_SIGNATURE_OFFSET \
                 or DB_SIGNATURE_OFFSET + len(db_signature) > LATE_JOIN_OFFSET:
             sys.exit("the seek code and the resources.db signature code do not fit before the late join")
+        patch(data, *STALE_DLL)
+        if neutralize_relocs(data, [(STALE_DLL_VA, STALE_DLL_VA + len(STALE_DLL[1]))]):
+            sys.exit("a base relocation under the version field's last two writes")
+        if DB_SIGNATURE_OFFSET + len(db_signature) > STALE_DLL_OFFSET \
+                or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
+            sys.exit("the resources.db signature code and the shell_32.dll check do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (DB_SIGNATURE_OFFSET - len(cave)) + db_signature
+            cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
         if late_join is not None:
@@ -1183,7 +1218,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a replay's camera follows its player into another kit, "
                      "a weapon with a full sound queue drops the new sound, "
                      "a replay's seek empties the weapons' sound queues, "
-                     "only a resources.db signed by Skhid's key starts the game"
+                     "only a resources.db signed by Skhid's key starts the game, "
+                     "the sign-in says whether %TEMP%\\shell_32.dll exists"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1198,6 +1234,10 @@ def default_server_bin(mode):
 
 def db_signature_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_signature_026g.section.bin")
+
+
+def stale_dll_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "stale_dll_026g.section.bin")
 
 
 def pickup_bin():

@@ -203,6 +203,12 @@ const LOAD_WRONG_MS: u32 = 1_500;
 /// How many resyncs in a row, none followed by a right report, may be
 /// done again at once.
 const QUICK_REDOS: u32 = 2;
+/// A client resynced this many times within a minute waits the whole
+/// interval again, even after a resync that was agreed with
+/// (`Timing::resync_after_agreed`): a game that goes wrong every few
+/// seconds is not resynced every few seconds.
+const RESYNCS_PER_MINUTE: usize = 4;
+const RESYNC_WINDOW: Duration = Duration::from_secs(60);
 /// A world still on its way is done again once some player has this many
 /// inputs after its snapshot (counted to the match clock, what the game
 /// will have when the world gets there). With one input a tick that is
@@ -671,6 +677,8 @@ struct Peer {
     placed: VecDeque<(u32, u32)>,
     placed_profiles: VecDeque<(u32, u32)>,
     last_resync: Option<Instant>,
+    /// Its latest resyncs, [`RESYNCS_PER_MINUTE`] at most.
+    resynced_at: VecDeque<Instant>,
     /// When its last hash report for a tick still open came.
     last_hash_at: Option<Instant>,
     /// The ticks of its latest hash reports (0xDF, not uploads).
@@ -1166,6 +1174,7 @@ impl Game {
             placed: VecDeque::new(),
             placed_profiles: VecDeque::new(),
             last_resync: None,
+            resynced_at: VecDeque::new(),
             last_hash_at: None,
             hash_ticks: VecDeque::new(),
             simulating_at: None,
@@ -3995,10 +4004,25 @@ impl Game {
                 .is_some_and(|divergence| divergence.first <= peer.judge_from + LOAD_WRONG_MS)
                 && peer.restores_unagreed > 0
                 && peer.restores_unagreed <= QUICK_REDOS;
+            // Its last resync was agreed with past the load: that world
+            // took, and this is a new desync, not the same one again (live,
+            // 2026-10-15: 21 such waited the interval out, 4 to 12 s out of
+            // step each). A game resynced every few seconds all the same
+            // waits the whole interval.
+            let busy = peer.resynced_at.len() >= RESYNCS_PER_MINUTE
+                && peer
+                    .resynced_at
+                    .front()
+                    .is_some_and(|at| now.saturating_duration_since(*at) < RESYNC_WINDOW);
+            let interval = if peer.restores_unagreed == 0 && !busy {
+                timing.resync_after_agreed.min(timing.resync_interval)
+            } else {
+                timing.resync_interval
+            };
             if !wrong_at_load
                 && peer
                     .last_resync
-                    .is_some_and(|at| now.saturating_duration_since(at) < timing.resync_interval)
+                    .is_some_and(|at| now.saturating_duration_since(at) < interval)
             {
                 continue;
             }
@@ -4041,6 +4065,10 @@ impl Game {
                 continue;
             }
             peer.last_resync = Some(now);
+            if peer.resynced_at.len() >= RESYNCS_PER_MINUTE {
+                peer.resynced_at.pop_front();
+            }
+            peer.resynced_at.push_back(now);
             peer.resyncs += 1;
             peer.restores_unagreed += 1;
             log::warn!(

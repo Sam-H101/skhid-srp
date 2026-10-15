@@ -276,7 +276,10 @@ once.
 - A client whose reports disagree with the others' is resynced, each time
   with the next generation. The disagreement must last 1 s of match time
   (`divergence_confirm_ms`), or 3 s on the wall clock; at most one resync of
-  a client per 15 s (`resync_interval`). A resynced client wrong from its
+  a client per 15 s (`resync_interval`), or per 5 s once its last resync
+  was agreed with past the load (`resync_after_agreed`,
+  `SRP_RESYNC_AFTER_AGREED_SECONDS`), but 15 s again for a client resynced 4
+  times within a minute (`RESYNCS_PER_MINUTE`). A resynced client wrong from its
   first reports after the world (within 1.5 s of it going, `LOAD_WRONG_MS`)
   is resynced again at once, twice in a row at most (`QUICK_REDOS`); a
   report that agrees inside that time does not stop it. Its wrong world is
@@ -410,6 +413,7 @@ a GUESS at the original server and was never tried on a client.
 | `REJOIN_UPLOAD_AFTER_MS` | 600 | After a returning player's entry |
 | `divergence_confirm_ms` / `_max` | 1000 / 3 s | Disagreement must last this long |
 | `resync_interval` | 15 s | At most one resync of a client |
+| `resync_after_agreed` / `RESYNCS_PER_MINUTE` | 5 s / 4 | The least time between resyncs once the last one was agreed with; 15 s again after 4 within a minute |
 | `hash_settle_ms` | 2500 | Hash reports are judged once this old |
 | `refresh` | 5 s | How often a running match asks for a fresh world |
 | `CANDIDATE_WAIT` | 3 s | An upload waits this long for the reports that check it |
