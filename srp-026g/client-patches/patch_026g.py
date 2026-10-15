@@ -260,10 +260,11 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # the place's lists, the kit choice being the one the world has made for the
 # next spawn (FIRST_LOAD below): in 9 and before a newcomer could respawn a
 # player in another kit than the other games did.
-# 11: a field-of-view setting (FOV_PATCHES above): the video options' slider
-# is bound to uro_fov, which the camera's projection now multiplies the zoom
-# by instead of 65 degrees, from 50 to 100. A camera is not in what a match
-# computes: 10 and 11 play together, and a server need not ask for 11.
+# 11: a field-of-view setting (FOV_PATCHES and FOV_PROJECTION_HOOK below):
+# the video options' slider is bound to uro_fov, from 50 to 100, which the
+# camera's angle follows unaimed; through a scope the angle is the
+# original's. A camera is not in what a match computes: 10 and 11 play
+# together, and a server need not ask for 11.
 REVISION = 11
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -482,6 +483,17 @@ LATE_JOIN_PATCHES = (
 # Calls and jumps into the new code: (address, the original's bytes, the
 # entry's offset in the code, 0xE8 call or 0xE9 jmp); the rest of the
 # original's bytes become nops.
+# The camera's projection (patch 21, FOV_PATCHES below): its first
+# instruction, `fld dword [ecx+8Ch]`, jumps to fov_projection, which does the
+# whole projection with the angle of the field-of-view setting.
+FOV_PROJECTION_VA = 0x242900
+FOV_PROJECTION_OFFSET = 576
+FOV_PROJECTION_HOOK = (FOV_PROJECTION_VA, bytes.fromhex("d9818c000000"), FOV_PROJECTION_OFFSET, 0xE9)
+# The original's whole body, which the self-test reads (int3 after it).
+FOV_PROJECTION_BODY = bytes.fromhex(
+    "d9818c0000008b442408f30f1000f30f5e4004568b74240883ec0cd95c2408"
+    "d98188000000d95c2404f30f110424f30f108190000000f30f5905ecd9a200"
+    "e8edc4eaff83c40c8bc65ec20800cccccccc")
 LATE_JOIN_HOOKS = (
     (0x2CBF9B, bytes.fromhex("e860c10000"), 3072, 0xE8),         # a player's animations: register_animations
     (0x2D3880, bytes.fromhex("e89bdf0400"), 0, 0xE8),            # a slot's ids: bind_slot
@@ -497,6 +509,7 @@ LATE_JOIN_HOOKS = (
     KIT_STATE_HOOK,                                              # a spawn's weapons' kept state: kit_state_hook
     FIRST_LOAD_INPUT_HOOK,                                       # a first world's inputs, in time order: first_load_input
     FIRST_LOAD_KIT_HOOK,                                         # a first world's kit choices: first_load_kit
+    FOV_PROJECTION_HOOK,                                         # the camera's angle: fov_projection
 )
 # on_match_ready's jump (HOOKS[0], which goes to the upload code without
 # the late join) goes to ready_hook, which goes on to the upload code.
@@ -597,47 +610,22 @@ PREGAME_PROGRESS = (PREGAME_PROGRESS_VA, bytes.fromhex("e9f4000000"),
 # address for an address.
 FOV_OPTION_NAME = (0x262930, bytes.fromhex("b89c65a000"), b"\xb8" + struct.pack("<I", 0xA281D0))
 FOV_VALUE = 0xA6FA28
-# The camera's projection (0x242900, slot 0 of the vtables of game_camera,
-# lobby_camera, free_fly_camera, demo_camera and player_input_handler):
-# far, near and the viewport's aspect on the stack, xmm0 = the zoom
-# (this+90h, 1 but for a scope) * 1.134464 (65 degrees in radians, the
-# float at 0xA2D9EC, read here alone), then the matrix builder 0xEEE30,
-# `ret 8`. The new code passes the same arguments to the same builder with
-# xmm0 = zoom * uro_fov * pi / 180 (x87, rounded once to float as the
-# original's product is), within the original's 80 bytes, int3 after it.
-# Every register the original leaves is left alike (eax = the matrix). The
-# relocation of the constant's address (0x24293A) is disabled; the one
-# address of the new code, uro_fov's, is the image's own.
-FOV_PROJECTION_VA = 0x242900
-FOV_PROJECTION_ORIGINAL = bytes.fromhex(
-    "d9818c0000008b442408f30f1000f30f5e4004568b74240883ec0cd95c2408"
-    "d98188000000d95c2404f30f110424f30f108190000000f30f5905ecd9a200"
-    "e8edc4eaff83c40c8bc65ec20800cccccccc")
-FOV_PROJECTION = b"".join([
-    bytes.fromhex("8b442408"),             # mov eax,[esp+8]     viewport size
-    bytes.fromhex("56"),                   # push esi
-    bytes.fromhex("8b742408"),             # mov esi,[esp+8]     out matrix
-    bytes.fromhex("ffb18c000000"),         # push dword [ecx+8Ch]  far
-    bytes.fromhex("ffb188000000"),         # push dword [ecx+88h]  near
-    bytes.fromhex("6800003443"),           # push 180.0          aspect slot
-    bytes.fromhex("d98190000000"),         # fld dword [ecx+90h]
-    b"\xd8\x0d" + struct.pack("<I", FOV_VALUE),  # fmul dword [uro_fov]
-    bytes.fromhex("d9eb"),                 # fldpi
-    bytes.fromhex("dec9"),                 # fmulp st1
-    bytes.fromhex("d83424"),               # fdiv dword [esp]
-    bytes.fromhex("d91c24"),               # fstp dword [esp]
-    bytes.fromhex("f30f100424"),           # movss xmm0,[esp]
-    bytes.fromhex("d900"),                 # fld dword [eax]
-    bytes.fromhex("d87004"),               # fdiv dword [eax+4]
-    bytes.fromhex("d91c24"),               # fstp dword [esp]    aspect
-    b"\xe8" + struct.pack("<i", 0xEEE30 - (FOV_PROJECTION_VA + 0x42)),  # call 0xEEE30
-    bytes.fromhex("83c40c"),               # add esp,0Ch
-    bytes.fromhex("8bc6"),                 # mov eax,esi
-    bytes.fromhex("5e"),                   # pop esi
-    bytes.fromhex("c20800"),               # ret 8
-]).ljust(len(FOV_PROJECTION_ORIGINAL), b"\xCC")
-FOV_PROJECTION_PATCH = (FOV_PROJECTION_VA, FOV_PROJECTION_ORIGINAL, FOV_PROJECTION)
-FOV_PROJECTION_RELOC = 0x24293A
+# The camera's projection (FOV_PROJECTION_HOOK above; 0x242900, slot 0 of
+# the vtables of game_camera, lobby_camera, free_fly_camera, demo_camera and
+# player_input_handler): far, near and the viewport's aspect on the stack,
+# xmm0 = the zoom (this+90h) * 1.134464 (65 degrees in radians, the float at
+# 0xA2D9EC, read here alone), then the matrix builder 0xEEE30, `ret 8`. The
+# zoom is set at every frame by 0x1F3480: 1 + (target - 1) * the aim's
+# progress (weapon+5FCh), the target being a fitted scope's fov_factor
+# (scope+114h, 0.25 in all three scopes' configs) or else the weapon's
+# 1 / aim_zoom_factor (weapon+5B4h, from 1.0 to 1.2: 1 to 0.833), 1 when no
+# weapon is aimed. fov_projection (late_join_026g.asm) passes the same
+# arguments to the same builder with the angle
+#   65 z + (uro_fov - 65) * max(0, (z - 0.25) / 0.75)  degrees:
+# uro_fov unaimed, nearly it with iron sights, and through a scope exactly
+# the original's 65 * 0.25, whatever the setting, so no setting magnifies a
+# scope more than another. The rest of the original's body stays, never
+# reached, with the constant's relocation.
 # uro_fov's registration (0x85ADF0): `xorps xmm0,xmm0; movss [least],xmm0`
 # becomes `mov dword [least],50.0; nop` (xmm0 is loaded with the most, 100,
 # right after). At 0 the projection would divide by tan 0. The setter of every float console variable (0xECB70) stores the
@@ -648,7 +636,7 @@ FOV_MIN = 50.0
 FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
                bytes.fromhex("c7055465aa00") + struct.pack("<f", FOV_MIN) + b"\x90")
 FOV_MINIMUM_RELOC = 0x85AE0D
-FOV_PATCHES = (FOV_OPTION_NAME, FOV_PROJECTION_PATCH, FOV_MINIMUM)
+FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
 
 RUN_UNFOCUSED_VA = 0x1A0E1
 RUN_UNFOCUSED_BRANCH_VA = 0x1A0EE
@@ -969,11 +957,11 @@ def build(original, mode, code=None, server=None, late_join=None):
             sys.exit("a base relocation under time_floating_factor's value")
         for va, expected, new in FOV_PATCHES:
             patch(data, va, expected, new)
-        # The option's name stays an address the loader adds to; in the
-        # other two the one replaced address must not be added to.
-        for (va, expected, _), reloc in ((FOV_PROJECTION_PATCH, FOV_PROJECTION_RELOC), (FOV_MINIMUM, FOV_MINIMUM_RELOC)):
-            if neutralize_relocs(data, [(va, va + len(expected))]) != [reloc]:
-                sys.exit(f"{va:#x}: the base relocations under the field-of-view site are not where they were read")
+        # The option's name stays an address the loader adds to; the least's
+        # one replaced address must not be added to.
+        va, expected, _ = FOV_MINIMUM
+        if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
+            sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
 
     if mode == "section":
         if late_join is not None:
@@ -995,7 +983,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a spawn gives its weapons a random state of the match's own, "
                      "and the state a new weapon has where a game could not know the kit's last life, "
                      "a first world's kit choices are the world's and in time order, "
-                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows"
+                     f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

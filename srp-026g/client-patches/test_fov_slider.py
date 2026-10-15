@@ -14,12 +14,8 @@ class FovTests(unittest.TestCase):
     def test_rewrites_keep_their_sites_size(self):
         for _, original, new in P.FOV_PATCHES:
             self.assertEqual(len(original), len(new))
-        # The original projection is followed by four int3 bytes of padding.
-        self.assertTrue(P.FOV_PROJECTION_ORIGINAL.endswith(b"\xcc" * 4))
 
-    def test_replaced_addresses_are_where_the_disabled_relocations_are(self):
-        self.assertEqual(P.FOV_PROJECTION_ORIGINAL[P.FOV_PROJECTION_RELOC - P.FOV_PROJECTION_VA:][:4],
-                         struct.pack("<I", 0xA2D9EC))
+    def test_replaced_address_is_where_the_disabled_relocation_is(self):
         site, original, patched = P.FOV_MINIMUM
         self.assertEqual(original[P.FOV_MINIMUM_RELOC - site:][:4], struct.pack("<I", 0xAA6554))
         self.assertEqual(patched[2:10], struct.pack("<If", 0xAA6554, P.FOV_MIN))
@@ -27,15 +23,19 @@ class FovTests(unittest.TestCase):
         site, original, patched = P.FOV_OPTION_NAME
         self.assertEqual((original[0], patched[0]), (0xB8, 0xB8))
 
-    def test_projection_calls_the_original_matrix_builder(self):
-        call = P.FOV_PROJECTION.index(b"\xe8")
-        target = P.FOV_PROJECTION_VA + call + 5 + struct.unpack_from("<i", P.FOV_PROJECTION, call + 1)[0]
-        original = P.FOV_PROJECTION_ORIGINAL.index(b"\xe8")
-        self.assertEqual(target, P.FOV_PROJECTION_VA + original + 5
-                         + struct.unpack_from("<i", P.FOV_PROJECTION_ORIGINAL, original + 1)[0])
+    def test_projection_hook_jumps_from_its_first_instruction(self):
+        self.assertIn(P.FOV_PROJECTION_HOOK, P.LATE_JOIN_HOOKS)
+        va, original, offset, opcode = P.FOV_PROJECTION_HOOK
+        # `fld dword [ecx+8Ch]`, six bytes: a jmp and a nop.
+        self.assertEqual((va, original, opcode), (0x242900, bytes.fromhex("d9818c000000"), 0xE9))
+        self.assertLess(offset, P.LATE_JOIN_ASM_SIZE)
 
-    def test_projection_reads_uro_fov(self):
-        self.assertIn(b"\xd8\x0d" + struct.pack("<I", P.FOV_VALUE), P.FOV_PROJECTION)
+    def test_projection_code_reads_uro_fov_and_calls_the_matrix_builder(self):
+        code = (Path(__file__).with_name("late_join_026g.asm")).read_text()
+        body = code[code.index("fov_projection:"):code.index("fov_scope:")]
+        self.assertIn(f"fld dword [{P.FOV_VALUE:#X}]".replace("0X", "0x"), body)
+        self.assertIn("call 0xEEE30", body)
+        self.assertTrue(body.rstrip().endswith("ret 8"))
 
     def test_unknown_movie_is_rejected_before_invoking_compiler(self):
         with mock.patch.object(fov.subprocess, 'run') as run:

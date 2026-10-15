@@ -107,12 +107,15 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     console variable at 0xAA6510, whose value (0xA6FA28, 65.0) only its
     registration pointed to; the camera's projection (0x242900, slot 0 of
     the vtables of player_input_handler, game_camera, free_fly_camera,
-    demo_camera and lobby_camera, which RTTI names) reads that value where
-    the original reads the 65-degree constant 0xA2D9EC (read nowhere else),
-    calls the same matrix builder and returns as the original (`ret 8`);
-    the registration stores 50.0 as the least, the most stays the float
-    100 at 0xA710D0; the build without the late join keeps all three; no
-    branch or address aims inside them.
+    demo_camera and lobby_camera, which RTTI names, and pointed to from
+    nowhere else) jumps at its first instruction to fov_projection, the
+    rest of its body (the only reader of the 65-degree constant 0xA2D9EC)
+    the original's; fov_projection reads uro_fov, takes the scope's blend
+    with its four constants, calls the same matrix builder, writes no XMM
+    register but xmm0 and returns as the original (`ret 8`); the
+    registration stores 50.0 as the least, the most stays the float 100 at
+    0xA710D0; the build without the late join keeps all three; no branch or
+    address aims inside the two sites rewritten in place.
 """
 
 import ctypes
@@ -1098,18 +1101,29 @@ def test_fov(original, image, before):
           and struct.unpack("<f", source.read(P.FOV_VALUE, 4))[0] == 65.0,
           "option 7 names \"uro_fov\" for \"fov\" (pointed to from there alone); \"uro_fov\" names the console variable "
           f"at 0xAA6510, whose value ({P.FOV_VALUE:#x}, 65.0) only its registration pointed to")
-    rows = [text for _, _, text in ndisasm(image.read(P.FOV_PROJECTION_VA, len(P.FOV_PROJECTION)), P.FOV_PROJECTION_VA)]
-    was = [text for _, _, text in ndisasm(source.read(P.FOV_PROJECTION_VA, len(P.FOV_PROJECTION_ORIGINAL)),
-                                          P.FOV_PROJECTION_VA)]
+    va, old, offset, _ = P.FOV_PROJECTION_HOOK
+    entry = P.LATE_JOIN_VA + offset
+    hook = [text for _, _, text in ndisasm(image.read(va, len(old)), va)]
+    rest = len(P.FOV_PROJECTION_BODY)
+    check(source.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and branch_target(hook[0]) == entry and hook[1:] == ["nop"]
+          and image.read(va + len(old), rest - len(old)) == source.read(va + len(old), rest - len(old))
+          and source.read(va, rest) == P.FOV_PROJECTION_BODY and refs(0xA2D9EC) == [va + 0x3A],
+          f"the projection's first instruction jumps to fov_projection ({entry:#x}); the rest of its body, which "
+          "alone reads the 65-degree constant 0xA2D9EC, is the original's; the build without the late join keeps it")
+    rows = ndisasm(image.read(entry, 0x80), entry)
+    end_at = next(i for i, (_, _, text) in enumerate(rows) if text.startswith("ret"))
+    texts = [text for _, _, text in rows[:end_at + 1]]
+    data = image.read(rows[end_at][0] + len(rows[end_at][1]) // 2, 16)
+    returns = lambda text: text.replace("ret word ", "ret ")  # ndisasm 3 spells `ret 0x8` so
+    was = [text for _, _, text in ndisasm(source.read(va, rest), va)]
     calls = lambda texts: [branch_target(text) for text in texts if text.startswith("call")]
-    real, was_real = [text for text in rows if text != "int3"], [text for text in was if text != "int3"]
-    # ndisasm 3 spells `ret 0x8` as `ret word 0x8`.
-    returns = lambda text: text.replace("ret word ", "ret ")
-    check(calls(rows) == calls(was) == [0xEEE30] and returns(real[-1]) == returns(was_real[-1]) == "ret 0x8"
-          and "fldpi" in rows and rows[len(real):] == ["int3"] * (len(rows) - len(real))
-          and refs(0xA2D9EC) == [P.FOV_PROJECTION_RELOC] and P.FOV_PROJECTION.count(pack(P.FOV_VALUE)) == 1,
-          "the projection calls the matrix builder 0xEEE30 as the original, reads uro_fov where the original read the "
-          "65-degree constant 0xA2D9EC (read there alone), returns with `ret 0x8` and ends in int3")
+    check(calls(texts) == calls(was) == [0xEEE30] and returns(texts[-1]) == "ret 0x8"
+          and f"fld dword [0x{P.FOV_VALUE:x}]" in texts and "fcmovb st1" in texts
+          and not any("xmm" in text and "xmm0" not in text for text in texts)
+          and data == struct.pack("<4f", 0.25, 1.3333334, 65.0, 0.017453292),
+          "fov_projection reads uro_fov, takes max(0, (z - 0.25) / 0.75) (0.25, 4/3, 65 and pi/180 after its code), "
+          "calls the matrix builder 0xEEE30 as the original, writes no XMM register but xmm0 and returns with `ret 0x8`")
     check(all(source.read(vtable, 4) == pack(P.FOV_PROJECTION_VA)
               and string(source, struct.unpack("<I", source.read(struct.unpack("<I", source.read(vtable - 4, 4))[0] + 12,
                                                                   4))[0] + 8) == klass
@@ -1137,7 +1151,7 @@ def test_fov(original, image, before):
     found = [hit for va, old, _ in P.FOV_PATCHES for hit in aimed_inside(original, va, len(old), 0x82)
              if not (va <= hit < va + len(old)) and instruction(hit)]
     check(not found, "no rel32 branch of .text, no rel8 branch near them (read as the functions' instructions) and "
-          "no 4-byte value aims inside the three sites" + "".join(f"\n          {a:#x}" for a in found))
+          "no 4-byte value aims inside the two sites rewritten in place" + "".join(f"\n          {a:#x}" for a in found))
 
 
 # The respawn rules' vtables: player_respawn_rule_base, _core, the client's
@@ -1550,8 +1564,8 @@ def test_late_join(original, without, server, source):
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
     # The entries of the relocation table that are disabled (scene::remove_model's
-    # branch, the field-of-view setting's two).
-    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_PROJECTION_RELOC, P.FOV_MINIMUM_RELOC}
+    # branch, uro_fov's least).
+    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC}
     ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
                if kind == 3 and va in disabled]
     allowed = bytearray(raw)
@@ -1617,7 +1631,7 @@ def test_late_join(original, without, server, source):
     under = lambda relocations: [va for kind, va in relocations.values()
                                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
     # The sites with an address in them: scene::remove_model's branch and the
-    # field-of-view setting's three.
+    # field-of-view setting's two in place.
     with_address = {P.REMOVE_MODEL_VA} | {va for va, _, _ in P.FOV_PATCHES}
     kept = [(lo, hi) for lo, hi in sites if lo not in with_address]
     under_kept = [va for kind, va in Image(original).relocations().values()
@@ -1630,11 +1644,11 @@ def test_late_join(original, without, server, source):
     differing = sorted(key for key in set(now) | set(was) if now.get(key) != was.get(key))
     check(not under_kept and sorted(was[key][1] for key in differing) == sorted(disabled)
           and all(was[key][0] == 3 and now[key][0] == 0 for key in differing)
-          and under_fov == sorted({option, P.FOV_PROJECTION_RELOC, P.FOV_MINIMUM_RELOC})
+          and under_fov == sorted({option, P.FOV_MINIMUM_RELOC})
           and any(kind == 3 and va == option for kind, va in now.values()),
           "no base relocation is under a late-join site but those of scene::remove_model's branch "
-          f"({P.REMOVE_MODEL_VA + 2:#x}) and of the field-of-view setting's projection and least "
-          f"({P.FOV_PROJECTION_RELOC:#x}, {P.FOV_MINIMUM_RELOC:#x}), which are disabled, and of its option's name "
+          f"({P.REMOVE_MODEL_VA + 2:#x}) and of uro_fov's least ({P.FOV_MINIMUM_RELOC:#x}), which are disabled, "
+          f"and of the field-of-view option's name "
           f"({option:#x}, an address for an address), which stays; the rest of the table is the build's without it")
 
     test_clock_factor(original, image, before)
