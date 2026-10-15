@@ -349,6 +349,39 @@ pub fn place_late(sides: [Worth; 2], groups: &[Joiner], rule: &LateRule) -> Opti
     best.map(|(_, _, placement)| placement)
 }
 
+/// Where a match being played, whose sides are `sides` now, takes `joiner`
+/// when a maintenance is near (the lobby's JOIN, `docs/notes/lobby.md`
+/// §2.16.1): on the side that counts for less (players, strengths and the
+/// lead, as [`place_late`] counts them); of two that count alike the one
+/// with fewer players, and of two alike in that too side 0. Only the side
+/// being full (`capacity`) and the match's `room` stop it: none of
+/// [`place_late`]'s rules of sizes, of patience or of the sides counting
+/// more alike, and nothing of `dramatic`. The match ends before the
+/// maintenance does, so a player more on the weaker side is worth more
+/// than the evenness the balance rule waits for.
+pub fn place_weaker(sides: [Worth; 2], joiner: Worth, rule: &LateRule) -> Option<LatePlacement> {
+    let worth = |sides: &[Worth; 2], side: usize| {
+        rule.player_value * sides[side].players as i64 + sides[side].strength + rule.lead[side]
+    };
+    let side =
+        usize::from((worth(&sides, 1), sides[1].players) < (worth(&sides, 0), sides[0].players));
+    if joiner.players == 0
+        || joiner.players > rule.room
+        || sides[side].players + joiner.players > rule.capacity
+    {
+        return None;
+    }
+    let mut after = sides;
+    after[side].players += joiner.players;
+    after[side].strength += joiner.strength;
+    Some(LatePlacement {
+        assignments: vec![(0, side as u8)],
+        sides: after,
+        apart_before: worth(&sides, 0) - worth(&sides, 1),
+        apart_after: worth(&after, 0) - worth(&after, 1),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +527,85 @@ mod tests {
         let no_room = LateRule { room: 1, ..rule() };
         let placed = place_late([side(3, 0), side(2, 0)], &[joiner(1, 0); 2], &no_room).unwrap();
         assert_eq!(placed.population(), 6);
+    }
+
+    #[test]
+    fn near_a_maintenance_a_joiner_goes_to_the_weaker_side_even_if_uneven() {
+        let one = side(1, 300);
+        // Three against three, side 1 weaker by value: there, though the
+        // balance rule would keep an even match even.
+        let placed = place_weaker([side(3, 1000), side(3, 400)], one, &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides, [side(3, 1000), side(4, 700)]);
+        assert_eq!(placed.apart_before, 600);
+        assert_eq!(placed.apart_after, 600 - 1200 - 300);
+        // A side with more players that counts for less still is the
+        // weaker: four against three, and the four go to five.
+        let placed = place_weaker([side(4, -3000), side(3, 0)], one, &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        assert_eq!(placed.sides[0].players, 5);
+        // The lead counts: side 0 leads by more than side 1 is stronger.
+        let led = LateRule {
+            lead: [1000, 0],
+            ..rule()
+        };
+        let placed = place_weaker([side(3, 0), side(3, 500)], one, &led).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        // A dramatic lead changes nothing of it.
+        let dramatic = LateRule {
+            dramatic: true,
+            ..led
+        };
+        assert_eq!(
+            place_weaker([side(3, 0), side(3, 500)], one, &dramatic),
+            Some(placed)
+        );
+    }
+
+    #[test]
+    fn near_a_maintenance_ties_go_to_fewer_players_then_side_0() {
+        let one = side(1, 0);
+        // Alike by value: the side with fewer players (its players count
+        // for more each).
+        let placed = place_weaker([side(4, -1200), side(3, 0)], one, &rule()).unwrap();
+        assert_eq!(placed.apart_before, 0);
+        assert_eq!(placed.assignments, [(0, 1)]);
+        let placed = place_weaker([side(3, 0), side(4, -1200)], one, &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        // Alike in both: side 0.
+        let placed = place_weaker([side(3, 0), side(3, 0)], one, &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        // An empty match: side 0.
+        let placed = place_weaker([side(0, 0), side(0, 0)], one, &rule()).unwrap();
+        assert_eq!(placed.sides, [side(1, 0), side(0, 0)]);
+    }
+
+    #[test]
+    fn near_a_maintenance_a_full_weaker_side_or_no_room_takes_nobody() {
+        let one = side(1, 0);
+        let small = LateRule {
+            capacity: 3,
+            ..rule()
+        };
+        // The weaker side is full: nobody, though the other has room (the
+        // joiner would make the stronger side stronger).
+        assert_eq!(place_weaker([side(2, 2000), side(3, 0)], one, &small), None);
+        let placed = place_weaker([side(3, 0), side(2, 2000)], one, &small);
+        assert_eq!(placed, None);
+        let placed = place_weaker([side(2, 0), side(3, 2000)], one, &small).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        // No roster place left.
+        let no_room = LateRule { room: 0, ..rule() };
+        assert_eq!(place_weaker([side(3, 0), side(2, 0)], one, &no_room), None);
+        // Nobody to place.
+        assert_eq!(
+            place_weaker([side(3, 0), side(2, 0)], Worth::default(), &rule()),
+            None
+        );
+        // The sizes rule of the balance rule is not this one's: five
+        // against three, and the three are stronger, so the five get six.
+        let placed = place_weaker([side(5, 0), side(3, 3000)], one, &rule()).unwrap();
+        assert_eq!(placed.sides.map(|side| side.players), [6, 3]);
     }
 
     fn team(players: usize, average: u32) -> Team {

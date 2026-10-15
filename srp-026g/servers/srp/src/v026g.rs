@@ -144,6 +144,12 @@ impl MatchHost for RegistryHost {
             played: live
                 .played
                 .filter(|_| live.phase == matches::LivePhase::Playing),
+            // Nothing is left of a match that has its result.
+            time_left: if live.phase == matches::LivePhase::Over {
+                Some(Duration::ZERO)
+            } else {
+                live.time_left
+            },
         })
     }
 
@@ -160,6 +166,7 @@ impl MatchHost for RegistryHost {
                     .standing
                     .map(|standing| (standing.points, standing.age)),
                 played: live.played,
+                match_level: live.match_level,
             })
             .collect()
     }
