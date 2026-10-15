@@ -130,7 +130,7 @@
     "version": "021d"
   },
   "reference_pdb_sha256": "7e3624e684d42a42468b0b27288a2a3167485f84ca4938a6b2cba856058a19ca",
-  "addresses": "functions.json values are lists of preferred-image virtual addresses; functions.info.json and abi.json are keyed by those VAs.",
+  "addresses": "The va column of every TSV is a preferred-image virtual address.",
   "rva_formula": "RVA = listed VA - target.preferred_image_base",
   "runtime_formula": "Runtime address = actual loaded module base + RVA",
   "scope": "Accepted non-vendor game and engine labels, with condensed target ABI observations. Unresolved entries and detailed evidence remain in the private archive."
