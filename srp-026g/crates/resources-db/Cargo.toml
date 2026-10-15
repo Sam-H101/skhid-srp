@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "resources-db"
+version.workspace = true
+edition.workspace = true
+description = "Reads the game's resources.db archive, as installed or with a players' update plan applied in memory"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+
+[lints]
+workspace = true

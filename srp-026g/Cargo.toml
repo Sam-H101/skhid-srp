@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/binary-config-parser",
+  "crates/resources-db",
   "crates/session",
   "crates/survarium",
   "crates/udp-transport",
@@ -54,7 +55,7 @@ log = "0.4"
 sqlx = { version = "0.8", features = [ "runtime-tokio" ] }
 
 binary-config-parser = { path = "crates/binary-config-parser" }
-resources-db = { git = "https://github.com/srp-survarium/vostok-resources-db", rev = "9498aca14014ef74460429f51eb41a6af333522c" }
+resources-db = { path = "crates/resources-db" }
 session = { path = "crates/session" }
 survarium = { path = "crates/survarium" }
 udp-transport = { path = "crates/udp-transport" }
