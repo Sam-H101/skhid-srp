@@ -134,3 +134,10 @@ The viewer binds every place of chunk 1 at its start, so its list of game object
 **Run 2026-10-15 15:27** (0x3cf24270, revision 10 exe): 22 key frames loaded past the old crash points (74.6 s, 114.6 s), the map whole in every screenshot, the kill feed shown. (That run used the earlier detection from the worlds alone; the count from the kits gives the same bytes for that match.)
 
 **Watching** (RE-REPLAY-2.md, PROVEN in the code, not all tried): F11 shows the replay UI (player list, first/third person, seek bar, speed); F1 first person on the last target, F3 third person, F2 free view, F6/F5 next/previous player (only while attached); the console (`~`) has `attach_to_player <place>`, `detach_from_player`, `pause`, `resume`, `time_scale <0..10>`; Pause/Break pauses. Seeking is only the UI's slider: it loads the last key frame at or before the target and plays on from it.
+
+## 8. Two crashes of the viewer, fixed in the client (2026-10-15, patch revision 11)
+
+`client_patch.md` 3.22 has both fixes.
+- **First or third person, at the watched player's first respawn into another kit.** The camera stayed on the old kit's object, and `weapon::draw` died. Revision 11 re-attaches it. Run: followed past such a kit change.
+- **About 50 s after a seek, at normal speed.** A weapon's delayed-sound queue (64 items) overflowed. Revision 11 drops the new sound when it is full. Not yet run.
+- **Not fixed: late sounds after a backward seek** (reloads more than footsteps; LIKELY what was heard). The queued sounds keep their times from before the seek, and new copies wait behind them. Until that is fixed, sounds are only right in a run with no backward seek.

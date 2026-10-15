@@ -276,6 +276,13 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # server reads never ended before the time limit. What a match computes
 # changes at the first death after a team is out: a game of 11 and an
 # older one part there, so a server asks for 11.
+# Also in 11: a replay's camera follows the player it is on into another
+# kit (REPLAY_REATTACH below). Before it a replay watched in first or third
+# person died at that player's first respawn into another kit
+# (docs/notes/replay_sur.md). Only the replay client changes, nothing a
+# match computes: no revision of its own (owner, 2026-10-15). So is a
+# weapon's full sound queue (SOUND_QUEUE below), which killed a replay
+# about 50 s after a seek: the new sound is dropped instead.
 REVISION = 11
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -307,6 +314,44 @@ GATHER = (GATHER_EVENTS, GATHER_LOCK)
 # write of -1), so a rollback over the death that completed the rule keeps
 # it, and the replay of that death is skipped (match.md section 28).
 TDM_DEATHS = (0x3160F1, bytes.fromhex("0f85e6000000"), b"\x90" * 6)
+
+# replay_network_client's "is this place mine" (vtable 0x9FF344, slot +0x54
+# at 0x9FF398) is 0x54E10, `xor al,al` / `ret 4`. The client respawn rule's
+# kit change (0x2678E0) asks it and re-attaches the camera to the place's
+# new kit object when it says yes, as the live client's 0x27B550 does for
+# its own place; the replay never did, kept drawing the old kit's object as
+# the one watched and gave the new one's weapon a HUD of 0 + 0x2E4
+# (weapon::draw 0x24502B). The slot gets a thunk in the int3 padding after
+# is_player_current 0x242A40 (the client in eax, the place on the stack,
+# `ret 4`): `mov eax,ecx` / `jmp 242A40h`, so "mine" is "the place the
+# camera is on". The slot keeps its base relocation.
+REPLAY_REATTACH_THUNK = (0x242A69, bytes.fromhex("cc") * 7, bytes.fromhex("8bc1e9d0ffffff"))
+REPLAY_REATTACH_SLOT = (0x9FF398, struct.pack("<I", 0x54E10), struct.pack("<I", 0x242A69))
+
+# A weapon's delayed sounds (delayed_callbacks_queue<64>, weapon+9FCh:
+# begin, end, capacity end; 0x38 bytes an item) are emptied by nothing but
+# the weapon's destructor. Each id keeps one item for good and a chain of up
+# to 2 or 4 waiting ones; a seek moves the game clock and leaves the queue
+# as it was. Its add (0x2454A0: drain, then look for the id's chain) pushes
+# without looking, and push_back (0x245AD0) asserts at 64 (0x245B32: seen
+# in a replay, about 50 s after a seek). After the drain, at 0x2454C1, `mov
+# eax,[esi]` / `mov ecx,[esi+4]` (esi = the queue) becomes a jump to the
+# cave in int3 padding after a function that ends at 0x835A15: with the
+# queue full it goes to 0x24569A, the game's own exit for a sound past its
+# chain's cap (the same frame: it calls the functor with flag 0, which the
+# sound player 0x297E20 takes as "do not play", and returns `ret 18h`; the
+# queue is not touched); otherwise it does the two instructions and goes
+# back to 0x2454C6. A weapon with a full queue drops its new sounds until it
+# drains, where the game died. Sounds only: nothing a match computes.
+SOUND_QUEUE_HOOK_VA, SOUND_QUEUE_RETURN, SOUND_QUEUE_DROP = 0x2454C1, 0x2454C6, 0x24569A
+SOUND_QUEUE_CAVE_VA = 0x835A20
+SOUND_QUEUE_PADDING = (0x835A16, 42)          # the int3 run the cave is in
+SOUND_QUEUE_CAVE = (bytes.fromhex("8b4e04" "3b4e08" "7307" "8b06")
+                    + bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_RETURN - (SOUND_QUEUE_CAVE_VA + 15))
+                    + bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_DROP - (SOUND_QUEUE_CAVE_VA + 20)))
+SOUND_QUEUE_CAVE_SITE = (SOUND_QUEUE_CAVE_VA, bytes.fromhex("cc") * len(SOUND_QUEUE_CAVE), SOUND_QUEUE_CAVE)
+SOUND_QUEUE_HOOK = (SOUND_QUEUE_HOOK_VA, bytes.fromhex("8b068b4e04"),
+                    bytes([0xE9]) + struct.pack("<i", SOUND_QUEUE_CAVE_VA - (SOUND_QUEUE_HOOK_VA + 5)))
 
 # vfs::mounter::finish 0x469F0, the last step of every mount: `mov
 # eax,[eax+34h]` (the mount's root) / `test eax,eax` / `jnz 46B0Fh`, then
@@ -657,6 +702,22 @@ def patch_value(data, va, expected, new):
     data[at:at + len(new)] = new
 
 
+def patch_section_value(data, va, expected, new):
+    """As `patch`, for a value in any section of the original's (the
+    replay client's vtable is in .rdata)."""
+    headers = Headers(data)
+    for _, rva, vsize, raw, _, _ in headers.sections(data):
+        if IMAGE_BASE + rva <= va < IMAGE_BASE + rva + vsize:
+            at = va - IMAGE_BASE - rva + raw
+            break
+    else:
+        sys.exit(f"{va:#x}: in no section")
+    found = bytes(data[at:at + len(expected)])
+    if found != expected or len(new) != len(expected):
+        sys.exit(f"{va:#x}: expected {expected.hex()}, found {found.hex()}")
+    data[at:at + len(new)] = new
+
+
 def patch(data, va, expected, new):
     at = file_offset(va)
     found = bytes(data[at:at + len(expected)])
@@ -912,6 +973,13 @@ def build(original, mode, code=None, server=None, late_join=None):
         sites.append((PREGAME_PROGRESS_VA, PREGAME_PROGRESS_VA + len(PREGAME_PROGRESS[1])))
         patch(data, *TDM_DEATHS)
         sites.append((TDM_DEATHS[0], TDM_DEATHS[0] + len(TDM_DEATHS[1])))
+        patch(data, *REPLAY_REATTACH_THUNK)
+        sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
+        # An address: its relocation stays.
+        patch_section_value(data, *REPLAY_REATTACH_SLOT)
+        for site in (SOUND_QUEUE_CAVE_SITE, SOUND_QUEUE_HOOK):
+            patch(data, *site)
+            sites.append((site[0], site[0] + len(site[1])))
         patch(data, *REMOVE_MODEL)
         # The one address in what is replaced: the loader must not add to it.
         if neutralize_relocs(data, [(REMOVE_MODEL_VA, REMOVE_MODEL_VA + len(REMOVE_MODEL[1]))]) != [REMOVE_MODEL_VA + 2]:
@@ -945,7 +1013,9 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a spawn gives its weapons a random state of the match's own, "
                      "and the state a new weapon has where a game could not know the kit's last life, "
                      "a first world's kit choices are the world's and in time order, "
-                     "a Team Deathmatch rule counts a death after its own end"
+                     "a Team Deathmatch rule counts a death after its own end, "
+                     "a replay's camera follows its player into another kit, "
+                     "a weapon with a full sound queue drops the new sound"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
