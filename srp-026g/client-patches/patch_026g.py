@@ -669,6 +669,7 @@ FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
 PICKUP_OFFSET = 0x800
 PICKUP_VA = SECTION_VA + PICKUP_OFFSET
 PICKUP_ACROSS = 1.0
+PICKUP_ABOVE = 0.1
 PICKUP_FRAME = (0x2D84C9, bytes.fromhex("83ec34"), bytes.fromhex("83ec3c"))
 PICKUP_HOOKS = (
     (0x2D84E9, bytes.fromhex("d905d810a700"), 0, 0xE8),          # the ray's length: reach
@@ -1041,7 +1042,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a first world's kit choices are the world's and in time order, "
                      "a Team Deathmatch rule counts a death after its own end, "
                      f"a field-of-view setting (uro_fov, {FOV_MIN:g} to 100) the camera follows, a scope's view the original's, "
-                     f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across)"
+                     f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across, {PICKUP_ABOVE:g} m above)"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

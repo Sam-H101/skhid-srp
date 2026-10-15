@@ -1250,9 +1250,10 @@ def test_pickup(original, image, before):
     check(image.read(P.PICKUP_VA, len(code)) == code and outside == [0x2D85C6, 0x2D85FC, 0x2D8622]
           and [text for _, _, text in rows if text.startswith("call")] == ["call [edx+0x44]"]
           and struct.unpack("<f", source.read(0xA710D8, 4))[0] == 2.0
-          and code[-4:] == struct.pack("<f", P.PICKUP_ACROSS ** 2),
+          and code[-8:] == struct.pack("<2f", P.PICKUP_ACROSS ** 2, -P.PICKUP_ABOVE),
           f"the code at {P.PICKUP_VA:#x} is the .bin; it leaves only to the scan (0x2D85C6, 0x2D85FC, 0x2D8622), "
-          f"calls only get_transform (vtable+44h); the distance (0xA710D8) is 2.0; across, {P.PICKUP_ACROSS:g} m")
+          f"calls only get_transform (vtable+44h); the distance (0xA710D8) is 2.0; across {P.PICKUP_ACROSS:g} m, "
+          f"above {P.PICKUP_ABOVE:g} m")
     string = lambda at: source.read(at, 64).split(b"\0")[0]
     klass = lambda vtable: string(word(source, word(source, vtable - 4) + 12) + 8)
     can_use = struct.pack("<I", 0x300710)

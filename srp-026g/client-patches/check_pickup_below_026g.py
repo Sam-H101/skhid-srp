@@ -9,8 +9,8 @@ machine code; the ray query, collision groups, get_transform and the
 allocator are stubs. The default build of patch_026g.py must give the
 original's result for a battery in reach and in view, refuse one behind a
 wall or out of reach, and take one under the floor within 1 m of the feet
-across, with the feet as its point. Says nothing about which hits the real
-collision world returns.
+across (its centre at most 10 cm above the feet), with the feet as its
+point. Says nothing about which hits the real collision world returns.
 """
 import struct
 import sys
@@ -151,7 +151,11 @@ def cases():
         yield f"under the floor, {across} m across", [floor, below(across)], False, taken, FEET if taken else None
     yield "two floors down", [floor, ("wall", (x, y - 1, z)), below(0, 2.3)], False, True, FEET
     yield "a walkable hit only", [("walkable", (x + 0.3, y + 0.6, z)), ("battery", (x + 0.8, y + 0.1, z))], True, True, None
-    yield "centre above the feet", [floor, ("battery", (x, y - 0.1, z), (x, y + 0.05, z))], False, False, None
+    # Half in the floor: the centre up to 10 cm above the feet.
+    yield "centre 5 cm above the feet", [floor, ("battery", (x, y - 0.1, z), (x, y + 0.05, z))], False, True, FEET
+    yield "centre 15 cm above the feet", [floor, ("battery", (x, y - 0.1, z), (x, y + 0.15, z))], False, False, None
+    yield "behind a wall, lying on the floor", [("wall", (x + 0.4, y + 0.5, z)),
+                                                 ("battery", (x + 0.7, y + 0.2, z), (x + 0.7, y + 0.15, z))], False, False, None
     yield "another object under the floor", [floor, ("other", (x, y - 0.2, z))], False, False, None
     yield "a NaN centre", [floor, ("battery", (x, y - 0.2, z), (nan, y - 0.3, z))], False, False, None
     yield "another object, then a battery", [floor, ("other", (x, y - 0.1, z)), below(0)], False, True, FEET

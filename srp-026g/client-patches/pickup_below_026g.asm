@@ -40,7 +40,8 @@ times 64-($-$$) db 0xcc
 ; esi = the usable object a hit belongs to, edi = the hit (+0 its point).
 ; Within the native distance and before any crossed hit: the original. Else
 ; only a battery (its can_use is victory_item_core's) whose centre is below
-; the player's feet and at most 1 m from them across; its point becomes the
+; the player's feet (or at most 10 cm above them: a battery half in the
+; floor) and at most 1 m from them across; its point becomes the
 ; feet, which the use's range check (0x300830) keeps in reach. Anything
 ; else is skipped, past the original's keeping of the first unusable object
 ; for the prompt (0x2D85DC): it is not to be seen at all.
@@ -87,9 +88,8 @@ candidate:
     mulss xmm2, xmm2
     addss xmm1, xmm2               ; across^2
     add esp, 0x40
-    xorps xmm2, xmm2
-    comiss xmm0, xmm2
-    jbe .reject                    ; not below (or NaN)
+    comiss xmm0, [above]
+    jbe .reject                    ; more than 10 cm above (or NaN)
     movss xmm2, [across]
     comiss xmm2, xmm1
     jb .reject                     ; too far across (or NaN)
@@ -106,3 +106,4 @@ candidate:
 times 320-($-$$) db 0xcc
 
 across: dd 1.0                     ; (1 m)^2
+above:  dd -0.1                    ; below the feet, at least -10 cm
