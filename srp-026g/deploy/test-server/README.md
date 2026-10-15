@@ -67,7 +67,7 @@ itself takes changes only through pull requests.
    is off`, a page with no download and `404` at `/api/client-files`. The
    ZIP is `Survarium-0.26g-srp-files.zip`, made for this server's own
    address (`make_client_026g.py --pack-zip --server=<its name>:1234
-   --resource-grow=<grow.json> --resources-out=<blobs>`, the blobs into
+   --resources-db=<final resources.db> --resources-out=<blobs>`, the blobs into
    `download/resources/`, mode 644, before the ZIP): the
    launcher and the updater in it ask the site they were made for, so the
    players' ZIP is of no use here. A new ZIP put in its place is seen

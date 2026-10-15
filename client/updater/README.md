@@ -156,8 +156,8 @@ archive.org.
 ## Resources
 
 The players' ZIP may hold a plan, `game/binaries/x86/updater_skhid.resources`
-(`make_client_026g.py --resource-region`, `--resource-grow`; the format and
-its rules are in `logic/src/resources.rs`):
+(`make_client_026g.py --resources-db`, from the release's final
+`resources.db`; the format and its rules are in `logic/src/resources.rs`):
 
 ```text
 skhid-resources 2
@@ -169,8 +169,8 @@ end
 
 The game exe of patch revision 12 starts only with a db whose file table
 Skhid's key signed, which a `tail` and its head region install, so
-`make_client_026g.py` builds that exe only with `--resource-grow`: from
-that release on every plan is a required one.
+`make_client_026g.py` builds that exe only with a `--resources-db` whose
+table Skhid signed: from that release on every plan is a required one.
 
 A plan without a `tail` is written as format 1, as before, so that the
 updaters already out there read it; a `tail` comes only in format 2. An

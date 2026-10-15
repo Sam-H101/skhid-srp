@@ -168,14 +168,14 @@ kept DLL). First build the crash reporter with `../../client/bugtrap/build.sh`,
 then:
 
 ```
-python make_client_026g.py <game folder> <new folder> --server=<host>:<port> --resource-grow=<grow.json> --resources-out=<blobs> [--localization=ukrainian] [--check]
-python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> --resource-grow=<grow.json> --resources-out=<blobs> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new folder> --server=<host>:<port> --resources-db=<final resources.db> --resources-out=<blobs> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> --resources-db=<final resources.db> --resources-out=<blobs> [--localization=ukrainian] [--check]
 ```
 
-The default exe starts only with the Skhid-signed `resources.db` (patch 24),
-so the tool builds it only with `--resource-grow` (resource-porter's
-`pack release`, its head signed by `sign_resources_026g.py`), and every other
-exe only without. Upload the blobs of `--resources-out` before the ZIP.
+The default exe starts only with a `resources.db` whose file table Skhid's
+key signed (patch 24), so the tool builds it only with a `--resources-db`
+whose table is so signed (`sign_resources_026g.py`), and every other exe only
+with the original table. Upload the blobs of `--resources-out` before the ZIP.
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
 `game/binaries/x86/bugtrap.dll` (the Rust crash reporter),
@@ -206,32 +206,38 @@ installing. `--check` does every check and writes nothing. Existing ZIPs are
 never overwritten. `--bugtrap=<path>` selects another built DLL; by default
 the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
 
-`--resource-region=<name>=<entry file>` (once per entry; `main_menu`,
-`lobby_menu` and `login_menu` are known, `RESOURCE_REGIONS` in the tool;
-with `--resource-grow` too, whose head `[0, 10 583 534)` ends well before
-`main_menu`, `[17 970 448, 19 165 044)`, and the tool refuses a head that
-overlaps a region) with
-`--resources-out=<folder>` adds `game/binaries/x86/updater_skhid.resources`,
-the plan of the updater's resource step: the updater rewrites that entry of
-the player's `resources.db` in place with the entry file
-(`../../client/updater/README.md`, "Resources"). The tool refuses an entry
-file of another size or another game CRC than the original entry, and a
-source `resources.db` whose entry is not the original (it reads that part of
-the file only). The blobs the server must hand out at `/resources/<sha256>`,
-the entry file and the original entry, go into `<folder>`, named by their
-sha256: they are uploaded before the ZIP is offered
-(`launcher/README.md`, "Putting it on a server"). Without the option the ZIP
-is byte for byte what it was before the option existed (checked 2026-10-14
-against a build of `main` a63f37d with the same inputs).
+`--resources-db=<final resources.db>` with `--resources-out=<folder>` names
+the release's final `resources.db`, the file the players' is to be, and adds
+`game/binaries/x86/updater_skhid.resources`, the plan of the updater's
+resource step (`../../client/updater/README.md`, "Resources").
+`srp-game-data plan` (`../crates/resources-db`, `release`) reads it off the
+two files, in chunks: each file of the original's table whose bytes differ in
+place is a region named after it (`flash_movies/lobby_menu.swf`:
+`lobby_menu`), which with the original table must keep its size and the
+table's CRC-32; a new table is the head region `resources_head`, from the
+start to the end of the original files the new table and its signature cover
+(a release moves those to its end), and must be Skhid-signed; what the file
+has past the original's end is the tail `resources_tail`. A shorter file, or
+bytes changed outside every file, is refused. The blobs the server must hand
+out at `/resources/<sha256>`, each region's new and original bytes and the
+tail, go into `<folder>`, named by their sha256: they are uploaded before the
+ZIP is offered (`launcher/README.md`, "Putting it on a server"). A menu made
+here (`exchange_026g.py`, `fov_slider_026g.py`, `login_hint_026g.py`) goes
+into a copy of `resources.db` first, in place: `srp-game-data put --db <copy>
+--path flash_movies/<menu>.swf --file <it>` (the same size and CRC-32).
+Without `--resources-db` the ZIP is byte for byte what it was without a
+plan. Checked 2026-10-15: the candidate release's final db (6 328 475 738
+bytes) gives the plan and the 9 blobs the earlier per-entry options gave, byte
+for byte, and stock with live's three menus gives live's plan.
 
-**The server's game data.** A ZIP that changes `resources.db` (any
-`--resource-region` or `--resource-grow`, with `--pack-zip`) comes with
+**The server's game data.** A ZIP that changes `resources.db` (`--resources-db`, with
+`--pack-zip`) comes with
 `server-game-data.db` beside it: the files of the players' `resources.db`
 the server reads (`gameplay/` and the project markers, about 3 MB), made by
-`srp-game-data extract` (`../crates/resources-db`; build it first with
-`cargo build --release -p resources-db --bin srp-game-data` in `srp-026g`, or
-name it with `--game-data-tool=<path>`) from the source game's `resources.db`,
-the ZIP and the blobs. Each file is checked against the players' file table
+`srp-game-data extract --final` (`../crates/resources-db`; build it first
+with `cargo build --release -p resources-db --bin srp-game-data` in
+`srp-026g`, or name it with `--game-data-tool=<path>`) from the final
+`resources.db`, checked first to be what the ZIP's plan makes. Each file is checked against the players' file table
 (its size and CRC-32). It names the ZIP's plan (`srp/provenance`: the plan's
 sha256 and its `resources.db` lines), and the server refuses to start with
 data made for another plan, or a ZIP without its data

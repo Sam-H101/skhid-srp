@@ -566,8 +566,8 @@ installation and service.
    it they are the steps as before. Nothing is
    set by hand and no restart is needed.
 3. From then on a release is: build the ZIP, replace the file.
-4. A ZIP with resource regions (`make_client_026g.py
-   --resource-region=<name>=<entry file> --resources-out=<folder>`) needs,
+4. A ZIP with a resource plan (`make_client_026g.py
+   --resources-db=<final resources.db> --resources-out=<folder>`) needs,
    in this order: a server build with `/resources/`; the blobs the tool
    wrote into `<folder>` (each target and each original, named by its
    sha256) copied into `download/resources/` beside the ZIP, and fetched

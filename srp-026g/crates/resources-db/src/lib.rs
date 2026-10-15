@@ -40,6 +40,7 @@
 //! an archive of their own ([`write`]) that names the plan it was made for.
 
 pub mod plan;
+pub mod release;
 pub mod server;
 pub mod write;
 

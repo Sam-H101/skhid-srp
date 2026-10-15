@@ -19,13 +19,12 @@ USAGE
         [--site=https://<host>]      the server's web page; https://<host of --server>
                                      when not given
         [--no-launcher]              without the launcher and its updater
-        [--resource-region=<name>=<entry file> ...  --resources-out=<folder>]
-                                     have the updater rewrite a known entry of
-                                     resources.db in place (see RESOURCE REGIONS)
-        [--resource-grow=<manifest.json>  --resources-out=<folder>]
-                                     have the updater grow resources.db: a new
-                                     file table and new entries appended (see
-                                     GROWING RESOURCES.DB)
+        [--resources-db=<resources.db>  --resources-out=<folder>]
+                                     the players' resources.db of this release:
+                                     the updater makes theirs this file (see
+                                     THE PLAYERS' RESOURCES.DB)
+        [--game-data-tool=<srp-game-data>]  defaults to the release build in
+                                     ../target/release
 
     <game folder>   the original 0.26g game: the folder that holds
                     binaries/x86/survarium.exe (the installer's `game`
@@ -97,66 +96,54 @@ WHAT IT WRITES (the overlay mirrors the game's layout)
     <output>/README.txt
         what to do with it, and where the original game is had.
 
-RESOURCE REGIONS
+THE PLAYERS' RESOURCES.DB
 
-    --resource-region=<name>=<entry file> (once per region) adds
-    <output>/game/binaries/x86/updater_skhid.resources, the plan of the
-    updater's resource step (../../client/updater, "Resources"): after each
-    update the updater writes the entry file over that entry's bytes in the
-    player's game/resources.db, in place, and puts the original bytes back
-    once a later archive no longer names it. <name> is one of
-    RESOURCE_REGIONS below (an entry of build 2777's resources.db). The
-    entry file must have exactly the entry's size and the same game CRC as
-    the original entry (the file table of the db is signed and is not
-    changed), and the source game's resources.db must hold the original
-    entry. The blobs the updater fetches, named by their sha256 (the entry
-    file and the original entry), are copied into --resources-out=<folder>:
-    upload them to the server's download/resources/ BEFORE the archive is
-    offered. Without --resource-region the archive is as before, byte for
-    byte.
+    --resources-db=<resources.db> names the release's final resources.db:
+    the file the players' game/resources.db is to be. `srp-game-data plan`
+    (../crates/resources-db; build it first with `cargo build --release -p
+    resources-db --bin srp-game-data` in srp-026g, or name it with
+    --game-data-tool=<path>) compares it with the source game's, in chunks,
+    and gives the plan of the updater's resource step
+    (<output>/game/binaries/x86/updater_skhid.resources;
+    ../../client/updater/README.md, "Resources"):
 
-GROWING RESOURCES.DB
+    - every file of the original's table whose bytes differ at the same place
+      is a `region`, named after the file (flash_movies/lobby_menu.swf:
+      lobby_menu); with the original table each must keep its size and the
+      table's CRC-32, or the game refuses it;
+    - when the file table differs, `resources_head`: the header, the new
+      table and its signature, to the end of the original files they cover
+      (a release moves those to its end). The table must be signed with
+      Skhid's key (sign_resources_026g.py): the default exe (patch revision
+      12) starts with such a resources.db alone, every other exe with the
+      original one alone, so the default exe ships exactly when the table
+      changes;
+    - what it has past the original's end, `resources_tail`, appended with
+      the head. A plan with a tail is *required*: the updater keeps PLAY off
+      until the db holds it and every region, and puts the db back as shipped
+      when it cannot finish.
 
-    --resource-grow=<manifest.json> (once) adds new entries to the player's
-    game/resources.db: the manifest (written by resource-porter) names a head
-    (the bytes [offset, offset + size) of the db as shipped, its file table,
-    rewritten to name the new entries) and a tail (the new entries' bytes,
-    appended at the db's end):
+    Anything else (a shorter file, bytes changed outside every file) is
+    refused. The blobs the updater fetches, named by their sha256 (each
+    region's new and original bytes, the tail), are written into
+    --resources-out=<folder>: upload them to the server's download/resources/
+    BEFORE the archive is offered. Without --resources-db the archive is as
+    before, byte for byte.
 
-        {"format": "skhid-db-grow 1", "path": "game/resources.db",
-         "original_size": <db as shipped>, "new_size": <db grown>,
-         "head": {"name": "file_table", "offset": 0, "size": <n>,
-                  "file": "head.bin", "original_sha256": "...",
-                  "target_sha256": "..."},
-         "tail": {"name": "new_items", "file": "tail.bin",
-                  "sha256": "..."}}
-
-    (files relative to the manifest). Every size and checksum is checked,
-    against the source game's resources.db too. The head starts at 0: the
-    db's header, the new file table and its signature by Skhid's key
-    (sign_resources_026g.py). The default exe (patch revision 12) starts with
-    that resources.db alone and every other exe with the original one alone,
-    so the default exe ships exactly when --resource-grow is given. The plan
-    then has the head
-    as a region and a `tail` line naming it (plan format 2), and is
-    *required*: the updater keeps PLAY off until the db holds the tail, the
-    head and every other region of the plan, and puts the db back as
-    shipped when it cannot finish (client/updater/README.md, "Resources").
-    The head's, its original's and the tail's blobs go into
-    --resources-out=<folder> with the regions' ones.
+    A file made outside resources.db (a menu: exchange_026g.py,
+    fov_slider_026g.py, login_hint_026g.py) goes into a copy of it first, in
+    place: `srp-game-data put --db <copy> --path flash_movies/<menu>.swf
+    --file <it>` (the same size and CRC-32).
 
 THE SERVER'S GAME DATA
 
-    A ZIP (--pack-zip) with resource regions or --resource-grow comes with
-    the server's game data of it: <the ZIP's folder>/server-game-data.db,
-    the files of the players' resources.db the server reads, made by
-    `srp-game-data extract` (../crates/resources-db; build it first with
-    `cargo build --release -p resources-db --bin srp-game-data` in srp-026g,
-    or name it with --game-data-tool=<path>) from the source game's
-    resources.db, the ZIP and the blobs. It names the ZIP's plan, and the
-    server refuses to start with data made for another plan
-    (../docs/DEPLOY.md, "The game's files"): put it on the server with the
-    blobs, before the ZIP.
+    A ZIP (--pack-zip) with --resources-db comes with the server's game data
+    of it: <the ZIP's folder>/server-game-data.db, the files of the players'
+    resources.db the server reads, made by `srp-game-data extract --final`
+    from the final resources.db, checked first to be what the ZIP's plan
+    makes. It names the ZIP's plan, and the server refuses to start with
+    data made for another plan (../docs/DEPLOY.md, "The game's files"): put
+    it on the server with the blobs, before the ZIP.
 
 A player unpacks the overlay into an empty folder, or into the game's folder
 (the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
@@ -169,12 +156,10 @@ updater downloads the original game from its pinned mirror when it is missing.
 """
 
 import hashlib
-import io
 import os
 from pathlib import Path
 import sys
 import zipfile
-import zlib
 
 import patch_026g as P
 import sign_resources_026g as S
@@ -223,16 +208,6 @@ LOCALIZATIONS = ("english", "russian", "ukrainian", "german", "polish")
 # (PLAN_NAME in client/updater/logic/src/resources.rs).
 RESOURCES_PLAN = "game/binaries/x86/updater_skhid.resources"
 RESOURCES_DB = "game/resources.db"
-# Entries of build 2777's resources.db that can be rewritten in place: their
-# offset and size in the file (the file table's pos_in_db and size_in_db) and
-# the sha256 of their original bytes.
-RESOURCE_REGIONS = {
-    # The settings menu, for fov_slider_026g.py's "FOV:" slider (patch 22);
-    # it ends where lobby_menu begins.
-    "main_menu": (17970448, 1194596, "0ff118a85b53f69eb65f36b0f5996bdbdc12ec5068440e4d4d4dd6ece49481a4"),
-    "lobby_menu": (19165044, 38985769, "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"),
-    "login_menu": (58150813, 3508744, "805ea5f872402d0b8c4abceed4f8cabf5ed50b7d62d5c3fc45f58f6d64e982cf"),
-}
 
 
 def sha256(data):
@@ -291,132 +266,35 @@ def read_extractor(path):
     return data
 
 
-def game_crc(data):
-    """The checksum the game compares a file it reads from resources.db with
-    (the signed file table's): CRC-32, reflected polynomial 0x04C11DB7,
-    started at 0 with no final xor, its 32 bits reversed."""
-    crc = ~zlib.crc32(data, 0xFFFFFFFF) & 0xFFFFFFFF
-    return int(f"{crc:032b}"[::-1], 2)
+def release_plan(tool, source, final_db, blobs):
+    """The plan's lines for game/resources.db that make the source game's
+    resources.db `final_db`, from `srp-game-data plan`, which writes the
+    blobs they name into `blobs`."""
+    import subprocess
+    if not os.path.isfile(final_db):
+        sys.exit(f"{final_db}: no such resources.db")
+    result = subprocess.run(
+        [tool, "plan", "--original", os.path.join(source, "resources.db"), "--final", final_db,
+         "--blobs", blobs], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"srp-game-data plan: {result.stderr.strip()}")
+    lines = [line for line in result.stdout.splitlines() if line]
+    if not lines:
+        sys.exit(f"{final_db}: it is the source game's resources.db: nothing to change")
+    return lines
 
 
-def resource_regions(source, chosen):
-    """The plan's region lines and the blobs to upload, for `chosen`
-    ([(name, entry file path)]): every entry file checked against the
-    original entry in the source game's resources.db."""
-    db = os.path.join(source, "resources.db")
-    try:
-        db_size = os.path.getsize(db)
-    except OSError as e:
-        sys.exit(f"{db}: cannot read the game's resources.db ({e})")
-    lines, blobs = [], {}
-    for name, path in sorted(chosen, key=lambda pair: RESOURCE_REGIONS[pair[0]][0]):
-        offset, size, original_sha = RESOURCE_REGIONS[name]
+def head_signer(lines, blobs):
+    """Who signed the file table of the plan's head (`skhid`, `retail` or
+    None), or False when the plan keeps the original table."""
+    head = [line.split(" ") for line in lines if line.startswith("region ") and line.endswith(" resources_head")]
+    if not head:
+        return False
+    with open(os.path.join(blobs, head[0][6]), "rb") as file:
         try:
-            built = Path(path).read_bytes()
-        except OSError as e:
-            sys.exit(f"{path}: cannot read the entry file for {name} ({e})")
-        if len(built) != size:
-            sys.exit(f"{path}: {len(built)} bytes; the entry {name} has {size}: it must be the same size")
-        with open(db, "rb") as file:
-            file.seek(offset)
-            original = file.read(size)
-        if len(original) != size or sha256(original) != original_sha:
-            sys.exit(f"{db}: the entry {name} at {offset} is not the original one (sha256 {original_sha}): "
-                     "not build 2777's resources.db, or already changed")
-        if game_crc(built) != game_crc(original):
-            sys.exit(f"{path}: its game CRC is {game_crc(built):08x}, the original {name}'s {game_crc(original):08x}: "
-                     "the game would refuse it")
-        target_sha = sha256(built)
-        if target_sha == original_sha:
-            sys.exit(f"{path}: it is the original {name}: nothing to change")
-        lines.append(f"region {RESOURCES_DB} {db_size} {offset} {size} {original_sha} {target_sha} {name}")
-        blobs[target_sha] = built
-        blobs[original_sha] = original
-    return lines, blobs
-
-
-GROW_FORMAT = "skhid-db-grow 1"
-
-
-def resource_grow(source, manifest_path, region_lines=()):
-    """The plan's head region and tail lines, and the blobs to upload, for a
-    grow manifest: every size and checksum checked, the head's original
-    against the source game's resources.db."""
-    import json
-    folder = os.path.dirname(os.path.abspath(manifest_path))
-    try:
-        manifest = json.loads(Path(manifest_path).read_text())
-    except (OSError, ValueError) as e:
-        sys.exit(f"{manifest_path}: cannot read the grow manifest ({e})")
-    if not isinstance(manifest, dict) or manifest.get("format") != GROW_FORMAT:
-        sys.exit(f"{manifest_path}: not a {GROW_FORMAT!r} manifest")
-    if manifest.get("path") != RESOURCES_DB:
-        sys.exit(f"{manifest_path}: grows {manifest.get('path')!r}; only {RESOURCES_DB} can be grown")
-    try:
-        head, tail = manifest["head"], manifest["tail"]
-        original_size, new_size = int(manifest["original_size"]), int(manifest["new_size"])
-        offset, size = int(head["offset"]), int(head["size"])
-        names = (str(head["name"]), str(tail["name"]))
-        head_file, tail_file = head["file"], tail["file"]
-        expected = (head["original_sha256"], head["target_sha256"], tail["sha256"])
-    except (KeyError, TypeError, ValueError) as e:
-        sys.exit(f"{manifest_path}: incomplete grow manifest ({e!r})")
-    for name in names:
-        if not name or len(name) > 64 or not all(c.isascii() and (c.isalnum() or c in "._-") for c in name):
-            sys.exit(f"{manifest_path}: {name!r} is not a plan name (letters, digits, . _ -)")
-    if names[0].lower() == names[1].lower() or any(
-            line.split(" ")[-1].lower() in (names[0].lower(), names[1].lower()) for line in region_lines):
-        sys.exit(f"{manifest_path}: the names {names} are taken")
-    db = os.path.join(source, "resources.db")
-    try:
-        db_size = os.path.getsize(db)
-    except OSError as e:
-        sys.exit(f"{db}: cannot read the game's resources.db ({e})")
-    if db_size != original_size:
-        sys.exit(f"{db}: {db_size} bytes; the manifest grows a db of {original_size}")
-    if not (0 <= offset and 0 < size and offset + size <= original_size < new_size):
-        sys.exit(f"{manifest_path}: the head [{offset}, {offset + size}) or the sizes do not fit")
-    if offset != 0:
-        sys.exit(f"{manifest_path}: the head starts at {offset}; it must start at 0, where the db's "
-                 "header, file table and the table's signature are")
-    for line in region_lines:
-        _, _, _, other_offset, other_size, *_ = line.split(" ")
-        if offset < int(other_offset) + int(other_size) and int(other_offset) < offset + size:
-            sys.exit(f"{manifest_path}: the head overlaps the region {line.split(' ')[-1]}")
-    try:
-        built_head = Path(folder, head_file).read_bytes()
-        built_tail = Path(folder, tail_file).read_bytes()
-    except OSError as e:
-        sys.exit(f"{manifest_path}: cannot read a file it names ({e})")
-    with open(db, "rb") as file:
-        file.seek(offset)
-        original = file.read(size)
-    checks = [
-        (len(built_head) == size, f"{head_file}: {len(built_head)} bytes, the head has {size}"),
-        (sha256(original) == expected[0],
-         f"{db}: the head at {offset} is not the manifest's original: not the build it was made for"),
-        (sha256(built_head) == expected[1], f"{head_file}: not the manifest's head (sha256)"),
-        (expected[0] != expected[1], f"{head_file}: the head is the original: nothing to change"),
-        (len(built_tail) == new_size - original_size,
-         f"{tail_file}: {len(built_tail)} bytes; the db grows by {new_size - original_size}"),
-        (sha256(built_tail) == expected[2], f"{tail_file}: not the manifest's tail (sha256)"),
-    ]
-    for ok, message in checks:
-        if not ok:
-            sys.exit(message)
-    try:
-        signer = S.which_key(*S.read_table(io.BytesIO(built_head))[1:])
-    except ValueError as e:
-        sys.exit(f"{head_file}: not the head of a resources.db ({e})")
-    if signer != "skhid":
-        sys.exit(f"{head_file}: its file table is signed by {signer or 'neither key'}, not Skhid's; "
-                 f"the exe of patch revision {P.REVISION} would not start (sign_resources_026g.py sign)")
-    lines = [
-        f"region {RESOURCES_DB} {original_size} {offset} {size} {expected[0]} {expected[1]} {names[0]}",
-        f"tail {RESOURCES_DB} {original_size} {new_size} {expected[2]} {names[1]} {names[0]}",
-    ]
-    blobs = {expected[1]: built_head, expected[0]: original, expected[2]: built_tail}
-    return lines, blobs
+            return S.which_key(*S.read_table(file)[1:])
+        except ValueError as e:
+            sys.exit(f"resources_head: not the head of a resources.db ({e})")
 
 
 def resources_plan(lines):
@@ -442,34 +320,17 @@ def check_game_data_tool(tool):
     return tool
 
 
-def server_game_data(tool, source, zip_path, blobs, out):
+def server_game_data(tool, final_db, zip_path, out):
     """The server's game data of the players' ZIP `zip_path`, made by
-    `srp-game-data extract` from the source game's resources.db and the
-    blobs: it prints what it wrote."""
+    `srp-game-data extract --final` from the release's final resources.db:
+    it prints what it wrote."""
     import subprocess
     result = subprocess.run(
-        [tool, "extract", "--db", os.path.join(source, "resources.db"),
-         "--zip", zip_path, "--blobs", blobs, "--out", out],
+        [tool, "extract", "--final", final_db, "--zip", zip_path, "--out", out],
         capture_output=True, text=True)
     if result.returncode != 0:
         sys.exit(f"srp-game-data failed: {result.stderr.strip()}")
     print(result.stdout.strip())
-
-
-def write_blobs(folder, blobs, check):
-    """Each blob as <folder>/<sha256>; one that is there must be the same."""
-    for name, data in sorted(blobs.items()):
-        target = os.path.join(folder, name)
-        if os.path.exists(target):
-            if sha256(Path(target).read_bytes()) != name:
-                sys.exit(f"{target}: already there with other bytes")
-            print(f"kept {target} ({len(data)} bytes)")
-            continue
-        if not check:
-            os.makedirs(folder, exist_ok=True)
-            with open(target, "xb") as out:
-                out.write(data)
-        print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {name})")
 
 
 def game_root(folder):
@@ -703,7 +564,7 @@ def main():
     launcher, updater_path, site = True, UPDATER_EXE, None
     extractor_path = EXTRACTOR_EXE
     late_join = True
-    regions, resources_out, grow = [], None, None
+    resources_db, resources_out = None, None
     game_data_tool = GAME_DATA_TOOL
     for option in options:
         if option == "--check":
@@ -730,19 +591,10 @@ def main():
             site = L.parse_site(option[len("--site="):])
         elif option == "--no-launcher":
             launcher = False
-        elif option.startswith("--resource-region="):
-            name, _, path = option[len("--resource-region="):].partition("=")
-            if name not in RESOURCE_REGIONS or not path:
-                sys.exit(f"{option}: <name>=<entry file>, with a name of {', '.join(RESOURCE_REGIONS)}")
-            if any(name == other for other, _ in regions):
-                sys.exit(f"{option}: {name} is given twice")
-            regions.append((name, path))
-        elif option.startswith("--resource-grow="):
-            if grow is not None:
-                sys.exit(f"{option}: --resource-grow is given twice")
-            grow = option[len("--resource-grow="):]
-            if not grow:
-                sys.exit(f"{option}: --resource-grow=<manifest.json>")
+        elif option.startswith("--resources-db="):
+            if resources_db is not None:
+                sys.exit(f"{option}: --resources-db is given twice")
+            resources_db = os.path.abspath(option[len("--resources-db="):])
         elif option.startswith("--resources-out="):
             resources_out = os.path.abspath(option[len("--resources-out="):])
         elif option.startswith("--game-data-tool="):
@@ -758,36 +610,44 @@ def main():
     if not check and os.path.lexists(output):
         if archive or not os.path.isdir(output) or os.listdir(output):
             sys.exit(f"{output}: output already exists; use a new ZIP or an empty folder")
-    if (regions or grow) and not launcher:
-        sys.exit(f"{'--resource-grow' if grow else '--resource-region'} needs the updater: "
-                 "leave out --no-launcher")
-    if (regions or grow) and not resources_out:
-        sys.exit(f"{'--resource-grow' if grow else '--resource-region'} needs --resources-out=<folder> "
-                 "for the blobs the server is to offer")
-    if resources_out and not (regions or grow):
-        sys.exit("--resources-out is for --resource-region or --resource-grow")
+    if resources_db and not launcher:
+        sys.exit("--resources-db needs the updater: leave out --no-launcher")
+    if resources_db and not resources_out:
+        sys.exit("--resources-db needs --resources-out=<folder> for the blobs the server is to offer")
+    if resources_out and not resources_db:
+        sys.exit("--resources-out is for --resources-db")
     if resources_out and (inside(resources_out, source) or inside(resources_out, os.path.dirname(source))):
         sys.exit(f"{resources_out}: the blobs' folder must be outside the game folder {os.path.dirname(source)}")
     # A download that changes resources.db comes with the server's data of it.
     game_data = None
-    if (regions or grow) and archive:
-        game_data = os.path.join(os.path.dirname(output), SERVER_GAME_DATA)
-        if not check and os.path.lexists(game_data):
-            sys.exit(f"{game_data}: already there; the server's data of this ZIP goes to a new folder")
+    region_lines = []
+    if resources_db:
         game_data_tool = check_game_data_tool(game_data_tool)
-    # Checked before anything is written.
-    region_lines, blobs = resource_regions(source, regions) if regions else ([], {})
-    if grow:
-        grow_lines, grow_blobs = resource_grow(source, grow, region_lines)
-        region_lines = region_lines + grow_lines
-        blobs.update(grow_blobs)
-    # The default exe starts only with the Skhid-signed resources.db that
-    # --resource-grow ships, every other exe only with the original one.
-    if (mode == "section" and late_join) != bool(grow):
-        sys.exit(f"the default exe (patch revision {P.REVISION}) starts only with the resources.db "
-                 "--resource-grow ships, and every other exe (--no-late-join, --cert-only, --cave=) only "
-                 "with the original one: give the default exe --resource-grow (which needs the launcher), "
-                 "or build another exe")
+        if archive:
+            game_data = os.path.join(os.path.dirname(output), SERVER_GAME_DATA)
+            if not check and os.path.lexists(game_data):
+                sys.exit(f"{game_data}: already there; the server's data of this ZIP goes to a new folder")
+        # Checked before anything else is written; --check writes the blobs
+        # into a folder of its own, which it removes.
+        import tempfile
+        blobs_folder = tempfile.mkdtemp(prefix="skhid-blobs-") if check else resources_out
+        try:
+            region_lines = release_plan(game_data_tool, source, resources_db, blobs_folder)
+            signer = head_signer(region_lines, blobs_folder)
+        finally:
+            if check:
+                import shutil
+                shutil.rmtree(blobs_folder, ignore_errors=True)
+        if signer not in (False, "skhid"):
+            sys.exit(f"{resources_db}: its file table is signed by {signer or 'neither key'}, not Skhid's; "
+                     f"the exe of patch revision {P.REVISION} would not start (sign_resources_026g.py sign)")
+    # The default exe starts only with a resources.db whose table Skhid
+    # signed, every other exe only with the original table.
+    new_table = any(line.endswith(" resources_head") for line in region_lines)
+    if (mode == "section" and late_join) != new_table:
+        sys.exit(f"the default exe (patch revision {P.REVISION}) starts only with a resources.db whose "
+                 "file table Skhid signed, given with --resources-db (which needs the launcher), and "
+                 "every other exe (--no-late-join, --cert-only, --cave=) only with the original table")
 
     bugtrap = read_bugtrap(bugtrap_path)
 
@@ -864,15 +724,15 @@ def main():
             if name in SCRIPTS:
                 os.chmod(target, 0o755)
         print(f"{'would write' if check else 'wrote'} {target} ({len(data)} bytes, sha256 {sha256(data)})")
-    if blobs:
-        write_blobs(resources_out, blobs, check)
-        for line in region_lines:
-            print(f"resource {line}")
+    for line in region_lines:
+        print(f"resource {line}")
+    if region_lines:
+        print(f"{'checked' if check else 'wrote'} the blobs {'' if check else 'into ' + resources_out}")
     if game_data:
         if check:
             print(f"would write {game_data} (the server's game data of this ZIP)")
         else:
-            server_game_data(game_data_tool, source, output, resources_out, game_data)
+            server_game_data(game_data_tool, resources_db, output, game_data)
     print(f"exe: {description}")
     if launcher_description:
         print(f"launcher: {launcher_description}")

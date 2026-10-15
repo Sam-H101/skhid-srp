@@ -26,7 +26,7 @@ use std::path::Path;
 use updater_logic::resources::PLAN_NAME;
 use updater_logic::sha256::{Sha256, to_hex};
 
-use crate::plan::{RESOURCES_DB, open_installed, plan_text_of_zip};
+use crate::plan::{RESOURCES_DB, digest_of, open_installed, plan_of_zip, plan_text_of_zip};
 use crate::{Archive, Error, crc32};
 
 /// The files of `gameplay/` are read whole.
@@ -123,7 +123,7 @@ pub fn extract(
     zip: Option<&Path>,
     blobs: &Path,
 ) -> Result<(Vec<u8>, Extracted), Error> {
-    let (mut files, zip_bytes) = match zip {
+    let (files, zip_bytes) = match zip {
         Some(zip) => {
             let bytes = std::fs::read(zip)?;
             let (mut archive, _) = open_installed(installed, zip, blobs)?;
@@ -134,7 +134,64 @@ pub fn extract(
             None,
         ),
     };
-    let provenance = provenance(zip_bytes.as_deref())?;
+    finish(files, zip_bytes.as_deref(), installed)
+}
+
+/// The server's game data of the players' ZIP `zip`, read off the release's
+/// final `resources.db` (the file the players' updater makes): checked first
+/// to be what the ZIP's plan makes, each region's and the tail's bytes by
+/// their sha256, and its size.
+pub fn extract_final(final_db: &Path, zip: &Path) -> Result<(Vec<u8>, Extracted), Error> {
+    let zip_bytes = std::fs::read(zip)?;
+    let plan = plan_of_zip(&zip_bytes)?;
+    let mut file = File::open(final_db)?;
+    let len = file.metadata()?.len();
+    let wrong = |what: String| {
+        crate::format(format!(
+            "{} is not the resources.db the plan of {} makes: {what}",
+            final_db.display(),
+            zip.display()
+        ))
+    };
+    for region in plan
+        .regions
+        .iter()
+        .filter(|region| region.path == RESOURCES_DB)
+    {
+        if region.offset + region.size > len
+            || digest_of(&mut file, region.offset, region.size)? != region.target
+        {
+            return Err(wrong(format!("its region {} has other bytes", region.name)));
+        }
+    }
+    let tail = plan.tails.iter().find(|tail| tail.path == RESOURCES_DB);
+    let size = tail.map(|tail| tail.new_size).or_else(|| {
+        plan.regions
+            .iter()
+            .find(|region| region.path == RESOURCES_DB)
+            .map(|region| region.file_size)
+    });
+    if let Some(size) = size {
+        if len != size {
+            return Err(wrong(format!("it is {len} bytes, the plan makes {size}")));
+        }
+    }
+    if let Some(tail) = tail {
+        if digest_of(&mut file, tail.file_size, tail.new_size - tail.file_size)? != tail.sha256 {
+            return Err(wrong(format!("its tail {} has other bytes", tail.name)));
+        }
+    }
+    let files = server_files(&mut Archive::new(File::open(final_db)?)?)?;
+    finish(files, Some(&zip_bytes), final_db)
+}
+
+/// The server's game data of `files`, naming the plan of `zip`.
+fn finish(
+    mut files: BTreeMap<String, Vec<u8>>,
+    zip: Option<&[u8]>,
+    source: &Path,
+) -> Result<(Vec<u8>, Extracted), Error> {
+    let provenance = provenance(zip)?;
     let extracted = Extracted {
         gameplay: files
             .keys()
@@ -149,7 +206,7 @@ pub fn extract(
     if extracted.gameplay == 0 {
         return Err(crate::format(format!(
             "{} has no {GAMEPLAY}",
-            installed.display()
+            source.display()
         )));
     }
     files.insert(PROVENANCE.to_owned(), provenance.into_bytes());

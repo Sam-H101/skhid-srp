@@ -1,21 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `srp-game-data extract`: the server's game data of a release
-//! ([`resources_db::server`]), from 0.26g's `resources.db` and the players'
-//! ZIP with its blobs. `make_client_026g.py` runs it when it makes a release
-//! that changes `resources.db`.
+//! `srp-game-data`: the players' update plan of a release's final
+//! `resources.db` ([`resources_db::release`]), and the server's game data of
+//! a release ([`resources_db::server`]). `make_client_026g.py` runs `plan`
+//! and then `extract --final` when it makes a release that changes
+//! `resources.db`.
 //!
 //! ```text
+//! srp-game-data plan --original <0.26g resources.db> --final <the release's resources.db> --blobs <folder>
+//! srp-game-data put --db <a release's resources.db> --path <file of the archive> --file <its new bytes>
+//! srp-game-data extract --final <the release's resources.db> --zip <players' ZIP> --out <file>
 //! srp-game-data extract --db <0.26g resources.db> [--zip <players' ZIP> --blobs <folder>] --out <file>
 //! srp-game-data check --data <file> [--zip <players' ZIP>]
 //! ```
+//!
+//! `plan` prints the plan's lines for `game/resources.db`, one a line, and
+//! writes the blobs they name into the folder. `put` writes a file made
+//! outside the archive (a menu) over its file, in place, the same size and
+//! CRC-32.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use resources_db::Archive;
-use resources_db::server::{check, extract, plan_line};
+use resources_db::release::{put, release, write_blobs};
+use resources_db::server::{check, extract, extract_final, plan_line};
 
 const USAGE: &str = "usage:
+  srp-game-data plan --original <0.26g resources.db> --final <the release's resources.db> --blobs <folder>
+  srp-game-data put --db <a release's resources.db> --path <file of the archive> --file <its new bytes>
+  srp-game-data extract --final <the release's resources.db> --zip <players' ZIP> --out <file>
   srp-game-data extract --db <0.26g resources.db> [--zip <players' ZIP> --blobs <folder>] --out <file>
   srp-game-data check --data <file> [--zip <players' ZIP>]";
 
@@ -39,20 +52,60 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut take = |key: &str| named.remove(key);
     match command.as_str() {
-        "extract" => {
-            let db = take("--db").ok_or(USAGE)?;
-            let out = take("--out").ok_or(USAGE)?;
-            let zip = take("--zip");
-            let blobs = take("--blobs");
-            if zip.is_some() != blobs.is_some() {
-                return Err(format!("--zip and --blobs go together\n{USAGE}"));
-            }
+        "plan" => {
+            let original = take("--original").ok_or(USAGE)?;
+            let final_db = take("--final").ok_or(USAGE)?;
+            let blobs = take("--blobs").ok_or(USAGE)?;
             if let Some(key) = named.keys().next() {
                 return Err(format!("unknown option {key}\n{USAGE}"));
             }
-            let blobs = blobs.unwrap_or_default();
-            let (bytes, extracted) =
-                extract(&db, zip.as_deref(), &blobs).map_err(|e| e.to_string())?;
+            let plan = release(&original, &final_db).map_err(|e| e.to_string())?;
+            write_blobs(&plan, &original, &final_db, &blobs).map_err(|e| e.to_string())?;
+            for line in &plan.lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        "put" => {
+            let db = take("--db").ok_or(USAGE)?;
+            let path = take("--path").ok_or(USAGE)?;
+            let file = take("--file").ok_or(USAGE)?;
+            if let Some(key) = named.keys().next() {
+                return Err(format!("unknown option {key}\n{USAGE}"));
+            }
+            let bytes =
+                std::fs::read(&file).map_err(|cause| format!("{}: {cause}", file.display()))?;
+            let path = path.to_string_lossy().into_owned();
+            put(&db, &path, &bytes).map_err(|e| e.to_string())?;
+            println!(
+                "{}: {path} written ({} bytes, sha256 {})",
+                db.display(),
+                bytes.len(),
+                sha256_hex(&bytes)
+            );
+            Ok(())
+        }
+        "extract" => {
+            let out = take("--out").ok_or(USAGE)?;
+            let zip = take("--zip");
+            let (bytes, extracted) = if let Some(final_db) = take("--final") {
+                let zip = zip.ok_or_else(|| format!("--final needs --zip\n{USAGE}"))?;
+                if let Some(key) = named.keys().next() {
+                    return Err(format!("unknown option {key}\n{USAGE}"));
+                }
+                extract_final(&final_db, &zip).map_err(|e| e.to_string())?
+            } else {
+                let db = take("--db").ok_or(USAGE)?;
+                let blobs = take("--blobs");
+                if zip.is_some() != blobs.is_some() {
+                    return Err(format!("--zip and --blobs go together\n{USAGE}"));
+                }
+                if let Some(key) = named.keys().next() {
+                    return Err(format!("unknown option {key}\n{USAGE}"));
+                }
+                let blobs = blobs.unwrap_or_default();
+                extract(&db, zip.as_deref(), &blobs).map_err(|e| e.to_string())?
+            };
             let temporary = out.with_extension("db.part");
             std::fs::write(&temporary, &bytes)
                 .and_then(|()| std::fs::rename(&temporary, &out))

@@ -30,13 +30,53 @@ import time
 import unittest
 from unittest import mock
 import zipfile
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The release builder makes the resource plans here, as for the players'
 # archive, so its plan is read by the real updater.
 sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "srp-026g", "client-patches"))
 import make_client_026g as builder  # noqa: E402
-from test_release_overlay import forged  # noqa: E402
+
+
+def forged(original, text):
+    """Bytes of the original's length that start with `text` and end in four
+    bytes chosen so that the game CRC is the original's (a CRC from 0 with
+    no final xor is linear in the bits of a message of one length)."""
+    def crc0(data):
+        return ~zlib.crc32(data, 0xFFFFFFFF) & 0xFFFFFFFF
+    body = text + original[len(text):-4]
+    need = crc0(body + b'\0' * 4) ^ crc0(original)
+    effects = []
+    for bit in range(32):
+        tail = (1 << bit).to_bytes(4, 'little')
+        effects.append(crc0(bytes(len(body)) + tail))
+    # Gaussian elimination over GF(2): which tail bits give `need`.
+    basis = {}
+    for bit, effect in enumerate(effects):
+        chosen = 1 << bit
+        while effect:
+            top = effect.bit_length() - 1
+            if top not in basis:
+                basis[top] = (effect, chosen)
+                break
+            effect ^= basis[top][0]
+            chosen ^= basis[top][1]
+    tail = 0
+    while need:
+        top = need.bit_length() - 1
+        need ^= basis[top][0]
+        tail ^= basis[top][1]
+    return body + tail.to_bytes(4, 'little')
+
+
+def region_line(db, offset, target, name):
+    """A plan's region line, as `srp-game-data plan` writes it, for `target`
+    in place of `db`'s bytes at `offset`; and its blobs."""
+    original = db[offset:offset + len(target)]
+    line = (f"region game/resources.db {len(db)} {offset} {len(target)} "
+            f"{hashlib.sha256(original).hexdigest()} {hashlib.sha256(target).hexdigest()} {name}")
+    return line, {hashlib.sha256(original).hexdigest(): original, hashlib.sha256(target).hexdigest(): target}
 
 RELEASE = os.path.join("target", "i686-pc-windows-msvc", "release")
 UPDATER = os.path.join(HERE, "..", "exe", RELEASE, "updater_skhid.exe")
@@ -640,16 +680,11 @@ class UpdaterTest(unittest.TestCase):
     def plan(self, version=1, names=None):
         """The plan as make_client_026g.py writes it for these regions; their
         blobs (targets and originals) are put on the site."""
-        table = {name: (offset, size, sha256(self.db[offset:offset + size]))
-                 for name, (offset, size) in self.regions.items()}
-        chosen = []
+        lines, blobs = [], {}
         for name in names or self.regions:
-            path = os.path.join(self.root, f"{name}-{version}.bin")
-            with open(path, "wb") as file:
-                file.write(self.target(name, version))
-            chosen.append((name, path))
-        with mock.patch.dict(builder.RESOURCE_REGIONS, table, clear=True):
-            lines, blobs = builder.resource_regions(self.source, chosen)
+            line, region_blobs = region_line(self.db, self.regions[name][0], self.target(name, version), name)
+            lines.append(line)
+            blobs.update(region_blobs)
         self.site.blobs.update(blobs)
         return builder.resources_plan(lines)
 

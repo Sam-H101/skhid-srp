@@ -97,7 +97,7 @@ pub struct Applied {
 }
 
 /// The sha256 of `len` bytes of `file` from `at`.
-fn digest_of(file: &mut File, at: u64, len: u64) -> io::Result<[u8; 32]> {
+pub(crate) fn digest_of(file: &mut File, at: u64, len: u64) -> io::Result<[u8; 32]> {
     file.seek(SeekFrom::Start(at))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 20];

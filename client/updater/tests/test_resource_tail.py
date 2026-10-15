@@ -15,7 +15,7 @@ touched; no game file is needed. What needs another program to hold the db
 """
 
 import hashlib
-import json
+import io
 import os
 import random
 import shutil
@@ -149,8 +149,9 @@ class TailTest(unittest.TestCase):
             file.write(self.db)
 
     def release(self, version=1, lobby=True, tail_size=None):
-        """The plan make_client_026g.py writes for a grow manifest (and the
-        lobby's region), its blobs on the site, and the db it makes."""
+        """The plan make_client_026g.py writes for a release's final db (a
+        signed head, the lobby's region, a tail), its blobs on the site, and
+        that db."""
         offset, size = self.HEAD
         # The db's header, a new file table and its signature by "Skhid's" key.
         table = (f"table {version} ".encode() + self.db)[:size // 2]
@@ -167,28 +168,22 @@ class TailTest(unittest.TestCase):
             head = file.read()
         with open(os.path.join(folder, "tail.bin"), "wb") as file:
             file.write(tail)
-        manifest = os.path.join(folder, "grow.json")
-        with open(manifest, "w") as file:
-            json.dump({"format": "skhid-db-grow 1", "path": "game/resources.db",
-                       "original_size": len(self.db), "new_size": len(self.db) + len(tail),
-                       "head": {"name": "file_table", "offset": offset, "size": size, "file": "head.bin",
-                                "original_sha256": sha256(self.db[offset:offset + size]),
-                                "target_sha256": sha256(head)},
-                       "tail": {"name": "new_items", "file": "tail.bin", "sha256": sha256(tail)}}, file)
-        lines, blobs = [], {}
+        # The plan `srp-game-data plan` gives for the final db: the head, the
+        # lobby's region, the tail.
+        with mock.patch.object(builder.S, "OWN_KEY", PUBLIC):
+            self.assertEqual(builder.S.which_key(*builder.S.read_table(io.BytesIO(head))[1:]), "skhid")
+        line, blobs = harness.region_line(self.db, offset, head, "resources_head")
+        lines = [line]
         lobby_target = None
         if lobby:
             at, length = self.LOBBY
             lobby_target = harness.forged(self.db[at:at + length], f"lobby {version} ".encode())
-            path = os.path.join(folder, "lobby.bin")
-            with open(path, "wb") as file:
-                file.write(lobby_target)
-            table = {"lobby_menu": (at, length, sha256(self.db[at:at + length]))}
-            with mock.patch.dict(builder.RESOURCE_REGIONS, table, clear=True):
-                lines, blobs = builder.resource_regions(self.source, [("lobby_menu", path)])
-        with mock.patch.object(builder.S, "OWN_KEY", PUBLIC):
-            grow_lines, grow_blobs = builder.resource_grow(self.source, manifest, lines)
-        blobs.update(grow_blobs)
+            line, lobby_blobs = harness.region_line(self.db, at, lobby_target, "lobby_menu")
+            lines.append(line)
+            blobs.update(lobby_blobs)
+        lines.append(f"tail game/resources.db {len(self.db)} {len(self.db) + len(tail)} {sha256(tail)} "
+                     "resources_tail resources_head")
+        blobs[sha256(tail)] = tail
         self.site.blobs.update(blobs)
         expected = bytearray(self.db)
         expected[offset:offset + size] = head
@@ -196,7 +191,7 @@ class TailTest(unittest.TestCase):
             at, length = self.LOBBY
             expected[at:at + length] = lobby_target
         self.parts = {"head": head, "tail": tail, "lobby": lobby_target}
-        plan = builder.resources_plan(lines + grow_lines)
+        plan = builder.resources_plan(lines)
         return plan, bytes(expected) + tail
 
     def with_plan(self, plan, **changes):
@@ -233,7 +228,7 @@ class TailTest(unittest.TestCase):
         self.assertEqual(self.status(), "ready\r\n")
         record = self.read(f"{X86}/updater_skhid.resources.state").decode()
         self.assertTrue(record.startswith("skhid-resources-state 2\r\n"), record)
-        self.assertIn(" new_items file_table\r\n", record)
+        self.assertIn(" resources_tail resources_head\r\n", record)
         # The table's original is kept; the cache is emptied.
         offset, size = self.HEAD
         original = self.db[offset:offset + size]
@@ -241,10 +236,10 @@ class TailTest(unittest.TestCase):
         self.assertFalse(self.exists(f"{X86}/updater_skhid.cache"))
         self.assertFalse(self.exists(f"{X86}/updater_skhid.resources.journal"))
         log = self.log()
-        self.assertIn("new_items: appended and checked", log)
+        self.assertIn("resources_tail: appended and checked", log)
         self.assertIn("the required plan is in place, checked as a whole", log)
         # The tail before the table that points into it.
-        self.assertLess(log.index("new_items: appended"), log.index("file_table: written and checked"))
+        self.assertLess(log.index("resources_tail: appended"), log.index("resources_head: written and checked"))
         # The next start: hashed, nothing fetched or written.
         self.site.requests.clear()
         self.assertEqual(self.run_updater(), 0, self.log())
@@ -260,7 +255,7 @@ class TailTest(unittest.TestCase):
         self.assertEqual(self.run_updater(self.with_plan(plan)), 0, self.log())
         self.assertEqual(self.blob_requests(), [])
         self.assert_grown(expected)
-        self.assertIn("new_items is in place", self.log())
+        self.assertIn("resources_tail is in place", self.log())
         self.assertEqual(self.status(), "ready\r\n")
 
     def test_a_plan_the_next_archive_drops_cuts_the_db_back(self):
@@ -276,9 +271,9 @@ class TailTest(unittest.TestCase):
         self.assertFalse(self.exists(f"{X86}/updater_skhid.backup"))
         self.assertIsNone(self.status())
         log = self.log()
-        self.assertIn("new_items is no longer planned: it is cut off", log)
+        self.assertIn("resources_tail is no longer planned: it is cut off", log)
         # The table goes back before the tail is cut.
-        self.assertLess(log.index("file_table: its original is back"), log.index("new_items: cut off"))
+        self.assertLess(log.index("resources_head: its original is back"), log.index("resources_tail: cut off"))
 
     def test_a_new_release_replaces_the_tail_and_the_table(self):
         self.make_db()
@@ -287,7 +282,7 @@ class TailTest(unittest.TestCase):
         plan, expected = self.release(2, tail_size=self.TAIL_SIZE + 12_345)
         self.assertEqual(self.run_updater(self.with_plan(plan)), 0, self.log())
         self.assert_grown(expected)
-        self.assertIn("file_table: the plan has a new target for it", self.log())
+        self.assertIn("resources_head: the plan has a new target for it", self.log())
         self.assertEqual(self.run_updater(self.bundle(README__txt=b"no plan")), 0, self.log())
         self.assert_shipped()
 
@@ -304,7 +299,7 @@ class TailTest(unittest.TestCase):
         log = self.log()
         self.assertIn("resources: BLOCKED:", log)
         self.assertIn("PLAY stays off until this is done", log)
-        self.assertIn("file_table waits: its tail new_items is not in place", log)
+        self.assertIn("resources_head waits: its tail resources_tail is not in place", log)
         # The site has it now: the next start does it all.
         self.site.blob_statuses.clear()
         self.assertEqual(self.run_updater(files), 0, self.log())
@@ -335,7 +330,7 @@ class TailTest(unittest.TestCase):
         self.assert_shipped()
         log = self.log()
         self.assertIn("lobby_menu does not hold its target", log)
-        self.assertIn("file_table: its original is back", log)
+        self.assertIn("resources_head: its original is back", log)
         self.site.blob_bodies.clear()
         self.assertEqual(self.run_updater(files), 0, self.log())
         self.assert_grown(expected)
@@ -366,7 +361,7 @@ class TailTest(unittest.TestCase):
         self.assertEqual(self.run_updater(self.with_plan(plan)), 0, self.log())
         self.assert_grown(expected)
         log = self.log()
-        self.assertIn("an append of new_items was cut short", log)
+        self.assertIn("an append of resources_tail was cut short", log)
         self.assertFalse(self.exists(f"{X86}/updater_skhid.resources.journal"))
 
     def test_a_table_without_its_tail_is_repaired(self):
@@ -388,7 +383,7 @@ class TailTest(unittest.TestCase):
         plan, _ = self.release()
         for spoilt, code in [(plan.replace(b"skhid-resources 2", b"skhid-resources 3"), 1),
                              (plan[:-5], 1),
-                             (plan.replace(b" new_items file_table", b" new_items nothing"), 1)]:
+                             (plan.replace(b" resources_tail resources_head", b" resources_tail nothing"), 1)]:
             with self.subTest(plan=spoilt[:40]):
                 self.assertEqual(self.run_updater(self.with_plan(spoilt)), code)
                 self.assert_shipped()
@@ -399,13 +394,8 @@ class TailTest(unittest.TestCase):
         self.make_db()
         at, length = self.LOBBY
         target = harness.forged(self.db[at:at + length], b"lobby ")
-        path = os.path.join(self.root, "lobby.bin")
-        with open(path, "wb") as file:
-            file.write(target)
-        table = {"lobby_menu": (at, length, sha256(self.db[at:at + length]))}
-        with mock.patch.dict(builder.RESOURCE_REGIONS, table, clear=True):
-            lines, blobs = builder.resource_regions(self.source, [("lobby_menu", path)])
-        plan = builder.resources_plan(lines)
+        line, blobs = harness.region_line(self.db, at, target, "lobby_menu")
+        plan = builder.resources_plan([line])
         self.assertTrue(plan.startswith(b"skhid-resources 1\r\n"))
         self.site.blobs.update(blobs)
         self.site.blob_statuses[sha256(target)] = 404

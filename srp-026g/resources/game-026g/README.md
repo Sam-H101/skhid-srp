@@ -17,13 +17,15 @@ sha256 `059e4420ed7bd2d77ae3b08a10b82469565ef8ca2551431923bb755b3c831fac`.
 
 Made again for each release that changes `gameplay/`: it is the
 `server-game-data.db` that `make_client_026g.py` writes beside the release's
-ZIP, or by hand:
+ZIP, or by hand, from the release's final `resources.db`:
 
 ```sh
-srp-game-data extract --db <0.26g>/game/resources.db \
-  --zip <Survarium-0.26g-srp-files.zip> --blobs <its resources/ blobs> \
-  --out resources/game-026g/players.db
+srp-game-data extract --final <the release's resources.db> \
+  --zip <Survarium-0.26g-srp-files.zip> --out resources/game-026g/players.db
 ```
+
+(or from 0.26g's and the ZIP's plan: `extract --db <0.26g>/game/resources.db
+--zip <ZIP> --blobs <its blobs> --out ...`).
 
 Two ignored tests check it against the real archive (`game_data::tests`):
 `the_server_data_of_the_release_is_the_test_data` (`SRP_TEST_RESOURCES_DB`,

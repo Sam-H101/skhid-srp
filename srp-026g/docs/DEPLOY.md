@@ -115,8 +115,8 @@ srp takes every table of game data from the server's game data of the
 release the players run (`SRP-026G.md`, "Game data"): a file of a few MB
 (`server-game-data.db`), the files of the players' `resources.db` it reads,
 which `make_client_026g.py` writes beside the ZIP it makes (with
-`srp-game-data extract`, where 0.26g's `resources.db` is: the release
-machine). The host keeps it in the download folder, beside the ZIP:
+`srp-game-data extract --final`, from the release's final `resources.db`, on
+the release machine). The host keeps it in the download folder, beside the ZIP:
 
     /opt/srp-026g/download/server-game-data.db    (SRP_GAME_DATA=/srv/srp/download/server-game-data.db)
 
