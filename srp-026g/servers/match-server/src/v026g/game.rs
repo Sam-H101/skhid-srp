@@ -102,6 +102,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::mode;
+use survarium::v026g::match_msgs::client_model::EVENT_HORIZON_MS;
 use survarium::v026g::match_msgs::players::{self, Supplies};
 use survarium::v026g::match_msgs::rules::{self, TimelimitParams, TimelimitRule, Transition};
 use survarium::v026g::match_msgs::snapshot::{self, Rules, Sections, Standing, Statistics, event};
@@ -187,6 +188,10 @@ const REPLAY_REDONE: u32 = 3;
 const RESYNC_LOAD_BY_MS: u32 = 1_200;
 /// ... this many times a resync at most: then a slower load is taken.
 const SLOW_LOADS_REDONE: u32 = 3;
+/// A game that enters and would get a roster change past its horizon
+/// (`finish_sync`) is started again from a fresh world this many times at
+/// most: then the change goes all the same.
+const LATE_ROSTER_REDOS: u32 = 2;
 /// The entries a game keeps of each player's inputs (its rings, match.md
 /// section 30): a world loaded when some player has more inputs than this
 /// after the snapshot is played wrong from its first tick, whatever the
@@ -592,6 +597,18 @@ struct Peer {
     /// one: its clock is then set, and the snapshot may follow.
     set_times: VecDeque<SetTimeSent>,
     time_confirmed: bool,
+    /// It answered a 0xE5 of this generation (`time_confirmed` is also set
+    /// when one goes unanswered): a 0xE9 it gets now is read on that clock.
+    time_answered: bool,
+    /// The entries of the others sent to a game that enters before its
+    /// world is loaded: their time, the player, the serial, and whether it
+    /// went after the world (an entry ahead of it in the same burst is
+    /// there before it, and its ack may never be named: a game names only
+    /// its newest few seqs).
+    early_entries: Vec<(u32, usize, u64, bool)>,
+    /// Its starts done again for roster changes that would have come past
+    /// its horizon ([`LATE_ROSTER_REDOS`] at most).
+    late_roster_redos: u32,
     /// It has a game clock: it answered a 0xE5, or took a whole sync. A
     /// message at a tick (0xE9, 0xEA) means nothing to a client without.
     clock_set: bool,
@@ -1136,6 +1153,9 @@ impl Game {
             generation: Generation::AT_READY,
             set_times: VecDeque::new(),
             time_confirmed: false,
+            time_answered: false,
+            early_entries: Vec::new(),
+            late_roster_redos: 0,
             clock_set: false,
             ping: None,
             next_ping: now,
@@ -1354,6 +1374,7 @@ impl Game {
                 .copied()
         {
             peer.time_confirmed = true;
+            peer.time_answered = true;
             peer.clock_set = true;
             peer.clock_given = Some((sent.start, sent.at));
             if sent.ends_correction {
@@ -1808,7 +1829,17 @@ impl Game {
             // the client's 0xEA handler reads the match's view, which a
             // game has only once its world is loaded (0x27C776, [esi+4]),
             // and crashed on a leave that came before (live, 2026-10-14).
-            if to_resyncing {
+            // An entry to a game that enters, its world on the way: now,
+            // not after its load (`entries_since`).
+            let to_starting = entered
+                && other != index
+                && peer.time_answered
+                && matches!(peer.stage, Stage::Syncing { entering: true, time, .. } if at > time);
+            if to_starting {
+                if let Some(serial) = send_waiting(peer, &message) {
+                    peer.early_entries.push((at, index, serial, true));
+                }
+            } else if to_resyncing {
                 if let Some(serial) = send_kept(peer, &message) {
                     track(peer, serial, Flight::Roster(message.clone()), at);
                     gate(peer, serial, now, at, GateKind::Roster);
@@ -2315,6 +2346,8 @@ impl Game {
         peer.generation = peer.generation.next();
         peer.set_times.clear();
         peer.time_confirmed = false;
+        peer.time_answered = false;
+        peer.early_entries.clear();
         peer.replayed = None;
         clear_gate(peer, None, now);
         peer.world_waits = 0;
@@ -2378,6 +2411,31 @@ impl Game {
                     ServerMessage::PlayerLeft { tick, player }
                 };
                 (at, message)
+            })
+            .collect()
+    }
+
+    /// The other players' entries after `time`, for a game that enters
+    /// from a world of then: with its world, not after its load. The
+    /// client takes a 0xE9 that comes after its 0xE5 and before its world
+    /// is loaded, whatever its tick, and keeps it through the load (0xE8
+    /// loads in mode 1, 0x27C107); once the world is loaded it refuses one
+    /// whose tick is the event horizon behind its present ("too old",
+    /// `enter_match` 0x2D15C2), and every copy after. Sent after the load
+    /// (until 2026-10-15), a slow line had them past it: live, the oldest
+    /// were refused and the game was out of step 3 s into the match. 0xE9
+    /// never reads the match view, so it is safe before the load; 0xEA
+    /// does, and stays after it (`roster_change`). Never its own entry.
+    fn entries_since(&self, index: usize, time: u32) -> Vec<(u32, usize, ServerMessage)> {
+        self.events
+            .iter()
+            .filter(|(at, who, entered)| *entered && *at > time && *who != index)
+            .map(|&(at, who, _)| {
+                let message = ServerMessage::PlayerEntered {
+                    tick: tick_byte(at),
+                    player: who as u8,
+                };
+                (at, who, message)
             })
             .collect()
     }
@@ -2642,6 +2700,13 @@ impl Game {
                 .map(|(_, from, what)| relay(*from, what))
                 .collect()
         };
+        // A game that enters: the others' entries since its world, ahead
+        // of the world (`entries_since`).
+        let entries = if entering && resync_from.is_none() {
+            self.entries_since(index, snapshot.time)
+        } else {
+            Vec::new()
+        };
         let start = self.sync_start(index, snapshot.time, entering, clock, now);
         let id = self.id;
         // Only a game's first world: one that is in play takes a world as
@@ -2721,6 +2786,14 @@ impl Game {
                 send_kept(peer, message);
             }
         }
+        peer.early_entries.clear();
+        if peer.time_answered {
+            for (at, who, message) in &entries {
+                if let Some(serial) = send_waiting(peer, message) {
+                    peer.early_entries.push((*at, *who, serial, false));
+                }
+            }
+        }
         let payload = world.payload();
         // A world a game that plays waits for: its parts lost go again
         // sooner than 0xE8's 500 ms (`RESYNC_WORLD_RESEND_MIN`).
@@ -2796,6 +2869,8 @@ impl Game {
         );
         if let Some(peer) = self.peers[index].as_mut() {
             peer.time_confirmed = false;
+            peer.time_answered = false;
+            peer.early_entries.clear();
             peer.set_times.clear();
             // The next sync replays every input since its own snapshot.
             peer.held.clear();
@@ -2809,6 +2884,74 @@ impl Game {
                 entering,
             };
         }
+    }
+
+    /// Whether the game at `index`, whose world is loaded, would get one of
+    /// the others' roster changes past its horizon: one of `events`, or an
+    /// entry sent ahead of its load and not acked yet. Its present as a
+    /// message sent now reaches it is the clock its last 0xE5 gave plus
+    /// the time since that 0xE5 went (both take a way to it), and one way
+    /// more for a line that holds packets. Then its start is done again
+    /// from a fresh world, which holds them, [`LATE_ROSTER_REDOS`] times at
+    /// most: a game without the change is out of step from its tick on. A
+    /// 0xE9 past the horizon is refused (`enter_match` 0x2D15C2, PROVEN);
+    /// a 0xEA LIKELY the same way (`leave_match` 0x2D18B9 not read for
+    /// it), and a start done again for one costs no more than a load.
+    fn roster_too_late(
+        &mut self,
+        index: usize,
+        entering: bool,
+        events: &[(u32, ServerMessage)],
+        now: Instant,
+    ) -> bool {
+        let Some(peer) = self.peers[index].as_ref() else {
+            return false;
+        };
+        if peer.late_roster_redos >= LATE_ROSTER_REDOS {
+            return false;
+        }
+        let Some(sent) = peer.set_times.back() else {
+            return false;
+        };
+        let present =
+            sent.start + now.saturating_duration_since(sent.at).as_millis() as u32 + one_way(peer);
+        let late = |at: u32| at + EVENT_HORIZON_MS <= present;
+        // Its own entry (a player back in) is as ever.
+        let mut too_late: Vec<u32> = events
+            .iter()
+            .filter(|(at, message)| {
+                let who = match message {
+                    ServerMessage::PlayerEntered { player, .. }
+                    | ServerMessage::PlayerLeft { player, .. } => usize::from(*player),
+                    _ => index,
+                };
+                who != index && late(*at)
+            })
+            .map(|(at, _)| *at)
+            .collect();
+        too_late.extend(
+            peer.early_entries
+                .iter()
+                .filter(|(at, _, serial, after)| {
+                    *after && !peer.transport.is_delivered(*serial) && late(*at)
+                })
+                .map(|(at, _, _, _)| *at),
+        );
+        if too_late.is_empty() {
+            return false;
+        }
+        let redo = peer.late_roster_redos + 1;
+        if let Some(peer) = self.peers[index].as_mut() {
+            peer.late_roster_redos = redo;
+        }
+        let why = format!(
+            "{} roster changes since its world (the oldest at {} ms) would reach it past its \
+             horizon (its game at about {present} ms; {redo} of {LATE_ROSTER_REDOS} times)",
+            too_late.len(),
+            too_late.iter().min().copied().unwrap_or(0)
+        );
+        self.redo_sync(index, entering, &why, now);
+        true
     }
 
     /// The snapshot reached the client: the roster changes since, and the
@@ -2831,17 +2974,32 @@ impl Game {
         let resync_from = self.peers[index].as_ref().and_then(|peer| peer.resync_from);
         // A game that enters gets the roster changes since its world now,
         // after its load: before it, the client's 0xEA handler crashes
-        // (`roster_change`).
-        let events = if resync_from.is_some() {
+        // (`roster_change`). The entries sent ahead of the load
+        // (`entries_since`) are not sent again.
+        let events: Vec<(u32, ServerMessage)> = if resync_from.is_some() {
             Vec::new()
         } else {
+            let sent = self.peers[index]
+                .as_ref()
+                .map_or(&[][..], |peer| &peer.early_entries[..]);
             self.roster_since(index, time)
+                .into_iter()
+                .filter(|(at, message)| {
+                    !matches!(message, ServerMessage::PlayerEntered { player, .. }
+                        if sent.iter().any(|(t, who, _, _)| t == at && *who == usize::from(*player)))
+                })
+                .collect()
         };
+        if resync_from.is_none() && self.roster_too_late(index, entering, &events, now) {
+            return;
+        }
         let clock = self.clock(now);
         let id = self.id;
         let Some(peer) = self.peers[index].as_mut() else {
             return;
         };
+        peer.early_entries.clear();
+        peer.late_roster_redos = 0;
         // The inputs still held for it: from here on they come one by one.
         flush_held(peer);
         for (at, message) in events {
@@ -5699,6 +5857,11 @@ impl Game {
 
     pub fn resyncs(&self, index: usize) -> u32 {
         self.peers[index].as_ref().map_or(0, |peer| peer.resyncs)
+    }
+
+    /// The roster changes so far: when, who, entered or left.
+    pub fn events(&self) -> &[(u32, usize, bool)] {
+        &self.events
     }
 
     /// How often it was started once more right after its first world
