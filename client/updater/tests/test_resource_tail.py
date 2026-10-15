@@ -148,17 +148,18 @@ class TailTest(unittest.TestCase):
         with open(os.path.join(self.source, "resources.db"), "wb") as file:
             file.write(self.db)
 
-    def release(self, version=1, lobby=True, tail_size=None):
+    def release(self, version=1, lobby=True, tail_size=None, tail=True):
         """The plan make_client_026g.py writes for a release's final db (a
-        signed head, the lobby's region, a tail), its blobs on the site, and
-        that db."""
+        signed head, the lobby's region, a tail; without the tail, a
+        `required` line), its blobs on the site, and that db."""
         offset, size = self.HEAD
         # The db's header, a new file table and its signature by "Skhid's" key.
         table = (f"table {version} ".encode() + self.db)[:size // 2]
         head = (b"little-endian\0\0\0" + (1).to_bytes(4, "little") + len(table).to_bytes(4, "little")
                 + table + bytes(builder.S.SIGNATURE_SIZE))
         head += self.db[offset + len(head):offset + size]
-        tail = random.Random(version).randbytes(tail_size or self.TAIL_SIZE)
+        grows = tail
+        tail = random.Random(version).randbytes(tail_size or self.TAIL_SIZE) if grows else b""
         folder = os.path.join(self.root, f"release-{version}")
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "head.bin"), "wb") as file:
@@ -181,9 +182,12 @@ class TailTest(unittest.TestCase):
             line, lobby_blobs = harness.region_line(self.db, at, lobby_target, "lobby_menu")
             lines.append(line)
             blobs.update(lobby_blobs)
-        lines.append(f"tail game/resources.db {len(self.db)} {len(self.db) + len(tail)} {sha256(tail)} "
-                     "resources_tail resources_head")
-        blobs[sha256(tail)] = tail
+        if grows:
+            lines.append(f"tail game/resources.db {len(self.db)} {len(self.db) + len(tail)} {sha256(tail)} "
+                         "resources_tail resources_head")
+            blobs[sha256(tail)] = tail
+        else:
+            lines.append("required game/resources.db")
         self.site.blobs.update(blobs)
         expected = bytearray(self.db)
         expected[offset:offset + size] = head
@@ -381,12 +385,78 @@ class TailTest(unittest.TestCase):
     def test_a_plan_the_updater_cannot_read_keeps_play_off_when_it_may_grow_the_db(self):
         self.make_db()
         plan, _ = self.release()
-        for spoilt, code in [(plan.replace(b"skhid-resources 2", b"skhid-resources 3"), 1),
+        for spoilt, code in [(plan.replace(b"skhid-resources 2", b"skhid-resources 4"), 1),
                              (plan[:-5], 1),
                              (plan.replace(b" resources_tail resources_head", b" resources_tail nothing"), 1)]:
             with self.subTest(plan=spoilt[:40]):
                 self.assertEqual(self.run_updater(self.with_plan(spoilt)), code)
                 self.assert_shipped()
+        self.assertEqual(self.blob_requests(), [])
+        self.assertIn("resources: BLOCKED:", self.log())
+
+    # --- a new table and no tail: required all the same ------------------
+
+    def test_a_new_table_without_a_tail_is_required_and_checked_whole(self):
+        self.make_db()
+        plan, expected = self.release(tail=False)
+        self.assertTrue(plan.startswith(b"skhid-resources 3\r\n"), plan[:40])
+        self.assertTrue(plan.endswith(b"required game/resources.db\r\nend\r\n"))
+        self.assertEqual(len(expected), self.DB_SIZE)
+        files = self.with_plan(plan)
+        self.assertEqual(self.run_updater(files), 0, self.log())
+        self.assert_grown(expected)
+        self.assertEqual(self.status(), "ready\r\n")
+        log = self.log()
+        self.assertIn("(required)", log)
+        self.assertIn("the required plan is in place, checked as a whole", log)
+        self.assertEqual(self.run_ready(), 0, self.log())
+        # The next archive without it puts the db back as shipped.
+        self.assertEqual(self.run_updater(self.bundle(README__txt=b"no plan")), 0, self.log())
+        self.assert_shipped()
+        self.assertIsNone(self.status())
+
+    def test_a_damaged_new_table_keeps_play_off_and_puts_the_db_back(self):
+        self.make_db()
+        plan, expected = self.release(tail=False)
+        files = self.with_plan(plan)
+        self.site.blob_bodies[sha256(self.parts["head"])] = b"not the table"
+        self.assertEqual(self.run_updater(files), 1)
+        self.assert_shipped()
+        self.assertTrue(self.status().startswith("blocked "), self.status())
+        log = self.log()
+        self.assertIn("resources: BLOCKED:", log)
+        self.assertIn("resources_head does not hold its target", log)
+        self.assertIn("goes back to its bytes as shipped", log)
+        self.assertEqual(self.run_ready(), 1)
+        self.assertIn("ready: NOT READY:", self.log())
+        # The site has it right now: the next start does it all.
+        self.site.blob_bodies.clear()
+        self.assertEqual(self.run_updater(files), 0, self.log())
+        self.assert_grown(expected)
+        self.assertEqual(self.run_ready(), 0, self.log())
+
+    def test_a_region_missing_beside_a_new_table_puts_the_table_back_too(self):
+        self.make_db()
+        plan, expected = self.release(tail=False)
+        files = self.with_plan(plan)
+        self.site.blob_statuses[sha256(self.parts["lobby"])] = 404
+        self.assertEqual(self.run_updater(files), 1)
+        self.assert_shipped()
+        self.assertIn("resources_head: its original is back", self.log())
+        self.site.blob_statuses.clear()
+        self.assertEqual(self.run_updater(files), 0, self.log())
+        self.assert_grown(expected)
+
+    def test_an_updater_of_format_2_would_keep_play_off_for_a_new_table(self):
+        """What an updater that reads format 2 does with the plan: it is of a
+        newer format (`required`), so it keeps PLAY off and changes nothing;
+        the ZIP brings the updater that reads it. Here: format 3 with the
+        `required` line spelt as format 2 is refused the same way."""
+        self.make_db()
+        plan, _ = self.release(tail=False)
+        spoilt = plan.replace(b"skhid-resources 3", b"skhid-resources 2")
+        self.assertEqual(self.run_updater(self.with_plan(spoilt)), 1)
+        self.assert_shipped()
         self.assertEqual(self.blob_requests(), [])
         self.assertIn("resources: BLOCKED:", self.log())
 

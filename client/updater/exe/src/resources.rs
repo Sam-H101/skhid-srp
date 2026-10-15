@@ -1076,42 +1076,44 @@ impl Step<'_> {
     /// by other means than the launcher finds the file as it was. The tail's
     /// blob stays in the cache for the next run.
     fn roll_back(&mut self) {
-        for tail in &self.plan.tails {
-            let place = self.layout.place(&tail.path);
+        for path in self.plan.required_files() {
+            let tail = self.plan.tail_of(path);
+            let place = self.layout.place(path);
             let changed: Vec<Region> = self
                 .plan
                 .regions
                 .iter()
-                .filter(|region| region.path.eq_ignore_ascii_case(&tail.path))
+                .filter(|region| region.path.eq_ignore_ascii_case(path))
                 .filter(|region| {
                     let sizes = self.sizes(region);
                     matches!(look(&place, region, &sizes), Look::Bytes(hash) if hash != region.original)
                 })
                 .cloned()
                 .collect();
-            let grown = matches!(tail_look(&place, tail), TailLook::Grown { .. })
-                && tail_recorded(tail, &self.record);
+            let grown = tail.is_some_and(|tail| {
+                matches!(tail_look(&place, tail), TailLook::Grown { .. })
+                    && tail_recorded(tail, &self.record)
+            });
             if changed.is_empty() && !grown {
                 continue;
             }
             let Ok(file) = self.open(&place) else {
-                log!("resources: {}: cannot be put back now", tail.path);
+                log!("resources: {path}: cannot be put back now");
                 continue;
             };
             log!(
-                "resources: {}: the plan is not in place: the file goes back to its bytes as shipped",
-                tail.path
+                "resources: {path}: the plan is not in place: the file goes back to its bytes as shipped"
             );
             let mut table_back = true;
             for region in &changed {
                 if self.journal(region) && self.put_back(&file, region) {
                     self.record.forget_region(region);
                     self.save();
-                } else if tail.goes_with(region) {
+                } else if tail.is_some_and(|tail| tail.goes_with(region)) {
                     table_back = false;
                 }
             }
-            if grown && table_back {
+            if let Some(tail) = tail.filter(|_| grown && table_back) {
                 self.cut(&file, tail);
             }
         }
@@ -1215,33 +1217,48 @@ impl Step<'_> {
     }
 }
 
-/// The file of each tail of a required plan, checked as a whole: its size,
-/// its tail, and every region of the plan in it. `None` when all is in
-/// place; else what is not, for the log.
+/// Each file a required plan is required for, checked as a whole: its
+/// size (grown by its tail, or as shipped), its tail, and every region of
+/// the plan in it. `None` when all is in place; else what is not, for the
+/// log.
 fn verify(plan: &Plan, layout: &Layout) -> Option<String> {
-    for tail in &plan.tails {
-        let place = layout.place(&tail.path);
+    for path in plan.required_files() {
+        let place = layout.place(path);
+        let tail = plan.tail_of(path);
+        let regions: Vec<&Region> = plan
+            .regions
+            .iter()
+            .filter(|region| region.path.eq_ignore_ascii_case(path))
+            .collect();
+        let Some(size) = tail
+            .map(|tail| tail.new_size)
+            .or_else(|| regions.first().map(|region| region.file_size))
+        else {
+            continue;
+        };
         let file = match File::shared(&place) {
             Ok(file) => file,
             Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
         };
         match file.size() {
-            Ok(size) if size == tail.new_size => {}
-            Ok(size) => {
-                return Some(format!(
-                    "{place} has {size} bytes, not {} with {}",
-                    tail.new_size, tail.name
-                ));
+            Ok(have) if have == size => {}
+            Ok(have) => {
+                return Some(match tail {
+                    Some(tail) => {
+                        format!("{place} has {have} bytes, not {size} with {}", tail.name)
+                    }
+                    None => format!("{place} has {have} bytes, not {size}"),
+                });
             }
             Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
         }
-        if hash_range(&file, tail.file_size, tail.size()).ok() != Some(tail.sha256) {
-            return Some(format!("{place}: {} is not in place", tail.name));
+        if let Some(tail) = tail {
+            if hash_range(&file, tail.file_size, tail.size()).ok() != Some(tail.sha256) {
+                return Some(format!("{place}: {} is not in place", tail.name));
+            }
         }
-        for region in &plan.regions {
-            if region.path.eq_ignore_ascii_case(&tail.path)
-                && hash_range(&file, region.offset, region.size).ok() != Some(region.target)
-            {
+        for region in regions {
+            if hash_range(&file, region.offset, region.size).ok() != Some(region.target) {
                 return Some(format!("{place}: {} does not hold its target", region.name));
             }
         }
@@ -1252,8 +1269,9 @@ fn verify(plan: &Plan, layout: &Layout) -> Option<String> {
 /// `updater_skhid.exe ready`, from play_skhid.bat and play_skhid.sh before
 /// they start the game without the launcher: nothing is fetched or written.
 /// `Err` (the words for the player) when the plan beside it is required
-/// (it grows the db) and the db is not checked whole; also when the plan
-/// cannot be read and may be one. No plan, or one without a tail: `Ok`.
+/// (it grows the db, or writes its table) and the db is not checked whole;
+/// also when the plan cannot be read and may be one. No plan, or one that
+/// is not required: `Ok`.
 pub fn ready(layout: &Layout) -> Result<(), String> {
     let plan_path = format!("{}\\{PLAN_FILE}", layout.exe_dir);
     let bytes = match win::read_file(&plan_path, 1 << 20) {
@@ -1292,7 +1310,8 @@ pub fn ready(layout: &Layout) -> Result<(), String> {
 }
 
 /// Says why the step could not use a plan. A plan of format 2 or newer may
-/// grow the file the game needs: the game then may not be played.
+/// grow the file the game needs, or write its table: the game then may not
+/// be played.
 fn unusable(plan_bytes: &[u8], why: &str) -> Outcome {
     let required = !plan_bytes.starts_with(b"skhid-resources 1\r\n")
         && !plan_bytes.starts_with(b"skhid-resources 1\n");

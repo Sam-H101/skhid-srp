@@ -6,15 +6,19 @@
 //! ZIP like any other:
 //!
 //! ```text
-//! skhid-resources 2
+//! skhid-resources 3
 //! region <path> <file size> <offset> <size> <original sha256> <target sha256> <name>
 //! tail <path> <file size> <new size> <tail sha256> <name> <region>
 //! file <sha256> <size> <path>
+//! required <path>
 //! end
 //! ```
 //!
-//! (Format 1 is the same without `tail` lines; a plan without one is still
-//! written as format 1, so the updaters already out there read it.)
+//! (Format 1 is the same without `tail` and `required` lines, format 2
+//! without `required` lines. A plan is written in the lowest format that
+//! holds it, so the updaters already out there read what they can; an
+//! updater refuses a higher format whole, and a plan it cannot read that is
+//! not of format 1 keeps PLAY off, as a required one would.)
 //!
 //! - `region`: the bytes `[offset, offset + size)` of the file at `<path>`
 //!   (a name as the ZIP has them: `game/resources.db`) are the blob
@@ -36,6 +40,14 @@
 //!   a region's file is of its build when it has that size, or that size
 //!   grown by a tail the plan or the record names ([`file_sizes`]).
 //! - `file`: a whole file, fetched by its checksum and put at `<path>`.
+//! - `required`: the plan is required for the file at `<path>` as a tail
+//!   makes it, without a tail: every region of the plan on it must be in
+//!   place before the game may be played, the file checked whole (its size
+//!   as shipped, every region's target). A plan that writes a new file
+//!   table of `resources.db` (signed by Skhid's key, which the game from
+//!   patch revision 12 on asks for) and appends nothing has one: the game
+//!   with the old table would not start. Its file must have a region of the
+//!   plan, and all its regions one `<file size>`.
 //!
 //! The record beside the updater, `updater_skhid.resources.state`, is the
 //! same lines under `skhid-resources-state 1` (2 when it holds a tail):
@@ -165,12 +177,14 @@ pub struct WholeFile {
     pub path: String,
 }
 
-/// A plan, or a record: its regions, tails and files.
+/// A plan, or a record: its regions, tails and files, and (a plan's) the
+/// files it is required for without a tail.
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Plan {
     pub regions: Vec<Region>,
     pub files: Vec<WholeFile>,
     pub tails: Vec<Tail>,
+    pub required: Vec<String>,
 }
 
 /// Files of the updater itself (its state, its log, its cache, the plan)
@@ -332,9 +346,26 @@ impl Plan {
     }
 
     /// Whether the plan must be in place before the game is played: it has
-    /// a tail (see the module's text).
+    /// a tail or a `required` line (see the module's text).
     pub fn required(&self) -> bool {
-        !self.tails.is_empty()
+        !self.tails.is_empty() || !self.required.is_empty()
+    }
+
+    /// The files the plan is required for: each tail's, and each `required`
+    /// line's, once.
+    pub fn required_files(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for path in self
+            .tails
+            .iter()
+            .map(|tail| tail.path.as_str())
+            .chain(self.required.iter().map(String::as_str))
+        {
+            if !out.iter().any(|other| other.eq_ignore_ascii_case(path)) {
+                out.push(path);
+            }
+        }
+        out
     }
 
     /// Records `region` in the place of the one of the same place (another
@@ -398,12 +429,13 @@ fn parse(text: &[u8], magic: &[u8], unique_names: bool) -> Result<Plan, PlanErro
         return Err(PlanError::NotPlan);
     }
     let version = match number(version) {
-        Some(version @ (1 | 2)) => version,
-        Some(version) if version > 2 => return Err(PlanError::NewerFormat),
+        Some(version @ (1..=3)) => version,
+        Some(version) if version > 3 => return Err(PlanError::NewerFormat),
         _ => return Err(PlanError::NotPlan),
     };
     let mut plan = Plan::default();
     let mut tail_lines = Vec::new();
+    let mut required_lines = Vec::new();
     for (index, line) in lines.enumerate() {
         let at = index + 2;
         let added = match word(line) {
@@ -423,10 +455,31 @@ fn parse(text: &[u8], magic: &[u8], unique_names: bool) -> Result<Plan, PlanErro
                 let file = whole_file(values).ok_or(PlanError::BadLine(at))?;
                 plan.add_file(file)
             }
+            // An updater of format 2 would skip it and let the game start
+            // with a table it cannot read: `required` comes in format 3 only,
+            // and only in a plan.
+            (b"required", _) if version < 3 || !unique_names => {
+                return Err(PlanError::BadLine(at));
+            }
+            (b"required", values) => {
+                let path = fields::<1>(values)
+                    .and_then(|[text]| path(text))
+                    .ok_or(PlanError::BadLine(at))?;
+                required_lines.push(at);
+                let new = !plan
+                    .required
+                    .iter()
+                    .any(|other| other.eq_ignore_ascii_case(&path));
+                if new {
+                    plan.required.push(path);
+                }
+                new
+            }
             // What follows the end is not the plan's.
             (b"end", _) => {
                 if unique_names {
                     check_tails(&plan, &tail_lines)?;
+                    check_required(&plan, &required_lines)?;
                 }
                 return Ok(plan);
             }
@@ -435,7 +488,9 @@ fn parse(text: &[u8], magic: &[u8], unique_names: bool) -> Result<Plan, PlanErro
         if !added {
             return Err(PlanError::Conflict(at));
         }
-        if plan.regions.len() + plan.files.len() + plan.tails.len() > MAX_ENTRIES {
+        if plan.regions.len() + plan.files.len() + plan.tails.len() + plan.required.len()
+            > MAX_ENTRIES
+        {
             return Err(PlanError::TooMany);
         }
     }
@@ -459,6 +514,30 @@ fn check_tails(plan: &Plan, tail_lines: &[usize]) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// A `required` line's file must have a region of the plan, and its regions
+/// one build (`<file size>`); a file with a tail is of the tail's build.
+fn check_required(plan: &Plan, required_lines: &[usize]) -> Result<(), PlanError> {
+    for (path, &at) in plan.required.iter().zip(required_lines) {
+        let mut sizes = plan
+            .regions
+            .iter()
+            .filter(|region| region.path.eq_ignore_ascii_case(path))
+            .map(|region| region.file_size);
+        let Some(first) = sizes.next() else {
+            return Err(PlanError::BadLine(at));
+        };
+        if sizes.any(|size| size != first)
+            || plan
+                .files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(path))
+        {
+            return Err(PlanError::Conflict(at));
+        }
+    }
+    Ok(())
+}
+
 /// Reads the plan.
 pub fn parse_plan(text: &[u8]) -> Result<Plan, PlanError> {
     parse(text, PLAN_MAGIC, true)
@@ -473,10 +552,12 @@ pub fn parse_record(text: &[u8]) -> Option<Plan> {
 fn write(plan: &Plan, magic: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(magic);
-    out.extend_from_slice(if plan.tails.is_empty() {
-        b" 1\r\n"
-    } else {
+    out.extend_from_slice(if !plan.required.is_empty() {
+        b" 3\r\n"
+    } else if !plan.tails.is_empty() {
         b" 2\r\n"
+    } else {
+        b" 1\r\n"
     });
     for region in &plan.regions {
         out.extend_from_slice(b"region ");
@@ -515,6 +596,11 @@ fn write(plan: &Plan, magic: &[u8]) -> Vec<u8> {
         push_number(&mut out, file.size);
         out.push(b' ');
         out.extend_from_slice(file.path.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    for path in &plan.required {
+        out.extend_from_slice(b"required ");
+        out.extend_from_slice(path.as_bytes());
         out.extend_from_slice(b"\r\n");
     }
     out.extend_from_slice(b"end\r\n");
@@ -843,6 +929,7 @@ mod tests {
                 path: "game/resources/maps/new_map.db".into(),
             }],
             tails: Vec::new(),
+            required: Vec::new(),
         }
     }
 
@@ -900,9 +987,9 @@ mod tests {
             .unwrap()
             .replace("skhid-resources 2", "skhid-resources 1");
         assert_eq!(parse_plan(old.as_bytes()), Err(PlanError::BadLine(5)));
-        // Format 3 is newer.
+        // Format 4 is newer.
         assert_eq!(
-            parse_plan(b"skhid-resources 3\nend\n"),
+            parse_plan(b"skhid-resources 4\nend\n"),
             Err(PlanError::NewerFormat)
         );
         // Cut short anywhere: nothing.
@@ -910,6 +997,77 @@ mod tests {
         for cut in 0..text.len() - 4 {
             assert!(parse_plan(&text[..cut]).is_err(), "cut at {cut}");
         }
+    }
+
+    /// The plan of a release that writes a new file table of resources.db
+    /// (signed by Skhid's key) and appends nothing: the menus, with the table.
+    fn new_table() -> Plan {
+        let mut plan = grown();
+        plan.tails.clear();
+        plan.required.push("game/resources.db".into());
+        plan
+    }
+
+    #[test]
+    fn a_plan_with_a_required_line_is_of_format_3_and_required() {
+        let plan = new_table();
+        assert!(plan.required());
+        assert_eq!(plan.required_files(), vec!["game/resources.db"]);
+        let text = write_plan(&plan);
+        assert!(text.starts_with(b"skhid-resources 3\r\n"));
+        assert!(
+            String::from_utf8(text.clone())
+                .unwrap()
+                .ends_with("required game/resources.db\r\nend\r\n")
+        );
+        assert_eq!(parse_plan(&text), Ok(plan.clone()));
+        // A tail and a required line on one file: once.
+        let mut both = grown();
+        both.required.push("GAME/resources.db".into());
+        assert_eq!(both.required_files(), vec!["game/resources.db"]);
+        assert_eq!(parse_plan(&write_plan(&both)), Ok(both));
+        // In format 2 an updater of format 2 would skip the line and let the
+        // game start with the table it cannot read: refused, as in a record.
+        let old = String::from_utf8(text.clone())
+            .unwrap()
+            .replace("skhid-resources 3", "skhid-resources 2");
+        assert!(matches!(
+            parse_plan(old.as_bytes()),
+            Err(PlanError::BadLine(_))
+        ));
+        let record = String::from_utf8(text.clone())
+            .unwrap()
+            .replace("skhid-resources 3", "skhid-resources-state 3");
+        assert_eq!(parse_record(record.as_bytes()), None);
+        // Its file must have a region of the plan, of one build, and no
+        // whole file.
+        let none = "skhid-resources 3\r\nrequired game/resources.db\r\nend\r\n";
+        assert_eq!(parse_plan(none.as_bytes()), Err(PlanError::BadLine(2)));
+        let mut builds = new_table();
+        builds.regions[1].file_size -= 1;
+        assert!(matches!(
+            parse_plan(&write_plan(&builds)),
+            Err(PlanError::Conflict(_))
+        ));
+        for bad in [
+            "required",
+            "required a b",
+            "required game/binaries/x86/updater_skhid.exe",
+        ] {
+            let text = format!("skhid-resources 3\r\n{bad}\r\nend\r\n");
+            assert!(
+                matches!(parse_plan(text.as_bytes()), Err(PlanError::BadLine(2))),
+                "{bad}"
+            );
+        }
+        // Twice: a conflict.
+        let twice = String::from_utf8(text)
+            .unwrap()
+            .replace("end\r\n", "required game/resources.db\r\nend\r\n");
+        assert!(matches!(
+            parse_plan(twice.as_bytes()),
+            Err(PlanError::Conflict(_))
+        ));
     }
 
     #[test]
@@ -1173,7 +1331,7 @@ mod tests {
             Err(PlanError::NotPlan)
         );
         assert_eq!(
-            parse_plan(b"skhid-resources 3\nsomething new\n"),
+            parse_plan(b"skhid-resources 4\nsomething new\n"),
             Err(PlanError::NewerFormat)
         );
     }

@@ -233,6 +233,26 @@ plan. Checked 2026-10-15: the candidate release's final db (6 328 475 738
 bytes) gives the plan and the 9 blobs the earlier per-entry options gave, byte
 for byte, and stock with live's three menus gives live's plan.
 
+**A release with no new items** (the menus, a new exe) still has a new file
+table, since the exe from revision 12 on starts only with one Skhid signed:
+
+```
+cp <stock resources.db> final.db
+srp-game-data put --db final.db --path flash_movies/main_menu.swf --file <live main_menu target>
+srp-game-data put --db final.db --path flash_movies/lobby_menu.swf --file <live lobby_menu target>
+srp-game-data put --db final.db --path flash_movies/login_menu.swf --file <live login_menu target>
+python sign_resources_026g.py sign final.db --key=<the release signing key>
+python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> --resources-db=final.db --resources-out=<blobs>
+```
+
+The plan is then `resources_head` (`[0, 10 344 588)`: the header, the signed
+table, to `startup.cfg`, the first file) and the three menus, no tail, and a
+`required game/resources.db` line: plan format 3, required as a grown one is
+(`../../client/updater/README.md`, "Resources"). Checked 2026-10-15: a
+revision 13 exe starts and plays on such a db under Wine. `sign` takes the
+key as `--key=PATH` or `--key PATH`; anything it does not understand stops
+it with exit 64, nothing signed.
+
 **The server's game data.** A ZIP that changes `resources.db` (`--resources-db`, with
 `--pack-zip`) comes with
 `server-game-data.db` beside it: the files of the players' `resources.db`

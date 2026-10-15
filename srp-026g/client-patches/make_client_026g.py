@@ -119,9 +119,13 @@ THE PLAYERS' RESOURCES.DB
       original one alone, so the default exe ships exactly when the table
       changes;
     - what it has past the original's end, `resources_tail`, appended with
-      the head. A plan with a tail is *required*: the updater keeps PLAY off
-      until the db holds it and every region, and puts the db back as shipped
-      when it cannot finish.
+      the head.
+
+    A plan with a new table is *required*: with a tail (plan format 2), and
+    without one by a `required game/resources.db` line (plan format 3, which
+    an updater of format 2 refuses whole and so keeps PLAY off): the updater
+    keeps PLAY off until the db holds the head, every region and the tail,
+    checked whole, and puts the db back as shipped when it cannot finish.
 
     Anything else (a shorter file, bytes changed outside every file) is
     refused. The blobs the updater fetches, named by their sha256 (each
@@ -299,9 +303,15 @@ def head_signer(lines, blobs):
 
 def resources_plan(lines):
     """The plan's text (write_plan in client/updater/logic/src/resources.rs):
-    format 2 when it grows a file (an older updater must not write the
-    table without its tail), else format 1."""
-    version = 2 if any(line.startswith("tail ") for line in lines) else 1
+    format 3 when it has a `required` line, 2 when it grows a file (an older
+    updater must not write the table without its tail), else format 1: the
+    lowest that holds it, so the updaters out there read what they can."""
+    if any(line.startswith("required ") for line in lines):
+        version = 3
+    elif any(line.startswith("tail ") for line in lines):
+        version = 2
+    else:
+        version = 1
     regions = [line for line in lines if line.startswith("region ")]
     regions.sort(key=lambda line: int(line.split(" ")[3]))
     rest = [line for line in lines if not line.startswith("region ")]
@@ -376,9 +386,10 @@ def bat(server, localization, embedded=False):
         "rem It must run from this folder (game\\binaries\\x86): the game finds",
         "rem ..\\..\\resources\\ssl\\survarium_login_server.crt from where it is started.",
         'cd /d "%~dp0"',
-        "rem A release that grows resources.db must be in place first: the game",
-        "rem with the new exe and the old db crashes. The updater checks it (it",
-        "rem reads only; no updater beside this file, as without the launcher: no check).",
+        "rem A release that writes resources.db's file table (and may grow it) must",
+        "rem be in place first: the game with the new exe and the old db does not",
+        "rem start, or crashes. The updater checks it (it reads only; no updater",
+        "rem beside this file, as without the launcher: no check).",
         'if not exist "updater_skhid.exe" goto play',
         '"updater_skhid.exe" ready',
         "if errorlevel 1 goto not_ready",
@@ -644,6 +655,11 @@ def main():
     # The default exe starts only with a resources.db whose table Skhid
     # signed, every other exe only with the original table.
     new_table = any(line.endswith(" resources_head") for line in region_lines)
+    # A new table must be in place before PLAY: the plan is required (a
+    # tail, or a `required` line).
+    if new_table and not any(line.startswith(("tail ", "required ")) for line in region_lines):
+        sys.exit(f"{resources_db}: the plan writes a new file table but is not required: "
+                 "srp-game-data is older than this tool (it must add `required game/resources.db`)")
     if (mode == "section" and late_join) != new_table:
         sys.exit(f"the default exe (patch revision {P.REVISION}) starts only with a resources.db whose "
                  "file table Skhid signed, given with --resources-db (which needs the launcher), and "

@@ -127,9 +127,10 @@ if [[ $mode == launcher ]]; then
         || die "Launcher exited with an error. See $log"
     exit 0
 fi
-# A release that grows resources.db must be in place first: the game with the
-# new exe and the old db crashes. The updater checks it (it reads only); no
-# updater beside this script, as without the launcher: no check.
+# A release that writes resources.db's file table (and may grow it) must be in
+# place first: the game with the new exe and the old db does not start, or
+# crashes. The updater checks it (it reads only); no updater beside this
+# script, as without the launcher: no check.
 if [[ -f updater_skhid.exe && ! -L updater_skhid.exe ]] \
     && ! "$WINE" updater_skhid.exe ready quiet >>"$log" 2>&1; then
     die "Skhid has not finished updating the game's files (resources.db), so the game is not started.

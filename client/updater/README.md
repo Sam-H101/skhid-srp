@@ -160,30 +160,42 @@ The players' ZIP may hold a plan, `game/binaries/x86/updater_skhid.resources`
 `resources.db`; the format and its rules are in `logic/src/resources.rs`):
 
 ```text
-skhid-resources 2
+skhid-resources 3
 region <path> <file size> <offset> <size> <original sha256> <target sha256> <name>
 tail <path> <file size> <new size> <tail sha256> <name> <region>
 file <sha256> <size> <path>
+required <path>
 end
 ```
 
 The game exe from patch revision 12 on starts only with a db whose file table
-Skhid's key signed, which a `tail` and its head region install, so
-`make_client_026g.py` builds that exe only with a `--resources-db` whose
-table Skhid signed: from that release on every plan is a required one.
+Skhid's key signed, which the plan's head region (`resources_head`) installs,
+so `make_client_026g.py` builds that exe only with a `--resources-db` whose
+table Skhid signed: from that release on every plan is a required one. A
+plan is required by a `tail` (it grows the db) or, for a new table and no
+new files, by a `required <path>` line: either way the updater keeps PLAY off
+until every region of the plan on that file (and its tail) is in place, the
+file checked whole, and puts the file back as shipped when it cannot finish
+(below). `updater_skhid.exe ready`, which `play_skhid.bat` and
+`play_skhid.sh` run first, does the same check.
 
-A plan without a `tail` is written as format 1, as before, so that the
-updaters already out there read it; a `tail` comes only in format 2. An
-updater of format 1 refuses a plan of format 2 whole ("newer format",
-nothing is changed): it never writes a table without its tail. The ZIP
-brings the new updater, which starts at once and does the step.
+A plan is written in the lowest format that holds it, so that the updaters
+already out there read what they can: without `tail` and `required` lines
+format 1, as before; a `tail` comes in format 2 and later, a `required` line
+in format 3 only. An updater refuses a plan of a higher format than it reads
+whole ("newer format", nothing is changed), and keeps PLAY off when that
+plan is not of format 1: an updater of format 1 never writes a table without
+its tail, and one of format 2 never lets the game start with a table it
+could not check. The ZIP brings the new updater, which starts at once and
+does the step.
 
 A `region` line says that the bytes `[offset, offset + size)` of a game
 file (today `game/resources.db`, 6.3 GB) are the blob `<original>` as the
 game is shipped, and are to become the blob `<target>`: an entry of the db
 rewritten in place with the same size and the same game CRC, so the db's
 signed file table is not changed (the first two: the lobby's and the login
-screen's Flash movies). Or the file table itself, rewritten with a `tail`.
+screen's Flash movies). Or the file table itself, rewritten with a `tail`
+or a `required` line.
 
 A `tail` line says that the file, `<file size>` bytes as shipped, is to grow
 to `<new size>`: the blob `<tail sha256>` appended at its end, the new

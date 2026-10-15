@@ -16,7 +16,11 @@
 //!   original, or the game refuses it;
 //! - what the final file has past the original's end is the tail,
 //!   `resources_tail`, written with the head; a file that grows needs a new
-//!   table, and one that shrinks is refused.
+//!   table, and one that shrinks is refused;
+//! - a new table with no tail makes the plan required all the same
+//!   (`required game/resources.db`, plan format 3): the game from patch
+//!   revision 12 on does not start with the old table, so the updater keeps
+//!   PLAY off until the head and every region are in place.
 //!
 //! Anything else is an error. The same two files give the same plan.
 
@@ -324,6 +328,8 @@ pub fn release(original_db: &Path, final_db: &Path) -> Result<Release, Error> {
             offset: original_size,
             size,
         });
+    } else if head_changed {
+        out.lines.push(format!("required {RESOURCES_DB}"));
     }
     Ok(out)
 }

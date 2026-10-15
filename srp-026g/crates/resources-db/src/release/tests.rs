@@ -223,6 +223,37 @@ fn a_region_is_named_after_its_file_or_its_path() {
     );
 }
 
+#[test]
+fn a_new_table_without_a_tail_is_required() {
+    let dir = Scratch::new("head");
+    let base = archive();
+    let mut changed = base.clone();
+    // Another table of the same size: a byte of a file's name.
+    let at = changed
+        .windows(b"item.options".len())
+        .position(|w| w == b"item.options")
+        .unwrap();
+    changed[at] = b'J';
+    let (original, final_db) = (
+        dir.write("original.db", &base),
+        dir.write("final.db", &changed),
+    );
+    let plan = release(&original, &final_db).unwrap();
+    assert_eq!(plan.lines.len(), 2, "{:?}", plan.lines);
+    assert!(plan.lines[0].ends_with(" resources_head"));
+    assert_eq!(plan.lines[1], "required game/resources.db");
+    // The updater reads it as a required plan of format 3.
+    let mut text = b"skhid-resources 3\r\n".to_vec();
+    for line in &plan.lines {
+        text.extend_from_slice(line.as_bytes());
+        text.extend_from_slice(b"\r\n");
+    }
+    text.extend_from_slice(b"end\r\n");
+    let parsed = updater_logic::resources::parse_plan(&text).unwrap();
+    assert!(parsed.required());
+    assert_eq!(parsed.regions[0].offset, 0);
+}
+
 /// The candidate release: `SRP_RELEASE_ORIGINAL` (0.26g's resources.db),
 /// `SRP_RELEASE_FINAL` (the release's), `SRP_RELEASE_PLAN` (the plan its ZIP
 /// carries): the plan read off the two files is that plan's lines.
@@ -239,7 +270,11 @@ fn the_plan_of_a_real_release_is_its_zips() {
     let mut expected: Vec<&str> = expected
         .lines()
         .map(|line| line.trim_end_matches('\r'))
-        .filter(|line| line.starts_with("region ") || line.starts_with("tail "))
+        .filter(|line| {
+            line.starts_with("region ")
+                || line.starts_with("tail ")
+                || line.starts_with("required ")
+        })
         .collect();
     let mut lines: Vec<&str> = plan.lines.iter().map(String::as_str).collect();
     expected.sort_unstable();

@@ -14,6 +14,9 @@ is OpenSSL's: `openssl` on PATH (srp-026g/flake.nix has it).
     python sign_resources_026g.py genkey --key=PATH --public=PATH
         a new 2048-bit key: a new key is a new .bin and a new revision
 
+`--key PATH` is the same as `--key=PATH`. A command it does not know, or an
+option, stops it with exit 64 and writes nothing.
+
 The private key is never in the repository; its default place is DEFAULT_KEY.
 """
 
@@ -100,10 +103,39 @@ def genkey(key, public):
     write(public, openssl("rsa", "-in", key, "-RSAPublicKey_out", "-outform", "DER").stdout)
 
 
+USAGE_EXIT = 64
+
+
+def parse_args(argv):
+    """(words, {option: value}): `--name=value` or `--name value`, for the
+    options KNOWN; anything else stops it."""
+    known = ("key", "public")
+    args, options = [], {}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        if not arg.startswith("--"):
+            args.append(arg)
+            continue
+        name, has_value, value = arg[2:].partition("=")
+        if name not in known:
+            print(f"unknown option {arg}\n\n{__doc__}", file=sys.stderr)
+            sys.exit(USAGE_EXIT)
+        if not has_value:
+            if not rest or rest[0].startswith("--"):
+                print(f"{arg} needs a path\n\n{__doc__}", file=sys.stderr)
+                sys.exit(USAGE_EXIT)
+            value = rest.pop(0)
+        if name in options:
+            print(f"--{name} is given twice", file=sys.stderr)
+            sys.exit(USAGE_EXIT)
+        options[name] = value
+    return args, options
+
+
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    options = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
-    if args[:1] == ["sign"] and len(args) == 2:
+    args, options = parse_args(sys.argv[1:])
+    if args[:1] == ["sign"] and len(args) == 2 and options.keys() <= {"key"}:
         sign_file(args[1], options.get("key", DEFAULT_KEY))
         print(f"{args[1]}: signed with {options.get('key', DEFAULT_KEY)}")
     elif args[:1] == ["verify"] and len(args) == 2:
@@ -111,10 +143,11 @@ def main():
             signer = which_key(*read_table(handle)[1:])
         print(f"{args[1]}: {signer or 'neither key'}")
         sys.exit({"skhid": 0, "retail": 2, None: 1}[signer])
-    elif args == ["genkey"] and {"key", "public"} <= options.keys():
+    elif args == ["genkey"] and {"key", "public"} == options.keys():
         genkey(options["key"], options["public"])
     else:
-        sys.exit(__doc__)
+        print(__doc__, file=sys.stderr)
+        sys.exit(USAGE_EXIT)
 
 
 if __name__ == "__main__":

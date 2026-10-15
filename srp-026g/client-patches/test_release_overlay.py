@@ -315,7 +315,7 @@ class ReleaseTests(unittest.TestCase):
         return db
 
     def release_of(self, head=True, regions=(('lobby_menu', 1000, 700),), tail=b'new entries ' * 100,
-                   signer='skhid', claimed=None):
+                   signer='skhid', claimed=None, required=True):
         """The plan `srp-game-data plan` gives for a release of the game's
         db, and its blobs: a new head (a header, a file table and its
         signature by `signer`'s key, or none; `claimed` the table size its
@@ -345,6 +345,8 @@ class ReleaseTests(unittest.TestCase):
             lines.append(f'tail game/resources.db {len(db)} {len(db) + len(tail)} {sha(tail)} '
                          'resources_tail resources_head')
             blobs[sha(tail)] = tail
+        elif head and required:
+            lines.append('required game/resources.db')
         return lines, blobs
 
     def test_a_release_has_the_plan_and_the_blobs_of_its_resources_db(self):
@@ -377,6 +379,27 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as z:
             self.assertEqual(z.read(overlay.RESOURCES_PLAN).decode(),
                              f'skhid-resources 1\r\n{lines[0]}\r\nend\r\n')
+
+    def test_a_new_table_without_a_tail_is_a_required_plan_of_format_3(self):
+        """The menus with a table Skhid signed and no new files: the plan is
+        required all the same (the game from revision 12 on does not start
+        with the old table), so it is of format 3, which an updater of
+        format 2 refuses whole."""
+        self.fake_db()
+        lines, data = self.release_of(tail=b'')
+        archive = self.root / 'table.zip'
+        self.build(archive, '--pack-zip', f'--resources-db={self.root / "final.db"}',
+                   f'--resources-out={self.root / "blobs"}', plan=(lines, data))
+        with zipfile.ZipFile(archive) as z:
+            plan = z.read(overlay.RESOURCES_PLAN).decode()
+        self.assertEqual(plan.split('\r\n'), ['skhid-resources 3', lines[0], lines[1],
+                                               'required game/resources.db', 'end', ''])
+        # A plan with a new table that is not required: refused.
+        with self.assertRaises(SystemExit) as refused:
+            self.build(self.root / 'refused.zip', '--pack-zip', f'--resources-db={self.root / "final.db"}',
+                       f'--resources-out={self.root / "blobs2"}', plan=self.release_of(tail=b'', required=False))
+        self.assertIn('not required', str(refused.exception))
+        self.assertFalse((self.root / 'refused.zip').exists())
 
     def test_a_zip_that_changes_the_db_comes_with_the_servers_data(self):
         self.fake_db()
