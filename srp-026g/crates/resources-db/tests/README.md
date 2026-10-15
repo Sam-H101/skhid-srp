@@ -8,3 +8,7 @@ gameplay/items/same_bytes.options      "an item\n"
 gameplay/items/big.bin                 5000 times 'x'
 projects/level_01/day/client_project   empty
 ```
+
+`release.db`: the same tree with `gameplay/items/new.options` ("a new
+item\n") added, packed the same way: the archive a release makes of
+`fixture.db` (its first 9115 bytes as a region, 11 more as the tail).

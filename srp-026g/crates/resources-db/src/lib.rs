@@ -33,6 +33,12 @@
 //! files are 78 903 nodes and 1 030 more through 58 links to folders), nor
 //! has one the players' updates make, so this reader refuses them rather than
 //! guess.
+//!
+//! [`plan`] lays the players' update plan (`client/updater`) over an
+//! installed archive in memory: what is read is then the archive the
+//! players run.
+
+pub mod plan;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -67,6 +73,8 @@ pub enum Error {
     Io(io::Error),
     /// Not the format above, or a damaged table.
     Format(String),
+    /// A players' plan that is not for this archive, or its blobs.
+    Plan(String),
 }
 
 impl fmt::Display for Error {
@@ -74,6 +82,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io(cause) => write!(f, "{cause}"),
             Error::Format(what) => write!(f, "not a readable resources.db: {what}"),
+            Error::Plan(what) => write!(f, "the players' update plan: {what}"),
         }
     }
 }
