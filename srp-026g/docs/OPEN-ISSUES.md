@@ -384,8 +384,8 @@ them. `notes/match.md` §28 has the evidence and the choices,
     Unicorn on made-up objects; not run in a game yet.
   - **It changes what a match computes from a match's first spawn: games of
     10 and of 9 or before part there.** The release needs
-    `SRP_MIN_PATCH_REVISION=10` together with the ZIP (with
-    `SRP_PATCH_REVISION_CHECK=refuse`, as on the players' server). The
+    `SRP_MIN_PATCH_REVISION=10` together with the ZIP, as on the players'
+    server. The
     server needs no change: its clock factor takes 8 to 0x7F as fast and the
     late join takes 5 and later. A late-join exe built by hand (`0x80`) is
     not refused and does not have it.

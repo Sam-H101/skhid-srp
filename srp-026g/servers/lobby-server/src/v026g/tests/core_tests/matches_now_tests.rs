@@ -456,14 +456,6 @@ fn the_join_of_a_row_is_on_only_where_the_asker_makes_an_uneven_match_more_even(
     // A game too old to join a match being played: off (10).
     let old = world.connect("Old");
     assert_eq!(joins_now(&mut world, old), [(10, 1)]);
-    // A game the server refuses Play for its revision: off; one it only
-    // warns: on.
-    world.core.settings.min_patch_revision = PATCH_REVISION + 1;
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Refuse;
-    assert_eq!(joins_now(&mut world, carol), [(10, 1)]);
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Warn;
-    assert_eq!(joins_now(&mut world, carol), [(1, 1)]);
-    world.core.settings.patch_check = crate::v026g::PatchCheck::Off;
 
     // In a squad with another player: off for both (9).
     let alice = growing(&mut world, "Alice");

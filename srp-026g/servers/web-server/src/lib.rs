@@ -1475,22 +1475,15 @@ fn match_team_size() -> usize {
 
 /// Whether every game that can press Play plays in the growing queue (the
 /// games of patch revision 5 or later): the lobby refuses the others
-/// (`SRP_PATCH_REVISION_CHECK` is `refuse`, and `SRP_MIN_PATCH_REVISION` is
-/// 5 or more). The lobby makes two queues of the games with and without the
+/// (`SRP_MIN_PATCH_REVISION` is 5 or more). The lobby makes two queues of the games with and without the
 /// late join; the page tells the growing one's rules only when no game is
 /// left for the other.
 fn only_growing_games() -> bool {
-    let refuses = std::env::var("SRP_PATCH_REVISION_CHECK").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "refuse" | "on" | "1" | "true" | "yes"
-        )
-    });
     let minimum = std::env::var("SRP_MIN_PATCH_REVISION")
         .ok()
         .and_then(|value| value.trim().parse::<u8>().ok())
         .unwrap_or(0);
-    refuses && minimum >= survarium::v026g::match_msgs::late_join::FIRST_REVISION
+    minimum >= survarium::v026g::match_msgs::late_join::FIRST_REVISION
 }
 
 /// What the growing queue and the matches it makes are set to.

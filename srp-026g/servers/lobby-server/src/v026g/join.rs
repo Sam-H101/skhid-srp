@@ -232,9 +232,6 @@ impl Core<'_> {
                 "its game does not join matches being played",
             ));
         }
-        if self.would_refuse_outdated(who) {
-            return Some((JoinCode::Outdated, "its game is outdated"));
-        }
         None
     }
 

@@ -315,7 +315,7 @@ Reply to a JOIN: one `91` with one row, `name = "J1;<result>;<key>;<code>"`, `pl
 The rule, for asker A and match X (`join.rs`, `Core::join_fit`; the owner's of 2026-10-14: JOIN only where the player goes in at once with no wait, by the balance rule, and only to make a match that is uneven by value more even, counting the player's own value; a 3 v 4 that counts alike takes nobody):
 
 1. X admits now (`play.rs` `late_admission`: growing rosters, teams not fixed, the match server admits, more than 120 s left, no earlier joiner on its way in), and the queue has X.
-2. A is in the lobby (not in the queue, not in or sent to a match, no place in one), in no squad with others, its game plays in growing rosters, `refuse_outdated` would not refuse its Play, and A never had a place in X.
+2. A is in the lobby (not in the queue, not in or sent to a match, no place in one), in no squad with others, its game plays in growing rosters, and A never had a place in X. (With `SRP_MIN_PATCH_REVISION` set, an older game is never in the lobby: `patch_check.rs`.)
 3. No other player's place is held in X now.
 4. `matchmaking_policy::place_late(the sides now, [A alone: what A counts for as the queue counts it (Core::strength_of), not waited out], the late-join rule)` puts A on a side, and the sides then count strictly more alike than without A: `|apart after| < |apart before|`, apart being what side 0 counts less side 1 (players, strengths, lead; `matchmaking.md` §9.2).
 

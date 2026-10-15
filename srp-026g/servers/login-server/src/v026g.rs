@@ -102,8 +102,32 @@ const TOO_MANY_ATTEMPTS: u8 =
 const REGISTRATION_CLOSED: u8 =
     login_server_message_types_enum::user_restricted_by_access_level_message_type as u8;
 
-/// Not this server's client.
+/// Not this server's client, or a Skhid game older than the server takes:
+/// the game's "You're using an outdated version of the game.".
 const INVALID_VERSION: u8 = login_server_message_types_enum::sign_in_invalid_version as u8;
+
+/// Games older than a patch revision are not let in: srp's
+/// `SRP_MIN_PATCH_REVISION`. They
+/// are answered before the password, so they get no session and nothing of
+/// the lobby, whose sign-in names items an older game may not have.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RevisionGate {
+    /// The least patch revision let in; 0, the default, lets every game in.
+    pub min: u8,
+    /// The user names never refused: srp's test bots (`SRP_BOT_ACCOUNTS`),
+    /// whose sign-in says no revision.
+    pub exempt: Vec<String>,
+}
+
+impl RevisionGate {
+    fn refuses(&self, revision: u8, user_name: &str) -> bool {
+        revision < self.min
+            && !self
+                .exempt
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(user_name))
+    }
+}
 
 /// A ban with no reason the client has a text for: "banned by the
 /// administration".
@@ -205,7 +229,7 @@ pub fn run(store: Arc<SessionStore>) -> io::Result<()> {
     let config = config::get();
     let lobby = Lobby::new(&config.login_server, &config.lobby_server)?;
     let listener = TcpListener::bind(config.login_server.bind_addr())?;
-    accept(&listener, store, tls, lobby)
+    accept(&listener, store, tls, lobby, RevisionGate::default())
 }
 
 /// Where a login server started with [`serve`] sends its clients, and the
@@ -225,6 +249,8 @@ pub struct Endpoint {
     /// The login server's private key and certificate (PEM).
     pub key: std::path::PathBuf,
     pub certificate: std::path::PathBuf,
+    /// The games refused for their patch revision (the default: none).
+    pub revision_gate: RevisionGate,
 }
 
 /// [`run`] on a listener already bound (a caller that picks the address
@@ -260,7 +286,13 @@ pub fn serve(
         server(&endpoint.public_host, port),
         server(&endpoint.lobby_host, endpoint.lobby_port),
     )?;
-    accept(listener, store, Arc::new(tls), lobby)
+    accept(
+        listener,
+        store,
+        Arc::new(tls),
+        lobby,
+        endpoint.revision_gate.clone(),
+    )
 }
 
 /// Every connection of `listener`, each on a thread of its own.
@@ -269,6 +301,7 @@ fn accept(
     store: Arc<SessionStore>,
     tls: Arc<SslContext>,
     lobby: Lobby,
+    gate: RevisionGate,
 ) -> io::Result<()> {
     log::info!(
         "0.26g sign-ins on TCP {}; the lobby is at UDP {}:{}",
@@ -276,6 +309,13 @@ fn accept(
         lobby.public_ip,
         lobby.lobby.port
     );
+    if gate.min > 0 {
+        log::info!(
+            "Sign-ins of games older than patch revision {} are refused",
+            gate.min
+        );
+    }
+    let gate = Arc::new(gate);
 
     for stream in listener.incoming() {
         let stream = match stream {
@@ -286,10 +326,11 @@ fn accept(
                 continue;
             }
         };
-        let store = store.clone();
-        let tls = tls.clone();
+        let (store, tls, gate) = (store.clone(), tls.clone(), gate.clone());
         std::thread::spawn(move || {
-            if std::panic::catch_unwind(|| handle_client(&store, &tls, lobby, stream)).is_err() {
+            if std::panic::catch_unwind(|| handle_client(&store, &tls, lobby, &gate, stream))
+                .is_err()
+            {
                 log::error!("Connection handler panicked; dropped the connection");
             }
         });
@@ -328,7 +369,13 @@ pub fn run_collector(store: Arc<SessionStore>) {
     }
 }
 
-fn handle_client(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut stream: TcpStream) {
+fn handle_client(
+    store: &SessionStore,
+    tls: &SslContext,
+    lobby: Lobby,
+    gate: &RevisionGate,
+    mut stream: TcpStream,
+) {
     let mut request_type = [0_u8];
     if let Err(error) = io::Read::read_exact(&mut stream, &mut request_type) {
         log::info!("Login connection closed before its request: {error}");
@@ -337,7 +384,7 @@ fn handle_client(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut strea
     // The 0.26g client connects only to sign in: it signs out without a word
     // (`login_client_impl::sign_out` 0x385860 just closes).
     if request_type[0] == SIGN_IN {
-        handle_sign_in(store, tls, lobby, stream);
+        handle_sign_in(store, tls, lobby, gate, stream);
     } else {
         log::warn!(
             "Unknown login request type {}; dropped the connection",
@@ -447,7 +494,13 @@ fn refusal_code(store: &SessionStore, user_name: &str, error: SignInError) -> u8
     }
 }
 
-fn handle_sign_in(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut stream: TcpStream) {
+fn handle_sign_in(
+    store: &SessionStore,
+    tls: &SslContext,
+    lobby: Lobby,
+    gate: &RevisionGate,
+    mut stream: TcpStream,
+) {
     let mut buffer = [0; 1024];
     let peer = match stream.peer_addr() {
         Ok(peer) => peer,
@@ -480,6 +533,19 @@ fn handle_sign_in(store: &SessionStore, tls: &SslContext, lobby: Lobby, mut stre
         log::warn!(
             "Sign-in of {user_name} from {peer} refused: client version {:?}, not {VERSION}",
             sign_in.version
+        );
+        let _ = stream.write_all(&[INVALID_VERSION]);
+        return;
+    }
+    // A Skhid game older than the server takes. The player is sent back to
+    // the login screen with the game's "outdated version", restarts through
+    // the launcher, which updates the game, and signs in again.
+    if gate.refuses(sign_in.patch_revision, &user_name) {
+        log::info!(
+            "Sign-in of {user_name} from {peer} refused: patch revision {}, the server takes {} \
+             and later",
+            sign_in.patch_revision,
+            gate.min
         );
         let _ = stream.write_all(&[INVALID_VERSION]);
         return;
@@ -631,6 +697,11 @@ mod tests {
 
     /// A 0.26g login server on a free local port, serving `store`.
     fn start(store: Arc<SessionStore>, lobby: Lobby) -> SocketAddr {
+        start_gated(store, lobby, RevisionGate::default())
+    }
+
+    /// [`start`], refusing the games `gate` refuses.
+    fn start_gated(store: Arc<SessionStore>, lobby: Lobby, gate: RevisionGate) -> SocketAddr {
         let certs = concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs");
         let tls = tls_context_from(
             &format!("{certs}/survarium_login_server.key"),
@@ -641,7 +712,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                handle_client(&store, &tls, lobby, stream);
+                handle_client(&store, &tls, lobby, &gate, stream);
             }
         });
         addr
@@ -1000,7 +1071,7 @@ mod tests {
         for (revision, user_name) in [(1, &b"e2e-user-1"[..]), (255, b"e2e-user-2")] {
             let (answer, reply) = sign_in_as(
                 addr,
-                &[b'0', b'.', b'2', b'6', b'g', b'0', 0, revision],
+                &patched(revision),
                 user_name,
                 &typed(b"test-password-1"),
             );
@@ -1011,6 +1082,50 @@ mod tests {
             );
         }
         assert_eq!(store.session_count(), 2);
+    }
+
+    /// The version field of a game of patch `revision` (client_patch.md §6).
+    fn patched(revision: u8) -> [u8; 8] {
+        [b'0', b'.', b'2', b'6', b'g', b'0', 0, revision]
+    }
+
+    #[test]
+    fn a_game_older_than_the_server_takes_is_told_its_version_is_outdated() {
+        let store = Arc::new(SessionStore::new());
+        let gate = RevisionGate {
+            min: 11,
+            exempt: vec!["bot-1".to_owned()],
+        };
+        let addr = start_gated(store.clone(), local_lobby(), gate);
+        // Older ones, the unpatched exe (0) too: refused before the
+        // password, with no account made and no session.
+        for revision in [0, 4, 10] {
+            let (answer, reply) = sign_in_as(
+                addr,
+                &patched(revision),
+                b"old-game",
+                &typed(b"test-password-1"),
+            );
+            assert_eq!((answer, reply), (0x22, Vec::new()), "revision {revision}");
+        }
+        assert_eq!(store.account_id_by_name("old-game"), None);
+        assert_eq!(store.session_count(), 0);
+        // The least revision and newer ones sign in.
+        for (revision, user_name) in [(11, &b"current-game"[..]), (0x80, b"newer-game")] {
+            let (answer, reply) = sign_in_as(
+                addr,
+                &patched(revision),
+                user_name,
+                &typed(b"test-password-1"),
+            );
+            assert_eq!(answer, 0x0B, "revision {revision}");
+            assert_eq!(store.client_revision(session_of(&reply)), Some(revision));
+        }
+        // A test bot says no revision and is let in, whatever its case.
+        let (answer, reply) = sign_in(addr, b"Bot-1", &typed(b"test-password-1"));
+        assert_eq!(answer, 0x0B);
+        assert_eq!(store.client_revision(session_of(&reply)), Some(0));
+        assert_eq!(store.session_count(), 3);
     }
 
     #[test]

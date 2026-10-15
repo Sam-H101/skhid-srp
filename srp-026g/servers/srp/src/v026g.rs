@@ -33,7 +33,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use lobby_server::v026g::{self as lobby, Inbox, Lobby, MatchFinished, MatchHost};
-use login_server::v026g::{self as login, Endpoint};
+use login_server::v026g::{self as login, Endpoint, RevisionGate};
 use match_server::v026g::{self as matches, MatchRegistry};
 use session::LockExt;
 use session::SessionStore;
@@ -474,6 +474,12 @@ impl Stack {
             local_peers: options.lobby.local_peers,
             key: options.certs.join("survarium_login_server.key"),
             certificate: options.certs.join("survarium_login_server.crt"),
+            // Older games are kept out from their sign-in on; the lobby
+            // refuses the sessions they had before (`patch_check`).
+            revision_gate: RevisionGate {
+                min: options.lobby.min_patch_revision,
+                exempt: options.bots.clone(),
+            },
         };
 
         let mut threads = Vec::new();

@@ -105,11 +105,10 @@ Every setting has a default; none is needed on a dev PC.
   goes after the first (the second for a player in a match), and its
   session waits the third for the client to connect again (transport.md
   §6.1).
-- `SRP_PATCH_REVISION_CHECK` (default off; `warn`, `refuse`),
-  `SRP_MIN_PATCH_REVISION` (default 4), `SRP_OUTDATED_TEXT`, `SRP_UPDATE_HINT`:
-  a game whose exe says an older patch revision is told in the general chat
-  how to update and, with `refuse`, does not play (client_patch.md §6,
-  lobby_requests.md §4.2).
+- `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255 stops
+  srp): a game whose exe says an older patch revision is refused at its
+  sign-in (0x22) and its sessions from before a restart in the lobby
+  (client_patch.md §6).
 - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none): lines in
   the general chat when somebody joins or leaves the search and when a match
   starts, with whom (social.md §9.7).
