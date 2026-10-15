@@ -81,6 +81,15 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
+    /// From its two bits in [`WalkGrid`]'s packed links.
+    fn from_bits(bits: u32) -> Self {
+        match bits & 3 {
+            0 => Self::Walk,
+            1 => Self::Drop,
+            _ => Self::Jump,
+        }
+    }
+
     /// Extra path cost, in metres, so paths prefer walking (tuning, not
     /// game data).
     pub fn penalty(self) -> f32 {
@@ -96,6 +105,8 @@ impl LinkKind {
 pub type NodeId = u32;
 
 const NONE: u32 = u32::MAX;
+/// No link in a direction ([`WalkGrid`]'s `to`).
+const NO_LINK: u8 = u8::MAX;
 /// The 8 neighbour directions (dx, dz); `DIRS[d ^ 1]` is the opposite.
 const DIRS: [(i32, i32); 8] = [
     (1, 0),
@@ -134,11 +145,23 @@ pub struct WalkGrid {
     cell_of: Vec<u32>,
     height: Vec<f32>,
     ceiling: Vec<f32>,
-    links: Vec<[u32; 8]>,
-    kinds: Vec<[LinkKind; 8]>,
+    /// Per node and direction ([`DIRS`]), the floor it links to: that
+    /// floor's index among the floors of its cell, [`NO_LINK`] for none.
+    to: Vec<[u8; 8]>,
+    /// Per node, 4 bits a direction: the link's kind (bits 0-1) and how
+    /// many cells along the direction it lands, less one (bits 2-3; a drop
+    /// or a jump past an eroded floor lands further on).
+    how: Vec<u32>,
     /// Per node, its piece of the grid: floors joined by links either way
     /// ([`Self::may_reach`]).
     piece: Vec<u32>,
+}
+
+/// The links while the grid is built, a whole floor id a direction; packed
+/// into `to` and `how` at the end (28 B a floor instead of 56).
+struct Wide {
+    links: Vec<[u32; 8]>,
+    kinds: Vec<[LinkKind; 8]>,
 }
 
 /// Counts of a build, for logs and the docs.
@@ -225,23 +248,24 @@ impl WalkGrid {
             cell_of,
             height,
             ceiling,
-            links: Vec::new(),
-            kinds: Vec::new(),
+            to: Vec::new(),
+            how: Vec::new(),
             piece: Vec::new(),
         };
-        grid.link(&forced);
-        grid.erode();
-        grid.pieces();
+        let mut wide = grid.link(&forced);
+        grid.erode(&mut wide);
+        grid.pieces(&wide);
+        grid.pack(wide);
         stats.floors_after_erosion = grid.len();
         (grid, stats)
     }
 
-    fn link(&mut self, forced: &[bool]) {
+    fn link(&self, forced: &[bool]) -> Wide {
         let n = self.height.len();
         let body = self.body;
         let stair_rise = body.step.max(3.0 * self.cell);
-        self.links = vec![[NONE; 8]; n];
-        self.kinds = vec![[LinkKind::Walk; 8]; n];
+        let mut links = vec![[NONE; 8]; n];
+        let mut kinds = vec![[LinkKind::Walk; 8]; n];
         for a in 0..n {
             let (i, k) = self.cell_xz(self.cell_of[a] as usize);
             for (d, &(di, dk)) in DIRS.iter().enumerate() {
@@ -271,10 +295,11 @@ impl WalkGrid {
                         best = (b, 0.0, kind);
                     }
                 }
-                self.links[a][d] = best.0;
-                self.kinds[a][d] = best.2;
+                links[a][d] = best.0;
+                kinds[a][d] = best.2;
             }
         }
+        Wide { links, kinds }
     }
 
     /// The floor in `cell` nearest in height that `a` drops or jumps to,
@@ -312,7 +337,7 @@ impl WalkGrid {
     /// A drop or jump whose landing went lands further on, up to the
     /// rounds of erosion past it: a body that drops beside a wall lands
     /// clear of it.
-    fn erode(&mut self) {
+    fn erode(&mut self, wide: &mut Wide) {
         let n = self.height.len();
         let mut alive = vec![true; n];
         let rounds = erosion_rounds(self.body.radius, self.cell);
@@ -321,8 +346,8 @@ impl WalkGrid {
                 .filter(|&a| {
                     alive[a]
                         && (0..4).any(|d| {
-                            let b = self.links[a][d];
-                            b == NONE || (self.kinds[a][d] == LinkKind::Walk && !alive[b as usize])
+                            let b = wide.links[a][d];
+                            b == NONE || (wide.kinds[a][d] == LinkKind::Walk && !alive[b as usize])
                         })
                 })
                 .collect();
@@ -336,18 +361,18 @@ impl WalkGrid {
             }
             let (i, k) = self.cell_xz(self.cell_of[a] as usize);
             for (d, &(di, dk)) in DIRS.iter().enumerate() {
-                let b = self.links[a][d];
-                if b == NONE || alive[b as usize] || self.kinds[a][d] == LinkKind::Walk {
+                let b = wide.links[a][d];
+                if b == NONE || alive[b as usize] || wide.kinds[a][d] == LinkKind::Walk {
                     continue;
                 }
-                self.links[a][d] = NONE;
+                wide.links[a][d] = NONE;
                 for reach in 2..=rounds as i32 + 1 {
                     let Some(cell) = self.cell_index(i + di * reach, k + dk * reach) else {
                         break;
                     };
                     if let Some((b, kind)) = self.ledge(a, cell, Some(&alive)) {
-                        self.links[a][d] = b;
-                        self.kinds[a][d] = kind;
+                        wide.links[a][d] = b;
+                        wide.kinds[a][d] = kind;
                         break;
                     }
                 }
@@ -382,17 +407,17 @@ impl WalkGrid {
             if !alive[a] {
                 continue;
             }
-            let mut l = self.links[a];
+            let mut l = wide.links[a];
             for to in l.iter_mut() {
                 if *to != NONE {
                     *to = new_id[*to as usize];
                 }
             }
             links.push(l);
-            kinds.push(self.kinds[a]);
+            kinds.push(wide.kinds[a]);
         }
-        self.links = links;
-        self.kinds = kinds;
+        wide.links = links;
+        wide.kinds = kinds;
         let mut start = Vec::with_capacity(self.start.len());
         let mut node = 0usize;
         for c in 0..self.nx * self.nz {
@@ -428,7 +453,7 @@ impl WalkGrid {
 
     /// Bytes the grid holds.
     pub fn memory_bytes(&self) -> usize {
-        self.start.len() * 4 + self.len() * (4 + 4 + 4 + 32 + 8 + 4)
+        self.start.len() * 4 + self.len() * (4 + 4 + 4 + 8 + 4 + 4)
     }
 
     /// What the grid answers, as one number ([`crate::digest`]): its frame
@@ -461,11 +486,14 @@ impl WalkGrid {
             digest.f32(self.height[node]);
             digest.f32(self.ceiling[node]);
             digest.u32(self.piece[node]);
+            let (i, k) = self.cell_xz(self.cell_of[node] as usize);
             for d in 0..8 {
-                let to = self.links[node][d];
-                digest.u32(to);
-                if to != NONE {
-                    digest.u32(self.kinds[node][d] as u32);
+                match self.link_of(node, d, i, k) {
+                    Some((to, kind)) => {
+                        digest.u32(to);
+                        digest.u32(kind as u32);
+                    }
+                    None => digest.u32(NONE),
                 }
             }
         }
@@ -480,7 +508,7 @@ impl WalkGrid {
 
     /// Labels each floor with its piece: the floors it is joined to by
     /// links taken either way (union-find over the links).
-    fn pieces(&mut self) {
+    fn pieces(&mut self, wide: &Wide) {
         let n = self.len();
         let mut root: Vec<u32> = (0..n as u32).collect();
         fn find(root: &mut [u32], mut a: u32) -> u32 {
@@ -492,7 +520,7 @@ impl WalkGrid {
             a
         }
         for a in 0..n {
-            for &b in &self.links[a] {
+            for &b in &wide.links[a] {
                 if b != NONE {
                     let (ra, rb) = (find(&mut root, a as u32), find(&mut root, b));
                     if ra != rb {
@@ -502,6 +530,57 @@ impl WalkGrid {
             }
         }
         self.piece = (0..n as u32).map(|a| find(&mut root, a)).collect();
+    }
+
+    /// Packs the links: each as its floor's index in the cell it lands in,
+    /// its kind and its reach ([`WalkGrid`]'s `to` and `how`).
+    fn pack(&mut self, wide: Wide) {
+        let n = self.len();
+        let mut to = Vec::with_capacity(n);
+        let mut how = Vec::with_capacity(n);
+        for a in 0..n {
+            let (i, k) = self.cell_xz(self.cell_of[a] as usize);
+            let (mut floors, mut bits) = ([NO_LINK; 8], 0u32);
+            for (d, &(di, dk)) in DIRS.iter().enumerate() {
+                let b = wide.links[a][d];
+                if b == NONE {
+                    continue;
+                }
+                let cell = self.cell_of[b as usize] as usize;
+                let index = b - self.start[cell];
+                let (ib, kb) = self.cell_xz(cell);
+                let reach = (ib - i).abs().max((kb - k).abs());
+                assert!(
+                    index < u32::from(NO_LINK)
+                        && (1..=4).contains(&reach)
+                        && (ib - i, kb - k) == (di * reach, dk * reach),
+                    "a link the packed grid cannot hold: floor {a} to {b}"
+                );
+                floors[d] = index as u8;
+                bits |= (wide.kinds[a][d] as u32 | ((reach as u32 - 1) << 2)) << (4 * d);
+            }
+            to.push(floors);
+            how.push(bits);
+        }
+        self.to = to;
+        self.how = how;
+    }
+
+    /// The link out of floor `a` (in cell `i`, `k`) in direction `d`.
+    #[inline]
+    fn link_of(&self, a: usize, d: usize, i: i32, k: i32) -> Option<(NodeId, LinkKind)> {
+        let index = self.to[a][d];
+        if index == NO_LINK {
+            return None;
+        }
+        let bits = self.how[a] >> (4 * d);
+        let reach = ((bits >> 2) & 3) as i32 + 1;
+        let (di, dk) = DIRS[d];
+        let cell = (k + dk * reach) as usize * self.nx + (i + di * reach) as usize;
+        Some((
+            self.start[cell] + u32::from(index),
+            LinkKind::from_bits(bits),
+        ))
     }
 
     /// Whether a way from `from` to `to` may exist: false when they lie in
@@ -538,20 +617,24 @@ impl WalkGrid {
     /// The links out of a floor.
     pub fn links(&self, node: NodeId) -> impl Iterator<Item = (NodeId, LinkKind)> + '_ {
         let a = node as usize;
-        (0..8)
-            .filter(move |&d| self.links[a][d] != NONE)
-            .map(move |d| (self.links[a][d], self.kinds[a][d]))
+        let (i, k) = self.cell_xz(self.cell_of[a] as usize);
+        (0..8).filter_map(move |d| self.link_of(a, d, i, k))
     }
 
     /// The links into a floor.
     pub fn incoming(&self, node: NodeId) -> impl Iterator<Item = (NodeId, LinkKind)> + '_ {
-        let (i, k) = self.cell_xz(self.cell_of[node as usize] as usize);
+        let cell = self.cell_of[node as usize] as usize;
+        let (i, k) = self.cell_xz(cell);
+        let index = node - self.start[cell];
         DIRS.iter().enumerate().flat_map(move |(d, &(di, dk))| {
-            // A floor in the cell behind direction d linking forward.
+            // A floor in the cell behind direction d linking forward one
+            // cell.
             let from = self.cell_index(i - di, k - dk);
             let range = from.map_or(0..0, |c| self.start[c]..self.start[c + 1]);
             range.filter_map(move |b| {
-                (self.links[b as usize][d] == node).then_some((b, self.kinds[b as usize][d]))
+                let bits = self.how[b as usize] >> (4 * d);
+                (u32::from(self.to[b as usize][d]) == index && bits & 0b1100 == 0)
+                    .then(|| (b, LinkKind::from_bits(bits)))
             })
         })
     }
@@ -1035,13 +1118,13 @@ pub(crate) mod tests {
         moved.height[0] += 0.001;
         assert_ne!(moved.digest(), grid.digest());
         let mut relinked = two_rooms();
-        let d = (0..8).find(|&d| relinked.links[0][d] != NONE).unwrap();
-        relinked.kinds[0][d] = LinkKind::Jump;
+        let d = (0..8).find(|&d| relinked.to[0][d] != NO_LINK).unwrap();
+        relinked.how[0] = (relinked.how[0] & !(3 << (4 * d))) | (2 << (4 * d));
         assert_ne!(relinked.digest(), grid.digest());
         // A link that goes nowhere has no kind to tell.
         let mut unlinked = two_rooms();
-        let d = (0..8).find(|&d| unlinked.links[0][d] == NONE).unwrap();
-        unlinked.kinds[0][d] = LinkKind::Drop;
+        let d = (0..8).find(|&d| unlinked.to[0][d] == NO_LINK).unwrap();
+        unlinked.how[0] |= 1 << (4 * d);
         assert_eq!(unlinked.digest(), grid.digest());
     }
 
