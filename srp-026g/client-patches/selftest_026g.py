@@ -139,6 +139,18 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     stack back and returns with `ret`, and holds szOID_RSA_RSA and
     resources_db_key_026g.der (a 2048-bit key); the build without the late
     join keeps the original call.
+26. the same build: sign_in_on_connected's `mov [edi+8],eax` /
+    `mov [edi+0Ch],dl` (0x380889) are `call` stale_dll at 0xE00 of `.srp`
+    and a nop (no relocation under them, no branch aims inside them);
+    stale_dll_026g.section.bin is what nasm makes and sits there, after the
+    resources.db signature code and before the late join; it saves every
+    register (pushad / popad), calls itself once for its address, then
+    GetModuleHandleA, GetProcAddress, CreateFileA, CloseHandle through the
+    import table and GetTempPathA, branches only inside itself, does the two
+    writes it replaced and ends with `ret`; it names kernel32.dll,
+    GetTempPathA and shell_32.dll and nothing else. Check 11 works out its
+    field: byte 8 the check's. The build without the late join keeps the
+    original instructions.
 """
 
 import ctypes
@@ -288,6 +300,13 @@ def test_bins():
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.DB_SIGNATURE_ENTRY:#x}", "-i", HERE + os.sep,
                         os.path.join(HERE, "db_signature_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    path = P.stale_dll_bin()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.STALE_DLL_ENTRY:#x}",
+                        os.path.join(HERE, "stale_dll_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
     check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
 
@@ -829,6 +848,10 @@ def version_field(image):
         elif m := to_field.match(text):
             for i, value in enumerate(get(m.group(2))):
                 out[int(m.group(1), 16) + i] = value
+        elif text == f"call {P.STALE_DLL_ENTRY:#x}":
+            # stale_dll_026g.asm: what `mov [edi+8],eax` / `mov [edi+0Ch],dl`
+            # did, with its flags in byte 8 (check 26).
+            out[8:13] = ["stale_dll", 0, 0, 0] + get("dl")
         elif text not in ("nop", "add edi,esi"):
             check(False, f"{address:#x}: `{text}` is not an instruction of the version field's code")
             return None
@@ -852,10 +875,12 @@ def test_revision(original, image, mode, revision):
     check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{revision:#x}"
           and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
           f"{va:#x}: `mov byte [esp+0x27],{revision:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
-    expected = list(b"0.26g0" + bytes([0, revision]) + bytes(4)) + ["eula"]
+    stale_dll = revision >= 13
+    expected = list(b"0.26g0" + bytes([0, revision])) + (["stale_dll"] if stale_dll else [0]) + [0, 0, 0, "eula"]
     check(field == expected,
-          f'the version field is "0.26g0", a zero, the revision {revision} in byte 7 and four zero bytes; '
-          "the EULA flag follows as before")
+          f'the version field is "0.26g0", a zero, the revision {revision} in byte 7, '
+          + ("the shell_32.dll check's flags in byte 8 and three zero bytes" if stale_dll else "four zero bytes")
+          + "; the EULA flag follows as before")
     inside = lambda relocations: sorted((address, kind) for kind, address in relocations.values()
                                         if VERSION_FIELD[0] <= address < VERSION_FIELD[1])
     check(inside(Image(original).relocations()) == [(0x380849, 3), (0x380850, 3), (0x380864, 3)],
@@ -1698,6 +1723,47 @@ def test_db_signature(original, image, before):
           "it holds szOID_RSA_RSA, NULL parameters and resources_db_key_026g.der (2048 bits, e = 65537)")
 
 
+def test_stale_dll(original, image, before):
+    r"""Check 26: the sign-in says whether %TEMP%\shell_32.dll exists."""
+    va, old, new = P.STALE_DLL
+    entry = P.STALE_DLL_ENTRY
+    check(image.read(va, len(new)) == new and before.read(va, len(old)) == old
+          and [text for _, _, text in ndisasm(image.read(va, 6), va)] == [f"call {entry:#x}", "nop"]
+          and [text for _, _, text in ndisasm(Image(original).read(va, 6), va)]
+          == ["mov [edi+0x8],eax", "mov [edi+0xc],dl"],
+          f"{va:#x}: `mov [edi+0x8],eax` / `mov [edi+0xc],dl` are `call {entry:#x}` / `nop`; "
+          "the build without the late join keeps them")
+    under = [v for kind, v in Image(original).relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    start, end = SIGN_IN_ON_CONNECTED
+    found = aimed_inside(original, va, len(old), 0)
+    found += [address for address, _, text in ndisasm(Image(original).read(start, end - start), start)
+              if (target := branch_target(text)) is not None and va < target < va + len(old)]
+    check(not under and not found,
+          "no base relocation under the two instructions, no branch or address aims inside them"
+          + "".join(f"\n          {a:#x}" for a in found))
+    code = open(P.stale_dll_bin(), "rb").read()
+    check(image.read(entry, len(code)) == code, f"stale_dll at {entry:#x} is stale_dll_026g.section.bin")
+    strings = code[code.index(b"kernel32.dll\0"):]
+    listing = ndisasm(code[:len(code) - len(strings)], entry)
+    texts = [text for _, _, text in listing]
+    here = listing[2][0]
+    slots = {0x87003C, 0x870040, 0x870048, 0x870084}
+    calls = [text for text in texts if text.startswith("call")]
+    indirect = {int(m.group(1), 16) for text in calls
+                if (m := re.match(r"^call (?:dword (?:near )?)?\[ebp\+0x([0-9a-f]+)\]$", text))}
+    other = [text for text in calls if not re.match(r"^call (?:dword (?:near )?)?\[ebp\+0x", text)]
+    jumps = [branch_target(text) for text in texts if text.startswith("j")]
+    check(texts[:2] == ["pusha", f"call {here:#x}"]
+          and texts[-4:] == ["popa", "mov [edi+0x8],eax", "mov [edi+0xc],dl", "ret"]
+          and indirect == slots and other == [f"call {here:#x}", "call eax"]
+          and all(entry <= target < entry + len(code) for target in jumps),
+          "it saves every register (pushad / popad), calls itself once for its address, GetModuleHandleA, "
+          "GetProcAddress, CreateFileA and CloseHandle through the import table and GetTempPathA, "
+          "branches only inside itself, then does the two writes it replaced and returns")
+    check(strings == b"kernel32.dll\0GetTempPathA\0shell_32.dll\0",
+          "the names it holds are kernel32.dll, GetTempPathA and shell_32.dll, and nothing else")
+
+
 def test_replay_reattach(original, image, before):
     """A replay's camera follows its player into another kit (patch
     revision 11, REPLAY_REATTACH): replay_network_client's slot +0x54 is
@@ -1887,11 +1953,13 @@ def test_late_join(original, without, server, source):
     pickup = open(P.pickup_bin(), "rb").read()
     seek = open(P.seek_clear_bin(), "rb").read()
     signature_code = open(P.db_signature_bin(), "rb").read()
+    stale_dll = open(P.stale_dll_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     pieces = [(0, len(first_page), "the build without the late join's first page"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.DB_SIGNATURE_OFFSET, len(signature_code), "the resources.db signature code"),
+              (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
                 for a, b in zip(pieces, pieces[1:]) if a[0] + a[1] > b[0]]
@@ -1904,12 +1972,15 @@ def test_late_join(original, without, server, source):
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
           and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.DB_SIGNATURE_OFFSET]) <= {0xCC}
           and body[P.DB_SIGNATURE_OFFSET:P.DB_SIGNATURE_OFFSET + len(signature_code)] == signature_code
-          and set(body[P.DB_SIGNATURE_OFFSET + len(signature_code):P.LATE_JOIN_OFFSET]) <= {0xCC}
+          and set(body[P.DB_SIGNATURE_OFFSET + len(signature_code):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
+          and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"pickup code at +{P.PICKUP_OFFSET:#x}, the seek code at +{P.SEEK_CLEAR_OFFSET:#x} and the "
-          f"resources.db signature code at +{P.DB_SIGNATURE_OFFSET:#x}, the code follows, then int3 padding")
+          f"resources.db signature code at +{P.DB_SIGNATURE_OFFSET:#x} and the shell_32.dll check at "
+          f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
           and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
@@ -1938,7 +2009,7 @@ def test_late_join(original, without, server, source):
     ranges.append((P.data_file_offset(P.CLOCK_FACTOR_VA), 4))
     ranges.append((image.offset(P.REPLAY_REATTACH_SLOT[0]), 4))
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
-               (P.file_offset(P.DB_SIGNATURE_VA) + 1, 4),
+               (P.file_offset(P.DB_SIGNATURE_VA) + 1, 4), (P.file_offset(P.STALE_DLL_VA), len(P.STALE_DLL[1])),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
@@ -2044,6 +2115,7 @@ def test_late_join(original, without, server, source):
     test_sound_queue(original, image, before)
     test_seek_clear(original, image, before)
     test_db_signature(original, image, before)
+    test_stale_dll(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
