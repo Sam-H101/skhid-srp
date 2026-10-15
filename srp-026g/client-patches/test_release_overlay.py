@@ -338,9 +338,13 @@ class ReleaseTests(unittest.TestCase):
             self.build(self.root / 'again.zip', '--pack-zip', f'--resource-region=lobby_menu={lobby_path}',
                        f'--resources-out={blobs}')
         self.assertEqual(len(list(blobs.iterdir())), 4)
-        # The same in the real table: the two entries of build 2777's db.
+        # The same in the real table: the three entries of build 2777's db,
+        # the settings menu's ending where the lobby's begins.
+        self.assertEqual(overlay.RESOURCE_REGIONS['main_menu'][:2], (17970448, 1194596))
         self.assertEqual(overlay.RESOURCE_REGIONS['lobby_menu'][:2], (19165044, 38985769))
         self.assertEqual(overlay.RESOURCE_REGIONS['login_menu'][:2], (58150813, 3508744))
+        spans = sorted(entry[:2] for entry in overlay.RESOURCE_REGIONS.values())
+        self.assertTrue(all(a + n <= b for (a, n), (b, _) in zip(spans, spans[1:])))
 
     def test_an_entry_the_game_or_the_updater_would_refuse_is_refused(self):
         db, regions = self.fake_db()

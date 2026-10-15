@@ -172,6 +172,9 @@ RESOURCES_DB = "game/resources.db"
 # offset and size in the file (the file table's pos_in_db and size_in_db) and
 # the sha256 of their original bytes.
 RESOURCE_REGIONS = {
+    # The settings menu, for fov_slider_026g.py's "FOV:" slider (patch 22);
+    # it ends where lobby_menu begins.
+    "main_menu": (17970448, 1194596, "0ff118a85b53f69eb65f36b0f5996bdbdc12ec5068440e4d4d4dd6ece49481a4"),
     "lobby_menu": (19165044, 38985769, "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"),
     "login_menu": (58150813, 3508744, "805ea5f872402d0b8c4abceed4f8cabf5ed50b7d62d5c3fc45f58f6d64e982cf"),
 }
