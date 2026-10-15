@@ -624,7 +624,7 @@ also catches a PC where the cheat ran in an earlier session.
 - **Checked** (`selftest_026g.py` check 26, `test_stale_dll`): the two
   instructions become the call and a nop (the build without the late join
   keeps them); no relocation under them and no branch into them; the cave is
-  `stale_dll_026g.section.bin`, sits after the signature code and before the
+  `stale_dll_026g.section.bin`, sits after the seek code and before the
   late join without overlap, saves and restores every register, calls only
   itself, the four imports and `GetTempPathA`, branches only inside itself,
   and names only `kernel32.dll`, `GetTempPathA` and `shell_32.dll`. Check 11
@@ -693,16 +693,16 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   CN=survarium.com, issuer Certum Code Signing CA) was valid 2014-06-06 to
   **2015-06-06**, so the chain check always fails today.
 - Patch: 0x12A10 `83 EC 2C` -> `31 C0 C3` (`xor eax,eax; ret`; cdecl, no
-  relocations in those bytes). The file table signature is still verified
-  with the certificate's key afterwards. Live: the patched client gets past
-  the check and opens its window.
+  relocations in those bytes). The file table signature was still verified
+  with the certificate's key afterwards, until revision 14 (§0.1). Live:
+  the patched client gets past the check and opens its window.
 - Ruled out: a damaged unpack (resources.db CRC 0x4A01F332 equals the 7z
   record) and a half-applied update (the leftover
   `temp/patch_temp/resources.db.patch` names target size 6,285,533,906 =
   our resources.db).
 - 0.21d has `verify_sign` too, but its clients start; not checked why.
 
-### 0.1 What is signed, and Skhid's key (patch revision 12, 2026-10-15)
+### 0.1 What is signed, and why it is no longer checked (patch revisions 12 and 14, 2026-10-15)
 
 - **The bytes** [V, PROVEN with the retail archive]: the file table, the
   node buffer after the 24-byte header, `[24, 24 + u32 at 20)`; RSA PKCS#1
@@ -717,8 +717,20 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   CERT_INFO.SubjectPublicKeyInfo (+0Ch, +38h) alone, for
   CryptImportPublicKeyInfo, then SHA-1 and CryptVerifySignature; 0 is good,
   8 a bad signature ("Resources archive is corrupted"). [V]
-- **Revision 12** (`../../client-patches/db_signature_026g.asm`, README patch
-  24): the call at 0x135D3 goes to `.srp`+C00h, which calls 0x12CB0 once
-  with a context made on the stack whose key is Skhid's
-  (`resources_db_key_026g.der`). Only a Skhid-signed table starts the game.
-  Not run in a game.
+- **The result** [V]: verify_sign keeps 0x12CB0's eax (`mov ebx,eax`
+  0x135DC, `mov eax,ebx` 0x13601) and returns it; the mounter's
+  `test eax,eax` / `jz` at 0x432DD mounts on 0 and pushes "Resources archive
+  is corrupted" (0x432E1) on anything else. So 0 is success at this call.
+- **Revision 12** (README patch 24, never in a download): the call at
+  0x135D3 went to 413 bytes at `.srp`+C00h, which called 0x12CB0 once with a
+  context made on the stack whose key was Skhid's. Only a Skhid-signed table
+  started the game.
+- **Revision 14** (README patch 24): the call at 0x135D3, `E8 D8 F6 FF FF`,
+  is `31 C0 90 90 90` (`xor eax,eax` and three nops), the same skip as
+  resource-porter's `tools/patch-026-map-resources.py`; the `add esp,10h`
+  after it still takes the four arguments off, and the caller still frees
+  the certificate. No signature is checked. Why (the owner, 2026-10-15): a
+  check in the player's own exe is patched out by anyone who wants to, so it
+  protected nothing, and the updater already checks every byte it writes by
+  sha256. The 413 bytes at `.srp`+C00h are int3 padding again; the
+  shell_32.dll check stays at +E00h. Not run in a game.

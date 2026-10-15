@@ -30,9 +30,6 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425000 snapshot_upload_026g.asm -o snapshot_upload_026g.section.bin
         nasm -f bin -DCAVE=0x325A60  snapshot_upload_026g.asm -o snapshot_upload_026g.hash-mismatch.bin
     (both .bin files are checked in; --bin=<file> names another one).
-    The resources.db signature code comes from db_signature_026g.asm:
-        nasm -f bin -DCAVE=0xA425C00 db_signature_026g.asm -o db_signature_026g.section.bin
-    (checked in; it embeds resources_db_key_026g.der).
     The stale shell_32.dll check comes from stale_dll_026g.asm:
         nasm -f bin -DCAVE=0xA425E00 stale_dll_026g.asm -o stale_dll_026g.section.bin
     (checked in).
@@ -165,13 +162,11 @@ Patches:
   mask, the server saw a player alive and the match ran to the time limit
   (match.md section 28). The `jnz` at 0x3160F1 becomes six nops, as the
   battery rule's does;
-- the resources.db file table is checked with Skhid's key instead of the
-  survarium.com certificate's (patch revision 12, client_patch.md section
-  0.1): verify_sign's call of verify_sign_impl at 0x135D3 goes to
-  db_signature_026g.asm at 0xC00 of `.srp`, which makes it once with a
-  certificate context whose key is resources_db_key_026g.der. The game
-  starts only with the resources.db the updater installs; any other is
-  "Resources archive is corrupted";
+- the resources.db file table's signature is not checked (patch revision
+  14, client_patch.md section 0.1): verify_sign's call of verify_sign_impl
+  at 0x135D3 becomes `xor eax,eax` and three nops, verify_sign_impl's
+  "good signature", so a game starts with an archive of new files. (Revision
+  12 checked it with Skhid's key instead; 14 drops that code);
 - the sign-in reports a stale shell_32.dll in the temporary folder (patch
   revision 13, client_patch.md section 3.25): sign_in_on_connected's
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
@@ -308,15 +303,16 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # replay's seek empties the weapons' sound queues (SEEK_CLEAR below; sounds
 # played late after a seek). Nothing a match computes: no revision of their
 # own (owner, 2026-10-15).
-# 12: the game starts only with a resources.db whose file table Skhid's key
-# signed, the one the updater installs (DB_SIGNATURE below); a retail one
-# stops it. Nothing a match computes: 11 and 12 play together. A server that
-# sells items only that resources.db has asks for 12: a game that says 12
-# has started with it.
+# 12: the game started only with a resources.db whose file table Skhid's
+# key signed (DB_SIGNATURE below; 14 replaced it). Nothing a match computes:
+# 11 and 12 play together.
 # 13: the sign-in reports whether %TEMP%\shell_32.dll exists (STALE_DLL
 # below), in byte 8 of the version field. Nothing a match computes: 12 and
 # 13 play together.
-REVISION = 13
+# 14: the resources.db signature is not checked at all (DB_SIGNATURE below):
+# a retail archive and one with new files both start the game. Nothing a
+# match computes: 13 and 14 play together.
+REVISION = 14
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -428,27 +424,24 @@ CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
 # was found and its chain check (CERT, 0x12A10) passed: `mov eax,esi` /
 # `call 12CB0h` (verify_sign_impl: eax = the certificate's context, four
 # cdecl arguments: the file table, its size, the signature, its size; 0 for
-# a good signature) / `add esp,10h`. The call goes to verify_skhid
-# (db_signature_026g.asm), at DB_SIGNATURE_OFFSET in the first page of
-# `.srp`: after the upload code, the default-server stub and the address
-# (0x21D at most), the pickup code (PICKUP_OFFSET, 0x800) and the replay's
-# seek code (SEEK_CLEAR_OFFSET, 0xA00); the late join begins at the next
-# page. build() checks that none of them overlaps. The rel32 holds no
-# address: no base relocation is under it.
+# a good signature) / `add esp,10h` / ... / `mov ebx,eax`, verify_sign's
+# result, which the mounter tests (0x432DD: 0 mounts, any other value is
+# "Resources archive is corrupted"). The call becomes `xor eax,eax` and
+# three nops: no signature is checked; the `add esp,10h` after it still
+# takes the four arguments off. The call's rel32 holds no address: no base
+# relocation is under it.
 DB_SIGNATURE_VA, DB_SIGNATURE_IMPL = 0x135D3, 0x12CB0
-DB_SIGNATURE_OFFSET = 0xC00
-DB_SIGNATURE_ENTRY = SECTION_VA + DB_SIGNATURE_OFFSET
-DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"),
-                b"\xE8" + struct.pack("<i", DB_SIGNATURE_ENTRY - DB_SIGNATURE_VA - 5))
+DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"), bytes.fromhex("31c0909090"))
 
 # sign_in_on_connected 0x380800, where it finishes the 12-byte version field
 # (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
 # `mov [edi+0Ch],dl` (the EULA byte). Both become a call of
 # stale_dll_026g.asm and a nop; the code there does both after its check,
 # with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
-# of `.srp`, after the resources.db signature code (DB_SIGNATURE_OFFSET);
-# build() checks that they do not overlap. The two instructions hold no
-# address: no base relocation is under them.
+# of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET; 0xC00 to
+# 0xE00 held revision 12's signature code); build() checks that they do not
+# overlap. The two instructions hold no address: no base relocation is
+# under them.
 STALE_DLL_VA = 0x380889
 STALE_DLL_OFFSET = 0xE00
 STALE_DLL_ENTRY = SECTION_VA + STALE_DLL_OFFSET
@@ -1029,9 +1022,8 @@ def build(original, mode, code=None, server=None, late_join=None):
     server embeds a default host:port in full builds only. late_join = the
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
-    REVISION_WITHOUT_LATE_JOIN; with it the game also starts only with a
-    resources.db signed by Skhid's key (db_signature_026g.section.bin), and
-    its sign-in says whether %TEMP%\\shell_32.dll exists
+    REVISION_WITHOUT_LATE_JOIN; with it the game also checks no resources.db
+    signature, and its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
@@ -1046,7 +1038,6 @@ def build(original, mode, code=None, server=None, late_join=None):
             sys.exit("the late-join code is the 4096 bytes of late_join_026g.asm and the C code after them")
     revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
     if late_join is not None:
-        db_signature = open(db_signature_bin(), "rb").read()
         stale_dll = open(stale_dll_bin(), "rb").read()
     data = bytearray(original)
     patch(data, *CERT)
@@ -1178,21 +1169,17 @@ def build(original, mode, code=None, server=None, late_join=None):
         patch(data, *DB_SIGNATURE)
         if neutralize_relocs(data, [(DB_SIGNATURE_VA, DB_SIGNATURE_VA + len(DB_SIGNATURE[1]))]):
             sys.exit("a base relocation under verify_sign's call")
-        if SEEK_CLEAR_OFFSET + len(seek_clear) > DB_SIGNATURE_OFFSET \
-                or DB_SIGNATURE_OFFSET + len(db_signature) > LATE_JOIN_OFFSET:
-            sys.exit("the seek code and the resources.db signature code do not fit before the late join")
         patch(data, *STALE_DLL)
         if neutralize_relocs(data, [(STALE_DLL_VA, STALE_DLL_VA + len(STALE_DLL[1]))]):
             sys.exit("a base relocation under the version field's last two writes")
-        if DB_SIGNATURE_OFFSET + len(db_signature) > STALE_DLL_OFFSET \
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > STALE_DLL_OFFSET \
                 or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
-            sys.exit("the resources.db signature code and the shell_32.dll check do not fit before the late join")
+            sys.exit("the seek code and the shell_32.dll check do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
-            cave = cave + b"\xCC" * (DB_SIGNATURE_OFFSET - len(cave)) + db_signature
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
@@ -1218,7 +1205,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a replay's camera follows its player into another kit, "
                      "a weapon with a full sound queue drops the new sound, "
                      "a replay's seek empties the weapons' sound queues, "
-                     "only a resources.db signed by Skhid's key starts the game, "
+                     "no resources.db signature check, "
                      "the sign-in says whether %TEMP%\\shell_32.dll exists"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
@@ -1230,10 +1217,6 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
-
-
-def db_signature_bin():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_signature_026g.section.bin")
 
 
 def stale_dll_bin():

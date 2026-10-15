@@ -514,13 +514,8 @@ has none), the launcher's ten local pages, and `Skhid.bat` and `Skhid.sh`
 beside `game`, the one file a player starts. Build the Rust programs first with
 `../client/bugtrap/build.sh` and `../client/updater/build.sh`; the overlay
 builder includes them by default.
-The default exe (patch revision 12) starts only with the Skhid-signed
-`resources.db`, so it is built with `--resource-grow=<grow.json>
---resources-out=<folder>` (resource-porter's `pack release`), which the
-updater installs before PLAY. `--pack-zip` creates the player
-archive directly instead of a folder, with exactly those files (24 with the
-plan; seven with `--no-launcher --no-late-join`) and no source, symbols or
-tests.
+`--pack-zip` creates the player archive directly instead of a folder, with exactly
+those files (23; seven with `--no-launcher`) and no source, symbols or tests.
 `--check` writes nothing. The same input gives the same archive byte for byte:
 the updater installs whenever the archive the site offers has another checksum.
 The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the

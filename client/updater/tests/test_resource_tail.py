@@ -43,19 +43,10 @@ X86 = harness.X86
 sha256 = harness.sha256
 WINE = os.environ.get("SKHID_TEST_WINE") or shutil.which("wine")
 PREFIX = None
-# A throwaway key standing for Skhid's: the builder takes a head only when
-# its file table is signed by Skhid's key.
-KEYS = tempfile.TemporaryDirectory(prefix="skhid-key-")
-KEY, PUBLIC = os.path.join(KEYS.name, "key.pem"), os.path.join(KEYS.name, "key.der")
-
-
-def tearDownModule():
-    KEYS.cleanup()
 
 
 def setUpModule():
     global PREFIX
-    builder.S.genkey(KEY, PUBLIC)
     if WINDOWS:
         return
     if not WINE:
@@ -152,19 +143,12 @@ class TailTest(unittest.TestCase):
         """The plan make_client_026g.py writes for a grow manifest (and the
         lobby's region), its blobs on the site, and the db it makes."""
         offset, size = self.HEAD
-        # The db's header, a new file table and its signature by "Skhid's" key.
-        table = (f"table {version} ".encode() + self.db)[:size // 2]
-        head = (b"little-endian\0\0\0" + (1).to_bytes(4, "little") + len(table).to_bytes(4, "little")
-                + table + bytes(builder.S.SIGNATURE_SIZE))
-        head += self.db[offset + len(head):offset + size]
+        head = (f"table {version} ".encode() + self.db[offset:offset + size])[:size]
         tail = random.Random(version).randbytes(tail_size or self.TAIL_SIZE)
         folder = os.path.join(self.root, f"release-{version}")
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "head.bin"), "wb") as file:
             file.write(head)
-        builder.S.sign_file(os.path.join(folder, "head.bin"), KEY)
-        with open(os.path.join(folder, "head.bin"), "rb") as file:
-            head = file.read()
         with open(os.path.join(folder, "tail.bin"), "wb") as file:
             file.write(tail)
         manifest = os.path.join(folder, "grow.json")
@@ -186,8 +170,7 @@ class TailTest(unittest.TestCase):
             table = {"lobby_menu": (at, length, sha256(self.db[at:at + length]))}
             with mock.patch.dict(builder.RESOURCE_REGIONS, table, clear=True):
                 lines, blobs = builder.resource_regions(self.source, [("lobby_menu", path)])
-        with mock.patch.object(builder.S, "OWN_KEY", PUBLIC):
-            grow_lines, grow_blobs = builder.resource_grow(self.source, manifest, lines)
+        grow_lines, grow_blobs = builder.resource_grow(self.source, manifest, lines)
         blobs.update(grow_blobs)
         self.site.blobs.update(blobs)
         expected = bytearray(self.db)

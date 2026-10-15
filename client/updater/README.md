@@ -167,11 +167,6 @@ file <sha256> <size> <path>
 end
 ```
 
-The game exe of patch revision 12 starts only with a db whose file table
-Skhid's key signed, which a `tail` and its head region install, so
-`make_client_026g.py` builds that exe only with `--resource-grow`: from
-that release on every plan is a required one.
-
 A plan without a `tail` is written as format 1, as before, so that the
 updaters already out there read it; a `tail` comes only in format 2. An
 updater of format 1 refuses a plan of format 2 whole ("newer format",
