@@ -871,15 +871,50 @@ class UpdaterTest(unittest.TestCase):
     def test_a_plan_of_a_newer_format_or_cut_short_changes_nothing(self):
         self.make_db()
         plan = self.plan()
-        for spoilt, said in [(plan.replace(b"skhid-resources 1", b"skhid-resources 2"), "of a newer format"),
-                             (plan[:-5], "cannot be used (CutShort)"),
+        for spoilt, said in [(plan[:-5], "cannot be used (CutShort)"),
                              (plan.replace(b"game/resources.db", b"game/../resources.db", 1), "cannot be used (BadLine(2))")]:
             with self.subTest(said=said):
                 launcher = self.install(self.with_plan(spoilt))
                 self.assertEqual(launcher.said[-2:], [CHECKING, LATEST])
                 self.assert_original()
                 self.assertIn(said, self.log())
+        # A plan of a newer format may grow the db (a `tail`): the game may
+        # not be played with what this updater cannot do.
+        self.offer(self.with_plan(plan.replace(b"skhid-resources 1", b"skhid-resources 3")))
+        launcher = self.launcher()
+        launcher.wait_for_state(ERROR)
+        self.assertIn("PLAY stays off until this is done", " ".join(launcher.texts()))
+        self.assertEqual(launcher.finish(), 1)
+        self.assert_original()
+        self.assertIn("of a newer format", self.log())
         self.assertEqual(self.blob_requests(), [])
+
+    def test_a_running_game_keeps_play_off_while_a_required_plan_waits(self):
+        """A plan that grows the db (test_resource_tail.py has the rest,
+        under Wine too): while the game holds the db, the launcher says
+        what to do and PLAY stays off; the next start does it."""
+        import test_resource_tail as tail_tests
+        tail = tail_tests.TailTest("run")
+        tail.__dict__.update(self.__dict__)
+        tail.make_db()
+        plan, expected = tail.release()
+        files = self.with_plan(plan)
+        self.offer(files)
+        held = _winapi.CreateFile(self.path("game/resources.db"), _winapi.GENERIC_READ, 3,
+                                  _winapi.NULL, _winapi.OPEN_EXISTING, 0, _winapi.NULL)
+        try:
+            launcher = self.launcher()
+            launcher.wait_for_state(ERROR)
+            self.assertEqual(launcher.finish(), 1)
+        finally:
+            _winapi.CloseHandle(held)
+        self.assertIn("The game is running", " ".join(launcher.texts()))
+        self.assertEqual(self.read("game/resources.db"), tail.db)
+        self.assertTrue(self.read(f"{X86}/updater_skhid.resources.status").startswith(b"blocked "))
+        # The game has ended: the next start does it.
+        launcher = self.install(files)
+        self.assertEqual(launcher.said[-2:], [CHECKING, LATEST])
+        self.assertEqual(self.read("game/resources.db"), expected)
 
     def test_the_updater_that_replaced_itself_leaves_the_step_to_the_new_one(self):
         self.make_db()

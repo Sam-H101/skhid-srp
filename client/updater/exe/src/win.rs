@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FindClose,
     FindFirstFileW, FindNextFileW, FlushFileBuffers, GetDiskFreeSpaceExW, GetFileAttributesW,
     GetFileSizeEx, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING, MoveFileExW, OPEN_ALWAYS,
-    OPEN_EXISTING, ReadFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
+    OPEN_EXISTING, ReadFile, SetEndOfFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
@@ -500,6 +500,15 @@ impl File {
     /// Has Windows put what was written on the disk.
     pub fn flush(&self) -> Result<(), Code> {
         if unsafe { FlushFileBuffers(self.0.0) } == 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+
+    /// Makes the file `size` bytes long: what is past it goes.
+    pub fn set_len(&self, size: u64) -> Result<(), Code> {
+        self.seek(size)?;
+        if unsafe { SetEndOfFile(self.0.0) } == 0 {
             return Err(last_error());
         }
         Ok(())

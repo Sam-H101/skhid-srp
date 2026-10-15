@@ -181,6 +181,26 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.assertEqual(self.exe.read_bytes(), PATCHED_FIXTURE)
         self.assertFalse(self.exe.with_name(self.exe.name + '.before-memory-patch').exists())
 
+    def test_a_db_the_updater_finds_not_updated_keeps_the_game_from_starting(self):
+        self.copy_exe()
+        self.script.write_bytes(overlay.sh('release.example:2234', 'polish', True))
+        (self.bin / 'updater_skhid.exe').write_bytes(b'MZ updater')
+        self.env['TEST_FAIL'] = 'wine:updater_skhid.exe'
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has not finished updating the game's files", result.stderr)
+        self.assertIn('bash Skhid.sh launcher', result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        self.assertEqual(calls[-1]['args'], ['updater_skhid.exe', 'ready', 'quiet'])
+        self.assertFalse(any(call['args'][:1] == ['survarium_skhid.exe'] for call in calls))
+        # Ready: the game starts after the check.
+        self.env.pop('TEST_FAIL')
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
+        self.assertEqual([call['args'][:2] for call in calls[-2:]],
+                         [['updater_skhid.exe', 'ready'], ['survarium_skhid.exe', '-localization=polish']])
+
     def test_generated_cert_only_launcher_passes_configured_server(self):
         self.copy_exe()
         self.script.write_bytes(overlay.sh('release.example:2234', 'german', False))
