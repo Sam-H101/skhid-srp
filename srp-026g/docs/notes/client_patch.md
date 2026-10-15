@@ -574,6 +574,64 @@ Both came up while watching `.sur` files made from match recordings (`replay_sur
   - push_back's full test uses the same two fields as the cave;
   - `test_seek_clear`: the seek's site and steps, its two callers, the vtable's two writers, the destructor's clear, and the cave's start and end.
 
+### 3.25 The sign-in reports a stale shell_32.dll in the temporary folder (written 2026-10-15, patch revision 13) — PROVEN bytes, run with Unicorn, not run in a game
+
+One known cheat, "Survarium 0.26e ESP NAT" (`surv_26e_esp_hack_v21`,
+`cmtme.exe`, 2014), is an external wallhack: it reads the game's memory from
+its own process and draws on a window of its own over the game's. It touches
+the game once — it writes a DLL to `%TEMP%\shell_32.dll` and loads it into
+the game, where the DLL unloads `bugtrap.dll` and then itself (`ofstream`
+`out|binary`, 10 240 bytes, sha256 `a7f7593f…b817`, carved from the exe's
+`.data` at 0x40A020). As shipped it does not start against 0.26g: it looks
+for the 0.26e window title and its memory offsets are 0.26e's, both in
+`cmtme.exe`. A port would change those. Players can patch any client check
+out, so this is not proof; it is a first count, to learn whether the cheat
+is here at all before deciding whether to worry about it. Only the one file
+is checked, because the cheat leaves it behind and never removes it, so it
+also catches a PC where the cheat ran in an earlier session.
+
+- **The site** (`STALE_DLL`, full builds only, `stale_dll_026g.asm` at
+  `.srp`+E00h): `sign_in_on_connected` finishes the 12-byte version field
+  with `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 (bytes 8..11 are 0,
+  eax being 0; byte 12 is the EULA flag). These two become `call` the cave
+  and a `nop`. The cave saves every register (`pushad`), asks Windows whether
+  `%TEMP%\shell_32.dll` exists (`GetTempPathA` through `GetProcAddress`,
+  then `CreateFileA` with `OPEN_EXISTING` and no access, then `CloseHandle`;
+  `kernel32.dll` and the two imports `CreateFileA`/`CloseHandle` are the
+  exe's own), restores them (`popad`), and does the two writes it replaced
+  with the flags in byte 8: `0x80` the check ran, `0x80 | 0x01` it ran and
+  the file exists. Every register but eax is as the game had it; the image
+  may be rebased (call/pop-relative addressing, like the other caves).
+- **The field**: the text still ends at byte 6, so a server that reads only
+  the text (`parse_sign_in`) is unaffected, and the patch revision in byte 7
+  (§6) is unchanged. Byte 8 was 0 in every earlier exe.
+- **The server** (`login-server/src/lib.rs` `parse_sign_in`, `v026g.rs`):
+  reads byte 8 as `cheat_flags`, next to the patch revision, and logs it in
+  the sign-in line; `0x01` also logs a warning line with the account and
+  address. Nothing else is done with it (the owner: only count at first). A
+  shadowban, if wanted, should be delayed, so a caught player cannot tell
+  which sign-in flagged them.
+- **Nothing a match computes changes**: revisions 12 and 13 play together.
+  The two writes do what the originals did; the stack and every kept register
+  are restored; the field's length is unchanged.
+- **Run with Unicorn** (`check_stale_dll_026g.py`): the hook and its code run
+  on the built exe, loaded as it is and again 1 MiB higher (a rebased image),
+  with the Win32 functions stubbed. Byte 8 is `0x80` on a clean machine and
+  with the file elsewhere or `GetTempPathA` missing, `0x81` with
+  `%TEMP%\shell_32.dll`, including a 258-letter temporary folder; a folder
+  too long for the name gives `0x80`. Every register but eax is kept, the
+  stack is restored, and every handle opened is closed.
+- **Checked** (`selftest_026g.py` check 26, `test_stale_dll`): the two
+  instructions become the call and a nop (the build without the late join
+  keeps them); no relocation under them and no branch into them; the cave is
+  `stale_dll_026g.section.bin`, sits after the signature code and before the
+  late join without overlap, saves and restores every register, calls only
+  itself, the four imports and `GetTempPathA`, branches only inside itself,
+  and names only `kernel32.dll`, `GetTempPathA` and `shell_32.dll`. Check 11
+  works out byte 8 as the check's.
+- **What it is not**: proof, and not a defence. A ported cheat that skips the
+  `%TEMP%` DLL, or a player who deletes the file, leaves nothing to count.
+
 ## 4. Mode 3 batteries: not needed in 0.26g
 
 - 0.26g splits the rule: `match_time_vi_spawn_rule` (vtable 0xA06C04) wraps `match_time_vi_spawn_rule_core` (vtable 0xA15CAC). The battery tick is no longer a vtable slot: the core's ctor 0x3147A0 stores a delegate `{this, 0x3148A0}` at +0x1C4 / +0x1C8 (0x3147F1). [V]
