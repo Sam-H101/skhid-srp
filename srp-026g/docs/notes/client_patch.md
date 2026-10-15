@@ -734,3 +734,94 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   protected nothing, and the updater already checks every byte it writes by
   sha256. The 413 bytes at `.srp`+C00h are int3 padding again; the
   shell_32.dll check stays at +E00h. Not run in a game.
+
+### 0.2 resources.db's patches: more archives over it (patch revision 14, README patch 27, 2026-10-16)
+
+- **The design** (the owner, 2026-10-16): `resources.db` stays the retail
+  file; content comes as `resources.db.patch_1`, `_2`, ..., each a small
+  archive of the same format, mounted after it at the same virtual path,
+  `resources`, in order. A later archive's file replaces an earlier one's
+  and its new files are added; nothing is taken away. (This replaces #92's
+  `resources_skhid.db`, one archive the updater would have rebuilt.)
+- **Why a later mount wins** [from the VFS labels of #95, not re-read
+  here]: `hash_multiset::insert` 0x45900 puts a node in front of the nodes
+  of the same path whose mount id is lower (predicate 0x453D0, unsigned
+  `mount_id_of_node(node) < new id`), `find_no_lock` 0x452E0 returns the
+  first; mount ids only grow (`archive_mounter` 0x42D30, `lock xadd
+  [1F1D33Ch]` at 0x42E44); the file system's tasks run in the order they
+  were added (`add_fs_task` 0xF8480). A folder over a folder merges, a file
+  over a file replaces it. `windows_hdd_file_system::open` 0x40000 keeps one
+  handle for any path that ends in `.db`, so a patch must not.
+- **The start-up mount** [V]: the start-up (0x14E8A) makes a
+  `mount_by_config_helper` (0xE7D20) for "resources" with the callback
+  `on_mounted_resources` 0x147E0 bound to engine_world+2C0h and +2D4h
+  (0x14E1F..0x14E50; `mov dword [esp+1Ch],147E0h` at 0x14E34 is the
+  function's only reference in the file). `query_db` 0xE7D90 formats
+  `"../../%s.db"` (`push 9E705Ch` at 0xE7DAD; 0x18190 formats with `/` made
+  the string's separator, `\`) into a native path string on its stack
+  (begin, end of the text, end of the buffer, 260 characters, the
+  separator at +110h), and calls `query_mount_archive` 0xE7EF0 at 0xE7E3E,
+  its only caller: esi the allocator, then cdecl the virtual path string
+  ("resources"), the path string twice (the file table and the archive are
+  the same file), the descriptor (`m_mount_id.c_str()`) and the callback
+  (the helper's first member). It allocates a task (0x3E0 bytes) that
+  copies all of it (0x105510; the helper is freed right after the call,
+  0xE7E43..0xE7E6A) and adds it (0xF8480). The engine's source
+  (`core/sources/resources_query_mount.cpp`) is the same: one
+  `query_mount_archive(virtual_path, path, path, m_mount_id.c_str(),
+  m_callback, m_allocator, NULL)`. The descriptor is copied into the mount
+  root (`fixed_string<32>`, `vfs_mount_archive.cpp`) and only filters
+  unmounts by descriptor: every patch gets "resources" too.
+- **The callback** [V]: `on_mounted_resources(where it is kept, the next
+  step, &mount)`, cdecl. A null mount calls the fatal error 0x113580
+  (printf-like, never returns: 0x1134E0 and int3 after it) with "Cannot
+  mount resources. Please reinstall the application and try again."
+  (0x9DB7A0). Otherwise it takes a reference (`lock xadd [mount+1Ch],1`),
+  stores the mount where it is kept, lets the one there go (0xDFE30 at
+  zero) and starts the next step (0x176D0, 0xE5B60: the shaders' masks).
+  `link_mount_ptr`, the engine's way to hold several mounts as one, is not
+  in this build.
+- **The patch** (`mount_patches_026g.asm`, 505 bytes at `.srp`+C00h, where
+  revision 12's signature code was):
+  - 0xE7E3E `E8 AD 00 00 00` (`call 0E7EF0h`) becomes `E8 1D DE 33 0A`, `call 0A425C60h`,
+    mount_all. It looks for `..\..\resources.db.patch_<n>` for n = 1, 2,
+    ... (the same 0x18190 with `"../../%s.db.patch_%u"` and the
+    descriptor; `CreateFileA` with no access and OPEN_EXISTING, then
+    `CloseHandle`, the imports at 0x870048 and 0x870040), at most 64,
+    until one is not there. It writes the count of callbacks to come
+    (1 + patches) to its state before it queues anything, then calls
+    0xE7EF0 with the game's five arguments, then once for each patch with
+    its own path string in place of the two paths. All registers are kept
+    (pushad / popad); nothing it needs survives a call in a register.
+  - 0x147E0 `55 8B EC 83 E4 F8` (`push ebp` / `mov ebp,esp` / `and esp,-8`)
+    becomes `E9 1B 14 41 0A 90` (`jmp 0A425C00h` / nop), on_mounted. When no
+    start-up mount is pending it runs the six bytes and jumps to 0x147E6:
+    the game's own. A null mount for the n-th callback: n = 0 the game's own
+    (its fatal), else the fatal "Cannot mount resources.db.patch_<n>.
+    Please run the Skhid launcher again." Otherwise it takes a reference
+    (`lock inc [mount+1Ch]`), keeps the mount at the next of the state's
+    65 slots and counts the callback down (`lock dec`); for all but the
+    last it returns (the caller takes the arguments and lets its own
+    reference go). The last puts the address of slot 0 (resources.db's
+    mount) in place of its third argument and goes on into the game:
+    engine_world+2C0h holds resources.db's mount, as without patches, and
+    the start-up goes on after every archive is mounted.
+  - The state: 0xE00 of `.srpd` (0xA428E00 with the late-join code as
+    built; the late join's own state is its first 60 bytes): the count of
+    callbacks to come, the count held, 65 mounts. The .bin ends with the
+    address it was assembled for, and `patch_026g.py` refuses a .bin made
+    for another one. Neither site holds an address (no base relocation
+    under them) and nothing aims inside them but their first byte (a
+    `call 3DB6F0h` at 0x3C6F0A has the bytes of 0x147E1, no relocation).
+- **The order of the callbacks**: FIFO, so the n-th callback is patch n's
+  and the fatal names the right file. If the file system ever ran two
+  mounts at once only the number in the message could be wrong; which
+  call goes on into the game does not depend on the order.
+- **Checked**: `selftest_026g.py` check 27, and
+  `check_mount_patches_026g.py` (Unicorn 2.1.4, the image as is and
+  rebased by 1 MiB with its relocations): the two hooks and the code run on
+  made-up folders and callbacks, the formatting, the file checks, the
+  mount, the fatal and the game's code after the six bytes being stubs.
+  **Not run: a game.** Not known from the code alone: whether a small
+  archive mounts as the retail one does (the mounter reads the 256
+  signature bytes after the file table, section 0.1).

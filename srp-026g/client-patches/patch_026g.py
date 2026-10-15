@@ -32,7 +32,10 @@ USAGE (this script never touches the source exe):
     (both .bin files are checked in; --bin=<file> names another one).
     The stale shell_32.dll check comes from stale_dll_026g.asm:
         nasm -f bin -DCAVE=0xA425E00 stale_dll_026g.asm -o stale_dll_026g.section.bin
-    (checked in).
+    (checked in). The mount of resources.db's patches comes from
+    mount_patches_026g.asm:
+        nasm -f bin -DCAVE=0xA425C00 -DSTATE=0xA428E00 mount_patches_026g.asm -o mount_patches_026g.section.bin
+    (checked in; STATE is 0xE00 of the late join's state page, checked).
     The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -169,6 +172,17 @@ Patches:
   at 0x135D3 becomes `xor eax,eax` and three nops, verify_sign_impl's
   "good signature", so a game starts with an archive of new files. (Revision
   12 checked it with Skhid's key instead; 14 drops that code);
+- the game mounts resources.db's patches (patch revision 14,
+  client_patch.md section 0.2): query_db's call of query_mount_archive at
+  0xE7E3E calls mount_patches_026g.asm at 0xC00 of `.srp`, which mounts
+  ../../resources.db as the game did and then ../../resources.db.patch_1,
+  _2, ... (up to 64, until the first one that is not there) at the same
+  place, "resources": a later archive's file replaces an earlier one's, and
+  its new files are added. on_mounted_resources 0x147E0 jumps there first:
+  each start-up mount but the last is held (a reference) and kept in
+  `.srpd`; the last goes on into the game's code with resources.db's mount.
+  A patch that fails to mount stops the game ("Cannot mount
+  resources.db.patch_<n>");
 - the sign-in reports a stale shell_32.dll in the temporary folder (patch
   revision 13, client_patch.md section 3.25): sign_in_on_connected's
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
@@ -312,8 +326,9 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # below), in byte 8 of the version field. Nothing a match computes: 12 and
 # 13 play together.
 # 14: the resources.db signature is not checked at all (DB_SIGNATURE below):
-# a retail archive and one with new files both start the game. Nothing a
-# match computes: 13 and 14 play together.
+# a retail archive and one with new files both start the game. And the game
+# mounts resources.db.patch_1, _2, ... over resources.db (MOUNT_PATCHES
+# below). Nothing a match computes: 13 and 14 play together.
 REVISION = 14
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
@@ -435,13 +450,42 @@ CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
 DB_SIGNATURE_VA, DB_SIGNATURE_IMPL = 0x135D3, 0x12CB0
 DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"), bytes.fromhex("31c0909090"))
 
+# resources.db's patches (patch 27, client_patch.md section 0.2). The game
+# mounts one archive at start: the start-up (0x14E8A) makes a
+# mount_by_config_helper (0xE7D20) for "resources", whose query_db (0xE7D90)
+# formats "../../%s.db" and calls query_mount_archive (0xE7EF0: esi = the
+# allocator; the virtual path, the file table's path, the archive's path,
+# the descriptor, the callback, cdecl) once, at 0xE7E3E. Its callback,
+# on_mounted_resources (0x147E0, the only one: its one reference is the
+# bind at 0x14E34), keeps the mount in engine_world+2C0h and goes on with the
+# start-up. The call at 0xE7E3E calls mount_all of mount_patches_026g.asm
+# (MOUNT_PATCHES_OFFSET of `.srp`, where revision 12's signature code was)
+# instead; the first six bytes of 0x147E0 (`push ebp` / `mov ebp,esp` /
+# `and esp,-8`) jump to its on_mounted and a nop. What the code does: the
+# .asm's head. Neither site holds an address: no base relocation is under
+# them. The code keeps its state at MOUNT_STATE_OFFSET of the late join's
+# state page (the late join's own state is its first 60 bytes); the .bin
+# ends with the address it was assembled for, which build() checks.
+MOUNT_PATCHES_OFFSET = 0xC00
+MOUNT_PATCHES_VA = SECTION_VA + MOUNT_PATCHES_OFFSET
+MOUNTED_OFFSET, MOUNT_ALL_OFFSET = 0, 0x60      # the .asm's two entries
+MOUNT_STATE_OFFSET = 0xE00
+MOUNT_MAX_PATCHES = 64
+MOUNT_QUERY_VA, MOUNTED_VA = 0xE7E3E, 0x147E0
+MOUNT_QUERY_MOUNT_ARCHIVE = 0xE7EF0
+MOUNT_QUERY = (MOUNT_QUERY_VA, b"\xE8" + struct.pack("<i", MOUNT_QUERY_MOUNT_ARCHIVE - MOUNT_QUERY_VA - 5),
+               b"\xE8" + struct.pack("<i", MOUNT_PATCHES_VA + MOUNT_ALL_OFFSET - MOUNT_QUERY_VA - 5))
+MOUNTED = (MOUNTED_VA, bytes.fromhex("55" "8bec" "83e4f8"),
+           b"\xE9" + struct.pack("<i", MOUNT_PATCHES_VA + MOUNTED_OFFSET - MOUNTED_VA - 5) + b"\x90")
+
 # sign_in_on_connected 0x380800, where it finishes the 12-byte version field
 # (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
 # `mov [edi+0Ch],dl` (the EULA byte). Both become a call of
 # stale_dll_026g.asm and a nop; the code there does both after its check,
 # with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
-# of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET; 0xC00 to
-# 0xE00 held revision 12's signature code); build() checks that they do not
+# of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET) and the mount
+# of resources.db's patches (MOUNT_PATCHES_OFFSET, 0xC00 to 0xE00, where
+# revision 12's signature code was); build() checks that they do not
 # overlap. The two instructions hold no address: no base relocation is
 # under them.
 STALE_DLL_VA = 0x380889
@@ -1025,7 +1069,8 @@ def build(original, mode, code=None, server=None, late_join=None):
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
     REVISION_WITHOUT_LATE_JOIN; with it the game also checks no resources.db
-    signature, and its sign-in says whether %TEMP%\\shell_32.dll exists
+    signature, mounts resources.db's patches (mount_patches_026g.section.bin),
+    and its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
@@ -1041,6 +1086,13 @@ def build(original, mode, code=None, server=None, late_join=None):
     revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
     if late_join is not None:
         stale_dll = open(stale_dll_bin(), "rb").read()
+        mount_patches = open(mount_patches_bin(), "rb").read()
+        state = late_join_state_va(late_join) + MOUNT_STATE_OFFSET
+        if mount_patches[-4:] != struct.pack("<I", state):
+            sys.exit(f"mount_patches_026g.section.bin keeps its state elsewhere: assemble it with -DSTATE={state:#x}")
+        if mount_patches[MOUNTED_OFFSET:MOUNTED_OFFSET + 5] != bytes.fromhex("e800000000") \
+                or mount_patches[MOUNT_ALL_OFFSET] != 0x60:
+            sys.exit("mount_patches_026g.section.bin: its entries are not where patch_026g.py calls them")
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -1174,14 +1226,20 @@ def build(original, mode, code=None, server=None, late_join=None):
         patch(data, *STALE_DLL)
         if neutralize_relocs(data, [(STALE_DLL_VA, STALE_DLL_VA + len(STALE_DLL[1]))]):
             sys.exit("a base relocation under the version field's last two writes")
-        if SEEK_CLEAR_OFFSET + len(seek_clear) > STALE_DLL_OFFSET \
+        for site in (MOUNT_QUERY, MOUNTED):
+            patch(data, *site)
+            if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
+                sys.exit(f"{site[0]:#x}: a base relocation under a hook of the patches' mount")
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > MOUNT_PATCHES_OFFSET \
+                or MOUNT_PATCHES_OFFSET + len(mount_patches) > STALE_DLL_OFFSET \
                 or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
-            sys.exit("the seek code and the shell_32.dll check do not fit before the late join")
+            sys.exit("the seek code, the patches' mount and the shell_32.dll check do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
@@ -1208,6 +1266,7 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a weapon with a full sound queue drops the new sound, "
                      "a replay's seek empties the weapons' sound queues, "
                      "no resources.db signature check, "
+                     f"resources.db.patch_1 to _{MOUNT_MAX_PATCHES} mounted over resources.db, "
                      "the sign-in says whether %TEMP%\\shell_32.dll exists"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
@@ -1223,6 +1282,10 @@ def default_server_bin(mode):
 
 def stale_dll_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "stale_dll_026g.section.bin")
+
+
+def mount_patches_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "mount_patches_026g.section.bin")
 
 
 def pickup_bin():
