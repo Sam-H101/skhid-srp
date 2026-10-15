@@ -137,7 +137,10 @@ fn main() -> ExitCode {
         .iter()
         .map(|(t, k, p)| format!("{k}{p}@{t}"))
         .collect();
-    println!("late joiners: {}", report.late_joiners);
+    println!(
+        "late joiners: {}; installs (world ms, objects): {:?}; not found: {:?}; key frames padded: {}",
+        report.late_joiners, report.installs, report.installs_not_found, report.padded_key_frames
+    );
     println!("roster events: {}", roster.join(" "));
     println!("inputs per minute: {:?}", report.inputs_per_minute);
     if !report.unparsed_why.is_empty() {

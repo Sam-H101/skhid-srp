@@ -65,6 +65,8 @@ const DEFAULT_KEY_FRAME_EVERY_MS: u32 = 10_000;
 /// The world kept for a late joiner is the first one this long after its
 /// entry: the item must be later than the entry's tick.
 const LATE_JOINER_WORLD_AFTER_MS: u32 = 300;
+/// How long before its entry a late joiner's install is looked for.
+const INSTALL_WINDOW_MS: u32 = 60_000;
 
 /// What the caller chooses.
 #[derive(Clone, Debug)]
@@ -123,6 +125,14 @@ pub struct Report {
     pub roster: u8,
     /// Places that entered beyond the roster the first 0xE4 had.
     pub late_joiners: usize,
+    /// `(world time, objects)`: where a late joiner's grenades and traps
+    /// first are in the uploaded worlds, and how many.
+    pub installs: Vec<(u32, usize)>,
+    /// Late joiners whose install was not found in the worlds: the key
+    /// frames before their entry are left out.
+    pub installs_not_found: Vec<u8>,
+    /// Key frames given zero bytes for joiners not installed yet.
+    pub padded_key_frames: usize,
     pub worlds_complete: usize,
     pub world_times: usize,
     pub worlds_disagreeing: usize,
@@ -593,6 +603,13 @@ pub fn convert(
     if settings.first_key_frame_only {
         times.truncate(1);
     }
+    // The viewer binds every place of chunk 1 at its start, so its list of
+    // game objects holds each late joiner's grenades and traps from the
+    // first tick; the recorded games got them only at the install, as zero
+    // bytes put in front of the saved objects (client_patch.md 3.14). A
+    // world from before an install is given those bytes here, or every
+    // object of the viewer reads out of step (docs/notes/replay_sur.md).
+    let installs = find_installs(&chosen, &entered, initial, &mut report);
     let mut frames = Vec::new();
     for &time in &times {
         // Where the reading goes on: the first record after the world's time.
@@ -600,7 +617,22 @@ pub fn convert(
             .iter()
             .find(|record| record.event.time > time)
             .map_or(body.len(), |record| record.offset);
-        frames.push(KeyFrame::new(time, &chosen[&time], offset));
+        let missing: usize = installs
+            .iter()
+            .filter(|install| install.at > time)
+            .map(|install| install.objects)
+            .sum();
+        let world = if missing == 0 {
+            chosen[&time].clone()
+        } else {
+            pad_objects(&chosen[&time], missing).ok_or(ConvertError::Verify(format!(
+                "the world at {time} ms does not split into its parts"
+            )))?
+        };
+        if missing != 0 {
+            report.padded_key_frames += 1;
+        }
+        frames.push(KeyFrame::new(time, &world, offset));
     }
     report.key_frame_parts = times
         .iter()
@@ -631,6 +663,81 @@ pub fn convert(
     let file = sur::write(&parts, options_decoded, settings.coding)?;
     sur::verify(&file).map_err(ConvertError::Verify)?;
     Ok((file, report))
+}
+
+/// A late joiner's grenades and traps put into the recorded games.
+struct Install {
+    /// The first world that has them.
+    at: u32,
+    objects: usize,
+}
+
+/// For each late joiner, the first world whose game objects are the world
+/// before it with zero bytes in front: the install, and how many objects
+/// (0 for a place with no grenade or trap: the objects did not grow).
+/// Looked for between 60 s before the entry and the entry.
+fn find_installs(
+    chosen: &BTreeMap<u32, Vec<u8>>,
+    entered: &BTreeMap<(u32, u8), ()>,
+    initial: u8,
+    report: &mut Report,
+) -> Vec<Install> {
+    let objects = |body: &Vec<u8>| snapshot::Sections::walk(body).map(|s| s.objects.to_vec());
+    let mut installs = Vec::new();
+    let mut joins: Vec<(u32, u8)> = entered
+        .keys()
+        .filter(|&&(_, place)| place >= initial)
+        .copied()
+        .collect();
+    joins.sort_unstable();
+    for (entry, place) in joins {
+        let window: Vec<(u32, Option<Vec<u8>>)> = chosen
+            .range(entry.saturating_sub(INSTALL_WINDOW_MS)..=entry)
+            .map(|(&time, body)| (time, objects(body)))
+            .collect();
+        let mut found = None;
+        let mut unchanged = false;
+        for pair in window.windows(2) {
+            let (Some(before), Some(after)) = (&pair[0].1, &pair[1].1) else {
+                continue;
+            };
+            if after.len() > before.len() {
+                let grown = after.len() - before.len();
+                if after[..grown].iter().all(|&b| b == 0) && after[grown..] == before[..] {
+                    found = Some(Install {
+                        at: pair[1].0,
+                        objects: grown,
+                    });
+                }
+            } else if after == before {
+                unchanged = true;
+            }
+        }
+        // A joiner already counted by an earlier join's window is not
+        // counted twice.
+        match found {
+            Some(install) if !installs.iter().any(|i: &Install| i.at == install.at) => {
+                report.installs.push((install.at, install.objects));
+                installs.push(install);
+            }
+            Some(_) => {}
+            None if unchanged => report.installs.push((entry, 0)),
+            None => report.installs_not_found.push(place),
+        }
+    }
+    installs
+}
+
+/// `body` with `count` zero bytes in front of its game objects.
+fn pad_objects(body: &[u8], count: usize) -> Option<Vec<u8>> {
+    let sections = snapshot::Sections::walk(body)?;
+    let mut objects = vec![0u8; count];
+    objects.extend_from_slice(sections.objects);
+    snapshot::Sections {
+        objects: &objects,
+        ..sections
+    }
+    .to_body()
 }
 
 /// An input's time: the tick byte read against the match clock; an event
