@@ -370,7 +370,7 @@ OPEN-ISSUES.md, "0.26g"):
 |---|---|
 | Login | Sign-in, registration on first sign-in, wrong password, bans with the game's ban reasons, limits, closed registration, wrong build |
 | Lobby account | The sign-in push in the order the client needs; inventory with its three "spent" lists; kits (three, the third with premium), move, autobuy flag, active kit, kit names |
-| Shop | Buy, sell, repair, gold for silver (`47 04`); sellers by reputation level |
+| Shop | Buy, sell, repair, gold for silver and (srp's lobby exchange) silver for gold (`47 04`); sellers by reputation level |
 | Skills | Set, reset for silver or gold |
 | Quests | Choosing a faction, daily quests, progress and pay after a match |
 | Queue and matches | Play alone or as a squad, leave, rejoin after a new sign-in (`MatchRegistry::reseat`) |

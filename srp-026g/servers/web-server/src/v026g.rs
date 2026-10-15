@@ -10,7 +10,8 @@
 //!   the password nor the digest is logged or kept.
 //! - Gold for silver is the game's own action (`47 04`,
 //!   [`rules::exchange_premium`]). Silver for gold is srp's own, at the same
-//!   rate: the client has no such button.
+//!   rate ([`rules::buy_premium`]): the stock client has no such button, the
+//!   lobby's patched exchange window (`client-patches/exchange`) has.
 //! - The admin's tabs: money, the account (premium time, experience or
 //!   level, reputation), an item by its `items_dict` id or name, and the
 //!   operator's text (`A5` / `A6`) for everyone in the lobby. Bans,
@@ -247,16 +248,10 @@ impl Web {
                     )),
                 }
             } else {
-                match (
-                    account.generic_money.checked_sub(silver),
-                    account.premium_money.checked_add(gold),
-                ) {
-                    (Some(left), Some(total)) => {
-                        account.generic_money = left;
-                        account.premium_money = total;
-                        Ok(())
-                    }
-                    (None, _) => Err(lang.tr(
+                // The lobby's exchange window does the same (`47 04`).
+                match rules::buy_premium(&mut account, gold) {
+                    Ok(_) => Ok(()),
+                    Err(rules::ActionError::NotEnoughMoney) => Err(lang.tr(
                         &format!(
                             "Not enough silver: {gold} gold costs {silver}, you have {}.",
                             account.generic_money

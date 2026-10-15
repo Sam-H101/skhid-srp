@@ -212,7 +212,7 @@ Dispatch: `servers/lobby-server/src/v026g/dispatch.rs`, `Core::handle`. "Writer"
 | `01` | selling an item | 0x272F70 / 0x272F85 | **real**: `83 47 01`, pushes | `dispatch.rs`; `rules::sell` | medium |
 | `02` | buying premium or a bundle; from the results screen too | 0x271040 / 0x27105F | **being changed today** (prices) | `shop.rs` `buy_offer` | — |
 | `03` | repairing an item | 0x270D00 / 0x270D18 | **real**: silver, gold or a kit; `83 47 03`; a timed repair ends with a notice | `items.rs` `repair`, `item_timers` | medium |
-| `04` | gold for silver | 0x274390 / 0x27439D | **real**: `83 47 04`, pushes | `dispatch.rs`; `rules::exchange_premium` | medium |
+| `04` | gold for silver; silver for gold from srp's window | 0x274390 / 0x27439D | **real**: `83 47 04`, pushes | `dispatch.rs`; `rules::exchange_premium`, `rules::buy_premium` | medium |
 | `05` | accepting the premium offer after a match | 0x276AE0 / 0x276AEE | **being changed today** (prices). The offer exists only when `SRP_PREMIUM_DISCOUNT` is set. | `shop.rs` `accept_premium_with_bonuses` | — |
 | `06` | accepting the sign-in discount | 0x276BF0 / 0x276BFE | **being changed today** (prices) | `shop.rs` `accept_premium_with_discount` | — |
 

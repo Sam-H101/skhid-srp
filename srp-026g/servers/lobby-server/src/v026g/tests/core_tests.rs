@@ -12,7 +12,7 @@ use session::{LockExt, SessionStore};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::drops::Rng;
 use survarium::v026g::lobby::client_model::{Decoded, FriendshipPush, Permitted};
-use survarium::v026g::lobby::requests::INVENTORY_SLOT;
+use survarium::v026g::lobby::requests::{BUY_PREMIUM, INVENTORY_SLOT};
 use survarium::v026g::lobby::{ClientState, FULL_CONDITION, NameRefusal, channel};
 use survarium::v026g::maps;
 use survarium::v026g::match_msgs::snapshot::{PlayerStatistics, event};
@@ -435,6 +435,29 @@ fn a_worn_item_is_repaired_and_gold_is_exchanged() {
         message,
         Decoded::Money { premium, .. } if *premium == gold - 2
     )));
+
+    // srp's exchange window buys gold back: the same answer.
+    let silver = world.account(alice).generic_money;
+    world.ask(alice, request::exchange(BUY_PREMIUM + 3));
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::NoEffect {
+            op: 0x47,
+            event: Some(4)
+        })
+    ));
+    assert!(decoded.iter().any(|message| matches!(
+        message,
+        Decoded::Money { premium, generic } if *premium == gold + 1 && *generic == silver - 300
+    )));
+    // More gold than the silver pays for: the game's own text for it.
+    world.ask(alice, request::exchange(BUY_PREMIUM + 1_000_000));
+    assert_eq!(
+        denial(&world.take(alice), 0x47).as_deref(),
+        Some("st_not_enougth_money")
+    );
+    assert_eq!(world.account(alice).premium_money, gold + 1);
     world.assert_clean();
 }
 
