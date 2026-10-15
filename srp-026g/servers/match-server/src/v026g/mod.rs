@@ -72,6 +72,8 @@
 mod game;
 /// Match recordings (`SRP_RECORD_DIR`) and their reader.
 pub mod record;
+pub mod sur;
+pub mod sur_convert;
 mod registry;
 mod server;
 

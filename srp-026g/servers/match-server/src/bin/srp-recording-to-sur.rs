@@ -1,0 +1,138 @@
+//! Makes the client's own replay file (`.sur`, `docs/notes/replay_sur.md`)
+//! from a match recording (`SRP_RECORD_DIR`, `match_server::v026g::record`).
+//!
+//! ```text
+//! srp-recording-to-sur <file.srprec> --game-modes <dir> [--out <dir>] [--stored] [--every <ms>]
+//! ```
+//!
+//! `--game-modes` is a folder holding the game's `gameplay/game_modes/*.options`
+//! files as they are in `resources.db` (the file the recording's map id names in
+//! `maps_dict` is used). The result is `<out>/<name>.sur`, `<name>` the recording's
+//! own file name; a summary is printed.
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use match_server::v026g::record;
+use match_server::v026g::sur::Coding;
+use match_server::v026g::sur_convert::{self, Settings};
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let value = |name: &str| {
+        args.iter()
+            .position(|arg| arg == name)
+            .and_then(|at| args.get(at + 1))
+            .cloned()
+    };
+    let Some(input) = args.iter().find(|arg| {
+        !arg.starts_with("--") && Path::new(arg).extension().is_some_and(|e| e == "srprec")
+    }) else {
+        eprintln!(
+            "usage: srp-recording-to-sur <file.srprec> --game-modes <dir> [--out <dir>] [--stored] [--every <ms>]"
+        );
+        return ExitCode::from(2);
+    };
+    let Some(modes) = value("--game-modes") else {
+        eprintln!("--game-modes <dir> is needed: the game's gameplay/game_modes/*.options files");
+        return ExitCode::from(2);
+    };
+    let mut settings = Settings::default();
+    if args.iter().any(|arg| arg == "--stored") {
+        settings.coding = Coding::Stored;
+    }
+    if let Some(every) = value("--every").and_then(|v| v.parse().ok()) {
+        settings.key_frame_every_ms = every;
+    }
+    let records = match record::read(Path::new(input)) {
+        Ok(records) => records,
+        Err(error) => {
+            eprintln!("{input}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(config_name) = sur_convert::config_name(&records) else {
+        eprintln!("{input}: no header note");
+        return ExitCode::FAILURE;
+    };
+    let config_path = PathBuf::from(&modes).join(config_name);
+    let config = match std::fs::read(&config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{}: {error}", config_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let (file, report) = match sur_convert::convert(&records, &config, settings) {
+        Ok(done) => done,
+        Err(error) => {
+            eprintln!("{input}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out_dir = PathBuf::from(value("--out").unwrap_or_else(|| ".".into()));
+    let name = Path::new(input)
+        .file_stem()
+        .map_or_else(|| "replay".into(), |s| s.to_string_lossy().into_owned());
+    let out = out_dir.join(format!("{name}.sur"));
+    if let Err(error) = std::fs::create_dir_all(&out_dir).and_then(|()| std::fs::write(&out, &file))
+    {
+        eprintln!("{}: {error}", out.display());
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "match {} map {} mode {}, {} places at the start, roster {}",
+        report.match_id, report.map, report.mode, report.places, report.roster
+    );
+    println!(
+        "recording: {} datagrams out, {} in ({} not parsed); clock offset {} ms",
+        report.datagrams_out, report.datagrams_in, report.unparsed, report.clock_offset_ms
+    );
+    println!(
+        "events: {} inputs ({} copies dropped, {} conflicts, {} dropped as future), {} kit choices, {} entered, {} left",
+        report.inputs,
+        report.input_copies,
+        report.input_conflicts,
+        report.dropped_future,
+        report.profiles,
+        report.entered,
+        report.left
+    );
+    println!(
+        "worlds: {} uploads complete, {} item times, {} times where clients disagreed; first {:?}",
+        report.worlds_complete,
+        report.world_times,
+        report.worlds_disagreeing,
+        report.first_world_ms
+    );
+    println!(
+        "replay: {} ms to {} ms, {} key frames ({:?} ...), body {} bytes, decoded {} bytes",
+        report.start_ms,
+        report.end_ms,
+        report.key_frames.len(),
+        &report.key_frames[..report.key_frames.len().min(4)],
+        report.body_bytes,
+        report.decoded_bytes
+    );
+    let roster: Vec<String> = report
+        .roster_events
+        .iter()
+        .map(|(t, k, p)| format!("{k}{p}@{t}"))
+        .collect();
+    println!("late joiners: {}", report.late_joiners);
+    println!("roster events: {}", roster.join(" "));
+    println!("inputs per minute: {:?}", report.inputs_per_minute);
+    if !report.unparsed_why.is_empty() {
+        println!("not parsed: {:?}", report.unparsed_why);
+    }
+    for note in &report.notes {
+        println!("note: {note}");
+    }
+    println!(
+        "wrote {} ({} bytes; recording {} bytes)",
+        out.display(),
+        file.len(),
+        std::fs::metadata(input).map_or(0, |m| m.len())
+    );
+    ExitCode::SUCCESS
+}
