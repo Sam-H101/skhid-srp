@@ -274,6 +274,61 @@ and the resource checksum validation remain intact. No archive signature bypass
 is added. The sources are in `login_hint/`;
 game assets are generated locally and are not checked in.
 
+## Field-of-view slider
+
+`fov_slider_026g.py` adds a FOV slider under gamma in Settings → Graphics.
+The game already has most of it. The native video options list a "fov"
+slider (option 7, snap 1, label `st_fov_option` in all five languages), and
+`Settings.as` maps it to `_slider_fov`. But no console variable is called
+`fov`, no slider is placed on the timeline, and the camera uses a fixed 65
+degrees. The `uro_fov` variable (65.0, saved in `user.cfg`) is never read.
+
+```sh
+python fov_slider_026g.py exe /original/survarium.exe /output/survarium_skhid.exe [--server=host:port]
+python fov_slider_026g.py resources /original/game/resources.db /output/game/resources.db \
+  --ffdec=/path/to/ffdec.jar
+python check_fov_slider_026g.py /original/survarium.exe
+```
+
+Both builds are needed: the stock exe has no `fov` variable, and the stock
+menu has no slider. Inputs are only read; an existing output is refused.
+
+The exe is the default full build of `patch_026g.py` (patch revision
+`REVISION`, with the late join) plus three changes:
+- option 7 is bound to `uro_fov` (0x262931);
+- the camera projection 0x242900 computes `zoom × uro_fov × π / 180`
+  instead of `zoom × 1.134464`. It takes the same arguments and calls the
+  same matrix builder, within its 80 bytes, with one relocation moved;
+- the lower bound of `uro_fov` is 50 instead of 0; the upper bound stays 100.
+
+The angle is vertical, as before: 65 is the stock view, and scope zoom still
+multiplies it. Camera code is not part of the simulated world, so clients
+with and without the slider can play together.
+
+The resources build needs a JDK and JPEXS FFDec, as the login hint does. It
+compiles `fov_slider/SrpFovSlider.as` into `main_menu.swf` and calls it twice
+in `Settings.create_content`. The first call, before the options are bound,
+creates the slider on the Graphics frame, so the game binds option 7 to it
+like its other controls (label, range, value, apply). The second call, before
+the final return, runs after the game has set the label, as the login hint's
+calls run after the stock code. It makes the slider opaque (Scaleform leaves
+a slider made by script at alpha 0), adds the colon gamma has ("FOV:"),
+places it under gamma and moves the preset-button panel down to make room.
+Under Scaleform `ENTER_FRAME` never reached the slider, so nothing runs per
+frame. As with the login hint, one ActionScript block changes, every other
+tag and unrelated method stays byte-identical, and the archive entry keeps
+its size and CRC, so the signed file table is untouched. The input may
+already carry the login hint.
+
+`check_fov_slider_026g.py` needs Python `unicorn`. It runs the original and
+the patched projection, including the real matrix builder, at 5 angles, 3
+zooms and 3 viewports, and compares the matrices. It also checks the option
+name, the bound and the moved relocations. `test_fov_slider.py` checks the
+rest without game files. Checked live in the lobby and in a match on a local
+server, with the same three changes on an earlier patch revision: the slider
+shows "FOV:" under gamma, changes the view and is saved to `user.cfg`. Not
+included in release overlays.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
