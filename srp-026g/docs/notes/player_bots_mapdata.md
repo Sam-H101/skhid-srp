@@ -206,8 +206,9 @@ battery map:
   in small pockets (behind narrow doors) that the 0.5 m grid enters and
   cannot leave.
 - level_05/evening_2 at 0.25 m: each team reaches all 50 batteries.
-- Grid memory is 52 bytes a floor (8 links of 4 bytes dominate); level_02
-  needs 122 MB at 0.25 m.
+- Grid memory was 52 bytes a floor (8 links of 4 bytes dominated); level_02
+  needed 122 MB at 0.25 m. Since 2026-10-16 the links are packed (§6,
+  "Lighter maps"): 28 bytes a floor, 64 MB on level_02.
 
 Tests on the game data: `SRP_RESOURCES_DB=<resources.db> cargo test -p
 mapdata --release -- --nocapture` (skipped without the variable).
@@ -333,17 +334,73 @@ So a 10 v 10 of bots takes about 2-5 % of the host's core. A search took
 1-2 ms on average and 46 ms at worst (a long corridor on level_06).
 `real_bot_cost` prints the searches by stage.
 
-**Memory, not yet solved:** the 0.26g container is limited to 512 MB and
-uses about 190 MB; a world is 63-149 MB and its build peaks near twice
-that; a match's tactics add 4 bytes a floor of labels, 4 of regions and 2
-of hazard marks (up to 23 MB on level_02); the A* arrays the match thread
-keeps are 12 bytes a floor of the largest grid searched (27 MB). One bot
-match on a big map fits; a build beside a second one may not. Prebuilt
-worlds (read, not built) would remove the build's peak and its 1-3 s of
-the host's core; the weather projects of a level share their geometry on
-levels 1, 2, 6 and 7 (`weather_projects_share_geometry`), and level_04's
-except its rain; not levels 3 and 5 (placements differ); level_08 not
-looked at.
+**Memory before 2026-10-16:** the 0.26g container is limited to 512 MB
+and uses about 190 MB; a world was 63-149 MB and its build peaked near
+twice that; a match's tactics added 4 bytes a floor of labels, 4 of
+regions and 2 of hazard marks (up to 23 MB on level_02); the A* arrays
+the match thread keeps are 12 bytes a floor of the largest grid searched
+(27 MB).
+
+### Lighter maps (2026-10-16)
+
+The owner's rule: as little CPU and memory as can be, and the bots never
+decide worse (only better). So every change below was kept only once it
+was shown to leave every decision as it was.
+
+**The proof.**
+- `mapdata::digest`: `WalkGrid::digest`, `RayTree::digest` and
+  `TacticsBase::digest` give what a structure answers as one number (floats
+  by their bits, links as target and kind). Pinned on synthetic maps, so a
+  change to a build fails a test until its `*_ALGO` is raised.
+- `every_world_builds_the_same_twice` (`crates/mapdata/tests/real_maps.rs`):
+  each of the 72 projects builds the same twice; its digests are the
+  baseline the later steps had to match (they did, all 72).
+- The decisions digest (`bots/tests.rs`, `Decisions`): every input the
+  bots make and every note, as one number, in the three whole matches and
+  in `real_bot_cost` (4 maps, 4 v 4 and 10 v 10, 437,000 inputs). The bots
+  read no clock, so two runs give the same digests; every step below gave
+  the same digests as before it.
+
+**What changed.**
+- `TacticsBase` (shared by matches) holds what depends on the map and the
+  hazard margin only: the hazard marks, the spawn areas (a byte a floor,
+  was 4 with the zones' set), the regions, the exits. `Tactics` is a
+  match's view of it: its own zones' clocks (anomalies) and human routes.
+- The store (`bots::maps`) hands out one `TacticsBase` per map for the
+  default margin, built on the map's build thread: no tactics thread per
+  match. A match tuned to another margin builds its own on the shared
+  world, as before.
+- The grid and the sight tree are `Arc`s, found by the key of what they are
+  built from (`mapdata::grid_key`, `sight_key`): the 72 projects have only
+  29 grids and 30 trees, and the weather variants of a level now share
+  them. The map's meshes are dropped after the build (nothing read them).
+- The grid's links are packed: the linked floor's index in its cell (a
+  byte) and 4 bits of kind and reach, 28 bytes a floor instead of 56.
+  Building all 72 got faster too (62 s to 48 s here).
+- Built grids, trees and tactics are kept on disk (`mapdata::built`,
+  `SRP_MAPDATA_BUILT`, default `<SRP_MAPDATA_DIR>/built`) and read instead
+  of built. Each file is named by its key (another build's file is never
+  found), checked index by index and by its digest (a damaged one is
+  refused, built again and written over; never a panic). The server writes
+  them itself, so they are what the host builds. The tactics' key holds the
+  map file's digest and the grid's key: a tactics file is never read onto
+  another grid.
+
+**Measured here** (release, fast desktop; the host is about 2.6 times
+slower):
+
+| | before | after |
+|---|---|---|
+| grid, level_02/day_4 | 128 MB | 64 MB |
+| tactics, level_02 | 23 MB a match | 16 MB a map, shared |
+| a map ready (world + tactics) | 1.1 s + 0.39 s a match | 0.13 s read |
+| all 72 projects ready | 57 s built | 9.7 s read |
+| built files on disk | | 2.4 GB (29 grids, 30 trees, 72 tactics) |
+| the bots' polls, level_02 10 v 10 | 102 ms a second | 90 ms a second |
+
+Not changed: the decisions (proven above). The first load of a map on the
+host still builds it (and writes its files); the build's peak (near twice
+the grid) comes only then.
 
 ## 7. Anomalies on the match server
 
@@ -407,8 +464,7 @@ zone is always active, as is every zone before `attach`.
 - The match server loads the files (§6), but no bot moves by them yet.
 - The grid against the client's real movement (step, slope, jump height,
   narrow doors, the one-way bases) is not checked in a game.
-- Grid memory is high at 0.25 m (up to 122 MB); links could shrink to a
-  byte each (index in the neighbour cell) or be recomputed. Not done.
+- Grid memory: done (§6, "Lighter maps"); 64 MB on level_02.
 - Files are not compressed (`lzma-rust2` is in the workspace).
 - The objectives' reach is only checked for level_05 batteries; a
   container's use box is a trigger shape, not a floor (`Shape::contains`

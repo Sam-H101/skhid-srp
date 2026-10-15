@@ -9,7 +9,7 @@
 //! Little endian:
 //!
 //! ```text
-//! magic "SRPGRID\0" or "SRPSGHT\0", u32 version (1)
+//! magic "SRPGRID\0", "SRPSGHT\0" or "SRPTACT\0", u32 version (1)
 //! u64 key, u64 digest (WalkGrid::digest / RayTree::digest)
 //! the structure's fields and arrays (grid.rs, sight.rs: `write_body`)
 //! magic "END\0"
@@ -28,6 +28,8 @@ use crate::resources::Error;
 
 pub const GRID_MAGIC: &[u8; 8] = b"SRPGRID\0";
 pub const SIGHT_MAGIC: &[u8; 8] = b"SRPSGHT\0";
+/// A map's tactics (the match server's `TacticsBase`).
+pub const TACTICS_MAGIC: &[u8; 8] = b"SRPTACT\0";
 pub const VERSION: u32 = 1;
 const END: &[u8; 4] = b"END\0";
 /// Bytes read at a time.
@@ -36,6 +38,11 @@ const CHUNK: usize = 1 << 16;
 /// The file of a built grid: `grid-<key>.bin`.
 pub fn grid_file_name(key: u64) -> String {
     format!("grid-{key:016x}.bin")
+}
+
+/// The file of a map's built tactics: `tactics-<key>.bin`.
+pub fn tactics_file_name(key: u64) -> String {
+    format!("tactics-{key:016x}.bin")
 }
 
 /// The file of a built sight tree: `sight-<key>.bin`.
@@ -49,7 +56,7 @@ fn error(path: &Path, what: impl std::fmt::Display) -> Error {
 
 /// Writes a file: the header, `body`, the end mark. Through a temporary
 /// file renamed at the end, so a reader never sees half of one.
-pub(crate) fn write(
+pub fn write(
     path: &Path,
     magic: &[u8; 8],
     key: u64,
@@ -76,7 +83,7 @@ pub(crate) fn write(
 
 /// Reads a file written by [`write`] for `key`: `body` reads the
 /// structure, which must then give the stored digest (`digest_of`).
-pub(crate) fn read<T>(
+pub fn read<T>(
     path: &Path,
     magic: &[u8; 8],
     key: u64,
@@ -119,27 +126,27 @@ pub(crate) fn read<T>(
     Ok(value)
 }
 
-pub(crate) struct Out(BufWriter<File>);
+pub struct Out(BufWriter<File>);
 
 impl Out {
-    pub(crate) fn bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    pub fn bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         self.0.write_all(bytes)
     }
 
-    pub(crate) fn u32(&mut self, v: u32) -> std::io::Result<()> {
+    pub fn u32(&mut self, v: u32) -> std::io::Result<()> {
         self.bytes(&v.to_le_bytes())
     }
 
-    pub(crate) fn u64(&mut self, v: u64) -> std::io::Result<()> {
+    pub fn u64(&mut self, v: u64) -> std::io::Result<()> {
         self.bytes(&v.to_le_bytes())
     }
 
-    pub(crate) fn f32(&mut self, v: f32) -> std::io::Result<()> {
+    pub fn f32(&mut self, v: f32) -> std::io::Result<()> {
         self.u32(v.to_bits())
     }
 
     /// A count, then each item as `N` bytes ([`In::plain`]).
-    pub(crate) fn plain<const N: usize, T>(
+    pub fn plain<const N: usize, T>(
         &mut self,
         items: &[T],
         to: impl Fn(&T) -> [u8; N],
@@ -149,7 +156,7 @@ impl Out {
     }
 }
 
-pub(crate) struct In {
+pub struct In {
     reader: BufReader<File>,
     /// Bytes the file has left.
     left: u64,
@@ -168,21 +175,21 @@ impl In {
         Ok(bytes)
     }
 
-    pub(crate) fn u32(&mut self) -> Result<u32, String> {
+    pub fn u32(&mut self) -> Result<u32, String> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn u64(&mut self) -> Result<u64, String> {
+    pub fn u64(&mut self) -> Result<u64, String> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
-    pub(crate) fn f32(&mut self) -> Result<f32, String> {
+    pub fn f32(&mut self) -> Result<f32, String> {
         Ok(f32::from_bits(self.u32()?))
     }
 
     /// A list written by [`Out::plain`]: `N` bytes an item, read a chunk
     /// at a time.
-    pub(crate) fn plain<const N: usize, T>(
+    pub fn plain<const N: usize, T>(
         &mut self,
         from: impl Fn([u8; N]) -> T,
     ) -> Result<Vec<T>, String> {

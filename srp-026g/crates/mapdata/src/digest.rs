@@ -36,6 +36,18 @@ impl Digest {
         self.u32(value.to_bits());
     }
 
+    /// Bytes, eight at a time (the last word padded), after their length.
+    pub fn bytes(&mut self, bytes: &[u8]) {
+        self.len(bytes.len());
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.u64(u64::from_le_bytes(*word));
+        }
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        self.u64(u64::from_le_bytes(last));
+    }
+
     /// A length first, so that two arrays end where they did.
     pub fn len(&mut self, len: usize) {
         self.u64(len as u64);

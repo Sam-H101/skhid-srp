@@ -233,6 +233,63 @@ impl Regions {
         }
     }
 
+    /// Into a built file ([`crate::built`]).
+    pub fn write_body(&self, out: &mut crate::built::Out) -> std::io::Result<()> {
+        for array in [
+            &self.of,
+            &self.middle,
+            &self.out_start,
+            &self.in_start,
+            &self.inn,
+        ] {
+            out.plain(array, |v| v.to_le_bytes())?;
+        }
+        out.plain(&self.out, |&(region, cost)| {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&region.to_le_bytes());
+            bytes[4..].copy_from_slice(&cost.to_bits().to_le_bytes());
+            bytes
+        })
+    }
+
+    /// From a built file, for a grid of `floors` floors: every index
+    /// checked against its array.
+    pub fn read_body(input: &mut crate::built::In, floors: usize) -> Result<Self, String> {
+        let regions = Self {
+            of: input.plain(u32::from_le_bytes)?,
+            middle: input.plain(u32::from_le_bytes)?,
+            out_start: input.plain(u32::from_le_bytes)?,
+            in_start: input.plain(u32::from_le_bytes)?,
+            inn: input.plain(u32::from_le_bytes)?,
+            out: input.plain(|bytes: [u8; 8]| {
+                let (region, cost) = bytes.split_at(4);
+                (
+                    u32::from_le_bytes(region.try_into().expect("4 bytes")),
+                    f32::from_bits(u32::from_le_bytes(cost.try_into().expect("4 bytes"))),
+                )
+            })?,
+        };
+        let count = regions.middle.len();
+        let starts = |start: &[u32], len: usize| {
+            start.len() == count + 1
+                && start[0] == 0
+                && start[count] as usize == len
+                && start.windows(2).all(|w| w[0] <= w[1])
+        };
+        let fine = regions.of.len() == floors
+            && regions.of.iter().all(|&r| (r as usize) < count)
+            && regions.middle.iter().all(|&node| (node as usize) < floors)
+            && starts(&regions.out_start, regions.out.len())
+            && starts(&regions.in_start, regions.inn.len())
+            && regions.out.iter().all(|&(r, _)| (r as usize) < count)
+            && regions.inn.iter().all(|&r| (r as usize) < count);
+        if fine {
+            Ok(regions)
+        } else {
+            Err("regions out of range".into())
+        }
+    }
+
     pub fn memory_bytes(&self) -> usize {
         self.of.len() * 4
             + self.middle.len() * 4

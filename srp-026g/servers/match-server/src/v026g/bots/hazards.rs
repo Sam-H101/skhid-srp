@@ -123,64 +123,11 @@ pub struct HazardMarks {
 }
 
 impl HazardMarks {
-    /// Bytes held.
-    pub fn memory_bytes(&self) -> usize {
-        self.floor_set.len() * 2 + self.sets.iter().map(|set| 24 + set.len() * 2).sum::<usize>()
-    }
-
-    /// Into `digest`: every floor's set and every set.
-    pub fn digest_into(&self, digest: &mut mapdata::digest::Digest) {
-        digest.len(self.floor_set.len());
-        self.floor_set.iter().for_each(|&set| digest.u32(u32::from(set)));
-        digest.len(self.sets.len());
-        for set in &self.sets {
-            digest.len(set.len());
-            set.iter().for_each(|&h| digest.u32(u32::from(h)));
-        }
-    }
-}
-
-/// The map's damage zones and the floors they cover. A clone shares the
-/// marks and copies the zones (a few dozen): a match's own clocks.
-#[derive(Clone, Debug, Default)]
-pub struct Hazards {
-    pub zones: Vec<Hazard>,
-    marks: Arc<HazardMarks>,
-    pub margin: f32,
-    /// How long a switching zone must stay off for [`Self::allowed`].
-    pub pass_ms: u32,
-    anomalies: Option<Anomalies>,
-    /// The prediction the activities were made from.
-    seen: u64,
-}
-
-impl Hazards {
-    /// The damage zones of `world`, each floor within `margin` metres of
-    /// one marked. Each shape visits only the floors under its bounds: a
-    /// few ms to a few tens on the largest maps, once per match.
-    pub fn build(world: &World, margin: f32) -> Self {
+    /// Each floor of `world` within `margin` metres of one of `zones`
+    /// marked. Each shape visits only the floors under its bounds: a few
+    /// ms to a few tens on the largest maps.
+    pub fn build(world: &World, zones: &[Hazard], margin: f32) -> Self {
         let map = &world.map;
-        let mut zones = Vec::new();
-        for (index, zone) in map.zones.iter().enumerate() {
-            if zone.kind != ZoneKind::Damage || zone.damage.as_ref().is_some_and(|d| !d.harmful()) {
-                continue;
-            }
-            let anomaly = map
-                .anomalies
-                .iter()
-                .find(|anomaly| anomaly.zones.contains(&zone.name))
-                .map(|anomaly| anomaly.name.clone());
-            zones.push(Hazard {
-                name: zone.name.clone(),
-                zone: index,
-                anomaly,
-                damage_type: zone.damage_type.clone(),
-                damage: zone.damage.clone(),
-                centre: zone.position,
-                control: Control::Static,
-                activity: Activity::Always,
-            });
-        }
         let grid = &world.grid;
         // Heights over the feet that a standing body fills, ≤ 0.25 m apart.
         let top = grid.body().stand_height.max(0.1);
@@ -224,9 +171,129 @@ impl Hazards {
                 }
             }
         }
+        Self { floor_set, sets }
+    }
+
+    /// Into a built file (`mapdata::built`).
+    pub fn write_body(&self, out: &mut mapdata::built::Out) -> std::io::Result<()> {
+        out.plain(&self.floor_set, |v| v.to_le_bytes())?;
+        out.plain(&self.sets, |set| (set.len() as u32).to_le_bytes())?;
+        let flat: Vec<u16> = self.sets.iter().flatten().copied().collect();
+        out.plain(&flat, |v| v.to_le_bytes())
+    }
+
+    /// From a built file, for a grid of `floors` floors and `zones` zones:
+    /// every index checked.
+    pub fn read_body(
+        input: &mut mapdata::built::In,
+        floors: usize,
+        zones: usize,
+    ) -> Result<Self, String> {
+        let floor_set: Vec<u16> = input.plain(u16::from_le_bytes)?;
+        let lengths: Vec<u32> = input.plain(u32::from_le_bytes)?;
+        let flat: Vec<u16> = input.plain(u16::from_le_bytes)?;
+        let total: u64 = lengths.iter().map(|&len| u64::from(len)).sum();
+        if floor_set.len() != floors
+            || total != flat.len() as u64
+            || floor_set
+                .iter()
+                .any(|&set| usize::from(set) > lengths.len())
+            || flat.iter().any(|&zone| usize::from(zone) >= zones)
+        {
+            return Err("hazard marks out of range".into());
+        }
+        let mut rest = flat.as_slice();
+        let sets = lengths
+            .iter()
+            .map(|&len| {
+                let (set, after) = rest.split_at(len as usize);
+                rest = after;
+                set.to_vec()
+            })
+            .collect();
+        Ok(Self { floor_set, sets })
+    }
+
+    /// Bytes held.
+    pub fn memory_bytes(&self) -> usize {
+        self.floor_set.len() * 2
+            + self
+                .sets
+                .iter()
+                .map(|set| 24 + set.len() * 2)
+                .sum::<usize>()
+    }
+
+    /// Into `digest`: every floor's set and every set.
+    pub fn digest_into(&self, digest: &mut mapdata::digest::Digest) {
+        digest.len(self.floor_set.len());
+        self.floor_set
+            .iter()
+            .for_each(|&set| digest.u32(u32::from(set)));
+        digest.len(self.sets.len());
+        for set in &self.sets {
+            digest.len(set.len());
+            set.iter().for_each(|&h| digest.u32(u32::from(h)));
+        }
+    }
+}
+
+/// The map's damage zones and the floors they cover. A clone shares the
+/// marks and copies the zones (a few dozen): a match's own clocks.
+#[derive(Clone, Debug, Default)]
+pub struct Hazards {
+    pub zones: Vec<Hazard>,
+    marks: Arc<HazardMarks>,
+    pub margin: f32,
+    /// How long a switching zone must stay off for [`Self::allowed`].
+    pub pass_ms: u32,
+    anomalies: Option<Anomalies>,
+    /// The prediction the activities were made from.
+    seen: u64,
+}
+
+impl Hazards {
+    /// The damage zones of `world`, each floor within `margin` metres of
+    /// one marked ([`HazardMarks::build`]).
+    pub fn build(world: &World, margin: f32) -> Self {
+        let zones = Self::zones_of(world);
+        let marks = HazardMarks::build(world, &zones, margin);
+        Self::with_marks(zones, Arc::new(marks), margin)
+    }
+
+    /// The damage zones of `world` that hurt, each always active till
+    /// [`Self::attach`]: what [`HazardMarks`] index.
+    pub fn zones_of(world: &World) -> Vec<Hazard> {
+        let map = &world.map;
+        let mut zones = Vec::new();
+        for (index, zone) in map.zones.iter().enumerate() {
+            if zone.kind != ZoneKind::Damage || zone.damage.as_ref().is_some_and(|d| !d.harmful()) {
+                continue;
+            }
+            let anomaly = map
+                .anomalies
+                .iter()
+                .find(|anomaly| anomaly.zones.contains(&zone.name))
+                .map(|anomaly| anomaly.name.clone());
+            zones.push(Hazard {
+                name: zone.name.clone(),
+                zone: index,
+                anomaly,
+                damage_type: zone.damage_type.clone(),
+                damage: zone.damage.clone(),
+                centre: zone.position,
+                control: Control::Static,
+                activity: Activity::Always,
+            });
+        }
+        zones
+    }
+
+    /// The zones and the floors they mark (built for them, or read).
+    pub fn with_marks(zones: Vec<Hazard>, marks: Arc<HazardMarks>, margin: f32) -> Self {
         Self {
             zones,
-            marks: Arc::new(HazardMarks { floor_set, sets }),
+            marks,
             margin,
             pass_ms: PASS_MS,
             anomalies: None,
@@ -263,7 +330,11 @@ impl Hazards {
     /// The set of zones marking `node` (0: none); floors of one set are
     /// shut and open together.
     pub fn set_of(&self, node: NodeId) -> u16 {
-        self.marks.floor_set.get(node as usize).copied().unwrap_or(0)
+        self.marks
+            .floor_set
+            .get(node as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Whether no zone marks `node` at all (a place to stay).
@@ -282,7 +353,11 @@ impl Hazards {
 
     /// Floors marked, for the logs.
     pub fn marked(&self) -> usize {
-        self.marks.floor_set.iter().filter(|&&mark| mark > 0).count()
+        self.marks
+            .floor_set
+            .iter()
+            .filter(|&&mark| mark > 0)
+            .count()
     }
 
     /// Whether `point` is near a zone (the floor under it is marked).

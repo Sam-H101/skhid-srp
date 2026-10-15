@@ -15,7 +15,8 @@
 //! the same every time. The maps' meshes are dropped once the grid and the
 //! tree are built: nothing reads them later.
 //!
-//! A grid or tree built is written to `<dir>/built/` by its key
+//! A grid or tree built is written to `<dir>/built/` (`SRP_MAPDATA_BUILT`)
+//! by its key
 //! (`mapdata::built`), and read from there the next time instead of built:
 //! a tenth of the time, and no build peak. A file is checked index by index
 //! and by its digest, so it answers as the build would; one that fails is
@@ -74,6 +75,9 @@ impl fmt::Debug for MapState {
 /// The store of built maps, shared by every match of the server.
 pub struct Maps {
     dir: Option<PathBuf>,
+    /// Where built grids, trees and tactics are kept; `None`: built at
+    /// each load.
+    built: Option<PathBuf>,
     keep: usize,
     cache: Arc<Mutex<Cache>>,
     /// Held by the build under way: one at a time, for memory and the one
@@ -111,8 +115,16 @@ impl Maps {
 
     /// As [`Maps::new`], keeping `keep` maps (at least one).
     pub fn with_keep(dir: Option<PathBuf>, keep: usize) -> Arc<Self> {
+        let built = dir.as_ref().map(|dir| dir.join(BUILT_DIR));
+        Self::configured(dir, keep, built)
+    }
+
+    /// As [`Maps::with_keep`], the built files in `built` (none: built at
+    /// each load).
+    pub fn configured(dir: Option<PathBuf>, keep: usize, built: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             dir,
+            built,
             keep: keep.max(1),
             cache: Arc::default(),
             builds: Arc::default(),
@@ -176,12 +188,13 @@ impl Maps {
     fn spawn_build(&self, project: &str, path: PathBuf) {
         let (cache, builds) = (self.cache.clone(), self.builds.clone());
         let (keep, name) = (self.keep, project.to_owned());
+        let built = self.built.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("map {project}"))
             .spawn(move || {
                 let result = {
                     let _turn = builds.lock().unwrap_or_else(|p| p.into_inner());
-                    build(&path, &cache)
+                    build(&path, built.as_deref(), &cache)
                 };
                 let mut cache = lock(&cache);
                 match result {
@@ -258,6 +271,7 @@ struct Built {
     seconds: f32,
     grid: Source,
     sight: Source,
+    tactics: Source,
 }
 
 impl Built {
@@ -267,7 +281,12 @@ impl Built {
             Source::Read => "read",
             Source::Built => "built",
         };
-        format!("grid {}, sight tree {}", word(self.grid), word(self.sight))
+        format!(
+            "grid {}, sight tree {}, tactics {}",
+            word(self.grid),
+            word(self.sight),
+            word(self.tactics)
+        )
     }
 }
 
@@ -302,15 +321,23 @@ fn read_or_build<T>(
 
 /// Reads one map, takes or builds its grid and tree, and builds its
 /// tactics for the default margin.
-fn build(path: &Path, cache: &Mutex<Cache>) -> Result<(TacticsBase, Built), String> {
+fn build(
+    path: &Path,
+    built: Option<&Path>,
+    cache: &Mutex<Cache>,
+) -> Result<(TacticsBase, Built), String> {
     let started = Instant::now();
-    let mut map = MapData::read(path).map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut map_file = mapdata::digest::Digest::new();
+    map_file.bytes(&bytes);
+    let map_file = map_file.finish();
+    let mut map =
+        MapData::from_bytes(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    drop(bytes);
     let built = catch_unwind(AssertUnwindSafe(|| {
         let (cell, body) = (mapdata::CELL, Body::default());
         let walker = map.walker_triangles();
         let area = map.play_area(mapdata::AREA_MARGIN);
-        let built = path.parent().map(|dir| dir.join(BUILT_DIR));
-        let built = built.as_deref();
         let grid_key = mapdata::grid_key(&walker, area, cell, body);
         let shared = lock(cache).grids.get(&grid_key).and_then(Weak::upgrade);
         let (grid, grid_source) = match shared {
@@ -352,17 +379,26 @@ fn build(path: &Path, cache: &Mutex<Cache>) -> Result<(TacticsBase, Built), Stri
         map.libraries = Vec::new();
         map.placements = Vec::new();
         let world = Arc::new(World::assemble(map, grid, sight));
-        let base = TacticsBase::build(world, Maps::margin());
-        (base, grid_source, sight_source)
+        let margin = Maps::margin();
+        let key = TacticsBase::key(map_file, grid_key, margin);
+        let (base, tactics_source) = read_or_build(
+            built,
+            mapdata::built::tactics_file_name(key),
+            |path| TacticsBase::read(path, key, world.clone(), margin),
+            || TacticsBase::build(world.clone(), margin),
+            |base, path| base.write(path, key),
+        );
+        (base, grid_source, sight_source, tactics_source)
     }))
     .map_err(|_| format!("{}: the build panicked", path.display()))?;
-    let (base, grid, sight) = built;
+    let (base, grid, sight, tactics) = built;
     Ok((
         base,
         Built {
             seconds: started.elapsed().as_secs_f32(),
             grid,
             sight,
+            tactics,
         },
     ))
 }
@@ -405,6 +441,7 @@ impl fmt::Debug for Maps {
         ready.sort_unstable();
         f.debug_struct("Maps")
             .field("dir", &self.dir)
+            .field("built", &self.built)
             .field("keep", &self.keep)
             .field("ready", &ready)
             .finish()
@@ -572,9 +609,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!(files.len(), 3, "{files:?}");
         assert!(files.iter().any(|name| name.starts_with("grid-")));
         assert!(files.iter().any(|name| name.starts_with("sight-")));
+        assert!(files.iter().any(|name| name.starts_with("tactics-")));
         // A new store (a restart) reads them: the same grid and tree.
         let second = wait_ready(&Maps::new(Some(dir.clone())), project, wait);
         assert!(!Arc::ptr_eq(&first.world.grid, &second.world.grid));
@@ -593,13 +631,15 @@ mod tests {
         assert_eq!(first.digest(), third.digest());
         for name in &files {
             let path = dir.join(BUILT_DIR).join(name);
-            assert!(name.starts_with("grid-") || name.starts_with("sight-"));
             let key = u64::from_str_radix(&name[name.len() - 20..name.len() - 4], 16).unwrap();
-            if name.starts_with("grid-") {
-                assert!(WalkGrid::read(&path, key).is_ok(), "{name} written over");
+            let fine = if name.starts_with("grid-") {
+                WalkGrid::read(&path, key).is_ok()
+            } else if name.starts_with("sight-") {
+                RayTree::read(&path, key).is_ok()
             } else {
-                assert!(RayTree::read(&path, key).is_ok(), "{name} written over");
-            }
+                TacticsBase::read(&path, key, third.world.clone(), Maps::margin()).is_ok()
+            };
+            assert!(fine, "{name} written over");
         }
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -699,6 +739,60 @@ mod tests {
         for spawn in &world.map.spawns {
             assert!(world.grid.locate(spawn.position, 1.0).is_some());
         }
+    }
+
+    /// Every real map through two stores, only with `SRP_MAPDATA_DIR` and
+    /// `SRP_BUILT_DIR` (an empty folder): the first builds and writes the
+    /// grids, trees and tactics, the second (a restart) reads them; each
+    /// map's digests are the same both ways, and the second never builds.
+    #[test]
+    #[ignore = "a measurement; needs SRP_MAPDATA_DIR and SRP_BUILT_DIR"]
+    fn real_maps_read_back_through_the_store() {
+        let (Some(dir), Some(built)) = (
+            real_dir(),
+            std::env::var_os("SRP_BUILT_DIR").map(PathBuf::from),
+        ) else {
+            return;
+        };
+        let mut projects: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                let stem = name.strip_suffix(".mapdata")?;
+                let (level, weather) = stem.split_at(stem.find('_').unwrap() + 3);
+                Some(format!("{level}/{}", &weather[1..]))
+            })
+            .collect();
+        projects.sort();
+        let wait = Duration::from_secs(300);
+        let digests = |maps: &Maps, project: &str| {
+            let base = wait_ready(maps, project, wait);
+            (
+                base.world.grid.digest(),
+                base.world.sight.digest(),
+                base.digest(),
+            )
+        };
+        let first = Maps::configured(Some(dir.clone()), 1, Some(built.clone()));
+        let started = Instant::now();
+        let written: Vec<_> = projects.iter().map(|p| digests(&first, p)).collect();
+        let build_s = started.elapsed().as_secs_f32();
+        let second = Maps::configured(Some(dir.clone()), 1, Some(built.clone()));
+        let started = Instant::now();
+        for (project, written) in projects.iter().zip(&written) {
+            assert_eq!(&digests(&second, project), written, "{project}");
+        }
+        let read_s = started.elapsed().as_secs_f32();
+        let on_disk: u64 = std::fs::read_dir(&built)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum();
+        eprintln!(
+            "{} projects: built and written in {build_s:.1} s, read in {read_s:.1} s; {} files, {} MB",
+            projects.len(),
+            std::fs::read_dir(&built).unwrap().count(),
+            on_disk >> 20
+        );
     }
 
     /// Build time and memory of a few real maps (the numbers in the notes):

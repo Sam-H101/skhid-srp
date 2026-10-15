@@ -17,7 +17,7 @@ use std::sync::Arc;
 use mapdata::regions::Regions;
 use mapdata::{NodeId, Vec3, World};
 
-use super::hazards::Hazards;
+use super::hazards::{HazardMarks, Hazards, PASS_MS};
 use super::path::{self, Route};
 use super::rng::Rng;
 use super::view::{EYE_CROUCHED, EYE_STANDING};
@@ -61,6 +61,13 @@ pub struct Tactics {
 
 /// The label's bits for the sides' spawn areas.
 const SPAWN_BITS: u32 = 8;
+
+/// The version of what [`TacticsBase::build`] gives, in its key: raised
+/// with any change that changes the tactics of a map (the hazard marks,
+/// the spawn areas, the regions, the exits and the searches they come
+/// from), so a stored base of the old build is never read for the new.
+/// `the_base_and_its_digest_are_fixed` fails until then.
+pub const TACTICS_ALGO: u32 = 1;
 
 /// What a spot is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,12 +166,122 @@ impl TacticsBase {
         self.hazards.margin
     }
 
+    /// The key of the base built for `margin` from the map file whose
+    /// bytes digest to `map_file` (`mapdata::digest::Digest::bytes`: the
+    /// map's zones, anomalies and spawns) on the grid of `grid_key`
+    /// (`mapdata::grid_key`, of the triangles as this machine placed them:
+    /// a base is never read onto another grid).
+    pub fn key(map_file: u64, grid_key: u64, margin: f32) -> u64 {
+        let mut digest = mapdata::digest::Digest::new();
+        digest.u32(TACTICS_ALGO);
+        digest.u64(map_file);
+        digest.u64(grid_key);
+        digest.f32(margin);
+        digest.f32(SPAWN_AREA_M);
+        digest.u32(SPAWN_BITS);
+        digest.u32(PASS_MS);
+        digest.finish()
+    }
+
+    /// Writes the base to `path` as the base of `key` (`mapdata::built`).
+    pub fn write(&self, path: &std::path::Path, key: u64) -> Result<(), mapdata::Error> {
+        mapdata::built::write(
+            path,
+            mapdata::built::TACTICS_MAGIC,
+            key,
+            self.digest(),
+            |out| {
+                self.hazards.marks().write_body(out)?;
+                out.plain(&self.spawn_areas, |&bits| [bits])?;
+                self.regions.write_body(out)?;
+                out.plain(&self.exits, |(side, exits)| {
+                    let mut bytes = [0u8; 8];
+                    bytes[..4].copy_from_slice(&side.to_le_bytes());
+                    bytes[4..].copy_from_slice(&(exits.len() as u32).to_le_bytes());
+                    bytes
+                })?;
+                let points: Vec<Vec3> = self.exits.iter().flat_map(|(_, e)| e).copied().collect();
+                out.plain(&points, |p| {
+                    let mut bytes = [0u8; 12];
+                    for (chunk, v) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([p.x, p.y, p.z]) {
+                        *chunk = v.to_bits().to_le_bytes();
+                    }
+                    bytes
+                })
+            },
+        )
+    }
+
+    /// Reads the base of `key` on `world` (built for `margin`) that
+    /// [`Self::write`] wrote: the zones are the world's own, the rest is
+    /// read, checked index by index and then by the digest.
+    pub fn read(
+        path: &std::path::Path,
+        key: u64,
+        world: Arc<World>,
+        margin: f32,
+    ) -> Result<Self, mapdata::Error> {
+        let zones = Hazards::zones_of(&world);
+        let floors = world.grid.len();
+        mapdata::built::read(
+            path,
+            mapdata::built::TACTICS_MAGIC,
+            key,
+            |input| {
+                let marks = HazardMarks::read_body(input, floors, zones.len())?;
+                let spawn_areas: Vec<u8> = input.plain(|[bits]: [u8; 1]| bits)?;
+                let regions = Regions::read_body(input, floors)?;
+                let sides: Vec<(i32, u32)> = input.plain(|bytes: [u8; 8]| {
+                    let (side, count) = bytes.split_at(4);
+                    (
+                        i32::from_le_bytes(side.try_into().expect("4 bytes")),
+                        u32::from_le_bytes(count.try_into().expect("4 bytes")),
+                    )
+                })?;
+                let points: Vec<Vec3> = input.plain(|bytes: [u8; 12]| {
+                    let v = bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|chunk| f32::from_bits(u32::from_le_bytes(*chunk)))
+                        .collect::<Vec<_>>();
+                    Vec3::new(v[0], v[1], v[2])
+                })?;
+                let total: u64 = sides.iter().map(|&(_, count)| u64::from(count)).sum();
+                if spawn_areas.len() != floors || total != points.len() as u64 {
+                    return Err("tactics out of range".into());
+                }
+                let mut rest = points.as_slice();
+                let exits = sides
+                    .into_iter()
+                    .map(|(side, count)| {
+                        let (exits, after) = rest.split_at(count as usize);
+                        rest = after;
+                        (side, exits.to_vec())
+                    })
+                    .collect();
+                Ok(Self {
+                    world,
+                    hazards: Hazards::with_marks(zones, Arc::new(marks), margin),
+                    exits,
+                    spawn_areas,
+                    regions,
+                })
+            },
+            Self::digest,
+        )
+    }
+
     /// Bytes held, beyond the world.
     pub fn memory_bytes(&self) -> usize {
         self.hazards.marks().memory_bytes()
             + self.spawn_areas.len()
             + self.regions.memory_bytes()
-            + self.exits.iter().map(|(_, exits)| exits.len() * 12).sum::<usize>()
+            + self
+                .exits
+                .iter()
+                .map(|(_, exits)| exits.len() * 12)
+                .sum::<usize>()
     }
 
     /// What the tactics answer, as one number (`mapdata::digest`): the
@@ -198,6 +315,14 @@ impl TacticsBase {
             }
         }
         digest.finish()
+    }
+
+    /// [`Tactics::exits`].
+    pub fn exits(&self, side: i32) -> &[Vec3] {
+        self.exits
+            .iter()
+            .find(|(s, _)| *s == side)
+            .map_or(&[], |(_, exits)| exits.as_slice())
     }
 
     /// [`Tactics::in_spawn_area`].
@@ -486,13 +611,8 @@ impl Tactics {
     /// The exits of `side`'s base: points 30-60 m out on the ways from its
     /// spawns toward the other side's, outside the spawn areas.
     pub fn exits(&self, side: i32) -> &[Vec3] {
-        self.base
-            .exits
-            .iter()
-            .find(|(s, _)| *s == side)
-            .map_or(&[], |(_, exits)| exits.as_slice())
+        self.base.exits(side)
     }
-
 }
 
 fn centroid(points: &[Vec3]) -> Option<Vec3> {
@@ -600,6 +720,44 @@ pub(super) mod tests {
             assert!(!tactics.in_spawn_area(*exit, None));
             assert!(exit.distance_xz(Vec3::new(75.0, 0.0, 15.0)) < 62.0);
         }
+    }
+
+    /// The base's build is fixed: a change to it (or to the searches its
+    /// exits come from) fails here until [`TACTICS_ALGO`] is raised and
+    /// the pin updated, so a stored base of the old build is never read.
+    #[test]
+    fn the_base_and_its_digest_are_fixed() {
+        let base = TacticsBase::build(field(), 1.0);
+        assert_eq!(base.digest(), PINNED_FIELD);
+        assert_eq!(TACTICS_ALGO, 1);
+    }
+
+    const PINNED_FIELD: u64 = 5_789_686_057_576_583_692;
+
+    #[test]
+    fn a_written_base_reads_back_the_same_and_a_damaged_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("srp-tactics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(mapdata::built::tactics_file_name(9));
+        let base = TacticsBase::build(field(), 1.0);
+        base.write(&path, 9).unwrap();
+        let read = TacticsBase::read(&path, 9, base.world.clone(), 1.0).unwrap();
+        assert_eq!(read.digest(), base.digest());
+        assert_eq!(read.exits(1), base.exits(1));
+        assert!(TacticsBase::read(&path, 10, base.world.clone(), 1.0).is_err());
+        // Read for another margin: the digest tells.
+        assert!(TacticsBase::read(&path, 9, base.world.clone(), 2.0).is_err());
+        let bytes = std::fs::read(&path).unwrap();
+        for at in (0..bytes.len()).step_by(997).chain([bytes.len() - 1]) {
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 0x41;
+            std::fs::write(&path, &damaged).unwrap();
+            assert!(
+                TacticsBase::read(&path, 9, base.world.clone(), 1.0).is_err(),
+                "byte {at}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
