@@ -775,6 +775,27 @@ impl WalkGrid {
         })
     }
 
+    /// Whether some floor `enters` lets through links into `node`, at any
+    /// reach (a drop past an eroded floor lands up to 4 cells on): what a
+    /// search needs to reach `node` at all.
+    pub fn entered_from(&self, node: NodeId, enters: impl Fn(NodeId) -> bool) -> bool {
+        let cell = self.cell_of[node as usize] as usize;
+        let (i, k) = self.cell_xz(cell);
+        DIRS.iter().enumerate().any(|(d, &(di, dk))| {
+            (1..=4).any(|reach| {
+                let Some(from) = self.cell_index(i - di * reach, k - dk * reach) else {
+                    return false;
+                };
+                (self.start[from]..self.start[from + 1]).any(|b| {
+                    let (bi, bk) = (i - di * reach, k - dk * reach);
+                    self.link_of(b as usize, d, bi, bk)
+                        .is_some_and(|(to, _)| to == node)
+                        && enters(b)
+                })
+            })
+        })
+    }
+
     /// The cost of a link: its length plus the kind's penalty.
     pub fn link_cost(&self, from: NodeId, to: NodeId, kind: LinkKind) -> f32 {
         (self.position(to) - self.position(from)).length() + kind.penalty()

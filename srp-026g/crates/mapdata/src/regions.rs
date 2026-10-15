@@ -450,6 +450,13 @@ impl Regions {
         if from as usize >= n || to as usize >= n || !grid.may_reach(from, to) {
             return (Search::NoWay, Stage::NoWay);
         }
+        // The goal is reached only from a floor that links into it and is
+        // let through (or is the start): with none, there is no way, and a
+        // search would only prove it the long way (a goal inside a zone the
+        // body keeps out of: the whole grid flooded).
+        if from != to && !grid.entered_from(to, |b| b == from || allowed(b)) {
+            return (Search::NoWay, Stage::NoWay);
+        }
         let regions = self;
         let (rf, rt) = (regions.of(from), regions.of(to));
         let corridor = MARKS.with(|marks| {
@@ -512,6 +519,61 @@ impl Regions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A goal no let-through floor links into has no way, answered before
+    /// any search, and the answer is the whole grid's.
+    #[test]
+    fn a_goal_shut_in_by_floors_kept_out_of_is_no_way_at_once() {
+        let grid = crate::grid::tests::two_rooms();
+        let regions = Regions::build(&grid, None);
+        let from = grid.locate(Vec3::new(3.0, 0.0, 6.0), 1.0).unwrap();
+        let to = grid.locate(Vec3::new(25.0, 0.0, 6.0), 1.0).unwrap();
+        let goal = grid.position(to);
+        // A 2 m ring round the goal is kept out of: a zone the body avoids.
+        let allowed = |v: NodeId| grid.position(v).distance_xz(goal) > 2.0;
+        let (found, stage) = regions.route_search(&grid, from, to, allowed, |_| true, usize::MAX);
+        assert_eq!((found, stage), (Search::NoWay, Stage::NoWay));
+        assert_eq!(grid.search(from, to, allowed, usize::MAX), Search::NoWay);
+        // A lane through the ring, along z = the goal's: found, as the whole
+        // grid's search finds it.
+        let lane = |v: NodeId| {
+            let p = grid.position(v);
+            allowed(v) || ((p.z - goal.z).abs() < 0.2 && p.x <= goal.x)
+        };
+        let (found, _) = regions.route_search(&grid, from, to, lane, |_| true, usize::MAX);
+        assert!(matches!(found, Search::Found(_)));
+        assert!(matches!(grid.search(from, to, lane, usize::MAX), Search::Found(_)));
+        let next = grid.links(to).next().unwrap().0;
+        // The start itself next to the goal: found.
+        let (found, _) = regions.route_search(&grid, next, to, allowed, |_| true, usize::MAX);
+        assert!(matches!(found, Search::Found(_)));
+    }
+
+    /// `entered_from` is "some floor let through links into it", for every
+    /// floor of the grid.
+    #[test]
+    fn entered_from_agrees_with_every_link() {
+        let grid = crate::grid::tests::two_rooms();
+        let n = grid.len() as NodeId;
+        let mut into = vec![Vec::new(); n as usize];
+        for b in 0..n {
+            for (to, _) in grid.links(b) {
+                into[to as usize].push(b);
+            }
+        }
+        for node in 0..n {
+            let some = |b: NodeId| !b.is_multiple_of(3);
+            assert_eq!(
+                grid.entered_from(node, |_| true),
+                !into[node as usize].is_empty()
+            );
+            assert_eq!(
+                grid.entered_from(node, some),
+                into[node as usize].iter().any(|&b| some(b)),
+                "floor {node}"
+            );
+        }
+    }
 
     #[test]
     fn a_way_through_regions_matches_the_whole_search() {

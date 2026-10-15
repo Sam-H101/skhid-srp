@@ -399,6 +399,21 @@ slower):
 | the bots' polls, level_02 10 v 10 | 102 ms a second | 90 ms a second |
 | a test process loading level_01/day_4 through the store (peak working set) | 146 MB, 0.69 s (world only) | first load 146 MB, 1.45 s (world, tactics, files written); then 62-83 MB, 0.17 s |
 
+**Goals no allowed floor leads into** (School, level_02). Several of
+School's battery spawners lie inside the fruit toxic cloud (the anomaly in
+the middle of the map) or the stalactite radiation; the bots keep out of
+the cloud's low levels always, so those batteries cannot be reached. The
+regions' search lets the goal's own region through (the goal floor is
+always let through), so it found a corridor, the floors' search inside it
+failed, and the whole grid was flooded to prove "no way": about 80 ms,
+again every half second while Collect kept that battery (224 of the 228
+whole-grid searches of a 10 v 10, 94 % of the bots' time).
+`WalkGrid::entered_from` now answers it first: a goal is reached only from
+a floor that links into it and is let through (or the start); with none
+there is no way, the same answer, at once. School 10 v 10: 90 to 11.6 ms
+a second, worst poll 124 to 19 ms; level_01's worst poll 99 to 16 ms. The
+decisions digests are the same.
+
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.
