@@ -1063,8 +1063,8 @@ least for a value out of range or not a number: a wrong `uro_fov` in
 
 **Revisions.** A camera is not in what a match computes, and the 65-degree
 constant has no other reader: 10 and 11 are expected to play together, and
-a server need not ask for 11. Two games at different FOVs have not been in
-one match yet.
+a server need not ask for 11. Two games of 11 at different FOVs played one
+match (below); a game of 10 with one of 11 has not.
 
 Checked: `selftest_026g.py` check 22 (the two sites in place and the hook in
 the original, the build and the build without the late join; the strings
@@ -1082,9 +1082,12 @@ scope is the original's at every setting, and at 65 every zoom is the
 original's. Run in a game (an earlier form of the patch, the zoom
 multiplied by uro_fov, with the slider of `fov_slider_026g.py`): the lobby
 and a match on a local server with a test bot, the view following the
-slider, the value saved to `user.cfg`. **Not run: this revision's exe in a
-game (a scope at a setting other than 65), two games at different FOVs, a
-restart reading the saved value.**
+slider, the value saved to `user.cfg`. Run with this revision's exe
+(2026-10-15, a local server built from this source): two games in one
+match, one at 100 with an SVD and a PSO-1, one at 50 with an SKS; the scope
+and the iron sights as the formula says, and each game started with the
+setting saved in its `user.cfg`. **Not run:** Windows; the Giperon and the
+Leupold (their `fov_factor` is the PSO-1's); a game of 10 with one of 11.
 
 ## Not ported, not done
 
