@@ -8,9 +8,10 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `bf289387d1dedf6bf1fd2d8bd41d3d190d1e8bdeae54fa0d6b3e7e882b9842c6` (patch revision 11); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `6b752ed0a23c03f4eb82111c955fe4bed61f7c087c40f6d78de4c686ecf0c46a`. Revision 10 was `c43bfd8a…ef85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `19586e8bb43eaf1aca103c1b7bc39cb01f4adbd355d07b3c250f686d6da9222f` (patch revision 12); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `5deb3f4c98d68c587e0d94f70d9d7140a949b53fd791ffcf2452632278f91441`. Revision 11, as the tool of `main` d0ea090 builds it (the replay fixes included), was `3f7e0488…2ffa` and, with that server, `5a5e18e2…0cc1` (before the replay fixes `bf289387…42c6` and `6b752ed0…c46a`); revision 10 was `c43bfd8a…ef85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
 | Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen, and patch 20: a spawn gives the new kit's weapons the time of their last tick, and at a change of kit the fire mode, ammunition, chamber, aim and recoil, a new weapon has, where those were what the kit's last life left in the games that played it; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 11 | Revision 10 with patch 21: Team Deathmatch's death handler counts a death after the rule's own end (match.md section 28; below), and patch 22, a field-of-view setting (the video options' slider bound to `uro_fov`, which the camera follows, a scope's view staying the original's; a camera is not in what a match computes), and patch 23, a battery under the floor one stands on can be picked up (a use is in what a match computes). With patch 21 alone, made as the download is (`--server=skhid.link:1234`) it was `b728a80c62a8da6b0dca46de55236d1e7c4b010190f9c0fddf884e0c998d6ece`, without a server `985ca3410f024a9e391a8f6fd5750295d6c0add8185fc244245c15371400b75a`; both differ from revision 10 made the same way in six bytes (file 0x3054F1), the revision byte and the PE checksum, and in nothing else (compared byte by byte). It does not play with 10 or before (they part at the first death after a team is out), so **a server asks for 11 (`SRP_MIN_PATCH_REVISION=11`), put up with the ZIP**. **Not in a download yet.** The handler was run outside the game (`run_tdm_rule.ps1`); a game was not |
+| Revision 12 | Revision 11 with patch 24: the game starts only with a `resources.db` signed by Skhid's key, the one the updater installs; the retail one stops it at start ("Resources archive is corrupted"). It differs from revision 11 in one call's target, the revision byte, the PE checksum and 413 bytes of `.srp`. 11 and 12 play together. **Not in a download yet; not run in a game** |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -41,6 +42,9 @@ published.
 | `default_server_026g.asm`, `.section.bin`, `.hash-mismatch.bin` | Optional default-login-address stub, appended to the snapshot cave; source and assembled code for both placements |
 | `make_client_026g.py` | Makes the players' overlay folder or ZIP: patched exe, Rust BugTrap DLL, certificate, start file and README |
 | `play_skhid.sh`, `LINUX.txt` | Linux Wine/DXVK launcher and instructions, included in the generated folder and ZIP |
+| `db_signature_026g.asm`, `db_signature_026g.section.bin` | The code of patch 24 (a `resources.db` signed by Skhid's key alone) and that code assembled for 0xC00 of `.srp`; `patch_026g.py` reads the .bin |
+| `resources_db_key_026g.der` | Skhid's public key (DER RSAPublicKey, 2048 bits), embedded in the .bin. The private key is never in the repository |
+| `sign_resources_026g.py`, `test_sign_resources.py` | Signs a `resources.db` file table with Skhid's key, says which key signed one; and its tests. Needs `openssl` |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
 | `survarium_login_server.crt` | The login certificate (the same file as `../certs/survarium_login_server.crt`) |
@@ -164,16 +168,21 @@ kept DLL). First build the crash reporter with `../../client/bugtrap/build.sh`,
 then:
 
 ```
-python make_client_026g.py <game folder> <new folder> --server=<host>:<port> [--localization=ukrainian] [--check]
-python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new folder> --server=<host>:<port> --resource-grow=<grow.json> --resources-out=<blobs> [--localization=ukrainian] [--check]
+python make_client_026g.py <game folder> <new file.zip> --pack-zip --server=<host>:<port> --resource-grow=<grow.json> --resources-out=<blobs> [--localization=ukrainian] [--check]
 ```
+
+The default exe starts only with the Skhid-signed `resources.db` (patch 24),
+so the tool builds it only with `--resource-grow` (resource-porter's
+`pack release`, its head signed by `sign_resources_026g.py`), and every other
+exe only without. Upload the blobs of `--resources-out` before the ZIP.
 
 It writes `game/binaries/x86/survarium_skhid.exe`,
 `game/binaries/x86/bugtrap.dll` (the Rust crash reporter),
 `game/binaries/x86/play_skhid.bat` and `play_skhid.sh` (Windows and Linux launchers),
 `game/resources/ssl/survarium_login_server.crt` and
 `README.txt` and `LINUX.txt` into the new folder, or a ZIP with `--pack-zip`, to be copied over
-the game. With `--no-launcher` these are
+the game. With `--no-launcher` (and so `--no-late-join`) these are
 the only seven files shipped; source, symbols, tests and development tools are
 excluded.
 
@@ -197,8 +206,11 @@ installing. `--check` does every check and writes nothing. Existing ZIPs are
 never overwritten. `--bugtrap=<path>` selects another built DLL; by default
 the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
 
-`--resource-region=<name>=<entry file>` (once per entry; `lobby_menu` and
-`login_menu` are known, `RESOURCE_REGIONS` in the tool) with
+`--resource-region=<name>=<entry file>` (once per entry; `main_menu`,
+`lobby_menu` and `login_menu` are known, `RESOURCE_REGIONS` in the tool;
+with `--resource-grow` too, whose head `[0, 10 583 534)` ends well before
+`main_menu`, `[17 970 448, 19 165 044)`, and the tool refuses a head that
+overlaps a region) with
 `--resources-out=<folder>` adds `game/binaries/x86/updater_skhid.resources`,
 the plan of the updater's resource step: the updater rewrites that entry of
 the player's `resources.db` in place with the entry file
@@ -402,7 +414,8 @@ original bytes first, so another build or an already patched file is refused.
   that key. The certificate ran out on 2015-06-06, so every unpatched 0.26g
   client stops with "Resources archive is corrupted".
 - **What stays:** only the chain check is skipped. The file table's
-  signature is still verified.
+  signature is still verified (with Skhid's key instead since revision 12:
+  patch 24).
 
 ### 2. The single-instance check
 
@@ -1249,6 +1262,23 @@ Checked: `selftest_026g.py` (`test_replay_reattach`, `test_sound_queue`,
 places, kits and weapons. Run in a game (2026-10-15, the replay of a 10-player
 match, first person, with seeks back and forth): no crash past the old crash
 points, sounds on time after seeks.
+
+### 24. A resources.db signed by Skhid's key, and no other (patch revision 12)
+
+The game checks the `resources.db` file table's signature at every start
+with the survarium.com certificate's key, so an archive with a new file
+stops it. Patch 24 sends verify_sign's call of `verify_sign_impl` (0x135D3)
+to `db_signature_026g.asm` at 0xC00 of `.srp`, which calls it once with a
+certificate context whose key is Skhid's (`resources_db_key_026g.der`). A
+revision 12 game starts only with the Skhid-signed archive the updater
+installs; any other stops it at start. What is signed and how:
+`../docs/notes/client_patch.md` section 0.1.
+
+`sign_resources_026g.py sign <db or head>` signs with the private key at
+`~/.local/share/skhid-signing/resources-db-key.pem` on the machine that makes
+releases (never in the repository; a new key means a new .bin and a new
+revision). Checked: `selftest_026g.py` check 25, `test_sign_resources.py`.
+**Not run: a game.**
 
 ## Not ported, not done
 

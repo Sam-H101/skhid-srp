@@ -643,3 +643,24 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   `temp/patch_temp/resources.db.patch` names target size 6,285,533,906 =
   our resources.db).
 - 0.21d has `verify_sign` too, but its clients start; not checked why.
+
+### 0.1 What is signed, and Skhid's key (patch revision 12, 2026-10-15)
+
+- **The bytes** [V, PROVEN with the retail archive]: the file table, the
+  node buffer after the 24-byte header, `[24, 24 + u32 at 20)`; RSA PKCS#1
+  v1.5 over its SHA-1, 2048 bits; the 256 signature bytes right after the
+  table, least significant byte first (CryptoAPI's order), then zeros to the
+  first file. Retail: table `[24, 10 344 304)`, signature `[10 344 304,
+  10 344 560)`, first file at 10 344 588. The files' bytes are not signed.
+- **The key**: verify_sign 0x13310 takes the survarium.com certificate from
+  the exe's own Authenticode signature and calls verify_sign_impl 0x12CB0
+  at 0x135D3 (eax = the certificate's context; the table, its size, the
+  signature, its size). Of the context it reads the encoding type (+0) and
+  CERT_INFO.SubjectPublicKeyInfo (+0Ch, +38h) alone, for
+  CryptImportPublicKeyInfo, then SHA-1 and CryptVerifySignature; 0 is good,
+  8 a bad signature ("Resources archive is corrupted"). [V]
+- **Revision 12** (`../../client-patches/db_signature_026g.asm`, README patch
+  24): the call at 0x135D3 goes to `.srp`+C00h, which calls 0x12CB0 once
+  with a context made on the stack whose key is Skhid's
+  (`resources_db_key_026g.der`). Only a Skhid-signed table starts the game.
+  Not run in a game.

@@ -30,6 +30,9 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425000 snapshot_upload_026g.asm -o snapshot_upload_026g.section.bin
         nasm -f bin -DCAVE=0x325A60  snapshot_upload_026g.asm -o snapshot_upload_026g.hash-mismatch.bin
     (both .bin files are checked in; --bin=<file> names another one).
+    The resources.db signature code comes from db_signature_026g.asm:
+        nasm -f bin -DCAVE=0xA425C00 db_signature_026g.asm -o db_signature_026g.section.bin
+    (checked in; it embeds resources_db_key_026g.der).
     The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -159,6 +162,13 @@ Patches:
   mask, the server saw a player alive and the match ran to the time limit
   (match.md section 28). The `jnz` at 0x3160F1 becomes six nops, as the
   battery rule's does;
+- the resources.db file table is checked with Skhid's key instead of the
+  survarium.com certificate's (patch revision 12, client_patch.md section
+  0.1): verify_sign's call of verify_sign_impl at 0x135D3 goes to
+  db_signature_026g.asm at 0xC00 of `.srp`, which makes it once with a
+  certificate context whose key is resources_db_key_026g.der. The game
+  starts only with the resources.db the updater installs; any other is
+  "Resources archive is corrupted";
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -290,7 +300,12 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # replay's seek empties the weapons' sound queues (SEEK_CLEAR below; sounds
 # played late after a seek). Nothing a match computes: no revision of their
 # own (owner, 2026-10-15).
-REVISION = 11
+# 12: the game starts only with a resources.db whose file table Skhid's key
+# signed, the one the updater installs (DB_SIGNATURE below); a retail one
+# stops it. Nothing a match computes: 11 and 12 play together. A server that
+# sells items only that resources.db has asks for 12: a game that says 12
+# has started with it.
+REVISION = 12
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -397,6 +412,23 @@ SECTION_VA = IMAGE_BASE + SECTION_RVA         # 0xA425000, the CAVE of the .sect
 SECTION_CHARACTERISTICS = 0x60000020          # code, execute, read (as .text)
 
 CAVES = {"section": SECTION_VA, "hash-mismatch": HASH_MISMATCH_VA}
+
+# vostok::crypt::verify_sign 0x13310, after the survarium.com certificate
+# was found and its chain check (CERT, 0x12A10) passed: `mov eax,esi` /
+# `call 12CB0h` (verify_sign_impl: eax = the certificate's context, four
+# cdecl arguments: the file table, its size, the signature, its size; 0 for
+# a good signature) / `add esp,10h`. The call goes to verify_skhid
+# (db_signature_026g.asm), at DB_SIGNATURE_OFFSET in the first page of
+# `.srp`: after the upload code, the default-server stub and the address
+# (0x21D at most), the pickup code (PICKUP_OFFSET, 0x800) and the replay's
+# seek code (SEEK_CLEAR_OFFSET, 0xA00); the late join begins at the next
+# page. build() checks that none of them overlaps. The rel32 holds no
+# address: no base relocation is under it.
+DB_SIGNATURE_VA, DB_SIGNATURE_IMPL = 0x135D3, 0x12CB0
+DB_SIGNATURE_OFFSET = 0xC00
+DB_SIGNATURE_ENTRY = SECTION_VA + DB_SIGNATURE_OFFSET
+DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"),
+                b"\xE8" + struct.pack("<i", DB_SIGNATURE_ENTRY - DB_SIGNATURE_VA - 5))
 
 # The late join (client_patch.md section 3.11). Its code is the second page
 # of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
@@ -972,7 +1004,8 @@ def build(original, mode, code=None, server=None, late_join=None):
     server embeds a default host:port in full builds only. late_join = the
     late-join code (late_join_026g.section.bin), in "section" builds only:
     with it the build is patch revision REVISION, without it
-    REVISION_WITHOUT_LATE_JOIN."""
+    REVISION_WITHOUT_LATE_JOIN; with it the game also starts only with a
+    resources.db signed by Skhid's key (db_signature_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -985,6 +1018,8 @@ def build(original, mode, code=None, server=None, late_join=None):
         if len(late_join) <= LATE_JOIN_ASM_SIZE:
             sys.exit("the late-join code is the 4096 bytes of late_join_026g.asm and the C code after them")
     revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
+    if late_join is not None:
+        db_signature = open(db_signature_bin(), "rb").read()
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -1112,11 +1147,18 @@ def build(original, mode, code=None, server=None, late_join=None):
         patch(data, va, expected, hook_bytes(SEEK_CLEAR_VA, va, expected, offset, opcode))
         if neutralize_relocs(data, [(va, va + len(expected))]):
             sys.exit("a base relocation under the seek's hook")
+        patch(data, *DB_SIGNATURE)
+        if neutralize_relocs(data, [(DB_SIGNATURE_VA, DB_SIGNATURE_VA + len(DB_SIGNATURE[1]))]):
+            sys.exit("a base relocation under verify_sign's call")
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > DB_SIGNATURE_OFFSET \
+                or DB_SIGNATURE_OFFSET + len(db_signature) > LATE_JOIN_OFFSET:
+            sys.exit("the seek code and the resources.db signature code do not fit before the late join")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (DB_SIGNATURE_OFFSET - len(cave)) + db_signature
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
         if late_join is not None:
@@ -1140,7 +1182,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      f"a battery under the floor one stands on taken (within {PICKUP_ACROSS:g} m across), "
                      "a replay's camera follows its player into another kit, "
                      "a weapon with a full sound queue drops the new sound, "
-                     "a replay's seek empties the weapons' sound queues"
+                     "a replay's seek empties the weapons' sound queues, "
+                     "only a resources.db signed by Skhid's key starts the game"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1151,6 +1194,10 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
+def db_signature_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "db_signature_026g.section.bin")
 
 
 def pickup_bin():
