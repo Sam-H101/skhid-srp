@@ -374,11 +374,7 @@ mod tests {
             0.25,
             mapdata::Body::default(),
         );
-        World {
-            map,
-            grid,
-            sight: RayTree::build(&[]),
-        }
+        World::assemble(map, grid.into(), RayTree::build(&[]).into())
     }
 
     pub fn with_anomaly() -> World {

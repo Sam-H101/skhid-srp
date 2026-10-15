@@ -12,7 +12,9 @@
 //!   the walker mesh; [`WalkGrid::distances_to`] floods a target once for
 //!   every bot heading there, [`WalkGrid::path`] is A* for one path.
 //! - [`RayTree`]: line of sight on the bullet mesh ([`RayTree::visible`]).
-//! - [`World`]: the three together for one match.
+//! - [`World`]: the three together for one match. Its grid and tree are
+//!   `Arc`s: projects built from the same geometry share them
+//!   ([`grid_key`], [`sight_key`]).
 //!
 //! Everything is in the map frame: left-handed, Y up, positions at the
 //! feet. Values from the physics engine (the uploaded worlds' `m_last_pos`)
@@ -63,11 +65,19 @@ pub const AREA_MARGIN: f32 = 5.0;
 /// (level_02 and level_04 fall apart); 0.25 m cells keep them.
 pub const CELL: f32 = 0.25;
 
+/// The version of what [`WalkGrid::build`] gives, in [`grid_key`]: raised
+/// with any change to the build that changes a grid (the pinned digest
+/// test in `grid.rs` fails until then), so a stored or shared grid of the
+/// old build is never taken for the new.
+pub const GRID_ALGO: u32 = 1;
+/// The same for [`RayTree::build`], in [`sight_key`].
+pub const SIGHT_ALGO: u32 = 1;
+
 /// One map ready for bots: its data, walk grid and sight tree.
 pub struct World {
     pub map: MapData,
-    pub grid: WalkGrid,
-    pub sight: RayTree,
+    pub grid: std::sync::Arc<WalkGrid>,
+    pub sight: std::sync::Arc<RayTree>,
 }
 
 impl World {
@@ -82,6 +92,64 @@ impl World {
             body,
         );
         let sight = RayTree::build(&map.bullet_triangles());
+        Self::assemble(map, grid.into(), sight.into())
+    }
+
+    /// A world of a grid and a tree built before, from this map's geometry
+    /// (or the same geometry: [`grid_key`], [`sight_key`]).
+    pub fn assemble(
+        map: MapData,
+        grid: std::sync::Arc<WalkGrid>,
+        sight: std::sync::Arc<RayTree>,
+    ) -> Self {
         Self { map, grid, sight }
+    }
+}
+
+/// What a walk grid is built from, as one number: the triangles as placed
+/// (corners by their bits, walker behaviour), the area, the cell, the body
+/// and [`GRID_ALGO`]. Equal keys build equal grids (the build is
+/// deterministic: `every_world_builds_the_same_twice`).
+pub fn grid_key(triangles: &[Triangle], area: [f32; 4], cell: f32, body: Body) -> u64 {
+    let mut digest = digest::Digest::new();
+    digest.u32(GRID_ALGO);
+    triangles_into(&mut digest, triangles, true);
+    for value in area.into_iter().chain([cell]) {
+        digest.f32(value);
+    }
+    for value in [
+        body.step,
+        body.stand_height,
+        body.crouch_height,
+        body.radius,
+        body.min_ground_normal_y,
+        body.max_drop,
+        body.max_jump,
+    ] {
+        digest.f32(value);
+    }
+    digest.finish()
+}
+
+/// What a sight tree is built from ([`grid_key`] for the tree): the
+/// triangles' corners and [`SIGHT_ALGO`].
+pub fn sight_key(triangles: &[Triangle]) -> u64 {
+    let mut digest = digest::Digest::new();
+    digest.u32(SIGHT_ALGO);
+    triangles_into(&mut digest, triangles, false);
+    digest.finish()
+}
+
+fn triangles_into(digest: &mut digest::Digest, triangles: &[Triangle], walker: bool) {
+    digest.len(triangles.len());
+    for triangle in triangles {
+        for v in triangle.v {
+            digest.f32(v.x);
+            digest.f32(v.y);
+            digest.f32(v.z);
+        }
+        if walker {
+            digest.u32(triangle.walker as u32);
+        }
     }
 }

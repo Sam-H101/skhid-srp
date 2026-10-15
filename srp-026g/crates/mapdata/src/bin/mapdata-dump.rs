@@ -132,7 +132,7 @@ fn stats(map: MapData, cell: f32) {
         grid.memory_bytes() as f64 / 1e6,
         sight.memory_bytes() as f64 / 1e6,
     );
-    let world = World { map, grid, sight };
+    let world = World::assemble(map, grid.into(), sight.into());
     let spawns: Vec<(i32, Option<u32>)> = world
         .map
         .spawns

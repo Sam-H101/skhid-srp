@@ -369,7 +369,7 @@ impl Tracker {
         state.keys = keys;
         state
             .body
-            .decided(time, keys, turn, kick, kin, world.map(|world| &world.grid));
+            .decided(time, keys, turn, kick, kin, world.map(|world| &*world.grid));
         let at = state.body.estimate().map(|e| e.feet);
         let Some(at) = at else {
             return;
@@ -468,7 +468,7 @@ impl Tracker {
         if let Some(health) = health {
             state.health = health;
         }
-        state.body.fixed(fix, kin, world.map(|world| &world.grid))
+        state.body.fixed(fix, kin, world.map(|world| &*world.grid))
     }
 
     /// The rest of a trusted world: statistics (deaths become events),
@@ -575,7 +575,7 @@ impl Tracker {
                 } else {
                     state
                         .body
-                        .at(clock.clock, kin, world.map(|world| &world.grid))
+                        .at(clock.clock, kin, world.map(|world| &*world.grid))
                 };
                 let carrying = self
                     .carriers

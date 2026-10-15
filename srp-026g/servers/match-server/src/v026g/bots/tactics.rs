@@ -547,7 +547,7 @@ pub(super) mod tests {
         };
         edit(&mut map);
         let sight = RayTree::build(&triangles);
-        Arc::new(World { map, grid, sight })
+        Arc::new(World::assemble(map, grid.into(), sight.into()))
     }
 
     #[test]

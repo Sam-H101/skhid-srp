@@ -227,29 +227,42 @@ impl Walkers {
         }
         if self.world.is_none() && !self.absent {
             match self.maps.get(self.project) {
-                MapState::Ready(world) => {
-                    let (send, built) = std::sync::mpsc::channel();
+                MapState::Ready(base) => {
+                    let world = base.world.clone();
                     let margin = self.bots.tuning.hazard_margin;
-                    let for_tactics = world.clone();
-                    let spawned = std::thread::Builder::new()
-                        .name(format!("bot tactics {id:#x}"))
-                        .spawn(move || {
-                            let started = std::time::Instant::now();
-                            let tactics = Tactics::new(for_tactics, margin);
-                            log::info!(
-                                "Match {id:#x}: the bots' tactics built in {:.2} s",
-                                started.elapsed().as_secs_f32()
-                            );
-                            let _ = send.send(tactics);
-                        });
-                    match spawned {
-                        Ok(_) => self.tactics = Some(built),
-                        Err(error) => {
-                            log::warn!(
-                                "Match {id:#x}: can't start the bots' tactics build ({error}); \
-                                 the server's bots run the stage 0 script"
-                            );
-                            self.absent = true;
+                    if margin.to_bits() == base.margin().to_bits() {
+                        // The map's own tactics, shared by every match on it.
+                        let floors = world.grid.len();
+                        let summary = self.bots.tactics_ready(Tactics::of(base));
+                        log::info!(
+                            "Match {id:#x}: the bots have the map {} ({floors} floors; {summary})",
+                            self.project,
+                        );
+                    } else {
+                        // Tuned to another margin: tactics of its own.
+                        let (send, built) = std::sync::mpsc::channel();
+                        let for_tactics = world.clone();
+                        let spawned = std::thread::Builder::new()
+                            .name(format!("bot tactics {id:#x}"))
+                            .spawn(move || {
+                                let started = std::time::Instant::now();
+                                let tactics = Tactics::new(for_tactics, margin);
+                                log::info!(
+                                    "Match {id:#x}: the bots' tactics for margin {margin} built \
+                                     in {:.2} s",
+                                    started.elapsed().as_secs_f32()
+                                );
+                                let _ = send.send(tactics);
+                            });
+                        match spawned {
+                            Ok(_) => self.tactics = Some(built),
+                            Err(error) => {
+                                log::warn!(
+                                    "Match {id:#x}: can't start the bots' tactics build \
+                                     ({error}); the server's bots run the stage 0 script"
+                                );
+                                self.absent = true;
+                            }
                         }
                     }
                     self.world = Some(world);
