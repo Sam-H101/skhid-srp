@@ -397,6 +397,7 @@ slower):
 | all 72 projects ready | 57 s built | 9.7 s read |
 | built files on disk | | 2.4 GB (29 grids, 30 trees, 72 tactics) |
 | the bots' polls, level_02 10 v 10 | 102 ms a second | 90 ms a second |
+| a test process loading level_01/day_4 through the store (peak working set) | 146 MB, 0.69 s (world only) | first load 146 MB, 1.45 s (world, tactics, files written); then 62-83 MB, 0.17 s |
 
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
