@@ -9,6 +9,37 @@ release that made it what it is now.
 
 ---
 
+## 15 Oct, 15:39 — Game update 11: FOV setting, exchange both ways, Team Deathmatch end, batteries under the floor (update required)
+
+Start `Skhid.bat` and the launcher updates the game by itself. An older game
+can no longer play: Play tells you to update.
+
+- **Field of view:** a new "FOV:" slider under gamma in Settings → Graphics,
+  from 50 to 100 (the game's view was fixed at 65). Iron sights stay close to
+  your setting; a full scope looks exactly as before at any setting.
+- **Team Deathmatch ends when a team is out.** Before, one dead player could
+  stay counted as alive and the match ran on to its time limit.
+- **A battery that fell under the floor** can now be picked up: stand right
+  above it, look down and press use.
+- **Exchange silver and gold both ways in the game:** the gold and silver
+  boxes at the top of the lobby open an exchange window. Type how much to pay
+  or receive and swap the direction with the arrow button, at 100 silver = 1
+  gold. The exchange on the website still works too.
+- **Fewer desyncs:** a game that went out of step and did not take the fix is
+  put back again, and a move that reaches the server a little late is still
+  passed on to the others while their games can take it.
+- **Leaving a match:** when a match you left ends, you are no longer sent to
+  the next match of the players still in it.
+- **Launcher:** Enter presses PLAY.
+- **"Matches" window:**
+  - Each match shows its level.
+  - When JOIN is off, it says why: you are searching, in a squad or in a match, the match has not started, it ends soon, the teams are already even, and so on.
+- **Before a maintenance:** in the last 30 minutes, when Play is off, JOIN
+  still works for a match that ends before the maintenance. You go onto the
+  weaker side at once, even if that makes the sides uneven.
+- **Website:** shorter steps on the home page, and a link to the project's
+  Discord.
+
 ## 14 Oct, 21:26 — Fewer desyncs (update required)
 
 Start `Skhid.bat` and the launcher updates the game by itself. An older game
