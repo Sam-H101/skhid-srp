@@ -278,7 +278,13 @@ once.
   (`divergence_confirm_ms`), or 3 s on the wall clock; at most one resync of
   a client per 15 s (`resync_interval`). A resynced client wrong from its
   first reports after the world (within 1.5 s of it going, `LOAD_WRONG_MS`)
-  is resynced again at once, twice in a row at most (`QUICK_REDOS`).
+  is resynced again at once, twice in a row at most (`QUICK_REDOS`); a
+  report that agrees inside that time does not stop it. Its wrong world is
+  asked for just ahead of the resync and saved as kind `wrong`, 2 a player
+  and 8 a match at most.
+- A player back in the match (in the others' worlds since its entry) is put
+  at the match clock by its first world, as a resynced client is, and its
+  inputs are taken while that world is on its way.
 - Who is wrong (`judge`): the majority's CRC is right. With no majority, a
   client known to be out of step is wrong; else the side with the better
   links is right, if it clearly outweighs the rest (`TRUST_MARGIN`); else
@@ -526,7 +532,7 @@ plain reliables (E3, F3..F5).
 
 - `SRP_PACKET_LOG`: the packet capture (Wireshark is not installed).
 - `SRP_SNAPSHOT_DIR`: saved worlds, with their kind (`unreadable` among
-  them).
+  them; `wrong`: a game's own world as it was found out of step).
 - `servers/srp/tests/v026g_end_to_end.rs`: the real servers with two
   scripted clients through a whole match. Its clients report every tick's
   hash and skip the countdown, so it proves the servers agree with each

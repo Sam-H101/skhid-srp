@@ -295,6 +295,10 @@ const INPUT_MAX_AGE_MS: u32 = 5_000;
 const INPUTS_KEPT_MS: u32 = 60_000;
 /// Rejected or unchecked snapshots saved at most this many times a match.
 const MAX_DOUBTFUL_DUMPS: u32 = 40;
+/// The worlds of players found out of step asked for (`ask_wrong_world`):
+/// at most this many a player in a match, and as many a match.
+const WRONG_WORLDS_PER_PLAYER: u32 = 2;
+const WRONG_WORLDS_PER_MATCH: u32 = 8;
 /// Ticks a client is known to have missed, the latest ones.
 const MISSED_KEPT: usize = 64;
 /// A tie names a client out of step only for a tick it missed, or an own
@@ -655,6 +659,11 @@ struct Peer {
     /// Back in a match it left: when it entered for the others, before it
     /// was started, until it is live.
     entered_early: Option<u32>,
+    /// Asked for its world as it was found out of step, to look at
+    /// (`ask_wrong_world`): the tick of the majority's verdict and how
+    /// many it gave so far.
+    wrong_world_asked: Option<u32>,
+    wrong_worlds: u32,
     /// The times of its inputs already handled.
     inputs_seen: HashSet<u32>,
     profiles_seen: HashSet<(u32, u8)>,
@@ -838,6 +847,8 @@ pub(crate) struct Game {
     disagreement_logged: Option<Instant>,
     respawn_points_logged: bool,
     doubtful_dumps: u32,
+    /// Worlds of players out of step asked for (`ask_wrong_world`).
+    wrong_worlds_asked: u32,
     pings_logged_at: u32,
     /// Since when a match with test bots has had no real client connected.
     bots_alone_since: Option<Instant>,
@@ -889,6 +900,7 @@ impl Game {
             disagreement_logged: None,
             respawn_points_logged: false,
             doubtful_dumps: 0,
+            wrong_worlds_asked: 0,
             pings_logged_at: 0,
             bots_alone_since: None,
             result: None,
@@ -1147,6 +1159,8 @@ impl Game {
             answer_redos: 0,
             sync_sent_at: None,
             entered_early: None,
+            wrong_world_asked: None,
+            wrong_worlds: 0,
             inputs_seen: HashSet::new(),
             profiles_seen: HashSet::new(),
             placed: VecDeque::new(),
@@ -2067,6 +2081,55 @@ impl Game {
         }
     }
 
+    /// The world of the player at `index`, found out of step: asked for to
+    /// look at (`wrong_world_uploaded`), no vote and never a world anyone
+    /// starts from. A patched client uploads its event-horizon world of the
+    /// moment it handles the request (client_patch.md section 3.4); asked
+    /// for ahead of the 0xE5 of its resync, that is a world of the game it
+    /// played. Live, 2026-10-15: only agreed worlds were kept, none of an
+    /// out-of-step game, and no wrong world could be compared byte for byte.
+    /// [`WRONG_WORLDS_PER_PLAYER`] a player and [`WRONG_WORLDS_PER_MATCH`]
+    /// a match at most.
+    fn ask_wrong_world(&mut self, index: usize, now: Instant) {
+        if self.wrong_worlds_asked >= WRONG_WORLDS_PER_MATCH {
+            return;
+        }
+        let clock = self.clock(now);
+        let Some(peer) = self.peers[index].as_mut() else {
+            return;
+        };
+        if !peer.patched
+            || peer.stage != Stage::Live
+            || peer.wrong_worlds >= WRONG_WORLDS_PER_PLAYER
+            || peer.is_asked(now)
+        {
+            return;
+        }
+        peer.wrong_worlds += 1;
+        peer.wrong_world_asked = Some(clock);
+        send(peer, &ServerMessage::UploadRequest);
+        peer.asked = Some(now);
+        peer.asked_clock = None;
+        self.wrong_worlds_asked += 1;
+    }
+
+    /// The world a player out of step was asked for came: saved as
+    /// "wrong" with what it and the majority say of its tick.
+    fn wrong_world_uploaded(&mut self, index: usize, asked_at: u32, snapshot: &Snapshot) {
+        let crc = snapshot::crc(&snapshot.body);
+        let majority = self.majority(snapshot.time);
+        log::warn!(
+            "Match {:#x}: player {index}, out of step, gave its world at {} ms ({} bytes, CRC \
+             {crc:08x}; the majority's for that tick {}; asked at {asked_at} ms); saved as \
+             \"wrong\"",
+            self.id,
+            snapshot.time,
+            snapshot.body.len(),
+            majority.map_or("unknown".to_owned(), |majority| format!("{majority:08x}"))
+        );
+        self.dump(snapshot, index, "wrong");
+    }
+
     /// Where a client that starts from the snapshot at `time` has its clock
     /// put (0xE5).
     ///
@@ -2129,7 +2192,22 @@ impl Game {
             };
             return own.max(newest);
         }
-        if others {
+        let back_in = self.peers[index]
+            .as_ref()
+            .filter(|peer| peer.entered_early.is_some());
+        if let Some(peer) = back_in
+            && others
+        {
+            // Back in the match: the others have its player since its
+            // entry, and take its inputs as a live one's. Its game goes at
+            // the match clock as the 0xE5 arrives, as a resynced one's
+            // does: put behind it by `SYNC_LEAD_MS` its inputs of the first
+            // second came 250-400 ms past their ticks, too late for the
+            // others, and their drops reached its game past its history
+            // (live, 2026-10-15, 9 drops and out of step 2 s after its
+            // load). Never behind the lead.
+            (clock + one_way(peer)).max(time + SYNC_LEAD_MS)
+        } else if others {
             (time + SYNC_LEAD_MS)
                 .min(clock)
                 .max(clock.saturating_sub(MAX_CLOCK_CORRECTION_MS))
@@ -2905,8 +2983,11 @@ impl Game {
         };
         // A client resynced while it plays is in the others' worlds all
         // the while: its inputs are handled as a live one's (match.md
-        // section 30). A client that enters has no world, and makes none.
-        if peer.stage != Stage::Live && !resyncing(peer.stage) {
+        // section 30). A client that enters has no world, and makes none;
+        // one back in the match is in the others' worlds since its entry,
+        // and makes them once its world is loaded, before the server has
+        // that word (`takes_inputs`).
+        if !takes_inputs(peer) {
             return;
         }
         let Some(time) = input.time.resolve(clock) else {
@@ -3052,7 +3133,7 @@ impl Game {
             return;
         };
         // As an input (`input`).
-        if peer.stage != Stage::Live && !resyncing(peer.stage) {
+        if !takes_inputs(peer) {
             return;
         }
         let Some(time) = tick_time(tick, clock) else {
@@ -3228,6 +3309,12 @@ impl Game {
             }
         }
         peer.asked = None;
+        if !initial && let Some(asked_at) = peer.wrong_world_asked.take() {
+            // Asked for as it was found out of step: a world to look at,
+            // no vote (`ask_wrong_world`).
+            self.wrong_world_uploaded(index, asked_at, &snapshot);
+            return;
+        }
         if !initial && joiner {
             // Asked for over its wrong reports: a world to look at, no vote
             // (`check_joiner_worlds`).
@@ -3818,8 +3905,13 @@ impl Game {
             divergence.last = divergence.last.max(time);
         } else if peer.diverged.is_none() {
             // A report that agrees, with none against it standing: its
-            // last restore worked.
-            peer.restores_unagreed = 0;
+            // last restore worked, once it is past the time its world may
+            // still turn out not to have taken (`LOAD_WRONG_MS`). Live,
+            // 2026-10-15: right for one or two reports, wrong 105 and 261
+            // ms after the load, and the quick redo was lost to them.
+            if time > peer.judge_from + LOAD_WRONG_MS {
+                peer.restores_unagreed = 0;
+            }
         } else if !strict {
             // Not enough to say it agrees again.
         } else if let Some(divergence) = peer.diverged.take() {
@@ -3955,6 +4047,9 @@ impl Game {
                 "Match {:#x}: player {index} is out of sync{wrong}; resyncing it",
                 self.id
             );
+            // Its wrong world first, to look at: asked for ahead of its
+            // 0xE5, it is the world it played in.
+            self.ask_wrong_world(index, now);
             // A fresh snapshot from the others: the inputs since it bring
             // the client to now.
             self.start_sync(index, false, now);
@@ -5207,6 +5302,19 @@ fn resend_pace(peer: &Peer) -> Duration {
     .max(RESYNC_WORLD_RESEND_MIN)
 }
 
+/// Whether an input of the client is taken: it simulates in the others'
+/// worlds. Live; resynced while it plays (`resyncing`); or back in the
+/// match (`Peer::entered_early`: the others have its player since that
+/// entry) with its world on its way: the client makes inputs from its
+/// load, and the ack of the world comes a way later. Live, 2026-10-15: a
+/// player back in made an input 395 ms past its tick in that while, which
+/// was neither relayed nor dropped.
+fn takes_inputs(peer: &Peer) -> bool {
+    peer.stage == Stage::Live
+        || resyncing(peer.stage)
+        || (peer.entered_early.is_some() && matches!(peer.stage, Stage::Syncing { .. }))
+}
+
 /// The way of a message to the client, as far as a resync's clock goes:
 /// half its round trip, at most [`RESYNC_ONE_WAY_MAX_MS`].
 fn one_way(peer: &Peer) -> u32 {
@@ -5653,6 +5761,14 @@ impl Game {
                 peer.sync_pending_most,
                 peer.gate_checks,
             )
+        })
+    }
+
+    /// The worlds the client was asked for as it was found out of step,
+    /// and whether one of them is still awaited (`ask_wrong_world`).
+    pub fn wrong_worlds(&self, index: usize) -> (u32, bool) {
+        self.peers[index].as_ref().map_or((0, false), |peer| {
+            (peer.wrong_worlds, peer.wrong_world_asked.is_some())
         })
     }
 
