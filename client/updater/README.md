@@ -167,7 +167,7 @@ file <sha256> <size> <path>
 end
 ```
 
-The game exe of patch revision 12 starts only with a db whose file table
+The game exe from patch revision 12 on starts only with a db whose file table
 Skhid's key signed, which a `tail` and its head region install, so
 `make_client_026g.py` builds that exe only with a `--resources-db` whose
 table Skhid signed: from that release on every plan is a required one.

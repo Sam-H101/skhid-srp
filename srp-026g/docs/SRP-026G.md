@@ -559,7 +559,7 @@ has none), the launcher's ten local pages, and `Skhid.bat` and `Skhid.sh`
 beside `game`, the one file a player starts. Build the Rust programs first with
 `../client/bugtrap/build.sh` and `../client/updater/build.sh`; the overlay
 builder includes them by default.
-The default exe (patch revision 12) starts only with a `resources.db` whose
+The default exe (patch revision 12 and later) starts only with a `resources.db` whose
 file table Skhid signed, so it is built with `--resources-db=<the release's
 final resources.db> --resources-out=<folder>`: the plan is read off it and
 the stock one (`srp-game-data plan`), and the updater installs it before

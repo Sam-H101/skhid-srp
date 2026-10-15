@@ -115,7 +115,7 @@ THE PLAYERS' RESOURCES.DB
       table and its signature, to the end of the original files they cover
       (a release moves those to its end). The table must be signed with
       Skhid's key (sign_resources_026g.py): the default exe (patch revision
-      12) starts with such a resources.db alone, every other exe with the
+      12 and later) starts with such a resources.db alone, every other exe with the
       original one alone, so the default exe ships exactly when the table
       changes;
     - what it has past the original's end, `resources_tail`, appended with
