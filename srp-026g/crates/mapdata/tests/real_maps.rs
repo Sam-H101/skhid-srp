@@ -47,11 +47,12 @@ fn spawn_heights(map: &MapData) -> Vec<f32> {
 
 fn grid(map: &MapData, cell: f32, body: Body) -> WalkGrid {
     let t = Instant::now();
-    let grid = WalkGrid::build(
+    let grid = WalkGrid::build_kept(
         &map.walker_triangles(),
         map.play_area(mapdata::AREA_MARGIN),
         cell,
         body,
+        &map.grid_seeds(),
     );
     eprintln!(
         "grid of {cell} m: {} floors in {:.2} s",
@@ -353,13 +354,14 @@ fn every_world_reads_back_from_its_built_files() {
         let walker = map.walker_triangles();
         let area = map.play_area(mapdata::AREA_MARGIN);
         let body = Body::default();
-        let grid_key = mapdata::grid_key(&walker, area, mapdata::CELL, body);
+        let seeds = map.grid_seeds();
+        let grid_key = mapdata::grid_key(&walker, area, mapdata::CELL, body, &seeds);
         let bullet = map.bullet_triangles();
         let sight_key = mapdata::sight_key(&bullet);
         let grid_path = out.join(mapdata::built::grid_file_name(grid_key));
         let sight_path = out.join(mapdata::built::sight_file_name(sight_key));
         let t = Instant::now();
-        let grid = WalkGrid::build(&walker, area, mapdata::CELL, body);
+        let grid = WalkGrid::build_kept(&walker, area, mapdata::CELL, body, &seeds);
         let sight = RayTree::build(&bullet);
         let build = t.elapsed().as_secs_f32();
         if !grid_path.is_file() {
@@ -393,4 +395,94 @@ fn every_world_reads_back_from_its_built_files() {
         on_disk >> 20
     );
     let _ = bytes;
+}
+
+/// Each world's kept grid is its whole grid less floors no body gets to:
+/// every kept floor is a floor of the whole at the same place, with the
+/// same headroom and links; every floor the seeds reach in the whole is
+/// kept; and how many go and what memory that saves, per map.
+#[test]
+#[ignore = "needs SRP_MAPDATA_DIR"]
+fn kept_grids_are_the_whole_grids_less_floors_no_body_gets_to() {
+    let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "mapdata"))
+        .collect();
+    files.sort();
+    let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
+    let (mut whole_bytes, mut kept_bytes) = (0usize, 0usize);
+    for path in &files {
+        let map = MapData::read(path).unwrap();
+        let walker = map.walker_triangles();
+        let area = map.play_area(mapdata::AREA_MARGIN);
+        let body = Body::default();
+        let seeds = map.grid_seeds();
+        let whole = WalkGrid::build(&walker, area, mapdata::CELL, body);
+        let kept = WalkGrid::build_kept(&walker, area, mapdata::CELL, body, &seeds);
+        let of: std::collections::HashMap<_, NodeId> = (0..whole.len() as NodeId)
+            .map(|f| (key(whole.position(f)), f))
+            .collect();
+        let mut present = vec![false; whole.len()];
+        for k in 0..kept.len() as NodeId {
+            let f = of[&key(kept.position(k))];
+            present[f as usize] = true;
+            assert_eq!(kept.headroom(k), whole.headroom(f));
+            let links = |g: &WalkGrid, a: NodeId| -> Vec<_> {
+                g.links(a)
+                    .map(|(b, kind)| (key(g.position(b)), kind))
+                    .collect()
+            };
+            assert_eq!(links(&kept, k), links(&whole, f), "{}", map.project);
+        }
+        // What the seeds reach in the whole is kept.
+        let starts: Vec<NodeId> = seeds.iter().filter_map(|&s| whole.locate(s, 3.0)).collect();
+        let mut seen = vec![false; whole.len()];
+        let mut queue = starts.clone();
+        for &s in &starts {
+            seen[s as usize] = true;
+        }
+        while let Some(a) = queue.pop() {
+            assert!(
+                present[a as usize],
+                "{}: a reached floor dropped",
+                map.project
+            );
+            for (b, _) in whole.links(a) {
+                if !seen[b as usize] {
+                    seen[b as usize] = true;
+                    queue.push(b);
+                }
+            }
+        }
+        // A seed finds the same floor in both.
+        for &s in &seeds {
+            assert_eq!(
+                whole.locate(s, 3.0).map(|f| key(whole.position(f))),
+                kept.locate(s, 3.0).map(|k| key(kept.position(k))),
+                "{}",
+                map.project
+            );
+        }
+        whole_bytes += whole.memory_bytes();
+        kept_bytes += kept.memory_bytes();
+        eprintln!(
+            "{}: {} floors, {} kept ({:.0} %), {:.1} MB to {:.1} MB",
+            map.project,
+            whole.len(),
+            kept.len(),
+            100.0 * kept.len() as f64 / whole.len().max(1) as f64,
+            whole.memory_bytes() as f64 / 1e6,
+            kept.memory_bytes() as f64 / 1e6
+        );
+    }
+    eprintln!(
+        "all {} projects: {:.0} MB to {:.0} MB",
+        files.len(),
+        whole_bytes as f64 / 1e6,
+        kept_bytes as f64 / 1e6
+    );
 }

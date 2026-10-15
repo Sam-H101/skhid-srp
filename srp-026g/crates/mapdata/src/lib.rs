@@ -70,7 +70,7 @@ pub const CELL: f32 = 0.25;
 /// with any change to the build that changes a grid (the pinned digest
 /// test in `grid.rs` fails until then), so a stored or shared grid of the
 /// old build is never taken for the new.
-pub const GRID_ALGO: u32 = 1;
+pub const GRID_ALGO: u32 = 2;
 /// The same for [`RayTree::build`], in [`sight_key`].
 pub const SIGHT_ALGO: u32 = 1;
 
@@ -83,14 +83,16 @@ pub struct World {
 
 impl World {
     /// Builds the grid (cells of `cell` metres over the play area, normally
-    /// [`CELL`]) and the sight tree: 0.3-0.8 s for a 0.26g map at 0.25 m
-    /// (timings in the notes).
+    /// [`CELL`], keeping the floors a body gets to from the map's
+    /// [`MapData::grid_seeds`]) and the sight tree: 0.3-0.8 s for a 0.26g
+    /// map at 0.25 m (timings in the notes).
     pub fn build(map: MapData, cell: f32, body: Body) -> Self {
-        let grid = WalkGrid::build(
+        let grid = WalkGrid::build_kept(
             &map.walker_triangles(),
             map.play_area(AREA_MARGIN),
             cell,
             body,
+            &map.grid_seeds(),
         );
         let sight = RayTree::build(&map.bullet_triangles());
         Self::assemble(map, grid.into(), sight.into())
@@ -108,10 +110,17 @@ impl World {
 }
 
 /// What a walk grid is built from, as one number: the triangles as placed
-/// (corners by their bits, walker behaviour), the area, the cell, the body
-/// and [`GRID_ALGO`]. Equal keys build equal grids (the build is
-/// deterministic: `every_world_builds_the_same_twice`).
-pub fn grid_key(triangles: &[Triangle], area: [f32; 4], cell: f32, body: Body) -> u64 {
+/// (corners by their bits, walker behaviour), the area, the cell, the body,
+/// the seeds ([`WalkGrid::build_kept`]) and [`GRID_ALGO`]. Equal keys build
+/// equal grids (the build is deterministic:
+/// `every_world_builds_the_same_twice`).
+pub fn grid_key(
+    triangles: &[Triangle],
+    area: [f32; 4],
+    cell: f32,
+    body: Body,
+    seeds: &[Vec3],
+) -> u64 {
     let mut digest = digest::Digest::new();
     digest.u32(GRID_ALGO);
     triangles_into(&mut digest, triangles, true);
@@ -120,6 +129,12 @@ pub fn grid_key(triangles: &[Triangle], area: [f32; 4], cell: f32, body: Body) -
     }
     for value in body.values() {
         digest.f32(value);
+    }
+    digest.len(seeds.len());
+    for seed in seeds {
+        digest.f32(seed.x);
+        digest.f32(seed.y);
+        digest.f32(seed.z);
     }
     digest.finish()
 }

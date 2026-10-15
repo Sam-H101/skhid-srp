@@ -565,7 +565,18 @@ impl Decisions {
         self.notes += 1;
     }
 
+    /// With `SRP_TRACE_DECISIONS=<file>`, each line is also appended
+    /// there: two runs' files show where they part.
     fn text(&mut self, text: &str) {
+        if let Some(path) = std::env::var_os("SRP_TRACE_DECISIONS") {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(file, "{text}").unwrap();
+        }
         self.digest.len(text.len());
         for chunk in text.as_bytes().chunks(8) {
             let mut word = [0u8; 8];

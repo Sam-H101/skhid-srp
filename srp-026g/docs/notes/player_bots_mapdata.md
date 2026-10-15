@@ -426,6 +426,45 @@ fire), level_03/day_3 6 of 18 (the timed spot in the rust gas). Failed
 searches, School 10 v 10: 2,012 to 618. Taking them with little damage, as
 players do, is for later.
 
+**Floors no body gets to are dropped** (a decision change, the owner's
+word of 2026-10-16). The grid covers the `levelmap` box and 5 m more, and
+counts every face up with room above. On School only 17 % of its 2.29 M
+floors were reached from a spawn: 58 % lay on `level_02_border` (the
+invisible boundary: walls with lids at 35 m and 48 m and a plate at -9 m,
+on purpose, not a leftover), 20 % on the ground outside it, 3 % on roofs
+one drops from, 1.5 % in shut rooms (one wall from open floor), the rest on
+props' tops. `WalkGrid::build_kept` (step 5 of the grid's build) keeps the
+floors reached from the map's `grid_seeds` (spawns, batteries, containers,
+stations), those leading into them (roofs) and what those link to; the
+seeds are in `grid_key` and `GRID_ALGO` is 2.
+
+Proof, `kept_grids_are_the_whole_grids_less_floors_no_body_gets_to` (all
+72 projects): each kept floor is a floor of the whole grid at the same
+place with the same headroom and the same links, every floor the seeds
+reach is kept, every seed finds the same floor. So a way between kept
+floors is as before. The decisions still changed on the real maps (not in
+the three whole matches): `Tactics::spots` probes points round a place and
+takes the floor `locate` finds there, preferring high ones, and `locate`
+found floors no body gets to (a prop's top, a shut room); a bot then went
+for a spot with no way (`SRP_TRACE_DECISIONS` showed the first such goal
+on level_01, 36 s in). Now those probes land on floors a body reaches.
+Failed searches, the same runs: level_01 4 v 4 205 to 128, 10 v 10 923 to
+203; level_03 10 v 10 2,909 to 1,837; School 4 v 4 725 to 445, 10 v 10 618
+to 535; level_06 about the same (2,007 to 2,021, 4,077 to 4,155).
+
+| | whole grid | kept |
+|---|---|---|
+| School (level_02/day_2) floors | 2,291,518 | 476,544 (21 %) |
+| grid, level_02/day_4 | 64 MB | 15 MB |
+| tactics, level_02 | 16 MB a map | 3 MB |
+| grids of all 72 projects (unshared) | 2,346 MB | 1,012 MB |
+| kept share by level | | 01: 51 %, 02: 21 %, 03: 88 %, 04: 31 %, 05: 84 %, 06: 47 %, 07: 74 %, 08: 10 % |
+| map_ready (tactics build), level_06 | 479 ms | 360 ms |
+
+A process loading level_01/day_4 from built files peaks at 72 MB (62-83
+before; other parts dominate there). The build itself still makes the
+whole grid first, so a first load's peak is as before (146 MB).
+
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.
@@ -492,7 +531,7 @@ zone is always active, as is every zone before `attach`.
 - The match server loads the files (§6), but no bot moves by them yet.
 - The grid against the client's real movement (step, slope, jump height,
   narrow doors, the one-way bases) is not checked in a game.
-- Grid memory: done (§6, "Lighter maps"); 64 MB on level_02.
+- Grid memory: done (§6, "Lighter maps"); 15 MB on level_02 (floors no body gets to dropped).
 - Files are not compressed (`lzma-rust2` is in the workspace).
 - The objectives' reach is only checked for level_05 batteries; a
   container's use box is a trigger shape, not a floor (`Shape::contains`

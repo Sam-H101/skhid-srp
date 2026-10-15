@@ -21,6 +21,12 @@
 //!    `(k - 0.5) × cell` from the wall; it stays when that is the radius
 //!    (within 1 cm). At 0.25 m cells that is 1 round, which keeps 0.9-1 m
 //!    doors open; 2 rounds (`ceil(radius / cell)`, the prototype) shut some.
+//! 5. With seeds (a map's spawns and objectives, [`WalkGrid::build_kept`]):
+//!    only the floors a body gets to stay: those reached from a seed's
+//!    floor, those leading into them, and what those link to. The rest
+//!    (an invisible border's lids, the ground outside it, shut rooms) go;
+//!    no link joins them to a kept floor, so the kept floors and their
+//!    links are as before.
 //!
 //! Positions are in the map frame, at the feet ([`crate::math`]).
 
@@ -151,6 +157,9 @@ const DIRS: [(i32, i32); 8] = [
 const MERGE_GAP: f32 = 0.05;
 /// Spans whose tops differ less than this are one floor.
 const SAME_TOP: f32 = 0.1;
+/// A seed's floor is found within this, metres ([`WalkGrid::locate`]; an
+/// objective's goal is found as far).
+const SEED_M: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug)]
 struct Span {
@@ -200,6 +209,9 @@ pub struct BuildStats {
     pub spans: usize,
     pub floors: usize,
     pub floors_after_erosion: usize,
+    /// Left after dropping the floors no body gets to (the same without
+    /// seeds).
+    pub floors_kept: usize,
 }
 
 impl WalkGrid {
@@ -214,6 +226,29 @@ impl WalkGrid {
         area: [f32; 4],
         cell: f32,
         body: Body,
+    ) -> (Self, BuildStats) {
+        Self::build_kept_with_stats(triangles, area, cell, body, &[])
+    }
+
+    /// [`Self::build`] keeping only the floors a body gets to from the
+    /// floors under `seeds` (step 5 of the module documentation); no seed
+    /// on a floor keeps them all.
+    pub fn build_kept(
+        triangles: &[Triangle],
+        area: [f32; 4],
+        cell: f32,
+        body: Body,
+        seeds: &[Vec3],
+    ) -> Self {
+        Self::build_kept_with_stats(triangles, area, cell, body, seeds).0
+    }
+
+    pub fn build_kept_with_stats(
+        triangles: &[Triangle],
+        area: [f32; 4],
+        cell: f32,
+        body: Body,
+        seeds: &[Vec3],
     ) -> (Self, BuildStats) {
         assert!(cell > 0.0, "cell size must be positive");
         let (x0, z0) = (area[0], area[1]);
@@ -283,9 +318,11 @@ impl WalkGrid {
         };
         let mut wide = grid.link(&forced);
         grid.erode(&mut wide);
+        stats.floors_after_erosion = grid.len();
+        grid.keep_reached(&mut wide, seeds);
         grid.pieces(&wide);
         grid.pack(wide);
-        stats.floors_after_erosion = grid.len();
+        stats.floors_kept = grid.len();
         (grid, stats)
     }
 
@@ -384,6 +421,7 @@ impl WalkGrid {
                 alive[a] = false;
             }
         }
+        let furthest = rounds as i32 + 1;
         for a in 0..n {
             if !alive[a] {
                 continue;
@@ -395,7 +433,7 @@ impl WalkGrid {
                     continue;
                 }
                 wide.links[a][d] = NONE;
-                for reach in 2..=rounds as i32 + 1 {
+                for reach in 2..=furthest {
                     let Some(cell) = self.cell_index(i + di * reach, k + dk * reach) else {
                         break;
                     };
@@ -407,7 +445,71 @@ impl WalkGrid {
                 }
             }
         }
-        // Compact: new ids in the same (cell) order.
+        self.compact(wide, &alive);
+    }
+
+    /// Drops the floors no body gets to from `seeds` (step 5 of the
+    /// module documentation), then compacts.
+    fn keep_reached(&mut self, wide: &mut Wide, seeds: &[Vec3]) {
+        let n = self.len();
+        let mut kept = vec![false; n];
+        let mut queue: Vec<u32> = Vec::new();
+        for &seed in seeds {
+            if let Some(a) = self.locate(seed, SEED_M)
+                && !kept[a as usize]
+            {
+                kept[a as usize] = true;
+                queue.push(a);
+            }
+        }
+        if queue.is_empty() {
+            return;
+        }
+        let forward = |kept: &mut Vec<bool>, queue: &mut Vec<u32>| {
+            while let Some(a) = queue.pop() {
+                for &b in &wide.links[a as usize] {
+                    if b != NONE && !kept[b as usize] {
+                        kept[b as usize] = true;
+                        queue.push(b);
+                    }
+                }
+            }
+        };
+        forward(&mut kept, &mut queue);
+        // Those leading in: a link lands at most `reach` cells along its
+        // direction (`erode`).
+        let reach = erosion_rounds(self.body.radius, self.cell) as i32 + 1;
+        let mut back: Vec<u32> = (0..n as u32).filter(|&a| kept[a as usize]).collect();
+        let mut added = Vec::new();
+        while let Some(b) = back.pop() {
+            let (i, k) = self.cell_xz(self.cell_of[b as usize] as usize);
+            for (d, &(di, dk)) in DIRS.iter().enumerate() {
+                for r in 1..=reach {
+                    let Some(cell) = self.cell_index(i - di * r, k - dk * r) else {
+                        break;
+                    };
+                    for a in self.start[cell]..self.start[cell + 1] {
+                        if !kept[a as usize] && wide.links[a as usize][d] == b {
+                            kept[a as usize] = true;
+                            back.push(a);
+                            added.push(a);
+                        }
+                    }
+                }
+            }
+        }
+        // And where those lead (a roof's drop into a yard with no way out).
+        forward(&mut kept, &mut added);
+        if kept.iter().all(|&k| k) {
+            return;
+        }
+        self.compact(wide, &kept);
+    }
+
+    /// Keeps the `alive` floors, new ids in the same (cell) order; links
+    /// to a floor gone become none.
+    fn compact(&mut self, wide: &mut Wide, alive: &[bool]) {
+        let n = self.height.len();
         let mut new_id = vec![NONE; n];
         let mut next = 0u32;
         for a in 0..n {
@@ -1354,6 +1456,89 @@ pub(crate) mod tests {
     }
 
     const AREA: [f32; 4] = [0.0, 0.0, 10.0, 10.0];
+
+    /// Each floor of `kept` is a floor of `full` at the same place, with
+    /// the same headroom and the same links (to the same places, of the
+    /// same kinds); the floors of `full` missing are returned.
+    pub(crate) fn kept_part_of(full: &WalkGrid, kept: &WalkGrid) -> Vec<NodeId> {
+        let key = |p: Vec3| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits());
+        let of: std::collections::HashMap<_, NodeId> = (0..full.len() as NodeId)
+            .map(|f| (key(full.position(f)), f))
+            .collect();
+        let mut present = vec![false; full.len()];
+        for k in 0..kept.len() as NodeId {
+            let f = of[&key(kept.position(k))];
+            present[f as usize] = true;
+            assert_eq!(kept.headroom(k), full.headroom(f));
+            let links = |g: &WalkGrid, a: NodeId| -> Vec<_> {
+                g.links(a)
+                    .map(|(b, kind)| (key(g.position(b)), kind))
+                    .collect()
+            };
+            assert_eq!(
+                links(kept, k),
+                links(full, f),
+                "floor at {:?}",
+                kept.position(k)
+            );
+        }
+        (0..full.len() as NodeId)
+            .filter(|&f| !present[f as usize])
+            .collect()
+    }
+
+    /// A yard with a shed (its roof 3 m up: a drop down, no jump up) under
+    /// a lid 20 m up (an invisible border's): the lid goes, the roof stays,
+    /// the rest is as built whole.
+    #[test]
+    fn floors_no_body_gets_to_are_dropped_and_the_rest_kept_as_built() {
+        let mut tris = Vec::new();
+        tris.extend(floor(0.0, 0.0, 20.0, 10.0, 0.0));
+        tris.extend(floor(12.0, 2.0, 18.0, 8.0, 3.0));
+        tris.extend(floor(-1.0, -1.0, 21.0, 11.0, 20.0));
+        let area = [0.0, 0.0, 20.0, 10.0];
+        let full = WalkGrid::build(&tris, area, 0.25, Body::default());
+        let seeds = [Vec3::new(2.0, 0.0, 5.0)];
+        let (kept, stats) =
+            WalkGrid::build_kept_with_stats(&tris, area, 0.25, Body::default(), &seeds);
+        let gone = kept_part_of(&full, &kept);
+        assert_eq!(stats.floors_kept, kept.len());
+        assert_eq!(stats.floors_after_erosion, full.len());
+        assert!(!gone.is_empty());
+        assert!(
+            gone.iter().all(|&f| full.position(f).y == 20.0),
+            "only the lid goes"
+        );
+        assert!(
+            (0..kept.len() as NodeId).any(|k| kept.position(k).y == 3.0),
+            "the roof stays"
+        );
+        assert!((0..kept.len() as NodeId).all(|k| kept.position(k).y < 20.0));
+        // A way between kept floors is the same.
+        let a = kept.locate(Vec3::new(2.0, 0.0, 5.0), 1.0).unwrap();
+        let roof = kept.locate(Vec3::new(15.0, 3.0, 5.0), 1.0).unwrap();
+        let ground = kept.locate(Vec3::new(10.0, 0.0, 5.0), 1.0).unwrap();
+        assert!(kept.path(a, roof).is_none(), "no way up");
+        assert_eq!(
+            kept.path(roof, a).unwrap().cost,
+            full.path(
+                full.locate(Vec3::new(15.0, 3.0, 5.0), 1.0).unwrap(),
+                full.locate(Vec3::new(2.0, 0.0, 5.0), 1.0).unwrap()
+            )
+            .unwrap()
+            .cost
+        );
+        assert!(kept.path(a, ground).is_some());
+        // No seed on a floor: all kept.
+        let none = WalkGrid::build_kept(
+            &tris,
+            area,
+            0.25,
+            Body::default(),
+            &[Vec3::new(5.0, 50.0, 5.0)],
+        );
+        assert_eq!(none.digest(), full.digest());
+    }
 
     #[test]
     fn erosion_keeps_floors_a_radius_from_walls() {
