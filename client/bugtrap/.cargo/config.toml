@@ -3,7 +3,11 @@ target = "i686-pc-windows-msvc"
 
 [target.i686-pc-windows-msvc]
 linker = "rust-lld"
-rustflags = ["-C", "link-arg=/ENTRY:DllMain@12", "-C", "link-arg=/NODEFAULTLIB", "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.1"]
+# Reproducible: /Brepro stamps the DLL with a hash of its content, not the time,
+# and /DEBUG:NONE writes no PDB. A PDB names the linker's command line, which
+# for a DLL holds a temporary folder of a random name, and the build folder;
+# the DLL's stamp and PDB identity would follow it (check-reproducible.sh).
+rustflags = ["-C", "link-arg=/Brepro", "-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/ENTRY:DllMain@12", "-C", "link-arg=/NODEFAULTLIB", "-C", "link-arg=/SUBSYSTEM:WINDOWS,6.1"]
 
 [unstable]
 build-std = ["core"]

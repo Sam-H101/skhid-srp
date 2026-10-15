@@ -260,6 +260,20 @@ python tests/test_game_download.py           # Windows or Wine
 SKHID_TEST_BUNDLE=<a players' zip> python tests/test_updater.py
 ```
 
+The build is reproducible: the same source, toolchain and `SKHID_UPDATE_URL`
+give the same exe, byte for byte, in any folder:
+- `exe/.cargo/config.toml` gives `rust-lld` `/Brepro` (the PE stamp is a hash
+  of the content, not the time) and `/DEBUG:NONE` (no PDB, which would record
+  the build folder), as `../bugtrap`;
+- `exe` and `logic` are one Cargo workspace (`Cargo.toml` here, one
+  `Cargo.lock`). Cargo names a path dependency outside the workspace by its
+  absolute path, and that name reaches the exe's symbols and their order. The
+  exe still builds to `exe/target/` (`target-dir` in `exe/.cargo/config.toml`);
+  `cargo test` in `logic` builds to `target/` here.
+
+`../check-reproducible.sh` builds the updater and BugTrap twice, in two
+folders, and compares.
+
 `make_client_026g.py` puts the built exe into the players' ZIP and writes
 `updater_skhid.url` for the server the ZIP is made for.
 
