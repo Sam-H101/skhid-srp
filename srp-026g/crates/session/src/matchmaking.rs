@@ -820,12 +820,21 @@ impl Matchmaking {
         })
     }
 
-    /// The match is over: its seats are free.
+    /// The match is over: its seats are free. A session that gave its seat
+    /// up and sits in another match keeps being told of that one: clearing
+    /// it sent the game to the match it was already playing again (it
+    /// reloaded it, or started a match nobody simulated).
     pub fn end_match(&self, match_id: u32) {
         let mut inner = self.inner.locked();
         if let Some(seats) = inner.matches.remove(&match_id) {
             for seat in seats {
-                inner.told.remove(&seat.player.session_id);
+                let session_id = seat.player.session_id;
+                if inner.given_up.contains(&(match_id, seat.player.account_id))
+                    || inner.seat_of_session(session_id).is_some()
+                {
+                    continue;
+                }
+                inner.told.remove(&session_id);
             }
         }
         inner.given_up.retain(|(id, _)| *id != match_id);
@@ -2209,11 +2218,16 @@ mod tests {
         };
         assert_ne!(second, FIRST_MATCH_ID);
         assert_eq!(matchmaking.match_count(), 2);
+        matchmaking.mark_told(2);
+        matchmaking.mark_told(3);
 
         // The match it left ends: nothing of it is left, and the new seat
-        // stands.
+        // stands. It was sent to the new match and is not sent again (a
+        // second "goes to match" made its game load that match once more).
         matchmaking.end_match(FIRST_MATCH_ID);
         assert_eq!(matchmaking.seat(2).map(|(id, _)| id), Some(second));
+        assert!(matchmaking.is_told(2));
+        assert!(matchmaking.is_told(3));
         // In the new match it has a seat to give up like any other.
         assert_eq!(matchmaking.give_up_seat(player(2).account_id), Some(second));
     }

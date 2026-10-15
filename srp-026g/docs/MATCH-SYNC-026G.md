@@ -276,7 +276,9 @@ once.
 - A client whose reports disagree with the others' is resynced, each time
   with the next generation. The disagreement must last 1 s of match time
   (`divergence_confirm_ms`), or 3 s on the wall clock; at most one resync of
-  a client per 15 s (`resync_interval`).
+  a client per 15 s (`resync_interval`). A resynced client wrong from its
+  first reports after the world (within 1.5 s of it going, `LOAD_WRONG_MS`)
+  is resynced again at once, twice in a row at most (`QUICK_REDOS`).
 - Who is wrong (`judge`): the majority's CRC is right. With no majority, a
   client known to be out of step is wrong; else the side with the better
   links is right, if it clearly outweighs the rest (`TRUST_MARGIN`); else
@@ -284,7 +286,11 @@ once.
   nobody is named.
 - **Out of step by the transport:** a relay, discard or roster change that
   was never acked in its 250 ms marks the client as having missed that tick.
-  A lost 0xE9 / 0xEA is also sent once more.
+  A lost 0xE9 / 0xEA is also sent once more. An own input the client was
+  told to drop (0xF1 / 0xF2) counts as well. Either names the client in a
+  tie only for a tick less than 1 s before the disputed one, or before the
+  start of the disagreement it is in (`MISSED_RECENT_MS`): an older miss
+  changed nothing.
 - A resynced client's unjudged reports are dropped; reports count only from
   clients in the simulation (both fixed after tests resynced a healthy
   client).
@@ -298,7 +304,10 @@ once.
   the replay, and its world goes only once that is acked and from a
   snapshot at most 1000 ms old (`RESYNC_WORLD_MAX_AGE_MS`), and again from a
   fresh one if not loaded 1200 ms after its snapshot (`RESYNC_LOAD_BY_MS`,
-  three times at most). An answer to an own input (drop or move) waits from
+  three times at most), or as soon as a player has more inputs after the
+  snapshot than the game keeps (27, `INPUT_RING`; 26 for a world still on
+  its way). An unchecked upload is started from only when another client
+  reported its hash too. An answer to an own input (drop or move) waits from
   its first 0xE5 to its load; after it, it goes if the input is still in the
   game's history, else the sync is done again from a snapshot past it.
 - **A newcomer wrong from its first report** (match.md §31): after 1 s of
@@ -372,6 +381,9 @@ a GUESS at the original server and was never tried on a client.
 | `RESYNC_WORLD_MAX_AGE_MS` | 1000 | A resynced client's world goes only from a snapshot this fresh |
 | `REPLAY_ACK_WAIT` | 3 s | A resync's replay not acked in this is done again |
 | `RESYNC_LOAD_BY_MS` / `SLOW_LOADS_REDONE` | 1200 / 3 | A resync world not acked this long after its snapshot (plus the ack's way) goes again from a fresh one, this many times a resync |
+| `INPUT_RING` / `INPUT_RING_SAFE` | 27 / 26 | A resync world loaded with more inputs of one player after its snapshot (or on its way with this many) goes again from a fresh one, within `SLOW_LOADS_REDONE` |
+| `LOAD_WRONG_MS` / `QUICK_REDOS` | 1500 / 2 | A resynced client wrong this soon after its world went is resynced again without `resync_interval`, this many times in a row |
+| `MISSED_RECENT_MS` | 1000 | A missed relay or dropped own input names a client in a tie only this close before the disputed tick (or the start of its disagreement) |
 | `RESYNC_CLOCK_MARGIN_MS` | 100 | A resynced client's clock goes this far past its own (when measured) and past its newest input seen |
 | `RESYNC_WORLD_RESEND_MIN` | 120 ms | A resync world's parts go again every round trip + 50 ms, this at least (0xE8's own pace 500 ms) |
 | `JOINER_ABSENT` (`late_join.rs`) | 20 s | A late-join group member not connected this long is left out |
