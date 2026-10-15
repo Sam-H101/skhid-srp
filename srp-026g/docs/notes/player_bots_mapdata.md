@@ -414,6 +414,18 @@ there is no way, the same answer, at once. School 10 v 10: 90 to 11.6 ms
 a second, worst poll 124 to 19 ms; level_01's worst poll 99 to 16 ms. The
 decisions digests are the same.
 
+**Batteries inside a hazard are left** (a decision change, the owner's
+word of 2026-10-16). Before, Collect took such a battery, found no way and
+the bot stood still till `give_up_s` (120 s). Now Collect leaves a free
+battery no allowed floor leads into (`Ctx::reachable`, the same check), and
+a Fetch gives up at once when a hazard closes round its battery (the
+cloud's energy rose). Batteries so left with the zones always on: School 14
+of 51 (8 in the cloud's levels 1-2, 6 in the stalactites' radiation; 6 more
+in levels 3-5 only while the energy is high), level_06/day_2 5 of 32 (acid,
+fire), level_03/day_3 6 of 18 (the timed spot in the rust gas). Failed
+searches, School 10 v 10: 2,012 to 618. Taking them with little damage, as
+players do, is for later.
+
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.

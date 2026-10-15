@@ -432,6 +432,23 @@ impl Ctx<'_> {
         }
     }
 
+    /// Whether a way to `at` may be open now: the floor there (as the
+    /// motor finds it) is entered from a floor this bot may walk on, or
+    /// from where it stands. With none, the route search would answer no
+    /// way, and the bot would stand still (a battery inside a zone the
+    /// bots keep out of: level_02's fruit cloud and stalactites).
+    pub fn reachable(&self, at: Vec3, objective: bool) -> bool {
+        let grid = &self.tactics.world.grid;
+        let Some(goal) = grid.locate(at, 3.0) else {
+            return false;
+        };
+        let start = grid.locate(self.me.feet, 1.5);
+        start == Some(goal)
+            || grid.entered_from(goal, |b| {
+                Some(b) == start || self.tactics.allowed(b, self.now, self.bot.side, objective)
+            })
+    }
+
     /// Known enemies within `m` of `at` (by the memory, whatever the
     /// source).
     pub fn enemies_near(&self, at: Vec3, m: f32) -> usize {
