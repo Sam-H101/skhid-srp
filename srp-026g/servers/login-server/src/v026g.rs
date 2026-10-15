@@ -107,7 +107,7 @@ const REGISTRATION_CLOSED: u8 =
 const INVALID_VERSION: u8 = login_server_message_types_enum::sign_in_invalid_version as u8;
 
 /// Games older than a patch revision are not let in: srp's
-/// `SRP_PATCH_REVISION_CHECK=refuse` with `SRP_MIN_PATCH_REVISION`. They
+/// `SRP_MIN_PATCH_REVISION`. They
 /// are answered before the password, so they get no session and nothing of
 /// the lobby, whose sign-in names items an older game may not have.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -474,14 +474,10 @@ impl Stack {
             local_peers: options.lobby.local_peers,
             key: options.certs.join("survarium_login_server.key"),
             certificate: options.certs.join("survarium_login_server.crt"),
-            // `refuse` keeps older games out from their sign-in on; the
-            // lobby refuses the sessions they had before (`patch_check`).
+            // Older games are kept out from their sign-in on; the lobby
+            // refuses the sessions they had before (`patch_check`).
             revision_gate: RevisionGate {
-                min: if options.lobby.patch_check == lobby::PatchCheck::Refuse {
-                    options.lobby.min_patch_revision
-                } else {
-                    0
-                },
+                min: options.lobby.min_patch_revision,
                 exempt: options.bots.clone(),
             },
         };

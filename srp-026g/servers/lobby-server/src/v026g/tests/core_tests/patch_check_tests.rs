@@ -1,16 +1,15 @@
-//! A game older than the server takes (`patch_check.rs`): with `refuse` its
-//! sessions from before are refused in the lobby. (The sign-in itself is
+//! A game older than the server takes (`patch_check.rs`): its sessions from
+//! before are refused in the lobby. (The sign-in itself is
 //! refused by the login server: `login_server::v026g`'s tests.)
 
 use super::*;
-use crate::v026g::PatchCheck;
+use crate::v026g::patch_check::parse_min_patch_revision;
 use survarium::v026g::lobby::requests::id;
 use survarium::v026g::match_msgs::late_join::PATCH_REVISION as LATE_JOIN_REVISION;
 
 /// A lobby that asks for patch revision 4.
-fn checking(check: PatchCheck) -> World {
+fn checking() -> World {
     let mut world = World::new(Duration::ZERO);
-    world.core.settings.patch_check = check;
     world.core.settings.min_patch_revision = 4;
     world
 }
@@ -28,8 +27,7 @@ fn game_of(world: &mut World, name: &str, revision: u8) -> usize {
 #[test]
 fn nobody_is_checked_unless_the_server_is_told_to() {
     let settings = Settings::local("127.0.0.1:0");
-    assert_eq!(settings.patch_check, PatchCheck::Off);
-    assert_eq!(settings.min_patch_revision, 4);
+    assert_eq!(settings.min_patch_revision, 0);
 
     let mut world = World::new(Duration::ZERO);
     let old = game_of(&mut world, "Old", 0);
@@ -41,7 +39,7 @@ fn nobody_is_checked_unless_the_server_is_told_to() {
 
 #[test]
 fn an_older_games_session_from_before_is_refused_and_ended() {
-    let mut world = checking(PatchCheck::Refuse);
+    let mut world = checking();
     let (account, _) = signed_in(world.store, "Old");
     let session = world.store.create_session_with_revision(account, 3);
     let old = world.connect_session((account, session));
@@ -63,7 +61,7 @@ fn an_older_games_session_from_before_is_refused_and_ended() {
 
 #[test]
 fn a_game_that_is_new_enough_signs_in_and_plays() {
-    let mut world = checking(PatchCheck::Refuse);
+    let mut world = checking();
     let current = game_of(&mut world, "Current", 4);
     let other = game_of(&mut world, "Other", 4);
     for client in [current, other] {
@@ -89,7 +87,7 @@ fn a_game_that_is_new_enough_signs_in_and_plays() {
 
 #[test]
 fn a_test_bot_is_never_checked() {
-    let mut world = checking(PatchCheck::Refuse);
+    let mut world = checking();
     world.accounts.set_bots(&["Bot".to_owned()]);
     let bot = game_of(&mut world, "Bot", 0);
     assert!(world.client(bot).model.is_signed_in());
@@ -99,18 +97,18 @@ fn a_test_bot_is_never_checked() {
 }
 
 #[test]
-fn the_setting_is_off_or_refuse_and_nothing_else() {
-    for (text, check) in [
-        ("off", PatchCheck::Off),
-        ("", PatchCheck::Off),
-        (" Refuse ", PatchCheck::Refuse),
-        ("refuse", PatchCheck::Refuse),
+fn the_least_revision_is_a_number_or_none() {
+    for (text, min) in [
+        (None, 0),
+        (Some(""), 0),
+        (Some(" "), 0),
+        (Some("0"), 0),
+        (Some(" 12 "), 12),
     ] {
-        assert_eq!(PatchCheck::parse(text), Some(check), "{text:?}");
+        assert_eq!(parse_min_patch_revision(text), Ok(min), "{text:?}");
     }
-    // `warn` of before, and the words that once meant refuse, stop srp:
-    // a stale .env must not be read as something else.
-    for text in ["warn", "on", "1", "true", "yes", "maybe"] {
-        assert_eq!(PatchCheck::parse(text), None, "{text}");
+    // A value it can't read stops srp, rather than let older games in.
+    for text in ["refuse", "-1", "256", "12a"] {
+        assert!(parse_min_patch_revision(Some(text)).is_err(), "{text}");
     }
 }

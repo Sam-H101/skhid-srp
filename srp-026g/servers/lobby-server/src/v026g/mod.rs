@@ -76,10 +76,9 @@
 //! - `SRP_SQUADS` (default on), `SRP_SQUADS_OFF_TEXT`: with `off` nobody
 //!   is invited to a squad, and the one who tries is told so in a message
 //!   box (`social.rs`);
-//! - `SRP_PATCH_REVISION_CHECK` (`off`, the default, or `refuse`; anything
-//!   else stops srp), `SRP_MIN_PATCH_REVISION` (default 4): with `refuse` a
-//!   game older than that patch revision is refused at its sign-in, and its
-//!   sessions from before in the lobby (`patch_check`);
+//! - `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255
+//!   stops srp): a game older than that patch revision is refused at its
+//!   sign-in, and its sessions from before in the lobby (`patch_check`);
 //! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
 //!   lines in the general chat when somebody joins or leaves the search and
 //!   when a match starts, with whom (`queue_chat.rs`);
@@ -142,7 +141,7 @@ use survarium::v026g::lobby::ServerMessage;
 use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
-pub use patch_check::{PatchCheck, from_env as patch_check_from_env};
+pub use patch_check::min_patch_revision_from_env;
 pub use play::{
     LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, OpenMatch, match_profile,
 };
@@ -210,11 +209,9 @@ pub struct Settings {
     /// The sender name of those lines (`SRP_QUEUE_CHAT_NAME`, default
     /// none: the client then shows the line with no name).
     pub queue_chat_name: String,
-    /// Whether a game older than `min_patch_revision` is refused, at its
-    /// sign-in and its sessions from before in the lobby
-    /// (`SRP_PATCH_REVISION_CHECK`, default off; `patch_check`).
-    pub patch_check: PatchCheck,
-    /// The least patch revision of a game let in (`SRP_MIN_PATCH_REVISION`).
+    /// The least patch revision of a game let in, 0 for any: an older one
+    /// is refused at its sign-in, and its sessions from before in the lobby
+    /// (`SRP_MIN_PATCH_REVISION`; `patch_check`).
     pub min_patch_revision: u8,
     /// What a player counts for when the sides of a match are made
     /// (`SRP_BALANCE_*`; `session::v026g::balance`).
@@ -324,11 +321,11 @@ impl Settings {
         let queue_chat_name = var("SRP_QUEUE_CHAT_NAME")
             .map(|name| name.trim().chars().take(20).collect())
             .unwrap_or_default();
-        // srp checked it before it started anything (`patch_check::from_env`).
-        let (patch_check, min_patch_revision) =
-            patch_check::from_env().unwrap_or_else(|error| panic!("{error}"));
-        if patch_check != PatchCheck::Off {
-            log::info!("Patch revision check: {patch_check:?}, from revision {min_patch_revision}");
+        // srp checked it before it started anything.
+        let min_patch_revision =
+            patch_check::min_patch_revision_from_env().unwrap_or_else(|error| panic!("{error}"));
+        if min_patch_revision > 0 {
+            log::info!("Games older than patch revision {min_patch_revision} are refused");
         }
         let weight = |name: &str, default: f64| match var(name) {
             Some(value) => parse_weight(&value).unwrap_or_else(|| {
@@ -402,7 +399,6 @@ impl Settings {
             squads_off_text,
             queue_chat,
             queue_chat_name,
-            patch_check,
             min_patch_revision,
             bind: config.bind_addr(),
             public_host: config.public_host.clone(),
@@ -433,8 +429,7 @@ impl Settings {
             team_size: DEFAULT_TEAM_SIZE,
             queue_chat: true,
             queue_chat_name: String::new(),
-            patch_check: PatchCheck::Off,
-            min_patch_revision: patch_check::DEFAULT_MIN_PATCH_REVISION,
+            min_patch_revision: 0,
             balance: Weights::default(),
             late_join_patience: DEFAULT_LATE_JOIN_PATIENCE,
             squads: true,

@@ -965,7 +965,7 @@ late join (revision 10).
 
 **Revisions.** What a match computes changes at a match's first spawn: a
 game of 10 and one of 9 or before part there. **A server asks for 10**
-(`SRP_MIN_PATCH_REVISION=10`, with `SRP_PATCH_REVISION_CHECK=refuse`), put
+(`SRP_MIN_PATCH_REVISION=10`), put
 up with the ZIP. The match server needs no change (its clock factor and
 the late join take 10). A late-join exe built by hand (`0x80`) is let in
 and has not the patch.

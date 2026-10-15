@@ -95,12 +95,11 @@ RUST_LOG=info
 # No squads: an invite is refused, and its sender is told in a message box.
 # SRP_SQUADS=off
 # SRP_SQUADS_OFF_TEXT=Squads are switched off on this server.
-# A game older than a patch revision (what the exe says at its sign-in):
-# `refuse` refuses its sign-in with the game's own "outdated version", and
-# its sessions from before a restart in the lobby. `off` (or left out) lets
-# every game in; any other value stops srp at start.
-# SRP_PATCH_REVISION_CHECK=refuse
-# SRP_MIN_PATCH_REVISION=4
+# A game older than this patch revision (what the exe says at its sign-in)
+# is refused at its sign-in with the game's own "outdated version", and its
+# sessions from before a restart in the lobby. Left out (or 0): every game
+# is let in; a value that is not a number from 0 to 255 stops srp at start.
+# SRP_MIN_PATCH_REVISION=12
 # A silent client: its lobby link goes after the first (the second for a
 # player in a match), and its session waits the third for the client to
 # connect again by itself.

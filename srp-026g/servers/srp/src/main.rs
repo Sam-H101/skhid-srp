@@ -48,19 +48,10 @@ fn main() {
         log::error!("srp: {error}");
         std::process::exit(1);
     }
-    // A check the server would read otherwise than meant (the `warn` of
-    // before) stops it here, rather than letting older games in.
-    if let Err(error) = lobby_server::v026g::patch_check_from_env() {
+    // A minimum revision it can't read stops it, rather than let older games in.
+    if let Err(error) = lobby_server::v026g::min_patch_revision_from_env() {
         log::error!("srp: {error}");
         std::process::exit(1);
-    }
-    for gone in ["SRP_UPDATE_HINT", "SRP_OUTDATED_TEXT"] {
-        if std::env::var_os(gone).is_some() {
-            log::warn!(
-                "srp: {gone} is set but no more read: an older game is refused at its sign-in, \
-                 with the game's own text (SRP_PATCH_REVISION_CHECK)"
-            );
-        }
     }
 
     let gather = match session::gather_window_from_env() {
