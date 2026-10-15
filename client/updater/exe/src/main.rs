@@ -629,6 +629,8 @@ struct Options {
     pipe_name: Option<String>,
     /// The original's `copy` action: nothing to do here.
     copy: bool,
+    /// `ready`: only whether the game's files are updated (play_skhid.bat).
+    ready: bool,
     quiet: bool,
 }
 
@@ -656,9 +658,10 @@ fn options() -> Result<Options, String> {
             .cloned()
     };
     match action.to_ascii_lowercase().as_str() {
-        "check" => Ok(Options {
+        action @ ("check" | "ready") => Ok(Options {
             pipe_name: None,
             copy: false,
+            ready: action == "ready",
             quiet: rest
                 .iter()
                 .any(|argument| argument.eq_ignore_ascii_case("quiet")),
@@ -666,11 +669,13 @@ fn options() -> Result<Options, String> {
         "update" | "full_update" => Ok(Options {
             pipe_name: pipe_name(),
             copy: false,
+            ready: false,
             quiet: false,
         }),
         "copy" => Ok(Options {
             pipe_name: pipe_name(),
             copy: true,
+            ready: false,
             quiet: false,
         }),
         _ => Err(text::usage()),
@@ -702,6 +707,22 @@ fn run() -> u32 {
             return exit::FAILED;
         }
     };
+    if options.ready {
+        // Read only: no lock, no server, no pipe.
+        return match resources::ready(&layout) {
+            Ok(()) => {
+                log!("exit 0");
+                exit::OK
+            }
+            Err(message) => {
+                log!("FAILED: {message}");
+                if !options.quiet {
+                    message_box(&message);
+                }
+                exit::FAILED
+            }
+        };
+    }
     let pipe = match &options.pipe_name {
         Some(name) => match Pipe::connect(name) {
             Ok(pipe) => Some(pipe),

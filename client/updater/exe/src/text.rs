@@ -46,7 +46,8 @@ fn megabytes(bytes: u64) -> u64 {
 
 pub fn usage() -> String {
     "The Skhid updater is started by launcher_skhid.exe. To update by hand, start it as: \
-     updater_skhid.exe check"
+     updater_skhid.exe check (to see whether the game's files are updated: updater_skhid.exe \
+     ready)"
         .into()
 }
 
@@ -279,4 +280,13 @@ pub fn resources_failed() -> String {
          game\\binaries\\x86\\updater_skhid.log. Start the launcher again; if this keeps \
          happening, send that file to the server's operator.{RESOURCES_PLAY_OFF}"
     )
+}
+
+/// `updater_skhid.exe ready` found the game's files not updated: the game
+/// is not started by play_skhid.bat or play_skhid.sh.
+pub fn resources_not_ready() -> String {
+    "Skhid has not finished updating the game's files (game\\resources.db), so the game is \
+     not started: it would crash in a match. Start Skhid.bat (the launcher): it finishes the \
+     update, or says what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
+        .into()
 }

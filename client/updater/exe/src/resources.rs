@@ -1070,40 +1070,6 @@ impl Step<'_> {
         }
     }
 
-    /// The file of each tail of a required plan, checked as a whole after
-    /// the step: its size, its tail, and every region of the plan in it.
-    /// `None` when all is in place; else what is not, for the log.
-    fn verify(&self) -> Option<String> {
-        for tail in &self.plan.tails {
-            let place = self.layout.place(&tail.path);
-            let file = match File::shared(&place) {
-                Ok(file) => file,
-                Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
-            };
-            match file.size() {
-                Ok(size) if size == tail.new_size => {}
-                Ok(size) => {
-                    return Some(format!(
-                        "{place} has {size} bytes, not {} with {}",
-                        tail.new_size, tail.name
-                    ));
-                }
-                Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
-            }
-            if hash_range(&file, tail.file_size, tail.size()).ok() != Some(tail.sha256) {
-                return Some(format!("{place}: {} is not in place", tail.name));
-            }
-            for region in &self.plan.regions {
-                if region.path.eq_ignore_ascii_case(&tail.path)
-                    && hash_range(&file, region.offset, region.size).ok() != Some(region.target)
-                {
-                    return Some(format!("{place}: {} does not hold its target", region.name));
-                }
-            }
-        }
-        None
-    }
-
     /// A required plan that is not in place: each file it grows goes back
     /// to its bytes as shipped (every region of the plan on it given its
     /// original, the tail cut off once its table is back), so a game started
@@ -1245,6 +1211,82 @@ impl Step<'_> {
             }
             // Only when it is empty.
             win::remove_dir(&folder);
+        }
+    }
+}
+
+/// The file of each tail of a required plan, checked as a whole: its size,
+/// its tail, and every region of the plan in it. `None` when all is in
+/// place; else what is not, for the log.
+fn verify(plan: &Plan, layout: &Layout) -> Option<String> {
+    for tail in &plan.tails {
+        let place = layout.place(&tail.path);
+        let file = match File::shared(&place) {
+            Ok(file) => file,
+            Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
+        };
+        match file.size() {
+            Ok(size) if size == tail.new_size => {}
+            Ok(size) => {
+                return Some(format!(
+                    "{place} has {size} bytes, not {} with {}",
+                    tail.new_size, tail.name
+                ));
+            }
+            Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
+        }
+        if hash_range(&file, tail.file_size, tail.size()).ok() != Some(tail.sha256) {
+            return Some(format!("{place}: {} is not in place", tail.name));
+        }
+        for region in &plan.regions {
+            if region.path.eq_ignore_ascii_case(&tail.path)
+                && hash_range(&file, region.offset, region.size).ok() != Some(region.target)
+            {
+                return Some(format!("{place}: {} does not hold its target", region.name));
+            }
+        }
+    }
+    None
+}
+
+/// `updater_skhid.exe ready`, from play_skhid.bat and play_skhid.sh before
+/// they start the game without the launcher: nothing is fetched or written.
+/// `Err` (the words for the player) when the plan beside it is required
+/// (it grows the db) and the db is not checked whole; also when the plan
+/// cannot be read and may be one. No plan, or one without a tail: `Ok`.
+pub fn ready(layout: &Layout) -> Result<(), String> {
+    let plan_path = format!("{}\\{PLAN_FILE}", layout.exe_dir);
+    let bytes = match win::read_file(&plan_path, 1 << 20) {
+        Ok(bytes) => bytes,
+        Err(code) if win::is_missing(code) => return Ok(()),
+        Err(code) => {
+            log!(
+                "ready: {PLAN_FILE} cannot be read ({})",
+                win::error_text(code)
+            );
+            return Err(crate::text::resources_not_ready());
+        }
+    };
+    let plan = match parse_plan(&bytes) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return match unusable(&bytes, &format!("cannot be used ({error:?})")) {
+                Outcome::Blocked(_) => Err(crate::text::resources_not_ready()),
+                _ => Ok(()),
+            };
+        }
+    };
+    if !plan.required() {
+        return Ok(());
+    }
+    match verify(&plan, layout) {
+        None => {
+            log!("ready: the required plan is in place");
+            Ok(())
+        }
+        Some(why) => {
+            log!("ready: NOT READY: {why}: the game is not started");
+            Err(crate::text::resources_not_ready())
         }
     }
 }
@@ -1428,7 +1470,7 @@ pub fn run(
         return Outcome::Stopped;
     }
     let outcome = if plan.required() {
-        match step.verify() {
+        match verify(&plan, layout) {
             None => {
                 log!("resources: the required plan is in place, checked as a whole");
                 for tail in &plan.tails {

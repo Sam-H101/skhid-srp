@@ -60,6 +60,7 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 | `"<exe>" "copy" "<pipe>" ...` | the unpatched launcher | Answers "copy done" at once: nothing needs copying |
 | `updater_skhid.exe check` | a person, a script | The update without a launcher; an error is a message box |
 | `updater_skhid.exe check quiet` | a script | No box either. Exit code 0: done or nothing to do; 1: failed (the reason is in the log) |
+| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the plan beside it grows the db and the db is not checked whole, or the plan cannot be read and may be one (format 2 or newer); else 0 |
 
 Exit codes: 0, 1 (failed), 2 (the launcher's pipe could not be opened), 3
 (an internal error; logged).
@@ -319,9 +320,14 @@ meanwhile keeps its target); a game started with `play_skhid.bat` in the
 second a region is being written (its own open of the db fails then); a
 db of the plan's size but another build (the size is the only sign of the
 build the plan gives, so its regions would count as damaged and be
-overwritten); a game started with `play_skhid.bat` (not through the
-launcher) after a required step failed: it finds the db as shipped (the
-step put it back), with the new exe.
+overwritten).
+
+`play_skhid.bat` and `play_skhid.sh` start the game without the launcher.
+Before they do, they run `updater_skhid.exe ready`: while a required plan
+is not in place, they say so ("Skhid has not finished updating the game's
+files ... Start Skhid.bat (the launcher)") and do not start the game. With
+no updater beside them (an archive without the launcher) they start it as
+before.
 
 ## Build and test
 
@@ -355,12 +361,14 @@ own functions, and one region of the lobby movie's size). Not run yet: the
 real launcher, a real `resources.db`, Wine.
 
 Run on 2026-10-15 (Linux, Wine 11.8 staging, `check quiet`), with tails:
-the 44 unit tests, and the 12 scenarios of `test_resource_tail.py` (a 4 MB
+the 44 unit tests, and the 15 scenarios of `test_resource_tail.py` (a 4 MB
 stand-in db grown by 1 MB: a fresh install, found done after, a db grown
 already without a record, the plan dropped, a new release replacing the
 tail and the table, a tail or a table or the lobby the site lacks or spoils,
 a db of another size, an append cut short, a table without its tail, plans
-that cannot be read, and a plan without a tail staying best effort).
+that cannot be read, a plan without a tail staying best effort; `ready`, and
+the players' `play_skhid.bat` run by Wine's cmd with a stand-in game,
+refusing to start it until the db is in place).
 `test_updater.py`'s two changed scenarios (a newer format; a running game
 with a required plan) are not run yet: they need Windows.
 

@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -103,6 +104,32 @@ class TailTest(unittest.TestCase):
             command, env = [WINE, exe, "check", "quiet"], wine_env()
         return subprocess.run(command, cwd=self.x86, env=env, timeout=300,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+    def run_ready(self):
+        """`updater_skhid.exe ready quiet` (what play_skhid.sh runs): its
+        exit code."""
+        exe = os.path.join(self.x86, "updater_skhid.exe")
+        command = [exe, "ready", "quiet"] if WINDOWS else [WINE, exe, "ready", "quiet"]
+        return subprocess.run(command, cwd=self.x86, env=None if WINDOWS else wine_env(), timeout=300,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+    def run_bat(self):
+        """The players' play_skhid.bat, as make_client_026g.py writes it, run
+        by cmd; whether it started the game (the stand-in writes down that
+        it was started)."""
+        started = os.path.join(self.x86, "survarium_skhid.exe.started.txt")
+        if os.path.exists(started):
+            os.remove(started)
+        self.write(f"{X86}/play_skhid.bat", builder.bat("srp.example:1234", "english", True))
+        command = ["cmd", "/c", "play_skhid.bat"] if WINDOWS else [WINE, "cmd", "/c", "play_skhid.bat"]
+        code = subprocess.run(command, cwd=self.x86, env=None if WINDOWS else wine_env(), timeout=120,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # `start` does not wait for the game.
+        for _ in range(100):
+            if os.path.exists(started):
+                break
+            time.sleep(0.1)
+        return code.returncode, os.path.exists(started), code.stdout.decode("ascii", "replace")
 
     def make_db(self):
         self.db = random.Random(2777).randbytes(self.DB_SIZE)
@@ -369,6 +396,60 @@ class TailTest(unittest.TestCase):
         self.assert_shipped()
         self.assertIsNone(self.status())
         self.assertNotIn("BLOCKED", self.log())
+
+
+    # --- what play_skhid.bat and play_skhid.sh check before they start
+    # the game without the launcher: `updater_skhid.exe ready` ----------
+
+    def test_ready_says_whether_a_grown_db_is_in_place(self):
+        self.make_db()
+        plan, expected = self.release()
+        files = self.with_plan(plan)
+        self.site.blob_statuses[sha256(self.parts["tail"])] = 404
+        self.assertEqual(self.run_updater(files), 1)
+        self.assertEqual(self.run_ready(), 1)
+        self.assertIn("ready: NOT READY:", self.log())
+        self.site.blob_statuses.clear()
+        self.assertEqual(self.run_updater(files), 0, self.log())
+        self.assertEqual(self.run_ready(), 0, self.log())
+        # Damaged after (another program, a disk): not ready again.
+        with open(self.path("game/resources.db"), "r+b") as file:
+            file.seek(len(self.db) + 10)
+            file.write(b"damaged")
+        self.assertEqual(self.run_ready(), 1)
+        self.assertEqual(self.read("game/resources.db")[len(self.db) + 10:len(self.db) + 17], b"damaged",
+                         "ready only reads")
+
+    def test_ready_without_a_required_plan_lets_the_game_start(self):
+        self.make_db()
+        self.assertEqual(self.run_ready(), 0, "no plan at all")
+        self.write(self.PLAN, b"skhid-resources 1\r\nend\r\n")
+        self.assertEqual(self.run_ready(), 0, "a plan without a tail")
+        self.write(self.PLAN, b"skhid-resources 1\r\nregion cut short")
+        self.assertEqual(self.run_ready(), 0, "a format 1 plan that cannot be read")
+        self.write(self.PLAN, b"skhid-resources 2\r\nregion cut short")
+        self.assertEqual(self.run_ready(), 1, "a format 2 plan that cannot be read")
+
+    def test_play_skhid_bat_starts_the_game_only_when_ready(self):
+        self.make_db()
+        plan, _ = self.release()
+        files = self.with_plan(plan)
+        self.site.blob_statuses[sha256(self.parts["tail"])] = 404
+        self.assertEqual(self.run_updater(files), 1)
+        code, started, said = self.run_bat()
+        self.assertEqual((code, started), (1, False), said)
+        self.assertIn("Skhid has not finished updating the game's files", said)
+        self.site.blob_statuses.clear()
+        self.assertEqual(self.run_updater(files), 0, self.log())
+        code, started, said = self.run_bat()
+        self.assertEqual((code, started), (0, True), said)
+        # Without the updater beside it (an archive without the launcher):
+        # no check, the game starts as before.
+        os.remove(os.path.join(self.x86, "updater_skhid.exe"))
+        with open(self.path("game/resources.db"), "r+b") as file:
+            file.truncate(len(self.db))
+        code, started, said = self.run_bat()
+        self.assertEqual((code, started), (0, True), said)
 
 
 if __name__ == "__main__":
