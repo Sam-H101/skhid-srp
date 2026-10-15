@@ -288,6 +288,50 @@ fn with_giving_way_off_no_bot_leaves_for_a_late_joiner() {
 }
 
 #[test]
+fn a_part_of_a_group_enters_alone_when_the_bots_keep_the_sides_even() {
+    // The player and bot 2 against bots 1 and 3; a group of two comes, one
+    // for each side (places 4 and 5), and the one for team 1 never does.
+    let mut bench = playing_with_bots(MAP_TDM, Settings::default());
+    let first = bench.clients.len();
+    let group: Vec<_> = (first..first + 2)
+        .map(|place| setup(first + 2, MAP_TDM).players.remove(place))
+        .collect();
+    assert_eq!(
+        group
+            .iter()
+            .map(|player| player.profile.team)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    bench
+        .registry
+        .join_running_group(bench.match_id, group)
+        .expect("the match takes the group");
+    for place in first..first + 2 {
+        bench.clients.push(super::client::Client::growing(
+            super::session_of(place),
+            first + 2,
+            MAP_TDM,
+        ));
+        bench.addrs.push(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40_000 + place as u16,
+        )));
+    }
+    bench.join(first);
+    bench.run_long(61_000);
+    // Counted with the bots the sides are two against two, and bot 2 gives
+    // way: the one that came enters, and the sides stay even. Counted by
+    // the clients alone (one against none) it would have waited its time
+    // out.
+    assert!(!bench.clients[first].disconnected);
+    assert!(bench.clients[0].entered().contains(&(first as u8)));
+    assert!(!bench.clients[0].entered().contains(&(first as u8 + 1)));
+    assert_eq!(bench.clients[0].left(), [2]);
+    bench.assert_no_faults();
+}
+
+#[test]
 fn a_bot_of_a_side_out_of_respawns_leaves_only_once_dead_and_the_dead_one_first() {
     use survarium::v026g::match_msgs::motion::Tail;
     use survarium::v026g::match_msgs::players::PlayerState;

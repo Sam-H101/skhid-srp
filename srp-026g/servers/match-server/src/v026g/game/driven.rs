@@ -415,6 +415,23 @@ impl Game {
             .collect()
     }
 
+    /// The server's bots in the match by side, less the ones that owe their
+    /// place already: those are as good as gone (as [`Self::give_way`]
+    /// counts them).
+    pub(super) fn bots_staying(&self) -> [usize; 2] {
+        let mut bots = [0_usize; 2];
+        for (index, place) in self.formed.places.iter().enumerate() {
+            if self.bot_in_match(index) {
+                bots[usize::from(place.team.min(1))] += 1;
+            }
+        }
+        for owed in &self.owed {
+            let team = usize::from(owed.team);
+            bots[team] = bots[team].saturating_sub(1);
+        }
+        bots
+    }
+
     /// The bots that give way to a late joiner who needs the room, by
     /// place ([`super::super::LiveMatch::giving_way`]): the bots in the
     /// match, less the ones that owe their place already (a side's last
