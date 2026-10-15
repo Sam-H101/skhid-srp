@@ -98,6 +98,8 @@ def move_reloc(data, old_va, new_va):
     end = offset + size
     while offset < end:
         page, block = struct.unpack_from("<II", data, offset)
+        if block < 8:
+            break
         if base.IMAGE_BASE + page == old_va & ~0xFFF:
             for at in range(offset + 8, offset + block, 2):
                 if struct.unpack_from("<H", data, at)[0] == 0x3000 | old_va & 0xFFF:
@@ -178,6 +180,7 @@ def main():
 
     if args.command == "exe":
         data = build_exe(args.source.read_bytes(), args.server)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         write_new(args.output, data)
         print(f"Created {args.output}: FOV option uses uro_fov; SHA-256 {hashlib.sha256(data).hexdigest()}")
         return

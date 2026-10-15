@@ -302,14 +302,19 @@ changes:
   same matrix builder, within its 80 bytes, with one relocation moved;
 - the lower bound of `uro_fov` is 50 instead of 0; the upper bound stays 100.
 
-The angle is vertical, as before: 65 is the stock view, and scope zoom still
-multiplies it. The projection is shared by every camera of the game (the
+The angle is vertical, as before: 65 is the stock view. Scope zoom still
+multiplies it, so a scope magnifies relative to the player's own FOV: at 50
+every scope shows 65/50 = 1.3 times more than in the stock game, at 100
+0.65 times as much, and a reticle drawn for 65 degrees is off by as much.
+The projection is shared by every camera of the game (the
 classes `game_camera`, `lobby_camera`, `free_fly_camera`, `demo_camera` and
 `player_input_handler`), so the lobby, spectator and replay views follow the
 setting too: at 100 the lobby scene is wider and the character smaller, at
 50 it is cropped. That is left so on purpose; a player who prefers the stock
-lobby sets 65. Camera code is not part of the simulated world, so clients
-with and without the slider can play together.
+lobby sets 65. Camera code is not part of the simulated world, and the 65
+degree constant has no other reader, so clients at different FOVs are
+expected to play together; two real clients at different FOVs have not been
+in one match yet.
 
 The resources build needs a JDK and JPEXS FFDec, as the login hint does. It
 compiles `fov_slider/SrpFovSlider.as` into `main_menu.swf` and calls it twice

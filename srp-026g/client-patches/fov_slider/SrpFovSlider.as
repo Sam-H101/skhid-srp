@@ -44,8 +44,11 @@ package
                 tabs._slider_fov = slider;
                 content.addChild(slider);
             }
-            // Script-added children survive frame changes; show it on Graphics only.
-            slider.visible = video;
+            // Hidden until finish shows it: script-added children survive frame
+            // changes, and create_content returns early (skipping finish) while
+            // the tab's settings have not arrived, when an unplaced slider would
+            // sit at 0,0 over the monitor list.
+            slider.visible = false;
         }
 
         public static function finish(settings:Settings):void
@@ -58,10 +61,11 @@ package
             var tabs:Object = content;
             var slider:SrvOptionSlider = tabs._slider_fov as SrvOptionSlider;
             var gamma:DisplayObject = tabs.slider_gamma;
-            if (slider == null || !slider.visible || gamma == null)
+            if (slider == null || content.currentFrame != VIDEO_FRAME || gamma == null)
             {
                 return;
             }
+            slider.visible = true;
             // Scaleform leaves the script-created slider fully transparent.
             slider.alpha = 1;
             // The game labels gamma "Gamma:" but FOV without the colon, in
