@@ -264,16 +264,15 @@ verification details: [updater README](../../../client/updater/README.md#origina
    are what was installed.
 7. Writes `updater_skhid.state`. Leftover `.skhid-old` files are deleted at
    the next start.
-8. The resource step, at every start (also when nothing was installed;
+8. The database step, at every start (also when nothing was installed;
    with no download when the server could not be asked; left to the new
-   updater when this run replaced the updater or the launcher): the
-   entries of `resources.db` the ZIP's plan `updater_skhid.resources` names
-   are rewritten in place from `/resources/<sha256>`, and those a plan no
-   longer names get their original bytes back. Best effort: a failure is
-   logged and tried again at the next start, and never fails the update,
-   keeps PLAY off or changes steps 1 to 7. While the game runs it holds
-   `resources.db`, and the step changes nothing. What it does, and what it
-   writes: [updater README](../../../client/updater/README.md#resources).
+   updater when this run replaced the updater or the launcher):
+   `game\resources_skhid.db` is made the release's, a copy of the
+   untouched `resources.db` with the patches of the ZIP's list
+   `updater_skhid.patches` (blobs from `/resources/<sha256>`), checked
+   whole. Required: until it is, PLAY stays off. While the game runs it
+   holds the database, and the step changes nothing. What it does, and what
+   it writes: [updater README](../../../client/updater/README.md#the-games-database).
 
 Where files go: an entry `game/...` goes into the game folder (two levels
 above `binaries\x86`, whatever its name), any other entry beside the game
@@ -306,8 +305,7 @@ to `game\binaries\x86\updater_skhid.log`. Nothing is half installed.
 | Not enough disk space | "Not enough free disk space for the update in <folder>: N MB needed, M MB free." |
 | The game folder cannot be written (Program Files, read-only) | "Cannot write <file>: Access is denied (error 5). Move the game out of Program Files or start the launcher as administrator; an antivirus can block it too." |
 | A file is held by another program (the game is running) | "Cannot replace <file>: ... (error 32). Nothing was changed. Another program holds the file: close the game and try again." |
-| The resource step fails (the game is running, a blob is missing or damaged on the server, the disk is full, another build of the game) | For a plan that only rewrites entries in place: nothing: no box, PLAY as usual, the game as it was (or, after a failed write, with its original bytes put back). The reason is in the log after `resources:`; it is tried again at the next start |
-| ...for a plan that grows `resources.db` (new items: a `tail`) | Status "Error", PLAY stays off, the db put back as shipped, and a box that says what to do: close the game, free disk space, delete a db of another build, check the connection, or send `updater_skhid.log` (`../../../client/updater/README.md`, "Resources"). The next start repairs it |
+| The database step cannot finish (the game is running, a blob is missing or damaged on the server, the disk is full, resources.db is not the original and cannot be downloaded again) | Status "Error", PLAY stays off, and a box that says what to do: close the game, free disk space, check the connection, or send `updater_skhid.log` (`../../../client/updater/README.md`, "The game's database"). The next start repairs it |
 | `updater_skhid.exe` is missing | The launcher's own box: "Cannot start updater_skhid.exe. Copy the files again." |
 | The launcher is closed during an update | The updater stops; nothing was changed, or everything was |
 | The updater is started from another folder than `game\binaries\x86` | "The updater must be in the game's folder game\binaries\x86 ..." |
@@ -566,16 +564,15 @@ installation and service.
    it they are the steps as before. Nothing is
    set by hand and no restart is needed.
 3. From then on a release is: build the ZIP, replace the file.
-4. A ZIP with resource regions (`make_client_026g.py
-   --resource-region=<name>=<entry file> --resources-out=<folder>`) needs,
-   in this order: a server build with `/resources/`; the blobs the tool
-   wrote into `<folder>` (each target and each original, named by its
-   sha256) copied into `download/resources/` beside the ZIP, and fetched
-   back through the site to see that they answer; only then the ZIP. An
-   updater from before the step installs the ZIP (it brings the new
-   updater), replaces itself, the launcher starts again and the new
-   updater does the step. A ZIP offered before its blobs costs nothing but
-   the log lines: the step is tried again at each start. Keep the
-   originals' blobs on the server while any player may still have a
-   region changed: a later ZIP without the region puts the original back
-   from the player's own copy, or from the server when that copy is gone.
+4. A ZIP with database patches (`make_client_026g.py
+   --db-patches=<folder> --resources-out=<folder>`) needs, in this order:
+   a server build with `/resources/`; every patch's blob (named by its
+   sha256) in `download/resources/` beside the ZIP, and fetched back
+   through the site to see that it answers; only then the ZIP. A ZIP
+   offered before its blobs keeps PLAY off for players until they are
+   there. Never take a patch's blob off the server: a player who missed
+   releases applies every patch since the original. While players may
+   still have the menus written in place by the updater of before, keep the
+   originals of those regions (`ab6f22d8…`, `805ea5f8…`, `0ff118a8…`) on
+   the server too: the new updater puts them back from the player's own
+   copy, or from the server when that copy is gone.

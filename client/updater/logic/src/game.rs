@@ -35,6 +35,19 @@ pub const ORIGINAL_EXE: Pin = Pin {
     sha256: "ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153",
 };
 
+/// The stock resources.db of build 2777, the input of the first database
+/// patch (`dbpatch`; make_client_026g.py writes it as the list's
+/// `original`).
+pub const RESOURCES_DB: Pin = Pin {
+    size: 6_285_533_906,
+    sha256: "c74078be702d17113b9ca23f59aa2b0087238481e7f01fb793620d51d875492c",
+};
+/// Where a pristine resources.db (plain or zstd-compressed) is downloaded
+/// from when a player's is not the original and cannot be put back;
+/// `updater_skhid.db-url` beside the updater overrides it. Empty: none is
+/// hosted yet, and the game's own archive ([`ARCHIVE`]) is downloaded for it.
+pub const DB_URL: &str = "";
+
 /// Only the files needed to run the game, relative to `Survarium/game`.
 /// Old vendor installers, services and updaters are never extracted or run.
 pub const FILES: &[(&str, u64)] = &[
@@ -75,7 +88,8 @@ mod tests {
 
     #[test]
     fn release_pins_and_paths_are_well_formed() {
-        for pin in [ARCHIVE, EXTRACTOR, ORIGINAL_EXE] {
+        assert!(FILES.contains(&("resources.db", RESOURCES_DB.size)));
+        for pin in [ARCHIVE, EXTRACTOR, ORIGINAL_EXE, RESOURCES_DB] {
             assert!(pin.size > 0);
             assert!(from_hex(pin.sha256.as_bytes()).is_some());
         }

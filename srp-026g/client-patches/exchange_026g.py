@@ -9,8 +9,8 @@ the rate under them. Silver for gold goes to the server as `47 04` with
 SrpExchange.BUY_GOLD added to the gold amount; the server must know it.
 
 The input is the live lobby region (the lobby with the matches list), as a
-whole resources.db or as the entry file a release names with
---resource-region=lobby_menu=<file>; the output is of the same kind and
+whole resources.db or as the entry file (the lobby's bytes at its stock offset,
+as database patch 14 writes them); the output is of the same kind and
 never replaces the input. Requires a JDK and JPEXS FFDec (tested with 26.0.0).
 No game assets are stored in this repository.
 """
@@ -27,8 +27,8 @@ import login_hint_026g as hint
 # Retail build 2777: resources-db list -> flash_movies/lobby_menu.swf.
 MOVIE_OFFSET = 19165044
 MOVIE_SIZE = 38985769
-# The lobby regions with the matches list (make_client_026g.py's lobby_menu
-# targets), not the retail movie: that one lacks the list. The exchange
+# The lobby regions with the matches list (the lobby_menu targets players
+# had, now database patch 14's), not the retail movie: that one lacks the list. The exchange
 # changes other classes than the list's (BottomPanel), so either takes it.
 MOVIE_SHA256S = {
     "8a98cf0df2c7c3c22c95c0ae80d310a0cfe234d84d3bca47d681a29f3a51456e": "live since 14 Oct",

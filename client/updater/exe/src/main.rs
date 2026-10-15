@@ -24,9 +24,10 @@ mod http;
 mod install;
 mod log;
 mod pipe;
-mod resources;
+mod skhid_db;
 mod rt;
 mod text;
+mod unzstd;
 mod win;
 
 use alloc::format;
@@ -416,28 +417,26 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Err(message) => return Done::Failed(message),
     };
     let done = overlay(session, layout, &server);
-    // The resource step is best effort unless its plan is required: then
-    // it must be in place before the game is played. It runs at every start
-    // the game may be played after, and with the server only when the
-    // server answered. When this updater or the launcher was replaced, the
-    // new ones start at once and do it.
+    // The game's database (resources_skhid.db) must be the release's before
+    // the game is played. The step runs at every start the game may be
+    // played after, with the server only when the server answered. When
+    // this updater or the launcher was replaced, the new ones start at once
+    // and do it.
     let server = match &done {
         Done::UpToDate | Done::Installed { restart: false } => Some(&server),
         Done::Offline(_) => None,
         Done::Installed { restart: true } => {
             log!(
-                "resources: the updater or the launcher was replaced: the resource step is done by the new one"
+                "db: the updater or the launcher was replaced: the new one prepares the game's database"
             );
             return done;
         }
         Done::Stopped | Done::Failed(_) => return done,
     };
-    // A required plan (it grows the game's resources.db) that is not in
-    // place keeps PLAY off: a new exe with an old db crashes.
-    match resources::run(session, layout, server, read_installed(layout).as_ref()) {
-        resources::Outcome::Ready => done,
-        resources::Outcome::Stopped => Done::Stopped,
-        resources::Outcome::Blocked(message) => Done::Failed(message),
+    match skhid_db::run(session, layout, server, read_installed(layout).as_ref()) {
+        skhid_db::Outcome::Ready => done,
+        skhid_db::Outcome::Stopped => Done::Stopped,
+        skhid_db::Outcome::Blocked(message) => Done::Failed(message),
     }
 }
 
@@ -709,7 +708,7 @@ fn run() -> u32 {
     };
     if options.ready {
         // Read only: no lock, no server, no pipe.
-        return match resources::ready(&layout) {
+        return match skhid_db::ready(&layout) {
             Ok(()) => {
                 log!("exit 0");
                 exit::OK

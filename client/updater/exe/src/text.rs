@@ -237,56 +237,57 @@ pub fn install(error: &InstallError) -> String {
     }
 }
 
-/// The resource step of a plan that must be in place before the game is
-/// played (it grows the game's resources.db) could not finish. Each says
-/// what the player is to do; PLAY stays off.
-const RESOURCES_PLAY_OFF: &str = " PLAY stays off until this is done.";
+/// The game's database (game\resources_skhid.db, built from the original
+/// resources.db and the release's patches) could not be made ready. Each
+/// says what the player is to do; PLAY stays off.
+const PLAY_OFF: &str = " PLAY stays off until this is done.";
 
-pub fn resources_game_running() -> String {
+pub fn db_game_running() -> String {
     format!(
-        "The game is running, so Skhid could not finish updating the game's files \
-         (game\\resources.db). Close the game, then start the launcher again.{RESOURCES_PLAY_OFF}"
+        "The game is running, so Skhid could not finish preparing the game's database \
+         (game\\resources_skhid.db). Close the game, then start the launcher again.{PLAY_OFF}"
     )
 }
 
-pub fn resources_disk_full(folder: &str, needed: u64, free: u64) -> String {
+pub fn db_disk_full(folder: &str, needed: u64, free: u64) -> String {
     format!(
-        "Not enough free disk space to update the game's files in {}: {} MB needed, {} MB free. \
-         Free some space, then start the launcher again.{RESOURCES_PLAY_OFF}",
+        "Not enough free disk space to prepare the game's database in {}: {} MB needed, {} MB \
+         free. Free some space, then start the launcher again.{PLAY_OFF}",
         folder,
         megabytes(needed),
         megabytes(free)
     )
 }
 
-pub fn resources_other_build(path: &str, size: u64, expected: u64) -> String {
+pub fn db_offline() -> String {
     format!(
-        "{path} is not the game file this Skhid release is for ({size} bytes, expected {expected}). \
-         Delete {path} and start the launcher again: the original game is downloaded again \
-         (about 3 GB).{RESOURCES_PLAY_OFF}"
+        "The update of the game's database could not be downloaded: the server could not be \
+         reached. Check the connection, then start the launcher again.{PLAY_OFF}"
     )
 }
 
-pub fn resources_offline() -> String {
+/// The original resources.db is missing or not the original, and getting
+/// it again failed: `reason` says why.
+pub fn db_original(reason: &str) -> String {
     format!(
-        "The update of the game's files could not be downloaded: the server could not be reached. \
-         Check the connection, then start the launcher again.{RESOURCES_PLAY_OFF}"
+        "game\\resources.db is missing or not the original game file, and it could not be \
+         downloaded again: {reason}{PLAY_OFF}"
     )
 }
 
-pub fn resources_failed() -> String {
+pub fn db_failed() -> String {
     format!(
-        "Skhid could not finish updating the game's files (game\\resources.db); the reason is in \
+        "Skhid could not prepare the game's database (game\\resources_skhid.db); the reason is in \
          game\\binaries\\x86\\updater_skhid.log. Start the launcher again; if this keeps \
-         happening, send that file to the server's operator.{RESOURCES_PLAY_OFF}"
+         happening, send that file to the server's operator.{PLAY_OFF}"
     )
 }
 
-/// `updater_skhid.exe ready` found the game's files not updated: the game
-/// is not started by play_skhid.bat or play_skhid.sh.
-pub fn resources_not_ready() -> String {
-    "Skhid has not finished updating the game's files (game\\resources.db), so the game is \
-     not started: it would crash in a match. Start Skhid.bat (the launcher): it finishes the \
-     update, or says what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
+/// `updater_skhid.exe ready` found the database not ready: the game is not
+/// started by play_skhid.bat or play_skhid.sh.
+pub fn db_not_ready() -> String {
+    "Skhid has not finished preparing the game's database (game\\resources_skhid.db), so the \
+     game is not started. Start Skhid.bat (the launcher): it finishes the update, or says what \
+     is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
         .into()
 }

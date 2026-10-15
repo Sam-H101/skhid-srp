@@ -8,7 +8,9 @@ use crate::{
 };
 use alloc::{format, string::String, vec::Vec};
 use updater_logic::{
+    dbpatch::FileId,
     game::{self, Pin},
+    sha256::to_hex,
     pipe::{ToLauncher, state, step},
     url,
 };
@@ -139,6 +141,37 @@ fn check(
     Ok(pin.matches(size, hash).then_some(file))
 }
 
+/// Streams `url` into a new file at `path`, flushed: at most `limit` bytes.
+/// A failed transfer is deleted. `what` names it for the player.
+fn download_to(
+    session: &mut Session,
+    url: &url::Url,
+    path: &str,
+    limit: u64,
+    what: &str,
+) -> Result<(), Option<String>> {
+    let result = (|| {
+        session.begin_progress();
+        session.state(state::DOWNLOADING);
+        let output =
+            win::DownloadFile::create(path).map_err(|code| io_error("save the download", code))?;
+        http::get_stream(url, "", limit,
+            &mut |chunk| output.write(chunk).map_err(|code| HttpError::Network("write download", code)),
+            &mut |done, total| session.progress(done, total.unwrap_or(limit)),
+        ).map_err(|error| match error {
+            HttpError::Stopped => None,
+            _ => Some(format!("The {what} download failed. {} No downloaded file was installed. Retry or use another direct HTTPS mirror.", crate::text::http(url, "", &error))),
+        })?;
+        output
+            .flush()
+            .map_err(|code| io_error("flush the download to disk", code))
+    })();
+    if result.is_err() {
+        let _ = win::delete(path);
+    }
+    result
+}
+
 /// Returns a read lock only after hashing the bytes actually on disk. The lock
 /// stays alive until the extractor exits, preventing replacement after checking.
 fn fetch(
@@ -153,27 +186,83 @@ fn fetch(
         log!("reusing verified download: {path}");
         return Ok(file);
     }
-    let result = (|| {
-        session.begin_progress();
-        session.state(state::DOWNLOADING);
-        let output = win::DownloadFile::create(path)
-            .map_err(|code| io_error("save the game download", code))?;
-        http::get_stream(&url, "", pin.size,
-            &mut |chunk| output.write(chunk).map_err(|code| HttpError::Network("write download", code)),
-            &mut |done, _| session.progress(done, pin.size),
-        ).map_err(|error| match error {
-            HttpError::Stopped => None,
-            _ => Some(format!("The game download failed. {} No downloaded game file was installed. Retry or use another direct HTTPS mirror.", crate::text::http(&url, "", &error))),
-        })?;
-        output
-            .flush()
-            .map_err(|code| io_error("flush the download to disk", code))?;
-        drop(output);
-        check(path, pin, session)?.ok_or_else(|| Some(format!(
-            "Download rejected: size or SHA-256 mismatch. Expected {} bytes and SHA-256 {}. Nothing from this download was extracted or run.", pin.size, pin.sha256)))
-    })();
-    if result.is_err() {
+    download_to(session, &url, path, pin.size, "game")?;
+    let checked = check(path, pin, session).and_then(|file| file.ok_or_else(|| Some(format!(
+        "Download rejected: size or SHA-256 mismatch. Expected {} bytes and SHA-256 {}. Nothing from this download was extracted or run.", pin.size, pin.sha256))));
+    if checked.is_err() {
         let _ = win::delete(path);
+    }
+    checked
+}
+
+/// Where a pristine resources.db comes from when the one here is not the
+/// original and cannot be put back: the address in this file beside the
+/// updater, else [`game::DB_URL`] (none yet: then the game's own pinned
+/// archive, as for a first installation).
+const DB_URL_FILE: &str = "updater_skhid.db-url";
+
+/// Puts a pristine resources.db in the place of one that is missing or not
+/// `original` (the stock file): from the address of [`DB_URL_FILE`] (the
+/// file itself, plain or zstd-compressed, checked against `original` once
+/// unpacked and only then moved into place), else from the pinned game
+/// archive. `Err(None)`: told to stop.
+pub fn reinstall_db(
+    session: &mut Session,
+    layout: &Layout,
+    original: FileId,
+) -> Result<(), Option<String>> {
+    let db = format!("{}\\resources.db", layout.game_dir);
+    let address = address(layout, DB_URL_FILE, game::DB_URL)?;
+    if address.is_empty() {
+        log!("resources.db: no {DB_URL_FILE}: the original game's archive is downloaded for it");
+        win::delete(&db).map_err(|code| io_error("remove game\\resources.db", code))?;
+        return ensure(session, layout).map(|_| ());
+    }
+    let url = url::download(&address)
+        .ok_or_else(|| Some(format!("{DB_URL_FILE} must hold a direct HTTPS download URL.")))?;
+    // The download (never more than the file unpacked) and the file.
+    let needed = 2 * original.size + (256 << 20);
+    let free = win::free_space(&layout.game_dir)
+        .ok_or_else(|| Some("Cannot check free disk space.".into()))?;
+    if free < needed {
+        return Err(Some(format!(
+            "it needs {} MB of free disk space; this disk has {} MB.",
+            needed >> 20,
+            free >> 20
+        )));
+    }
+    log!("resources.db: downloading a pristine copy from {address}");
+    let download = format!("{}\\.skhid-resources.db.download", layout.game_dir);
+    let staged = format!("{db}.skhid-new");
+    // zstd may add a little to what does not compress.
+    let limit = original.size + original.size / 128 + (1 << 20);
+    download_to(session, &url, &download, limit, "resources.db")?;
+    session.begin_progress();
+    session.state(state::INSTALLING);
+    session.send(ToLauncher::InstallInfo {
+        step: step::EXTRACT,
+        text: "resources.db",
+    });
+    session.named_file = true;
+    let unpacked = crate::unzstd::unpack(&download, &staged, &mut |done| {
+        session.progress(done, original.size)
+    });
+    let _ = win::delete(&download);
+    let result = match unpacked {
+        Ok(file) if file == original => win::rename(&staged, &db, true)
+            .map_err(|code| io_error("put resources.db in its place", code)),
+        Ok(file) => Err(Some(format!(
+            "the file downloaded from {address} is not the original resources.db ({} bytes, SHA-256 {})",
+            file.size,
+            core::str::from_utf8(&to_hex(&file.sha256)).unwrap_or("")
+        ))),
+        Err(None) => Err(None),
+        Err(Some(why)) => Err(Some(format!("the download cannot be unpacked ({why})"))),
+    };
+    if result.is_err() {
+        let _ = win::delete(&staged);
+    } else {
+        log!("resources.db: the pristine copy is in place, checked");
     }
     result
 }

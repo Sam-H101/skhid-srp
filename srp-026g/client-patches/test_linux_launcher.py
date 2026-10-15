@@ -188,7 +188,7 @@ elif name=='winetricks' and os.environ.get('TEST_DXVK_FAIL')=='1':
         self.env['TEST_FAIL'] = 'wine:updater_skhid.exe'
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("has not finished updating the game's files", result.stderr)
+        self.assertIn("has not finished preparing the game's database", result.stderr)
         self.assertIn('bash Skhid.sh launcher', result.stderr)
         calls = [json.loads(s) for s in self.calls.read_text().splitlines()]
         self.assertEqual(calls[-1]['args'], ['updater_skhid.exe', 'ready', 'quiet'])

@@ -5,11 +5,11 @@
 `survarium_updater.exe`. It keeps the few Skhid files of a player's game
 (the patched exe, the certificate, the crash reporter, the start scripts,
 the launcher and itself) the same as the ZIP the server's page offers, and
-then rewrites in place the few entries of the game's own `resources.db` that
-the ZIP's plan names, and, when the plan says so, grows the db by new
-entries ("Resources" below).
+then builds the game's database, `resources_skhid.db`: the game's own
+`resources.db`, never changed, with the release's database patches applied
+("The game's database" below).
 
-A 32-bit Windows program of about 130 KB, without the Rust standard library
+A 32-bit Windows program of about 180 KB, without the Rust standard library
 and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 `user32.dll` (its message box) and `winhttp.dll`.
 
@@ -35,18 +35,17 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   prompt is needed. Allow about 10 GB of free disk space. The game is
   unpacked with `7zr.exe`, a file of the Skhid archive beside the updater
   (`extractor/`): nothing that is run is downloaded on its own.
-- After the Skhid files, at every start, the resource step: `GET
-  /resources/<sha256>` for the blobs the plan `updater_skhid.resources`
-  names, written over entries of the game's `resources.db` in place, and
-  appended to it when the plan has a `tail` ("Resources" below). Best
-  effort for a plan without a tail: it never fails the update and never
-  keeps PLAY off. A plan with a tail is required: PLAY stays off until the
-  db is checked whole.
+- After the Skhid files, at every start, the database step: `GET
+  /resources/<sha256>` for the patches the list `updater_skhid.patches`
+  names, applied to a copy of `resources.db` ("The game's database"
+  below). Required: PLAY stays off until `resources_skhid.db` is checked
+  whole at the release's revision.
 - Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
   does hold the game folder's path) beside itself. `updater_skhid.lock`
-  prevents simultaneous installs in the same folder. The resource step
-  writes its own files beside it too (listed under "Resources").
+  prevents simultaneous installs in the same folder. The database step
+  writes its own files beside it too (`updater_skhid.patches.state`,
+  `.status`, `updater_skhid.cache\`).
 - No BitTorrent, no listening port, no UPnP, no registry, no service, no
   crash upload, no administrator rights (its manifest says `asInvoker`;
   without one Windows takes a program named "updater" for an installer and
@@ -60,7 +59,7 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 | `"<exe>" "copy" "<pipe>" ...` | the unpatched launcher | Answers "copy done" at once: nothing needs copying |
 | `updater_skhid.exe check` | a person, a script | The update without a launcher; an error is a message box |
 | `updater_skhid.exe check quiet` | a script | No box either. Exit code 0: done or nothing to do; 1: failed (the reason is in the log) |
-| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the plan beside it grows the db and the db is not checked whole, or the plan cannot be read and may be one (format 2 or newer); else 0 |
+| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the list beside it cannot be read, or `resources_skhid.db` is not found at the release's revision by the quick look; else 0 (also with no list) |
 
 Exit codes: 0, 1 (failed), 2 (the launcher's pipe could not be opened), 3
 (an internal error; logged).
@@ -72,9 +71,9 @@ says so and does nothing.
 
 | Folder | What |
 |---|---|
-| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the resource plan and its record) and what the resource step decides, the launcher's pipe messages, command-line splitting, the server address. `cargo test` there runs on any host |
+| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the database patches and their state, the old resource step's record) and what the database step decides, the launcher's pipe messages, command-line splitting, the server address. `cargo test` there runs on any host |
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
-| `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started |
+| `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `test_skhid_db.py`: the database step, `check quiet`, on Windows or Wine. `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started |
 
 ## Original game download and verification
 
@@ -153,194 +152,151 @@ downloads, verifies and extracts the full game with the extractor of
 `extractor/`, then installs the Skhid overlay. It does not contact Drive or
 archive.org.
 
-## Resources
+## The game's database
 
-The players' ZIP may hold a plan, `game/binaries/x86/updater_skhid.resources`
-(`make_client_026g.py --resource-region`, `--resource-grow`; the format and
-its rules are in `logic/src/resources.rs`):
+The game's own `resources.db` (6.3 GB, build 2777's) is never changed. The
+updater builds `game\resources_skhid.db` beside it: a copy with every
+database patch of the release applied in the order of their revisions, and
+checks the whole result by its SHA-256. The game opens that file.
+
+The players' ZIP holds the list, `game/binaries/x86/updater_skhid.patches`
+(`make_client_026g.py --db-patches=<folder>`). The formats are defined in
+`logic/src/dbpatch.rs` (its Python twin, for the tools, is
+`srp-026g/client-patches/db_patches.py`):
 
 ```text
-skhid-resources 2
-region <path> <file size> <offset> <size> <original sha256> <target sha256> <name>
-tail <path> <file size> <new size> <tail sha256> <name> <region>
-file <sha256> <size> <path>
+skhid-db-patches 1
+original <sha256> <size>              the stock resources.db
+skhid-db-patch 1                      each patch, in the order of revisions
+revision 14
+from <sha256 of the whole input> <size>
+to <sha256 of the whole output> <size>
+blob <sha256 of the blob> <size>
+write <offset> <length>               bytes put over the input, in place
+append <length>                       bytes added at the end
+end
 end
 ```
 
-A plan without a `tail` is written as format 1, as before, so that the
-updaters already out there read it; a `tail` comes only in format 2. An
-updater of format 1 refuses a plan of format 2 whole ("newer format",
-nothing is changed): it never writes a table without its tail. The ZIP
-brings the new updater, which starts at once and does the step.
+The blob, `GET /resources/<blob sha256>`, is zstd-compressed and holds the
+bytes of every `write` and `append` in the order of the lines; the updater
+decompresses it as it applies it (`ruzstd`, pure Rust, no `std`). Writes are
+inside the input, in rising order, not overlapping; `to` is `from` and the
+appends. Revisions rise and each `from` is the `to` before it, from the
+original; the last `to` is the release's database. With no patch it is a
+copy of the original. A list of a higher format, cut short, or breaking a
+rule changes nothing and keeps PLAY off. The patches are never taken off the
+server: a player who missed releases applies all of them.
 
-A `region` line says that the bytes `[offset, offset + size)` of a game
-file (today `game/resources.db`, 6.3 GB) are the blob `<original>` as the
-game is shipped, and are to become the blob `<target>`: an entry of the db
-rewritten in place with the same size and the same game CRC, so the db's
-signed file table is not changed (the first two: the lobby's and the login
-screen's Flash movies). Or the file table itself, rewritten with a `tail`.
-
-A `tail` line says that the file, `<file size>` bytes as shipped, is to grow
-to `<new size>`: the blob `<tail sha256>` appended at its end, the new
-entries of the db. `<region>` names the region of the plan written with it:
-the db's file table (the head, `[0, n)`), rewritten to name the new
-entries. One tail per file. A region's `<file size>` stays the size as
-shipped: its file is of its build when it has that size, or that size grown
-by a tail of the plan or of the record. A `file` line is a whole file fetched by its
-checksum, for later (new maps, if the game can load them); it may not name
-a file of the overlay, an original game file (`game::FILES`) or one of the
-updater's own. A line with an unknown word is skipped. A plan of a higher
-format, one cut short (no `end`), one with a line that cannot be read, or
-one where two lines claim the same bytes, changes nothing at all.
+Revision 14, the first, is three writes and no append: the menus players had
+written in place before (`main_menu` 1 194 596 bytes at 17 970 448, the FOV
+slider; `lobby_menu` 38 985 769 at 19 165 044, the exchange and the matches
+list; `login_menu` 3 508 744 at 58 150 813, the account hint): stock + the
+live targets `edc60a3d…`, `3a2c470d…` and `20ab1d22…` gives `to`
+`4ad16d16…` (the same size). Its blob is 43 MB (the movies are compressed
+already).
 
 The step runs after the overlay at every start the game may be played
-after: also when nothing new was installed, and when the server could not
-be asked (then with what is kept here only: nothing is downloaded). When
-the run replaced the updater or the launcher, the new ones start at once
-and do it. It holds the installation lock, as the overlay does. For each
-region:
+after, under the installation lock (also when the server could not be
+asked: then with what is kept here only). When the run replaced the updater
+or the launcher, the new ones start at once and do it.
 
-1. The region is hashed (39 MB in 125 ms on the test PC with the file in
-   Windows' cache; a cold read from a hard disk is slower, not measured).
-   It holds the target: done, nothing downloaded or written.
-2. A missing file, or a file of another size than the plan's (another
-   build of the game): skipped, logged.
-3. The file is opened by the updater alone (share mode 0) and closed again.
-   The game keeps `resources.db` open from its start to its exit (share
-   mode read and write), so this fails with error 32 while a game runs: the
-   log says "the game is running" and no region is changed this run, and
-   nothing is fetched for them either.
-4. The target is fetched from `<site>/resources/<sha256>` into
-   `updater_skhid.cache\<sha256>.part`, streamed to the disk 64 KiB at a
-   time, flushed, its size and SHA-256 checked as read back from the disk,
-   then renamed to `<sha256>`. A blob that is there and checks is used
-   again. Two tries a run.
-5. The file is opened by the updater alone again. A region that holds the
-   original, with no checked copy of it yet, is copied into
-   `updater_skhid.backup\<original sha256>` first (written, flushed, read
-   back, checked); if that fails, the region is not written.
-6. The region is recorded in `updater_skhid.resources.state` and noted in
-   `updater_skhid.resources.journal` (both flushed) before its first byte is
-   written: a region is never changed without a note of how to put it
-   back. Then the blob is written at the region's offset (64-bit offsets),
-   `FlushFileBuffers`, the region read back and checked, and the journal
-   and the cached blob deleted.
-7. If the write or the check fails, the original is written back (from the
-   copy kept, else from the site's blob of the original) and checked. If
-   that fails too, the region stays recorded for the next run.
-8. A region that holds neither its original nor its target (a write cut
-   short, a disk error, another program, the target of an earlier plan) is
-   damaged: the target is written over it. The checksum decides; a journal
-   left over is told in the log.
+1. A quick look: the state beside the updater,
+   `updater_skhid.patches.state` (the revision, the whole file's size and
+   SHA-256 as last checked, and the SHA-256 of its first and last 16 MB),
+   against the file's size and those 32 MB. The release's revision: done.
+2. Checked at an older revision: the newer patches' blobs are fetched (into
+   `updater_skhid.cache\`, checked by size and SHA-256), the free space
+   checked (the growth, the blobs, 64 MB), the state removed (an
+   interruption from here on leaves a file nothing vouches for), each patch
+   applied in place, the whole file hashed and compared with the last `to`,
+   the state written.
+3. There but no state that fits (lost, a damaged file, an update cut
+   short): hashed whole; a revision of the list is taken as it is (2.),
+   anything else is built anew (4.).
+4. Missing or built anew: the old file is removed, the free space checked
+   (the release's size, the blobs, 64 MB), every blob fetched, then
+   `resources.db` copied into `resources_skhid.db.skhid-build` and hashed as
+   it is read (it must be the list's `original`), every patch applied, the
+   whole file hashed, and only then renamed into its place and the state
+   written. A `.skhid-build` left by a run that was cut short is removed at
+   the next start.
+5. A result that is not the release's `to` is built anew from the original
+   once; then PLAY stays off. The intermediate revisions of a build are not
+   hashed (each would be another 6.3 GB read); a wrong one shows in the end.
 
-A tail, after the regions and the tails that leave, before the plan's
-regions:
+Applied blobs are removed from the cache. A file the game holds (it keeps
+its database open while it runs) is not changed: PLAY stays off until it is
+closed.
 
-1. The file's size and the bytes past the size as shipped tell what it
-   holds: the size as shipped (to append), the tail (done), or longer by
-   something else. Longer by what this step appended before (an append cut
-   short, an older tail; the record says so) is cut off first. Longer or
-   shorter by anything else is another build or another program's: nothing
-   is written, and the plan is not in place (below).
-2. The disk must have room for the tail and, when it is not in the cache
-   yet, its blob, plus 64 MB; else nothing is fetched.
-3. The blob is fetched as a region's, the file opened by the updater alone.
-4. The table (the tail's region), when it holds its original, is copied
-   into `updater_skhid.backup\` first.
-5. The tail is recorded and journalled (flushed) before the first byte is
-   appended. The file is cut to its size as shipped, the blob appended,
-   `FlushFileBuffers`, the size and the tail read back and checked.
-6. If that fails, the file is cut to its size as shipped again.
+A `resources.db` that is not the original (the copy's SHA-256 says so) is
+downloaded again, once a run (`exe/src/game.rs`, `reinstall_db`): from the
+address in `updater_skhid.db-url` beside the updater (else
+`logic::game::DB_URL`, none yet), a plain or zstd-compressed
+`resources.db`, unpacked beside it and checked against the list's
+`original` before it replaces the file; without an address, from the game's
+own pinned archive, as for a first installation (2.9 GB, extracted with
+`7zr.exe`). Like the game's mirror, the address changes only where it comes
+from, never what is accepted.
 
-Every region of a file with a tail (the table, and the lobby's and the
-login's) waits until the tail is in place: a table is never written that
-points past the file's end. If the table cannot be written, its original is
-put back and the tail cut off.
+What keeps PLAY off ("Error" in the launcher's line, the reason in its box),
+each followed by "PLAY stays off until this is done.":
 
-A plan with a tail is *required* (the game with the new exe and the old db
-crashes on the items the server sends). At the end of the step every file
-with a tail is checked whole: its size, its tail, and every region of the
-plan in it. If anything is not in place:
+| Found | The player is told |
+|---|---|
+| The game holds a file | "The game is running, so Skhid could not finish preparing the game's database (game\resources_skhid.db). Close the game, then start the launcher again." |
+| Not enough disk | "Not enough free disk space to prepare the game's database in <folder>: N MB needed, M MB free. Free some space, then start the launcher again." |
+| A blob is not here and the server could not be asked | "The update of the game's database could not be downloaded: the server could not be reached. ..." |
+| `resources.db` is not the original and could not be downloaded again | "game\resources.db is missing or not the original game file, and it could not be downloaded again: <why>" |
+| Anything else (a blob the server lacks or spoils, a list that cannot be read, a result that is not the release's twice) | "Skhid could not prepare the game's database (game\resources_skhid.db); the reason is in game\binaries\x86\updater_skhid.log. ..." |
 
-- the file goes back to its bytes as shipped: each region of the plan in it
-  gets its original back, then the tail is cut off (the tail's blob stays
-  in the cache, so the next start does not download it again). Not while
-  the game holds it: then nothing was changed this run.
-- the update fails with words that say what to do, and PLAY stays off
-  ("Error" in the launcher's line, the reason in its box):
+The log has `db: BLOCKED: <what was found>. The player is told: <the words>`,
+and `updater_skhid.patches.status` says `ready` or `blocked <what>`, for
+support. Every step is in the log after `db:`. The launcher shows the step
+as an install: "downloading" with the bar for a blob, "Extracting file
+resources_skhid.db" with the bar for the copy and the patches, "checking"
+for a whole hash.
 
-  | Found | The player is told |
-  |---|---|
-  | The game holds the db | "The game is running, so Skhid could not finish updating the game's files (game\resources.db). Close the game, then start the launcher again." |
-  | Not enough disk | "Not enough free disk space to update the game's files in <folder>: N MB needed, M MB free. Free some space, then start the launcher again." |
-  | The db is of another size, or grown by something else | "game\resources.db is not the game file this Skhid release is for (N bytes, expected M). Delete game\resources.db and start the launcher again: the original game is downloaded again (about 3 GB)." |
-  | A blob is not here and the server could not be asked | "The update of the game's files could not be downloaded: the server could not be reached. Check the connection, then start the launcher again." |
-  | Anything else (a blob the server lacks or spoils, a write that fails, a plan that cannot be read but may grow the db: format 2 or newer) | "Skhid could not finish updating the game's files (game\resources.db); the reason is in game\binaries\x86\updater_skhid.log. Start the launcher again; if this keeps happening, send that file to the server's operator." |
+`play_skhid.bat` and `play_skhid.sh` run `updater_skhid.exe ready` before
+they start the game without the launcher: it reads only, and says no (exit
+1) unless the quick look finds the release's revision.
 
-  each followed by "PLAY stays off until this is done."
-- the log has a line `resources: BLOCKED: <what was found>. The player is
-  told: <the words>`, and `updater_skhid.resources.status` beside the
-  updater says `blocked <what was found>` (`ready` once it is in place),
-  for support.
+## Putting resources.db back to stock (once)
 
-The next start repairs it: the checksums and the size decide, a journal
-left over is told in the log. `check quiet` exits 1 in that case.
+The updaters before the database patches wrote the menus into the players'
+`resources.db` in place (the "resource step" of #79), with a record
+`updater_skhid.resources.state`, a journal while a write ran, and copies of
+the originals in `updater_skhid.backup\`. Before anything else the step puts
+those bytes back (from the copy kept, else from the server's blob of the
+original) and cuts off what they appended (`logic/src/legacy.rs` reads the
+record). Then the whole file is checked against the list's original: as it
+is copied for a build, or hashed when `resources_skhid.db` needs no build.
+Only once it is the original are the record, the journal, the old status,
+the old plan and the copies removed. If it is not (a copy and the server's
+blob both missing, a byte changed elsewhere) it is downloaded again as
+above. This goes once every player's db is stock again.
 
-A recorded region the plan no longer has (or the plan itself is gone,
-because the server's ZIP has none) gets its original back the same way,
-before the plan's own regions are written. A planned region over the bytes
-of a recorded one whose original could not be put back waits. A region of
-the plan with a new target is written over the old target directly (the
-copy of the original stays the way back). A recorded `file` the plan no
-longer has is deleted if it is still the file placed. A recorded tail the
-plan no longer has is cut off once its table is back (a tail whose table
-the plan keeps, with a new tail, is cut off at once; the new tail and the
-new table follow). Every handle on the db is closed before the launcher is
-told that PLAY may be pressed.
-
-What it never does: fail the update for a plan without a tail, show a
-message box of its own, change the overlay's files or `updater_skhid.state`,
-or touch a byte outside the regions and the tails. Every step and failure is in `updater_skhid.log`, each line after
-`resources:`. The launcher shows it as an install: "downloading" with the
-bar for a blob, "Extracting file <name>" while a region is written, then
-"latest" as always. When there is nothing to do it says nothing.
-
-Its files beside the updater: `updater_skhid.resources` (the plan, from the
-ZIP), `updater_skhid.resources.state` (the record),
-`updater_skhid.resources.journal` (only while a region is written or a
-tail appended), `updater_skhid.resources.status` (a required plan's last
-result),
-`updater_skhid.cache\` (blobs not written yet; emptied and removed when
-done) and `updater_skhid.backup\` (the originals of the regions planned or
-recorded, 39 MB and 3.5 MB today; removed when no region needs them).
-
-Not handled: a record that is lost or damaged (a region the plan still
-names is recorded again when it holds its target; one that left the plan
-meanwhile keeps its target); a game started with `play_skhid.bat` in the
-second a region is being written (its own open of the db fails then); a
-db of the plan's size but another build (the size is the only sign of the
-build the plan gives, so its regions would count as damaged and be
-overwritten).
-
-`play_skhid.bat` and `play_skhid.sh` start the game without the launcher.
-Before they do, they run `updater_skhid.exe ready`: while a required plan
-is not in place, they say so ("Skhid has not finished updating the game's
-files ... Start Skhid.bat (the launcher)") and do not start the game. With
-no updater beside them (an archive without the launcher) they start it as
-before.
+Not handled: a `resources_skhid.db` damaged outside its first and last
+16 MB while its state says it is fine is not noticed until it is rebuilt
+(the game would crash on what it reads there); a `resources.db` deleted
+by hand to save room is downloaded again by the overlay's first step, even
+when `resources_skhid.db` is ready (keeping the original compressed is a
+later change).
 
 ## Build and test
 
 Use the same nightly Rust as the game workspaces (`srp-026g/flake.nix`
 supplies it with `rust-src`). No Windows SDK is needed. The two locked
-dependencies of `exe/` are Microsoft's `windows-sys` and `windows-link`.
+dependencies of `exe/` are Microsoft's `windows-sys` and `windows-link`, and
+`ruzstd` 0.8.3 (zstd decoding, without its default features: no `std`, no
+dependency of its own).
 
 ```sh
 ./build.sh                                   # exe/target/i686-pc-windows-msvc/release/updater_skhid.exe
 SKHID_UPDATE_URL=https://test.example ./build.sh   # another default server
 (cd logic && cargo test)
 python tests/test_updater.py                 # Windows
-python tests/test_resource_tail.py           # Windows or Wine (a plan that grows the db)
+python tests/test_skhid_db.py                # Windows or Wine (the game's database; needs zstd)
 python tests/test_game_download.py           # Windows or Wine
 SKHID_TEST_BUNDLE=<a players' zip> python tests/test_updater.py
 ```
@@ -386,6 +342,28 @@ refusing to start it until the db is in place).
 `test_updater.py`'s two changed scenarios (a newer format; a running game
 with a required plan) are not run yet: they need Windows.
 
+Run on 2026-10-16 (Linux, Wine 11.8 staging, `check quiet`), the database
+step (the in-place step and `test_resource_tail.py` are gone): the 40 unit
+tests, and the 16 scenarios of `test_skhid_db.py` (a 4 MB stand-in for the
+stock db: a fresh build of two patches, found done after with nothing
+fetched or hashed whole; a new release applying only its own patch; no
+patch; a database at an older revision without its state; a damaged one
+built anew; a build and an update in place cut short; a patch whose result
+is not its `to`, built twice, then PLAY off; a blob the site lacks or
+spoils; not enough disk, said before anything is fetched; lists that cannot
+be read, and no list; an original that is not the original, downloaded
+again (zstd) or not, and with no address the game's archive; a db changed
+in place put back from the copies and the server, or downloaded again when
+it cannot be, and beside a ready database; `play_skhid.bat` run by Wine's
+cmd). Real data: revision 14 (stock and the three live menus) from a
+`resources.db` with the menus written in place, its record and the copies of
+the originals, as the live players have it: put back, checked stock, built
+and checked whole in 61 s on an SSD (the copy 29 s, the whole hash 24 s);
+`resources_skhid.db` `4ad16d16…`, `resources.db` `c74078be…`; the next start
+under a second, `ready` 0.2 s. Not run: `test_updater.py`'s three new
+scenarios (Windows: the launcher's bar, a running game holding the database,
+the updater that replaced itself), a hard disk, the real launcher.
+
 ## Not done
 
 - A signature on the ZIP made with a key that is not on the server. Today
@@ -394,3 +372,10 @@ with a required plan) are not run yet: they need Windows.
   again).
 - Texts in other languages than English (the launcher shows them in an
   ANSI message box).
+- Keeping the original `resources.db` zstd-compressed (level 3) to save its
+  6.3 GB: the updater has the decoder now (`exe/src/unzstd.rs`); the copy
+  would read through it. A later change, with the overlay's first step
+  taught that a compressed original is the game being there.
+- The revision kept inside `resources_skhid.db` (the free bytes after its
+  file table) in the place of the state file, and the list from a server
+  endpoint as well as from the ZIP: the next change of the stack.

@@ -202,23 +202,25 @@ installing. `--check` does every check and writes nothing. Existing ZIPs are
 never overwritten. `--bugtrap=<path>` selects another built DLL; by default
 the builder reads `client/bugtrap/target/i686-pc-windows-msvc/release/BugTrap.dll`.
 
-`--resource-region=<name>=<entry file>` (once per entry; `main_menu`,
-`lobby_menu` and `login_menu` are known, `RESOURCE_REGIONS` in the tool;
-with `--resource-grow` too, whose head `[0, 10 583 534)` ends well before
-`main_menu`, `[17 970 448, 19 165 044)`, and the tool refuses a head that
-overlaps a region) with
-`--resources-out=<folder>` adds `game/binaries/x86/updater_skhid.resources`,
-the plan of the updater's resource step: the updater rewrites that entry of
-the player's `resources.db` in place with the entry file
-(`../../client/updater/README.md`, "Resources"). The tool refuses an entry
-file of another size or another game CRC than the original entry, and a
-source `resources.db` whose entry is not the original (it reads that part of
-the file only). The blobs the server must hand out at `/resources/<sha256>`,
-the entry file and the original entry, go into `<folder>`, named by their
-sha256: they are uploaded before the ZIP is offered
-(`launcher/README.md`, "Putting it on a server"). Without the option the ZIP
-is byte for byte what it was before the option existed (checked 2026-10-14
-against a build of `main` a63f37d with the same inputs).
+With the launcher the ZIP always has `game/binaries/x86/updater_skhid.patches`,
+the list of the release's database patches: the updater builds
+`game/resources_skhid.db` from the player's untouched `resources.db` (the stock
+file of build 2777, SHA-256 `c74078be…`) and these patches, in the order of their
+revisions, and checks the whole result (`../../client/updater/README.md`, "The
+game's database"; the formats: `db_patches.py`, the twin of the updater's
+`logic/src/dbpatch.rs`). `--db-patches=<folder>` is the release's folder of
+patches, which only grows: each description (`*.skhid-db-patch`) and each
+zstd-compressed blob, named by its sha256, of every release so far. The tool
+checks the chain from the stock database (rising revisions, each `from` the `to`
+before it) and every blob by its size and sha256; it reads none of the game's
+`resources.db`. Without it the list has no patch and `resources_skhid.db` is a
+copy of the original. `--resources-out=<folder>` copies the blobs there for the
+server's `download/resources/` (uploaded BEFORE the ZIP is offered). The first
+patch, revision 14, is three writes: the menus the players had written in place
+before (`main_menu`, `lobby_menu`, `login_menu` at their stock offsets). The
+patches are made from whole databases by the release's tools (stack PR 3/6);
+`--resource-region`, `--resource-grow` and the grow manifest are gone with the
+in-place step.
 
 Full overlays embed the supplied `--server` address in the executable, so
 players do not need `-server=` at launch. The generated batch file retains
@@ -329,9 +331,8 @@ archive, revision 11 still has the setting (`uro_fov 80` in the console or
 refusals without game files. Checked live in the lobby and in a match on a
 local server (with an earlier form of patch 22): the slider shows "FOV:"
 under gamma, changes the view and is saved to `user.cfg`. In the players'
-download from revision 11: `make_client_026g.py --resource-region=main_menu=<entry>`,
-where the entry is the movie's 1 194 596 bytes at offset 17 970 448 of the
-built resources.db; the updater writes it into the player's db.
+download from revision 14: a write of database patch 14, the movie's 1 194 596
+bytes at offset 17 970 448 of the built resources.db.
 
 ## Lobby exchange, silver and gold both ways
 
@@ -379,7 +380,7 @@ than the account has.
 The input is a lobby region with the matches list (sha256 `8a98cf0d…`, live
 since 14 Oct, or `48c3439f…`, with the JOIN reasons and the match level; the
 exchange changes other classes than the list's), not the retail movie, either as a whole `resources.db` or as
-the entry file of `--resource-region=lobby_menu=<file>`. The output is of the
+the entry file (the lobby's bytes at its stock offset). The output is of the
 same kind:
 
 ```sh
