@@ -90,37 +90,40 @@ the live one (`curl -o live.zip $SKHID_SITE/download`, sha256 per entry):
   unexplained difference is unreleased work on `main` riding along: stop and
   tell the releaser.
 
-## 4. Publish the content patch (if any)
+## 4. Upload the new patch (if any)
+
+Only the new patch goes up; the patches server is the one copy of every
+published patch.
 
 ```sh
 P=resources.db.patch_<rev>
-cp <the patch database> "$SKHID_PATCHES_LOCAL/$P"
-scp "$SKHID_PATCHES_LOCAL/$P" "$SKHID_PATCHES_SSH:$SKHID_PATCHES_DIR/$P.tmp"
+scp <the patch database> "$SKHID_PATCHES_SSH:$SKHID_PATCHES_DIR/$P.tmp"
 ssh "$SKHID_PATCHES_SSH" "cd $SKHID_PATCHES_DIR && test ! -e $P && chmod 644 $P.tmp && mv $P.tmp $P"
-curl -s "$SKHID_PATCHES_URL/$P" | sha256sum      # must equal the local file's
+curl -s -o /dev/null -w '%{http_code}\n' "$SKHID_PATCHES_URL/$P"   # 200
 ```
 
-`$SKHID_PATCHES_LOCAL` keeps a copy of every published patch: the server's
-data is built from all of them. Never overwrite or delete a published patch;
-a fix is a new patch at the next revision. (To be scripted:
-`release/upload-patches`.)
+Never overwrite or delete a published patch; a fix is a new patch at the
+next revision. (To be scripted: `release/upload-patches`.)
 
 ## 5. Build the server's game data
 
-On the release machine (it has the stock db; the live host never stores it):
+On the release machine (it has the stock db; the live host never stores it),
+for every release, content or not (it records the patch list the server
+serves). From the patches server:
+
+1. list `resources.db.patch_*` in `$SKHID_PATCHES_DIR` (ssh);
+2. download each from `$SKHID_PATCHES_URL/<name>` — every one must return 200;
+3. build and print what `/patches` will offer:
 
 ```sh
-srp-game-data build --db "$SKHID_STOCK_DB" \
-  $(for f in "$SKHID_PATCHES_LOCAL"/resources.db.patch_*; do
-      printf -- '--patch %s=%s/%s ' "$f" "$SKHID_PATCHES_URL" "$(basename "$f")"; done) \
-  --out <scratch>/server-game-data.db
-srp-game-data info <scratch>/server-game-data.db   # the patches /patches will offer
+srp-game-data build --db "$SKHID_STOCK_DB" --patch-url "$SKHID_PATCHES_URL" \
+  --patch <downloaded resources.db.patch_<n>> … --out <scratch>/server-game-data.db
+srp-game-data info <scratch>/server-game-data.db
 ```
 
 `srp-game-data` is built with
 `nix develop ./srp-026g -c bash -c 'cd srp-026g && cargo build --release -p resources-db --bin srp-game-data'`.
-(To be scripted: `release/build-server-db`.) Build it for every release, even
-one without new content: it records the patch list the server serves.
+(To be scripted: `release/build-server-db`.)
 
 ## 6. Test
 
