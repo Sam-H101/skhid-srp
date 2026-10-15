@@ -303,7 +303,12 @@ changes:
 - the lower bound of `uro_fov` is 50 instead of 0; the upper bound stays 100.
 
 The angle is vertical, as before: 65 is the stock view, and scope zoom still
-multiplies it. Camera code is not part of the simulated world, so clients
+multiplies it. The projection is shared by every camera of the game (the
+classes `game_camera`, `lobby_camera`, `free_fly_camera`, `demo_camera` and
+`player_input_handler`), so the lobby, spectator and replay views follow the
+setting too: at 100 the lobby scene is wider and the character smaller, at
+50 it is cropped. That is left so on purpose; a player who prefers the stock
+lobby sets 65. Camera code is not part of the simulated world, so clients
 with and without the slider can play together.
 
 The resources build needs a JDK and JPEXS FFDec, as the login hint does. It
