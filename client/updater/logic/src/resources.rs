@@ -6,11 +6,15 @@
 //! ZIP like any other:
 //!
 //! ```text
-//! skhid-resources 1
+//! skhid-resources 2
 //! region <path> <file size> <offset> <size> <original sha256> <target sha256> <name>
+//! tail <path> <file size> <new size> <tail sha256> <name> <region>
 //! file <sha256> <size> <path>
 //! end
 //! ```
+//!
+//! (Format 1 is the same without `tail` lines; a plan without one is still
+//! written as format 1, so the updaters already out there read it.)
 //!
 //! - `region`: the bytes `[offset, offset + size)` of the file at `<path>`
 //!   (a name as the ZIP has them: `game/resources.db`) are the blob
@@ -18,15 +22,30 @@
 //!   `<target>`. `<file size>` is the whole file's size in that build of the
 //!   game: a file of another size is of another build and is left alone.
 //!   `<name>` is for the log and the launcher's line.
+//! - `tail`: the file at `<path>`, `<file size>` bytes as shipped, is to
+//!   grow to `<new size>` bytes: the blob `<tail sha256>` appended at its
+//!   end. `<region>` names the region of the plan that must be written with
+//!   it (the file's table, which says where the new entries are): that
+//!   region is written only once the tail is in place, and if it cannot be
+//!   written the tail is cut off again. A tail makes the plan *required*
+//!   for its file: every region of the plan on that file, and the tail,
+//!   must be in place before the game may be played (the game with a new
+//!   exe and an old file crashes on what the server sends). One tail per
+//!   file; the region it names must be of the same build (`<file size>`).
+//!   The regions of a file keep their `<file size>`, the size as shipped:
+//!   a region's file is of its build when it has that size, or that size
+//!   grown by a tail the plan or the record names ([`file_sizes`]).
 //! - `file`: a whole file, fetched by its checksum and put at `<path>`.
 //!
 //! The record beside the updater, `updater_skhid.resources.state`, is the
-//! same lines under `skhid-resources-state 1`: the regions the step wrote
-//! (a region is recorded before its first byte is written), each with its
-//! original, so the original can be put back when the plan no longer has
-//! it; and the files it placed, so they can be removed. The journal,
-//! `updater_skhid.resources.journal`, is a record of the one region being
-//! written.
+//! same lines under `skhid-resources-state 1` (2 when it holds a tail):
+//! the regions the step wrote (a region is recorded before its first byte
+//! is written), each with its original, so the original can be put back
+//! when the plan no longer has it; the tails it appended (recorded before
+//! the first byte is appended), so they can be cut off; and the files it
+//! placed, so they can be removed. The journal,
+//! `updater_skhid.resources.journal`, is a record of the one region or tail
+//! being written.
 //!
 //! As in `manifest`, a line with an unknown word is skipped (a later server
 //! may say more) and a higher format number is refused. Unlike the server's
@@ -50,7 +69,7 @@ use crate::zip::safe_name;
 pub const PLAN_NAME: &str = "game/binaries/x86/updater_skhid.resources";
 const PLAN_MAGIC: &[u8] = b"skhid-resources";
 const RECORD_MAGIC: &[u8] = b"skhid-resources-state";
-/// The most regions and files one plan may have.
+/// The most regions, tails and files one plan may have.
 pub const MAX_ENTRIES: usize = 256;
 /// The longest region name.
 const MAX_LABEL: usize = 64;
@@ -104,6 +123,40 @@ impl Region {
     }
 }
 
+/// Bytes appended to a file: it grows from `file_size` to `new_size`.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Tail {
+    pub path: String,
+    pub file_size: u64,
+    pub new_size: u64,
+    pub sha256: [u8; 32],
+    pub name: String,
+    /// The name of the region written with it.
+    pub region: String,
+}
+
+impl Tail {
+    /// The same bytes appended to the same file of the same build.
+    pub fn same_place(&self, other: &Tail) -> bool {
+        self.path.eq_ignore_ascii_case(&other.path)
+            && self.file_size == other.file_size
+            && self.new_size == other.new_size
+            && self.sha256 == other.sha256
+    }
+
+    /// The tail's bytes.
+    pub fn size(&self) -> u64 {
+        self.new_size - self.file_size
+    }
+
+    /// Whether `region` is the one written with it.
+    pub fn goes_with(&self, region: &Region) -> bool {
+        self.path.eq_ignore_ascii_case(&region.path)
+            && self.file_size == region.file_size
+            && self.region.eq_ignore_ascii_case(&region.name)
+    }
+}
+
 /// A whole file put in its place by its checksum.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct WholeFile {
@@ -112,11 +165,12 @@ pub struct WholeFile {
     pub path: String,
 }
 
-/// A plan, or a record: its regions and files.
+/// A plan, or a record: its regions, tails and files.
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Plan {
     pub regions: Vec<Region>,
     pub files: Vec<WholeFile>,
+    pub tails: Vec<Tail>,
 }
 
 /// Files of the updater itself (its state, its log, its cache, the plan)
@@ -179,6 +233,19 @@ fn region(values: &[u8]) -> Option<Region> {
     (fits && region.original != region.target).then_some(region)
 }
 
+fn tail(values: &[u8]) -> Option<Tail> {
+    let [path_text, file_size, new_size, sha256, name, region] = fields::<6>(values)?;
+    let tail = Tail {
+        path: path(path_text)?,
+        file_size: number(file_size)?,
+        new_size: number(new_size)?,
+        sha256: from_hex(sha256)?,
+        name: label(name)?,
+        region: label(region)?,
+    };
+    (tail.new_size > tail.file_size).then_some(tail)
+}
+
 fn whole_file(values: &[u8]) -> Option<WholeFile> {
     let [sha256, size, path_text] = fields::<3>(values)?;
     let file = WholeFile {
@@ -200,7 +267,12 @@ impl Plan {
         }) || self
             .files
             .iter()
-            .any(|file| file.path.eq_ignore_ascii_case(&region.path));
+            .any(|file| file.path.eq_ignore_ascii_case(&region.path))
+            || (unique_names
+                && self
+                    .tails
+                    .iter()
+                    .any(|tail| tail.name.eq_ignore_ascii_case(&region.name)));
         if !clash {
             self.regions.push(region);
         }
@@ -215,11 +287,54 @@ impl Plan {
             || self
                 .regions
                 .iter()
-                .any(|region| region.path.eq_ignore_ascii_case(&file.path));
+                .any(|region| region.path.eq_ignore_ascii_case(&file.path))
+            || self
+                .tails
+                .iter()
+                .any(|tail| tail.path.eq_ignore_ascii_case(&file.path));
         if !clash {
             self.files.push(file);
         }
         !clash
+    }
+
+    /// One tail per file, none on a whole file of the plan, and (a plan's)
+    /// a name of its own.
+    fn add_tail(&mut self, tail: Tail, unique_names: bool) -> bool {
+        let clash = self
+            .tails
+            .iter()
+            .any(|other| other.path.eq_ignore_ascii_case(&tail.path))
+            || self
+                .files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(&tail.path))
+            || (unique_names
+                && (self
+                    .regions
+                    .iter()
+                    .any(|region| region.name.eq_ignore_ascii_case(&tail.name))
+                    || self
+                        .tails
+                        .iter()
+                        .any(|other| other.name.eq_ignore_ascii_case(&tail.name))));
+        if !clash {
+            self.tails.push(tail);
+        }
+        !clash
+    }
+
+    /// The plan's tail on `path`, if it has one.
+    pub fn tail_of(&self, path: &str) -> Option<&Tail> {
+        self.tails
+            .iter()
+            .find(|tail| tail.path.eq_ignore_ascii_case(path))
+    }
+
+    /// Whether the plan must be in place before the game is played: it has
+    /// a tail (see the module's text).
+    pub fn required(&self) -> bool {
+        !self.tails.is_empty()
     }
 
     /// Records `region` in the place of the one of the same place (another
@@ -259,8 +374,20 @@ impl Plan {
             .retain(|other| !other.path.eq_ignore_ascii_case(path));
     }
 
+    /// Records `tail` in the place of the one of its file (one tail per
+    /// file).
+    pub fn record_tail(&mut self, tail: &Tail) {
+        self.tails
+            .retain(|other| !other.path.eq_ignore_ascii_case(&tail.path));
+        self.tails.push(tail.clone());
+    }
+
+    pub fn forget_tail(&mut self, tail: &Tail) {
+        self.tails.retain(|other| !other.same_place(tail));
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.regions.is_empty() && self.files.is_empty()
+        self.regions.is_empty() && self.files.is_empty() && self.tails.is_empty()
     }
 }
 
@@ -270,12 +397,13 @@ fn parse(text: &[u8], magic: &[u8], unique_names: bool) -> Result<Plan, PlanErro
     if name != magic {
         return Err(PlanError::NotPlan);
     }
-    match number(version) {
-        Some(1) => {}
-        Some(version) if version > 1 => return Err(PlanError::NewerFormat),
+    let version = match number(version) {
+        Some(version @ (1 | 2)) => version,
+        Some(version) if version > 2 => return Err(PlanError::NewerFormat),
         _ => return Err(PlanError::NotPlan),
-    }
+    };
     let mut plan = Plan::default();
+    let mut tail_lines = Vec::new();
     for (index, line) in lines.enumerate() {
         let at = index + 2;
         let added = match word(line) {
@@ -283,22 +411,52 @@ fn parse(text: &[u8], magic: &[u8], unique_names: bool) -> Result<Plan, PlanErro
                 let region = region(values).ok_or(PlanError::BadLine(at))?;
                 plan.add_region(region, unique_names)
             }
+            // An updater of format 1 would skip the line and write the
+            // region that needs it: a tail comes in format 2 only.
+            (b"tail", _) if version < 2 => return Err(PlanError::BadLine(at)),
+            (b"tail", values) => {
+                let tail = tail(values).ok_or(PlanError::BadLine(at))?;
+                tail_lines.push(at);
+                plan.add_tail(tail, unique_names)
+            }
             (b"file", values) => {
                 let file = whole_file(values).ok_or(PlanError::BadLine(at))?;
                 plan.add_file(file)
             }
             // What follows the end is not the plan's.
-            (b"end", _) => return Ok(plan),
+            (b"end", _) => {
+                if unique_names {
+                    check_tails(&plan, &tail_lines)?;
+                }
+                return Ok(plan);
+            }
             _ => true,
         };
         if !added {
             return Err(PlanError::Conflict(at));
         }
-        if plan.regions.len() + plan.files.len() > MAX_ENTRIES {
+        if plan.regions.len() + plan.files.len() + plan.tails.len() > MAX_ENTRIES {
             return Err(PlanError::TooMany);
         }
     }
     Err(PlanError::CutShort)
+}
+
+/// A plan's tail must name a region of the plan, of its build; every region
+/// of its file must be of that build. (A record may hold a tail whose
+/// region was put back already.)
+fn check_tails(plan: &Plan, tail_lines: &[usize]) -> Result<(), PlanError> {
+    for (tail, &at) in plan.tails.iter().zip(tail_lines) {
+        if !plan.regions.iter().any(|region| tail.goes_with(region)) {
+            return Err(PlanError::BadLine(at));
+        }
+        if plan.regions.iter().any(|region| {
+            region.path.eq_ignore_ascii_case(&tail.path) && region.file_size != tail.file_size
+        }) {
+            return Err(PlanError::Conflict(at));
+        }
+    }
+    Ok(())
 }
 
 /// Reads the plan.
@@ -315,7 +473,11 @@ pub fn parse_record(text: &[u8]) -> Option<Plan> {
 fn write(plan: &Plan, magic: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(magic);
-    out.extend_from_slice(b" 1\r\n");
+    out.extend_from_slice(if plan.tails.is_empty() {
+        b" 1\r\n"
+    } else {
+        b" 2\r\n"
+    });
     for region in &plan.regions {
         out.extend_from_slice(b"region ");
         out.extend_from_slice(region.path.as_bytes());
@@ -329,6 +491,21 @@ fn write(plan: &Plan, magic: &[u8]) -> Vec<u8> {
         }
         out.push(b' ');
         out.extend_from_slice(region.name.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    for tail in &plan.tails {
+        out.extend_from_slice(b"tail ");
+        out.extend_from_slice(tail.path.as_bytes());
+        for value in [tail.file_size, tail.new_size] {
+            out.push(b' ');
+            push_number(&mut out, value);
+        }
+        out.push(b' ');
+        out.extend_from_slice(&to_hex(&tail.sha256));
+        for text in [&tail.name, &tail.region] {
+            out.push(b' ');
+            out.extend_from_slice(text.as_bytes());
+        }
         out.extend_from_slice(b"\r\n");
     }
     for file in &plan.files {
@@ -361,6 +538,7 @@ pub fn names_overlay_file<'a>(plan: &'a Plan, overlay: &[&str]) -> Option<&'a st
     plan.regions
         .iter()
         .map(|region| region.path.as_str())
+        .chain(plan.tails.iter().map(|tail| tail.path.as_str()))
         .chain(plan.files.iter().map(|file| file.path.as_str()))
         .find(|path| overlay.iter().any(|name| name.eq_ignore_ascii_case(path)))
 }
@@ -459,6 +637,123 @@ pub fn blocked(region: &Region, record: &Plan) -> bool {
         .any(|other| !other.same_place(region) && other.overlaps(region))
 }
 
+/// The sizes `region`'s file may have and still be of its build: the size
+/// as shipped, and that size grown by a tail of the plan or the record.
+pub fn file_sizes(region: &Region, plan: &Plan, record: &Plan) -> Vec<u64> {
+    let mut sizes = alloc::vec![region.file_size];
+    for tail in plan.tails.iter().chain(record.tails.iter()) {
+        if tail.path.eq_ignore_ascii_case(&region.path)
+            && tail.file_size == region.file_size
+            && !sizes.contains(&tail.new_size)
+        {
+            sizes.push(tail.new_size);
+        }
+    }
+    sizes
+}
+
+/// What a look at a tail's file found.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TailLook {
+    Missing,
+    Unreadable,
+    /// Shorter than as shipped: another build.
+    Smaller(u64),
+    /// The size as shipped: nothing appended.
+    Original,
+    /// Longer than as shipped. `tail`: the SHA-256 of the bytes past the
+    /// size as shipped, when the file has the tail's new size.
+    Grown {
+        size: u64,
+        tail: Option<[u8; 32]>,
+    },
+}
+
+/// What is to be done with a tail of the plan.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TailTodo {
+    /// Nothing can be done: the file is missing, unreadable, of another
+    /// build, or grown by something that is not this step's.
+    Skip,
+    /// The tail is in place.
+    Done,
+    /// The tail is to be appended. `cut_first`: the file is longer than as
+    /// shipped by what this step appended before (a tail cut short, an
+    /// older tail): it is cut to its size as shipped first.
+    Append { cut_first: bool },
+}
+
+/// `recorded`: the record has a tail of this file and build
+/// ([`tail_recorded`]), so what is past the size as shipped is this step's.
+pub fn tail_todo(tail: &Tail, look: TailLook, recorded: bool) -> TailTodo {
+    match look {
+        TailLook::Missing | TailLook::Unreadable | TailLook::Smaller(_) => TailTodo::Skip,
+        TailLook::Original => TailTodo::Append { cut_first: false },
+        TailLook::Grown {
+            size,
+            tail: Some(hash),
+        } if size == tail.new_size && hash == tail.sha256 => TailTodo::Done,
+        TailLook::Grown { .. } if recorded => TailTodo::Append { cut_first: true },
+        TailLook::Grown { .. } => TailTodo::Skip,
+    }
+}
+
+/// Whether the record has a tail of `tail`'s file and build.
+pub fn tail_recorded(tail: &Tail, record: &Plan) -> bool {
+    record.tails.iter().any(|other| {
+        other.path.eq_ignore_ascii_case(&tail.path) && other.file_size == tail.file_size
+    })
+}
+
+/// What to do with a recorded tail the plan no longer has.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TailUndo {
+    /// Nothing to cut (the file is as shipped, gone, or of another build):
+    /// the record of it goes.
+    Forget,
+    /// The file is cut to its size as shipped.
+    Cut,
+    /// The file cannot be read now: the record stays.
+    Wait,
+}
+
+pub fn tail_undo(look: TailLook) -> TailUndo {
+    match look {
+        TailLook::Missing | TailLook::Smaller(_) | TailLook::Original => TailUndo::Forget,
+        TailLook::Unreadable => TailUndo::Wait,
+        TailLook::Grown { .. } => TailUndo::Cut,
+    }
+}
+
+/// The recorded tails the plan no longer has.
+pub fn tails_leaving(plan: &Plan, record: &Plan) -> Vec<Tail> {
+    record
+        .tails
+        .iter()
+        .filter(|recorded| {
+            !plan
+                .tails
+                .iter()
+                .any(|planned| planned.same_place(recorded))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Whether a recorded tail that leaves must wait: the region written with
+/// it leaves too and is not put back yet (its table would point past the
+/// file's end). A region the plan keeps is written again after the plan's
+/// own tail.
+pub fn tail_waits(tail: &Tail, plan: &Plan, record: &Plan) -> bool {
+    record.regions.iter().any(|region| {
+        tail.goes_with(region)
+            && !plan
+                .regions
+                .iter()
+                .any(|planned| planned.same_place(region))
+    })
+}
+
 /// What a look at a whole file found.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum FileLook {
@@ -547,7 +842,262 @@ mod tests {
                 size: 123_456_789,
                 path: "game/resources/maps/new_map.db".into(),
             }],
+            tails: Vec::new(),
         }
+    }
+
+    /// The plan of a release that grows resources.db: its file table (the
+    /// head) is written with the tail of new entries.
+    fn grown() -> Plan {
+        let mut plan = plan();
+        plan.regions.insert(
+            0,
+            Region {
+                path: "game/resources.db".into(),
+                file_size: 6_285_533_906,
+                offset: 0,
+                size: 10_618_257,
+                original: digest(b"table original"),
+                target: digest(b"table target"),
+                name: "file_table".into(),
+            },
+        );
+        plan.tails.push(Tail {
+            path: "game/resources.db".into(),
+            file_size: 6_285_533_906,
+            new_size: 6_285_533_906 + 43_000_000,
+            sha256: digest(b"tail"),
+            name: "new_items".into(),
+            region: "file_table".into(),
+        });
+        plan
+    }
+
+    #[test]
+    fn a_plan_with_a_tail_is_of_format_2() {
+        let plan = grown();
+        let text = write_plan(&plan);
+        assert!(text.starts_with(b"skhid-resources 2\r\n"));
+        let line = format!(
+            "tail game/resources.db 6285533906 6328533906 {} new_items file_table\r\n",
+            hex(b"tail")
+        );
+        assert!(String::from_utf8(text.clone()).unwrap().contains(&line));
+        assert_eq!(parse_plan(&text), Ok(plan.clone()));
+        assert!(plan.required());
+        assert!(!self::plan().required());
+        // Without a tail, format 1 still: the updaters out there read it.
+        assert!(write_plan(&self::plan()).starts_with(b"skhid-resources 1\r\n"));
+        // The record holds tails the same way; one whose region was put
+        // back already is fine there.
+        let mut record = plan.clone();
+        record.regions.remove(0);
+        assert!(write_record(&record).starts_with(b"skhid-resources-state 2\r\n"));
+        assert_eq!(parse_record(&write_record(&record)), Some(record.clone()));
+        // A plan of format 1 with a tail line: an old updater would skip
+        // the line and write the table alone. Refused.
+        let old = String::from_utf8(text)
+            .unwrap()
+            .replace("skhid-resources 2", "skhid-resources 1");
+        assert_eq!(parse_plan(old.as_bytes()), Err(PlanError::BadLine(5)));
+        // Format 3 is newer.
+        assert_eq!(
+            parse_plan(b"skhid-resources 3\nend\n"),
+            Err(PlanError::NewerFormat)
+        );
+        // Cut short anywhere: nothing.
+        let text = write_plan(&plan);
+        for cut in 0..text.len() - 4 {
+            assert!(parse_plan(&text[..cut]).is_err(), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn a_tail_must_come_with_its_region() {
+        let text = String::from_utf8(write_plan(&grown())).unwrap();
+        for (from, to, error) in [
+            // No region of that name, or of another file.
+            (
+                " new_items file_table",
+                " new_items lobby_table",
+                PlanError::BadLine(5),
+            ),
+            (
+                "tail game/resources.db",
+                "tail game/resources2.db",
+                PlanError::BadLine(5),
+            ),
+            // Not longer than as shipped.
+            (
+                " 6285533906 6328533906 ",
+                " 6285533906 6285533906 ",
+                PlanError::BadLine(5),
+            ),
+            (
+                " 6285533906 6328533906 ",
+                " 6285533906 5 ",
+                PlanError::BadLine(5),
+            ),
+            // Another build than its region's (and the other regions').
+            (
+                "tail game/resources.db 6285533906",
+                "tail game/resources.db 6285533907",
+                PlanError::BadLine(5),
+            ),
+            // A name of a region.
+            (
+                " new_items file_table",
+                " lobby_menu file_table",
+                PlanError::Conflict(5),
+            ),
+            (
+                " new_items file_table",
+                " new_items lobby/table",
+                PlanError::BadLine(5),
+            ),
+        ] {
+            assert!(text.contains(from), "{from}");
+            assert_eq!(
+                parse_plan(text.replacen(from, to, 1).as_bytes()),
+                Err(error),
+                "{from} -> {to}"
+            );
+        }
+        // Another build's region on the tail's file.
+        let mut mixed = grown();
+        mixed.regions[2].file_size = 70_000_000;
+        assert_eq!(parse_plan(&write_plan(&mixed)), Err(PlanError::Conflict(5)));
+        // Two tails on one file; a tail on a whole file of the plan.
+        let mut two = grown();
+        let mut other = two.tails[0].clone();
+        other.name = "more".into();
+        two.tails.push(other);
+        assert_eq!(parse_plan(&write_plan(&two)), Err(PlanError::Conflict(6)));
+        let mut whole = grown();
+        whole.tails[0].path = whole.files[0].path.clone();
+        whole.regions.clear();
+        assert_eq!(parse_plan(&write_plan(&whole)), Err(PlanError::Conflict(3)));
+        // The overlay may not have the tail's file either.
+        let mut alone = grown();
+        alone.regions.clear();
+        alone.files.clear();
+        assert_eq!(
+            names_overlay_file(&alone, &["game/RESOURCES.db"]),
+            Some("game/resources.db")
+        );
+    }
+
+    #[test]
+    fn a_grown_file_is_still_of_its_build() {
+        let plan = grown();
+        let lobby = &plan.regions[1];
+        let empty = Plan::default();
+        assert_eq!(
+            file_sizes(lobby, &self::plan(), &empty),
+            vec![6_285_533_906]
+        );
+        assert_eq!(
+            file_sizes(lobby, &plan, &empty),
+            vec![6_285_533_906, 6_328_533_906]
+        );
+        // An older tail of the record counts as well, once.
+        let mut record = Plan::default();
+        let mut older = plan.tails[0].clone();
+        older.new_size += 5;
+        older.sha256 = digest(b"older tail");
+        record.record_tail(&older);
+        record.record_tail(&plan.tails[0]);
+        assert_eq!(record.tails, vec![plan.tails[0].clone()]);
+        record.record_tail(&older);
+        assert_eq!(
+            file_sizes(lobby, &plan, &record),
+            vec![6_285_533_906, 6_328_533_906, 6_328_533_911]
+        );
+        // Another file's or another build's tail does not.
+        let mut elsewhere = plan.tails[0].clone();
+        elsewhere.path = "game/other.db".into();
+        let mut build = plan.tails[0].clone();
+        build.file_size -= 1;
+        let others = Plan {
+            tails: vec![elsewhere, build],
+            ..Plan::default()
+        };
+        assert_eq!(file_sizes(lobby, &others, &empty), vec![6_285_533_906]);
+    }
+
+    #[test]
+    fn what_a_file_is_decides_what_is_done_with_its_tail() {
+        let plan = grown();
+        let tail = &plan.tails[0];
+        let grown_by = |size: u64, hash: Option<[u8; 32]>| TailLook::Grown { size, tail: hash };
+        for recorded in [false, true] {
+            for look in [
+                TailLook::Missing,
+                TailLook::Unreadable,
+                TailLook::Smaller(5),
+            ] {
+                assert_eq!(tail_todo(tail, look, recorded), TailTodo::Skip);
+            }
+            assert_eq!(
+                tail_todo(tail, TailLook::Original, recorded),
+                TailTodo::Append { cut_first: false }
+            );
+            assert_eq!(
+                tail_todo(tail, grown_by(tail.new_size, Some(tail.sha256)), recorded),
+                TailTodo::Done
+            );
+            // Cut short, another tail of this step, or more than it wrote.
+            for look in [
+                grown_by(tail.new_size - 1, None),
+                grown_by(tail.new_size, Some(digest(b"x"))),
+                grown_by(tail.new_size + 1, None),
+            ] {
+                assert_eq!(
+                    tail_todo(tail, look, recorded),
+                    if recorded {
+                        TailTodo::Append { cut_first: true }
+                    } else {
+                        TailTodo::Skip
+                    }
+                );
+            }
+        }
+        let mut record = Plan::default();
+        assert!(!tail_recorded(tail, &record));
+        let mut older = tail.clone();
+        older.sha256 = digest(b"older");
+        record.record_tail(&older);
+        assert!(tail_recorded(tail, &record));
+        // A tail that leaves.
+        assert_eq!(tail_undo(TailLook::Original), TailUndo::Forget);
+        assert_eq!(tail_undo(TailLook::Missing), TailUndo::Forget);
+        assert_eq!(tail_undo(TailLook::Smaller(1)), TailUndo::Forget);
+        assert_eq!(tail_undo(TailLook::Unreadable), TailUndo::Wait);
+        assert_eq!(tail_undo(grown_by(7, None)), TailUndo::Cut);
+        assert_eq!(tail.size(), 43_000_000);
+    }
+
+    #[test]
+    fn a_tail_leaves_after_its_region() {
+        let plan = grown();
+        let mut record = plan.clone();
+        assert_eq!(tails_leaving(&plan, &record), vec![]);
+        // A release without the new items: the table goes back first.
+        let without = self::plan();
+        assert_eq!(tails_leaving(&without, &record), plan.tails);
+        assert!(tail_waits(&plan.tails[0], &without, &record));
+        record.forget_region(&plan.regions[0]);
+        assert!(!tail_waits(&plan.tails[0], &without, &record));
+        // A release with other new items: the old tail is cut, the new one
+        // appended, then the table written over the old target.
+        let mut next = grown();
+        next.tails[0].sha256 = digest(b"next tail");
+        next.tails[0].new_size += 1000;
+        next.regions[0].target = digest(b"next table");
+        let record = plan.clone();
+        assert_eq!(tails_leaving(&next, &record), plan.tails);
+        assert!(!tail_waits(&plan.tails[0], &next, &record));
+        assert!(record.tails[0].goes_with(&next.regions[0]));
     }
 
     #[test]
@@ -623,7 +1173,7 @@ mod tests {
             Err(PlanError::NotPlan)
         );
         assert_eq!(
-            parse_plan(b"skhid-resources 2\nsomething new\n"),
+            parse_plan(b"skhid-resources 3\nsomething new\n"),
             Err(PlanError::NewerFormat)
         );
     }

@@ -1,0 +1,23 @@
+# One workspace for the updater and its logic: Cargo names a member by its
+# place in the workspace, a path dependency outside it by its absolute path,
+# and that name reaches the exe's symbols. So the exe is the same file
+# whichever folder it is built in (../check-reproducible.sh). The tests'
+# stand-in program builds on its own.
+[workspace]
+members = ["exe", "logic"]
+exclude = ["tests/fake_exe"]
+resolver = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "s"
+debug = 2
+strip = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = "s"

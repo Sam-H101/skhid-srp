@@ -87,7 +87,9 @@ English, Russian, Ukrainian, German, Polish; English without the option):
 
 Use the 0.26g player overlay, or build the DLL for manual installation. Keep a
 backup of the game's original `bugtrap.dll` and replace it with the built DLL
-under that filename. Keep the matching `BugTrap.pdb` locally for debugging.
+under that filename. The DLL is linked without a PDB, so that every build of
+the same source is the same file (see Build); a crash inside BugTrap itself is
+read from its addresses.
 An EXE rebuild is unnecessary. This build
 supports the native ANSI Win32 interface; x64 and BugTrapN/managed UI are outside
 its scope. Native Windows testing is still outstanding.
@@ -153,7 +155,15 @@ cd client/bugtrap
 ```
 
 This uses `-Z build-std=core` and the `i686-pc-windows-msvc` target. Output:
-`target/i686-pc-windows-msvc/release/BugTrap.dll` and `BugTrap.pdb`.
+`target/i686-pc-windows-msvc/release/BugTrap.dll`.
+
+The build is reproducible: the same source and toolchain give the same DLL,
+byte for byte, in any folder. `rust-lld` gets `/Brepro` (the PE stamp is a
+hash of the content, not the time) and `/DEBUG:NONE` (no PDB: a PDB records
+the linker's command line, which for a DLL names a temporary folder of a
+random name, and the build folder, and the DLL's stamp and PDB identity would
+follow them). `../check-reproducible.sh` builds BugTrap and the updater twice,
+in two folders, and compares.
 It has no Rust standard-library runtime or C runtime DLL dependency. Unsafe code
 is confined to the native ABI, Win32 calls, fixed crash state and compiler helpers;
 Rust cannot make an already-corrupted game's memory safe.
@@ -203,7 +213,7 @@ The harness temporarily replaces BugTrap and adds a D3D11 forwarding test DLL.
 After the game window appears and 15 seconds elapse, it triggers a real null write
 inside the client, checks the dialog, closes it and parses the persistent dump.
 It validates the original exception/register context, fault module, game module
-and Rust PDB identity. It restores the original BugTrap and removes both test
+and that BugTrap is in the module list. It restores the original BugTrap and removes both test
 DLLs in `finally`, checks the EXE and earlier dump hashes, and keeps evidence in
 `--output`. Its server address is loopback. Do not use this against a running
 play session. The test does not change host ptrace policy.

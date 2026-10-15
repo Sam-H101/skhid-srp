@@ -4,9 +4,14 @@
 //! and those an older plan changed and this one no longer names are given
 //! their original bytes back. `client/updater/README.md`, "Resources".
 //!
-//! Best effort: whatever fails here is logged and tried again at the next
-//! run. It never fails the update, never keeps PLAY off, and never touches
-//! the overlay's files or its state.
+//! Best effort for a plan without a tail: whatever fails here is logged and
+//! tried again at the next run; it never fails the update and never keeps
+//! PLAY off. A plan with a tail (it grows the game's resources.db) is
+//! *required*: the step ends with the file checked as a whole (its size,
+//! its tail, every region of it), and anything else, a failure, a game
+//! that runs, a file of another build, keeps PLAY off with words that say
+//! what to do ([`Outcome::Blocked`]); the next start repairs it. It never
+//! touches the overlay's files or its state.
 //!
 //! For one region, in order:
 //!
@@ -31,6 +36,22 @@
 //!
 //! A region of the record the plan no longer has gets its original back the
 //! same way, before the plan's own regions are written.
+//!
+//! A tail, after the regions that leave and the tails that leave (cut to
+//! the size as shipped once the region written with them is put back):
+//!
+//! 1. The file's size and the bytes past the size as shipped tell what it
+//!    holds (`updater_logic::resources::tail_todo`).
+//! 2. The disk must have room for the blob and the tail, the blob is
+//!    fetched as for a region, and the file opened by this program alone.
+//! 3. The region written with it (the file's table) is copied out first
+//!    when it holds its original.
+//! 4. The tail is recorded and journalled, then appended (what an earlier
+//!    append left is cut off first), flushed, and read back.
+//! 5. If that fails, the file is cut to its size as shipped again.
+//!
+//! Its region waits until the tail is in place; if that region cannot be
+//! written, its original is put back and the tail cut off.
 
 use alloc::format;
 use alloc::string::String;
@@ -39,9 +60,10 @@ use alloc::vec::Vec;
 use updater_logic::manifest::Installed;
 use updater_logic::pipe::{ToLauncher, state, step};
 use updater_logic::resources::{
-    FileLook, FileUndo, Look, PLAN_NAME, Plan, PlanError, Region, Todo, Undo, WholeFile, blocked,
-    file_done, file_undo, files_leaving, leaving, names_overlay_file, parse_plan, parse_record,
-    todo, undo, write_record,
+    FileLook, FileUndo, Look, PLAN_NAME, Plan, PlanError, Region, Tail, TailLook, TailTodo,
+    TailUndo, Todo, Undo, WholeFile, blocked, file_done, file_sizes, file_undo, files_leaving,
+    leaving, names_overlay_file, parse_plan, parse_record, tail_recorded, tail_todo, tail_undo,
+    tail_waits, tails_leaving, todo, undo, write_record,
 };
 use updater_logic::sha256::{Sha256, to_hex};
 use updater_logic::url::Url;
@@ -59,6 +81,11 @@ const RECORD_FILE: &str = "updater_skhid.resources.state";
 const JOURNAL_FILE: &str = "updater_skhid.resources.journal";
 const CACHE_DIR: &str = "updater_skhid.cache";
 const BACKUP_DIR: &str = "updater_skhid.backup";
+/// What the last run of a required plan found: `ready` or `blocked <why>`,
+/// for whoever looks into the folder (support, a crash report).
+const STATUS_FILE: &str = "updater_skhid.resources.status";
+/// Room left on the disk after a tail is appended.
+const DISK_MARGIN: u64 = 64 << 20;
 /// A blob or a copy while it is written, before it is checked.
 const PART: &str = ".part";
 /// How often a blob is asked for in one run.
@@ -125,8 +152,9 @@ fn checked(path: &str, size: u64, sha256: &[u8; 32]) -> Option<File> {
     (file.size().ok()? == size && hash_range(&file, 0, size).ok()? == *sha256).then_some(file)
 }
 
-/// What the bytes of `region` are now. The file may be open in the game.
-fn look(place: &str, region: &Region) -> Look {
+/// What the bytes of `region` are now, its file of one of `sizes` (the size
+/// as shipped, or grown by a tail). The file may be open in the game.
+fn look(place: &str, region: &Region, sizes: &[u64]) -> Look {
     let file = match File::shared(place) {
         Ok(file) => file,
         Err(code) if win::is_missing(code) => return Look::Missing,
@@ -139,7 +167,7 @@ fn look(place: &str, region: &Region) -> Look {
         }
     };
     match file.size() {
-        Ok(size) if size != region.file_size => return Look::OtherSize(size),
+        Ok(size) if !sizes.contains(&size) => return Look::OtherSize(size),
         Ok(_) => {}
         Err(_) => return Look::Unreadable,
     }
@@ -163,6 +191,47 @@ fn look(place: &str, region: &Region) -> Look {
     }
 }
 
+/// What a tail's file is now. The bytes past the size as shipped are hashed
+/// only when the file has the tail's new size.
+fn tail_look(place: &str, tail: &Tail) -> TailLook {
+    let file = match File::shared(place) {
+        Ok(file) => file,
+        Err(code) if win::is_missing(code) => return TailLook::Missing,
+        Err(code) => {
+            log!(
+                "resources: {place} cannot be read ({})",
+                win::error_text(code)
+            );
+            return TailLook::Unreadable;
+        }
+    };
+    let Ok(size) = file.size() else {
+        return TailLook::Unreadable;
+    };
+    if size < tail.file_size {
+        return TailLook::Smaller(size);
+    }
+    if size == tail.file_size {
+        return TailLook::Original;
+    }
+    if size != tail.new_size {
+        return TailLook::Grown { size, tail: None };
+    }
+    match hash_range(&file, tail.file_size, tail.size()) {
+        Ok(hash) => TailLook::Grown {
+            size,
+            tail: Some(hash),
+        },
+        Err(code) => {
+            log!(
+                "resources: {place} cannot be read ({})",
+                win::error_text(code)
+            );
+            TailLook::Unreadable
+        }
+    }
+}
+
 fn file_look(place: &str) -> FileLook {
     match win::hash_file(place) {
         Ok((size, hash)) => FileLook::Found(size, hash),
@@ -181,6 +250,35 @@ enum Fail {
     Other,
 }
 
+/// Why a required plan is not in place: the first that was found decides
+/// what the player is told.
+#[derive(Clone)]
+enum Problem {
+    GameRunning,
+    DiskFull {
+        folder: String,
+        needed: u64,
+        free: u64,
+    },
+    OtherBuild {
+        path: String,
+        size: u64,
+        expected: u64,
+    },
+    /// A blob was not here and the server could not be asked.
+    Offline,
+}
+
+/// How the step ended.
+pub enum Outcome {
+    /// Done, or not required: the game may be played.
+    Ready,
+    /// The launcher asked to stop.
+    Stopped,
+    /// A required plan is not in place: PLAY stays off, with these words.
+    Blocked(String),
+}
+
 /// Where the launcher's window is in this step.
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Phase {
@@ -192,6 +290,7 @@ enum Phase {
 struct Step<'a> {
     session: &'a mut Session,
     layout: &'a Layout,
+    plan: &'a Plan,
     /// Where blobs are fetched; `None` when the server could not be asked
     /// this run (only what is kept here is used then).
     server: Option<&'a Url>,
@@ -202,6 +301,9 @@ struct Step<'a> {
     /// A file is held by another program: no region is touched any more.
     game_running: bool,
     stopped: bool,
+    /// The plan's tails in place (appended or found), by name.
+    tails_done: Vec<String>,
+    problem: Option<Problem>,
 }
 
 impl Step<'_> {
@@ -277,12 +379,36 @@ impl Step<'_> {
         }
     }
 
+    /// The first reason a required plan is not in place.
+    fn trouble(&mut self, problem: Problem) {
+        if self.problem.is_none() {
+            self.problem = Some(problem);
+        }
+    }
+
+    /// The sizes `region`'s file may have and still be of its build.
+    fn sizes(&self, region: &Region) -> Vec<u64> {
+        file_sizes(region, self.plan, &self.record)
+    }
+
     /// Notes that `region` is being written, on the disk, before the write.
     fn journal(&self, region: &Region) -> bool {
-        let text = write_record(&Plan {
+        self.note(Plan {
             regions: alloc::vec![region.clone()],
-            files: Vec::new(),
-        });
+            ..Plan::default()
+        })
+    }
+
+    /// Notes that `tail` is being appended.
+    fn journal_tail(&self, tail: &Tail) -> bool {
+        self.note(Plan {
+            tails: alloc::vec![tail.clone()],
+            ..Plan::default()
+        })
+    }
+
+    fn note(&self, what: Plan) -> bool {
+        let text = write_record(&what);
         match win::write_file(&self.beside(JOURNAL_FILE), &text) {
             Ok(()) => true,
             Err(code) => {
@@ -311,6 +437,7 @@ impl Step<'_> {
             log!(
                 "resources: {what}: its blob is not here and the server could not be asked: next time"
             );
+            self.trouble(Problem::Offline);
             return Err(Fail::Other);
         };
         let folder = self.beside(CACHE_DIR);
@@ -401,6 +528,7 @@ impl Step<'_> {
                      no region is changed now, next time"
                 );
                 self.game_running = true;
+                self.trouble(Problem::GameRunning);
                 Err(Fail::GameRunning)
             }
             Err(code) => {
@@ -542,7 +670,8 @@ impl Step<'_> {
     /// A region of the record the plan no longer has: its original back.
     fn remove(&mut self, region: &Region) {
         let place = self.layout.place(&region.path);
-        match undo(region, look(&place, region)) {
+        let sizes = self.sizes(region);
+        match undo(region, look(&place, region, &sizes)) {
             Undo::Forget => {
                 log!(
                     "resources: {} is no longer planned and holds no change",
@@ -590,17 +719,34 @@ impl Step<'_> {
     /// A region of the plan: its target.
     fn apply(&mut self, region: &Region, cut_short: bool) {
         let place = self.layout.place(&region.path);
-        let found = look(&place, region);
+        let sizes = self.sizes(region);
+        let found = look(&place, region, &sizes);
+        // The tail written with it (the region is the file's table).
+        let tail = self
+            .plan
+            .tails
+            .iter()
+            .find(|tail| tail.goes_with(region))
+            .cloned();
         let kept = matches!(found, Look::Bytes(hash) if hash == region.original)
             && self.backup_kept(region);
         match todo(region, found, kept) {
             Todo::Skip => match found {
                 Look::Missing => log!("resources: {}: {place} is not there: skipped", region.name),
-                Look::OtherSize(size) => log!(
-                    "resources: {}: {place} has {size} bytes, not {} (another build of the game): skipped",
-                    region.name,
-                    region.file_size
-                ),
+                Look::OtherSize(size) => {
+                    log!(
+                        "resources: {}: {place} has {size} bytes, not {} (another build of the game): skipped",
+                        region.name,
+                        region.file_size
+                    );
+                    if self.plan.tail_of(&region.path).is_some() {
+                        self.trouble(Problem::OtherBuild {
+                            path: region.path.clone(),
+                            size,
+                            expected: region.file_size,
+                        });
+                    }
+                }
                 _ => log!("resources: {}: skipped, next time", region.name),
             },
             Todo::Done => {
@@ -616,6 +762,18 @@ impl Step<'_> {
                 }
             }
             Todo::Write { backup, damaged } => {
+                // Every region of a file the plan grows waits for the tail:
+                // a run that cannot finish puts the file back as shipped.
+                if let Some(grows) = self.plan.tail_of(&region.path)
+                    && !self.tails_done.contains(&grows.name)
+                {
+                    log!(
+                        "resources: {} waits: its tail {} is not in place",
+                        region.name,
+                        grows.name
+                    );
+                    return;
+                }
                 if blocked(region, &self.record) {
                     log!(
                         "resources: {} waits: an older region over its bytes is not put back yet",
@@ -679,9 +837,282 @@ impl Step<'_> {
                         );
                         if self.put_back(&file, region) {
                             self.record.forget_region(region);
+                            // The file as shipped again: without its table
+                            // the tail is of no use.
+                            if let Some(tail) = &tail
+                                && self.save()
+                                && self.cut(&file, tail)
+                            {
+                                self.tails_done.retain(|name| *name != tail.name);
+                            }
                         }
                     }
                 }
+            }
+        }
+        self.save();
+    }
+
+    /// Cuts `tail`'s file to its size as shipped, and forgets the tail.
+    /// `false` when that failed (the record keeps it, for the next run).
+    fn cut(&mut self, file: &File, tail: &Tail) -> bool {
+        let result = file
+            .set_len(tail.file_size)
+            .and_then(|()| file.flush())
+            .and_then(|()| file.size());
+        match result {
+            Ok(size) if size == tail.file_size => {
+                log!(
+                    "resources: {}: cut off, {} is as shipped again",
+                    tail.name,
+                    tail.path
+                );
+                self.record.forget_tail(tail);
+                self.save();
+                true
+            }
+            Ok(size) => {
+                log!(
+                    "resources: {}: the file has {size} bytes after the cut: next time",
+                    tail.name
+                );
+                false
+            }
+            Err(code) => {
+                log!(
+                    "resources: {}: cannot be cut off ({}): next time",
+                    tail.name,
+                    win::error_text(code)
+                );
+                false
+            }
+        }
+    }
+
+    /// A tail of the record the plan no longer has: cut off, once the region
+    /// written with it is put back.
+    fn remove_tail(&mut self, tail: &Tail) {
+        if tail_waits(tail, self.plan, &self.record) {
+            log!(
+                "resources: {} waits: its region {} is not put back yet",
+                tail.name,
+                tail.region
+            );
+            return;
+        }
+        let place = self.layout.place(&tail.path);
+        match tail_undo(tail_look(&place, tail)) {
+            TailUndo::Forget => {
+                log!(
+                    "resources: {} is no longer planned and {} is as shipped",
+                    tail.name,
+                    tail.path
+                );
+                self.record.forget_tail(tail);
+            }
+            TailUndo::Wait => {}
+            TailUndo::Cut => {
+                let Ok(file) = self.open(&place) else {
+                    return;
+                };
+                log!(
+                    "resources: {} is no longer planned: it is cut off",
+                    tail.name
+                );
+                self.installing(&tail.name);
+                self.cut(&file, tail);
+            }
+        }
+        self.save();
+    }
+
+    /// A tail of the plan: appended to its file.
+    fn apply_tail(&mut self, tail: &Tail, cut_short: bool) {
+        let place = self.layout.place(&tail.path);
+        let found = tail_look(&place, tail);
+        let recorded = tail_recorded(tail, &self.record);
+        match tail_todo(tail, found, recorded) {
+            TailTodo::Skip => match found {
+                TailLook::Missing => log!("resources: {}: {place} is not there", tail.name),
+                TailLook::Unreadable => log!("resources: {}: skipped, next time", tail.name),
+                TailLook::Smaller(size) | TailLook::Grown { size, .. } => {
+                    log!(
+                        "resources: {}: {place} has {size} bytes, neither {} as shipped nor {} with the tail: \
+                             not the build this plan is for, or changed by another program; nothing is written",
+                        tail.name,
+                        tail.file_size,
+                        tail.new_size
+                    );
+                    self.trouble(Problem::OtherBuild {
+                        path: tail.path.clone(),
+                        size,
+                        expected: tail.file_size,
+                    });
+                }
+                TailLook::Original => {}
+            },
+            TailTodo::Done => {
+                self.tails_done.push(tail.name.clone());
+                if !self.record.tails.contains(tail) {
+                    self.record.record_tail(tail);
+                    log!("resources: {} is in place", tail.name);
+                }
+            }
+            TailTodo::Append { cut_first } => {
+                if cut_short {
+                    log!("resources: {}: an append of it was cut short", tail.name);
+                } else if cut_first {
+                    log!(
+                        "resources: {}: {place} holds an earlier tail: it is cut off first",
+                        tail.name
+                    );
+                }
+                // Nothing is fetched for a file the game holds.
+                match self.open(&place) {
+                    Ok(probe) => drop(probe),
+                    Err(_) => return,
+                }
+                let folder = win::split_path(&place).0;
+                let blob_here =
+                    win::file_size(&self.cached(&tail.sha256)).ok() == Some(tail.size());
+                let needed = tail.size() * if blob_here { 1 } else { 2 } + DISK_MARGIN;
+                if let Some(free) = win::free_space(folder)
+                    && free < needed
+                {
+                    log!(
+                        "resources: {}: {free} bytes free in {folder}, {needed} needed: not appended",
+                        tail.name
+                    );
+                    self.trouble(Problem::DiskFull {
+                        folder: folder.into(),
+                        needed,
+                        free,
+                    });
+                    return;
+                }
+                let Ok(blob) = self.fetch(&tail.sha256, tail.size(), &tail.name) else {
+                    return;
+                };
+                let Ok(file) = self.open(&place) else {
+                    return;
+                };
+                // The table's original is kept before the file changes.
+                if let Some(head) = self
+                    .plan
+                    .regions
+                    .iter()
+                    .find(|region| tail.goes_with(region))
+                    && hash_range(&file, head.offset, head.size).ok() == Some(head.original)
+                    && !self.backup_kept(head)
+                    && !self.make_backup(&file, head)
+                {
+                    return;
+                }
+                self.record.record_tail(tail);
+                if !self.save() || !self.journal_tail(tail) {
+                    log!("resources: {}: not appended", tail.name);
+                    return;
+                }
+                self.installing(&tail.name);
+                match self.append(&file, tail, &blob) {
+                    Ok(()) => {
+                        log!(
+                            "resources: {}: appended and checked ({} bytes)",
+                            tail.name,
+                            tail.new_size
+                        );
+                        self.end_journal();
+                        self.tails_done.push(tail.name.clone());
+                    }
+                    Err(message) => {
+                        log!(
+                            "resources: {}: the append failed ({message}): the file is cut back",
+                            tail.name
+                        );
+                        if self.cut(&file, tail) {
+                            self.end_journal();
+                        }
+                    }
+                }
+            }
+        }
+        self.save();
+    }
+
+    /// Appends the blob at `path` to `file` at the tail's place (the file
+    /// cut to its size as shipped first), flushes, and reads it back.
+    fn append(&mut self, file: &File, tail: &Tail, path: &str) -> Result<(), String> {
+        let Some(blob) = checked(path, tail.size(), &tail.sha256) else {
+            return Err(format!("{path} is not the blob it was"));
+        };
+        file.set_len(tail.file_size)
+            .map_err(|code| format!("cut: {}", win::error_text(code)))?;
+        let size = tail.size();
+        let session = &mut *self.session;
+        let copied = copy(&blob, 0, file, tail.file_size, size, &mut |done| {
+            let _ = session.progress(done, size);
+        })
+        .map_err(|code| format!("write: {}", win::error_text(code)))?;
+        if copied != tail.sha256 {
+            return Err("the blob changed while it was written".into());
+        }
+        file.flush()
+            .map_err(|code| format!("flush: {}", win::error_text(code)))?;
+        match file.size() {
+            Ok(now) if now == tail.new_size => {}
+            Ok(now) => return Err(format!("the file has {now} bytes, not {}", tail.new_size)),
+            Err(code) => return Err(format!("size: {}", win::error_text(code))),
+        }
+        match hash_range(file, tail.file_size, size) {
+            Ok(hash) if hash == tail.sha256 => Ok(()),
+            Ok(_) => Err("the tail read back with other bytes".into()),
+            Err(code) => Err(format!("read back: {}", win::error_text(code))),
+        }
+    }
+
+    /// A required plan that is not in place: each file it grows goes back
+    /// to its bytes as shipped (every region of the plan on it given its
+    /// original, the tail cut off once its table is back), so a game started
+    /// by other means than the launcher finds the file as it was. The tail's
+    /// blob stays in the cache for the next run.
+    fn roll_back(&mut self) {
+        for tail in &self.plan.tails {
+            let place = self.layout.place(&tail.path);
+            let changed: Vec<Region> = self
+                .plan
+                .regions
+                .iter()
+                .filter(|region| region.path.eq_ignore_ascii_case(&tail.path))
+                .filter(|region| {
+                    let sizes = self.sizes(region);
+                    matches!(look(&place, region, &sizes), Look::Bytes(hash) if hash != region.original)
+                })
+                .cloned()
+                .collect();
+            let grown = matches!(tail_look(&place, tail), TailLook::Grown { .. })
+                && tail_recorded(tail, &self.record);
+            if changed.is_empty() && !grown {
+                continue;
+            }
+            let Ok(file) = self.open(&place) else {
+                log!("resources: {}: cannot be put back now", tail.path);
+                continue;
+            };
+            log!(
+                "resources: {}: the plan is not in place: the file goes back to its bytes as shipped",
+                tail.path
+            );
+            let mut table_back = true;
+            for region in &changed {
+                if self.journal(region) && self.put_back(&file, region) {
+                    self.record.forget_region(region);
+                    self.save();
+                } else if tail.goes_with(region) {
+                    table_back = false;
+                }
+            }
+            if grown && table_back {
+                self.cut(&file, tail);
             }
         }
         self.save();
@@ -754,6 +1185,7 @@ impl Step<'_> {
             .iter()
             .map(|region| hex(&region.target))
             .chain(plan.files.iter().map(|file| hex(&file.sha256)))
+            .chain(plan.tails.iter().map(|tail| hex(&tail.sha256)))
             .collect();
         let wanted_backups: Vec<String> = plan
             .regions
@@ -783,6 +1215,96 @@ impl Step<'_> {
     }
 }
 
+/// The file of each tail of a required plan, checked as a whole: its size,
+/// its tail, and every region of the plan in it. `None` when all is in
+/// place; else what is not, for the log.
+fn verify(plan: &Plan, layout: &Layout) -> Option<String> {
+    for tail in &plan.tails {
+        let place = layout.place(&tail.path);
+        let file = match File::shared(&place) {
+            Ok(file) => file,
+            Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
+        };
+        match file.size() {
+            Ok(size) if size == tail.new_size => {}
+            Ok(size) => {
+                return Some(format!(
+                    "{place} has {size} bytes, not {} with {}",
+                    tail.new_size, tail.name
+                ));
+            }
+            Err(code) => return Some(format!("{place}: {}", win::error_text(code))),
+        }
+        if hash_range(&file, tail.file_size, tail.size()).ok() != Some(tail.sha256) {
+            return Some(format!("{place}: {} is not in place", tail.name));
+        }
+        for region in &plan.regions {
+            if region.path.eq_ignore_ascii_case(&tail.path)
+                && hash_range(&file, region.offset, region.size).ok() != Some(region.target)
+            {
+                return Some(format!("{place}: {} does not hold its target", region.name));
+            }
+        }
+    }
+    None
+}
+
+/// `updater_skhid.exe ready`, from play_skhid.bat and play_skhid.sh before
+/// they start the game without the launcher: nothing is fetched or written.
+/// `Err` (the words for the player) when the plan beside it is required
+/// (it grows the db) and the db is not checked whole; also when the plan
+/// cannot be read and may be one. No plan, or one without a tail: `Ok`.
+pub fn ready(layout: &Layout) -> Result<(), String> {
+    let plan_path = format!("{}\\{PLAN_FILE}", layout.exe_dir);
+    let bytes = match win::read_file(&plan_path, 1 << 20) {
+        Ok(bytes) => bytes,
+        Err(code) if win::is_missing(code) => return Ok(()),
+        Err(code) => {
+            log!(
+                "ready: {PLAN_FILE} cannot be read ({})",
+                win::error_text(code)
+            );
+            return Err(crate::text::resources_not_ready());
+        }
+    };
+    let plan = match parse_plan(&bytes) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return match unusable(&bytes, &format!("cannot be used ({error:?})")) {
+                Outcome::Blocked(_) => Err(crate::text::resources_not_ready()),
+                _ => Ok(()),
+            };
+        }
+    };
+    if !plan.required() {
+        return Ok(());
+    }
+    match verify(&plan, layout) {
+        None => {
+            log!("ready: the required plan is in place");
+            Ok(())
+        }
+        Some(why) => {
+            log!("ready: NOT READY: {why}: the game is not started");
+            Err(crate::text::resources_not_ready())
+        }
+    }
+}
+
+/// Says why the step could not use a plan. A plan of format 2 or newer may
+/// grow the file the game needs: the game then may not be played.
+fn unusable(plan_bytes: &[u8], why: &str) -> Outcome {
+    let required = !plan_bytes.starts_with(b"skhid-resources 1\r\n")
+        && !plan_bytes.starts_with(b"skhid-resources 1\n");
+    if required {
+        log!("resources: BLOCKED: {PLAN_FILE} {why}");
+        Outcome::Blocked(crate::text::resources_failed())
+    } else {
+        log!("resources: {PLAN_FILE} {why}: nothing is changed");
+        Outcome::Ready
+    }
+}
+
 /// The resource step. `server`: `None` when the server could not be asked
 /// this run. Reports to the launcher only when it changes something.
 pub fn run(
@@ -790,8 +1312,9 @@ pub fn run(
     layout: &Layout,
     server: Option<&Url>,
     installed: Option<&Installed>,
-) {
+) -> Outcome {
     let plan_path = format!("{}\\{PLAN_FILE}", layout.exe_dir);
+    let status_path = format!("{}\\{STATUS_FILE}", layout.exe_dir);
     let overlay: Vec<&str> = installed
         .iter()
         .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str()))
@@ -800,15 +1323,9 @@ pub fn run(
         Ok(bytes) => match parse_plan(&bytes) {
             Ok(plan) => plan,
             Err(PlanError::NewerFormat) => {
-                log!(
-                    "resources: {PLAN_FILE} is of a newer format than this updater reads: nothing is changed"
-                );
-                return;
+                return unusable(&bytes, "is of a newer format than this updater reads");
             }
-            Err(error) => {
-                log!("resources: {PLAN_FILE} cannot be used ({error:?}): nothing is changed");
-                return;
-            }
+            Err(error) => return unusable(&bytes, &format!("cannot be used ({error:?})")),
         },
         // The overlay has none: whatever an older plan changed goes back.
         Err(code)
@@ -826,12 +1343,20 @@ pub fn run(
                 "resources: {PLAN_FILE} cannot be read ({}): nothing is changed",
                 win::error_text(code)
             );
-            return;
+            return Outcome::Ready;
         }
     };
     if let Some(name) = names_overlay_file(&plan, &overlay) {
         log!("resources: {PLAN_FILE} names {name}, a file of the overlay: nothing is changed");
-        return;
+        return if plan.required() {
+            log!("resources: BLOCKED: the plan is required");
+            Outcome::Blocked(crate::text::resources_failed())
+        } else {
+            Outcome::Ready
+        };
+    }
+    if !plan.required() {
+        let _ = win::delete(&status_path);
     }
     let record_path = format!("{}\\{RECORD_FILE}", layout.exe_dir);
     let record = match win::read_file(&record_path, 1 << 20) {
@@ -848,28 +1373,36 @@ pub fn run(
     let nothing_kept = !win::is_folder(&format!("{}\\{CACHE_DIR}", layout.exe_dir))
         && !win::is_folder(&format!("{}\\{BACKUP_DIR}", layout.exe_dir));
     if plan.is_empty() && record.is_empty() && journal.is_none() && nothing_kept {
-        return;
+        return Outcome::Ready;
     }
     log!(
-        "resources: the plan has {} region(s) and {} file(s); {} region(s) and {} file(s) recorded",
+        "resources: the plan has {} region(s), {} tail(s) and {} file(s){}; {} region(s), {} tail(s) and {} file(s) recorded",
         plan.regions.len(),
+        plan.tails.len(),
         plan.files.len(),
+        if plan.required() { " (required)" } else { "" },
         record.regions.len(),
+        record.tails.len(),
         record.files.len()
     );
     let mut step = Step {
         session,
         layout,
+        plan: &plan,
         server,
         saved: record.clone(),
         record,
         phase: Phase::Quiet,
         game_running: false,
         stopped: false,
+        tails_done: Vec::new(),
+        problem: None,
     };
-    // A write that was cut short: its region is recorded (it was before the
-    // write began), and what it holds is told by its checksum below.
+    // A write that was cut short: its region (or tail) is recorded (it was
+    // before the write began), and what it holds is told by its checksum
+    // below.
     let mut cut_short: Vec<Region> = Vec::new();
+    let mut tails_cut_short: Vec<Tail> = Vec::new();
     if let Some(journal) = journal {
         for region in &journal.regions {
             log!("resources: a write of {} was cut short", region.name);
@@ -881,16 +1414,36 @@ pub fn run(
             }
             cut_short.push(region.clone());
         }
+        for tail in &journal.tails {
+            log!("resources: an append of {} was cut short", tail.name);
+            step.record.record_tail(tail);
+            tails_cut_short.push(tail.clone());
+        }
         if step.save() {
             step.end_journal();
         }
     }
 
+    // The table goes back before the tail it points into is cut off; a new
+    // tail is in place before the table that points into it is written.
     for region in leaving(&plan, &step.record) {
         if step.game_running || step.stopped || !step.session.pump() {
             break;
         }
         step.remove(&region);
+    }
+    for tail in tails_leaving(&plan, &step.record) {
+        if step.game_running || step.stopped || !step.session.pump() {
+            break;
+        }
+        step.remove_tail(&tail);
+    }
+    for tail in &plan.tails {
+        if step.game_running || step.stopped || !step.session.pump() {
+            break;
+        }
+        let cut = tails_cut_short.iter().any(|other| other.same_place(tail));
+        step.apply_tail(tail, cut);
     }
     for region in &plan.regions {
         if step.game_running || step.stopped || !step.session.pump() {
@@ -914,7 +1467,48 @@ pub fn run(
     step.save();
     if step.stopped {
         log!("resources: stopped; the rest next time");
-        return;
+        return Outcome::Stopped;
     }
+    let outcome = if plan.required() {
+        match verify(&plan, layout) {
+            None => {
+                log!("resources: the required plan is in place, checked as a whole");
+                for tail in &plan.tails {
+                    let _ = win::delete(&step.cached(&tail.sha256));
+                }
+                let _ = win::write_file(&status_path, b"ready\r\n");
+                Outcome::Ready
+            }
+            Some(why) => {
+                if !step.game_running {
+                    step.roll_back();
+                }
+                let problem = step.problem.clone();
+                let message = match problem {
+                    Some(Problem::GameRunning) => crate::text::resources_game_running(),
+                    Some(Problem::DiskFull {
+                        folder,
+                        needed,
+                        free,
+                    }) => crate::text::resources_disk_full(&folder, needed, free),
+                    Some(Problem::OtherBuild {
+                        path,
+                        size,
+                        expected,
+                    }) => {
+                        crate::text::resources_other_build(&path.replace('/', "\\"), size, expected)
+                    }
+                    Some(Problem::Offline) => crate::text::resources_offline(),
+                    None => crate::text::resources_failed(),
+                };
+                log!("resources: BLOCKED: {why}. The player is told: {message}");
+                let _ = win::write_file(&status_path, format!("blocked {why}\r\n").as_bytes());
+                Outcome::Blocked(message)
+            }
+        }
+    } else {
+        Outcome::Ready
+    };
     step.sweep(&plan);
+    outcome
 }
