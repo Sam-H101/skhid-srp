@@ -8,13 +8,13 @@ use super::*;
 
 /// `../tests/fixture.db` packed again with `gameplay/items/new.options`
 /// ("a new item\n") added: the archive a release makes of it.
-const RELEASE: &[u8] = include_bytes!("../../tests/release.db");
-const INSTALLED: &[u8] = include_bytes!("../../tests/fixture.db");
+pub(crate) const RELEASE: &[u8] = include_bytes!("../../tests/release.db");
+pub(crate) const INSTALLED: &[u8] = include_bytes!("../../tests/fixture.db");
 
-struct Folder(PathBuf);
+pub(crate) struct Folder(pub(crate) PathBuf);
 
 impl Folder {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "srp-resources-db-{name}-{}-{:?}",
             std::process::id(),
@@ -25,18 +25,18 @@ impl Folder {
         Self(dir)
     }
 
-    fn installed(&self, bytes: &[u8]) -> PathBuf {
+    pub(crate) fn installed(&self, bytes: &[u8]) -> PathBuf {
         let path = self.0.join("resources.db");
         std::fs::write(&path, bytes).unwrap();
         path
     }
 
-    fn blobs(&self) -> PathBuf {
+    pub(crate) fn blobs(&self) -> PathBuf {
         self.0.join("blobs")
     }
 
     /// Puts `bytes` among the blobs, by their sha256; returns it.
-    fn blob(&self, bytes: &[u8]) -> String {
+    pub(crate) fn blob(&self, bytes: &[u8]) -> String {
         let sha = hex(&digest(bytes));
         std::fs::write(self.blobs().join(&sha), bytes).unwrap();
         sha
@@ -51,7 +51,7 @@ impl Drop for Folder {
 
 /// The plan that makes `RELEASE` of `INSTALLED`: its first
 /// `INSTALLED.len()` bytes as a region, the rest as the tail.
-fn release_plan(folder: &Folder) -> String {
+pub(crate) fn release_plan(folder: &Folder) -> String {
     let size = INSTALLED.len();
     let original = hex(&digest(INSTALLED));
     let head = folder.blob(&RELEASE[..size]);
@@ -162,7 +162,7 @@ fn whatever_is_not_the_plans_is_refused() {
 }
 
 /// A ZIP of stored entries.
-fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
+pub(crate) fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut zip = Vec::new();
     let mut directory = Vec::new();
     for (name, data) in files {

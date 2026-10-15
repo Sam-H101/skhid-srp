@@ -212,6 +212,23 @@ sha256: they are uploaded before the ZIP is offered
 is byte for byte what it was before the option existed (checked 2026-10-14
 against a build of `main` a63f37d with the same inputs).
 
+**The server's game data.** A ZIP that changes `resources.db` (any
+`--resource-region` or `--resource-grow`, with `--pack-zip`) comes with
+`server-game-data.db` beside it: the files of the players' `resources.db`
+the server reads (`gameplay/` and the project markers, about 3 MB), made by
+`srp-game-data extract` (`../crates/resources-db`; build it first with
+`cargo build --release -p resources-db --bin srp-game-data` in `srp-026g`, or
+name it with `--game-data-tool=<path>`) from the source game's `resources.db`,
+the ZIP and the blobs. Each file is checked against the players' file table
+(its size and CRC-32). It names the ZIP's plan (`srp/provenance`: the plan's
+sha256 and its `resources.db` lines), and the server refuses to start with
+data made for another plan, or a ZIP without its data
+(`../docs/DEPLOY.md`, "The game's files"). The same inputs give the same
+file. A release goes out in this order: the blobs, then
+`server-game-data.db`, then the ZIP, then the server's restart, in one
+maintenance window. `srp-game-data check --data <file> --zip <ZIP>` says
+whether they belong together.
+
 Full overlays embed the supplied `--server` address in the executable, so
 players do not need `-server=` at launch. The generated batch file retains
 the language and allocator options. To use another server, add

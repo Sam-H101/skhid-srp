@@ -27,17 +27,27 @@ use crate::{Archive, Error};
 /// The plan's name for the archive.
 pub const RESOURCES_DB: &str = "game/resources.db";
 
-/// The plan of the players' ZIP `zip`.
-pub fn plan_of_zip(zip: &[u8]) -> Result<Plan, Error> {
+/// The plan file of the players' ZIP `zip` as it is, if it has one.
+pub fn plan_text_of_zip(zip: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     let entries = updater_logic::zip::entries(zip)
         .map_err(|cause| plan_error(format!("the ZIP cannot be read ({cause:?})")))?;
     let Some(entry) = entries.iter().find(|entry| entry.name == PLAN_NAME) else {
-        return Ok(Plan::default());
+        return Ok(None);
     };
     let text = entry
         .read()
         .map_err(|cause| plan_error(format!("its {PLAN_NAME} cannot be read ({cause:?})")))?;
-    parse_plan(&text).map_err(|cause| plan_error(format!("{PLAN_NAME}: {cause:?}")))
+    Ok(Some(text))
+}
+
+/// The plan of the players' ZIP `zip`; no lines if it has none.
+pub fn plan_of_zip(zip: &[u8]) -> Result<Plan, Error> {
+    match plan_text_of_zip(zip)? {
+        Some(text) => {
+            parse_plan(&text).map_err(|cause| plan_error(format!("{PLAN_NAME}: {cause:?}")))
+        }
+        None => Ok(Plan::default()),
+    }
 }
 
 fn plan_error(what: String) -> Error {
@@ -300,4 +310,4 @@ pub fn open_installed(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

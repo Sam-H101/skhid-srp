@@ -140,6 +140,19 @@ GROWING RESOURCES.DB
     The head's, its original's and the tail's blobs go into
     --resources-out=<folder> with the regions' ones.
 
+THE SERVER'S GAME DATA
+
+    A ZIP (--pack-zip) with resource regions or --resource-grow comes with
+    the server's game data of it: <the ZIP's folder>/server-game-data.db,
+    the files of the players' resources.db the server reads, made by
+    `srp-game-data extract` (../crates/resources-db; build it first with
+    `cargo build --release -p resources-db --bin srp-game-data` in srp-026g,
+    or name it with --game-data-tool=<path>) from the source game's
+    resources.db, the ZIP and the blobs. It names the ZIP's plan, and the
+    server refuses to start with data made for another plan
+    (../docs/DEPLOY.md, "The game's files"): put it on the server with the
+    blobs, before the ZIP.
+
 A player unpacks the overlay into an empty folder, or into the game's folder
 (the one that holds `game`), and starts Skhid.bat (or play_skhid.bat: the game alone, no
 updates), or bash Skhid.sh on Linux. --pack-zip directly makes the
@@ -173,6 +186,12 @@ EXTRACTOR_NAME = "7zr.exe"
 EXTRACTOR_EXE = os.path.abspath(os.path.join(HERE, "..", "..", "client", "updater", "extractor", EXTRACTOR_NAME))
 EXTRACTOR_SIZE = 602624
 EXTRACTOR_SHA256 = "256feca8e274e5da655e2a284fabafd9f554365eb164862089dacd4e8276d282"
+# The tool that makes the server's game data of a release
+# (srp-026g/crates/resources-db, `srp-game-data extract`).
+GAME_DATA_TOOL = os.path.abspath(os.path.join(
+    HERE, "..", "target", "release", "srp-game-data" + (".exe" if os.name == "nt" else "")))
+# The server's game data, beside the ZIP.
+SERVER_GAME_DATA = "server-game-data.db"
 BUGTRAP_DLL = os.path.abspath(os.path.join(
     HERE, "..", "..", "client", "bugtrap", "target", "i686-pc-windows-msvc", "release", "BugTrap.dll"))
 # The same build-2777 mirror pinned in client/updater/logic/src/game.rs.
@@ -393,6 +412,31 @@ def resources_plan(lines):
     rest = [line for line in lines if not line.startswith("region ")]
     return "".join(line + "\r\n" for line in
                    [f"skhid-resources {version}", *regions, *rest, "end"]).encode("ascii")
+
+
+def check_game_data_tool(tool):
+    """`tool` if it is there, before anything is written; else a stop that
+    says how to build it."""
+    if not os.path.isfile(tool):
+        sys.exit(f"{tool}: no srp-game-data, which makes the server's game data of a release "
+                 "that changes resources.db: build it in srp-026g with "
+                 "`cargo build --release -p resources-db --bin srp-game-data`, "
+                 "or name it with --game-data-tool=<path>")
+    return tool
+
+
+def server_game_data(tool, source, zip_path, blobs, out):
+    """The server's game data of the players' ZIP `zip_path`, made by
+    `srp-game-data extract` from the source game's resources.db and the
+    blobs: it prints what it wrote."""
+    import subprocess
+    result = subprocess.run(
+        [tool, "extract", "--db", os.path.join(source, "resources.db"),
+         "--zip", zip_path, "--blobs", blobs, "--out", out],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"srp-game-data failed: {result.stderr.strip()}")
+    print(result.stdout.strip())
 
 
 def write_blobs(folder, blobs, check):
@@ -643,6 +687,7 @@ def main():
     extractor_path = EXTRACTOR_EXE
     late_join = True
     regions, resources_out, grow = [], None, None
+    game_data_tool = GAME_DATA_TOOL
     for option in options:
         if option == "--check":
             check = True
@@ -683,6 +728,8 @@ def main():
                 sys.exit(f"{option}: --resource-grow=<manifest.json>")
         elif option.startswith("--resources-out="):
             resources_out = os.path.abspath(option[len("--resources-out="):])
+        elif option.startswith("--game-data-tool="):
+            game_data_tool = os.path.abspath(option[len("--game-data-tool="):])
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
     if len(args) != 2 or server is None:
@@ -704,6 +751,13 @@ def main():
         sys.exit("--resources-out is for --resource-region or --resource-grow")
     if resources_out and (inside(resources_out, source) or inside(resources_out, os.path.dirname(source))):
         sys.exit(f"{resources_out}: the blobs' folder must be outside the game folder {os.path.dirname(source)}")
+    # A download that changes resources.db comes with the server's data of it.
+    game_data = None
+    if (regions or grow) and archive:
+        game_data = os.path.join(os.path.dirname(output), SERVER_GAME_DATA)
+        if not check and os.path.lexists(game_data):
+            sys.exit(f"{game_data}: already there; the server's data of this ZIP goes to a new folder")
+        game_data_tool = check_game_data_tool(game_data_tool)
     # Checked before anything is written.
     region_lines, blobs = resource_regions(source, regions) if regions else ([], {})
     if grow:
@@ -790,6 +844,11 @@ def main():
         write_blobs(resources_out, blobs, check)
         for line in region_lines:
             print(f"resource {line}")
+    if game_data:
+        if check:
+            print(f"would write {game_data} (the server's game data of this ZIP)")
+        else:
+            server_game_data(game_data_tool, source, output, resources_out, game_data)
     print(f"exe: {description}")
     if launcher_description:
         print(f"launcher: {launcher_description}")

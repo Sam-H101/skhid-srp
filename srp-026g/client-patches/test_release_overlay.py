@@ -91,16 +91,23 @@ class ReleaseTests(unittest.TestCase):
         } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
              for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
 
-    def build(self, output, *options):
+    def build(self, output, *options, game_data_tool=None):
         args = ['make_client_026g.py', str(self.game), str(output),
                 '--server=release.example:2234', '--localization=polish',
                 '--bugtrap=' + str(self.dll), '--updater=' + str(self.updater), *options]
         # Binary patching has its own disassembly suite. Exercise every other
         # part of the real release builder, including source reads and ZIP I/O.
+        # The server's game data is made by srp-game-data (its own tests):
+        # here what the builder asks of it is recorded.
         launcher = mock.patch.object(
             overlay.L, 'build', return_value=(b'patched launcher fixture', 'test launcher'))
+        self.game_data_calls = []
+        tool = mock.patch.object(overlay, 'check_game_data_tool', side_effect=lambda path: path) \
+            if game_data_tool is None else contextlib.nullcontext()
+        made = mock.patch.object(overlay, 'server_game_data',
+                                 side_effect=lambda *call: self.game_data_calls.append(call))
         with mock.patch.object(overlay.P, 'build', return_value=(b'patched fixture', 'test patch')) as patcher:
-            with launcher as self.launcher, mock.patch('sys.argv', args), \
+            with launcher as self.launcher, mock.patch('sys.argv', args), tool, made, \
                     contextlib.redirect_stdout(io.StringIO()) as messages:
                 overlay.main()
         self.assertEqual(self.exe.read_bytes(), b'original fixture')
@@ -306,6 +313,41 @@ class ReleaseTests(unittest.TestCase):
         path = self.root / f'{name}.bin'
         path.write_bytes(changed)
         return path, changed
+
+    def test_a_zip_that_changes_the_db_comes_with_the_servers_data(self):
+        db, regions = self.fake_db()
+        lobby_path, _ = self.entry(db[1000:1700], 'lobby')
+        blobs = self.root / 'blobs'
+        out = self.root / 'release'
+        archive = out / 'Survarium-0.26g-srp-files.zip'
+        region = f'--resource-region=lobby_menu={lobby_path}'
+        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
+            self.build(archive, '--pack-zip', region, f'--resources-out={blobs}')
+            # Made from the game's db, the ZIP and its blobs, beside the ZIP.
+            self.assertEqual(self.game_data_calls, [(
+                overlay.GAME_DATA_TOOL, str(self.game), str(archive), str(blobs),
+                str(out / overlay.SERVER_GAME_DATA))])
+            # --check says so and makes nothing.
+            _, said = self.build(self.root / 'check' / 'x.zip', '--pack-zip', '--check', region,
+                                 f'--resources-out={blobs}')
+            self.assertEqual(self.game_data_calls, [])
+            self.assertIn(f'would write {self.root / "check" / overlay.SERVER_GAME_DATA}', said)
+            # Never over data that is there.
+            (self.root / 'other').mkdir()
+            (self.root / 'other' / overlay.SERVER_GAME_DATA).write_bytes(b'old')
+            with self.assertRaises(SystemExit) as refused:
+                self.build(self.root / 'other' / 'y.zip', '--pack-zip', region, f'--resources-out={blobs}')
+            self.assertIn('already there', str(refused.exception))
+            self.assertFalse((self.root / 'other' / 'y.zip').exists())
+            # Without the tool, nothing is written.
+            with self.assertRaises(SystemExit) as refused:
+                self.build(self.root / 'none' / 'z.zip', '--pack-zip', region, f'--resources-out={blobs}',
+                           f'--game-data-tool={self.root / "no-such-tool"}', game_data_tool='real')
+            self.assertIn('cargo build --release -p resources-db --bin srp-game-data', str(refused.exception))
+            self.assertFalse((self.root / 'none').exists())
+        # A ZIP that leaves the db alone: no server data.
+        self.build(self.root / 'plain.zip', '--pack-zip', '--no-late-join')
+        self.assertEqual(self.game_data_calls, [])
 
     def test_resource_regions_add_the_plan_and_the_blobs(self):
         db, regions = self.fake_db()

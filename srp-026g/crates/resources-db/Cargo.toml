@@ -3,7 +3,7 @@
 name = "resources-db"
 version.workspace = true
 edition.workspace = true
-description = "Reads the game's resources.db archive, as installed or with a players' update plan applied in memory"
+description = "Reads the game's resources.db archive, as installed or with a players' update plan applied in memory, and makes the server's game data of a release"
 license = "GPL-3.0-or-later"
 
 [dependencies]

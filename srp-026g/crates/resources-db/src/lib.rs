@@ -36,9 +36,12 @@
 //!
 //! [`plan`] lays the players' update plan (`client/updater`) over an
 //! installed archive in memory: what is read is then the archive the
-//! players run.
+//! players run. [`server`] takes from it the files the server reads, into
+//! an archive of their own ([`write`]) that names the plan it was made for.
 
 pub mod plan;
+pub mod server;
+pub mod write;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -99,11 +102,29 @@ fn format(what: impl Into<String>) -> Error {
     Error::Format(what.into())
 }
 
-/// A file of the archive: where its bytes are, and how many.
+/// The checksum the table keeps of each file's bytes ([`Entry::hash`]): the
+/// engine's CRC-32 (`boost::crc_optimal<32, 0x04C11DB7>`, reflected input,
+/// output not reflected, no final xor). 0.26g's archive and the players'
+/// releases have it right for every file.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    crc.reverse_bits()
+}
+
+/// A file of the archive: where its bytes are, how many, and the table's
+/// checksum of them ([`crc32`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub offset: u64,
     pub size: u32,
+    pub hash: u32,
 }
 
 /// An archive: its file table read; its files read when asked for.
@@ -333,6 +354,7 @@ fn file_entry(table: &Table<'_>, base: usize, shown: &str) -> Result<Entry, Erro
     Ok(Entry {
         size: table.u32(start)?,
         offset: table.u64(start + 8)?,
+        hash: table.u32(start + 16)?,
     })
 }
 
