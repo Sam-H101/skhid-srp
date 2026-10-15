@@ -145,9 +145,6 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
         // The "Marodeur" container: Black Market, rank 4 (W:8172); its
         // config says Scavengers, item level 3. PROVEN.
         ("bm_back_1", &[(BM, 4)]),
-        // The release's Bandit balaclava: Black Market, rank 2 "Fighter",
-        // as the owner set it (2026-10-15); its config says item level 3.
-        ("bandit_026_mask", &[(BM, 2)]),
         // --- Ammo (W:8170, W:8172, W:8175, W:8176; PROVEN but where
         // said) ---
         ("ammo_12mm_buck", &[(SCAV, 1), (BM, 1)]),
@@ -637,6 +634,27 @@ mod tests {
     }
 
     #[test]
+    fn the_bandit_balaclava_goes_by_the_rule() {
+        // No exception (owner, 2026-10-16): Black Market at its item level,
+        // within the faction's ranks 0 to 5. players.db still has the
+        // release's item level 3; the next release's has 8, which the rule
+        // puts at Black Market's last rank.
+        let dictionary = Dictionary::shared();
+        assert_eq!(top_level(dictionary, faction::BLACK_MARKET), 5);
+        assert_eq!(seller_level(dictionary, faction::BLACK_MARKET, 8), 5);
+        let item = dictionary.item_named("bandit_026_mask").unwrap();
+        let params = item_params(item.dict_id).unwrap();
+        assert_eq!(params.faction, faction::BLACK_MARKET);
+        assert_eq!(
+            sold_by("bandit_026_mask"),
+            [(
+                faction::BLACK_MARKET,
+                seller_level(dictionary, faction::BLACK_MARKET, params.item_level)
+            )]
+        );
+    }
+
+    #[test]
     fn gear_exceptions_move_the_seller_or_the_rank() {
         // Edge sells the 9A-91 and VSK-94, whose configs say Renaissance.
         assert_eq!(sold_by("a9_91"), [(4, 8)]);
@@ -653,7 +671,6 @@ mod tests {
         }
         assert_eq!(sold_by("fort_17"), [(3, 2)]);
         assert_eq!(sold_by("aps"), [(4, 2)]);
-        assert_eq!(sold_by("bandit_026_mask"), [(2, 2)]);
         // The Duty exoskeleton by the rule: Renaissance at its level 15.
         assert_eq!(sold_by("duty_exo_back"), [(3, 10)]);
         assert_eq!(sold_by("bm_back_1"), [(2, 4)]);

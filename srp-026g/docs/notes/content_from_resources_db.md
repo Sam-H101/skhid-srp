@@ -111,7 +111,7 @@ neither 0.26g's archive nor the blobs.
 ## What stays in code
 
 What the game's files do not say: the shop's exceptions (`prices::EXCEPTIONS`,
-by item name: the balaclava is sold by Black Market from rank 2), the
+by item name; the balaclava has none and goes by the rule), the
 bundles, a project's respawn points and container teams, the loadouts of new
 accounts.
 
