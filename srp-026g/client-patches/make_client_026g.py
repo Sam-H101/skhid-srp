@@ -132,7 +132,12 @@ GROWING RESOURCES.DB
                   "sha256": "..."}}
 
     (files relative to the manifest). Every size and checksum is checked,
-    against the source game's resources.db too. The plan then has the head
+    against the source game's resources.db too. The head starts at 0: the
+    db's header, the new file table and its signature by Skhid's key
+    (sign_resources_026g.py). The default exe (patch revision 12) starts with
+    that resources.db alone and every other exe with the original one alone,
+    so the default exe ships exactly when --resource-grow is given. The plan
+    then has the head
     as a region and a `tail` line naming it (plan format 2), and is
     *required*: the updater keeps PLAY off until the db holds the tail, the
     head and every other region of the plan, and puts the db back as
@@ -164,6 +169,7 @@ updater downloads the original game from its pinned mirror when it is missing.
 """
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -171,6 +177,7 @@ import zipfile
 import zlib
 
 import patch_026g as P
+import sign_resources_026g as S
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "launcher"))
@@ -369,6 +376,9 @@ def resource_grow(source, manifest_path, region_lines=()):
         sys.exit(f"{db}: {db_size} bytes; the manifest grows a db of {original_size}")
     if not (0 <= offset and 0 < size and offset + size <= original_size < new_size):
         sys.exit(f"{manifest_path}: the head [{offset}, {offset + size}) or the sizes do not fit")
+    if offset != 0:
+        sys.exit(f"{manifest_path}: the head starts at {offset}; it must start at 0, where the db's "
+                 "header, file table and the table's signature are")
     for line in region_lines:
         _, _, _, other_offset, other_size, *_ = line.split(" ")
         if offset < int(other_offset) + int(other_size) and int(other_offset) < offset + size:
@@ -394,6 +404,13 @@ def resource_grow(source, manifest_path, region_lines=()):
     for ok, message in checks:
         if not ok:
             sys.exit(message)
+    try:
+        signer = S.which_key(*S.read_table(io.BytesIO(built_head))[1:])
+    except ValueError as e:
+        sys.exit(f"{head_file}: not the head of a resources.db ({e})")
+    if signer != "skhid":
+        sys.exit(f"{head_file}: its file table is signed by {signer or 'neither key'}, not Skhid's; "
+                 f"the exe of patch revision {P.REVISION} would not start (sign_resources_026g.py sign)")
     lines = [
         f"region {RESOURCES_DB} {original_size} {offset} {size} {expected[0]} {expected[1]} {names[0]}",
         f"tail {RESOURCES_DB} {original_size} {new_size} {expected[2]} {names[1]} {names[0]}",
@@ -764,6 +781,13 @@ def main():
         grow_lines, grow_blobs = resource_grow(source, grow, region_lines)
         region_lines = region_lines + grow_lines
         blobs.update(grow_blobs)
+    # The default exe starts only with the Skhid-signed resources.db that
+    # --resource-grow ships, every other exe only with the original one.
+    if (mode == "section" and late_join) != bool(grow):
+        sys.exit(f"the default exe (patch revision {P.REVISION}) starts only with the resources.db "
+                 "--resource-grow ships, and every other exe (--no-late-join, --cert-only, --cave=) only "
+                 "with the original one: give the default exe --resource-grow (which needs the launcher), "
+                 "or build another exe")
 
     bugtrap = read_bugtrap(bugtrap_path)
 
