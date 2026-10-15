@@ -213,6 +213,20 @@ impl Regions {
         &self.inn[self.in_start[r as usize] as usize..self.in_start[r as usize + 1] as usize]
     }
 
+    /// Into `digest` ([`crate::digest`]): every floor's region, every
+    /// region's middle and links.
+    pub fn digest_into(&self, digest: &mut crate::digest::Digest) {
+        for array in [&self.of, &self.middle, &self.out_start, &self.in_start, &self.inn] {
+            digest.len(array.len());
+            array.iter().for_each(|&value| digest.u32(value));
+        }
+        digest.len(self.out.len());
+        for &(region, cost) in &self.out {
+            digest.u32(region);
+            digest.f32(cost);
+        }
+    }
+
     pub fn memory_bytes(&self) -> usize {
         self.of.len() * 4
             + self.middle.len() * 4

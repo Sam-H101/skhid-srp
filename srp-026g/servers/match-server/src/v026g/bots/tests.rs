@@ -543,9 +543,51 @@ impl Game {
     }
 }
 
+/// Every input the bots made and every note they wrote, as one number:
+/// two runs that decide the same give the same digest. The proof that a
+/// change for speed or memory left the bots as they were
+/// (`docs/notes/player_bots_mapdata.md` §6).
+#[derive(Clone, Copy, Debug, Default)]
+struct Decisions {
+    digest: mapdata::digest::Digest,
+    inputs: u64,
+    notes: u64,
+}
+
+impl Decisions {
+    fn made(&mut self, made: &Made) {
+        self.text(&format!("{} {} {:?}", made.place, made.time, made.input));
+        self.inputs += 1;
+    }
+
+    fn note(&mut self, note: &Note) {
+        self.text(&format!("{} {} {}", note.place, note.time, note.text));
+        self.notes += 1;
+    }
+
+    fn text(&mut self, text: &str) {
+        self.digest.len(text.len());
+        for chunk in text.as_bytes().chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.digest.u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "decisions {:016x} ({} inputs, {} notes)",
+            self.digest.finish(),
+            self.inputs,
+            self.notes
+        )
+    }
+}
+
 /// How a soak run went.
 #[derive(Debug, Default)]
 struct Outcome {
+    decisions: Decisions,
     winner: Option<u8>,
     end_s: f32,
     kills: [u32; 2],
@@ -621,9 +663,13 @@ fn soak_mode(
             if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
             {
                 for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
-                    out.notes.extend(bots.fixed(place, fix, Some(health)));
+                    let notes = bots.fixed(place, fix, Some(health));
+                    notes.iter().for_each(|note| out.decisions.note(note));
+                    out.notes.extend(notes);
                 }
-                out.notes.extend(bots.facts(facts));
+                let notes = bots.facts(facts);
+                notes.iter().for_each(|note| out.decisions.note(note));
+                out.notes.extend(notes);
             }
         }
         let (made, notes) = bots.poll(Clock {
@@ -631,8 +677,10 @@ fn soak_mode(
             time_left_s: (limit_ms - clock) as f32 / 1000.0,
             total_s: limit_s as f32,
         });
+        notes.iter().for_each(|note| out.decisions.note(note));
         out.notes.extend(notes);
         for made in made {
+            out.decisions.made(&made);
             // Every input keeps the rules: on the grid, ahead, in order,
             // no forbidden bit, a turn under π.
             assert!(made.time > clock && made.time <= clock + 100);
@@ -760,6 +808,7 @@ fn a_short_soak_has_fights_and_keeps_the_input_rules() {
 #[ignore = "a whole match; run in release"]
 fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
     let out = soak(4, 3, 0, 900, 1);
+    eprintln!("{}", out.decisions.line());
     let total = out.kills[0] + out.kills[1];
     assert!(
         total >= 4,
@@ -786,6 +835,7 @@ fn four_bots_a_side_fight_and_bring_batteries_to_a_win() {
 fn a_team_deathmatch_of_bots_is_fought_to_the_last_ticket() {
     // 25 tickets a side: the endgame (no respawns, the hunt) comes.
     let out = soak(4, 0, 25, 900, 2);
+    eprintln!("{}", out.decisions.line());
     assert!(
         out.winner.is_some(),
         "a winner in {} s: {:?}",
@@ -809,6 +859,7 @@ fn a_team_deathmatch_of_bots_is_fought_to_the_last_ticket() {
 #[ignore = "a whole match; run in release"]
 fn timed_batteries_are_waited_for_at_the_stations_and_brought_home() {
     let out = soak_mode(4, 4, 0, Some(20), 900, 4);
+    eprintln!("{}", out.decisions.line());
     assert!(
         out.delivered[0] + out.delivered[1] >= 2,
         "{:?}",
@@ -969,6 +1020,7 @@ fn real_bot_cost() {
                 bots.entered(place, true, 0);
             }
             let mut times = Times::default();
+            let mut decisions = Decisions::default();
             let mut plays: std::collections::BTreeMap<String, u32> = Default::default();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
@@ -985,9 +1037,13 @@ fn real_bot_cost() {
                         game.world_at(clock / TICK_MS * TICK_MS - 300)
                     {
                         for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
-                            bots.fixed(place, fix, Some(health));
+                            for note in bots.fixed(place, fix, Some(health)) {
+                                decisions.note(&note);
+                            }
                         }
-                        bots.facts(facts);
+                        for note in bots.facts(facts) {
+                            decisions.note(&note);
+                        }
                     }
                 }
                 let clock_now = Clock {
@@ -997,6 +1053,7 @@ fn real_bot_cost() {
                 };
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
+                    decisions.note(&note);
                     let key: String = note
                         .text
                         .split(|c: char| c == '(' || c == ':' || c.is_ascii_digit())
@@ -1006,6 +1063,7 @@ fn real_bot_cost() {
                     *plays.entry(key).or_default() += 1;
                 }
                 for made in made {
+                    decisions.made(&made);
                     let r = made.input.rotation;
                     let turn = (
                         half_value(u16::from_le_bytes([r[0], r[1]])),
@@ -1080,6 +1138,17 @@ fn real_bot_cost() {
             let mut top: Vec<_> = plays.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  notes: {:?}", &top[..top.len().min(12)]);
+            let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
+            eprintln!("  {line}");
+            if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(out)
+                    .unwrap();
+                writeln!(file, "{line}").unwrap();
+            }
             let total = times.view + times.commander + times.think + times.ticks;
             let mut each = std::mem::take(&mut times.each);
             each.sort_by(f32::total_cmp);
