@@ -1136,7 +1136,7 @@ player's feet and at most 1 m from them across. Look down at the battery
 and press use. A battery in plain view within 2 m is taken as before; one
 seen through a wall at one's own height is not, nor is anything else
 behind a wall (containers, traps). The code (`pickup_below_026g.asm`) is
-at `.srp`+800h; `docs/notes/client_patch.md` section 3.23 has the details.
+at `.srp`+800h; `../docs/notes/client_patch.md` section 3.23 has the details.
 
 **Revisions.** Every game runs every player's use: a game of 11 takes a
 battery an older game leaves, so they part there; a server asks for 11

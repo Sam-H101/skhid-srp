@@ -5,15 +5,10 @@
 BITS 32
 ORG CAVE
 
-; The scan casts one ray from the eye along the view (the collision world's
-; ray_query, vtable+4Ch: every hit, nearest first) and walks the hits: a
-; usable object (group 80h) is the result if its can_use (vtable+30h) says
-; yes; at any other hit it stops once the groups seen so far hold both
-; walkable (2) and hittable (8), so a battery behind a wall or under a floor
-; is never seen. Its frame after `push ebx/esi/edi` (esp = base): [esp+0Ch]
-; the groups so far, [esp+10h] the result, and [esp+40h], new (the frame
-; grows by 8 at 0x2D84C9), set once such a hit was crossed. [ebp+8] = the
-; player: +43Ch its position (the feet), +47Ch the ray's start (the eye).
+; The scan's frame after `push ebx/esi/edi` (esp = base): [esp+0Ch] the
+; hits' groups so far, [esp+10h] the result, [esp+40h] new (the frame grows
+; by 8 at 0x2D84C9): set once a wall or floor was crossed. [ebp+8] = the
+; player: +43Ch the feet, +47Ch the eye. client_patch.md section 3.23.
 %define CROSSED 0x40
 %define DISTANCE 0xA710D8          ; usable_objects_detection_distance, 2.0
 
@@ -46,9 +41,9 @@ times 64-($-$$) db 0xcc
 ; Within the native distance and before any crossed hit: the original. Else
 ; only a battery (its can_use is victory_item_core's) whose centre is below
 ; the player's feet and at most 1 m from them across; its point becomes the
-; feet, which the use's range check (0x300830: the eye to the point, within
-; the native distance, every tick of the use) keeps in reach. Anything else
-; is dropped as the original drops a usable object it cannot use.
+; feet, which the use's range check (0x300830) keeps in reach. Anything
+; else is skipped, past the original's keeping of the first unusable object
+; for the prompt (0x2D85DC): it is not to be seen at all.
 candidate:
     mov eax, [ebp+8]
     movss xmm0, [edi]

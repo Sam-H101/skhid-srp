@@ -124,13 +124,11 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     registration stores 50.0 as the least, the most stays the float 100 at
     0xA710D0; the build without the late join keeps all three; no branch or
     address aims inside the two sites rewritten in place.
-24. the same build: a battery under the floor (patch 23). The use scan's
-    frame grows by 8 and its three hooks call or jump to the pickup code
-    (the .bin, at .srp+800h), which leaves only back to the scan and calls
-    only get_transform (vtable+44h; a battery's usable vtables have
-    victory_item_core::can_use at +30h and their own get_transform at
-    +44h); the distance is 2.0; the build without the late join keeps the
-    four sites; nothing aims inside them.
+24. the same build: a battery under the floor (patch 23). The scan's
+    frame and its three hooks; the code (.srp+800h) leaves only back to the
+    scan and calls only a battery's get_transform (vtable+44h; only
+    batteries' vtables have victory_item_core::can_use at +30h); nothing
+    aims inside the four sites.
 """
 
 import ctypes
@@ -1092,6 +1090,15 @@ def aimed_inside(original, va, size, near):
     return found + [va + i for i in range(1, size) if original.find(struct.pack("<I", va + i)) != -1]
 
 
+def starts_instruction(source, at):
+    """Whether `at` starts an instruction of the function around it, read
+    from the function's start (after the int3 before it)."""
+    start = at
+    while source.read(start - 1, 1) != b"\xcc" or start % 16:
+        start -= 1
+    return at in {address for address, _, _ in ndisasm(source.read(start, at - start + 16), start)}
+
+
 def test_pregame_progress(original, image, before):
     """Check 18: the hud draws the team points while a match counts down."""
     source = Image(original)
@@ -1142,15 +1149,6 @@ def test_pregame_progress(original, image, before):
 
 
 # The vtables whose slot 0 is the camera's projection, by RTTI.
-def starts_instruction(source, at):
-    """Whether `at` starts an instruction of the function around it, read
-    from the function's start (after the int3 before it)."""
-    start = at
-    while source.read(start - 1, 1) != b"\xcc" or start % 16:
-        start -= 1
-    return at in {address for address, _, _ in ndisasm(source.read(start, at - start + 16), start)}
-
-
 FOV_VTABLES = {0xA0406C: b".?AVplayer_input_handler@survarium@@", 0xA04084: b".?AVgame_camera@survarium@@",
                0xA047F0: b".?AVfree_fly_camera@survarium@@", 0xA0482C: b".?AVdemo_camera@survarium@@",
                0xA09ED8: b".?AVlobby_camera@survarium@@"}
@@ -1226,9 +1224,8 @@ def test_fov(original, image, before):
           "no 4-byte value aims inside the two sites rewritten in place" + "".join(f"\n          {a:#x}" for a in found))
 
 
-# The usable-object vtables of the battery (victory_item_core and the
-# client's victory_item): can_use at +30h, get_transform at +44h.
-BATTERY_VTABLES = (0xA13E8C, 0xA0437C)
+# A battery's usable-object vtables: can_use at +30h, get_transform at +44h.
+BATTERY_VTABLES = {0xA13E8C: b".?AVvictory_item_core@survarium@@", 0xA0437C: b".?AVvictory_item@survarium@@"}
 
 
 def test_pickup(original, image, before):
@@ -1255,12 +1252,19 @@ def test_pickup(original, image, before):
           and code[-4:] == struct.pack("<f", P.PICKUP_ACROSS ** 2),
           f"the code at {P.PICKUP_VA:#x} is the .bin; it leaves only to the scan (0x2D85C6, 0x2D85FC, 0x2D8622), "
           f"calls only get_transform (vtable+44h); the distance (0xA710D8) is 2.0; across, {P.PICKUP_ACROSS:g} m")
-    check(all(word(source, vtable + 0x30) == 0x300710 and word(source, vtable + 0x44) == 0x246ED0
-              for vtable in BATTERY_VTABLES)
-          and source.read(0x246ED0, 8) == bytes.fromhex("83e914e9") + struct.pack("<i", 0x300A20 - 0x246ED8)
-          and word(source, 0xA13DA8) == 0x2F8440 and word(source, 0xA13DA8 - 4) == 0x2F85B0,
-          "a battery's usable vtables have victory_item_core::can_use (0x300710) at +30h and at +44h, where "
-          "usable_object::get_transform (0x2F8440) is in others, its own (sub ecx,14h; jmp 0x300A20)")
+    string = lambda at: source.read(at, 64).split(b"\0")[0]
+    klass = lambda vtable: string(word(source, word(source, vtable - 4) + 12) + 8)
+    can_use = struct.pack("<I", 0x300710)
+    at, holders = original.find(can_use), []
+    while at != -1:
+        holders += [P.IMAGE_BASE + rva + at - raw for _, rva, _, raw, rsize, _ in source.sections if raw <= at < raw + rsize]
+        at = original.find(can_use, at + 1)
+    check(sorted(holders) == sorted(vtable + 0x30 for vtable in BATTERY_VTABLES)
+          and all(klass(vtable) == name and word(source, vtable + 0x44) == 0x246ED0
+                  for vtable, name in BATTERY_VTABLES.items())
+          and source.read(0x246ED0, 8) == bytes.fromhex("83e914e9") + struct.pack("<i", 0x300A20 - 0x246ED8),
+          "victory_item_core::can_use (0x300710) is at +30h of victory_item_core's and victory_item's usable "
+          "vtables and nowhere else; their +44h, get_transform, is the battery's (sub ecx,14h; jmp 0x300A20)")
     found = [hit for va, size in pickup_sites() for hit in aimed_inside(original, va, size, 0x82)
              if not (va <= hit < va + size) and starts_instruction(source, hit)]
     check(not found, "no rel32 branch of .text, no rel8 branch near them and no 4-byte value aims inside the "

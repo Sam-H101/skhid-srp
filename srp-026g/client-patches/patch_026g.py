@@ -664,13 +664,8 @@ FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
 FOV_MINIMUM_RELOC = 0x85AE0D
 FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
 
-# A battery under the floor (patch 23, pickup_below_026g.asm). A use's
-# scan (base_player::detect_usable_object, 0x2D84C0) casts a 2 m ray from the
-# eye and stops at the first wall or floor (walkable and hittable,
-# 0x2D861C). Here the ray is 4 m, the scan goes past walls and floors, and
-# what it finds beyond one or beyond 2 m is taken only if it is a battery
-# whose centre is below the player's feet and within PICKUP_ACROSS of them
-# across. docs/notes/client_patch.md section 3.23 has the addresses.
+# A battery under the floor (patch 23, pickup_below_026g.asm at
+# PICKUP_VA): client_patch.md section 3.23.
 PICKUP_OFFSET = 0x800
 PICKUP_VA = SECTION_VA + PICKUP_OFFSET
 PICKUP_ACROSS = 1.0
@@ -695,15 +690,13 @@ def late_join_state_va(code):
     return (end + 0xFFF) // 0x1000 * 0x1000
 
 
-def pickup_hook(va, expected, offset, opcode):
-    """The bytes a pickup hook site gets: the call or jump and nops."""
-    return bytes([opcode]) + struct.pack("<i", PICKUP_VA + offset - va - 5) + b"\x90" * (len(expected) - 5)
+def hook_bytes(base, va, expected, offset, opcode):
+    """The bytes a hook site gets: the call or jump to base+offset and nops."""
+    return bytes([opcode]) + struct.pack("<i", base + offset - va - 5) + b"\x90" * (len(expected) - 5)
 
 
 def late_join_hook(va, expected, offset, opcode):
-    """The bytes a hook site gets: the call or jump and nops."""
-    target = LATE_JOIN_VA + offset
-    return bytes([opcode]) + struct.pack("<i", target - va - 5) + b"\x90" * (len(expected) - 5)
+    return hook_bytes(LATE_JOIN_VA, va, expected, offset, opcode)
 
 HOOKS = [
     # network_client::on_match_ready, ebx = network_client: mov ebx,[ebx+1F1C48h]
@@ -1020,7 +1013,7 @@ def build(original, mode, code=None, server=None, late_join=None):
         patch(data, *PICKUP_FRAME)
         sites = [(PICKUP_FRAME[0], PICKUP_FRAME[0] + len(PICKUP_FRAME[1]))]
         for va, expected, offset, opcode in PICKUP_HOOKS:
-            patch(data, va, expected, pickup_hook(va, expected, offset, opcode))
+            patch(data, va, expected, hook_bytes(PICKUP_VA, va, expected, offset, opcode))
             sites.append((va, va + len(expected)))
         if neutralize_relocs(data, sites) != [PICKUP_RELOC]:
             sys.exit("the base relocations under the pickup sites are not where they were read")
