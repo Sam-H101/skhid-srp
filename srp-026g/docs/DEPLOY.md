@@ -88,6 +88,23 @@ when `.env` sets it: add its name to the list first.
 Never set `SRP_BOT_ACCOUNTS` on a public server (`SRP-026G.md`, "Test
 bots").
 
+A download that every game must have (new content in `resources.db`, a
+match rule older games compute otherwise) goes with the server refusing
+older games (`.env`):
+
+    SRP_PATCH_REVISION_CHECK=refuse
+    SRP_MIN_PATCH_REVISION=<the download's revision>
+
+An older game is then refused at its sign-in with the game's own "You're
+using an outdated version of the game.", and a game that reconnects after
+the restart with a session from before is refused in the lobby: it goes to
+its login screen within about half a minute, and is refused there. It never
+gets the lobby's sign-in, whose price list names every item sold.
+`SRP_PATCH_REVISION_CHECK` takes `off` or `refuse` alone: any other value,
+the `warn` of before too, stops srp at start, so check `.env` before the
+restart. `SRP_UPDATE_HINT` and `SRP_OUTDATED_TEXT` are no more read (srp
+logs a warning when they are set): take them out.
+
 ## Data, logs, backups
 
 - The volume `srp26-data` holds `srp.db` (SQLite: accounts, sessions, the

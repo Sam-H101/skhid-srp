@@ -78,7 +78,7 @@ impl Core<'_> {
             M::AfterSignIn { .. } => {}
 
             M::Play { kit_id } => self.play(who, kit_id, now),
-            M::ClanPlay { kit_id } => self.clan_play(who, kit_id, now),
+            M::ClanPlay { kit_id } => self.clan_play(who, kit_id),
             M::Leave { left_match, .. } => self.leave(who, left_match),
 
             // ---- queries ----
@@ -431,7 +431,6 @@ impl Core<'_> {
                 if let Some(player) = self.player_mut(addr) {
                     player.channel_ids = channel_ids;
                 }
-                self.hint_outdated(who, now);
             }
             M::ImportantRead { message_id, answer } => self.important_read(who, message_id, answer),
         }

@@ -1480,12 +1480,10 @@ fn match_team_size() -> usize {
 /// late join; the page tells the growing one's rules only when no game is
 /// left for the other.
 fn only_growing_games() -> bool {
-    let refuses = std::env::var("SRP_PATCH_REVISION_CHECK").is_ok_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "refuse" | "on" | "1" | "true" | "yes"
-        )
-    });
+    // srp starts only with `off` or `refuse` (`lobby_server`'s
+    // `patch_check::from_env`).
+    let refuses = std::env::var("SRP_PATCH_REVISION_CHECK")
+        .is_ok_and(|value| value.trim().eq_ignore_ascii_case("refuse"));
     let minimum = std::env::var("SRP_MIN_PATCH_REVISION")
         .ok()
         .and_then(|value| value.trim().parse::<u8>().ok())

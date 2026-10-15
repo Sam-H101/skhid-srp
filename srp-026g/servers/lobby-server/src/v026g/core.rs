@@ -5,7 +5,8 @@
 //!   ([`SessionStore::hold`]); the link keeps the hold while it lasts. One
 //!   that is refused is disconnected (`FD`, then the transport's own
 //!   disconnect): until its 0x80 the client reads nothing else
-//!   (`lobby.md` H2).
+//!   (`lobby.md` H2). So is one whose game is older than the server takes
+//!   (`patch_check`), and its session ends.
 //! - The pushes of a sign-in wait until the client has acked its 0x80. The
 //!   client's sign-in handler ignores every other message (`lobby.md` H2),
 //!   and 0x80 is not ordered against the pushes (transport.md §4.1), so a
@@ -72,9 +73,6 @@ pub(super) struct Player<'a> {
     /// join is still to be answered by a leave line (`queue_chat`).
     pub queue_line: Option<Instant>,
     pub queue_announced: bool,
-    /// When it was last told in the general chat to update its game
-    /// (`patch_check`).
-    pub update_hint_at: Option<Instant>,
     /// The order id of its Play (0x85), which `31` gives back.
     pub order_id: u32,
     /// The match (the queue's id) it was sent to, while it lasts.
@@ -452,6 +450,29 @@ impl<'a> Core<'a> {
 
     // -------------------------------------------------------------- sign-in
 
+    /// A sign-in refused before anything of it was taken: `FD`, and the
+    /// link closes. The client counts it a failed try (transport.md §6.1).
+    fn refuse_sign_in(&mut self, from: SocketAddr, mut transport: Transport, now: Instant) {
+        let closing = self
+            .links
+            .values()
+            .filter(|link| !matches!(link.stage, Stage::Player(_)))
+            .count();
+        if closing < MAX_CLOSING {
+            transport.kick(now);
+            self.links.insert(
+                from,
+                Link {
+                    transport,
+                    stage: Stage::Closing,
+                    held: None,
+                    #[cfg(test)]
+                    pushed: Vec::new(),
+                },
+            );
+        }
+    }
+
     fn sign_in(
         &mut self,
         from: SocketAddr,
@@ -460,30 +481,27 @@ impl<'a> Core<'a> {
         need_shop_items: bool,
         now: Instant,
     ) {
+        // A session from before a restart, of a game older than the server
+        // now takes: it must not get the pushes, which name items its game
+        // may lack. It ends, so the game's tries fail and it goes to its
+        // login screen, where its sign-in is refused (`patch_check`).
+        if let Some((name, revision)) = self.outdated_session(session_id) {
+            log::info!(
+                "{name}: a lobby sign-in from {from} of a game of patch revision {revision}, the \
+                 server takes {} and later; refused, and its session ended",
+                self.settings.min_patch_revision
+            );
+            self.store.end_session(session_id);
+            self.refuse_sign_in(from, transport, now);
+            return;
+        }
         let held = self.store.hold(session_id);
         let account = held
             .as_ref()
             .and_then(|_| self.store.account_for_session(session_id));
         let (Some(hold), Some(account)) = (held, account) else {
             log::warn!("A lobby sign-in from {from} with an unknown or ended session; refused");
-            let closing = self
-                .links
-                .values()
-                .filter(|link| !matches!(link.stage, Stage::Player(_)))
-                .count();
-            if closing < MAX_CLOSING {
-                transport.kick(now);
-                self.links.insert(
-                    from,
-                    Link {
-                        transport,
-                        stage: Stage::Closing,
-                        held: None,
-                        #[cfg(test)]
-                        pushed: Vec::new(),
-                    },
-                );
-            }
+            self.refuse_sign_in(from, transport, now);
             return;
         };
         let (account_id, login_name) = {
@@ -566,17 +584,7 @@ impl<'a> Core<'a> {
                 // Not an account a client can hold: it must not be half
                 // signed in.
                 log::error!("{name}'s sign-in could not be answered: {error}; refused");
-                transport.kick(now);
-                self.links.insert(
-                    from,
-                    Link {
-                        transport,
-                        stage: Stage::Closing,
-                        held: None,
-                        #[cfg(test)]
-                        pushed: Vec::new(),
-                    },
-                );
+                self.refuse_sign_in(from, transport, now);
                 return;
             }
         };
@@ -602,7 +610,6 @@ impl<'a> Core<'a> {
             queued_since: None,
             queue_line: None,
             queue_announced: false,
-            update_hint_at: None,
             order_id: 0,
             in_match,
             connect: None,

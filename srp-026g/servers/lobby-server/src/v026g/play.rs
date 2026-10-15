@@ -714,9 +714,6 @@ impl Core<'_> {
         let Some(pool) = self.pool_for_sessions([who.session_id]) else {
             return;
         };
-        if self.refuse_outdated(who, id::PLAY, now) {
-            return;
-        }
         let unix = quests::now();
         let (checked, level) = {
             let mut account = who.account.locked();
