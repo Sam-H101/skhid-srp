@@ -21,7 +21,8 @@ use std::process::ExitCode;
 
 use resources_db::Archive;
 use resources_db::server::{
-    Data, PatchFile, Provenance, archives_in, build, provenance_of, read, url_in,
+    Data, LAST_PATCH, PATCH_PREFIX, PatchFile, Provenance, RESOURCES_DB, archives_in, build,
+    patch_number, read, url_in,
 };
 
 const USAGE: &str = "usage:
@@ -46,9 +47,16 @@ optional port, a path; no credentials, no #, no spaces, quotes or
 backslashes; at most 1024 bytes): <file>=<URL>, or --patch-url <base URL>,
 which gives a patch without one the URL <base URL>/<its file name>.
 
+build writes the server's game data; info reads it and says what it was made
+of; check builds it again of the archives given and says whether <file> is
+those bytes (exit status 1 if not).
+
 pack makes a patch of every file under <folder>, at its path there
 (<folder>/gameplay/x is gameplay/x of the archive), reads it back and checks
-every file against the folder. It never overwrites --out.";
+every file against the folder. --out must be called resources.db.patch_<n>
+(or resources.db), the names the game mounts.
+
+build and pack never overwrite --out.";
 
 /// The archives the options name: `resources.db`, its patches with their
 /// URLs; and `--out`.
@@ -60,6 +68,12 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
     let mut patches: Vec<(PathBuf, Option<String>)> = Vec::new();
     let mut rest = options.iter();
     while let Some(key) = rest.next() {
+        if !matches!(
+            key.as_str(),
+            "--dir" | "--db" | "--patch-url" | "--out" | "--patch"
+        ) {
+            return Err(format!("unknown option {key}\n{USAGE}"));
+        }
         let value = rest
             .next()
             .ok_or_else(|| format!("{key} needs a value\n{USAGE}"))?;
@@ -76,7 +90,7 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
                 Some((path, url)) => (path.into(), Some(url.to_owned())),
                 None => (value.into(), None),
             }),
-            _ => return Err(format!("unknown option {key}\n{USAGE}")),
+            _ => unreachable!("an option above"),
         }
     }
     let db = match (dir, db) {
@@ -128,12 +142,48 @@ fn print(provenance: &Provenance) {
     }
 }
 
+/// Refuses `out` if something is there: it is never overwritten.
+fn is_new(out: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(out) {
+        Ok(_) => Err(format!(
+            "{}: already there; never overwritten",
+            out.display()
+        )),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Writes `bytes` to `out`, which must not be there yet: to `<out>.part`,
+/// which `check` reads back, then renamed to `out`. If any of it fails,
+/// `<out>.part` is removed.
+fn write_new(
+    out: &Path,
+    bytes: &[u8],
+    check: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    is_new(out)?;
+    let mut temporary = out.as_os_str().to_owned();
+    temporary.push(".part");
+    let temporary = PathBuf::from(temporary);
+    let at = |cause: std::io::Error| format!("{}: {cause}", temporary.display());
+    let written = std::fs::write(&temporary, bytes)
+        .map_err(at)
+        .and_then(|()| check(&temporary))
+        .and_then(|()| is_new(out))
+        .and_then(|()| std::fs::rename(&temporary, out).map_err(at));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     let (command, options) = args.split_first().ok_or(USAGE)?;
     match command.as_str() {
         "build" => {
             let (db, patches, out) = archives(options)?;
             let out = out.ok_or_else(|| format!("build needs --out\n{USAGE}"))?;
+            is_new(&out)?;
             let built = build(&db, &patches).map_err(|e| e.to_string())?;
             let names = std::iter::once(&built.provenance.db)
                 .chain(built.provenance.patches.iter().map(|patch| &patch.input));
@@ -143,11 +193,12 @@ fn run(args: &[String]) -> Result<(), String> {
                     input.name, given.files, given.replaced
                 );
             }
-            let mut temporary = out.clone().into_os_string();
-            temporary.push(".part");
-            std::fs::write(&temporary, &built.bytes)
-                .and_then(|()| std::fs::rename(&temporary, &out))
-                .map_err(|cause| format!("{}: {cause}", out.display()))?;
+            write_new(&out, &built.bytes, |written| {
+                let found = open(written)?;
+                (found.provenance == built.provenance)
+                    .then_some(())
+                    .ok_or_else(|| format!("{}: another provenance read back", written.display()))
+            })?;
             let made = resources_db::server::Input::of(&out).map_err(|e| e.to_string())?;
             println!(
                 "{}: {} bytes, sha256 {}, {} gameplay files, {} projects, made of:",
@@ -182,22 +233,42 @@ fn run(args: &[String]) -> Result<(), String> {
             if out.is_some() {
                 return Err(format!("check takes no --out\n{USAGE}"));
             }
-            let found = open(&data)?;
-            let given = provenance_of(&db, &patches).map_err(|e| e.to_string())?;
-            if found.provenance == given {
-                println!("{}: made of these, as given:", data.display());
-                print(&given);
-                Ok(())
-            } else {
-                println!("{} was made of:", data.display());
-                print(&found.provenance);
-                println!("what is given:");
-                print(&given);
-                Err(format!("{} was made of something else", data.display()))
-            }
+            check(&data, &db, &patches)
         }
         "pack" => pack(options),
         _ => Err(USAGE.into()),
+    }
+}
+
+/// `check <file> <archives>`: whether `data` is, byte for byte, what
+/// `build` makes of the archives now.
+fn check(data: &Path, db: &Path, patches: &[PatchFile]) -> Result<(), String> {
+    let found = std::fs::read(data).map_err(|cause| format!("{}: {cause}", data.display()))?;
+    let built = build(db, patches).map_err(|e| e.to_string())?;
+    if found == built.bytes {
+        println!(
+            "{}: the bytes these archives give, made of:",
+            data.display()
+        );
+        print(&built.provenance);
+        return Ok(());
+    }
+    match open(data) {
+        Ok(read) if read.provenance != built.provenance => {
+            println!("{} was made of:", data.display());
+            print(&read.provenance);
+            println!("what is given:");
+            print(&built.provenance);
+            Err(format!("{} was made of something else", data.display()))
+        }
+        Ok(_) => Err(format!(
+            "{}: made of these archives, but not the bytes they give now ({} bytes, not {}): \
+             another srp-game-data's, or changed",
+            data.display(),
+            found.len(),
+            built.bytes.len()
+        )),
+        Err(cause) => Err(format!("{cause}; not the bytes these archives give")),
     }
 }
 
@@ -209,25 +280,26 @@ fn pack(options: &[String]) -> Result<(), String> {
         _ => return Err(format!("pack needs --dir <folder> --out <file>\n{USAGE}")),
     };
     let out = PathBuf::from(out);
-    if std::fs::symlink_metadata(&out).is_ok() {
+    let name = out.file_name().and_then(|name| name.to_str());
+    if !name.is_some_and(|name| name == RESOURCES_DB || patch_number(name).is_some()) {
         return Err(format!(
-            "{}: already there; never overwritten",
+            "{}: the game mounts an archive only by the name {PATCH_PREFIX}<n>, n from 1 to \
+             {LAST_PATCH} (or {RESOURCES_DB})",
             out.display()
         ));
     }
+    is_new(&out)?;
     let (bytes, files) = resources_db::pack::pack(Path::new(dir)).map_err(|e| e.to_string())?;
     for (path, content) in &files {
         println!("  {path} {} bytes", content.len());
     }
-    let mut temporary = out.clone().into_os_string();
-    temporary.push(".part");
-    std::fs::write(&temporary, &bytes).map_err(|cause| format!("{}: {cause}", out.display()))?;
     // Read back from the disk, as the game will.
-    let written =
-        std::fs::read(&temporary).map_err(|cause| format!("{}: {cause}", out.display()))?;
-    resources_db::pack::check(&written, &files)
-        .map_err(|e| format!("{} read back: {e}", out.display()))?;
-    std::fs::rename(&temporary, &out).map_err(|cause| format!("{}: {cause}", out.display()))?;
+    write_new(&out, &bytes, |written| {
+        let written =
+            std::fs::read(written).map_err(|cause| format!("{}: {cause}", written.display()))?;
+        resources_db::pack::check(&written, &files)
+            .map_err(|e| format!("{} read back: {e}", out.display()))
+    })?;
     let made = resources_db::server::Input::of(&out).map_err(|e| e.to_string())?;
     println!(
         "{}: {} files, {} bytes, sha256 {}, read back: the same files",
@@ -249,3 +321,7 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "srp-game-data/tests.rs"]
+mod tests;

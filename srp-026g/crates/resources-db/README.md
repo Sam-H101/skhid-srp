@@ -26,9 +26,9 @@ the patches it runs on.
 
 | Module | Does |
 |---|---|
-| `lib.rs` (`Archive`) | Reads an archive: its table when opened (10 MB of 0.26g's 6.3 GB), a file's bytes when asked for. Every offset is checked; node kinds 0.26g has none of are refused by name. From resource-porter's `deps/vostok-resources-db` (`src/fat.rs` at 5d3b53e) |
-| `overlay` (`Overlay`) | Archives over one another in order: for each path the file of the last archive that has one. Only the tables are read to lay them; a file is read from its own archive. A path that is a file in one archive and a folder in another is refused |
-| `write` | Writes an archive the game mounts, deterministically: the mount root, folders and files in name order, each node's `m_parent` the start of its folder's class (936 for the root's children, as in 0.26g's archive; the engine follows it), each file's CRC-32, a zeroed 256-byte signature after the table, the files' bytes from the next 2048-byte boundary after it. `write` takes the files' bytes in memory (a patch); `write_to` asks for each file's bytes when it writes them, keeps empty folders, and writes files that share a key (a hard link's target and its links, read from another archive) once, so resource-porter can write a whole game archive again with some files changed |
+| `lib.rs` (`Archive`) | Reads an archive: its table when opened (10 MB of 0.26g's 6.3 GB), a file's bytes when asked for. Every offset and size is checked against the file before anything is allocated; node kinds 0.26g has none of are refused by name, as are names that are not UTF-8, paths longer than the game takes (`MAX_PATH`, 249 bytes: `resources/<path>` in the engine's 260-char `string_path` with its NUL) and a hard link to a folder it is in. From resource-porter's `deps/vostok-resources-db` (`src/fat.rs` at 5d3b53e) |
+| `overlay` (`Overlay`) | Archives over one another in order: for each path the file of the last archive that has one. Only the tables are read to lay them; a file is read from its own archive. A path that is a file in one archive and a folder in another (an empty one too) is refused; `empty_folders` gives the empty folders no archive fills |
+| `write` | Writes an archive the game mounts, deterministically: the mount root, folders and files in name order, each node's `m_parent` the start of its folder's class (936 for the root's children, as in 0.26g's archive; the engine follows it), each file's CRC-32, a zeroed 256-byte signature after the table (the room 0.26g's mounter reads), the files' bytes from the next 2048-byte boundary after it. That boundary is this writer's (and resource-porter's packer's) convention, not the engine's, and the layout is otherwise not 0.26g's: it is like the stock archive only in the parents and the signature. `write` takes the files' bytes in memory (a patch); `write_to` asks for each file's bytes when it writes them, keeps empty folders, and writes files that share a key (a hard link's target and its links, read from another archive) once, so resource-porter can write a whole game archive again with some files changed. An empty file never shares: its offset is the next file's |
 | `server` | The server's game data: `build`, `Provenance`, `read` |
 | `pack` | A patch from a folder: every file under it at its path there, written by `write`, read back and compared with the folder |
 | `bin/srp-game-data.rs` | The command line |
@@ -62,19 +62,28 @@ srp-game-data pack --dir <folder> --out resources.db.patch_<n>
   `https://`, a host name or a bare IPv4 address, an optional port, a path;
   no credentials, no `#`, no spaces, quotes or backslashes; printable ASCII,
   at most 1024 bytes.
-- `build` writes `<out>.part` and renames it. It prints what each archive
-  gave, the output's size and sha256, and the provenance.
+- `build` never overwrites `--out`: it writes `<out>.part`, reads its
+  provenance back and renames it; if anything fails the `.part` is removed.
+  It prints what each archive gave, the output's size and sha256, and the
+  provenance.
 - `info` checks every file of the data against its table and prints the
-  provenance; `check` also hashes the archives given and says whether the
-  data was made of exactly those, with those URLs (exit status 1 if not).
+  provenance. `check` builds the data again of the archives given, with
+  those URLs (as `build`, in memory), and says whether the file is those
+  bytes, exit status 1 if not: made of other archives or URLs (both
+  provenances are printed), or of these but not the bytes they give now
+  (another srp-game-data's, or changed). It writes nothing.
 
 - `pack` makes a patch of a folder whose files are at the paths the game
   looks them up by (`<folder>/gameplay/items/x.options` is
   `gameplay/items/x.options`), by `write` (above), reads the written file
   back and compares every file with the folder's. A symbolic link, a name
-  that is not UTF-8 or has a `\`, an empty folder (`write` makes none) and a
-  folder without files are refused; `--out` is never overwritten. The
-  release script `release/build-patch` calls it.
+  that is not UTF-8 or has a `\`, a hidden file or folder (a name starting
+  with `.`: `.git`, an editor's swap file), a path longer than 249 bytes,
+  an empty folder (`write` makes none) and a folder without files are
+  refused. `--out` must be called `resources.db.patch_<n>` (or
+  `resources.db`), a name the game mounts, and is never overwritten; the
+  `.part` is removed if anything fails. The release script
+  `release/build-patch` calls it.
 
 For example, on the release machine:
 
@@ -125,13 +134,26 @@ provenance and so other bytes.
 
 `cargo test -p resources-db`: small archives made by `write` (a later file
 over an earlier one, new files, folders merging over three archives, a file
-over a folder refused, patches given out of order, gaps in the numbers, the
-names the game does not mount, the same bytes twice, other bytes for another
-URL or patch, the provenance read back and wrong ones refused, a file unlike
-its table refused), resource-porter's `tests/fixture.db` for the reader,
-the writer's `m_parent` and signature room, `write_to` (the bytes `write` gives, empty folders, one copy of shared bytes, bytes unlike their size or checksum refused), and `pack` (a folder's files at
-their paths, read back, the same bytes twice, what an archive cannot say
-refused).
+over a folder or an empty folder refused, the empty folders no archive
+fills, patches given out of order, gaps in the numbers, the names the game
+does not mount, the same bytes twice, other bytes for another URL or patch,
+the provenance read back and wrong ones refused, a file unlike its table
+refused), resource-porter's `tests/fixture.db` for the reader (damaged
+tables, a short header, sizes past the end of the file refused before
+anything is allocated, a name that is not UTF-8, a folder that links to
+itself or to a folder above it refused at once, a path through links
+longer than the game takes, the CRC by its table against the CRC bit by
+bit), the writer's `m_parent` and signature room, `write_to` (the bytes
+`write` gives, empty folders, one copy of shared bytes, an archive written
+again with its offsets as share keys though its empty files share the next
+file's offset, bytes unlike their size or checksum refused), and `pack` (a
+folder's files at their paths, read back, the same bytes twice, what an
+archive cannot say refused, hidden files, paths too long).
+`tests/srp_game_data.rs` runs the command: `check` passes (exit 0) on what `build` wrote and fails
+(exit 1) on other URLs, other files under the same provenance, an archive
+that is not server data or a missing file; `build` and `pack` never
+overwrite and a failure writes nothing; `pack` writes only names the game
+mounts. The command's own tests check its option rules.
 
 `pack` of the folders patches 14, 15 and 16 were made of gives those
 patches byte for byte (sha256 `7535d0d0…d4c6c3`, `191b24fb…b993ea0`,
