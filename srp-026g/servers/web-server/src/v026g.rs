@@ -72,6 +72,32 @@ pub struct LiveMatch {
     pub standing: Option<LiveStanding>,
 }
 
+/// What a match is taken to last when its map is not known: the time all
+/// playable modes have (`maps::MapMode`: 900 s, a 20 s countdown, a 5 s
+/// wait).
+const UNKNOWN_MAP_LASTS: Duration = Duration::from_secs(900 + 20 + 5);
+
+impl LiveMatch {
+    /// The most the match can still last, which `GET /api/stats` gives as
+    /// `last_match_ends_in`: once the countdown began, its time left (the
+    /// launcher's "Time left"); before that, while its players load, its
+    /// map's whole wait, countdown and match time (the loading itself may
+    /// take a little longer); nothing once it has its result. It can end
+    /// sooner (the tickets, the batteries, everyone leaving).
+    pub fn ends_within(&self) -> Duration {
+        if !self.phase.is_listed() {
+            return Duration::ZERO;
+        }
+        self.time_left.unwrap_or_else(|| {
+            survarium::v026g::maps::map_mode(self.map_id).map_or(UNKNOWN_MAP_LASTS, |map| {
+                Duration::from_secs(u64::from(
+                    map.wait_time + map.countdown_time + map.match_time,
+                ))
+            })
+        })
+    }
+}
+
 /// The score the match server last trusted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveStanding {

@@ -236,7 +236,7 @@ login or an admin token, with `Content-Type: application/json` and
 `Cache-Control: no-store`. For example (illustrative counts):
 
 ```json
-{"online":12,"registered":45,"matches":3,"queued":4}
+{"online":12,"registered":45,"matches":3,"queued":4,"last_match_ends_in":512}
 ```
 
 - `online`: distinct accounts with an active lobby/chat connection or a
@@ -247,8 +247,14 @@ login or an admin token, with `Content-Type: application/json` and
 - `queued`: players currently in the regular matchmaking queue, counting
   each squad member separately. Players already assigned to a match, and
   players waiting for squad/clan readiness outside matchmaking, are excluded.
+- `last_match_ends_in`: seconds, rounded up, until the last running match
+  ends at the latest: the longest time left to the time limit of any match
+  (the launcher page's "Time left"); a match still loading, before its
+  countdown, counts its map's whole wait, countdown and match time (925 s);
+  0 when none runs. A match can end sooner. `release/release.sh` plans the
+  maintenance 2 minutes after it.
 
-All four fields are nonnegative integers. Counts are read from live state;
+All five fields are nonnegative integers. Counts are read from live state;
 separate locks mean they are not a single atomic snapshot. Reading the endpoint
 never forms a match. No names, identifiers, addresses or credentials are
 returned. It is independent of the page language. Poll about once a minute.
