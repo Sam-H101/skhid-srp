@@ -1877,6 +1877,7 @@ impl World {
                     kills: if place == 0 { 3 } else { 0 },
                     deaths: 0,
                     longest_killstreak: 0,
+                    kit_changes: 0,
                     statistics: Some(statistics),
                     supplies: None,
                 }

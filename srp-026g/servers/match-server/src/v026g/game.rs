@@ -870,6 +870,11 @@ pub(crate) struct Game {
     mode_end_at: Option<u32>,
     state: Option<Observed>,
     best_streaks: Vec<u16>,
+    /// By place: the kit choices relayed for a tick before play began
+    /// (`TimelimitRule::before_play`), when a patched game (patch 30)
+    /// respawns a live player in the chosen kit where it stands. At most as
+    /// many lives more than its deaths: [`PlayerResult::kit_changes`].
+    kit_changes: Vec<u16>,
     /// The end has come: waiting for a last snapshot since then.
     ending: Option<(Instant, MatchEnd)>,
     finished_at: Option<Instant>,
@@ -933,6 +938,7 @@ impl Game {
             mode_end_at: None,
             state: None,
             best_streaks: vec![0; players],
+            kit_changes: vec![0; players],
             ending: None,
             finished_at: None,
             empty_since: Some(now),
@@ -3384,12 +3390,24 @@ impl Game {
             }
         }
         peer.placed_profiles.push_back((time, relayed_time));
+        self.note_kit_choice(index, relayed_time);
         let what = Relayed::Profile {
             tick: relayed_tick,
             value,
         };
         self.relay_to_others(index, &what, relayed_time, now);
         self.inputs.push((relayed_time, index, what));
+    }
+
+    /// A kit choice of the player at `index`, relayed for `time`: counted
+    /// when it comes before play begins, when the games may respawn the
+    /// player in that kit where it stands (patch 30) without a death.
+    pub(crate) fn note_kit_choice(&mut self, index: usize, time: u32) {
+        if self.rule.before_play(time)
+            && let Some(count) = self.kit_changes.get_mut(index)
+        {
+            *count = count.saturating_add(1);
+        }
     }
 
     /// Send something of the player at `index` to every other client in
@@ -4626,6 +4644,7 @@ impl Game {
                     kills: record.map_or(counted(event::KILL), |record| record.kills),
                     deaths: record.map_or(counted(event::DEATH), |record| record.deaths),
                     longest_killstreak: self.best_streaks[index],
+                    kit_changes: self.kit_changes[index],
                     supplies: state.and_then(|state| state.supplies.get(index).cloned().flatten()),
                 }
             })

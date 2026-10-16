@@ -54,6 +54,7 @@ fn player(place: u8, team: u8, name: &str, statistics: PlayerStatistics) -> Play
         kills: statistics.total(event::KILL) as u16,
         deaths: statistics.total(event::DEATH) as u16,
         longest_killstreak: statistics.longest_killstreak,
+        kit_changes: 0,
         statistics: Some(statistics),
         supplies: None,
     }
@@ -2095,6 +2096,52 @@ fn a_level_reached_is_told_with_its_reward() {
         client.receive(&message).unwrap(),
         Decoded::Important { kind: 14, .. }
     ));
+}
+
+#[test]
+fn a_kit_change_before_play_is_a_life_more_for_the_supplies_used() {
+    use survarium::v026g::match_msgs::players::{ItemLeft, Supplies};
+    let medkit = Dictionary::shared().item_named("medkit").unwrap().dict_id;
+    // Alice died once and her block says none of her 5 medkits is left;
+    // a life takes 2 out of the store.
+    let mut players = alice_and_bob();
+    players[0].supplies = Some(Supplies {
+        alive: false,
+        kit: 0,
+        inventory_read: false,
+        items: vec![ItemLeft {
+            dict_id: medkit,
+            stack: true,
+            stored: 0,
+            in_hand: None,
+            condition: None,
+            magazine: None,
+            slot: None,
+        }],
+    });
+    let used = |kit_changes: u16| {
+        let mut players = players.clone();
+        players[0].kit_changes = kit_changes;
+        let store = accounts(&players);
+        {
+            let alice = store.get(10).unwrap();
+            let mut alice = alice.locked();
+            let kits = alice.add_item(medkit, 5);
+            alice.kits[0].slots[13] = Some(crate::v026g::KitSlot {
+                item_id: kits,
+                count: 2,
+            });
+        }
+        let report = Results::new()
+            .settle(&result(players), &store, &terms(), &mut Rng::new(1))
+            .unwrap();
+        report.players[0].reward.supplies_used.clone()
+    };
+    // Two lives (one death): at most 4.
+    assert_eq!(used(0), [(medkit, 4)]);
+    // A kit change before play began, a respawn in place with the new
+    // kit's medkits (patch 30): three lives, and all 5 were used.
+    assert_eq!(used(1), [(medkit, 5)]);
 }
 
 #[test]

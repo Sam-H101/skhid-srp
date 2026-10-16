@@ -1245,7 +1245,11 @@ impl Bots {
                 self.think(index, &view, &mut rays, &mut notes);
             }
             self.ticks(index, &clock, &view, &mut made);
-            if let Some(bot) = self.bots[index].as_mut()
+            // A kit picked before play begins would respawn the bot where
+            // it stands at once (the games' patch 30), not at its next
+            // life: the bot picks once play has begun, for its next life.
+            if clock.playing
+                && let Some(bot) = self.bots[index].as_mut()
                 && bot.entered.is_some()
                 && let Some((kit, left, other)) = bot.pick_kit()
             {
