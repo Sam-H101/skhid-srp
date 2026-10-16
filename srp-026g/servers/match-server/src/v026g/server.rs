@@ -70,12 +70,13 @@ pub fn run(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}, relays packed for {} ms",
+         check: {}, relays packed for {} ms, bots give way: {}",
         config.match_server.bind_addr(),
         settings.late_inputs,
         switch(settings.clock_correction),
         switch(settings.check_initial_world),
-        settings.pack.as_millis()
+        settings.pack.as_millis(),
+        switch(settings.bots_give_way)
     );
     serve(
         &socket,
@@ -103,12 +104,13 @@ pub fn run_on(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on UDP {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}, relays packed for {} ms",
+         check: {}, relays packed for {} ms, bots give way: {}",
         socket.local_addr()?,
         settings.late_inputs,
         switch(settings.clock_correction),
         switch(settings.check_initial_world),
-        settings.pack.as_millis()
+        settings.pack.as_millis(),
+        switch(settings.bots_give_way)
     );
     let port = registry.port();
     serve(
@@ -503,6 +505,7 @@ impl Server {
                     played_ms: None,
                     trusted_snapshot_ms: None,
                     trusted_by: 0,
+                    vs_bots: formed.vs_bots,
                     players: formed
                         .places
                         .iter()
@@ -513,6 +516,7 @@ impl Server {
                             account_id: place.account_id,
                             name: place.name.clone(),
                             team: place.team,
+                            driven: place.driven,
                             entered: false,
                             present_at_end: false,
                             left: false,

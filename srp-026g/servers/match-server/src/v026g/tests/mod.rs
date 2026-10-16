@@ -9,6 +9,7 @@
 use super::test_client as client;
 
 mod bots;
+mod driven;
 mod game;
 mod late_join;
 mod late_join_edge_cases;
@@ -69,12 +70,14 @@ pub fn setup(players: usize, map_id: u8) -> MatchSetup {
         players: (0..players)
             .map(|place| MatchPlayer {
                 bot: false,
+                driven: false,
                 session_id: session_of(place),
                 account_id: 100 + place as u32,
                 profile: profile(&format!("player{place}"), (place % 2) as u8),
             })
             .collect(),
         score_weights: None,
+        vs_bots: false,
     }
 }
 
@@ -119,11 +122,56 @@ impl Bench {
     /// (`MatchPlayer::bot`) and given clients that simulate nothing
     /// (`Client::idle`, what `srp-bot` runs).
     pub fn with_bots(players: usize, map_id: u8, settings: Settings, bots: &[usize]) -> Self {
-        Self::with_dialect(players, map_id, settings, bots, false)
+        Self::with_dialect(players, map_id, settings, bots, &[], false)
+    }
+
+    /// With the server's own bots ([`MatchPlayer::driven`]) at `driven`.
+    pub fn with_driven(players: usize, map_id: u8, settings: Settings, driven: &[usize]) -> Self {
+        Self::with_dialect(players, map_id, settings, &[], driven, false)
     }
 
     pub fn growing(players: usize, map_id: u8, settings: Settings) -> Self {
-        Self::with_dialect(players, map_id, settings, &[], true)
+        Self::with_dialect(players, map_id, settings, &[], &[], true)
+    }
+
+    /// A match of growing rosters with the server's own bots at `driven`.
+    pub fn growing_with_driven(
+        players: usize,
+        map_id: u8,
+        settings: Settings,
+        driven: &[usize],
+    ) -> Self {
+        Self::with_dialect(players, map_id, settings, &[], driven, true)
+    }
+
+    /// A late joiner on `team` is taken into the running match: its client
+    /// is the bench's next one, not connected yet. Its place.
+    pub fn reserve_on(&mut self, team: u8) -> usize {
+        let place = self.clients.len();
+        let mut player = setup(place + 1, self.clients[0].sim.map_id)
+            .players
+            .remove(place);
+        player.profile.team = team;
+        player.profile.name = format!("late-player-{place}");
+        let ticket = self
+            .registry
+            .join_running(self.match_id, player)
+            .expect("the match takes the player");
+        assert_eq!(ticket.match_id, self.match_id);
+        let map_id = self.clients[0].sim.map_id;
+        self.clients
+            .push(Client::growing(session_of(place), place + 1, map_id));
+        self.addrs
+            .push(SocketAddr::from(([127, 0, 0, 1], 40_000 + place as u16)));
+        place
+    }
+
+    /// A match of one player against the server's own bots at `driven`
+    /// ("Player vs Bots": `MatchSetup::vs_bots`), of growing rosters.
+    pub fn vs_bots(players: usize, map_id: u8, settings: Settings, driven: &[usize]) -> Self {
+        let mut setup = setup(players, map_id);
+        setup.vs_bots = true;
+        Self::with_setup(setup, settings, &[], driven, true)
     }
 
     fn with_dialect(
@@ -131,14 +179,29 @@ impl Bench {
         map_id: u8,
         settings: Settings,
         bots: &[usize],
+        driven: &[usize],
+        growing: bool,
+    ) -> Self {
+        Self::with_setup(setup(players, map_id), settings, bots, driven, growing)
+    }
+
+    fn with_setup(
+        mut setup: MatchSetup,
+        settings: Settings,
+        bots: &[usize],
+        driven: &[usize],
         growing: bool,
     ) -> Self {
         log_to_stderr();
+        let (players, map_id) = (setup.players.len(), setup.map_id);
         let start = Instant::now();
         let registry = Arc::new(MatchRegistry::new("127.0.0.1", 1236));
-        let mut setup = setup(players, map_id);
         for place in bots {
             setup.players[*place].bot = true;
+        }
+        for place in driven {
+            let player = &mut setup.players[*place];
+            (player.driven, player.session_id, player.account_id) = (true, 0, 0);
         }
         let ticket = registry
             .create_with_dialect(setup, start, growing)

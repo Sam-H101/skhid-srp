@@ -24,7 +24,8 @@
 //! The layouts are PROVEN in the exe (the notes give the addresses), and so
 //! is the order of the rules inside the rules section: the mode config's
 //! `rules` (timelimit, respawn, the mode's rule, kd stats), then the two
-//! respawn flags. No 0.26g snapshot was seen yet.
+//! respawn flags. Every world of real 0.26g matches the server saved
+//! (33,106, 2026-10-12..14) walks into its six sections.
 
 use std::collections::HashMap;
 

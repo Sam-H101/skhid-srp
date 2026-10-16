@@ -24,6 +24,7 @@ fn terms() -> Terms {
         wear: true,
         playtime_bonus: true,
         rated_players: 1,
+        pvb_pay: 0.5,
     }
 }
 
@@ -44,6 +45,7 @@ fn player(place: u8, team: u8, name: &str, statistics: PlayerStatistics) -> Play
         account_id: 10 + u32::from(place),
         name: name.to_owned(),
         team,
+        driven: false,
         entered: true,
         present_at_end: true,
         left: false,
@@ -72,6 +74,7 @@ fn result(players: Vec<PlayerResult>) -> MatchResult {
         trusted_snapshot_ms: Some(690_000),
         trusted_by: 2,
         players,
+        vs_bots: false,
     }
 }
 
@@ -2240,6 +2243,114 @@ fn a_report_whose_screen_may_be_open_is_kept_past_the_last_ones() {
 
 // ---- test bots (`bots`, `SRP_BOT_ACCOUNTS`) ----
 
+/// A match of one player against the server's bots ("Player vs Bots"):
+/// its silver and experience at `SRP_PVB_PAY` (half), no quest counted and
+/// no daily bonus, no rating moved. Bob is one of the server's bots.
+#[test]
+fn a_match_against_bots_pays_half_and_counts_no_quest() {
+    let mut players = alice_and_bob();
+    players[1].driven = true;
+    players[1].account_id = 0;
+    players[1].session_id = 0;
+    let mut outcome = result(players.clone());
+    outcome.trusted_by = 1;
+    let quest = Quests::shared().quest(10101).unwrap();
+    // Alice has not played today, takes the Scavengers' quests and holds
+    // their first (win with the base not robbed), which this match meets.
+    let fresh = || {
+        let store = accounts(&players[..1]);
+        let alice = store.get(10).unwrap();
+        let mut alice = alice.locked();
+        alice.extras.bonus = Default::default();
+        quests::choose_faction(&mut alice, 1).unwrap();
+        alice.quests = vec![QuestInstance {
+            instance_id: 50,
+            quest_id: quest.id,
+            games: 0,
+            expires_at: NOW + 10_000,
+        }];
+        alice.next_quest_instance = 51;
+        drop(alice);
+        store
+    };
+
+    // The same match as any other: the quest is paid, the day's first
+    // victory doubled.
+    let store = fresh();
+    let plain = Results::new()
+        .settle(&outcome, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    let plain = &plain.players[0].reward;
+    assert!(plain.daily_bonus && plain.quest_money >= quest.money);
+
+    // Against bots: no daily bonus, the quest held as it was.
+    outcome.vs_bots = true;
+    let store = fresh();
+    let report = Results::new()
+        .settle(&outcome, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    let alice = &report.players[0];
+    assert!(alice.reward.won && !alice.reward.daily_bonus);
+    assert_eq!(alice.reward.daily_reward, None);
+    assert_eq!(alice.reward.quest_money, 0);
+    assert!(alice.reward.quest_reputation.is_empty());
+    assert_eq!(alice.full.quest_money, 0);
+    assert!(!alice.notices.iter().any(|(kind, _)| *kind == QUEST_MESSAGE));
+    let after = account(&store, 10);
+    assert_eq!(after.extras.bonus, Default::default());
+    assert_eq!(after.quests.len(), 1);
+    assert_eq!(
+        (after.quests[0].quest_id, after.quests[0].games),
+        (10101, 0)
+    );
+    // No rating moves (a bot of the server's is in it).
+    assert_eq!(alice.reward.rating_after, alice.reward.rating_before);
+    assert_eq!(after.rating, pay::START_RATING);
+    assert_eq!(after.balance, Default::default());
+
+    // Half the silver and experience: at the money rate 100 and the
+    // experience rate 2 it pays what a match not against bots pays at 50
+    // and 1 (with the day's bonus spent and no quest), cell by cell.
+    // Reputation is whole.
+    let store = accounts(&players[..1]);
+    quests::choose_faction(&mut store.get(10).unwrap().locked(), 1).unwrap();
+    let half = Terms {
+        money_rate: pay::MoneyRate::Flat(50),
+        ..terms()
+    };
+    let mut reference = outcome.clone();
+    reference.vs_bots = false;
+    let reference = Results::new()
+        .settle(&reference, &store, &half, &mut Rng::new(1))
+        .unwrap();
+    let reference = &reference.players[0];
+    let whole = Terms {
+        experience_rate: 2,
+        ..terms()
+    };
+    let store = fresh();
+    let report = Results::new()
+        .settle(&outcome, &store, &whole, &mut Rng::new(1))
+        .unwrap();
+    let alice = &report.players[0];
+    assert_eq!(alice.reward.money, reference.reward.money);
+    assert!(alice.reward.money > 0);
+    assert_eq!(alice.reward.reputation, reference.reward.reputation);
+    assert_eq!(alice.full.components, reference.full.components);
+    assert_eq!(alice.full.premium, reference.full.premium);
+    assert_eq!(alice.reward.experience, reference.reward.experience);
+    assert!(alice.reward.experience > 0);
+    // At the default half and rate 1, less than the plain match's.
+    let store = fresh();
+    let report = Results::new()
+        .settle(&outcome, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    assert!(report.players[0].reward.experience < plain.experience);
+    assert!(report.players[0].reward.money < plain.money);
+    // The screen of the player still comes out.
+    assert!(report.screen_for(10).is_some());
+}
+
 #[test]
 fn a_match_with_a_test_bot_moves_no_rating_and_pays_the_bot_no_daily_bonus() {
     // Bob is a bot, and wins: neither has played today.
@@ -2296,6 +2407,34 @@ fn a_match_with_a_test_bot_moves_no_rating_and_pays_the_bot_no_daily_bonus() {
     for id in [10, 11] {
         assert!(report.screen_for(id).is_some());
     }
+}
+
+#[test]
+fn a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0() {
+    // Bob's place is the match server's own bot (`SRP_SERVER_BOTS`): no
+    // account, no session.
+    let mut players = alice_and_bob();
+    let store = accounts(&players);
+    players[1].driven = true;
+    (players[1].session_id, players[1].account_id) = (0, 0);
+    players[1].statistics = None;
+    players[1].score = 0;
+    let mut outcome = result(players);
+    outcome.winner = Some(0);
+    outcome.trusted_by = 1;
+    let results = Results::new();
+    let report = results
+        .settle(&outcome, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+    // Alice is paid for her win, and her rating stays: a match against a
+    // bot says nothing of her.
+    let alice = &report.players[0];
+    assert!(alice.reward.won && alice.reward.money > 0);
+    assert_eq!(alice.reward.rating_after, alice.reward.rating_before);
+    assert_eq!(account(&store, 10).rating, pay::START_RATING);
+    assert!(report.screen_for(10).is_some());
+    // Nothing is kept for an account 0 to be shown.
+    assert!(!results.has_unseen(0));
 }
 
 /// The players' accounts ([`accounts`]) kept in `repository`.

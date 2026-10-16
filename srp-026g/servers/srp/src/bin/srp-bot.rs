@@ -24,7 +24,7 @@ place in the match, stays to the end without playing, takes the results
 and presses Play again.
 
   srp-bot [--server HOST:PORT] [--name NAME] [--password PASSWORD]
-          [--count N] [--once] [--kit ID] [--revision N]
+          [--count N] [--once] [--kit ID] [--drive] [--revision N]
 
   --server    the login server, as the game's -server= (default
               127.0.0.1:1234; or SRP_BOT_SERVER)
@@ -39,6 +39,9 @@ and presses Play again.
               the late join, the only one such a game meets
   --kit ID    press Play with this kit id (default: the kit the account
               plays)
+  --drive     in a match, send inputs: a fixed script (walk, turn a quarter,
+              walk, sprint, crouch, fire, reload, weapon 2, turn back),
+              again and again; each input is printed (srp::drive)
 
 The server must name the bots' accounts: SRP_BOT_ACCOUNTS=bot-1,bot-2
 (testing only: never on a public server).
@@ -71,6 +74,7 @@ fn main() {
     let mut count = 1_usize;
     let mut once = false;
     let mut kit = None;
+    let mut drive = false;
     let mut revision = 0_u8;
 
     let mut args = std::env::args().skip(1);
@@ -110,6 +114,7 @@ fn main() {
                     .unwrap_or_else(|_| fail("--revision must be 0 to 255"));
             }
             "--once" => once = true,
+            "--drive" => drive = true,
             "--help" | "-h" => {
                 print!("{USAGE}");
                 return;
@@ -138,6 +143,7 @@ fn main() {
             password: password.clone(),
             once,
             kit,
+            drive,
             revision,
         })
         .collect();

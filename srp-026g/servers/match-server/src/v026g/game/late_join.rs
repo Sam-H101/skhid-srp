@@ -3,6 +3,7 @@
 //! clocks, histories and normal input relay while this state machine waits.
 
 use super::*;
+use session::matchmaking_policy::bot_gives_way;
 use survarium::v026g::match_msgs::late_join::{Prepare, Prepared, Proposal, Status};
 use survarium::v026g::match_msgs::{MAX_PLAYERS, id};
 
@@ -158,9 +159,10 @@ impl Game {
         }
         assert_eq!(formed.match_id, self.id);
         assert_eq!(&formed.places[..self.players()], &self.formed.places);
-        for _ in self.players()..formed.places.len() {
+        for place in self.players()..formed.places.len() {
             self.peers.push(None);
             self.best_streaks.push(0);
+            self.push_driven_place(formed.places[place].team);
             self.admissions.push(Some(Admission::new(now)));
         }
         let before = self.players();
@@ -582,13 +584,16 @@ impl Game {
                 return;
             }
             let at = grid_up(clock + ROSTER_LEAD_MS);
-            for index in caught_up {
+            for &index in &caught_up {
                 log::info!(
                     "Match {:#x}: new place {index} caught up; entry scheduled for {at} ms",
                     self.id
                 );
                 self.roster_change(None, index, true, at, now);
             }
+            // The server's bots make room for them where it is needed
+            // (`driven.rs`).
+            self.give_way(&caught_up, at, now);
         }
     }
 
@@ -617,7 +622,7 @@ impl Game {
     /// not (two placed one on each side, one of them gone). The sides it
     /// would make when not.
     fn entry_keeps_balance(&self, entering: &[usize]) -> Result<(), [i64; 2]> {
-        let mut sides = [0i64; 2];
+        let mut sides = [0usize; 2];
         for (index, place) in self.formed.places.iter().enumerate() {
             let in_match = !self.waiting_entry(index)
                 && self.peers[index]
@@ -627,15 +632,32 @@ impl Game {
                 sides[usize::from(place.team.min(1))] += 1;
             }
         }
-        let before = (sides[0] - sides[1]).abs();
-        for index in entering {
-            sides[usize::from(self.formed.places[*index].team.min(1))] += 1;
+        // The server's bots are players of their side too, as the lobby
+        // counts them; one whose side needs the room makes it for an
+        // entrant, as `give_way` lets it after the entry.
+        let staying = self.bots_staying();
+        let mut bots = if self.settings.bots_give_way {
+            staying
+        } else {
+            [0, 0]
+        };
+        for side in 0..2 {
+            sides[side] += staying[side];
         }
-        let after = (sides[0] - sides[1]).abs();
+        let before = sides[0].abs_diff(sides[1]);
+        for index in entering {
+            let team = usize::from(self.formed.places[*index].team.min(1));
+            if bot_gives_way(sides, bots, team) {
+                bots[team] -= 1;
+            } else {
+                sides[team] += 1;
+            }
+        }
+        let after = sides[0].abs_diff(sides[1]);
         if after <= 1 || after <= before {
             Ok(())
         } else {
-            Err(sides)
+            Err(sides.map(|side| side as i64))
         }
     }
 

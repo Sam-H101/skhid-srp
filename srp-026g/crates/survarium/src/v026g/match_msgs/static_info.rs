@@ -207,29 +207,55 @@ impl MatchProfile {
         dictionary: &Dictionary,
         first_instance_id: u32,
     ) -> Self {
-        let mut kit = MatchKit::empty(1, "");
-        kit.modifiers = modifiers;
+        Self::from_loadouts(
+            name,
+            team,
+            &[loadout],
+            modifiers,
+            dictionary,
+            first_instance_id,
+        )
+    }
+
+    /// A player with a usable kit for each of `loadouts` (ids 1 on, at
+    /// most [`MAX_KITS`]), each with items of its own (no item is in two
+    /// kits, so each kit's ammo is its own), whole and with no
+    /// modifications; the items' ids count up from `first_instance_id`.
+    pub fn from_loadouts(
+        name: &str,
+        team: u8,
+        loadouts: &[&Loadout],
+        modifiers: [f32; MODIFIERS],
+        dictionary: &Dictionary,
+        first_instance_id: u32,
+    ) -> Self {
         let mut items = Vec::new();
-        for item in &loadout.items {
-            let Some(slot) = kit.slots.get_mut(usize::from(item.slot)) else {
-                continue;
-            };
-            let is_stack = dictionary.is_stack(item.dict_id);
-            let count = if is_stack { item.count } else { 1 };
-            *slot = Some((items.len() as u16, count.min(u32::from(u16::MAX)) as u16));
-            items.push(MatchItem {
-                instance_id: first_instance_id.wrapping_add(items.len() as u32),
-                dict_id: item.dict_id,
-                condition_or_stack: if is_stack { item.count } else { FULL_CONDITION },
-                ..MatchItem::default()
-            });
+        let mut kits = Vec::new();
+        for (index, loadout) in loadouts.iter().take(MAX_KITS).enumerate() {
+            let mut kit = MatchKit::empty(index as u32 + 1, "");
+            kit.modifiers = modifiers;
+            for item in &loadout.items {
+                let Some(slot) = kit.slots.get_mut(usize::from(item.slot)) else {
+                    continue;
+                };
+                let is_stack = dictionary.is_stack(item.dict_id);
+                let count = if is_stack { item.count } else { 1 };
+                *slot = Some((items.len() as u16, count.min(u32::from(u16::MAX)) as u16));
+                items.push(MatchItem {
+                    instance_id: first_instance_id.wrapping_add(items.len() as u32),
+                    dict_id: item.dict_id,
+                    condition_or_stack: if is_stack { item.count } else { FULL_CONDITION },
+                    ..MatchItem::default()
+                });
+            }
+            kits.push(kit);
         }
         Self {
             team,
             name: name.to_owned(),
             clan_tag: String::new(),
             protection: NO_PROTECTION,
-            kits: vec![kit],
+            kits,
             items,
             squad: 0,
         }

@@ -221,6 +221,18 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` | 120 | The same for a player in a match that runs (its level may be loading); never less than the one above |
 | `SRP_LOBBY_SESSION_GRACE_SECONDS` | 60 | How long the session of a link that went silent waits for its client to connect again (the client tries by itself, every 5 s); for a player in a match, counted from the match's end. 0: the session ends with the link |
 
+### Player vs Bots (`servers/lobby-server/src/v026g/pvb.rs`)
+
+One player against the server's own bots, chosen in srp's changed lobby movie (`docs/notes/lobby.md` §2.16.2, `matchmaking.md` §9.8, `player_bots.md` §8).
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_PVB` | off | `on`: the mode is offered |
+| `SRP_PVB_MAX_GEAR` | 5 | The highest equipment level let in (the client's own, of the kits that can be played), 0 to 15 |
+| `SRP_PVB_MAX_MATCHES` | 5 | The most matches against bots at once, 1 to 20 (choices held for a Play count too). With `SRP_PVB=on` the match server keeps up to this many bots' maps in memory (or `SRP_MAPDATA_AT_ONCE` if more): about 35-70 MB each |
+| `SRP_PVB_PAY` | 0.5 | The share of a match's silver and experience such a match pays, 0 to 1. It counts for no quest and no daily bonus, and moves no rating |
+| `SRP_PVB_STALL_S` | 60 | A match against bots whose player has been asked for its world this long and uploaded none while it plays is over (as deserted), 10 to 3600 |
+
 ### Match server (`servers/match-server/src/v026g/mod.rs`)
 
 Each is an escape hatch for one thing not proven against a live client.
@@ -234,6 +246,7 @@ Each is an escape hatch for one thing not proven against a live client.
 | `SRP_RESYNC_WORLD_ONLY` | off | `on`: a playing client is resynced with 0xE8 alone |
 | `SRP_RESTORE_LIMIT` | 0 | Resyncs in a row without agreement after which a client is disconnected; 0: no limit |
 | `SRP_COMPRESS_STATE` | on | `off`: the world (0xE8) goes to the clients as it is, not as LZMA2 (since 2026-10-13; `docs/notes/match.md` section 27) |
+| `SRP_BOTS_GIVE_WAY` | on | `off`: the server's own bots (`SRP_SERVER_BOTS`, testing only) stay to the end; on, one of a side leaves (0xEA) when a late joiner comes onto that side and it would otherwise be the larger one (`game/driven.rs`; a roster place is never freed by it) |
 | `SRP_ENTRY_STATE_SECONDS` | 4 | How long the first world of a game that has none yet is kept on its way before its sync starts over; 2 to 5, and less for an old snapshot (the ticks on the wire reach 6.35 s from the clock the game waits at). A game that plays is resynced within 1.75 s |
 | `SRP_RELAY_PACK_MS` | 15 | How long a relay or a drop order may wait for others to share its datagram (at most 50; 0: each goes at once). Anything else queued, a full datagram or an ack due sends them at once (since 2026-10-14; `docs/notes/transport.md` section 11.1) |
 

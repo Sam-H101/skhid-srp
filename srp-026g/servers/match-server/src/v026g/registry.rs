@@ -58,6 +58,14 @@ pub struct MatchPlayer {
     /// trust and resync rules count the other clients only (`game.rs`,
     /// "Bots").
     pub bot: bool,
+    /// The place is the match server's own bot (`SRP_SERVER_BOTS`; false
+    /// for every player otherwise): no account, no session, no client. Its
+    /// player enters once a real client simulates, and its inputs are made
+    /// by the match server (`super::drive`) and relayed as a player's are.
+    /// Like a test bot it is no witness of the world. Its `session_id` and
+    /// `account_id` are 0 and mean nothing: it has no seat, nobody can
+    /// connect for it, and its result pays nobody.
+    pub driven: bool,
 }
 
 /// A match the lobby formed.
@@ -74,6 +82,12 @@ pub struct MatchSetup {
     pub players: Vec<MatchPlayer>,
     /// The clients' score weights; `None` for the game's own.
     pub score_weights: Option<[f32; SCORE_EVENTS]>,
+    /// A match of one player against the server's own bots ("Player vs
+    /// Bots", the lobby's `pvb`): its teams are fixed and it takes no late
+    /// joiner (the lobby's rule), it ends when its only player stops
+    /// uploading worlds it is asked for (`Timing::pvb_stall`), and its
+    /// result says so ([`MatchResult::vs_bots`]: the rewards pay less).
+    pub vs_bots: bool,
 }
 
 /// Where the players of a made match connect.
@@ -149,6 +163,8 @@ pub(crate) struct Place {
     pub team: u8,
     /// [`MatchPlayer::bot`].
     pub bot: bool,
+    /// [`MatchPlayer::driven`].
+    pub driven: bool,
 }
 
 /// A made match, until it is over.
@@ -168,6 +184,8 @@ pub(crate) struct Formed {
     /// Every connecting client must advertise the matching capability.
     pub growing_roster: bool,
     pub initial_players: usize,
+    /// [`MatchSetup::vs_bots`].
+    pub vs_bots: bool,
 }
 
 /// How far a match is.
@@ -195,6 +213,8 @@ pub(crate) struct Live {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
+    /// [`LiveMatch::giving_way`].
+    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -231,6 +251,12 @@ pub struct LiveMatch {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
+    /// By roster place: the server's own bots in the match that give their
+    /// place up to a late joiner whose side needs the room
+    /// (`session::matchmaking_policy::bot_gives_way`, `game/driven.rs`);
+    /// none with `SRP_BOTS_GIVE_WAY=off`. One that owes its place already
+    /// and has not left yet is not among them.
+    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -357,9 +383,13 @@ impl MatchRegistry {
             .ok_or(CreateError::Map(setup.map_id))?;
         let mut inner = self.inner();
         for (place, player) in setup.players.iter().enumerate() {
+            // The server's own bots have no session to clash.
+            if player.driven {
+                continue;
+            }
             if setup.players[..place]
                 .iter()
-                .any(|other| other.session_id == player.session_id)
+                .any(|other| !other.driven && other.session_id == player.session_id)
             {
                 return Err(CreateError::DuplicateSession(player.session_id));
             }
@@ -392,12 +422,14 @@ impl MatchRegistry {
                 name: player.profile.name.clone(),
                 team: player.profile.team,
                 bot: player.bot,
+                driven: player.driven,
             })
             .collect();
-        let sessions: Vec<u32> = setup
+        // A server bot's place has no seat: no client connects for it.
+        let sessions: Vec<Option<u32>> = setup
             .players
             .iter()
-            .map(|player| player.session_id)
+            .map(|player| (!player.driven).then_some(player.session_id))
             .collect();
         let options = MatchOptions {
             players: setup
@@ -414,6 +446,9 @@ impl MatchRegistry {
             StaticInfo::new(&options, Dictionary::shared()).map_err(CreateError::StaticInfo)?;
         let profiles = options.players.clone();
         for (place, session_id) in sessions.into_iter().enumerate() {
+            let Some(session_id) = session_id else {
+                continue;
+            };
             inner.seats.insert(
                 session_id,
                 Seat {
@@ -435,23 +470,37 @@ impl MatchRegistry {
                 formed_at: now,
                 growing_roster,
                 initial_players: options.players.len(),
+                vs_bots: setup.vs_bots,
             }),
         );
-        let bots = inner.matches[&match_id]
-            .places
-            .iter()
-            .filter(|place| place.bot)
-            .count();
+        let count = |which: fn(&Place) -> bool| {
+            inner.matches[&match_id]
+                .places
+                .iter()
+                .filter(|place| which(place))
+                .count()
+        };
+        let (bots, driven) = (count(|place| place.bot), count(|place| place.driven));
         log::info!(
-            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}",
+            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}{}{}",
             map.id,
             map.name,
             map.mode,
             options.players.len(),
+            if setup.vs_bots {
+                ", one player against the server's bots"
+            } else {
+                ""
+            },
             if bots == 0 {
                 String::new()
             } else {
                 format!(", {bots} of them test bots (SRP_BOT_ACCOUNTS): no witnesses of the world")
+            },
+            if driven == 0 {
+                String::new()
+            } else {
+                format!(", {driven} of them the server's own bots (SRP_SERVER_BOTS)")
             }
         );
         Ok(MatchTicket {
@@ -481,6 +530,11 @@ impl MatchRegistry {
     ) -> Result<MatchTicket, JoinError> {
         if players.is_empty() {
             return Err(JoinError::EmptyGroup);
+        }
+        // The server's own bots are put in when a match is made, never
+        // into one being played.
+        if players.iter().any(|player| player.driven) {
+            return Err(JoinError::Unavailable);
         }
         let mut inner = self.inner();
         let formed = inner.matches.get(&match_id).ok_or(JoinError::Unavailable)?;
@@ -540,6 +594,7 @@ impl MatchRegistry {
                 name: player.profile.name,
                 team: player.profile.team,
                 bot: player.bot,
+                driven: false,
             });
             inner.seats.insert(
                 player.session_id,
@@ -709,6 +764,7 @@ impl MatchRegistry {
                 phase: LivePhase::Gathering,
                 players,
                 present: (1_u32 << formed.places.len().min(31)) - 1,
+                giving_way: 0,
                 kills: [0; 2],
                 played: None,
                 time_left: None,
@@ -723,6 +779,7 @@ impl MatchRegistry {
             phase: live.phase,
             players: live.players,
             present: live.present,
+            giving_way: live.giving_way,
             kills: live.kills,
             played: live.played.map(|played| played + since),
             time_left: live.time_left.map(|left| left.saturating_sub(since)),
@@ -795,6 +852,9 @@ pub struct PlayerResult {
     pub account_id: u32,
     pub name: String,
     pub team: u8,
+    /// [`MatchPlayer::driven`]: the server's own bot. Its session and
+    /// account are 0; nobody is to be paid or told for it.
+    pub driven: bool,
     /// Whether the player was ever in the match (0xE9 went out for it).
     /// One whose game never got that far neither won nor lost.
     pub entered: bool,
@@ -860,6 +920,8 @@ pub struct MatchResult {
     pub trusted_by: u8,
     /// By roster place.
     pub players: Vec<PlayerResult>,
+    /// [`MatchSetup::vs_bots`].
+    pub vs_bots: bool,
 }
 
 /// Where finished matches go: the lobby's results and rewards code.

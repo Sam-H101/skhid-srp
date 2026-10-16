@@ -347,6 +347,48 @@ An srp from before M1 answers the reserved start as a ranking page past the last
 
 Code: `push.rs` `matches_now` / `join_answer` / `JoinCode`, `dispatch.rs` `reserved_ranking` / `matches_now`, `join.rs`, `play.rs` `play` / `fill_running_matches`, `session::Matchmaking::append_player`, `session::matchmaking_policy::place_weaker`. Tests: `lobby/tests/writers.rs` `the_matches_now_are_ranking_rows_with_reserved_places` and `a_join_is_answered_with_one_row_at_the_join_start`, `core_tests/matches_now_tests.rs`, `core_tests/join_tests.rs`, and two of `v026g_end_to_end.rs` (the list in the first; `a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once`).
 
+#### 2.16.2 "Player vs Bots", on `3B` / 0x91: srp's own (contract B1/B2, 2026-10-16)
+
+**An extension of srp, as §2.16.1: srp's changed lobby movie asks, a stock game never does.** One player plays against the match server's own bots (`player_bots.md` §8): the movie's match settings panel has a "Player vs Bots" choice with a team size and a map. The rules, the settings and the owner's decisions are `servers/lobby-server/src/v026g/pvb.rs`; this is the wire.
+
+Requests (`request_players_range(start, count)`, `int` arguments, as §2.16.1):
+
+- `start == 2 050 000 000` (`PVB_STATUS_START`), `count` 32: the status, asked when the panel opens.
+- `start == 2 051 000 000 + size × 1000 + map_id` (`PVB_CHOOSE_BASE`; up to 2 051 999 999, `PVB_CHOOSE_LAST`), `count` 1: the choice of `size` players a side on the `maps_dict` id `map_id`.
+- Both are reserved starts (§2.16.1): an srp without the mode answers neither, and the movie takes no answer within 6 s as "not offered".
+
+Reply to the status: one `91`, rating and change 0 in every row, at most `count` rows (the header always):
+
+- row 0, `place = 2 050 000 000`: `B1;<code>;<gear>;<max gear>;<sizes>;<default size>;<default map>;<running>;<max matches>`, `sizes` joined by `.`. Example: `B1;0;3;5;6.8.10;8;61;2;5` (allowed; the player's equipment level 3 of at most 5; sizes 6, 8, 10, 8 first; Rudnya batteries first; 2 bot matches of at most 5).
+- row `i` from 1, `place = 2 050 000 000 + i`: a map offered, `<map_id>;<level>;<mode>;<free>`. `free` is how many more matches against bots may start now (0: none, the map's slot is busy); with the mode off it is 0. The maps are the server's own list (16: the day of each level 1 to 8 in batteries, mode 2, and in Team Deathmatch, mode 4; never London, a timed battery or another weather): the movie shows only these.
+
+Reply to a choice: one `91` with one row at the start asked:
+
+- `B2;ok;<size>;<map_id>`: the choice is held for the player for 10 s; the movie then presses Play (`play_button_clicked`).
+- `B2;no;<code>;<gear>;<max gear>;<running>;<max matches>`: refused, with the numbers the movie may show (the gear for code 1, the matches for code 7). The first three fields are DESIGN.md's `B2;no;<code>`; the four numbers were appended (a reader of three fields reads it as before).
+
+The codes (`PvbCode`; the first that applies is said, in this order: 6, 5, 4, 3, 2, 9, 1, 8, 7):
+
+| code | meaning |
+|---|---|
+| 0 | allowed |
+| 1 | the equipment level (the client's own, of the kits that can be played) is over the most (`SRP_PVB_MAX_GEAR`, 5) |
+| 2 | in a squad with others |
+| 3 | waiting in the queue |
+| 4 | in a match, sent to one, with a place in one, or holding a JOIN place (§2.16.1) |
+| 5 | the game is too old (does not play in growing rosters) |
+| 6 | the mode is off (`SRP_PVB`) |
+| 7 | as many matches against bots run, or are held for players who chose one, as allowed at once (`SRP_PVB_MAX_MATCHES`, 5) |
+| 8 | a planned maintenance is 30 minutes away or less |
+| 9 | in its clan's team (clan-team Play) |
+| 10 | (a choice only) a size or a map the server does not offer |
+
+Play (`2F`) with a choice held: the rule is checked again and the match is made at once with this player alone on team 0, the teams fixed, against `size` of the server's bots, with `size − 1` on its side (2N − 1 bots in all): `85` "match found" and `82` as for any Play. Refused: `84 2F 00 st_cant_change_ready_state`, not queued. A Play whose choice ran out within 30 s is refused the same way and not queued; later it is the ordinary Play. A choice ends with its 10 s, a new choice (granted or not), a JOIN, the Play, or the player's link.
+
+A match against bots is listed in the matches now (§2.16.1) with `join` 7, and its JOIN is `gone;…;7`: it never takes a late joiner.
+
+Code: `push.rs` `pvb_status` / `pvb_choose_ok` / `pvb_choose_no` / `pvb_choice` / `PvbCode`, `dispatch.rs` `reserved_ranking`, `pvb.rs`, `play.rs` `play` / `launch`, `session::Matchmaking::seat_solo`. Tests: `lobby/tests/writers.rs` `player_vs_bots_rows_are_ranking_rows_at_their_starts`, `core_tests/pvb_tests.rs`, `v026g_end_to_end.rs` `a_player_against_the_servers_bots_plays_a_match_to_the_results`. The contract as the movie's builder has it: `private/pvb-mode/CONTRACT-PVB.md` (not in this repository).
+
 ### 2.17 0x94 account services (old 0x36 0F) — PROVEN 0x2714D0 (0.21d 0x19E358)
 `u8 n`, n × 10 bytes {`u8 type`, `u8 skipped`, `u32 a`, `u32 b` (skipped)}. Only type 0 is used: premium = true, hours = a → `root.set_premium_state` 0x227D80 (`st_less_then_hour`, `%d %s` hours/days). **Types 1..4 (faction loyalty bonuses → `set_faction_bonus`) are no longer read: the loyalty display is gone.** The 0.21d 8-entry stack overflow hazard is gone with it.
 

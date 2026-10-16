@@ -553,12 +553,23 @@ impl Core<'_> {
     /// (the stock ranking page asks for no index past the count of ranked
     /// players). [`lobby::MATCHES_START`] is answered with the matches being
     /// played now (`matches_now`), `JOIN_START + key` with what came of the
-    /// JOIN button of that match (`join`); any other gets no answer.
-    /// Nothing of the ranking is read, sent or kept for them.
+    /// JOIN button of that match (`join`), [`lobby::PVB_STATUS_START`] and
+    /// a start from [`lobby::PVB_CHOOSE_BASE`] to
+    /// [`lobby::PVB_CHOOSE_LAST`] with the status and the choice of a
+    /// match against bots (`pvb`); any other gets no answer. Nothing of the
+    /// ranking is read, sent or kept for them.
     fn reserved_ranking(&mut self, who: &Who, start: u32, count: u8, now: Instant) {
         if start == lobby::MATCHES_START {
             let list = self.matches_now(who, count, now);
             self.send_made(who.addr, list);
+            return;
+        }
+        if start == lobby::PVB_STATUS_START {
+            self.pvb_status(who, count, now);
+            return;
+        }
+        if (lobby::PVB_CHOOSE_BASE..=lobby::PVB_CHOOSE_LAST).contains(&start) {
+            self.pvb_choose(who, start, now);
             return;
         }
         let key = start.wrapping_sub(lobby::JOIN_START);
