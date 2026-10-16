@@ -1,6 +1,6 @@
 ---
 name: skhid-release
-description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which plans the maintenance, prepares everything during the countdown, swaps it in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision bump, the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
+description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which prepares and stages everything first, then plans the maintenance to start 2 minutes after the last running match ends and swaps it all in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision bump, the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
 ---
 
 # Making a Skhid 0.26g release
@@ -110,10 +110,11 @@ release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
                    [--label <word>] [--ref <branch>] [--dry-run] [--yes --i-know]
 ```
 
-Matches last up to 15 minutes, so it plans the maintenance
-`$SKHID_MAINT_MINUTES` (default 20) minutes ahead, prepares and stages
-everything while the countdown runs, and at its end swaps it all in at once
-(the downtime is the restart).
+It prepares and stages everything first, with Play open and no countdown;
+then it plans the maintenance to start **2 minutes after the last running
+match ends**, so Play locks at once and no new match starts, and at its
+time swaps it all in at once (the downtime is the restart). Players wait
+only for the matches that run, never for the build.
 
 1. **Preflight**, nothing players see. It says exactly what's missing: ssh
    to the jump host, through it to the live host, the patches server; the
@@ -137,14 +138,8 @@ everything while the countdown runs, and at its end swaps it all in at once
    listed yet. Last, which server-code files differ, and which settings
    main's compose file newly passes that the target's `.env` sets (names
    only: their values take effect at the recreate).
-2. **The lock, y/N, then maintenance**: a POST to the admin page
-   (`tab=maint`, `minutes`) from the jump host, whose address must be in
-   the target's `SRP_ADMIN_IPS` (behind Caddy with
-   `SRP_WEB_TRUST_PROXY=on`). The admin path and token are read from the
-   target's `.env` into variables and handed to curl as its config on
-   stdin: never printed, in no command line. It checks the countdown on
-   the launcher page and prints the planned time.
-3. **During the countdown**: `upload-patch` (with `--resources`; it adds
+2. **The lock and y/N**. Nothing is planned yet.
+3. **Prepared and staged at once** (players see nothing): `upload-patch` (with `--resources`; it adds
    the row), `build-server-db` (of the list), `build-zip` (of the commit
    checked in step 1); the checks of `deploy` on both files; then the
    **release folder** on the target (below) with both files staged in it
@@ -153,6 +148,27 @@ everything while the countdown runs, and at its end swaps it all in at once
    its ID, main's source unpacked in the folder's `src/` and
    `docker compose build srp26` run on it (the running container is not
    touched). The local builds run at nice 10.
+
+   **Then, once all of it is staged** (the folder `staging` with both files
+   and their sha256 in `new.sha`, checked on the host; never before), the
+   **maintenance**: a POST to the admin page (`tab=maint`, `minutes`) from
+   the jump host, whose address must be in the target's `SRP_ADMIN_IPS`
+   (behind Caddy with `SRP_WEB_TRUST_PROXY=on`). The admin path and token
+   are read from the target's `.env` into variables and handed to curl as
+   its config on stdin: never printed, in no command line. It checks the
+   countdown on the launcher page and prints the planned time. The minutes:
+   - `ceil((last_match_ends_in + 120) / 60)`, at least 2, where
+     `last_match_ends_in` is what `/api/stats` says: the seconds until the
+     last running match ends at the latest (its time left; a match still
+     loading counts its whole wait, countdown and 15 min), 0 when none
+     runs. A match ending in 5 min: 7; none: 2.
+   - An srp from before that field (revision 15 and older): 2 with
+     `"matches":0`; else the most "Time left" (`≤ <m> min`) of the launcher
+     page's matches + 2, when the page gives one for every running match;
+     else a whole match, 15 + 2 = 17. The log says which. The first release
+     with this script is of such an srp.
+   - `--minutes <n>`: `<n>`, planned at the same point (once staged).
+   - `--no-maintenance`: nothing is planned (below).
 4. **At the planned time**, once the launcher page says the server is down
    and `/api/stats` says `"matches":0` (it waits up to `--match-wait`,
    default `$SKHID_MATCH_WAIT_MINUTES`, else 15, more): it shows what changes,
@@ -183,13 +199,18 @@ srp26 is up and `/patches` is as before.
 
 A **stop before step 4** (a failure, a no, Ctrl-C) removes the staged
 files (the folder stays, state `stopped`, with its release.log), puts the
-image tag back and cancels the maintenance: the server is as it was (a
+image tag back and cancels the maintenance when it was planned (a stop
+before the plan asks the admin page nothing): the server is as it was (a
 published patch stays with its row; the next run goes without
 `--resources`). A stop in the swap before anything moved starts srp26
 again as it was.
 
 `--yes --i-know` (both or neither) answers both questions; only for a run
 the owner watches anyway.
+
+Every wait (the y/N, the wait for the planned time, for `"matches":0`)
+answers Ctrl-C within a second or two: its sleeps are `sleep & wait`, which
+a trap interrupts.
 
 ### A quick release: --no-maintenance
 
@@ -238,8 +259,10 @@ preflight: look at its `release.log`, finish or roll it back, then write
 ### What to watch
 
 - The preflight: every line `ok`.
-- After the first yes: the launcher countdown (players see it now; none
-  with `--no-maintenance`).
+- After the first yes: the builds and the staging (players see nothing
+  yet); then the plan's line, with its minutes and where they come from
+  (`/api/stats`, the launcher page, or a whole match), and the launcher
+  countdown (none with `--no-maintenance`).
 - The ZIP's entries against the current ZIP (build-zip's list, shown again
   at the second question and in `changed.txt`): `survarium_skhid.exe`
   always differs (the revision); `updater_skhid.exe` only if the updater

@@ -262,13 +262,18 @@ M=http://127.0.0.1:$(cat "$T/mirror.port")
 # /$(cat $T/state/admin-path) (its maintenance tab; the token of
 # $T/state/admin-token; the answer holds the token, as the real page's
 # does; every request of it, GET or POST, is a line of
-# $T/state/admin-seen.log), /api/stats saying a match runs for the first
-# $T/state/busy asks, or (with $T/state/matches) the next line of that file
-# for each ask (its last line once it is the only one), /api/client-files of
-# the ZIP in place when asked.
+# $T/state/admin-seen.log; a plan is a line of $T/state/admin-staged.log,
+# saying whether a release folder was staged then), /api/stats saying a
+# match runs for the first $T/state/busy asks, or (with $T/state/matches)
+# the next line of that file for each ask (its last line once it is the only
+# one), with "last_match_ends_in" of $T/state/ends-in when there is one (an
+# srp from before it without), the launcher's matches with the "Time left"
+# of each line of $T/state/page-left (minutes, or - for none yet),
+# /api/client-files of the ZIP in place when asked.
 python3 - "$T/site" "$T/site.port" "$T/state" "$T/live/download/Survarium-0.26g-srp-files.zip" >/dev/null 2>&1 <<'EOF' &
-import functools, hashlib, http.server, math, os, sys, time, urllib.parse
+import functools, glob, hashlib, http.server, math, os, sys, time, urllib.parse
 root, port_file, state, zip_path = sys.argv[1:5]
+live = os.path.dirname(os.path.dirname(zip_path))
 minute = float(os.environ.get("SKHID_TEST_SECONDS_PER_MINUTE", "60"))
 def read(name, default=None):
     try:
@@ -278,6 +283,11 @@ def read(name, default=None):
 class Handler(http.server.SimpleHTTPRequestHandler):
     server_version, sys_version = "Caddy", ""
     def log_message(self, *args): pass
+    def stats(self, online, matches):
+        body = '{"online":%d,"registered":3,"matches":%d,"queued":0' % (online, matches)
+        if read("ends-in") is not None:
+            body += ',"last_match_ends_in":%d' % int(read("ends-in"))
+        return self.answer(200, body + "}")
     def answer(self, status, body):
         data = body.encode()
         self.send_response(status)
@@ -292,19 +302,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 left = math.ceil(max(0.0, float(at) - time.time()) / minute)
                 text = '<div class="cap warn">' + (f"Maintenance in {left} min" if left else "Maintenance: the server is down") + "</div>"
-            return self.answer(200, "<table></table>" + text)
+            rows = "".join("<tr><td class=m>Rudnya</td><td class=e>"
+                           + ("&mdash;" if each == "-" else f"&le; {each} min") + "</td></tr>"
+                           for each in (read("page-left") or "").split())
+            return self.answer(200, "<table><tr><th class=m>Match</th><th class=e>Time left</th></tr>" + rows + "</table>" + text)
         if self.path == "/api/stats" and read("matches"):
             lines = read("matches").split("\n")
             if len(lines) > 1:
                 open(os.path.join(state, "matches"), "w").write("\n".join(lines[1:]) + "\n")
             n = int(lines[0])
-            return self.answer(200, '{"online":3,"registered":3,"matches":%d,"queued":0}' % n)
+            return self.stats(3, n)
         if self.path == "/api/stats" and read("busy"):
             busy = int(read("busy"))
             open(os.path.join(state, "busy"), "w").write(str(busy - 1))
             if busy > 0:
-                return self.answer(200, '{"online":3,"registered":3,"matches":1,"queued":0}')
-            return self.answer(200, '{"online":0,"registered":3,"matches":0,"queued":0}')
+                return self.stats(3, 1)
+            return self.stats(0, 0)
+        if self.path == "/api/stats" and read("ends-in") is not None:
+            return self.stats(0, 0)
         if self.path == "/api/client-files":
             try:
                 data = open(zip_path, "rb").read()
@@ -339,6 +354,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         minutes = int(field("minutes"))
         open(os.path.join(state, "maint"), "w").write(str(time.time() + minutes * minute))
         log.write(f"plan {minutes}\n")
+        staged = any(open(os.path.join(folder, "state")).read().strip() == "staging"
+                     and os.path.isfile(os.path.join(folder, "server-game-data.db"))
+                     and os.path.isfile(os.path.join(folder, "Survarium-0.26g-srp-files.zip"))
+                     for folder in glob.glob(os.path.join(live, "release-rev*")) if os.path.isfile(os.path.join(folder, "state")))
+        open(os.path.join(state, "admin-staged.log"), "a").write(f"plan {minutes} {'staged' if staged else 'NOT staged'}\n")
         return self.answer(200, page + f"Maintenance starts in {minutes} min, at 12:00 UTC.")
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=root))
 open(port_file, "w").write(str(server.server_address[1]))
@@ -610,7 +630,7 @@ expect_refused "setup refuses another site on the port" "another site on port" "
 python3 - "$T/work" <<'EOF'
 import sys, zipfile
 at = 0x380862 - 0x11000 + 0x400
-for revision in (2, 11, 12, 13, 14, 15):
+for revision in (2, 11, 12, 13, 14, 15, 16):
     exe = bytearray(at + 16)
     exe[at:at + 6] = bytes([0xC6, 0x44, 0x24, 0x27, revision, 0x90])
     with zipfile.ZipFile(f"{sys.argv[1]}/r{revision}.zip", "w") as z:
@@ -994,7 +1014,7 @@ touch "$T/build-fails"
 run yes --minutes 2 --label c || true
 rm "$T/build-fails"
 check "release: a failed build stops before the swap" has "$out" "STOPPED before the swap"
-check "release: ... cancels the maintenance" test "$(admin_log)" = "plan 2 cancel"
+check "release: ... planned no maintenance (the build comes before the plan), cancelled none" test ! -s "$T/state/admin.log" -a ! -e "$T/state/maint"
 check "release: ... removes the staged files" nothing_staged
 check "release: ... puts the image tag back" grep -q "docker tag $(cat "$T/docker/running") srp-026g:latest" "$T/log"
 check "release: ... srp-026g:latest is the running image" test "$(cat "$T/docker/latest")" = "$(cat "$T/docker/running")"
@@ -1127,7 +1147,7 @@ commit 15 "revision 15"
 before=$(tree)
 run quiet --no-maintenance --dry-run || fail "release.sh --no-maintenance --dry-run: $out"
 check "release --no-maintenance --dry-run: the preflight needs no admin page" has "$out" "the admin page: not needed (--no-maintenance)"
-check "release --no-maintenance --dry-run: plans no maintenance" has "$out" "no maintenance (--no-maintenance): the admin page is not asked"
+check "release --no-maintenance --dry-run: plans no maintenance" has "$out" "nothing planned yet (--no-maintenance: the admin page is never asked)"
 check "release --no-maintenance --dry-run: ... shows no POST" bash -c "! grep -q 'POST ' <<<\"\$1\"" _ "$out"
 check "release --no-maintenance --dry-run: the swap once \"matches\":0, up to 120 min" has "$out" 'wait for "matches":0 on .*/api/stats (up to 120 min), then y/N'
 check "release --no-maintenance --dry-run: \"matches\":0 once more, right before the stop" bash -c \
@@ -1173,6 +1193,103 @@ check "release --no-maintenance: ... its folder says released" grep -qx released
 check "release --no-maintenance: ... asked no admin page" test ! -s "$T/state/admin-seen.log"
 check "release --no-maintenance: ... planned nothing" test ! -s "$T/state/admin.log"
 check "release --no-maintenance: ... frees the lock" test ! -e "$T/lock"
+
+# The default: everything prepared and staged first, then the maintenance
+# planned to start 2 min after the last running match ends, as /api/stats
+# says (last_match_ends_in); from an srp without it, the launcher page's
+# "Time left", else a whole match. The dry run shows the minutes it would
+# plan now.
+commit 16 "revision 16"
+: >"$T/state/admin.log"
+: >"$T/state/admin-seen.log"
+: >"$T/state/admin-staged.log"
+plan_line() { grep -m1 'plan the maintenance in' <<<"$out" || true; }
+echo 300 >"$T/state/ends-in"
+run quiet --dry-run || fail "release.sh --dry-run, a match ending in 5 min: $out"
+check "release: a match ending in 5 min: the maintenance in 7 min" bash -c "grep -q 'in 7 min (now: /api/stats: the last match ends in 5:00 at the latest (last_match_ends_in 300), then 2 min' <<<\"\$1\"" _ "$(plan_line)"
+echo 299 >"$T/state/ends-in"
+run quiet --dry-run || true
+check "release: ... 4:59 to the last match's end: 7 too (rounded up)" bash -c "grep -q 'in 7 min' <<<\"\$1\"" _ "$(plan_line)"
+echo 0 >"$T/state/ends-in"
+run quiet --dry-run || true
+check "release: no match running: 2 min" bash -c "grep -q 'in 2 min (now: /api/stats: no match runs (last_match_ends_in 0), then 2 min' <<<\"\$1\"" _ "$(plan_line)"
+check "release --dry-run: ... shows the POST" has "$out" "tab=maint minutes=2 "
+check "release --dry-run: ... asks the admin page nothing but the preflight's GET" test "$(sort -u "$T/state/admin-seen.log")" = GET
+rm "$T/state/ends-in"
+run quiet --dry-run || true
+check "release: an srp without last_match_ends_in, \"matches\":0: 2 min, and it says why" bash -c "grep -q 'in 2 min (now: /api/stats has no last_match_ends_in (an srp from before it); \"matches\":0' <<<\"\$1\"" _ "$(plan_line)"
+printf '2\n2\n' >"$T/state/matches"
+printf '5\n9\n' >"$T/state/page-left"
+run quiet --dry-run || true
+check "release: ... matches running: the launcher page's most \"Time left\" + 2" bash -c "grep -q 'in 11 min (now: /api/stats has no last_match_ends_in .*: 2 match(es), the last ending in <= 9 min, then 2 min' <<<\"\$1\"" _ "$(plan_line)"
+printf '2\n2\n' >"$T/state/matches"
+printf '5\n-\n' >"$T/state/page-left"
+run quiet --dry-run || true
+check "release: ... one still loading (no time left): a whole match, 17 min" bash -c "grep -q 'in 17 min (now: .*(a match with no time left yet (still loading)): a whole match, 15 min, then 2 min' <<<\"\$1\"" _ "$(plan_line)"
+printf '3\n3\n' >"$T/state/matches"
+printf '5\n9\n' >"$T/state/page-left"
+run quiet --dry-run || true
+check "release: ... the page lists fewer than run: 17 min" bash -c "grep -q 'in 17 min (now: .*(2 time(s) left for 3 match(es))' <<<\"\$1\"" _ "$(plan_line)"
+rm -f "$T/state/matches" "$T/state/page-left"
+check "release --dry-run: none of these planned anything" test ! -s "$T/state/admin.log"
+
+# A stop before the plan: no admin request (but the preflight's GET), no
+# maintenance.
+echo 300 >"$T/state/ends-in"
+: >"$T/state/admin-seen.log"
+before=$(tree)
+touch "$T/build-zip-fails"
+run yes --label stop || true
+rm "$T/build-zip-fails"
+check "release: a stop before the plan (build-zip failed)" has "$out" "STOPPED before the swap"
+check "release: ... asked the admin page nothing but the preflight's GET" test "$(cat "$T/state/admin-seen.log")" = GET
+check "release: ... no maintenance planned, none cancelled" test ! -s "$T/state/admin.log" -a ! -e "$T/state/maint"
+check "release: ... says nothing of a maintenance" bash -c "! grep -q '^maintenance: ' <<<\"\$1\"" _ "$out"
+check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
+check "release: ... frees the lock" test ! -e "$T/lock"
+
+# Ctrl-C while it waits for the planned time (to bash only, as a trap during
+# a sleep of a minute once waited for the sleep): cleaned up in a few
+# seconds. A minute is 20 s here, so each wait is 20 s.
+: >"$T/state/admin.log"
+set -m
+SKHID_TEST_SECONDS_PER_MINUTE=20 "$here/release.sh" --yes --i-know --minutes 3 --label int >"$T/int.out" 2>&1 </dev/null &
+int_pid=$!
+set +m
+for _ in $(seq 300); do grep -q '4. waiting for the planned time' "$T/int.out" && break; sleep 0.1; done
+sleep 1
+kill -INT "$int_pid"
+int_at=$SECONDS
+for _ in $(seq 150); do kill -0 "$int_pid" 2>/dev/null || break; sleep 0.1; done
+int_took=$((SECONDS - int_at))
+if kill -0 "$int_pid" 2>/dev/null; then kill -9 "$int_pid"; fi
+wait "$int_pid" 2>/dev/null || true
+out=$(cat "$T/int.out")
+printf '%s\n' "$out" >>"$T/outputs"
+check "release: Ctrl-C in the wait for the planned time ends it in a few seconds (${int_took} s)" test "$int_took" -le 4
+check "release: ... it was waiting, the maintenance planned" bash -c "grep -q 'maintenance planned' <<<\"\$1\" && grep -q 'interrupted' <<<\"\$1\"" _ "$out"
+check "release: ... cancels the maintenance" test "$(admin_log)" = "plan 3 cancel" -a ! -e "$T/state/maint"
+check "release: ... removes the staged files" nothing_staged
+check "release: ... its folder says stopped" grep -qx stopped "$(folder 16 int)/state"
+check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
+check "release: ... frees the lock" test ! -e "$T/lock"
+
+# The whole default run: a match ending in 5 min, the maintenance in 7,
+# planned once all is staged.
+: >"$T/state/admin.log"
+: >"$T/state/admin-seen.log"
+: >"$T/state/admin-staged.log"
+echo 300 >"$T/state/ends-in"
+run yes --label auto || fail "release.sh, the default: $out"
+check "release: the default plans the maintenance in 7 min (a match ending in 5)" test "$(admin_log)" = "plan 7"
+check "release: ... only once all was staged" test "$(cat "$T/state/admin-staged.log")" = "plan 7 staged"
+check "release: ... the first POST after the staging" bash -c "s=\$(grep -n '== .*3. staged$' <<<\"\$1\" | head -n1 | cut -d: -f1); p=\$(grep -n '3. planning the maintenance in 7 min' <<<\"\$1\" | head -n1 | cut -d: -f1); test -n \"\$s\" -a -n \"\$p\" && ((s < p))" _ "$out"
+check "release: ... the admin page: the preflight's GET, then the plan" test "$(tr '\n' ' ' <"$T/state/admin-seen.log" | sed 's/ POST [^ ]*/ POST/; s/ $//')" = "GET POST"
+check "release: ... says Play is locked" has "$out" 'the launcher says "Maintenance in 7 min"; Play is locked; the swap at'
+check "release: ... then releases" cmp -s "$T/work/r16.zip" "$T/live/download/Survarium-0.26g-srp-files.zip"
+check "release: ... SRP_MIN_PATCH_REVISION=16" grep -qx "SRP_MIN_PATCH_REVISION=16" "$T/live/.env"
+check "release: ... the folder's rollback" test -f "$(folder 16 auto)/rollback.sh" -a -f "$(folder 16 auto)/rollback.env"
+rm -f "$T/state/ends-in"
 
 # No secret in any output or command line.
 check "release: the admin token is in no output" bash -c "! grep -qF -- '$token' $T/outputs"
