@@ -463,15 +463,18 @@ fn the_updater_is_told_the_patches_the_server_runs_on() {
     let provenance = &survarium::v026g::game_data::shared().provenance;
     let expected: Vec<String> = provenance
         .offered()
-        .map(|(name, sha256, url)| {
-            format!("\"{name}\":{{\"sha256\":\"{sha256}\",\"url\":\"{url}\"}}")
+        .map(|(name, sha256, urls)| {
+            let [url] = urls else {
+                panic!("the test data's patches have one URL each: {urls:?}")
+            };
+            format!("\"{name}\":{{\"sha256\":\"{sha256}\",\"urls\":[\"{url}\"]}}")
         })
         .collect();
     assert_eq!(expected.len(), 3);
     assert_eq!(body, format!("{{{}}}", expected.join(",")));
     assert!(body.starts_with(
         "{\"patch_14\":{\"sha256\":\"7535d0d0c287cf1c3c338936fdef54edb7f36e1334d7e872801a27d505d4c6c3\",\
-         \"url\":\"http://203.0.113.5/patches/resources.db.patch_14\"},\"patch_15\":"
+         \"urls\":[\"http://203.0.113.5/patches/resources.db.patch_14\"]},\"patch_15\":"
     ));
     stack.stop();
 }

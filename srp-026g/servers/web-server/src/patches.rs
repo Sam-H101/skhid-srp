@@ -3,8 +3,15 @@
 //! "Patches"), as JSON:
 //!
 //! ```text
-//! {"patch_14":{"sha256":"<64 hex>","url":"http://203.0.113.5/patches/resources.db.patch_14"},...}
+//! {"patch_14":{"sha256":"<64 hex>","urls":["http://203.0.113.5/patches/resources.db.patch_14",
+//!                                         "https://mirror.example/resources.db.patch_14"]},...}
 //! ```
+//!
+//! Each patch's URLs are the updater's to try in their order: the patches
+//! server, then mirrors. It is the form of updater 0.3.0, which reads the
+//! one-`url` form of the updaters before it too; those never read this one:
+//! a release that brings 0.3.0 has them install it first (the overlay comes
+//! before the patch step), and it does the patches.
 //!
 //! They are the patches the server's game data was made of
 //! (`survarium::v026g::game_data`, `Provenance::offered`), in the game's
@@ -22,8 +29,8 @@ pub struct OfferedPatch {
     pub name: String,
     /// The sha256 of the file, lowercase hex.
     pub sha256: String,
-    /// Where the updater downloads it.
-    pub url: String,
+    /// Where the updater downloads it: 1 to 8 URLs, tried in this order.
+    pub urls: Vec<String>,
 }
 
 /// `text` as a JSON string. srp-game-data only writes names, checksums
@@ -49,11 +56,12 @@ pub(crate) fn json(patches: &[OfferedPatch]) -> String {
     let entries: Vec<String> = patches
         .iter()
         .map(|patch| {
+            let urls: Vec<String> = patch.urls.iter().map(|url| string(url)).collect();
             format!(
-                "{}:{{\"sha256\":{},\"url\":{}}}",
+                "{}:{{\"sha256\":{},\"urls\":[{}]}}",
                 string(&patch.name),
                 string(&patch.sha256),
-                string(&patch.url)
+                urls.join(",")
             )
         })
         .collect();

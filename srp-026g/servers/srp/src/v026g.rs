@@ -55,10 +55,10 @@ pub fn offered_patches() -> Vec<web_server::OfferedPatch> {
     survarium::v026g::game_data::shared()
         .provenance
         .offered()
-        .map(|(name, sha256, url)| web_server::OfferedPatch {
+        .map(|(name, sha256, urls)| web_server::OfferedPatch {
             name,
             sha256: sha256.to_owned(),
-            url: url.to_owned(),
+            urls: urls.to_vec(),
         })
         .collect()
 }

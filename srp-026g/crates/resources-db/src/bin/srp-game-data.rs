@@ -2,7 +2,7 @@
 //! `srp-game-data`: the server's game data ([`resources_db::server`]), the
 //! files `srp` reads of `resources.db` with its patches over it, as the
 //! players' game mounts them, and what it was made of: `resources.db`, and
-//! each patch with the URL the players download it from.
+//! each patch with the URLs the players download it from.
 //!
 //! ```text
 //! srp-game-data build <archives> --out <file>
@@ -11,7 +11,7 @@
 //! srp-game-data pack --dir <folder> --out <file>
 //!
 //! <archives>: --dir <game folder> [--patch-url <base URL>]
-//!           | --db <resources.db> [--patch <file>[=<URL>]]... [--patch-url <base URL>]
+//!           | --db <resources.db> [--patch <file>[=<URL>[ <URL>]...]]... [--patch-url <base URL>]
 //! ```
 //!
 //! See [`USAGE`].
@@ -33,7 +33,7 @@ const USAGE: &str = "usage:
 
 <archives> is one of
   --dir <game folder> [--patch-url <base URL>]
-  --db <resources.db> [--patch <file>[=<URL>]]... [--patch-url <base URL>]
+  --db <resources.db> [--patch <file>[=<URL>[ <URL>]...]]... [--patch-url <base URL>]
 
 --dir takes what the game mounts from that folder: resources.db, then every
 resources.db.patch_<n> there, n from 1 to 255 (a missing n is skipped, other
@@ -41,11 +41,15 @@ names are not mounted). --db and --patch name the files; a patch must be
 called resources.db.patch_<n>, and the patches are laid over resources.db in
 ascending n, as the game mounts them, whatever their order here.
 
-Every patch needs the URL the players' updater downloads it from, one the
+Every patch needs the URLs the players' updater downloads it from, 1 to 8,
+tried in their order (the patches server first, then mirrors), each one the
 updater takes (http:// or https://, a host name or a bare IPv4 address, an
 optional port, a path; no credentials, no #, no spaces, quotes or
-backslashes; at most 1024 bytes): <file>=<URL>, or --patch-url <base URL>,
-which gives a patch without one the URL <base URL>/<its file name>.
+backslashes; at most 1024 bytes), none twice: <file>=<URL>, or
+<file>=<URL> <URL>... as one argument, the URLs one space apart (a URL has
+no space; the url column of release/patches.tsv is the same), or
+--patch-url <base URL>, which gives a patch without any the URL
+<base URL>/<its file name>.
 
 build writes the server's game data; info reads it and says what it was made
 of; check builds it again of the archives given and says whether <file> is
@@ -65,7 +69,7 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
     let mut db = None;
     let mut base = None;
     let mut out = None;
-    let mut patches: Vec<(PathBuf, Option<String>)> = Vec::new();
+    let mut patches: Vec<(PathBuf, Option<Vec<String>>)> = Vec::new();
     let mut rest = options.iter();
     while let Some(key) = rest.next() {
         if !matches!(
@@ -86,8 +90,12 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
             "--db" => once(&mut db)?,
             "--patch-url" => once(&mut base)?,
             "--out" => once(&mut out)?,
+            // `<file>=<URL> <URL>...`: the URLs one space apart.
             "--patch" => patches.push(match value.split_once('=') {
-                Some((path, url)) => (path.into(), Some(url.to_owned())),
+                Some((path, urls)) => (
+                    path.into(),
+                    Some(urls.split(' ').map(str::to_owned).collect()),
+                ),
                 None => (value.into(), None),
             }),
             _ => unreachable!("an option above"),
@@ -104,12 +112,12 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
     };
     let patches = patches
         .into_iter()
-        .map(|(path, url)| {
-            let url = match (url, &base) {
-                (Some(url), _) => url,
+        .map(|(path, urls)| {
+            let urls = match (urls, &base) {
+                (Some(urls), _) => urls,
                 (None, Some(base)) => {
                     let name = path.file_name().and_then(|name| name.to_str());
-                    url_in(base, name.unwrap_or_default())
+                    vec![url_in(base, name.unwrap_or_default())]
                 }
                 (None, None) => {
                     return Err(format!(
@@ -118,7 +126,7 @@ fn archives(options: &[String]) -> Result<(PathBuf, Vec<PatchFile>, Option<PathB
                     ));
                 }
             };
-            Ok(PatchFile { path, url })
+            Ok(PatchFile { path, urls })
         })
         .collect::<Result<_, String>>()?;
     Ok((db, patches, out.map(PathBuf::from)))
@@ -136,8 +144,11 @@ fn print(provenance: &Provenance) {
     for patch in &provenance.patches {
         let input = &patch.input;
         println!(
-            "  {} {} bytes sha256 {} url {}",
-            input.name, input.size, input.sha256, patch.url
+            "  {} {} bytes sha256 {} urls {}",
+            input.name,
+            input.size,
+            input.sha256,
+            patch.urls.join(" ")
         );
     }
 }

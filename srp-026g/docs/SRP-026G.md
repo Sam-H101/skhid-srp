@@ -143,9 +143,14 @@ The web page lists the data's patches for the players' updater at `GET
 /patches` (`servers/web-server/src/patches.rs`), in the game's order:
 
 ```json
-{"patch_14":{"sha256":"<64 hex>","url":"http://203.0.113.5/patches/resources.db.patch_14"}, ...}
+{"patch_14":{"sha256":"<64 hex>","urls":["http://203.0.113.5/patches/resources.db.patch_14","https://mirror.example/p14"]}, ...}
 ```
 
+each patch with its URLs, 1 to 8, in the order the updater tries them (the
+patches server, then mirrors; `release/patches.tsv`). The updater reads that
+form from 0.3.0 on (and the one-`url` form of the updaters before it); a
+release that brings 0.3.0 has the older updaters install it before their
+patch step, so no player's updater reads a form it does not know.
 `{}` when the data was made of `resources.db` alone. The updater keeps
 exactly those files in the game folder (`client/updater/README.md`,
 "Patches"), so the players run the archives the server runs on. The page does
@@ -342,7 +347,7 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   name under `/resources/` is the page's "not found"; the 0.21d page has no
   such route.
 - `/patches` (`GET`, public): the patches of `resources.db` the players'
-  updater keeps in the game folder, as JSON (`{"patch_<n>":{"sha256":…,"url":…},…}`,
+  updater keeps in the game folder, as JSON (`{"patch_<n>":{"sha256":…,"urls":[…]},…}`,
   `{}` for none): those the server's game data was made of ("Game data"
   above). The 0.21d page has no such route.
 - `/api/client-files` and `/launcher/…` (since 2026-10-13, for the patched game
