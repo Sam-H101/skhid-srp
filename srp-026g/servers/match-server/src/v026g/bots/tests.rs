@@ -1353,6 +1353,156 @@ fn a_bot_takes_a_battery_from_round_a_wall_its_use_cannot_pass() {
     );
 }
 
+/// How a lost-battery run went (`lost_battery_run`): when the thief died,
+/// when the team got a look spot, when its bot first went to look, when
+/// it took the battery (match ms).
+#[derive(Debug, Default)]
+struct LostBattery {
+    died: Option<u32>,
+    look: Option<u32>,
+    sent: Option<u32>,
+    took: Option<u32>,
+}
+
+/// Match 0x15aa5b99 in small: an enemy (place 1, no bot) steals battery 0
+/// from team 0's container and crouches 6 m off it carrying it; bot 0 of
+/// team 0 sees him and kills him; the battery falls where he died, in a
+/// "nook": no ray of the battery sight sees it (`battery_sight_m` 0), only
+/// a bot within `battery_near_m`. The thief cheat is off, so the team knows
+/// where he was only by its own senses. Runs to `limit` ms.
+fn lost_battery_run(look_weight: Option<f32>, limit: u32) -> LostBattery {
+    let world = soak_world();
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = false;
+    tuning.cheats.thief_every_ms = 0;
+    tuning.sense.battery_sight_m = 0.0;
+    if let Some(weight) = look_weight {
+        tuning
+            .plays
+            .entry(super::plays::PlayKind::Collect)
+            .or_insert_with(|| super::plays::default_tuning(super::plays::PlayKind::Collect))
+            .numbers
+            .insert("look_weight".into(), weight);
+    }
+    let teams = [0u8, 1];
+    let mut bots = Bots::new(
+        0x15AA,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, false],
+        &[None, None],
+        Arc::new(tuning),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world.clone(), &teams, 3, None, None);
+    // Battery 0 is in team 0's container (id 0, at (12, 0, 30)); the
+    // thief stands by it.
+    game.batteries[0] = Lying::Home(0);
+    game.points[0] = 1;
+    let by_container = Vec3::new(13.0, 0.0, 31.5);
+    game.bodies[1].node = world.grid.locate(by_container, 1.0);
+    game.bodies[1].feet = by_container;
+    // The bot a little way off, facing the container.
+    let bot_at = Vec3::new(14.0, 0.0, 12.0);
+    game.bodies[0].node = world.grid.locate(bot_at, 1.0);
+    game.bodies[0].feet = bot_at;
+    game.bodies[0].yaw = kin::yaw_of([by_container.x - bot_at.x, by_container.z - bot_at.z]);
+    bots.entered(0, true, 0);
+    bots.entered(1, true, 0);
+    let mut out = LostBattery::default();
+    let (mut clock, mut next_world) = (0, 1_000);
+    while clock < limit && out.took.is_none() {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        // At 3 s he takes it out; at 5 s he crouches in the nook 6 m off.
+        if clock == 3_000 {
+            game.batteries[0] = Lying::Carried(1);
+            game.bodies[1].carrying = Some(0);
+            game.points[0] = 0;
+        }
+        if clock == 5_000 {
+            let nook = Vec3::new(17.0, 0.0, 34.0);
+            game.bodies[1].node = world.grid.locate(nook, 1.0);
+            game.bodies[1].feet = nook;
+            game.bodies[1].keys = key::CROUCH;
+        }
+        // He comes back at his spawn and stands there.
+        if out.died.is_none() && !game.bodies[1].alive {
+            out.died = Some(clock);
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        if out.look.is_none() && !bots.teams[0].knowledge.looks.is_empty() {
+            out.look = Some(clock);
+        }
+        let (made, _) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 900.0,
+            playing: true,
+        });
+        if out.sent.is_none()
+            && bots.bots[0].as_ref().is_some_and(|b| {
+                b.assignment.as_ref().is_some_and(|a| {
+                    a.kind == super::plays::PlayKind::Collect
+                        && matches!(a.target, super::plays::TargetRef::Point(_))
+                })
+            })
+        {
+            out.sent = Some(clock);
+        }
+        for made in made {
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            let gun = Arms::fallback().primary.0;
+            game.inputs[made.place].push_back((made.time, made.input.actions, turn, None, gun));
+        }
+        if game.bodies[0].carrying == Some(0) {
+            out.took = Some(clock);
+        }
+    }
+    out
+}
+
+/// F4 of the analysis of matches 0x7db2c16a/0x15aa5b99: the thief the bot
+/// killed dropped our battery in a nook its sight misses; the team looks
+/// where it saw him die within a few seconds, and the bot finds and takes
+/// the battery. Without the look (its weight 0) the battery is not found
+/// in the same time (126 s in the owner's match).
+#[test]
+fn a_battery_a_killed_thief_dropped_in_a_nook_is_looked_for_and_taken() {
+    let run = lost_battery_run(None, 60_000);
+    let died = run
+        .died
+        .unwrap_or_else(|| panic!("the thief lives: {run:?}"));
+    let look = run.look.unwrap_or_else(|| panic!("no look: {run:?}"));
+    // The world showing the death comes 300 ms behind, a second apart.
+    assert!(look >= died && look <= died + 2_500, "{run:?}");
+    let sent = run.sent.unwrap_or_else(|| panic!("nobody sent: {run:?}"));
+    assert!(sent <= look + 5_000, "{run:?}");
+    let took = run.took.unwrap_or_else(|| panic!("not taken: {run:?}"));
+    assert!(took <= died + 30_000, "{run:?}");
+    let without = lost_battery_run(Some(0.0), took + 10_000);
+    eprintln!("with the look {run:?}; without {without:?}");
+    assert_eq!(without.died, run.died, "the same fight");
+    assert!(without.took.is_none(), "{without:?}");
+}
+
 /// Where the time of the bots' polls goes, seconds.
 #[derive(Default)]
 struct Times {
@@ -1615,12 +1765,27 @@ fn real_bot_cost() {
             // with no route: a bot standing where it means to walk.
             let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
             let mut stood_by: std::collections::BTreeMap<String, u64> = Default::default();
+            // Living bots' ticks looking at a spawner's spot (Collect at a
+            // `TargetRef::Spawner`), and their deaths while at it.
+            let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
+            let mut was_alive: Vec<bool> = game.bodies.iter().map(|b| b.alive).collect();
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
                     game.step();
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
+                        let searching = bot.assignment.as_ref().is_some_and(|a| {
+                            a.kind == super::plays::PlayKind::Collect
+                                && matches!(a.target, super::plays::TargetRef::Spawner(_))
+                        });
+                        if searching && body.alive {
+                            search_ticks += 1;
+                        }
+                        if searching && was_alive[bot.place] && !body.alive {
+                            search_deaths += 1;
+                        }
+                        was_alive[bot.place] = body.alive;
                         if let Go::To { at, within_m } = bot.intent.go
                             && body.alive
                             && body.feet.distance_xz(at) > within_m
@@ -1783,6 +1948,10 @@ fn real_bot_cost() {
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
+            eprintln!(
+                "  search: {:.0} bot-s at spawners' spots, {search_deaths} deaths in it",
+                search_ticks as f64 * f64::from(TICK_MS) / 1000.0
+            );
             let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
             eprintln!("  {line}");
             if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {
