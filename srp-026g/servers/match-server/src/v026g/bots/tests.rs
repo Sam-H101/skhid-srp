@@ -1288,6 +1288,15 @@ fn bench_tuning() -> Tuning {
                 .insert(name.to_owned(), value.parse().expect("a number"));
         }
     }
+    // The reflex's numbers (`CombatTuning`): `name=json,...`.
+    if let Ok(numbers) = std::env::var("SRP_BENCH_COMBAT") {
+        let mut combat = serde_json::to_value(&tuning.aim.combat).unwrap();
+        for pair in numbers.split(',').filter(|p| !p.is_empty()) {
+            let (name, value) = pair.split_once('=').expect("SRP_BENCH_COMBAT: name=value");
+            combat[name] = serde_json::from_str(value).expect("SRP_BENCH_COMBAT: a JSON value");
+        }
+        tuning.aim.combat = serde_json::from_value(combat).expect("SRP_BENCH_COMBAT: known names");
+    }
     if let Ok(floors) = std::env::var("SRP_BENCH_SEARCH_FLOORS") {
         tuning.think.search_floors_per_poll = if floors == "max" {
             u32::MAX

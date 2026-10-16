@@ -1409,6 +1409,15 @@ impl Bots {
         };
         bot.reflex
             .think_with(me, &sit, &bot.memory, now, &tuning.aim, skill, &mut bot.rng);
+        // Hit from a direction alone (the HUD's marker): its callout.
+        if let Some((at, bearing)) = bot.reflex.take_hit_note() {
+            self.teams[team].knowledge.shots_from.push(know::ShotFrom {
+                by: bot.place,
+                at,
+                bearing,
+                time: now + tuning.sense.callout_ms,
+            });
+        }
         if now < bot.pause_until {
             bot.intent = Intent::stay();
             return;
