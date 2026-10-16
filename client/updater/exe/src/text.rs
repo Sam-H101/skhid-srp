@@ -290,3 +290,66 @@ pub fn resources_not_ready() -> String {
      update, or says what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
         .into()
 }
+
+/// The patch step (game\resources.db.patch_<n>, the server's list) could
+/// not finish. PLAY stays off.
+pub fn patches_game_running() -> String {
+    format!(
+        "The game is running, so Skhid could not update the game's patches \
+         (game\\resources.db.patch_*). Close the game, then start the launcher \
+         again.{RESOURCES_PLAY_OFF}"
+    )
+}
+
+pub fn patches_failed() -> String {
+    format!(
+        "Skhid could not finish updating the game's patches (game\\resources.db.patch_*); \
+         the reason is in game\\binaries\\x86\\updater_skhid.log. Start the launcher again, \
+         or send that file to the server's operator.{RESOURCES_PLAY_OFF}"
+    )
+}
+
+pub fn patches_unreachable(reason: &str) -> String {
+    format!("The list of the game's patches could not be fetched. {reason}{RESOURCES_PLAY_OFF}")
+}
+
+pub fn patches_not_offered(server: &Url) -> String {
+    format!(
+        "{} offers no list of the game's patches. Tell the server's operator.{RESOURCES_PLAY_OFF}",
+        server.host
+    )
+}
+
+pub fn patches_bad_list(server: &Url, detail: &str) -> String {
+    format!(
+        "The list of the game's patches from {} cannot be used ({detail}). Tell the server's \
+         operator.{RESOURCES_PLAY_OFF}",
+        server.host
+    )
+}
+
+pub fn patches_download(name: &str, reason: &str) -> String {
+    format!("game\\{name} could not be downloaded. {reason}{RESOURCES_PLAY_OFF}")
+}
+
+pub fn patches_wrong(server: &Url, name: &str) -> String {
+    format!(
+        "{} sent game\\{name} with another checksum than its list says. Tell the server's \
+         operator.{RESOURCES_PLAY_OFF}",
+        server.host
+    )
+}
+
+/// The server could not be asked (`reason`, the overlay's words) and the
+/// patches were never checked in place, or are not any more.
+pub fn patches_offline(reason: &str) -> String {
+    format!("The game's patches could not be checked: {reason}{RESOURCES_PLAY_OFF}")
+}
+
+/// `updater_skhid.exe ready` found the patches not checked in place.
+pub fn patches_not_ready() -> String {
+    "Skhid has not finished updating the game's files (game\\resources.db.patch_*), so the \
+     game is not started. Start Skhid.bat (the launcher): it finishes the update, or says \
+     what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
+        .into()
+}

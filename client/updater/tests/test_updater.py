@@ -18,6 +18,7 @@ import ctypes
 import hashlib
 import http.server
 import io
+import json
 import os
 import random
 import shutil
@@ -69,7 +70,9 @@ def make_zip(files):
 
 
 class Site:
-    """The web server: `/api/client-files` and `/download`, as told."""
+    """The web server: `/api/client-files` and `/download`, as told; the
+    list of resources.db's patches at `/patches` (by default none: `{}`),
+    and the patch files at `/store/patch_<n>`."""
 
     def __init__(self):
         self.archive = b""
@@ -81,6 +84,13 @@ class Site:
         self.blobs = {}                 # /resources/<sha256>: sha256 -> bytes
         self.blob_statuses = {}         # sha256 -> another status than 200
         self.blob_bodies = {}           # sha256 -> other bytes than the blob's
+        self.patches = {}               # n -> bytes: listed at /patches, served at /store/patch_<n>
+        self.patch_list = None          # bytes to answer /patches with instead of the true list
+        self.patch_list_status = 200
+        self.patch_base = None          # where the list says the files are (default: this site)
+        self.patch_statuses = {}        # n -> another status than 200 for its file
+        self.patch_bodies = {}          # n -> other bytes than the listed ones
+        self.patch_lengths = {}         # n -> a Content-Length announced in the place of the file
         self.requests = []
         site = self
 
@@ -121,6 +131,31 @@ class Site:
                                 time.sleep(site.slow)
                     except OSError:
                         pass
+                elif self.path == "/patches":
+                    if site.patch_list_status != 200:
+                        self.answer(site.patch_list_status, b"")
+                    else:
+                        body = site.patch_list if site.patch_list is not None else site.true_patch_list()
+                        self.answer(200, body, "application/json")
+                elif self.path.startswith("/store/patch_"):
+                    name = self.path[len("/store/patch_"):]
+                    number = int(name) if name.isdigit() else None
+                    status = site.patch_statuses.get(number, 200 if number in site.patches else 404)
+                    if status != 200:
+                        self.answer(status, b"")
+                    elif number in site.patch_lengths:
+                        # A file larger than the disk: its length, a few bytes.
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(site.patch_lengths[number]))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(b"x" * 1024)
+                        except OSError:
+                            pass
+                        self.close_connection = True
+                    else:
+                        self.answer(200, site.patch_bodies.get(number, site.patches[number]),
+                                    "application/octet-stream")
                 elif self.path.startswith("/resources/"):
                     name = self.path[len("/resources/"):]
                     status = site.blob_statuses.get(name, 200 if name in site.blobs else 404)
@@ -137,6 +172,11 @@ class Site:
 
     def true_manifest(self):
         return f"skhid-client-files 1\nsha256 {sha256(self.archive)}\nsize {len(self.archive)}\n".encode()
+
+    def true_patch_list(self):
+        base = self.patch_base or self.url
+        return json.dumps({f"patch_{n}": {"sha256": sha256(data), "url": f"{base}/store/patch_{n}"}
+                           for n, data in self.patches.items()}).encode()
 
     def close(self):
         self.server.shutdown()
@@ -461,20 +501,18 @@ class UpdaterTest(unittest.TestCase):
 
     # --- what can go wrong -----------------------------------------------
 
-    def test_no_server_at_the_first_start_says_so_and_lets_the_player_try(self):
+    def test_no_server_at_the_first_start_says_so_and_keeps_play_off(self):
         # The files were copied by hand and the updater never installed
-        # anything: it knows nothing against them.
+        # anything: it knows nothing against them. But the patches of
+        # resources.db were never checked: PLAY stays off.
         self.offer(self.bundle())
         self.site.close()
         launcher = self.launcher()
-        launcher.wait_for_state(LATEST)
-        self.assertEqual(launcher.states(), [CHECKING, CHECK_FAILED] * 2 + [CHECKING, LATEST])
-        self.assertRegex(launcher.texts()[0], r"^No update check: Cannot connect to 127\.0\.0\.1\. .*"
-                                              r"The files could not be checked; you can try to play\.$")
-        # The box with the reason comes before PLAY is enabled.
-        types = [frame[0] for frame in launcher.frames]
-        self.assertLess(types.index(0x05), len(types) - 1)
-        self.assertEqual(launcher.finish(), 0)
+        launcher.wait_for(lambda l: l.texts(), 60, "error text")
+        self.assertEqual(launcher.states(), [CHECKING, CHECK_FAILED] * 2 + [CHECKING, ERROR])
+        self.assertRegex(launcher.texts()[0], r"^The game's patches could not be checked: Cannot connect to "
+                                              r"127\.0\.0\.1\. .*PLAY stays off until this is done\.$")
+        self.assertEqual(launcher.finish(), 1)
         self.site = Site()
 
     def test_no_server_but_whole_files_lets_the_game_be_played(self):
@@ -504,10 +542,20 @@ class UpdaterTest(unittest.TestCase):
     def test_a_server_without_client_files_says_so(self):
         self.site.manifest_status = 404
         launcher = self.launcher()
+        launcher.wait_for(lambda l: l.texts(), 30, "error text")
+        self.assertEqual(launcher.states(), [CHECKING, ERROR])
+        # The patches were never checked: PLAY stays off.
+        self.assertEqual(launcher.texts(), ["The game's patches could not be checked: 127.0.0.1 offers no client "
+                                            "files now. Try again later. PLAY stays off until this is done."])
+        self.assertEqual(launcher.finish(), 1)
+        # With the patches checked at an earlier start, the player may try.
+        self.site.manifest_status = 200
+        self.install(self.bundle())
+        self.site.manifest_status = 404
+        launcher = self.launcher()
         launcher.wait_for_state(LATEST, 30)
-        self.assertEqual(launcher.states(), [CHECKING, LATEST])
         self.assertEqual(launcher.texts(), ["No update check: 127.0.0.1 offers no client files now. Try again later. "
-                                            "The files could not be checked; you can try to play."])
+                                            "The installed files are complete, so you can play."])
         self.assertEqual(launcher.finish(), 0)
 
     def test_an_answer_that_is_not_the_servers_is_told_apart(self):

@@ -19,6 +19,11 @@ pub struct Url {
 
 /// Reads a base address. `None` for anything else than the forms above.
 pub fn parse(text: &str) -> Option<Url> {
+    base(text, false)
+}
+
+/// `parse`; `any_http`: plain HTTP to any host too.
+fn base(text: &str, any_http: bool) -> Option<Url> {
     let text = text.trim();
     let (secure, rest) = if let Some(rest) = text.strip_prefix("https://") {
         (true, rest)
@@ -52,7 +57,7 @@ pub fn parse(text: &str) -> Option<Url> {
     {
         return None;
     }
-    if !secure && !(host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
+    if !secure && !any_http && !(host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
         return None;
     }
     let prefix = path.trim_end_matches('/');
@@ -96,9 +101,74 @@ pub fn download(text: &str) -> Option<Url> {
     Some(url)
 }
 
+/// The address of a patch file of `resources.db` (`patches`): `http://` or
+/// `https://`, any host, a bare IP address too, and a path. Plain HTTP is
+/// taken here: the file is checked against the SHA-256 of the list, which
+/// comes from the update server over its own address. No credentials, no
+/// fragment, no space or control character.
+pub fn patch(text: &str) -> Option<Url> {
+    if text.len() > 1024
+        || text
+            .bytes()
+            .any(|c| !c.is_ascii_graphic() || matches!(c, b'\\' | b'#'))
+    {
+        return None;
+    }
+    let scheme_end = text.find("://")? + 3;
+    let at = scheme_end + text[scheme_end..].find('/')?;
+    let path = &text[at..];
+    if path.len() < 2 {
+        return None;
+    }
+    let mut url = base(&text[..at], true)?;
+    url.prefix = path.into();
+    Some(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_patch_may_be_on_any_host_over_http_or_https() {
+        let u = patch("http://203.0.113.5/patch_14").unwrap();
+        assert_eq!(
+            (u.secure, u.host.as_str(), u.port, u.prefix.as_str()),
+            (false, "203.0.113.5", 80, "/patch_14")
+        );
+        let u = patch("https://Files.Example.org:8443/db/patch_14?v=2").unwrap();
+        assert_eq!(
+            (u.secure, u.host.as_str(), u.port, u.prefix.as_str()),
+            (true, "files.example.org", 8443, "/db/patch_14?v=2")
+        );
+        assert!(patch("http://127.0.0.1:1234/p/patch_1").is_some());
+        for bad in [
+            "",
+            "/patch_14",
+            "patch_14",
+            "203.0.113.5/patch_14",
+            "ftp://203.0.113.5/patch_14",
+            "file:///C:/patch_14",
+            "file://host/patch_14",
+            "javascript://x/patch_14",
+            "HTTP://host/patch_14",
+            "http://203.0.113.5",
+            "http://203.0.113.5/",
+            "http://user@host/patch_14",
+            "http://user:pw@host/patch_14",
+            "http://host/patch_14#x",
+            "http://host/a b",
+            "http://host/a\\b",
+            "http://host/a\r\nX: y",
+            "http://host:0/patch_14",
+            "http://host:99999/patch_14",
+            "http://[::1]/patch_14",
+            "http:///patch_14",
+            " http://host/patch_14",
+        ] {
+            assert!(patch(bad).is_none(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn download_queries_preserve_the_exact_request() {

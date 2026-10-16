@@ -23,6 +23,7 @@ mod game;
 mod http;
 mod install;
 mod log;
+mod patches;
 mod pipe;
 mod resources;
 mod rt;
@@ -392,15 +393,15 @@ enum Done {
     Installed {
         restart: bool,
     },
-    /// The server could not be asked, and what is installed is whole: the
-    /// game can be started with it.
-    Offline(String),
+    /// The server could not be asked (why), and what is installed is whole:
+    /// the game can be started with it (the words for the player).
+    Offline(String, String),
     Stopped,
     Failed(String),
 }
 
-/// The update: the overlay, then the resource step, both under the
-/// installation lock.
+/// The update: the overlay, then the resource step, then the patch step,
+/// all under the installation lock.
 fn update(session: &mut Session, layout: &Layout) -> Done {
     let _lock = match win::install_lock(&layout.exe_dir) {
         Ok(lock) => lock,
@@ -423,7 +424,7 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
     // new ones start at once and do it.
     let server = match &done {
         Done::UpToDate | Done::Installed { restart: false } => Some(&server),
-        Done::Offline(_) => None,
+        Done::Offline(..) => None,
         Done::Installed { restart: true } => {
             log!(
                 "resources: the updater or the launcher was replaced: the resource step is done by the new one"
@@ -434,10 +435,31 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
     };
     // A required plan (it grows the game's resources.db) that is not in
     // place keeps PLAY off: a new exe with an old db crashes.
-    match resources::run(session, layout, server, read_installed(layout).as_ref()) {
-        resources::Outcome::Ready => done,
-        resources::Outcome::Stopped => Done::Stopped,
-        resources::Outcome::Blocked(message) => Done::Failed(message),
+    let installed = read_installed(layout);
+    match resources::run(session, layout, server, installed.as_ref()) {
+        resources::Outcome::Ready => {}
+        resources::Outcome::Stopped => return Done::Stopped,
+        resources::Outcome::Blocked(message) => return Done::Failed(message),
+    }
+    // The patches of resources.db the server lists: required too, every
+    // one of them checked before the game is played.
+    let overlay: Vec<&str> = installed
+        .iter()
+        .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str()))
+        .collect();
+    let offline = match &done {
+        Done::Offline(_, reason) => Some(reason.as_str()),
+        _ => None,
+    };
+    match patches::run(
+        session,
+        layout,
+        server.ok_or(offline.unwrap_or("")),
+        &overlay,
+    ) {
+        patches::Outcome::Ready => done,
+        patches::Outcome::Stopped => Done::Stopped,
+        patches::Outcome::Blocked(message) => Done::Failed(message),
     }
 }
 
@@ -466,9 +488,9 @@ fn overlay(session: &mut Session, layout: &Layout, server: &Url) -> Done {
             // hand, the first start): it knows nothing against them. Files
             // it installed and now finds damaged may not.
             return match &installed {
-                None => Done::Offline(text::offline_unchecked(&message)),
+                None => Done::Offline(text::offline_unchecked(&message), message),
                 Some(installed) => match damage(installed, |file| look(layout, file)) {
-                    None => Done::Offline(text::offline(&message)),
+                    None => Done::Offline(text::offline(&message), message),
                     Some(Reason::Missing(name) | Reason::Changed(name)) => {
                         Done::Failed(text::offline_damaged(&message, &name))
                     }
@@ -709,7 +731,7 @@ fn run() -> u32 {
     };
     if options.ready {
         // Read only: no lock, no server, no pipe.
-        return match resources::ready(&layout) {
+        return match resources::ready(&layout).and_then(|()| patches::ready(&layout)) {
             Ok(()) => {
                 log!("exit 0");
                 exit::OK
@@ -782,7 +804,7 @@ fn run() -> u32 {
             }
             exit::OK
         }
-        Done::Offline(message) => {
+        Done::Offline(message, _) => {
             log!("the server could not be asked: {message}");
             if session.named_file {
                 session.state(state::CHECKING);

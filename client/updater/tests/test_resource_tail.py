@@ -422,6 +422,10 @@ class TailTest(unittest.TestCase):
 
     def test_ready_without_a_required_plan_lets_the_game_start(self):
         self.make_db()
+        # Not before the launcher has checked the patches of resources.db
+        # once (test_db_patches.py): here the server lists none.
+        self.assertEqual(self.run_ready(), 1, "the patches never checked")
+        self.assertEqual(self.run_updater(self.bundle()), 0, self.log())
         self.assertEqual(self.run_ready(), 0, "no plan at all")
         self.write(self.PLAN, b"skhid-resources 1\r\nend\r\n")
         self.assertEqual(self.run_ready(), 0, "a plan without a tail")

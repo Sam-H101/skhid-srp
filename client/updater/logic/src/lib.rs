@@ -9,6 +9,7 @@ pub mod args;
 pub mod game;
 pub mod inflate;
 pub mod manifest;
+pub mod patches;
 pub mod pipe;
 pub mod resources;
 pub mod sha256;

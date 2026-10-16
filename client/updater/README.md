@@ -7,7 +7,9 @@
 the launcher and itself) the same as the ZIP the server's page offers, and
 then rewrites in place the few entries of the game's own `resources.db` that
 the ZIP's plan names, and, when the plan says so, grows the db by new
-entries ("Resources" below).
+entries ("Resources" below). Last, it makes the game folder's
+`resources.db.patch_<n>` files, which the game mounts over `resources.db`,
+the ones the server lists ("Patches" below).
 
 A 32-bit Windows program of about 130 KB, without the Rust standard library
 and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
@@ -42,6 +44,12 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   effort for a plan without a tail: it never fails the update and never
   keeps PLAY off. A plan with a tail is required: PLAY stays off until the
   db is checked whole.
+- After the resource step, at every start, the patch step: `GET /patches`,
+  the server's list of resources.db's patches, each with its SHA-256 and
+  the address of its file (plain HTTP or HTTPS, any host); a listed patch
+  that is missing or damaged is downloaded, a patch file the list has not
+  is deleted, every patch file is hashed. Required: PLAY stays off until
+  every listed patch is in place ("Patches" below).
 - Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
   does hold the game folder's path) beside itself. `updater_skhid.lock`
@@ -60,7 +68,7 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 | `"<exe>" "copy" "<pipe>" ...` | the unpatched launcher | Answers "copy done" at once: nothing needs copying |
 | `updater_skhid.exe check` | a person, a script | The update without a launcher; an error is a message box |
 | `updater_skhid.exe check quiet` | a script | No box either. Exit code 0: done or nothing to do; 1: failed (the reason is in the log) |
-| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the plan beside it grows the db and the db is not checked whole, or the plan cannot be read and may be one (format 2 or newer); else 0 |
+| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the plan beside it grows the db and the db is not checked whole, or the plan cannot be read and may be one (format 2 or newer); also when the last patch step did not end `ready`, or the patch files are not now what its list says (one missing, damaged, or one more); else 0 |
 
 Exit codes: 0, 1 (failed), 2 (the launcher's pipe could not be opened), 3
 (an internal error; logged).
@@ -72,7 +80,7 @@ says so and does nothing.
 
 | Folder | What |
 |---|---|
-| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the resource plan and its record) and what the resource step decides, the launcher's pipe messages, command-line splitting, the server address. `cargo test` there runs on any host |
+| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the resource plan and its record, the list of resources.db's patches) and what the resource step and the patch step decide, the launcher's pipe messages, command-line splitting, the server address and a patch's. `cargo test` there runs on any host |
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
 | `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started |
 
@@ -329,6 +337,94 @@ files ... Start Skhid.bat (the launcher)") and do not start the game. With
 no updater beside them (an archive without the launcher) they start it as
 before.
 
+## Patches
+
+The game (client patch revision 14, patch 27 of
+`srp-026g/client-patches/README.md`) mounts the retail `game/resources.db`
+and then every `game/resources.db.patch_<n>` there, n = 1 to 255 in order,
+a missing number skipped; a later patch's file wins. n is the patch
+revision that brought the patch. The updater keeps those files the ones the
+server lists (`logic/src/patches.rs`, `exe/src/patches.rs`).
+
+**The list.** `GET <server>/patches`, from the server the updater asks for
+everything else (`updater_skhid.url`, else the built-in
+`SKHID_UPDATE_URL`; so HTTPS in production):
+
+```json
+{"patch_14": {"sha256": "<64 hex>", "url": "http://203.0.113.5/patch_14"},
+ "patch_17": {"sha256": "<64 hex>", "url": "https://files.example/db/patch_17"}}
+```
+
+A JSON object and nothing else: every key `patch_<n>` with n from 1 to 255
+and no leading zero (the game's own rule), no key twice; every value an
+object of exactly `sha256` (64 hex characters, either case) and `url`
+(`http://` or `https://`, a host name or a bare IPv4 address, an optional
+port, and a path; no credentials, no fragment, no space, no other scheme;
+at most 1024 bytes). No escape in any string. At most 512 KB. `{}` is a
+list: no patch (every patch file is deleted). Anything else is refused
+whole, with nothing changed. 404 is "no list", not "no patch".
+
+**The files.** `GET <url>` of each entry, on whatever host the list names:
+a plain file server is enough. Plain HTTP is taken there, to any host, as
+it is not for the update server: the file is checked against the list's
+SHA-256, and the list came from the update server over HTTPS. No redirect
+is followed. The Content-Length, when the server sends one, is checked
+against the disk first.
+
+**A run**, after the resource step (also when nothing new was installed;
+under the installation lock):
+
+1. The list is fetched (three tries, 3 s apart) and read. It is kept beside
+   the updater as `updater_skhid.patches` (one line, the same form), and
+   `updater_skhid.patches.status` says `blocked checking` until the run is
+   through.
+2. Every `game\resources.db.patch_*` that is not a listed patch is deleted:
+   one the list no longer has (a rollback), a name the game does not take
+   (`_014`, `_0`, `_300`), a download left over (`.skhid-part`).
+3. Every listed patch's file is hashed. A damaged one is deleted. A missing
+   or damaged one is downloaded into `resources.db.patch_<n>.skhid-part`
+   beside its place (the disk must have its Content-Length plus 64 MB free,
+   else nothing is fetched), flushed, read back and hashed, and renamed to
+   its name only when it has the list's SHA-256. Two tries a run; a file
+   that is still wrong, or a network failure, ends the run. A `.skhid-part`
+   that failed is deleted.
+4. Every patch file is hashed once more against the list (step 2's rule
+   too). Then `updater_skhid.patches.status` says `ready`.
+
+When the update server could not be asked this run (the overlay's offline
+case), nothing is fetched: the game may be played when the last run ended
+`ready` and the folder is still what the kept list says; else PLAY stays
+off. A first start with the server down therefore keeps PLAY off (before
+this step it let the player try).
+
+What keeps PLAY off ("Error" in the launcher's line, the reason in its box,
+`check quiet` exits 1, `updater_skhid.patches.status` says `blocked <why>`,
+the log has `patches: BLOCKED: <why>. The player is told: <words>`), each
+told with "PLAY stays off until this is done." after it:
+
+| Found | The player is told |
+|---|---|
+| The list cannot be fetched (network, a status but 404) | "The list of the game's patches could not be fetched. <the network error>" |
+| `/patches` answers 404 | "<host> offers no list of the game's patches. Tell the server's operator." |
+| The list is not one (above) | "The list of the game's patches from <host> cannot be used (<what>). Tell the server's operator." |
+| A file cannot be downloaded | "game\resources.db.patch_<n> could not be downloaded. <the network error>" |
+| A file has another SHA-256, twice | "<host> sent game\resources.db.patch_<n> with another checksum than its list says. Tell the server's operator." |
+| Not enough disk | "Not enough free disk space to update the game's files in <folder>: N MB needed, M MB free. ..." |
+| A patch file is held (the game runs) | "The game is running, so Skhid could not update the game's patches ... Close the game, then start the launcher again." |
+| The server could not be asked and the patches were not checked in place | "The game's patches could not be checked: <why the server could not be asked>" |
+| Anything else (a file that cannot be written or deleted, the ZIP bringing a `game/resources.db.patch_*`) | "Skhid could not finish updating the game's patches ...; the reason is in game\binaries\x86\updater_skhid.log. ..." |
+
+The next start tries again. A file that is never half written in place:
+what the game mounts is a checked file or nothing.
+
+`ready` (play_skhid.bat, play_skhid.sh) checks the same as the offline case
+(the status `ready`, the folder against the kept list, every file hashed)
+and refuses otherwise: also before the launcher has ever run the step.
+
+The resource step is not changed by this: a ZIP that drops the old menu
+regions gives the players' resources.db its stock bytes back, and the menus
+come with a patch instead.
+
 ## Build and test
 
 Use the same nightly Rust as the game workspaces (`srp-026g/flake.nix`
@@ -341,6 +437,7 @@ SKHID_UPDATE_URL=https://test.example ./build.sh   # another default server
 (cd logic && cargo test)
 python tests/test_updater.py                 # Windows
 python tests/test_resource_tail.py           # Windows or Wine (a plan that grows the db)
+python tests/test_db_patches.py              # Windows or Wine (resources.db's patches)
 python tests/test_game_download.py           # Windows or Wine
 SKHID_TEST_BUNDLE=<a players' zip> python tests/test_updater.py
 ```
@@ -385,6 +482,25 @@ the players' `play_skhid.bat` run by Wine's cmd with a stand-in game,
 refusing to start it until the db is in place).
 `test_updater.py`'s two changed scenarios (a newer format; a running game
 with a required plan) are not run yet: they need Windows.
+
+Run on 2026-10-16 (Linux, Wine 11.8 staging, `check quiet`), with the
+patch step: the 62 unit tests; the 16 scenarios of
+`test_db_patches.py` (a fresh install of patches 1, 14, 17 and 255 and the
+next start downloading nothing; an empty list; the files on a second
+server; one missing; one damaged here; patch files the list has not,
+names the game does not take and a download left over deleted, and a
+rollback; a server file that is wrong, twice; a damaged file the server
+spoils too; nine lists that cannot be read, changing nothing; no
+`/patches`; a list that cannot be fetched; a file server that cannot be
+reached; the server down before and after a checked run; not enough disk,
+by a Content-Length past the free space; the ZIP bringing a patch file;
+`ready` and play_skhid.bat run by Wine's cmd refusing until the patches are
+checked, and again with a patch file added); `test_resource_tail.py` (15)
+and `test_game_download.py` (16, four skipped as before) again, with their
+servers now listing no patch. `test_updater.py`'s two changed scenarios (a
+first start with the server down, a server without client files: PLAY
+stays off now) and a game that holds a patch file are not run: they need
+Windows. play_skhid.sh is not run with Wine (it calls the same `ready`).
 
 ## Not done
 
