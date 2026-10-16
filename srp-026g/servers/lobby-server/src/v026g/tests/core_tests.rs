@@ -1868,7 +1868,7 @@ impl World {
                     account_id: player.account_id,
                     name: player.profile.name.clone(),
                     team: player.profile.team,
-                    driven: false,
+                    driven: player.driven,
                     entered: true,
                     present_at_end: true,
                     left: false,
@@ -1895,6 +1895,7 @@ impl World {
             trusted_snapshot_ms: Some(690_000),
             trusted_by: 2,
             players,
+            vs_bots: setup.vs_bots,
         };
         let terms = Terms::at(session::v026g::quests::now());
         let report = self
@@ -2333,6 +2334,7 @@ mod join_tests;
 mod feedback_tests;
 mod matches_now_tests;
 mod patch_check_tests;
+mod pvb_tests;
 mod queue_chat_tests;
 
 // ---- the premium shop, items for gold, the daily bonus, the tutorial, a

@@ -13,6 +13,8 @@
 //! - `join`: the JOIN button of the "matches now" window of srp's changed
 //!   lobby movie: a held place in a match being played, and the Play that
 //!   takes it;
+//! - `pvb`: "Player vs Bots": one player against the match server's own
+//!   bots, chosen in srp's changed lobby movie;
 //! - `social`: chat, friends, important messages, squads;
 //! - `clans`: clans, clan chat and clan-team Play.
 //!
@@ -111,7 +113,10 @@
 //!   player bots: a fixed script, `docs/notes/player_bots.md` §6). A late
 //!   joiner whose side needs the room takes the place of one of them,
 //!   which leaves the match (the match server's `SRP_BOTS_GIVE_WAY`;
-//!   `policy::bot_gives_way`, `play::late_rule`).
+//!   `policy::bot_gives_way`, `play::late_rule`);
+//! - `SRP_PVB` (default off), `SRP_PVB_MAX_GEAR` (5), `SRP_PVB_MAX_MATCHES`
+//!   (5), `SRP_PVB_PAY` (0.5), `SRP_PVB_STALL_S` (60): "Player vs Bots"
+//!   (`pvb`, whose module says what each does and which server reads it).
 
 mod away;
 mod clans;
@@ -121,6 +126,7 @@ mod items;
 mod join;
 mod patch_check;
 mod play;
+pub mod pvb;
 mod queue_chat;
 mod shop;
 mod social;
@@ -238,6 +244,9 @@ pub struct Settings {
     /// The match server's own bots put into each match made
     /// (`SRP_SERVER_BOTS`, default 0; testing only).
     pub server_bots: u8,
+    /// "Player vs Bots" (`SRP_PVB`, `SRP_PVB_MAX_GEAR`,
+    /// `SRP_PVB_MAX_MATCHES`; `pvb`).
+    pub pvb: pvb::Config,
 }
 
 impl Settings {
@@ -425,6 +434,7 @@ impl Settings {
         }
         Self {
             server_bots,
+            pvb: pvb::Config::from_env(),
             balance,
             late_join_patience,
             squads,
@@ -467,6 +477,7 @@ impl Settings {
             squads: true,
             squads_off_text: DEFAULT_SQUADS_OFF_TEXT.to_owned(),
             server_bots: 0,
+            pvb: pvb::Config::default(),
         }
     }
 }

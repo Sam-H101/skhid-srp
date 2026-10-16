@@ -40,6 +40,7 @@ pub mod notices;
 pub mod pay;
 pub mod persist;
 pub mod premium;
+pub mod pvb;
 pub mod quests;
 pub mod rewards;
 pub mod rules;

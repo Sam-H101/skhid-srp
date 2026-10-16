@@ -66,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|place| player(place, loadouts::starter()))
             .collect(),
         score_weights: None,
+        vs_bots: false,
     })?;
     let store = Arc::new(SessionStore::with_repository(
         Duration::from_secs(600),

@@ -770,6 +770,127 @@ fn a_join_is_answered_with_one_row_at_the_join_start() {
     assert_eq!(rows[0].0.len(), 21);
 }
 
+/// "Player vs Bots": the status (`B1` and a row a map, from 2 050 000 000)
+/// and a choice's answer (`B2`, at the start it was asked with), as the
+/// client reads them; every name within the 63 bytes, every start between
+/// the list of the matches and the JOIN starts.
+#[test]
+fn player_vs_bots_rows_are_ranking_rows_at_their_starts() {
+    assert_eq!(PVB_STATUS_START, 2_050_000_000);
+    assert_eq!(PVB_CHOOSE_BASE, 2_051_000_000);
+    const {
+        assert!(MATCHES_START + MATCHES_NOW_ROWS as u32 + 1 < PVB_STATUS_START);
+        assert!(PVB_STATUS_START + PVB_MAP_ROWS as u32 + 1 < PVB_CHOOSE_BASE);
+        assert!(PVB_CHOOSE_LAST < JOIN_START);
+    }
+    assert_eq!(pvb_choice_start(8, 61), 2_051_008_061);
+    assert_eq!(pvb_choice(2_051_008_061), Some((8, 61)));
+    assert_eq!(pvb_choice(2_051_010_138), Some((10, 138)));
+    assert_eq!(pvb_choice(PVB_CHOOSE_BASE - 1), None);
+    assert_eq!(pvb_choice(PVB_CHOOSE_LAST + 1), None);
+    assert_eq!(pvb_choice(PVB_CHOOSE_BASE + 256_000), None);
+    assert_eq!(pvb_choice(PVB_CHOOSE_BASE + 1_256), None);
+
+    let widest = PvbNumbers {
+        gear: u8::MAX,
+        max_gear: u8::MAX,
+        running: u32::MAX,
+        max_matches: u32::MAX,
+    };
+    let status = PvbStatus {
+        code: PvbCode::GearTooHigh,
+        numbers: PvbNumbers {
+            gear: 6,
+            max_gear: 5,
+            running: 1,
+            max_matches: 5,
+        },
+        sizes: vec![6, 8, 10],
+        default_size: 8,
+        default_map: 61,
+    };
+    let maps = [
+        PvbMap {
+            map_id: 61,
+            level: 1,
+            mode: 2,
+            free: 4,
+        },
+        PvbMap {
+            map_id: 138,
+            level: 8,
+            mode: 4,
+            free: 0,
+        },
+    ];
+    let mut client = Client::signed_in();
+    let read = |client: &mut Client, message| match client.receive(&message).unwrap() {
+        Decoded::EloList(rows) => rows,
+        other => panic!("not a ranking list: {other:?}"),
+    };
+    assert_eq!(
+        read(&mut client, pvb_status(&status, &maps, 32).unwrap()),
+        vec![
+            ("B1;1;6;5;6.8.10;8;61;1;5".into(), 2_050_000_000, 0, 0),
+            ("61;1;2;4".into(), 2_050_000_001, 0, 0),
+            ("138;8;4;0".into(), 2_050_000_002, 0, 0),
+        ]
+    );
+    // As many rows as asked for, the header always.
+    assert_eq!(
+        read(&mut client, pvb_status(&status, &maps, 2).unwrap()).len(),
+        2
+    );
+    assert_eq!(
+        read(&mut client, pvb_status(&status, &maps, 0).unwrap()).len(),
+        1
+    );
+    assert!(pvb_status(&status, &[maps[0]; PVB_MAP_ROWS + 1], 32).is_err());
+    let wide = PvbStatus {
+        numbers: widest,
+        code: PvbCode::UnknownChoice,
+        default_size: u8::MAX,
+        default_map: u8::MAX,
+        ..status.clone()
+    };
+    let header = &read(&mut client, pvb_status(&wide, &[], 1).unwrap())[0].0;
+    assert!(header.len() <= limits::NAME, "{header}");
+
+    assert_eq!(
+        read(&mut client, pvb_choose_ok(8, 61).unwrap()),
+        vec![("B2;ok;8;61".into(), 2_051_008_061, 0, 0)]
+    );
+    assert_eq!(
+        read(
+            &mut client,
+            pvb_choose_no(2_051_006_117, PvbCode::AtLimit, status.numbers).unwrap()
+        ),
+        vec![("B2;no;7;6;5;1;5".into(), 2_051_006_117, 0, 0)]
+    );
+    let no = &read(
+        &mut client,
+        pvb_choose_no(PVB_CHOOSE_LAST, PvbCode::UnknownChoice, widest).unwrap(),
+    )[0]
+    .0;
+    assert!(no.len() <= limits::NAME, "{no}");
+    // The codes are the contract's.
+    for (code, number) in [
+        (PvbCode::Allowed, 0),
+        (PvbCode::GearTooHigh, 1),
+        (PvbCode::InSquad, 2),
+        (PvbCode::Searching, 3),
+        (PvbCode::InMatch, 4),
+        (PvbCode::Outdated, 5),
+        (PvbCode::Off, 6),
+        (PvbCode::AtLimit, 7),
+        (PvbCode::Maintenance, 8),
+        (PvbCode::ClanTeam, 9),
+        (PvbCode::UnknownChoice, 10),
+    ] {
+        assert_eq!(code as u8, number);
+    }
+}
+
 #[test]
 fn quests_are_twenty_byte_records() {
     let record = QuestRecord {

@@ -71,6 +71,14 @@
 //!   a quest's silver and reputation times the match level's multipliers,
 //!   its reputation times `SRP_REPUTATION_RATE` percent too, and twice in
 //!   one of the day's doubled matches.
+//! - **A match against the server's bots** ("Player vs Bots",
+//!   [`MatchResult::vs_bots`]; the owner's of 2026-10-16): its rows pay
+//!   [`Terms::pvb_pay`] (`SRP_PVB_PAY`, default half) of their silver and
+//!   experience, and so do the premium half and the items' bonus counted
+//!   from them; reputation, the drop and the pay of a level reached are as
+//!   in any match. It counts for no quest and no daily bonus, and, as every
+//!   match with a bot of the server's, moves no rating and no balance
+//!   rating.
 //! - **Wear** (only with `SRP_ITEM_WEAR=on`; off by the owner's choice,
 //!   [`pay::item_wear`]): every item of a kit the player used loses its
 //!   `degrade_per_match`; a kit's firearms share `degrade_per_use` for each
@@ -258,6 +266,11 @@ pub struct MatchResult {
     pub trusted_by: u8,
     /// By roster place.
     pub players: Vec<PlayerResult>,
+    /// A match of one player against the server's bots ("Player vs Bots",
+    /// the match server's `MatchSetup::vs_bots`): it pays
+    /// [`Terms::pvb_pay`] of its silver and experience, and counts for no
+    /// quest and no daily bonus.
+    pub vs_bots: bool,
 }
 
 /// What the rewards of a match are counted with.
@@ -284,6 +297,10 @@ pub struct Terms {
     /// The fewest players a match must have had in it to move the balance
     /// rating ([`balance::players_in`]). 1: every match does.
     pub rated_players: u32,
+    /// What a match against the server's bots ([`MatchResult::vs_bots`])
+    /// pays of the silver and the experience of its rows, 0 to 1
+    /// (`SRP_PVB_PAY`, default 0.5; [`super::pvb::pay`]).
+    pub pvb_pay: f64,
 }
 
 impl Terms {
@@ -291,8 +308,8 @@ impl Terms {
     /// `SRP_MONEY_RATE` (default: by the match's level),
     /// `SRP_REPUTATION_RATE` (default 120), `SRP_ITEM_WEAR` and
     /// `SRP_DROP_PLAYTIME_BONUS` (both off unless set),
-    /// `SRP_BALANCE_RATED_PLAYERS` (default 4) and the weights srp's
-    /// matches are made with.
+    /// `SRP_BALANCE_RATED_PLAYERS` (default 4), `SRP_PVB_PAY` (default
+    /// 0.5) and the weights srp's matches are made with.
     pub fn at(now: u64) -> Self {
         Self {
             now,
@@ -303,6 +320,7 @@ impl Terms {
             wear: pay::item_wear(),
             playtime_bonus: pay::drop_playtime_bonus(),
             rated_players: balance::rated_players(),
+            pvb_pay: super::pvb::pay(),
         }
     }
 }
@@ -884,8 +902,10 @@ impl Results {
         }
         let mut shared = Shared::of(result, terms);
         // Test bots (`super::bots`; none unless `SRP_BOT_ACCOUNTS` names
-        // them) and the match server's own (`SRP_SERVER_BOTS`): a match with
-        // one in it moves no rating, and a bot is paid no daily bonus.
+        // them) and the match server's own (`SRP_SERVER_BOTS`, and every
+        // match against bots): a match with one in it moves no rating, and
+        // a bot is paid no daily bonus (nor is the player of a match
+        // against bots, `settle_player`).
         let bots: Vec<bool> = result
             .players
             .iter()
@@ -1562,9 +1582,19 @@ impl<'a> Shared<'a> {
         // from the new player's table.
         let new_player = account.exp_total == 0;
 
-        // The score's lines, and the premium half of each kit's column.
-        let rate = f64::from(self.terms.experience_rate);
-        let money_share = f64::from(self.terms.money_rate.at(self.result.match_level)) / 100.0;
+        // The score's lines, and the premium half of each kit's column. A
+        // match against the server's bots pays a share of the silver and
+        // the experience (`SRP_PVB_PAY`): of every cell, so of the premium
+        // half and the items' bonus too, which are counted from them.
+        let vs_bots = self.result.vs_bots;
+        let pvb_pay = if vs_bots {
+            self.terms.pvb_pay.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let rate = f64::from(self.terms.experience_rate) * pvb_pay;
+        let money_share =
+            f64::from(self.terms.money_rate.at(self.result.match_level)) / 100.0 * pvb_pay;
         let reputation_share = f64::from(self.terms.reputation_rate) / 100.0;
         let (money_k, experience_k, reputation_k) = self.multipliers;
         let faction = account.quest_faction;
@@ -1572,8 +1602,9 @@ impl<'a> Shared<'a> {
         let (mut money, mut experience, mut reputation) = (0_u32, 0_u32, 0_u32);
         let mut bonus = (0_u32, 0_u32, 0_u32);
         // The daily bonus: the account is seen today, and a victory it
-        // stayed for may be one of the day's first three.
-        if standing == Standing::Finished && !bot {
+        // stayed for may be one of the day's first three. A match against
+        // the server's bots counts for none of it.
+        if standing == Standing::Finished && !bot && !vs_bots {
             super::bonus::visit(account, now, rng);
             if reward.won {
                 let win = super::bonus::count_win(account);
@@ -1678,24 +1709,26 @@ impl<'a> Shared<'a> {
             }
         }
 
-        // The quests.
-        let scale = quests::Scale {
-            money_k,
-            reputation_k,
-            reputation_share,
-            doubled: reward.daily_bonus,
-        };
-        let pay = quests::evaluate_scaled(account, &self.quest_stats(player), &scale, now, rng);
-        reward.quest_money = pay.money;
-        full.quest_money = pay.money;
-        full.quest_reputation = clamp_u16(
-            pay.reputation
-                .iter()
-                .find(|&&(id, _)| id == faction)
-                .map_or(0, |&(_, points)| points),
-        );
-        reward.quest_reputation = pay.reputation;
-        notices.extend(pay.notices);
+        // The quests; a match against the server's bots counts for none.
+        if !vs_bots {
+            let scale = quests::Scale {
+                money_k,
+                reputation_k,
+                reputation_share,
+                doubled: reward.daily_bonus,
+            };
+            let pay = quests::evaluate_scaled(account, &self.quest_stats(player), &scale, now, rng);
+            reward.quest_money = pay.money;
+            full.quest_money = pay.money;
+            full.quest_reputation = clamp_u16(
+                pay.reputation
+                    .iter()
+                    .find(|&&(id, _)| id == faction)
+                    .map_or(0, |&(_, points)| points),
+            );
+            reward.quest_reputation = pay.reputation;
+            notices.extend(pay.notices);
+        }
 
         // The drop.
         if standing == Standing::Finished && game > 0 {

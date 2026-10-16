@@ -130,6 +130,14 @@ services:
       - SRP_ENTRY_STATE_SECONDS
       - SRP_RELAY_PACK_MS
       - SRP_PACKET_LOG
+      # "Player vs Bots" (off unless SRP_PVB=on; the lobby's `pvb.rs`). Each
+      # match against bots may hold a bots' map of its own in memory (about
+      # 35-70 MB): raise SRP26_MEMORY with it.
+      - SRP_PVB
+      - SRP_PVB_MAX_GEAR
+      - SRP_PVB_MAX_MATCHES
+      - SRP_PVB_PAY
+      - SRP_PVB_STALL_S
     ports:
       # Login: TLS over TCP.
       - "${SRP26_LOGIN_PORT:-2234}:${SRP26_LOGIN_PORT:-2234}/tcp"
