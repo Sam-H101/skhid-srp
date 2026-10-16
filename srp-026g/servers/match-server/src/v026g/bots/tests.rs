@@ -949,6 +949,27 @@ struct Times {
 /// The default tuning, with `SRP_BENCH_SEARCH_FLOORS=<n>` (`max`: no bound)
 /// as the floors a poll's searches may expand: the whole matches and the
 /// real-map runs at other budgets.
+/// The process's resident memory now and its peak since
+/// [`reset_peak_memory`], in MB: on Linux only (`/proc/self/status`).
+fn memory_mb() -> Option<(f64, f64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb = |key: &str| {
+        status
+            .lines()
+            .find(|line| line.starts_with(key))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<f64>()
+            .ok()
+    };
+    Some((kb("VmRSS:")? / 1024.0, kb("VmHWM:")? / 1024.0))
+}
+
+/// Starts the peak of [`memory_mb`] again from the memory now (Linux).
+fn reset_peak_memory() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
 fn bench_tuning() -> Tuning {
     let mut tuning = Tuning::default();
     if let Ok(floors) = std::env::var("SRP_BENCH_SEARCH_FLOORS") {
@@ -1076,6 +1097,10 @@ fn real_bot_cost() {
         let map = mapdata::MapData::read(&dir.join(mapdata::format::file_name(&project))).unwrap();
         let world = Arc::new(World::build(map, mapdata::CELL, mapdata::Body::default()));
         let built_s = started.elapsed().as_secs_f32();
+        // What the build freed handed back (glibc keeps it otherwise): the
+        // memory of the world as the server holds it.
+        mapdata::free_search_memory();
+        let world_mb = memory_mb().map(|(now, _)| now);
         for &per_team in &sizes {
             let teams: Vec<u8> = (0..2 * per_team).map(|p| u8::from(p >= per_team)).collect();
             let driven = vec![true; teams.len()];
@@ -1096,6 +1121,8 @@ fn real_bot_cost() {
             let started = Instant::now();
             let summary = bots.map_ready(world.clone());
             let ready_ms = started.elapsed().as_secs_f32() * 1e3;
+            let ready_mb = memory_mb().map(|(now, _)| now);
+            reset_peak_memory();
             let (tickets, timed) = match mode {
                 mode::TEAM_DEATHMATCH => (Some(60), None),
                 mode::TIMED_BATTERIES => (None, Some(20_000)),
@@ -1288,6 +1315,14 @@ fn real_bot_cost() {
                     .open(out)
                     .unwrap();
                 writeln!(file, "{line}").unwrap();
+            }
+            if let (Some(world_mb), Some(ready_mb), Some((_, peak))) =
+                (world_mb, ready_mb, memory_mb())
+            {
+                eprintln!(
+                    "  memory MB: {world_mb:.0} with the world, {ready_mb:.0} with the bots' \
+                     tactics, peak {peak:.0} in the match"
+                );
             }
             let total = times.view + times.commander + times.think + times.ticks;
             let mut each = std::mem::take(&mut times.each);
