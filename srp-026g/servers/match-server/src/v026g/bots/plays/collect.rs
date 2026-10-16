@@ -57,7 +57,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
             && cx
                 .battery_at(battery)
                 .and_then(|at| cx.tactics.stand_to_take(at))
-                .is_some_and(|stand| cx.reachable(stand, false))
+                .is_some_and(|stand| cx.reachable(stand, false) && !cx.no_way_lately(stand))
         {
             out.extend(cx.candidate(
                 PlayKind::Collect,
@@ -113,7 +113,9 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             let Some(stand) = cx.tactics.stand_to_take(at) else {
                 return Step::Failed("no way to it");
             };
-            if !cx.reachable(stand, false) {
+            // Or every way in crosses a hazard (a battery ringed by fire):
+            // the search said so, and the bot does something else.
+            if !cx.reachable(stand, false) || cx.no_way_lately(stand) {
                 return Step::Failed("no way to it");
             }
             if cx.me.feet.distance_xz(stand) <= num("reach_m") {
@@ -304,6 +306,29 @@ mod tests {
         s.bot(0, 0, stand);
         step(&mut state, target, &s.cx(0), &mut rng);
         assert!(matches!(state, State::Take { .. }));
+    }
+
+    /// A battery whose search lately proved no way (every way in crosses a
+    /// fire) is left until that is forgotten, and a fetch of it gives up.
+    #[test]
+    fn a_battery_no_way_was_found_to_lately_is_left_for_a_while() {
+        let mut s = with_toxic(0.3);
+        let at = Vec3::new(45.0, 0.0, 32.0);
+        s.battery(BatteryState::Free(at));
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
+        let target = TargetRef::Battery(0);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        s.no_way_to = vec![(at + Vec3::new(1.0, 0.0, 0.0), s.view.clock + 5_000)];
+        assert!(collects(&s).is_empty());
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Failed("no way to it")
+        );
+        // Forgotten: fetched again.
+        s.view.clock += 5_000;
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
     }
 
     /// Fetching a battery a hazard closes round: the play gives up at once

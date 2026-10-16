@@ -31,6 +31,11 @@ const LOCATE_M: f32 = 3.0;
 /// `usable_objects_detection_distance`, 2.0 (PROVEN), and must hit the
 /// object's own shape; 0.2 is kept for the aim and the body's sway.
 pub const USE_REACH_M: f32 = 1.8;
+/// A way out of a zone is looked for over at most this many floors.
+const ESCAPE_FLOORS: usize = 20_000;
+/// A way out ends at least this far from where it starts, metres: past the
+/// motor's arrival distance, so the body really walks out.
+const ESCAPE_MIN_M: f32 = 1.5;
 
 /// What one map's tactics hold for one hazard margin: the same for every
 /// match on the map, so matches share it ([`Tactics::of`]). Read-only once
@@ -553,6 +558,43 @@ impl Tactics {
         )
     }
 
+    /// The way out for a body on `from`, a floor it may not walk on now
+    /// (inside a zone it was pushed or stepped into): to the nearest floor
+    /// at least [`ESCAPE_MIN_M`] off that it may walk on and every floor
+    /// next to it too (clear of the zone's edge), over any floors, so the
+    /// stretch in the zone is short. No route to any goal starts there, so
+    /// without it the body would stand in the fire.
+    pub fn escape(
+        &self,
+        from: NodeId,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+    ) -> Option<Route> {
+        let grid = &self.world.grid;
+        let mut seen = std::collections::HashSet::from([from]);
+        let mut queue = std::collections::VecDeque::from([from]);
+        let start = grid.position(from);
+        let ok = |n: NodeId| self.allowed(n, time, side, objective);
+        while let Some(a) = queue.pop_front() {
+            if grid.position(a).distance_xz(start) >= ESCAPE_MIN_M
+                && ok(a)
+                && grid.links(a).all(|(b, _)| ok(b))
+            {
+                return path::plan(grid, from, a);
+            }
+            if seen.len() > ESCAPE_FLOORS {
+                return None;
+            }
+            for (b, _) in grid.links(a) {
+                if seen.insert(b) {
+                    queue.push_back(b);
+                }
+            }
+        }
+        None
+    }
+
     /// Whether a body walks from `a` to `b` in a line, on allowed floors.
     pub fn clear_line(&self, a: Vec3, b: Vec3, time: u32, side: Option<i32>) -> bool {
         self.clear_line_for(a, b, time, side, false)
@@ -897,6 +939,52 @@ pub(super) mod tests {
             // Behind the wall from the enemy's side: x < 40.
             assert!(spot.at.x < 40.0, "{spot:?}");
         }
+    }
+
+    /// A body inside a zone (always on) has no route to anywhere, but a
+    /// way out: to the nearest floor it may walk on, a few metres off.
+    #[test]
+    fn a_body_in_a_fire_walks_out_to_the_nearest_floor_it_may() {
+        use mapdata::{Rotation, Shape, ShapeKind, Zone, ZoneKind};
+        let world = field_with(|map| {
+            map.zones.push(Zone {
+                kind: ZoneKind::Damage,
+                name: "fire".into(),
+                team: -1,
+                position: Vec3::new(25.0, 0.0, 32.0),
+                damage_type: "fire".into(),
+                damage: None,
+                shapes: vec![Shape {
+                    kind: ShapeKind::Sphere,
+                    center: Vec3::new(25.0, 1.0, 32.0),
+                    rotation: Rotation::IDENTITY,
+                    half: Vec3::new(3.0, 3.0, 3.0),
+                }],
+            });
+        });
+        let tactics = Tactics::new(world.clone(), 1.0);
+        let grid = &world.grid;
+        let inside = grid.locate(Vec3::new(25.0, 0.0, 32.0), 1.0).unwrap();
+        assert!(!tactics.allowed(inside, 0, Some(0), false));
+        let goal = Vec3::new(10.0, 0.0, 30.0);
+        let to = grid.locate(goal, 1.0).unwrap();
+        assert!(
+            tactics
+                .route_nodes(inside, to, 0, Some(0), false, |_| true)
+                .is_none()
+        );
+        let out = tactics.escape(inside, 0, Some(0), false).unwrap();
+        let end = out.point_at(out.length());
+        let end_node = grid.locate(end, 0.3).unwrap();
+        assert!(tactics.allowed(end_node, 0, Some(0), false));
+        // The zone and its margin are 4 m round its centre: out within 5 m.
+        assert!(out.length() < 5.0, "{}", out.length());
+        // From there the goal has a way.
+        assert!(
+            tactics
+                .route_nodes(end_node, to, 0, Some(0), false, |_| true)
+                .is_some()
+        );
     }
 
     /// A roof one only drops from (3 m up; the jump is 1.3 m) is no goal:

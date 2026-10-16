@@ -39,6 +39,7 @@ pub struct Scenario {
     pub partner: Option<Place>,
     pub personality: usize,
     pub medkits_used: u8,
+    pub no_way_to: Vec<(Vec3, u32)>,
 }
 
 impl Scenario {
@@ -90,6 +91,7 @@ impl Scenario {
             partner: None,
             personality: 0,
             medkits_used: 0,
+            no_way_to: Vec::new(),
         };
         s.signals();
         s
@@ -228,6 +230,7 @@ impl Scenario {
                 last_ran: &self.last_ran,
                 partner: self.partner,
                 medkits_used: self.medkits_used,
+                no_way_to: &self.no_way_to,
             },
             memory: &self.memory,
             team: &self.team,

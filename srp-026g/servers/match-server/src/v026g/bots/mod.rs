@@ -91,6 +91,9 @@ const REPLAN_ERROR_M: f32 = 2.0;
 const STRAFE_CLEAR_M: f32 = 1.5;
 /// A goal no way was found to is not planned to again for this long, ms.
 const NO_WAY_RETRY_MS: u32 = 500;
+/// How long the plays leave a goal no way was found to (`Bot::no_way_to`):
+/// a zone on a timer may open meanwhile, and the bot does something else.
+pub const NO_WAY_KEEP_MS: u32 = 20_000;
 /// Grid searches a poll may make for all the match's bots: a search costs
 /// up to tens of ms on the host, and the match loop is the server's one
 /// thread. A bot left without one plans at a later poll (5 ms on).
@@ -150,6 +153,11 @@ pub struct Bot {
     route: Option<(Route, Vec3)>,
     /// A goal no way was found to, and until when it is not tried again.
     no_way: Option<(Vec3, u32)>,
+    /// Goals a search from its own floor proved no way to (over the floors
+    /// it may walk on then), and until when the plays leave them
+    /// ([`NO_WAY_KEEP_MS`]): a battery ringed by fire is not fetched again
+    /// and again, standing.
+    no_way_to: Vec<(Vec3, u32)>,
     /// Keys to press for one tick.
     press: u32,
     /// Keys held for a few ticks to get unstuck.
@@ -212,6 +220,7 @@ impl Bot {
             intent: Intent::stay(),
             route: None,
             no_way: None,
+            no_way_to: Vec::new(),
             press: 0,
             unstick: None,
             pause_until: 0,
@@ -838,6 +847,7 @@ impl Bots {
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
+                    no_way_to: &bot.no_way_to,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -886,6 +896,7 @@ impl Bots {
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
+                    no_way_to: &bot.no_way_to,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1059,6 +1070,7 @@ impl Bots {
                 last_ran: &bot.last_ran,
                 partner: bot.partner,
                 medkits_used: bot.medkits_used,
+                no_way_to: &bot.no_way_to,
             },
             memory: &bot.memory,
             team: &state.knowledge,
@@ -1279,10 +1291,16 @@ fn drive_tick(
                 // Round the spots it got stuck at, if there is a way; else
                 // through them (a second search only when there are any).
                 let avoiding = stuck.avoids_any(time);
-                let route = grid
-                    .locate(me.feet, 1.5)
-                    .zip(grid.locate(at, 3.0))
-                    .and_then(|(from, to)| {
+                let ends = grid.locate(me.feet, 1.5).zip(grid.locate(at, 3.0));
+                // On a floor it may not walk on (in a fire it stepped
+                // into): out to the nearest one it may first; the goal is
+                // planned from there.
+                let escaping =
+                    ends.is_some_and(|(from, _)| !tactics.allowed(from, time, side, objective));
+                let route = if escaping {
+                    ends.and_then(|(from, _)| tactics.escape(from, time, side, objective))
+                } else {
+                    ends.and_then(|(from, to)| {
                         tactics.route_nodes(from, to, time, side, objective, |node| {
                             !(avoiding && stuck.near_spot(time, grid.position(node)))
                         })
@@ -1291,8 +1309,17 @@ fn drive_tick(
                         avoiding
                             .then(|| tactics.route_for(me.feet, at, time, side, objective))
                             .flatten()
-                    });
+                    })
+                };
                 bot.no_way = route.is_none().then_some((at, time + NO_WAY_RETRY_MS));
+                // Both ends on floors, from one it may walk on, and no way:
+                // proven, for the plays.
+                if route.is_none() && ends.is_some() && !escaping {
+                    bot.no_way_to.retain(|&(goal, until)| {
+                        time < until && goal.distance_xz(at) > REPLAN_MOVED_M
+                    });
+                    bot.no_way_to.push((at, time + NO_WAY_KEEP_MS));
+                }
                 bot.route = route.map(|route| (route, at));
             }
             match bot.route.as_mut() {

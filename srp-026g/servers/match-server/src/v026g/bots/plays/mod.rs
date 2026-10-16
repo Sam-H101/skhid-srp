@@ -339,6 +339,8 @@ pub struct BotFacts<'a> {
     pub partner: Option<Place>,
     /// Medkits it used this life (quick use 1 pressed).
     pub medkits_used: u8,
+    /// Goals its searches proved no way to lately, and until when.
+    pub no_way_to: &'a [(Vec3, u32)],
 }
 
 /// What a play sees: the match, the bot, its knowledge, the team's, the
@@ -451,6 +453,15 @@ impl Ctx<'_> {
             || grid.entered_from(goal, |b| {
                 Some(b) == start || self.tactics.allowed(b, self.now, self.bot.side, objective)
             })
+    }
+
+    /// Whether this bot's search to a goal at `at` (the motor's, within
+    /// its replan distance) proved no way lately (`Bot::no_way_to`).
+    pub fn no_way_lately(&self, at: Vec3) -> bool {
+        self.bot
+            .no_way_to
+            .iter()
+            .any(|&(goal, until)| self.now < until && goal.distance_xz(at) <= super::REPLAN_MOVED_M)
     }
 
     /// Known enemies within `m` of `at` (by the memory, whatever the
