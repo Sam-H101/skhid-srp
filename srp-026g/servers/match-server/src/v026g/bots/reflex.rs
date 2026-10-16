@@ -309,9 +309,13 @@ pub struct CombatTuning {
     pub still_wait_ms: (u32, u32),
     /// Outranged: a target seen with a sniper weapon beyond its own
     /// weapon's band (and the slack), a short weapon (the Uzi, the TOZ-34,
-    /// the AK-74U, the pistol) breaks sight from him instead of stepping
-    /// in, at most once every `outranged_again_ms`.
+    /// the AK-74U, the pistol) does not step in at him; with
+    /// `outranged_cover`, seen facing it (his view within
+    /// `outranged_aimed_deg` of it), it breaks sight from him, at most once
+    /// every `outranged_again_ms`.
     pub outranged_hide: bool,
+    pub outranged_cover: bool,
+    pub outranged_aimed_deg: f32,
     pub outranged_again_ms: u32,
     /// Play 11 holds its ground at a target seen carrying a battery (he
     /// cannot shoot): no step back out of the band (match 0x15aa5b99: a
@@ -405,6 +409,8 @@ impl Default for CombatTuning {
             hit_told_m: 40.0,
             still_wait_ms: (2_000, 4_000),
             outranged_hide: true,
+            outranged_cover: true,
+            outranged_aimed_deg: 180.0,
             outranged_again_ms: 6_000,
             band_hold_on_carrier: true,
         }
@@ -1641,14 +1647,19 @@ impl Reflex {
             return;
         }
         let d = track.at().distance_xz(me.feet);
-        // Outranged by a sniper: no step in at him (it hides instead).
+        // Outranged by a sniper: no step in at him; seen facing it, out of
+        // his sight.
         if let Some(own) = own
             && c.outranged_hide
             && own != WeaponKind::Sniper
             && enemy == Some(WeaponKind::Sniper)
             && d > c.band(own).1 + c.band_slack_m
         {
-            self.outranged = true;
+            let facing = sit.view.place(track.who()).is_some_and(|him| {
+                wrap(him.yaw - bearing(track.at(), me.feet)).abs()
+                    <= c.outranged_aimed_deg.to_radians()
+            });
+            self.outranged = c.outranged_cover && facing;
             return;
         }
         // A carrier cannot shoot: no step back from him.

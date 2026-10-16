@@ -1443,6 +1443,19 @@ fn real_bot_cost() {
             if let Some(table) = &table {
                 bots.set_routes(table);
             }
+            // Every place's weapon known as a live match knows it (the
+            // weapon 1 of its role): play 11's matchup against the enemy's.
+            if std::env::var_os("SRP_BENCH_WEAPONS").is_some() {
+                let weapons = bots
+                    .bots
+                    .iter()
+                    .map(|bot| {
+                        let bot = bot.as_ref()?;
+                        super::reflex::WeaponKind::of_role(&bot.personality(&bots.tuning).name)
+                    })
+                    .collect();
+                bots.set_weapons(weapons);
+            }
             let started = Instant::now();
             let summary = bots.map_ready(world.clone());
             let ready_ms = started.elapsed().as_secs_f32() * 1e3;
