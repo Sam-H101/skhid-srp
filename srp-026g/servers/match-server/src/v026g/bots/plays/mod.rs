@@ -160,6 +160,29 @@ impl PlayKind {
     }
 }
 
+impl PlayKind {
+    /// A play whose point is a fight: to wait for an enemy, go at one or
+    /// stand by a teammate against one. A dry bot (nothing to fire) takes
+    /// none of them; it still collects, carries, escorts, raids, stations
+    /// and roams (match 0x5402a730: 4 of the human's 19 kills were of dry
+    /// bots).
+    pub fn seeks_fight(self) -> bool {
+        matches!(
+            self,
+            Self::Ambush
+                | Self::Intercept
+                | Self::Flank
+                | Self::Crossfire
+                | Self::PairUp
+                | Self::HoldExit
+                | Self::GuardLead
+                | Self::Trade
+                | Self::Hunt
+                | Self::Cut
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     Hold,
@@ -355,6 +378,9 @@ pub struct BotFacts<'a> {
     /// Plays that failed at once at a target, and until when they are
     /// not taken there again ([`SET_ASIDE_MS`]).
     pub set_aside: &'a [(PlayKind, TargetRef, u32)],
+    /// Nothing left to fire ([`super::reflex::Reflex::dry`]): it takes no
+    /// play that seeks a fight ([`PlayKind::seeks_fight`]).
+    pub dry: bool,
 }
 
 /// A play that fails this soon after it starts ...
@@ -620,6 +646,7 @@ impl Ctx<'_> {
             .set_aside
             .iter()
             .any(|&(k, t, until)| k == kind && t == target && self.now < until)
+            || (self.bot.dry && kind.seeks_fight())
         {
             return None;
         }

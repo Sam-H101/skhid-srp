@@ -192,6 +192,9 @@ pub struct CombatTuning {
     pub camp_m: f32,
     /// Play 21: the partner's death spot is looked at this long, ms.
     pub trade_ms: u32,
+    /// ... if it lies within this, metres (farther, the bot could do
+    /// nothing there; a shot heard, play 6, comes first).
+    pub trade_m: f32,
     /// A tactical reload: no enemy seen for `reload_idle_ms` and at least
     /// this share of the magazine fired (one round at least). The reload
     /// of an empty weapon needs no number: its rounds are counted
@@ -226,6 +229,33 @@ pub struct CombatTuning {
     /// With a bolt-action weapon, it crouches to fire at a target with
     /// this chance (drawn per target).
     pub sniper_crouch_chance: f32,
+    /// The target kept while seen gives way to another seen enemy nearer
+    /// than `switch_share` of its distance, or nearer than
+    /// `switch_near_m` and `switch_margin_m` nearer than it (match
+    /// 0x5402a730: a bot aimed at a bot 67 m away with the human 6 m from
+    /// it).
+    pub switch_share: f32,
+    pub switch_near_m: f32,
+    pub switch_margin_m: f32,
+    /// The turn to a threat, even with a target: hit, at the nearest enemy
+    /// it sensed firing in the last `threat_shot_ms` (seen, or heard: where
+    /// it heard him); not hit, at a shot heard within `threat_heard_m`
+    /// more than `threat_off_deg` off its view and nearer than its target.
+    /// It looks there `threat_ms`, and not again for `threat_again_ms`
+    /// after (unless hit); an enemy seen within `threat_match_m` (and the
+    /// place's error) of the threat is the shooter and its target. Only
+    /// what a player gets: its own sight and hearing (no damage record of
+    /// the world names the shooter).
+    pub threat_shot_ms: u32,
+    pub threat_heard_m: f32,
+    pub threat_off_deg: f32,
+    pub threat_ms: u32,
+    pub threat_again_ms: u32,
+    pub threat_match_m: f32,
+    /// Play 6 (no target): a heard shot is looked at `sound_ms`, and no
+    /// other before `sound_again_ms` more.
+    pub sound_ms: u32,
+    pub sound_again_ms: u32,
 }
 
 impl Default for CombatTuning {
@@ -274,6 +304,7 @@ impl Default for CombatTuning {
             camp_ms: 8_000,
             camp_m: 3.0,
             trade_ms: 3_000,
+            trade_m: 40.0,
             reload_idle_ms: 1_000,
             reload_some_share: 0.3,
             press_ms: 100,
@@ -285,6 +316,18 @@ impl Default for CombatTuning {
             strafe_still_chance: 0.5,
             strafe_still_ms: (150, 450),
             sniper_crouch_chance: 0.3,
+            switch_share: 0.5,
+            switch_near_m: 15.0,
+            switch_margin_m: 5.0,
+            threat_shot_ms: 1_000,
+            threat_heard_m: 25.0,
+            // Half the sense's view (`SenseTuning::view_deg`).
+            threat_off_deg: 45.0,
+            threat_ms: 1_000,
+            threat_again_ms: 1_500,
+            threat_match_m: 6.0,
+            sound_ms: 1_000,
+            sound_again_ms: 1_500,
         }
     }
 }
@@ -412,6 +455,12 @@ pub struct Override {
     /// while the bot stands to aim at a seen target; the caller presses it
     /// only where the ground that side is clear.
     pub strafe: u32,
+    /// `look_at` is a glance at a heard shot (play 6, or a threat not
+    /// made by a hit), not an aim: the caller keeps the play's look when
+    /// the play uses something or carries (a glance there broke the use
+    /// and slowed the carrier: the bench lost a third of its deliveries
+    /// once play 6 ran again).
+    pub glance: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -458,6 +507,18 @@ struct Camp {
     last: u32,
 }
 
+/// A threat to turn to: a hit's likely shooter, or a near shot heard from
+/// outside the view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Threat {
+    /// Where it was sensed, and that place's error, metres.
+    at: Vec3,
+    error_m: f32,
+    until: u32,
+    /// Made by a hit (play 7 hides from it).
+    hit: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Reflex {
     target: Option<Place>,
@@ -469,6 +530,11 @@ pub struct Reflex {
     pause_until: u32,
     /// A heard shot to turn to, and until when.
     sound: Option<(Vec3, u32)>,
+    /// A threat looked at even with a target, and when the next may come.
+    threat: Option<Threat>,
+    next_threat: u32,
+    /// Play 6: the next turn to a heard shot not before this.
+    next_sound: u32,
     /// No shot at the target before this: noticed + the reaction delay.
     first_shot_at: u32,
     /// The life it counts for (`PlaceView::spawned`).
@@ -607,6 +673,23 @@ impl Reflex {
         }
     }
 
+    /// Nothing to fire: weapon 1 has no round in it nor to load, and no
+    /// pistol with one (the kit's ammo lasts the match: dry until a spawn
+    /// with another kit).
+    pub fn dry(&self) -> bool {
+        match &self.hands {
+            Some(hands) => hands.primary.dry() && hands.pistol.is_none_or(|p| p.dry()),
+            None => {
+                self.left() == 0
+                    && self
+                        .arms
+                        .unwrap_or_else(Arms::fallback)
+                        .pistol
+                        .is_none_or(|(_, rounds)| rounds == 0)
+            }
+        }
+    }
+
     /// The weapon in hand (weapon 1 before the life's first use).
     pub fn held_gun(&self) -> &'static Gun {
         match &self.hands {
@@ -669,13 +752,17 @@ impl Reflex {
             .health
             .is_some_and(|before| me.health <= before - c.hit_drop);
         self.health = Some(me.health);
+        self.threats(me, sit.view, memory, now, hit, c);
         self.choose(me, Some(sit.view), memory, now, aim, skill, rng);
         if self.target.is_some() || hit {
             self.duel_until = now + c.duel_ms;
         }
         self.trade_watch(sit, now, c);
         self.watch_enemies(sit.view, memory, now, c);
-        self.punish(me, sit.view, memory, now, c, rng);
+        // Dry (nothing to fire): no push at an enemy's reload.
+        if !self.dry() {
+            self.punish(me, sit.view, memory, now, c, rng);
+        }
         if !memory.all_seen(now).is_empty() {
             self.last_seen = now;
         }
@@ -684,14 +771,14 @@ impl Reflex {
             if self.target.is_some() {
                 self.step_aside(now, c, rng);
             }
-            self.break_sight(me, sit, memory, now, c, rng);
+            self.break_sight(me, sit, memory, now, true, c, rng);
         }
         // The magazine out with a target seen: out of sight to reload, else
         // reload where it stands. (Out of ammo too, it takes the pistol
         // where it stands: [`Self::reload`].)
         let empty = self.hands().held().needs_reload();
         if empty && self.target.is_some() && !self.reload_here {
-            self.break_sight(me, sit, memory, now, c, rng);
+            self.break_sight(me, sit, memory, now, false, c, rng);
             self.reload_here = !matches!(self.cover, Cover::Hiding { .. });
         }
         self.cover_steps(me, sit, now, c, rng);
@@ -785,11 +872,34 @@ impl Reflex {
         skill: f32,
         rng: &mut Rng,
     ) {
+        let c = &aim.combat;
         let seen = memory.all_seen(now);
         let in_range = |t: &&SeenTrack| t.at().distance_xz(me.feet) <= aim.range_m;
+        let d = |t: &SeenTrack| t.at().distance_xz(me.feet);
+        // The present target, unless another seen enemy is much nearer.
         let keep = self
             .target
-            .and_then(|target| seen.iter().filter(in_range).find(|t| t.who() == target));
+            .and_then(|target| seen.iter().filter(in_range).find(|t| t.who() == target))
+            .filter(|kept| {
+                let far = d(kept);
+                !seen.iter().filter(in_range).any(|t| {
+                    let near = d(t);
+                    t.who() != kept.who()
+                        && (near < far * c.switch_share
+                            || (near < c.switch_near_m && near + c.switch_margin_m <= far))
+                })
+            });
+        // A threat's shooter seen: him before any other.
+        let shooter = self.threat.filter(|t| now < t.until).and_then(|threat| {
+            let off = |t: &SeenTrack| t.at().distance_xz(threat.at);
+            seen.iter()
+                .filter(in_range)
+                .filter(|t| off(t) <= c.threat_match_m + threat.error_m)
+                .min_by(|a, b| off(a).total_cmp(&off(b)))
+        });
+        if shooter.is_some() {
+            self.threat = None;
+        }
         let bonus = view.map_or(0.0, |_| aim.combat.wounded_bonus_m);
         let score = |t: &SeenTrack| {
             let health = view
@@ -797,7 +907,7 @@ impl Reflex {
                 .map_or(1.0, |p| p.health.clamp(0.0, 1.0));
             t.at().distance_xz(me.feet) - bonus * (1.0 - health)
         };
-        let choice = keep.or_else(|| {
+        let choice = shooter.or(keep).or_else(|| {
             seen.iter()
                 .filter(in_range)
                 .min_by(|a, b| score(a).total_cmp(&score(b)))
@@ -829,18 +939,114 @@ impl Reflex {
             None => {
                 self.target = None;
                 // Play 6: a shot heard lately, nothing seen: turn to it.
+                // A shot (`player_bots_behaviour.md` §3 play 6), not a
+                // step or a reload: one of the sounds of him it heard was
+                // a shot (with no view, any sound).
+                let fired = |who: Place| {
+                    view.is_none_or(|view| {
+                        view.sounds.iter().any(|sound| {
+                            sound.from == who
+                                && sound.kind == SoundKind::Shot
+                                && sound.time + 1_500 >= now
+                        })
+                    })
+                };
                 let heard = memory
                     .tracks()
                     .iter()
-                    .filter(|t| t.source == Source::Heard && t.time + 1_500 >= now)
+                    .filter(|t| t.source == Source::Heard && t.time + 1_500 >= now && fired(t.who))
                     .min_by(|a, b| {
                         a.at.distance_xz(me.feet)
                             .total_cmp(&b.at.distance_xz(me.feet))
                     });
-                if let Some(track) = heard {
-                    self.sound = Some((track.at, now + 2_000));
+                // A look of `sound_ms`, again after `sound_again_ms`: heard
+                // tracks now last (no callout wipes them), and a bot
+                // turning at every think to every shot stopped doing
+                // anything else.
+                if let Some(track) = heard
+                    && now >= self.next_sound
+                {
+                    self.sound = Some((track.at, now + c.sound_ms));
+                    self.next_sound = now + c.sound_ms + c.sound_again_ms;
                 }
             }
+        }
+    }
+
+    /// The threat to turn to at this think (`CombatTuning::threat_*`): hit,
+    /// the nearest enemy it sensed firing lately unless that is the target
+    /// it sees; not hit, a shot heard near from outside its view and nearer
+    /// than its target. By its own senses only: a shot sound of an enemy
+    /// it sees now, or whose place it heard (a heard track as new as the
+    /// shot window).
+    fn threats(
+        &mut self,
+        me: &PlaceView,
+        view: &MatchView,
+        memory: &Memory,
+        now: u32,
+        hit: bool,
+        c: &CombatTuning,
+    ) {
+        if self.threat.is_some_and(|t| now >= t.until) {
+            self.threat = None;
+        }
+        if !hit && (self.threat.is_some() || now < self.next_threat) {
+            return;
+        }
+        // (who, where, the place's error, seen now)
+        let mut shooters: Vec<(Place, Vec3, f32, bool)> = Vec::new();
+        for sound in &view.sounds {
+            if sound.kind != SoundKind::Shot
+                || sound.time + c.threat_shot_ms < now
+                || shooters.iter().any(|s| s.0 == sound.from)
+            {
+                continue;
+            }
+            let known = match memory.seen(sound.from, now) {
+                Some(seen) => Some((seen.at(), 0.0, true)),
+                None => memory
+                    .tracks()
+                    .iter()
+                    .find(|t| {
+                        t.who == sound.from
+                            && t.source == Source::Heard
+                            && t.time + c.threat_shot_ms >= now
+                    })
+                    .map(|t| (t.at, t.error_m, false)),
+            };
+            if let Some((at, error_m, seen)) = known {
+                shooters.push((sound.from, at, error_m, seen));
+            }
+        }
+        let d = |at: Vec3| at.distance_xz(me.feet);
+        let target_at = self
+            .target
+            .and_then(|target| memory.seen(target, now))
+            .map(|t| t.at());
+        let pick = if hit {
+            shooters
+                .iter()
+                .min_by(|a, b| d(a.1).total_cmp(&d(b.1)))
+                .filter(|s| !(Some(s.0) == self.target && s.3))
+        } else {
+            shooters
+                .iter()
+                .filter(|s| {
+                    !s.3 && d(s.1) <= c.threat_heard_m
+                        && !super::sense::in_view(me.feet, me.yaw, s.1, c.threat_off_deg * 2.0)
+                        && target_at.is_none_or(|at| d(s.1) < d(at))
+                })
+                .min_by(|a, b| d(a.1).total_cmp(&d(b.1)))
+        };
+        if let Some(&(_, at, error_m, _)) = pick {
+            self.threat = Some(Threat {
+                at,
+                error_m,
+                until: now + c.threat_ms,
+                hit,
+            });
+            self.next_threat = now + c.threat_ms + c.threat_again_ms;
         }
     }
 
@@ -947,13 +1153,16 @@ impl Reflex {
         }
     }
 
-    /// Play 7: hit in a duel: to a spot near by hidden from the enemy.
+    /// Play 7: hit in a duel: to a spot near by hidden from the enemy
+    /// (`hit`: from the hit's threat, if it has one).
+    #[allow(clippy::too_many_arguments)]
     fn break_sight(
         &mut self,
         me: &PlaceView,
         sit: &Situation,
         memory: &Memory,
         now: u32,
+        hit: bool,
         c: &CombatTuning,
         rng: &mut Rng,
     ) {
@@ -966,11 +1175,18 @@ impl Reflex {
         let Some(tactics) = sit.tactics else {
             return;
         };
-        // The enemy it fights: the target, else the last one seen.
-        let enemy = self
-            .target
-            .and_then(|target| memory.seen(target, now))
-            .map(|t| t.at())
+        // The enemy it fights: hit, the threat that shot it (not the
+        // target it sees); else the target, else the last one seen.
+        let threat = self
+            .threat
+            .filter(|t| hit && t.hit && now < t.until)
+            .map(|t| t.at);
+        let enemy = threat
+            .or_else(|| {
+                self.target
+                    .and_then(|target| memory.seen(target, now))
+                    .map(|t| t.at())
+            })
             .or_else(|| {
                 memory
                     .tracks()
@@ -1031,6 +1247,10 @@ impl Reflex {
                 None => {}
                 Some(arrived) if now >= arrived + wait_ms => {
                     self.cover = Cover::Open;
+                    // Dry: nothing to peek for.
+                    if self.dry() {
+                        return;
+                    }
                     let Some(tactics) = sit.tactics else {
                         return;
                     };
@@ -1087,7 +1307,8 @@ impl Reflex {
             return;
         };
         self.band = Some(band);
-        if !c.band_legs {
+        // Dry: no step at him.
+        if !c.band_legs || self.dry() {
             return;
         }
         let d = track.at().distance_xz(me.feet);
@@ -1376,6 +1597,7 @@ impl Reflex {
                 legs: None,
                 band_m: self.band,
                 strafe: 0,
+                glance: false,
             };
         }
         let seen = self.target.and_then(|target| memory.seen(target, now));
@@ -1383,13 +1605,37 @@ impl Reflex {
             self.last_seen = now;
         }
         let reload = self.reload(seen.is_some(), now, c);
+        // A threat (a hit's shooter, a near shot from outside the view): a
+        // moment's look, even from a target (`Self::threats`).
+        if let Some(threat) = self.threat.filter(|t| now < t.until) {
+            self.strafe = 0;
+            self.strafe_until = 0;
+            // No new shot; a one-round press under way is held to its end
+            // (its round is counted).
+            let fire = self.trigger(false, fire_allowed, now, c);
+            return Override {
+                look_at: Some(threat.at + Vec3::new(0.0, 1.4, 0.0)),
+                fire,
+                keys: reload,
+                legs,
+                band_m: self.band,
+                glance: !threat.hit,
+                ..Override::default()
+            };
+        }
         let Some(track) = seen else {
             self.target = None;
             self.held_ms = 0;
             self.strafe = 0;
             self.strafe_until = 0;
-            // Play 21: the partner's death spot, weapon up; else play 6.
-            if let Some((at, _)) = self.trade.filter(|(_, until)| now < *until) {
+            // Play 21: the partner's death spot within `trade_m`, weapon
+            // up, unless a shot was heard lately (play 6 first: the killer
+            // is there, not at the body); else play 6.
+            let shot = self.sound.is_some_and(|(_, until)| now < until);
+            if let Some((at, _)) = self
+                .trade
+                .filter(|(at, until)| now < *until && !shot && at.distance_xz(me.feet) <= c.trade_m)
+            {
                 return Override {
                     look_at: Some(at + Vec3::new(0.0, 1.3, 0.0)),
                     keys: key::AIM | reload,
@@ -1402,6 +1648,7 @@ impl Reflex {
                     look_at: Some(at + Vec3::new(0.0, 1.4, 0.0)),
                     keys: reload,
                     legs,
+                    glance: true,
                     ..Override::default()
                 },
                 _ => Override {
@@ -1506,6 +1753,7 @@ impl Reflex {
             legs,
             band_m: self.band,
             strafe,
+            glance: false,
         }
     }
 
@@ -2976,6 +3224,490 @@ mod tests {
             assert_eq!(legs.why, LegsWhy::Range);
             let d = legs.at.distance_xz(enemy_at);
             assert_eq!(d < enemy_x, closer, "{kind:?}: {d}");
+        }
+    }
+
+    fn shot(from: Place, at: Vec3, time: u32) -> Sound {
+        Sound {
+            from,
+            kind: SoundKind::Shot,
+            at,
+            time,
+        }
+    }
+
+    /// Match 0x5402a730: a bot kept a bot 67 m away as its target with the
+    /// human 6 m from it. A seen enemy much nearer takes the target; one
+    /// only somewhat nearer does not.
+    #[test]
+    fn a_much_nearer_seen_enemy_takes_the_target() {
+        let me = body(0, 0, Vec3::ZERO, 0.0);
+        let (far, middle, near) = (
+            Vec3::new(0.0, 0.0, 60.0),
+            Vec3::new(5.0, 0.0, 40.0),
+            Vec3::new(-3.0, 0.0, 8.0),
+        );
+        let view = view_of(vec![
+            me.clone(),
+            body(1, 1, far, 0.0),
+            body(2, 1, middle, 0.0),
+            body(3, 1, near, 0.0),
+        ]);
+        let aim = AimTuning::default();
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let mut rng = Rng::new(30);
+        let mut think = |percepts: &[Percept], now: u32, reflex: &mut Reflex| {
+            sense(&mut memory, percepts, now);
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+        };
+        for now in [1_000, 1_300] {
+            think(&[percept(1, far, now, Source::Seen)], now, &mut reflex);
+        }
+        assert_eq!(reflex.target(), Some(1));
+        // One at 40 m: not under half of 60, the target is kept.
+        for now in [1_600, 1_900, 2_200] {
+            let seen = [
+                percept(1, far, now, Source::Seen),
+                percept(2, middle, now, Source::Seen),
+            ];
+            think(&seen, now, &mut reflex);
+        }
+        assert_eq!(reflex.target(), Some(1));
+        // One at 8.5 m: him, once noticed.
+        for now in [2_500, 2_800, 3_100] {
+            let seen = [
+                percept(1, far, now, Source::Seen),
+                percept(2, middle, now, Source::Seen),
+                percept(3, near, now, Source::Seen),
+            ];
+            think(&seen, now, &mut reflex);
+        }
+        assert_eq!(reflex.target(), Some(3));
+        // Under 15 m it needs 5 m less: 10 m against 14 m keeps it, 12 m
+        // against 20 m does not.
+        for (kept_at, other_at, switches) in [(14.0, 10.0, false), (20.0, 12.0, true)] {
+            let kept = Vec3::new(0.0, 0.0, kept_at);
+            let other = Vec3::new(-2.0, 0.0, other_at);
+            let view = view_of(vec![
+                me.clone(),
+                body(1, 1, kept, 0.0),
+                body(2, 1, other, 0.0),
+            ]);
+            let mut memory = Memory::default();
+            let mut reflex = Reflex::default();
+            let mut rng = Rng::new(31);
+            for now in [1_000, 1_300, 1_600, 1_900, 2_200] {
+                let mut seen = vec![percept(1, kept, now, Source::Seen)];
+                if now >= 1_600 {
+                    seen.push(percept(2, other, now, Source::Seen));
+                }
+                sense(&mut memory, &seen, now);
+                reflex.think_with(
+                    &me,
+                    &Situation::of(&view),
+                    &memory,
+                    now,
+                    &aim,
+                    0.5,
+                    &mut rng,
+                );
+            }
+            let want = if switches { 2 } else { 1 };
+            assert_eq!(reflex.target(), Some(want), "{kept_at} {other_at}");
+        }
+    }
+
+    /// Match 0x5402a730: a bot fought two bots 34-36 m away with the human
+    /// 19 m to its side firing at it and never turned. Hit, it turns for a
+    /// moment to the nearest enemy it heard firing, the target kept; seen
+    /// there, he is the target.
+    #[test]
+    fn hit_it_turns_to_the_nearest_shooter_it_heard_even_with_a_target() {
+        let target_at = Vec3::new(0.0, 0.0, 35.0);
+        // To its side: out of the view of a bot facing the target.
+        let human_at = Vec3::new(-19.0, 0.0, -2.0);
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        let mut view = view_of(vec![
+            me.clone(),
+            body(1, 1, target_at, 0.0),
+            body(2, 1, human_at, 0.0),
+        ]);
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            ..AimTuning::default()
+        };
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let mut rng = Rng::new(32);
+        facing(&mut me, target_at + Vec3::new(0.0, 1.3, 0.0));
+        for now in [1_000, 1_300] {
+            sense(
+                &mut memory,
+                &[percept(1, target_at, now, Source::Seen)],
+                now,
+            );
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+        }
+        assert_eq!(reflex.target(), Some(1));
+        // Both fire; the human's shot is heard (with its error), and it is
+        // hit.
+        view.sounds = vec![shot(2, human_at, 1_500), shot(1, target_at, 1_550)];
+        let heard = Percept {
+            error_m: 2.0,
+            ..percept(2, human_at + Vec3::new(1.0, 0.0, 0.5), 1_500, Source::Heard)
+        };
+        sense(
+            &mut memory,
+            &[percept(1, target_at, 1_600, Source::Seen), heard],
+            1_600,
+        );
+        me.health = 0.8;
+        reflex.think_with(
+            &me,
+            &Situation::of(&view),
+            &memory,
+            1_600,
+            &aim,
+            0.5,
+            &mut rng,
+        );
+        let o = reflex.tick(&me, &view, &memory, 1_650, true, &aim, 0.5, &mut rng);
+        let look = o.look_at.expect("looks");
+        assert!(look.distance_xz(human_at) < 2.0, "{look:?}");
+        assert!(!o.fire);
+        assert_eq!(reflex.target(), Some(1), "the target kept meanwhile");
+        // Turned, it sees him: him, though 19 m is not under half of 35.
+        facing(&mut me, human_at + Vec3::new(0.0, 1.3, 0.0));
+        for now in [1_900, 2_250] {
+            sense(&mut memory, &[percept(2, human_at, now, Source::Seen)], now);
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+        }
+        assert_eq!(reflex.target(), Some(2));
+        let o = reflex.tick(&me, &view, &memory, 2_300, true, &aim, 0.5, &mut rng);
+        assert!(o.look_at.is_some_and(|p| p.distance_xz(human_at) < 0.5));
+
+        // Hit with the target the nearest shooter: it stays on him.
+        let mut me = body(0, 0, Vec3::ZERO, 0.0);
+        facing(&mut me, target_at + Vec3::new(0.0, 1.3, 0.0));
+        let far_at = Vec3::new(-30.0, 0.0, -30.0);
+        let mut view = view_of(vec![
+            me.clone(),
+            body(1, 1, target_at, 0.0),
+            body(2, 1, far_at, 0.0),
+        ]);
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        for now in [1_000, 1_300] {
+            sense(
+                &mut memory,
+                &[percept(1, target_at, now, Source::Seen)],
+                now,
+            );
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+        }
+        view.sounds = vec![shot(2, far_at, 1_500), shot(1, target_at, 1_550)];
+        sense(
+            &mut memory,
+            &[
+                percept(1, target_at, 1_600, Source::Seen),
+                percept(2, far_at, 1_500, Source::Heard),
+            ],
+            1_600,
+        );
+        me.health = 0.8;
+        reflex.think_with(
+            &me,
+            &Situation::of(&view),
+            &memory,
+            1_600,
+            &aim,
+            0.5,
+            &mut rng,
+        );
+        let o = reflex.tick(&me, &view, &memory, 1_650, true, &aim, 0.5, &mut rng);
+        assert!(
+            o.look_at.is_some_and(|p| p.distance_xz(target_at) < 1.0),
+            "{o:?}"
+        );
+    }
+
+    /// Not hit, a shot heard within 25 m from outside the view, nearer than
+    /// the target, turns it for a moment; a farther one, one in the view,
+    /// or one farther than the target does not.
+    #[test]
+    fn a_near_shot_heard_from_outside_the_view_turns_it_for_a_moment() {
+        let target_at = Vec3::new(0.0, 0.0, 30.0);
+        let aim = AimTuning::default();
+        for (shooter_at, turns) in [
+            (Vec3::new(2.0, 0.0, -12.0), true),
+            (Vec3::new(2.0, 0.0, -28.0), false),
+            (Vec3::new(4.0, 0.0, 15.0), false),
+        ] {
+            let mut me = body(0, 0, Vec3::ZERO, 0.0);
+            facing(&mut me, target_at + Vec3::new(0.0, 1.3, 0.0));
+            let mut view = view_of(vec![
+                me.clone(),
+                body(1, 1, target_at, 0.0),
+                body(2, 1, shooter_at, 0.0),
+            ]);
+            let mut memory = Memory::default();
+            let mut reflex = Reflex::default();
+            let mut rng = Rng::new(33);
+            for now in [1_000, 1_300] {
+                sense(
+                    &mut memory,
+                    &[percept(1, target_at, now, Source::Seen)],
+                    now,
+                );
+                reflex.think_with(
+                    &me,
+                    &Situation::of(&view),
+                    &memory,
+                    now,
+                    &aim,
+                    0.5,
+                    &mut rng,
+                );
+            }
+            view.sounds = vec![shot(2, shooter_at, 1_500)];
+            sense(
+                &mut memory,
+                &[
+                    percept(1, target_at, 1_600, Source::Seen),
+                    percept(2, shooter_at, 1_500, Source::Heard),
+                ],
+                1_600,
+            );
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                1_600,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+            let o = reflex.tick(&me, &view, &memory, 1_650, true, &aim, 0.5, &mut rng);
+            let looks = o.look_at.is_some_and(|p| p.distance_xz(shooter_at) < 0.5);
+            assert_eq!(looks, turns, "{shooter_at:?}");
+            if turns {
+                // A moment: back on the target after `threat_ms`.
+                for now in [1_900, 2_200, 2_500, 2_700] {
+                    sense(
+                        &mut memory,
+                        &[percept(1, target_at, now, Source::Seen)],
+                        now,
+                    );
+                    reflex.think_with(
+                        &me,
+                        &Situation::of(&view),
+                        &memory,
+                        now,
+                        &aim,
+                        0.5,
+                        &mut rng,
+                    );
+                }
+                let o = reflex.tick(&me, &view, &memory, 2_750, true, &aim, 0.5, &mut rng);
+                assert!(
+                    o.look_at.is_some_and(|p| p.distance_xz(target_at) < 1.0),
+                    "{o:?}"
+                );
+            }
+        }
+    }
+
+    /// With no target, a shot heard lately is looked at before the
+    /// partner's death spot (the killer is there, not at the body); with
+    /// none, the spot is watched if it lies within `trade_m`.
+    #[test]
+    fn a_shot_heard_is_looked_at_before_the_partners_death_spot() {
+        let me = body(0, 0, Vec3::ZERO, 0.0);
+        let near_spot = Vec3::new(8.0, 0.0, 8.0);
+        let far_spot = Vec3::new(45.0, 0.0, 8.0);
+        let shooter_at = Vec3::new(-10.0, 0.0, -6.0);
+        for (spot, heard, want) in [
+            (near_spot, true, Some(shooter_at)),
+            (near_spot, false, Some(near_spot)),
+            (far_spot, false, None),
+        ] {
+            let mut view = view_of(vec![
+                me.clone(),
+                body(1, 1, shooter_at, 0.0),
+                body(3, 0, spot, 0.0),
+            ]);
+            let mut memory = Memory::default();
+            if heard {
+                view.sounds = vec![shot(1, shooter_at, 1_100)];
+                sense(
+                    &mut memory,
+                    &[percept(1, shooter_at, 1_100, Source::Heard)],
+                    1_200,
+                );
+            }
+            let mut team = TeamKnowledge::default();
+            team.danger.push(DangerSpot {
+                at: spot,
+                time: 1_000,
+                victim: 3,
+            });
+            let aim = AimTuning::default();
+            let mut reflex = Reflex::default();
+            let mut rng = Rng::new(34);
+            let sit = Situation {
+                team: Some(&team),
+                partner: Some(3),
+                ..Situation::of(&view)
+            };
+            reflex.think_with(&me, &sit, &memory, 1_200, &aim, 0.5, &mut rng);
+            let o = reflex.tick(&me, &view, &memory, 1_250, true, &aim, 0.5, &mut rng);
+            match want {
+                Some(want) => {
+                    let look = o.look_at.expect("looks");
+                    assert!(look.distance_xz(want) < 0.1, "{spot:?} {heard}: {look:?}");
+                }
+                None => assert!(o.look_at.is_none(), "{o:?}"),
+            }
+        }
+    }
+
+    /// Play 6 turns to a heard shot (not a step) for `sound_ms`, and not
+    /// again before `sound_again_ms` more, however long he keeps firing.
+    #[test]
+    fn play_6_looks_at_a_shot_a_moment_at_a_time() {
+        let me = body(0, 0, Vec3::ZERO, 0.0);
+        let at = Vec3::new(-12.0, 0.0, 30.0);
+        let aim = AimTuning::default();
+        let c = &aim.combat;
+        // A step heard: no turn.
+        let mut view = view_of(vec![me.clone(), body(1, 1, at, 0.0)]);
+        view.sounds = vec![Sound {
+            from: 1,
+            kind: SoundKind::Sprint,
+            at,
+            time: 1_000,
+        }];
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let mut rng = Rng::new(36);
+        sense(&mut memory, &[percept(1, at, 1_000, Source::Heard)], 1_000);
+        reflex.think_with(
+            &me,
+            &Situation::of(&view),
+            &memory,
+            1_000,
+            &aim,
+            0.5,
+            &mut rng,
+        );
+        let o = reflex.tick(&me, &view, &memory, 1_050, true, &aim, 0.5, &mut rng);
+        assert!(o.look_at.is_none(), "{o:?}");
+        // Shots every think: looked at, then not, then again.
+        let mut looked = Vec::new();
+        let mut now = 2_000;
+        while now < 6_000 {
+            view.sounds = vec![shot(1, at, now)];
+            sense(&mut memory, &[percept(1, at, now, Source::Heard)], now);
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+            let o = reflex.tick(&me, &view, &memory, now + 50, true, &aim, 0.5, &mut rng);
+            looked.push((now, o.look_at.is_some_and(|p| p.distance_xz(at) < 0.1)));
+            now += 250;
+        }
+        let first = looked.iter().find(|l| l.1).map(|l| l.0).expect("looks");
+        assert_eq!(first, 2_000);
+        let period = c.sound_ms + c.sound_again_ms;
+        for &(t, on) in &looked {
+            assert_eq!(on, (t - first) % period < c.sound_ms, "{t}: {looked:?}");
+        }
+    }
+
+    /// Match 0x5402a730: bots with their kit's ammo spent kept pressing
+    /// FIRE for nine lives. Dry, it never fires and takes no step at the
+    /// enemy (play 11); with rounds, the same duel fires and steps.
+    #[test]
+    fn a_dry_bot_never_fires_and_steps_at_no_enemy() {
+        let tactics = Tactics::new(crate::v026g::bots::tactics::tests::field(), 1.0);
+        let fallback = Arms::fallback();
+        let aim = AimTuning {
+            fire_within_deg: 180.0,
+            ..AimTuning::default()
+        };
+        for rounds in [0, 30] {
+            let arms: &'static Arms = Box::leak(Box::new(Arms {
+                primary: (fallback.primary.0, rounds),
+                pistol: None,
+            }));
+            let mut me = body(0, 0, Vec3::new(20.0, 0.0, 32.0), 0.0);
+            let enemy_at = Vec3::new(50.0, 0.0, 32.0);
+            let view = view_of(vec![me.clone(), body(1, 1, enemy_at, 0.0)]);
+            let weapons = [Some(WeaponKind::Shotgun), Some(WeaponKind::Rifle)];
+            let sit = Situation {
+                tactics: Some(&tactics),
+                side: Some(0),
+                weapon: Some(WeaponKind::Shotgun),
+                weapons: &weapons,
+                ..Situation::of(&view)
+            };
+            let mut memory = Memory::default();
+            let mut reflex = Reflex::armed_carrying(Some(arms), rounds);
+            assert_eq!(reflex.dry(), rounds == 0);
+            let mut rng = Rng::new(35);
+            let (mut fired, mut stepped) = (false, false);
+            let mut now = 1_000;
+            while now < 5_000 {
+                sense(&mut memory, &[percept(1, enemy_at, now, Source::Seen)], now);
+                if now % 250 == 0 {
+                    reflex.think_with(&me, &sit, &memory, now, &aim, 0.5, &mut rng);
+                }
+                facing(&mut me, enemy_at + Vec3::new(0.0, 1.3, 0.0));
+                let o = reflex.tick(&me, &view, &memory, now, true, &aim, 0.5, &mut rng);
+                fired |= o.fire;
+                stepped |= o.legs.is_some_and(|l| l.why == LegsWhy::Range);
+                now += 50;
+            }
+            assert_eq!(reflex.target(), Some(1));
+            assert_eq!((fired, stepped), (rounds > 0, rounds > 0), "{rounds}");
         }
     }
 }

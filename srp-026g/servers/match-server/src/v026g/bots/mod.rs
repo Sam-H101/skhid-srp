@@ -905,6 +905,12 @@ impl Bots {
             for bot in self.bots.iter_mut().flatten() {
                 bot.memory.forget(a.place);
             }
+            // Nor do the team's callouts of him bring him back (match
+            // 0x5402a730: 115 of 125 bot lines 1.5-5 s after a death still
+            // knew the dead enemy, told).
+            for state in &mut self.teams {
+                state.knowledge.forget_callouts(a.place);
+            }
         }
         // With the battery cheat off, what each team's HUD shows of the
         // batteries.
@@ -1173,6 +1179,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &no_way,
                     set_aside: &bot.set_aside,
+                    dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1225,6 +1232,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &no_way,
                     set_aside: &bot.set_aside,
+                    dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1429,6 +1437,7 @@ impl Bots {
                 medkits_used: bot.medkits_used,
                 no_way_to: &bot.no_way_to,
                 set_aside: &bot.set_aside,
+                dry: bot.reflex.dry(),
             },
             memory: &bot.memory,
             team: &state.knowledge,
@@ -1634,8 +1643,13 @@ fn drive_tick(
         let (dx, dz) = (p.x - eye.x, p.z - eye.z);
         (kin::yaw_of([dx, dz]), (p.y - eye.y).atan2(dx.hypot(dz)))
     };
+    // A glance at a heard shot gives way to a play that uses something or
+    // carries (`Override::glance`).
+    let glance_yields =
+        over.glance && (matches!(intent.look, Look::Use(_)) || me.carrying.is_some());
     let aim = over
         .look_at
+        .filter(|_| !glance_yields)
         .map(|p| {
             let (yaw, pitch) = aim_at(p);
             (yaw + over.error.0, pitch + over.error.1)
