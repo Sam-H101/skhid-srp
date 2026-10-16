@@ -75,6 +75,8 @@ live_revision=$(zip_revision "$work/live.zip" "$work/live.exe")
 say "patch revision: $revision on $ref, $live_revision live"
 if [[ $live_revision == unknown ]]; then
     say "WARNING: the live exe's revision cannot be read; compare by hand"
+elif ((revision <= live_revision && test_server)); then
+    say "revision $revision is not above the test server's $live_revision: fine for the test environment"
 elif ((revision <= live_revision)); then
     die "the exe revision did not change ($revision on $ref, $live_revision live): bump REVISION in patch_026g.py first (the bump PR)"
 fi
