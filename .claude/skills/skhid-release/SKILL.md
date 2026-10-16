@@ -95,8 +95,11 @@ The checks of every URL (release.sh's preflight, build-server-db for the
 mirrors, add-mirror) download it whole once and keep the result per (URL,
 sha256) in `~/.cache/skhid-release/patch-urls.checked` (`$XDG_CACHE_HOME`
 if set): later runs ask such a URL for its first bytes only (200 or 206,
-not a web page, the archive's `little-endian` header). Delete a line, or
-the file, to have a URL downloaded whole again.
+not a web page, the row's size when the answer gives the whole file's
+size, the archive's `little-endian` header). A mirror whose file was
+replaced since by one of the same size is not seen so (the updater's
+sha256 check still refuses it, and moves on to the next URL). Delete a
+line, or the file, to have a URL downloaded whole again.
 
 ## release/release.sh
 

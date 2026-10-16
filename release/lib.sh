@@ -122,13 +122,18 @@ URL_CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/skhid-release/patch-urls.checked
 # text/html: Google Drive's virus-scan page, a sign-in page), the size and
 # the sha256; then the line in URL_CACHE. A URL in the cache for that
 # sha256 is asked for its first 13 bytes only: 200 or 206, not a web page,
-# the game archive's `little-endian`. `full`: the whole download all the
+# the whole file's size the row's when the answer says it (a 206's
+# Content-Range, a 200's Content-Length: a file replaced since by one of
+# another size), the game archive's `little-endian`. A file replaced by
+# one of the same size and header is seen only by a whole download: the
+# players' updater checks the sha256 all the same and moves on to the next
+# URL. `full`: the whole download all the
 # same (add-mirror). False, with URL_PROBLEM saying why, otherwise; CHECKED
 # says how it was checked (`downloaded`, `as checked before`).
 URL_PROBLEM='' CHECKED=''
 # shellcheck disable=SC2034 # CHECKED: the callers read it
 check_patch_url() {
-    local url=$1 sha=$2 size=$3 dir=$4 full=${5:-} out head status type got
+    local url=$1 sha=$2 size=$3 dir=$4 full=${5:-} out head status type total got
     out=$dir/url-check.$$ head=$dir/url-check.$$.head
     URL_PROBLEM='' CHECKED=''
     if [[ -z $full ]] && grep -qxF -- "$sha $size $url" "$URL_CACHE" 2>/dev/null; then
@@ -138,12 +143,22 @@ check_patch_url() {
         status=$(awk 'toupper($1) ~ /^HTTP\// { s = $2 } END { print s }' "$head" 2>/dev/null || true)
         type=$(tr -d '\r' <"$head" 2>/dev/null |
             awk 'toupper($1) ~ /^HTTP\// { t = "" } tolower($1) == "content-type:" { t = tolower($2) } END { print t }' || true)
+        # The whole file's size, as the last answer says it: a 206's
+        # Content-Range (`bytes 0-12/<size>`), a 200's Content-Length;
+        # nothing when it does not say.
+        total=$(tr -d '\r' <"$head" 2>/dev/null |
+            awk -v status="$status" 'toupper($1) ~ /^HTTP\// { r = ""; l = "" }
+                tolower($1) == "content-range:" { n = split($0, part, "/"); r = part[n] }
+                tolower($1) == "content-length:" { l = $2 }
+                END { print (status == 206 ? r : l) }' || true)
         got=$(cat "$out")
         rm -f "$out" "$head"
         if [[ $status != 200 && $status != 206 ]]; then
             URL_PROBLEM="$url answers ${status:-nothing} now (it gave the file before)"
         elif [[ $type == text/html* ]]; then
             URL_PROBLEM="$url answers with a web page now (it gave the file before)"
+        elif [[ $total =~ ^[0-9]+$ && $total != "$size" ]]; then
+            URL_PROBLEM="$url says the file is $total bytes now, not $size (it gave the file before)"
         elif [[ $got != little-endian ]]; then
             URL_PROBLEM="$url does not start as a patch now (it gave the file before)"
         else

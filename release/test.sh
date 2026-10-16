@@ -235,7 +235,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.answer(200, b"<!DOCTYPE html><html><title>Google Drive - Virus scan warning</title></html>",
                                "text/html; charset=utf-8")
         if len(parts) == 3 and parts[1] == "files" and os.path.isfile(os.path.join(root, parts[2])):
-            return self.answer(200, open(os.path.join(root, parts[2]), "rb").read())
+            body = open(os.path.join(root, parts[2]), "rb").read()
+            asked = self.headers.get("Range", "")
+            # Ranges only while root/../mirror.ranges is there (as Google
+            # Drive answers them): 206 and Content-Range.
+            if asked.startswith("bytes=") and os.path.exists(root + ".ranges"):
+                first, last = (int(n) for n in asked[6:].split("-"))
+                part = body[first:last + 1]
+                self.send_response(206)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Range", f"bytes {first}-{first + len(part) - 1}/{len(body)}")
+                self.send_header("Content-Length", str(len(part)))
+                self.end_headers()
+                return self.wfile.write(part)
+            return self.answer(200, body)
         return self.answer(404, b"not found\n", "text/plain")
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 open(port_file, "w").write(str(server.server_address[1]))
@@ -942,7 +955,25 @@ mv "$T/mirror/resources.db.patch_3" "$T/mirror/kept_3"
 run quiet --dry-run --minutes 2 || true
 check "release: a mirror that no longer gives the patch is a problem" has "$out" \
     "  - $T/mirrored.tsv: resources.db.patch_3: $M/files/resources.db.patch_3 answers 404 now (it gave the file before)"
+# Replaced since by a file of another size that starts as a patch does:
+# seen by the size the answer gives, a 200's Content-Length or a 206's
+# Content-Range.
+head -c $((size3 - 1)) "$T/mirror/kept_3" >"$T/mirror/resources.db.patch_3"
+run quiet --dry-run --minutes 2 || true
+check "release: a mirror whose file is now of another size is a problem (200)" has "$out" \
+    "  - $T/mirrored.tsv: resources.db.patch_3: $M/files/resources.db.patch_3 says the file is $((size3 - 1)) bytes now, not $size3 (it gave the file before)"
+touch "$T/mirror.ranges"
+run quiet --dry-run --minutes 2 || true
+check "release: a mirror whose file is now of another size is a problem (206)" has "$out" \
+    "  - $T/mirrored.tsv: resources.db.patch_3: $M/files/resources.db.patch_3 says the file is $((size3 - 1)) bytes now, not $size3 (it gave the file before)"
 mv "$T/mirror/kept_3" "$T/mirror/resources.db.patch_3"
+: >"$T/mirror.log"
+run quiet --dry-run --minutes 2 || fail "release.sh --dry-run, mirrors with ranges: $out"
+check "release: a mirror that answers its first bytes with a 206 of the row's size is good" has "$out" \
+    "the offered-patch list: 2 patch(es), each on the patches server (patches) with its sha256, and its 4 URL(s) giving it"
+check "release: ... asked for its first bytes only" \
+    bash -c "test -s $T/mirror.log && ! grep -v ' bytes=0-12\$' $T/mirror.log"
+rm -f "$T/mirror.ranges"
 printf 'resources.db.patch_3\t%s\t%s\t%s %s\nresources.db.patch_12\t%s\t%s\t%s\n' "$sha3" "$size3" "$P/resources.db.patch_3" \
     "$M/page/resources.db.patch_3" "$sha12" "$(stat -c %s "$T/r12/resources.db.patch_12")" "$P/resources.db.patch_12" >"$T/page.tsv"
 SKHID_RELEASE_ENV=$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/page.tsv|")
