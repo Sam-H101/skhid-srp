@@ -1842,3 +1842,111 @@ fn a_bot_spent_of_its_first_kit_picks_its_second_for_the_next_life() {
     let rusher = bots.bots[1].as_ref().unwrap();
     assert_eq!(rusher.kits[1].0.primary.0.item, "uzi");
 }
+
+/// Match 0x5402a730 (2026-10-16): the client's world has a dead body
+/// without feet, and `game::driven` hands the bots its bodies before its
+/// statistics, so the death the statistics show came with no spot: no
+/// kill feed entry, no danger spot, play 21 never a candidate. Now the
+/// death is where the body was last reckoned alive, and a team's third
+/// bot has a partner too (one way: it trades, it follows no one).
+#[test]
+fn a_partners_death_the_world_shows_without_feet_is_traded_by_both_teammates() {
+    let world = soak_world();
+    let teams = [0, 0, 0, 1, 1, 1];
+    let mut bots = Bots::new(
+        0x5402,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true; 6],
+        &[None; 6],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    bots.map_ready(world);
+    for place in 0..6 {
+        bots.entered(place, true, 0);
+    }
+    let spots = [
+        Vec3::new(10.0, 0.0, 30.0),
+        Vec3::new(14.0, 0.0, 30.0),
+        Vec3::new(15.0, 0.0, 34.0),
+        Vec3::new(70.0, 0.0, 30.0),
+        Vec3::new(72.0, 0.0, 34.0),
+        Vec3::new(70.0, 0.0, 38.0),
+    ];
+    let body = |time: u32, place: usize, alive: bool| Fix {
+        time,
+        alive,
+        inserted: 100,
+        feet: alive.then_some(spots[place]),
+        yaw: 0.0,
+        pitch: 0.0,
+        keys: 0,
+        speed: Some(0.0),
+    };
+    let clock = |clock: u32| Clock {
+        clock,
+        time_left_s: 600.0,
+        total_s: 900.0,
+        playing: true,
+    };
+    for place in 0..6 {
+        bots.fixed(place, body(1_000, place, true), Some(1.0));
+    }
+    bots.facts(WorldFacts {
+        time: 1_000,
+        stats: vec![(0, 0, 0); 6],
+        ..WorldFacts::default()
+    });
+    bots.poll(clock(1_100));
+    let partner = |bots: &Bots, place: usize| {
+        let bot = bots.bots[place].as_ref().unwrap();
+        (bot.partner, bot.paired)
+    };
+    assert_eq!(partner(&bots, 0), (Some(1), true));
+    assert_eq!(partner(&bots, 1), (Some(0), true));
+    // The third: its nearest living teammate, one way.
+    assert_eq!(partner(&bots, 2), (Some(1), false));
+    assert_eq!(partner(&bots, 5), (Some(4), false));
+
+    // Bot 1 dies: the world shows it dead, without feet, then the
+    // statistics.
+    for place in 0..6 {
+        bots.fixed(place, body(2_000, place, place != 1), Some(1.0));
+    }
+    let mut stats = vec![(0, 0, 0); 6];
+    stats[1].1 = 1;
+    stats[3].0 = 1;
+    bots.facts(WorldFacts {
+        time: 2_000,
+        stats,
+        ..WorldFacts::default()
+    });
+    let view = bots.tracker().view(&clock(2_000), &bots.tuning.kin, None);
+    assert_eq!(view.deaths.len(), 1, "{:?}", view.deaths);
+    assert_eq!(view.deaths[0].place, 1);
+    assert!(
+        view.deaths[0].at.distance_xz(spots[1]) < 1.0,
+        "{:?}",
+        view.deaths
+    );
+    let danger = &bots.teams[0].knowledge.danger;
+    assert_eq!(danger.len(), 1, "{danger:?}");
+    assert_eq!(danger[0].victim, 1);
+    assert!(danger[0].at.distance_xz(spots[1]) < 1.0, "{danger:?}");
+    // Both its teammates trade it: its pair and the third.
+    for now in (2_100..=3_000).step_by(100) {
+        bots.poll(clock(now));
+    }
+    // The third keeps its partner while he is down.
+    assert_eq!(partner(&bots, 2), (Some(1), false));
+    for place in [0, 2] {
+        let bot = bots.bots[place].as_ref().unwrap();
+        assert_eq!(
+            bot.assignment.as_ref().map(|a| a.kind),
+            Some(plays::PlayKind::Trade),
+            "bot {place}"
+        );
+    }
+}

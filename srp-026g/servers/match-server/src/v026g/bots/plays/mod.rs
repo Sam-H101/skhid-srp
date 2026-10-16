@@ -345,6 +345,9 @@ pub struct BotFacts<'a> {
     pub last_ran: &'a [(PlayKind, u32)],
     /// Its partner (play 21), if it has one.
     pub partner: Option<Place>,
+    /// Whether the partner has it for partner too (a pair, play 25); a
+    /// team's odd bot partners one way, for its trades only.
+    pub paired: bool,
     /// Medkits it used this life (quick use 1 pressed).
     pub medkits_used: u8,
     /// Goals its searches proved no way to lately, and until when.
