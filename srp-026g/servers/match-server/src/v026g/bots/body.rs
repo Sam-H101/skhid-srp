@@ -110,6 +110,11 @@ pub struct BodyTrack {
     last_error: Option<f32>,
     /// This life's speeds over the nominal ones (`Kinematics::level_of`).
     level: Option<f32>,
+    /// The lives the worlds showed, the present one counted.
+    lives: u32,
+    /// Where the body was last reckoned alive, and which life that was:
+    /// kept past its death, as a world shows a dead body without feet.
+    last_alive: Option<(u32, Vec3)>,
 }
 
 impl BodyTrack {
@@ -149,6 +154,18 @@ impl BodyTrack {
             self.level.unwrap_or(1.0),
             grid,
         ))
+    }
+
+    /// Where the body is, or was last reckoned alive, and in which of its
+    /// lives (counted from 1 as the worlds showed them): its feet now while
+    /// it lives, else where its last life was reckoned when a world first
+    /// showed it dead (that world has no feet for it: the kill feed's spot
+    /// of a death the world already shows). None for a body never placed.
+    pub fn last_alive(&self) -> Option<(u32, Vec3)> {
+        match self.estimate.as_ref() {
+            Some(estimate) => Some((self.lives, estimate.feet)),
+            None => self.last_alive,
+        }
     }
 
     /// Whether the last world showed the body dead.
@@ -209,7 +226,20 @@ impl BodyTrack {
         let feet = match (fix.alive, fix.feet) {
             (true, Some(feet)) => feet,
             _ => {
-                self.estimate = None;
+                // Where it fell, as near as is known: the reckoning at the
+                // world's tick (it was dead by then), else the last world's
+                // feet, else the reckoning now.
+                if let Some(estimate) = self.estimate.take() {
+                    let feet = self
+                        .trail
+                        .iter()
+                        .rev()
+                        .find(|(at, _)| *at <= fix.time)
+                        .map(|(_, feet)| *feet)
+                        .or_else(|| self.fix.as_ref().and_then(|last| last.feet))
+                        .unwrap_or(estimate.feet);
+                    self.last_alive = Some((self.lives, feet));
+                }
                 self.trail.clear();
                 self.level = None;
                 self.fix = Some(fix);
@@ -218,6 +248,7 @@ impl BodyTrack {
         };
         if new_life {
             self.level = None;
+            self.lives += 1;
         }
         if let Some(level) = fix.speed.and_then(|speed| kin.level_of(fix.keys, speed)) {
             self.level = Some(level);

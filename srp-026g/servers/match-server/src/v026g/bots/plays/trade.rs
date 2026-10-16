@@ -20,6 +20,9 @@ pub const NUMBERS: &[(&str, f32)] = &[
     ("trade_max_s", 3.5),
     // Past this from the spot, no trade, metres.
     ("max_m", 50.0),
+    // A bot at an objective play (a battery's work) trades only a death
+    // this near it: the killer is near it too, metres.
+    ("objective_m", 20.0),
     // A known enemy this near the spot is the killer, metres.
     ("killer_m", 30.0),
     // It runs at the spot until this near, then walks, metres.
@@ -48,6 +51,22 @@ pub fn tuning() -> PlayTuning {
     }
 }
 
+/// How near the partner's death must be to the bot for it to trade it,
+/// metres: `max_m`; at a battery's work (an objective play) `objective_m`,
+/// so it keeps at the battery unless the killer is near it too (match
+/// 0x5402a730 at 54.7 s: a partner killed 12.5 m off, the bot went on
+/// collecting and was killed next).
+fn reach(tuning: &Tuning, current: Option<PlayKind>) -> f32 {
+    let busy = current.is_some_and(|kind| {
+        let rank = tuning
+            .plays
+            .get(&kind)
+            .map_or_else(|| default_tuning(kind).rank, |play| play.rank);
+        kind != PlayKind::Trade && rank == Rank::Objective
+    });
+    tuning.number(PlayKind::Trade, if busy { "objective_m" } else { "max_m" })
+}
+
 /// Where and when the partner died lately, as far as the team knows.
 fn partner_death(cx: &Ctx) -> Option<(Vec3, u32)> {
     let partner = cx.bot.partner?;
@@ -73,8 +92,9 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     if cx.me.carrying.is_some() {
         return;
     }
+    let reach = reach(cx.tuning, cx.bot.current.map(|(kind, _, _)| kind));
     if let Some((at, _)) = partner_death(cx)
-        && at.distance_xz(cx.me.feet) <= cx.num(PlayKind::Trade, "max_m")
+        && at.distance_xz(cx.me.feet) <= reach
     {
         out.extend(cx.candidate(PlayKind::Trade, TargetRef::Point(at), None));
         return;
@@ -191,6 +211,26 @@ mod tests {
             victim: 2,
         });
         assert_eq!(trades(&s).len(), 1);
+    }
+
+    /// At a battery's work a bot trades only a death near it (20 m); at
+    /// any other play out to 50 m.
+    #[test]
+    fn at_a_batterys_work_only_a_near_death_is_traded() {
+        let at = |d: f32, current: Option<(PlayKind, TargetRef, u32)>| {
+            let mut s = widowed(1_000);
+            s.view.places[0].feet = SPOT + Vec3::new(-d, 0.0, 0.0);
+            s.current = current;
+            trades(&s).len()
+        };
+        let since = Some(1_000);
+        let collect = since.map(|t| (PlayKind::Collect, TargetRef::Battery(0), t));
+        let crossfire = since.map(|t| (PlayKind::Crossfire, TargetRef::None, t));
+        assert_eq!(at(15.0, collect), 1, "near: traded");
+        assert_eq!(at(30.0, collect), 0, "far: it keeps at the battery");
+        assert_eq!(at(30.0, crossfire), 1, "no battery's work: traded");
+        assert_eq!(at(30.0, None), 1);
+        assert_eq!(at(60.0, None), 0, "past max_m");
     }
 
     #[test]
