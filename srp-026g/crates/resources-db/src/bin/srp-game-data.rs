@@ -8,6 +8,7 @@
 //! srp-game-data build <archives> --out <file>
 //! srp-game-data info <file>
 //! srp-game-data check <file> <archives>
+//! srp-game-data pack --dir <folder> --out <file>
 //!
 //! <archives>: --dir <game folder> [--patch-url <base URL>]
 //!           | --db <resources.db> [--patch <file>[=<URL>]]... [--patch-url <base URL>]
@@ -27,6 +28,7 @@ const USAGE: &str = "usage:
   srp-game-data build <archives> --out <file>
   srp-game-data info <file>
   srp-game-data check <file> <archives>
+  srp-game-data pack --dir <folder> --out <resources.db.patch_<n>>
 
 <archives> is one of
   --dir <game folder> [--patch-url <base URL>]
@@ -42,7 +44,11 @@ Every patch needs the URL the players' updater downloads it from, one the
 updater takes (http:// or https://, a host name or a bare IPv4 address, an
 optional port, a path; no credentials, no #, no spaces, quotes or
 backslashes; at most 1024 bytes): <file>=<URL>, or --patch-url <base URL>,
-which gives a patch without one the URL <base URL>/<its file name>.";
+which gives a patch without one the URL <base URL>/<its file name>.
+
+pack makes a patch of every file under <folder>, at its path there
+(<folder>/gameplay/x is gameplay/x of the archive), reads it back and checks
+every file against the folder. It never overwrites --out.";
 
 /// The archives the options name: `resources.db`, its patches with their
 /// URLs; and `--out`.
@@ -190,8 +196,47 @@ fn run(args: &[String]) -> Result<(), String> {
                 Err(format!("{} was made of something else", data.display()))
             }
         }
+        "pack" => pack(options),
         _ => Err(USAGE.into()),
     }
+}
+
+/// `pack --dir <folder> --out <file>`.
+fn pack(options: &[String]) -> Result<(), String> {
+    let (dir, out) = match options {
+        [a, dir, b, out] if a == "--dir" && b == "--out" => (dir, out),
+        [b, out, a, dir] if a == "--dir" && b == "--out" => (dir, out),
+        _ => return Err(format!("pack needs --dir <folder> --out <file>\n{USAGE}")),
+    };
+    let out = PathBuf::from(out);
+    if std::fs::symlink_metadata(&out).is_ok() {
+        return Err(format!(
+            "{}: already there; never overwritten",
+            out.display()
+        ));
+    }
+    let (bytes, files) = resources_db::pack::pack(Path::new(dir)).map_err(|e| e.to_string())?;
+    for (path, content) in &files {
+        println!("  {path} {} bytes", content.len());
+    }
+    let mut temporary = out.clone().into_os_string();
+    temporary.push(".part");
+    std::fs::write(&temporary, &bytes).map_err(|cause| format!("{}: {cause}", out.display()))?;
+    // Read back from the disk, as the game will.
+    let written =
+        std::fs::read(&temporary).map_err(|cause| format!("{}: {cause}", out.display()))?;
+    resources_db::pack::check(&written, &files)
+        .map_err(|e| format!("{} read back: {e}", out.display()))?;
+    std::fs::rename(&temporary, &out).map_err(|cause| format!("{}: {cause}", out.display()))?;
+    let made = resources_db::server::Input::of(&out).map_err(|e| e.to_string())?;
+    println!(
+        "{}: {} files, {} bytes, sha256 {}, read back: the same files",
+        out.display(),
+        files.len(),
+        made.size,
+        made.sha256
+    );
+    Ok(())
 }
 
 fn main() -> ExitCode {

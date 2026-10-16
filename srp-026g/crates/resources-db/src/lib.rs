@@ -40,9 +40,11 @@
 //! `resources.db` and its patches, `resources.db.patch_<n>`: a later
 //! archive's file replaces an earlier one's, folders merge. [`server`] takes
 //! from that the files the server reads into an archive of their own
-//! ([`write`](mod@write)) that names the archives it was made of.
+//! ([`write`](mod@write)) that names the archives it was made of. [`pack`] makes a
+//! patch, an archive of the files of a folder.
 
 pub mod overlay;
+pub mod pack;
 pub mod server;
 pub mod write;
 

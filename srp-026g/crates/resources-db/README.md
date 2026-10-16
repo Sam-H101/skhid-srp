@@ -30,6 +30,7 @@ the patches it runs on.
 | `overlay` (`Overlay`) | Archives over one another in order: for each path the file of the last archive that has one. Only the tables are read to lay them; a file is read from its own archive. A path that is a file in one archive and a folder in another is refused |
 | `write` | Writes an archive the game mounts, deterministically: the mount root, folders and files in name order, each node's `m_parent` the start of its folder's class (936 for the root's children, as in 0.26g's archive; the engine follows it), each file's CRC-32, a zeroed 256-byte signature after the table, the files' bytes from the next 2048-byte boundary after it |
 | `server` | The server's game data: `build`, `Provenance`, `read` |
+| `pack` | A patch from a folder: every file under it at its path there, written by `write`, read back and compared with the folder |
 | `bin/srp-game-data.rs` | The command line |
 
 ## The command
@@ -39,6 +40,7 @@ srp-game-data build --dir <game folder> [--patch-url <base URL>] --out server-ga
 srp-game-data build --db resources.db [--patch <file>[=<URL>]]... [--patch-url <base URL>] --out server-game-data.db
 srp-game-data info server-game-data.db
 srp-game-data check server-game-data.db <the same archives as build>
+srp-game-data pack --dir <folder> --out resources.db.patch_<n>
 ```
 
 - `--dir` takes what the game mounts from that folder, by the exe's own rule:
@@ -65,6 +67,14 @@ srp-game-data check server-game-data.db <the same archives as build>
 - `info` checks every file of the data against its table and prints the
   provenance; `check` also hashes the archives given and says whether the
   data was made of exactly those, with those URLs (exit status 1 if not).
+
+- `pack` makes a patch of a folder whose files are at the paths the game
+  looks them up by (`<folder>/gameplay/items/x.options` is
+  `gameplay/items/x.options`), by `write` (above), reads the written file
+  back and compares every file with the folder's. A symbolic link, a name
+  that is not UTF-8 or has a `\`, an empty folder (`write` makes none) and a
+  folder without files are refused; `--out` is never overwritten. The
+  release script `release/build-patch` calls it.
 
 For example, on the release machine:
 
@@ -118,8 +128,14 @@ over an earlier one, new files, folders merging over three archives, a file
 over a folder refused, patches given out of order, gaps in the numbers, the
 names the game does not mount, the same bytes twice, other bytes for another
 URL or patch, the provenance read back and wrong ones refused, a file unlike
-its table refused), resource-porter's `tests/fixture.db` for the reader, and
-the writer's `m_parent` and signature room.
+its table refused), resource-porter's `tests/fixture.db` for the reader,
+the writer's `m_parent` and signature room, and `pack` (a folder's files at
+their paths, read back, the same bytes twice, what an archive cannot say
+refused).
+
+`pack` of the folders patches 14, 15 and 16 were made of gives those
+patches byte for byte (sha256 `7535d0d0…d4c6c3`, `191b24fb…b993ea0`,
+`add87569…c036d093`).
 
 On the real files (ignored tests):
 
