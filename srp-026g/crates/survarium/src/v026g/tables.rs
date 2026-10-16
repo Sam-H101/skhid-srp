@@ -11,6 +11,7 @@ use super::drops::{self, Drops};
 use super::game_data::{GameData, GameDataError};
 use super::item_params::{self, PlayerLimits};
 use super::loadouts::{self, Loadouts};
+use super::localization;
 use super::maps;
 use super::modifications::{self, Modifications};
 use super::quests::{self, Quests};
@@ -65,6 +66,9 @@ pub fn check(data: &GameData) -> Result<(), GameDataError> {
     }
     modifications::derive_item_mods(data, &dictionary)?;
     maps::derive(data, &dictionary)?;
+    for language in localization::Language::ALL {
+        localization::of(data, language)?;
+    }
     let player = needed(data, item_params::PLAYER_PATH)?;
     parsed(
         item_params::PLAYER_PATH,

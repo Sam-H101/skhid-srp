@@ -3689,7 +3689,7 @@ impl Game {
         if let Some(read) = &decoded.rules {
             // The map's respawn points are known from its project: a rule
             // read with another number was read wrong, or the data is.
-            let expected = rules::respawn_points(self.formed.map.level, self.game_mode());
+            let expected = Some(self.formed.map.respawn_points);
             let points = read.respawn.as_ref().map(|respawn| respawn.points.len());
             if points != expected && !self.respawn_points_logged {
                 self.respawn_points_logged = true;

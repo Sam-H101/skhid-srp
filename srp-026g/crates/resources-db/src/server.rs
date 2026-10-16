@@ -6,10 +6,14 @@
 //! [`build`] lays the patches over `resources.db` in the game's order
 //! ([`crate::overlay`]): by their number n, `resources.db.patch_<n>`, the
 //! lowest first. It takes the files the server reads ([`is_read`]): every
-//! file under `gameplay/`, and each project's `client_project` (srp only asks
-//! whether a project is there, so it is kept empty). Each file is read from
-//! the archive whose file is seen, and checked against that archive's table:
-//! its size, and the table's CRC-32 of its bytes ([`crate::crc32`]).
+//! file under `gameplay/`, the game's texts in the languages of srp's web
+//! page ([`LOCALIZATIONS`]), and each project's `client_project` cut to its
+//! `server_objects` ([`server_objects_of`]): srp reads a map's respawn
+//! points and battery containers there, and the rest of a project, its
+//! world (0.6 to 1.2 MB each, 60 MB for 0.26g's 73), is the client's. Each
+//! file is read from the archive whose file is seen, and checked against
+//! that archive's table: its size, and the table's CRC-32 of its bytes
+//! ([`crate::crc32`]).
 //!
 //! [`PROVENANCE`] names what it was made of ([`Provenance`]): `resources.db`
 //! (its file name, size and sha256) and every patch (its file name, size,
@@ -30,13 +34,24 @@ use crate::{Archive, Error, crc32};
 
 /// The files of `gameplay/` are read whole.
 pub const GAMEPLAY: &str = "gameplay/";
-/// A project is there when `projects/<project>/client_project` is.
+/// A project is there when `projects/<project>/client_project` is; the
+/// data keeps its `server_objects` ([`server_objects_of`]).
 pub const PROJECTS: &str = "projects/";
 pub const PROJECT_MARKER: &str = "/client_project";
+/// The table of a project the data keeps.
+pub const SERVER_OBJECTS: &str = "server_objects";
+/// The game's texts in the languages of srp's web page (its names of the
+/// maps and modes), read whole.
+pub const LOCALIZATIONS: [&str; 2] = [
+    "localization/english/localization",
+    "localization/ukrainian/localization",
+];
 /// What the data was made of ([`Provenance`]).
 pub const PROVENANCE: &str = "srp/provenance";
-/// The first line of [`PROVENANCE`].
-pub const FORMAT: &str = "skhid server game data 2";
+/// The first line of [`PROVENANCE`]. Data 3 keeps each project's
+/// `server_objects` and the [`LOCALIZATIONS`]; data 2 had the projects
+/// empty, and is refused by name.
+pub const FORMAT: &str = "skhid server game data 3";
 
 /// The game's archive, in its game folder.
 pub const RESOURCES_DB: &str = "resources.db";
@@ -47,7 +62,31 @@ pub const LAST_PATCH: u32 = 255;
 
 /// Whether the server reads `path` of the players' archive.
 pub fn is_read(path: &str) -> bool {
-    path.starts_with(GAMEPLAY) || (path.starts_with(PROJECTS) && path.ends_with(PROJECT_MARKER))
+    path.starts_with(GAMEPLAY)
+        || LOCALIZATIONS.contains(&path)
+        || (path.starts_with(PROJECTS) && path.ends_with(PROJECT_MARKER))
+}
+
+/// The `client_project` `bytes`, a binary config, cut to its
+/// `server_objects` as they are (its respawn points, battery containers,
+/// spawners and stations): a config of that one table, or of none for a
+/// project without it (`lobby_scene/day`). A project that is not a config
+/// is refused: the game could not load it either.
+pub fn server_objects_of(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use binary_config_parser::tree::ConfigValue;
+    let project = ConfigValue::parse(bytes).map_err(|cause| cause.to_string())?;
+    if !matches!(project, ConfigValue::Named(_)) {
+        return Err("not a binary config of named values".into());
+    }
+    let kept = project
+        .entries()
+        .iter()
+        .filter(|(name, _)| name == SERVER_OBJECTS)
+        .cloned()
+        .collect();
+    ConfigValue::Named(kept)
+        .to_bytes()
+        .map_err(|cause| cause.to_string())
 }
 
 fn content(what: impl Into<String>) -> Error {
@@ -260,7 +299,7 @@ impl Patch {
 /// (a URL has no space):
 ///
 /// ```text
-/// skhid server game data 2
+/// skhid server game data 3
 /// db resources.db 6285533906 <sha256>
 /// patch resources.db.patch_14 43691157 <sha256> http://203.0.113.5/resources.db.patch_14
 /// patch resources.db.patch_15 1048576 <sha256> http://203.0.113.5/resources.db.patch_15 https://mirror.example/p15
@@ -310,7 +349,8 @@ impl Provenance {
         let mut lines = text.lines();
         if lines.next() != Some(FORMAT) {
             return Err(content(format!(
-                "{PROVENANCE} does not start {FORMAT:?}: data of another srp-game-data"
+                "{PROVENANCE} does not start {FORMAT:?}: data of another srp-game-data (data 2 kept \
+                 the projects empty: build it again with this srp's srp-game-data)"
             )));
         }
         let wrong = |line: &str| content(format!("{PROVENANCE}: a wrong line: {line:?}"));
@@ -499,7 +539,8 @@ pub fn build(db: &Path, patches: &[PatchFile]) -> Result<Built, Error> {
             )));
         }
         let kept = if path.starts_with(PROJECTS) {
-            Vec::new()
+            server_objects_of(&bytes)
+                .map_err(|why| content(format!("{}: {path}: {why}", names[index])))?
         } else {
             bytes
         };

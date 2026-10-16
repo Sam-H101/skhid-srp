@@ -16,7 +16,7 @@ use survarium::v026g::match_msgs::client_model::{ClientModel, Skip, Taken};
 use survarium::v026g::match_msgs::late_join::{CONNECT_CAPABILITY, Prepare, Prepared, Status};
 use survarium::v026g::match_msgs::motion;
 use survarium::v026g::match_msgs::players::{self, PlayerState};
-use survarium::v026g::match_msgs::rules::{self, TimelimitParams, TimelimitRule, state};
+use survarium::v026g::match_msgs::rules::{TimelimitParams, TimelimitRule, state};
 use survarium::v026g::match_msgs::snapshot::{
     self, Battery, Container, Gather, KillsDeaths, PlayerStatistics, Respawn, Rules, Sections,
     Statistics, StatisticsTail, Tdm, Timed, Timelimit, VictoryItemStatus,
@@ -260,9 +260,7 @@ impl Sim {
                 seed: 2,
                 points: vec![
                     [0, 0];
-                    maps::map_mode(self.map_id)
-                        .and_then(|map| rules::respawn_points(map.level, map.mode))
-                        .unwrap_or(0)
+                    maps::map_mode(self.map_id).map_or(0, |map| map.respawn_points)
                 ],
             }),
             gather,

@@ -7,6 +7,8 @@ description = "Reads the game's resources.db archive and its patches, lays them 
 license = "GPL-3.0-or-later"
 
 [dependencies]
+# A project is kept cut to its `server_objects` (`server::server_objects_of`).
+binary-config-parser = { workspace = true }
 # The sha256 of each archive, named in the server's game data.
 sha2 = { workspace = true }
 

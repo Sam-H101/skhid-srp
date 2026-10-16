@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use session::SessionStore;
 use session::v026g::Board;
+use survarium::v026g::localization::{self, Language};
 use survarium::v026g::maps;
 
 use crate::{
@@ -395,29 +396,35 @@ fn grouped(value: u64) -> String {
     out
 }
 
-/// The game's own name of a map (`st_level_0N_name` of its localization;
-/// London's, level 9, comes with `resources.db.patch_13`).
-fn map_name(lang: Lang, level: u8) -> String {
-    match level {
-        1 => lang.tr("Rudnya", "Рудня"),
-        2 => lang.tr("School", "Школа"),
-        3 => lang.tr("Vostok Radar Station", "РЛС \"Восток\""),
-        4 => lang.tr("Chemical Plant", "Хімзавод"),
-        5 => lang.tr("Tarakanovsky Fort", "Тараканівський форт"),
-        6 => lang.tr("Mamayev Kurgan", "Мамаїв курган"),
-        7 => lang.tr("Vector Laboratory", "Лабораторія \"Вектор\""),
-        8 => lang.tr("Cologne", "Кельн"),
-        9 => lang.tr("London", "Лондон"),
-        _ => "?".to_owned(),
+/// The game's language of the page's.
+fn game_language(lang: Lang) -> Language {
+    match lang {
+        Lang::En => Language::English,
+        Lang::Uk => Language::Ukrainian,
     }
 }
 
-/// The game's own name of a mode (`st_mode_0N_name`): it has one name for
-/// both modes with batteries.
-fn mode_name(lang: Lang, mode: u8) -> String {
-    match mode {
-        maps::mode::TEAM_DEATHMATCH => lang.tr("Team Deathmatch", "Командний бій"),
-        _ => lang.tr("Protective device", "Захисний пристрій"),
+/// The game's own name of a map: the text of its config's `ui.map_name`
+/// (`st_level_0N_name`) in the page's language, else in English
+/// ([`localization::text`]), as the game data has it (a map a patch adds
+/// comes with its name in the patch's localizations); without one, its
+/// project's folder (`level_12`).
+fn map_name(lang: Lang, map: &maps::MapMode) -> String {
+    match localization::text(game_language(lang), map.map_name_key) {
+        Some(name) => name.to_owned(),
+        None => map.project.split('/').next().unwrap_or("?").to_owned(),
+    }
+}
+
+/// The game's own name of a mode (`ui.mode_name`, `st_mode_0N_name`): it
+/// has one name for both modes with batteries. Without one, its number.
+fn mode_name(lang: Lang, map: &maps::MapMode) -> String {
+    match localization::text(game_language(lang), map.mode_name_key) {
+        Some(name) => name.to_owned(),
+        None => lang.tr(
+            &format!("mode {}", map.mode),
+            &format!("режим {}", map.mode),
+        ),
     }
 }
 
@@ -455,7 +462,7 @@ fn matches(lang: Lang, live: &[LiveMatch]) -> String {
     let mut rows = String::new();
     for each in &open[..listed] {
         let (map, mode) = match maps::map_mode(each.map_id) {
-            Some(map) => (map_name(lang, map.level), mode_name(lang, map.mode)),
+            Some(map) => (map_name(lang, map), mode_name(lang, map)),
             None => ("?".to_owned(), "?".to_owned()),
         };
         let started = match (each.phase, each.played) {
@@ -907,10 +914,32 @@ mod tests {
         // A name of the game's with quotes in it stays inside its attribute.
         let radar = maps::playable().find(|map| map.level == 3).unwrap().id;
         assert!(row_uk(radar).contains("title=\"РЛС &quot;Восток&quot; · "));
-        // London (level 9) is in no stock data: its name is the patch's.
-        assert_eq!(map_name(Lang::En, 9), "London");
-        assert_eq!(map_name(Lang::Uk, 9), "Лондон");
-        assert_eq!(map_name(Lang::En, 10), "?");
+        // The names are the game data's: its localizations, by the keys of
+        // the map's config.
+        let rudnya_tdm = maps::map_mode(RUDNYA_TDM).unwrap();
+        assert_eq!(map_name(Lang::En, rudnya_tdm), "Rudnya");
+        assert_eq!(mode_name(Lang::En, rudnya_tdm), "Team Deathmatch");
+        // A map the localizations do not name (a patch's that brings no
+        // texts): its project's folder, and its mode by number.
+        let twelve = maps::MapMode {
+            level: 12,
+            mode: 9,
+            project: "level_12/day_4",
+            map_name_key: "st_level_12_name",
+            mode_name_key: "st_mode_09_name",
+            ..*rudnya_tdm
+        };
+        assert_eq!(map_name(Lang::En, &twelve), "level_12");
+        assert_eq!(map_name(Lang::Uk, &twelve), "level_12");
+        assert_eq!(mode_name(Lang::Uk, &twelve), "режим 9");
+        // Every playable map and mode has a name of the game's.
+        for map in maps::playable() {
+            for lang in [Lang::En, Lang::Uk] {
+                let game = |key| localization::text(game_language(lang), key).map(str::to_owned);
+                assert_eq!(Some(map_name(lang, map)), game(map.map_name_key));
+                assert_eq!(Some(mode_name(lang, map)), game(map.mode_name_key));
+            }
+        }
     }
 
     fn row_uk(map_id: u8) -> String {

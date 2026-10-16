@@ -4,14 +4,17 @@ use super::*;
 fn the_test_archive_is_0_26g_with_the_test_patches() {
     let data = shared();
     assert_eq!(data.origin, TEST_ORIGIN);
-    // 0.26g's 508, and the Bandit balaclava's config of patch 15.
-    assert_eq!(data.len(), 509);
+    // 0.26g's 508, the Bandit balaclava's config of patch 15, and the
+    // English and Ukrainian localizations.
+    assert_eq!(data.len(), 511);
+    assert!(data.file("localization/ukrainian/localization").is_some());
     assert!(
         data.file("gameplay/items/armour/mask/bandit_026.options")
             .is_some()
     );
     assert!(data.file("gameplay/missing").is_none());
-    // The projects are there as markers; level_08 at night is not.
+    // The projects are there, their server objects; level_08 at night is
+    // not.
     assert!(data.has_project("level_01/day_2"));
     assert!(!data.has_project("level_08/night_2"));
     // It names what it was made of: 0.26g's archive and patches 14, 15
@@ -135,7 +138,7 @@ fn srp_needs_readable_server_game_data() {
     )
     .unwrap();
     let message = GameData::open(&data).unwrap_err().to_string();
-    assert!(message.contains("skhid server game data 2"), "{message}");
+    assert!(message.contains(resources_db::server::FORMAT), "{message}");
 }
 
 #[test]
@@ -143,7 +146,8 @@ fn data_whose_tables_do_not_read_is_refused() {
     // Server data of the right form, but its dictionary is not one: the
     // tables' check stops srp at start.
     let provenance = format!(
-        "skhid server game data 2\ndb resources.db 1 {}\n",
+        "{}\ndb resources.db 1 {}\n",
+        resources_db::server::FORMAT,
         "0".repeat(64)
     );
     let bytes = archive_of(&[
@@ -201,6 +205,9 @@ fn the_test_data_is_0_26g_with_the_test_patches() {
         dictionary::PATH,
         "gameplay/items/armour/mask/bandit_026.options",
         "gameplay/items/weapons/wpn_svd.options",
+        // Patch 15 has its texts.
+        "localization/english/localization",
+        "localization/ukrainian/localization",
     ];
     assert_eq!(stock.len() + 1, patched.len());
     for (path, bytes) in &patched.files {

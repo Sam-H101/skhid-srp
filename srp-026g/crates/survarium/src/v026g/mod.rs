@@ -7,6 +7,7 @@ pub mod drops;
 pub mod game_data;
 pub mod item_params;
 pub mod loadouts;
+pub mod localization;
 pub mod maps;
 pub mod modifications;
 pub mod prices;

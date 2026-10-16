@@ -66,7 +66,7 @@ u8  team_2_respawn
 
 - Length = 8 + 4·popcount(mask) + 2·P, P = the number of respawn points the rule loaded for the map and mode.
 - **P is every entry of `server_objects.respawn_points` of the mode's project. PROVEN (2026-10-12):** `player_respawn_rule_cook` 0x2C6910 reads `server_objects` → `respawn_points`, allocates `0x1A8 + total·0x38`, counts team 0 and team 1 (0x2C69B4..0x2C69E9), lays the three groups out as team 0, team 1, team 2 (0x2C6A12..0x2C6A21) and fills each in config order (0x2C6A33..0x2C6A9D); no filter on layer or `is_temporary`. On the wire: team 0's points, then team 1's, then team 2's, each `u8` of the checker at point+0x28, then of the one at +0x2C (LIKELY allies in `ally_zones`, enemies in `enemy_zones`: constructor 0x2F4580).
-- P by level, the same for every weather (`tools/re-kit/v026g/data/projects/*.server_objects.txt`; `rules::respawn_points`):
+- srp counts P in each map's project, from the server's game data (`maps::MapMode::respawn_points`, read when the table is derived; no level is known to the code). In 0.26g's projects P is by level, the same for every weather (`tools/re-kit/v026g/data/projects/*.server_objects.txt`); London (level_09, skhid's patch 14) has 20 in each of its three modes:
 
 | level | modes 2 and 3 (team 0 / team 1) | mode 4 |
 |---|---|---|
@@ -110,7 +110,7 @@ u8  team_2_respawn
 
   A free battery is `6 + 160 + 1 + n` bytes. A cleared mask bit is a carried battery; who carries it is in that player's block (`m_carried_item`, §7).
 - **A container** (0x31CE40, reader 0x31CEE0; PROVEN): `u8 users`, users × `u8 owner.id`, `u32 m_victory_items.size()`, that many `u8` battery numbers. Two on every map.
-- **The container id is not the team** (PROVEN, data): it is the map's `victory_items_containers[..].id`, and `team` says whose it is. Container 0 is team 0's on level_02 and level_07 and team 1's on level_01, 03, 04, 05, 06, 08, in modes 2 and 3 and every weather (`rules::container_teams`). `m_team_points` are by team.
+- **The container id is not the team** (PROVEN, data): it is the map's `victory_items_containers[..].id`, and `team` says whose it is. Container 0 is team 0's on level_02 and level_07 and team 1's on level_01, 03, 04, 05, 06, 08, in modes 2 and 3 and every weather; London's container 0 is team 1's. srp reads it in each map's project (`maps::MapMode::container_teams`). `m_team_points` are by team.
 - **The results code does not need this rule when there are statistics:** the same team points and the winner are in the statistics tail (§3.3), which has a fixed position. With an empty statistics blob the rule's own `m_team_points` are the standing (`Decoded::standing`).
 
 ### 2.5 match_time_vi_spawn_rule_core (class 0x59, mode 3) — variable, PROVEN (0x3149B0)
@@ -288,8 +288,10 @@ and, with none, the gather rule's.
 
 `match_msgs/players.rs` (§7): `walk` / `blocks`, `animation_len`,
 `PlayerState` (the head), `Supplies` (what a player has left; the match
-server puts it into each `PlayerResult`). `match_msgs/rules.rs`:
-`respawn_points(level, mode)`, `container_teams(level)`.
+server puts it into each `PlayerResult`). A map's respawn points and its
+containers' teams: `maps::MapMode::respawn_points`, `container_teams`, read in
+its project when the map table is derived (they were hand tables of
+`match_msgs/rules.rs` before, levels 1 to 9; the projects give the same).
 
 ## 7. The player blocks (added 2026-10-12)
 

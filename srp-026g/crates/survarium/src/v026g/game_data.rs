@@ -20,16 +20,18 @@
 //! reads them: the dictionary ([`super::dictionary`]), each item's
 //! parameters and the slots it covers ([`super::item_params`]), what it may
 //! be modified with and the modifications ([`super::modifications`]), the
-//! game modes ([`super::maps`]), drops, quests, skills, awards and the test
-//! profiles. What the game's files do not say stays in code: the shop's
-//! exceptions ([`super::prices::EXCEPTIONS`]), the respawn points of a
-//! project ([`super::match_msgs::rules`]), the bundles.
+//! game modes and each map's respawn points and battery containers, read in
+//! its project ([`super::maps`]), the names of the maps and modes in the
+//! game's localizations ([`super::localization`]), drops, quests, skills,
+//! awards and the test profiles. What the game's files do not say stays in
+//! code: the shop's exceptions ([`super::prices::EXCEPTIONS`]), the
+//! bundles.
 //!
 //! Without [`init`] (tests, tools), the data is that of
 //! `resources/game-026g/server-game-data.db`: 0.26g's `resources.db` with
 //! the test patches 14 to 16 over it, as `srp-game-data build` makes it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -38,7 +40,7 @@ use std::sync::OnceLock;
 use binary_config_parser::tree::ConfigValue;
 use resources_db::Archive;
 pub use resources_db::server::Provenance;
-use resources_db::server::{GAMEPLAY, PROJECT_MARKER, PROJECTS};
+use resources_db::server::{GAMEPLAY, LOCALIZATIONS, PROJECT_MARKER, PROJECTS};
 
 /// The server's game data (`srp-game-data build`).
 pub const GAME_DATA_ENV: &str = "SRP_GAME_DATA";
@@ -78,41 +80,46 @@ pub struct GameData {
     /// The archives they were made of: `resources.db` and the patches the
     /// players' updater is told to fetch ([`Provenance::offered`]).
     pub provenance: Provenance,
-    /// Every file under `gameplay/`, by its path in the archive.
+    /// Every file under `gameplay/` and the localizations
+    /// ([`LOCALIZATIONS`]), by its path in the archive.
     files: BTreeMap<String, Vec<u8>>,
-    /// The projects the archive has (`projects/<project>/client_project`).
-    projects: BTreeSet<String>,
+    /// The projects the archive has (`projects/<project>/client_project`),
+    /// each its `client_project` cut to its `server_objects`
+    /// ([`resources_db::server::server_objects_of`]).
+    projects: BTreeMap<String, Vec<u8>>,
 }
 
 impl GameData {
     /// The server's game data in `archive`: every file checked against its
     /// table and the provenance read ([`resources_db::server::read`]), then
-    /// the `gameplay/` files and the projects taken.
+    /// the `gameplay/` files, the localizations and the projects taken.
     pub fn from_archive<R: Read + Seek>(
         archive: &mut Archive<R>,
         origin: String,
     ) -> Result<Self, GameDataError> {
         let data = resources_db::server::read(archive).map_err(|cause| error(cause.to_string()))?;
         let paths: Vec<String> = archive
-            .files_under(GAMEPLAY)
-            .map(|(path, _)| path.to_owned())
+            .files_under("")
+            .map(|(path, _)| path)
+            .filter(|path| path.starts_with(GAMEPLAY) || LOCALIZATIONS.contains(path))
+            .map(str::to_owned)
             .collect();
         let mut files = BTreeMap::new();
         for path in paths {
-            let bytes = archive
-                .read(&path)
-                .map_err(|cause| error(format!("{path}: {cause}")))?
-                .expect("a listed file");
+            let bytes = read(archive, &path)?;
             files.insert(path, bytes);
         }
-        let projects = archive
+        let project_paths: Vec<(String, String)> = archive
             .files_under(PROJECTS)
             .filter_map(|(path, _)| {
-                path.strip_prefix(PROJECTS)?
-                    .strip_suffix(PROJECT_MARKER)
-                    .map(str::to_owned)
+                let project = path.strip_prefix(PROJECTS)?.strip_suffix(PROJECT_MARKER)?;
+                Some((project.to_owned(), path.to_owned()))
             })
             .collect();
+        let mut projects = BTreeMap::new();
+        for (project, path) in project_paths {
+            projects.insert(project, read(archive, &path)?);
+        }
         Ok(Self {
             origin,
             provenance: data.provenance,
@@ -148,12 +155,42 @@ impl GameData {
     }
 
     /// Whether the archive has the project `project` (a game mode's
-    /// `match_making_params.map_name`, e.g. `level_01/day`).
+    /// `match_making_params.map_name`, e.g. `level_01/day_2`).
     pub fn has_project(&self, project: &str) -> bool {
-        self.projects.contains(project)
+        self.projects.contains_key(project)
     }
 
-    /// How many `gameplay/` files there are.
+    /// What the data has of the project `project`: its `client_project`
+    /// cut to its `server_objects`, a binary config.
+    pub fn project(&self, project: &str) -> Option<&[u8]> {
+        self.projects.get(project).map(Vec::as_slice)
+    }
+
+    /// This data with `files` over it, as a patch lays its files: a file
+    /// of `gameplay/` or a localization by its path, a project as
+    /// `projects/<project>/client_project` (what the data keeps of one:
+    /// [`resources_db::server::server_objects_of`]). Tests make up data so.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn laid_over(&self, origin: &str, files: Vec<(String, Vec<u8>)>) -> Self {
+        let mut data = Self {
+            origin: origin.to_owned(),
+            provenance: self.provenance.clone(),
+            files: self.files.clone(),
+            projects: self.projects.clone(),
+        };
+        for (path, bytes) in files {
+            let project = path
+                .strip_prefix(PROJECTS)
+                .and_then(|path| path.strip_suffix(PROJECT_MARKER));
+            match project {
+                Some(project) => data.projects.insert(project.to_owned(), bytes),
+                None => data.files.insert(path, bytes),
+            };
+        }
+        data
+    }
+
+    /// How many files there are: of `gameplay/`, and the localizations.
     pub fn len(&self) -> usize {
         self.files.len()
     }
@@ -172,6 +209,14 @@ impl GameData {
         }
         line
     }
+}
+
+/// The file at `path` of `archive`, which lists it.
+fn read<R: Read + Seek>(archive: &mut Archive<R>, path: &str) -> Result<Vec<u8>, GameDataError> {
+    archive
+        .read(path)
+        .map_err(|cause| error(format!("{path}: {cause}")))
+        .map(|bytes| bytes.expect("a listed file"))
 }
 
 static SHARED: OnceLock<GameData> = OnceLock::new();
@@ -221,7 +266,7 @@ pub fn init() -> Result<&'static GameData, GameDataError> {
     let data = shared();
     super::tables::check(data)?;
     log::info!(
-        "game data: {} ({} gameplay files, {} projects; made of {}; {} patch(es) offered at \
+        "game data: {} ({} gameplay and text files, {} projects; made of {}; {} patch(es) offered at \
          /patches)",
         data.origin,
         data.len(),

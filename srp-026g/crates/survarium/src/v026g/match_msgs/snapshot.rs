@@ -698,7 +698,8 @@ pub struct Respawn {
     /// respawn_points` of the mode's project: team 0's in config order,
     /// then team 1's, then team 2's), `m_inside_objects_count` of its two
     /// checkers [LIKELY allies, then enemies, in the point's zones]. Their
-    /// number is [`rules::respawn_points`].
+    /// number is the map's
+    /// [`MapMode::respawn_points`](super::super::maps::MapMode::respawn_points).
     pub points: Vec<[u8; 2]>,
 }
 
@@ -755,7 +756,8 @@ pub enum Battery {
     /// that player's block, `m_carried_item`).
     Carried,
     /// In the container with this id (`victory_items_containers[..].id` of
-    /// the map; whose it is: [`rules::container_teams`]).
+    /// the map; whose it is:
+    /// [`MapMode::container_teams`](super::super::maps::MapMode::container_teams)).
     InContainer(u8),
     /// Lying in the world.
     Free {
@@ -1676,10 +1678,14 @@ mod tests {
                 (5, 10)
             ]
         );
-        // The map's respawn points (`rules::respawn_points`).
+        // The map's respawn points (`MapMode::respawn_points`): level_07's
+        // in batteries.
+        let map = super::super::super::maps::playable_in(mode::BATTERIES)
+            .find(|map| map.level == 7)
+            .unwrap();
         assert_eq!(
             rules.respawn.as_ref().map(|respawn| respawn.points.len()),
-            rules::respawn_points(7, mode::BATTERIES)
+            Some(map.respawn_points)
         );
         let gather = rules.gather.expect("the gather rule");
         assert_eq!(gather.team_points, [9, 0]);

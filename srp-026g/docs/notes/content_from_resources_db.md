@@ -30,20 +30,22 @@ release machine):
 
 1. It lays the patches over `resources.db` in the game's order
    (`resources_db::overlay`), reading only their tables.
-2. It takes the files srp reads: every file under `gameplay/` and each
-   project's `client_project` (kept empty, srp only asks whether a project
-   is there), each from the archive whose file the game sees, and checks it
-   against that archive's table: its size, and the engine's CRC-32 of its
-   bytes.
-3. It adds `srp/provenance` (`skhid server game data 2`): `resources.db`
+2. It takes the files srp reads: every file under `gameplay/`, the English
+   and Ukrainian localizations (the names of the maps and modes on the web
+   page), and each project's `client_project` cut to its `server_objects`
+   (the respawn points and battery containers srp counts and reads; the
+   project's world is the client's), each from the archive whose file the
+   game sees, and checks it against that archive's table: its size, and the
+   engine's CRC-32 of its bytes.
+3. It adds `srp/provenance` (`skhid server game data 3`): `resources.db`
    (its name, size, sha256), and each patch with its name, size, sha256 and
    the URL the players' updater downloads it from.
 4. It writes them as an archive of the game's own format
    (`resources_db::write`; the same inputs give the same bytes).
 
-0.26g with the test patches 14, 15 and 16 gives 2 845 784 bytes (509
-`gameplay/` files, 73 projects) in about 5 s; that is the test data,
-`resources/game-026g/server-game-data.db`.
+0.26g with the test patches 14, 15 and 16 gives 6 496 917 bytes (509
+`gameplay/` files, 2 localizations, 73 projects) in about 6 s; that is the
+test data, `resources/game-026g/server-game-data.db`.
 
 ## How srp reads it
 
@@ -54,10 +56,13 @@ At start, before anything else, srp (`game_data::init`):
    provenance (`resources_db::server::read`); a missing variable, a missing
    or damaged file, or a file without the provenance of this format stops it
    with a message that says how to make the data;
-2. reads every `gameplay/` file and the projects (`game_data::GameData`);
+2. reads every `gameplay/` file, the localizations and the projects
+   (`game_data::GameData`); data 2, whose projects were empty, is refused by
+   its first line;
 3. builds every table from them and checks one file against another
    (`tables::check`): each item's config is there, each default
-   modification exists, ids once.
+   modification exists, ids once, every playable map's project has respawn
+   points and, in modes 2 and 3, the two teams' battery containers.
 
 The tables are then built from those files when first used. The web page
 answers `GET /patches` with the provenance's patches (`Provenance::offered`,

@@ -179,7 +179,8 @@ impl Walkers {
                 &roles,
                 Arc::new(tuning),
                 trace,
-            ),
+            )
+            .with_container_teams(formed.map.container_teams),
             maps,
             project,
             world: None,

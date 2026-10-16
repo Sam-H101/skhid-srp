@@ -38,19 +38,63 @@ fn patch(path: &Path) -> PatchFile {
     }
 }
 
+/// An archive of `list`, its files given as bytes.
+fn archive_of_bytes(list: &[(&str, &[u8])]) -> Vec<u8> {
+    let files: BTreeMap<String, Vec<u8>> = list
+        .iter()
+        .map(|(path, bytes)| ((*path).to_owned(), bytes.to_vec()))
+        .collect();
+    crate::write::write(&files).unwrap()
+}
+
+/// A `client_project` of `respawn_points` points, with a world srp does
+/// not read beside its `server_objects`; and what the data keeps of it.
+fn project(respawn_points: usize) -> (Vec<u8>, Vec<u8>) {
+    use binary_config_parser::tree::ConfigValue;
+    let point = ConfigValue::Named(vec![
+        ("team".into(), ConfigValue::Integer(1)),
+        ("position".into(), ConfigValue::Float3([1.0, 2.0, 3.0])),
+    ]);
+    let server_objects = (
+        SERVER_OBJECTS.to_owned(),
+        ConfigValue::Named(vec![(
+            "respawn_points".into(),
+            ConfigValue::Indexed(vec![point; respawn_points]),
+        )]),
+    );
+    let world = (
+        "collision_objects".to_owned(),
+        ConfigValue::Indexed(vec![ConfigValue::String("a wall".into()); 50]),
+    );
+    let whole = ConfigValue::Named(vec![world, server_objects.clone()]);
+    let kept = ConfigValue::Named(vec![server_objects]);
+    (whole.to_bytes().unwrap(), kept.to_bytes().unwrap())
+}
+
+/// A project of no `server_objects` (`lobby_scene`), and what is kept of
+/// it: a config of nothing.
+fn bare_project() -> (Vec<u8>, Vec<u8>) {
+    use binary_config_parser::tree::ConfigValue;
+    let whole = ConfigValue::Named(vec![("camera".into(), ConfigValue::Integer(1))]);
+    let kept = ConfigValue::Named(Vec::new());
+    (whole.to_bytes().unwrap(), kept.to_bytes().unwrap())
+}
+
 /// `resources.db` and patches 2 and 14 over it: an item changed by both,
-/// one added by each, a folder that only a patch has, files the server does
-/// not read.
+/// one added by each, a folder that only a patch has, a project in the db
+/// and one in patch 14, the English texts, files the server does not read.
 fn game(folder: &Folder) -> (PathBuf, PathBuf, PathBuf) {
     let db = folder.file(
         RESOURCES_DB,
-        &archive_of(&[
-            ("gameplay/db_static_dictionaries", "dictionary 0"),
-            ("gameplay/items/item.options", "item 0"),
-            ("gameplay/items/kept.options", "kept 0"),
-            ("projects/level_01/day/client_project", "project bytes"),
-            ("projects/level_01/day/level.bin", "not read"),
-            ("textures/a.dds", "not read"),
+        &archive_of_bytes(&[
+            ("gameplay/db_static_dictionaries", b"dictionary 0"),
+            ("gameplay/items/item.options", b"item 0"),
+            ("gameplay/items/kept.options", b"kept 0"),
+            ("projects/level_01/day/client_project", &project(3).0),
+            ("projects/level_01/day/level.bin", b"not read"),
+            ("localization/english/localization", b"english"),
+            ("localization/german/localization", b"not read"),
+            ("textures/a.dds", b"not read"),
         ]),
     );
     let two = folder.file(
@@ -63,10 +107,10 @@ fn game(folder: &Folder) -> (PathBuf, PathBuf, PathBuf) {
     );
     let fourteen = folder.file(
         "resources.db.patch_14",
-        &archive_of(&[
-            ("gameplay/items/item.options", "item 14"),
-            ("gameplay/items/armour/mask/new.options", "fourteen"),
-            ("projects/level_02/day/client_project", ""),
+        &archive_of_bytes(&[
+            ("gameplay/items/item.options", b"item 14"),
+            ("gameplay/items/armour/mask/new.options", b"fourteen"),
+            ("projects/level_02/day/client_project", &bare_project().0),
         ]),
     );
     (db, two, fourteen)
@@ -155,12 +199,17 @@ fn the_server_data_is_the_files_srp_reads_of_the_patches_over_the_db() {
         ("gameplay/items/item.options", "item 14"),
         ("gameplay/items/kept.options", "kept 0"),
         ("gameplay/items/two.options", "two"),
-        ("projects/level_01/day/client_project", ""),
-        ("projects/level_02/day/client_project", ""),
+        ("localization/english/localization", "english"),
     ]
     .into_iter()
     .map(|(path, bytes)| (path.to_owned(), bytes.as_bytes().to_vec()))
     .collect();
+    // The projects, cut to their server objects.
+    expected.insert("projects/level_01/day/client_project".into(), project(3).1);
+    expected.insert(
+        "projects/level_02/day/client_project".into(),
+        bare_project().1,
+    );
     expected.insert(PROVENANCE.into(), built.provenance.text().into_bytes());
     assert_eq!(files, expected);
     assert_eq!((built.gameplay, built.projects), (5, 2));
@@ -168,7 +217,7 @@ fn the_server_data_is_the_files_srp_reads_of_the_patches_over_the_db() {
         built.given,
         [
             Given {
-                files: 4,
+                files: 5,
                 replaced: 0
             },
             Given {
@@ -274,6 +323,29 @@ fn the_same_inputs_give_the_same_bytes_and_other_inputs_other_bytes() {
 }
 
 #[test]
+fn a_project_that_is_not_a_config_is_refused() {
+    let folder = Folder::new("bad-project");
+    let (db, _, _) = game(&folder);
+    for bytes in [&b""[..], b"project bytes", &project(2).0[..30]] {
+        let patch = folder.file(
+            "resources.db.patch_3",
+            &archive_of_bytes(&[("projects/level_03/day/client_project", bytes)]),
+        );
+        let message = build(&db, &[self::patch(&patch)]).unwrap_err().to_string();
+        assert!(
+            message.contains("resources.db.patch_3: projects/level_03/day/client_project:"),
+            "{message}"
+        );
+    }
+    // What is kept of a project reads as its server objects.
+    let kept = server_objects_of(&project(4).0).unwrap();
+    let kept = binary_config_parser::ConfigValue::parse(&kept).unwrap();
+    let points = kept.get(SERVER_OBJECTS).unwrap().get("respawn_points");
+    assert_eq!(points.unwrap().children().len(), 4);
+    assert!(kept.get("collision_objects").is_none());
+}
+
+#[test]
 fn what_the_game_would_not_mount_or_the_players_could_not_fetch_is_refused() {
     let folder = Folder::new("refused");
     let (db, two, fourteen) = game(&folder);
@@ -347,6 +419,8 @@ fn a_provenance_reads_back_and_a_wrong_one_is_refused() {
     for wrong in [
         String::new(),
         "skhid server game data 1\nplan none\n".into(),
+        // Data 2: its projects are empty.
+        format!("skhid server game data 2\ndb resources.db 10 {sha}\n"),
         format!("{FORMAT}\n"),
         format!("{FORMAT}\ndb resources.db 10 {}\n", "AB".repeat(32)),
         format!("{FORMAT}\ndb resources.db ten {sha}\n"),
@@ -643,7 +717,16 @@ fn the_server_data_of_0_26g_with_its_patches() {
         for file in read {
             let bytes = archive.read(&file).unwrap().unwrap();
             let kept = if file.starts_with(PROJECTS) {
-                Vec::new()
+                // Its server objects as the game has them.
+                let kept = server_objects_of(&bytes).unwrap();
+                let kept = binary_config_parser::ConfigValue::parse(&kept).unwrap();
+                let whole = binary_config_parser::ConfigValue::parse(&bytes).unwrap();
+                assert_eq!(
+                    kept.get(SERVER_OBJECTS),
+                    whole.get(SERVER_OBJECTS),
+                    "{file}"
+                );
+                server_objects_of(&bytes).unwrap()
             } else {
                 bytes
             };
