@@ -58,7 +58,7 @@ servers one port.
 | `servers/srp/src/v026g.rs` | Joins them: `Stack` (the three servers and the session collector, each on a supervised thread), `RegistryHost` (lobby → match server), `Settler` (match result → rewards → database → lobby), `WebLink` (web page → lobby) |
 | `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
 | `scripts/client-patch-026g/` | `patch_026g.py` (the client patch), `selftest_026g.py`, `make_client_026g.py` (the players' overlay) |
-| `crates/resources-db` | Reads `resources.db` and its patches (`resources.db.patch_<n>`), lays them over one another as the game mounts them, and `srp-game-data` builds the server's game data from them: the `gameplay/` files and the project markers, with what it was made of (`resources.db`, each patch with its URL). `srp` reads it at start (`SRP_GAME_DATA`). `crates/resources-db/README.md` |
+| `crates/resources-db` | Reads `resources.db` and its patches (`resources.db.patch_<n>`), lays them over one another as the game mounts them, and `srp-game-data` builds the server's game data from them: the `gameplay/` files, the English and Ukrainian localizations and each project's `server_objects`, with what it was made of (`resources.db`, each patch with its URL). `srp` reads it at start (`SRP_GAME_DATA`). `crates/resources-db/README.md` |
 | `resources/game-026g/` | The server's game data of tests and tools: 0.26g's `resources.db` with the test patches 14 to 16 |
 
 ## How a player gets into a match
@@ -123,17 +123,23 @@ the stock `resources.db` and every `resources.db.patch_<n>` over it, n
 ascending, a later file over an earlier one (client patch revision 12). It
 reads them from the server's game data (`server-game-data.db`), which
 `srp-game-data build` makes of exactly those archives (`crates/resources-db`,
-`server`): the files srp reads (every `gameplay/` file and the project
-markers), each checked against its archive's file table, and
+`server`): the files srp reads (every `gameplay/` file, the English and
+Ukrainian localizations, and each project's `client_project` cut to its
+`server_objects`), each checked against its archive's file table, and
 `srp/provenance`, what it was made of: `resources.db`, and each patch with
 its sha256 and the URL the players download it from. From its `gameplay/`
 files srp derives the dictionary, every item's parameters and the slots it
-covers, what it may be modified with, the game modes, the player's carry
+covers, what it may be modified with, the game modes and every map: which
+ids can be played (a mode srp plays, its config and its project: no level is
+known to the code, so a map a patch adds is played on the data that has it),
+each project's respawn points and whose its battery containers are, and the
+names the web page gives maps and modes (the localizations), the player's carry
 limits, and the modification, craft, reroll, drop, quest, skill, award and
 test-profile files (`tables.rs` checks them against each other). So it
-cannot know an item, or a value of one, the players' game does not. What the
-game's files do not say stays in code: the shop's exceptions (`prices.rs`),
-a project's respawn points, the bundles.
+cannot know an item, a map, or a value of one, the players' game does not.
+What the game's files do not say stays in code: the shop's exceptions
+(`prices.rs`), the bundles, and the maps offered against bots (`pvb.rs`
+`MAPS`, the maps the bots' map files exist for).
 
 | Variable | Default | What |
 |---|---|---|

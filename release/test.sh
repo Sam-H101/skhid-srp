@@ -429,7 +429,10 @@ changed_env() { # <sed expressions>: a copy of release.env changed so; prints it
 mkdir -p "$T/stock/gameplay/items" "$T/stock/projects/p/day"
 echo "dictionary" >"$T/stock/gameplay/db_static_dictionaries"
 echo "old item" >"$T/stock/gameplay/items/a.options"
-: >"$T/stock/projects/p/day/client_project"
+# A project of nothing: a binary config of an empty table (srp-game-data
+# keeps a project cut to its server objects, and refuses one that is not a
+# config).
+printf '\x18\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x03\0\0\0' >"$T/stock/projects/p/day/client_project"
 "$bin" pack --dir "$T/stock" --out "$T/resources.db" >/dev/null
 
 # build-patch

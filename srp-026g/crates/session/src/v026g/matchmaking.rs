@@ -124,7 +124,7 @@ pub fn match_level(levels: &[u8]) -> u16 {
 }
 
 /// How many matches the account was put in on the map `level`
-/// (`maps::MapMode::level`, 1..=9).
+/// (`maps::MapMode::level`, a number of the game data's).
 pub fn map_plays(account: &Account, level: u8) -> u32 {
     account
         .map_plays
@@ -207,8 +207,21 @@ fn level_weights(levels: &[u8], plays: impl Fn(u8) -> u64, players: usize, skew:
 /// `plays` is all the matches of the match's `players` on a level), then a
 /// mode the pool has for it, then one of that mode's ids (the weather).
 /// `below(n)` draws a number under `n`. `None` when the pool has no
-/// playable id.
+/// playable id. The ids are those of the game data ([`maps::all`]).
 pub fn choose_map(
+    pool: &[u8],
+    plays: impl Fn(u8) -> u64,
+    players: usize,
+    skew: f64,
+    below: impl FnMut(u32) -> u32,
+) -> Option<u8> {
+    choose_map_in(maps::all(), pool, plays, players, skew, below)
+}
+
+/// [`choose_map`] of the ids of `table` (a game data's,
+/// [`maps::derive`]).
+pub fn choose_map_in(
+    table: &[maps::MapMode],
     pool: &[u8],
     plays: impl Fn(u8) -> u64,
     players: usize,
@@ -217,7 +230,7 @@ pub fn choose_map(
 ) -> Option<u8> {
     let pool: Vec<&maps::MapMode> = pool
         .iter()
-        .filter_map(|&id| maps::map_mode(id))
+        .filter_map(|&id| table.iter().find(|map| map.id == id))
         .filter(|map| map.is_playable())
         .collect();
     let mut levels: Vec<u8> = pool.iter().map(|map| map.level).collect();
@@ -633,6 +646,66 @@ mod tests {
         assert_eq!(
             counts.into_iter().collect::<Vec<_>>(),
             [(1, 1000), (2, 2000)]
+        );
+    }
+
+    #[test]
+    fn a_map_of_a_patch_is_drawn_like_any_other() {
+        // Game data with a Team Deathmatch map of a level 12, which no code
+        // names (`maps::fixtures`).
+        use maps::fixtures::{AddedMap, table_of, with_map};
+        let added = AddedMap::level_12_tdm();
+        let table = table_of(&with_map(&added)).unwrap();
+        let in_mode = |game_mode: u8| -> Vec<u8> {
+            table
+                .iter()
+                .filter(|map| map.is_playable() && map.mode == game_mode)
+                .map(|map| map.id)
+                .collect()
+        };
+        let tdm = in_mode(maps::mode::TEAM_DEATHMATCH);
+        assert!(tdm.contains(&added.id));
+        // Its players never played it: it is drawn, and the likeliest
+        // level, all others played as much.
+        let plays = |level: u8| if level == 12 { 0 } else { 10 };
+        let mut total = 0;
+        choose_map_in(&table, &tdm, plays, 1, DEFAULT_MAP_SKEW, |bound| {
+            total = total.max(bound);
+            0
+        });
+        let mut drawn = BTreeMap::<u8, u32>::new();
+        for number in 0..total {
+            let mut first = true;
+            let below = |_| {
+                if std::mem::take(&mut first) {
+                    number
+                } else {
+                    0
+                }
+            };
+            let id = choose_map_in(&table, &tdm, plays, 1, DEFAULT_MAP_SKEW, below).unwrap();
+            let map = table.iter().find(|map| map.id == id).unwrap();
+            *drawn.entry(map.level).or_default() += 1;
+        }
+        assert_eq!(drawn.len(), 9, "{drawn:?}");
+        assert_eq!(drawn[&12], 2000);
+        assert!(
+            drawn
+                .iter()
+                .all(|(&level, &count)| level == 12 || count == 1000)
+        );
+        // A pool of the batteries has no level 12: it is Team Deathmatch only.
+        let batteries = in_mode(maps::mode::BATTERIES);
+        assert!(!batteries.contains(&added.id));
+        for number in 0..100 {
+            let id =
+                choose_map_in(&table, &batteries, |_| 0, 1, 0.0, |bound| number % bound).unwrap();
+            assert_ne!(table.iter().find(|map| map.id == id).unwrap().level, 12);
+        }
+        // The data without the map does not know its id.
+        assert_eq!(
+            choose_map(&[added.id], |_| 0, 1, DEFAULT_MAP_SKEW, |_| 0),
+            None
         );
     }
 

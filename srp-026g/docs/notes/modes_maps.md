@@ -44,6 +44,7 @@ PROVEN from `projects/*` and `gameplay/game_modes/*.options` (`match_making_para
 | 6 | level_06 | Mamayev Kurgan | same | yes |
 | 7 | level_07 | Vector Laboratory | same | **new** |
 | 8 | level_08 | Cologne | day/evening/prerain × _2 _3 _4 | **new** |
+| 9 | level_09 | London (skhid's `resources.db.patch_14`, ids 181 to 183) | day × _2 _3 _4 | — |
 | 88 | test/tt5, test/tdm_test, test/artefact_testlevel | test maps | **no `projects/test/*` in the db** | — |
 
 - `lobby_scene/day` still exists (client only). PROVEN.
@@ -63,6 +64,7 @@ PROVEN from `projects/*` and `gameplay/game_modes/*.options` (`match_making_para
 | level_06 | 20 (10/10), 32, 2 | 30 (14/16), 32, 2 | 30, 4, 24 | 30 (14/16) |
 | level_07 | — | 31 (16/15), 39, 2 | 31, 3, 18 | 31 (16/15) |
 | level_08 | — | 26 (13/13), 22, 2 | 26, 2, 16 | 26 (13/13) |
+| level_09 (London) | — | 20, 2 (container 0 is team 1's) | 20 | 20 |
 
 - Every map has ≥ 13 respawn points per team in every mode, so the 0.21d "≤ 10 per team" guidance still holds; mode 4 has no containers or spawners. PROVEN (counts); team cap LIKELY 10 (20 profiles in match_options per sibling).
 - Respawn point gained `invulnerability_time` (6), `enemy_check_radius` (1.2), `ally_check_radius` (0.8), `is_temporary`. PROVEN (`projects/level_01/day_3/client_project`).
@@ -227,3 +229,39 @@ Only the 11-byte statistics tail: `m_team_points[2]` (batteries or tickets) and 
 
 - "The consumer of `rule_completed` … was not traced": the world's save asks every rule (slot 18) and writes the answer into the history item at +0xC0BBA (0x2D271D..0x2D2755); nothing in the client reads that byte. The end of a match is the server's.
 - "Ignored once the rule has completed" has a second half: at the completion the rule also clears its byte +0x160, and from then on no container can be used (match.md §26). Neither is taken back by a rollback, which is why the tenth battery does not go in while anybody else sends inputs.
+
+## 12. What srp reads of the maps (added 2026-10-16)
+
+srp knows no level, id or count of these sections beforehand: it derives
+them from the server's game data when the map table is first used
+(`crates/survarium/src/v026g/maps.rs`, `maps::derive`), so a map a patch adds
+is played as soon as the server runs on data with it.
+
+- **Playable** (`MapMode::is_playable`): the data has the id's config
+  (`maps_dict` → `gameplay/game_modes/<cfg_mode_name>`), its `mode.mode` is
+  one srp plays (2, 3 or 4), and the data has its project
+  (`match_making_params.map_name`). No range of levels: on 0.26g's data that
+  is the 72 ids of §3; with London 75 (181, 182, 183).
+- **From the project** (`server_objects` of `client_project`, which the server
+  data keeps of every project: `resources_db::server::server_objects_of`):
+  `MapMode::respawn_points`, every entry of `respawn_points` (§2's table, the
+  number of pairs the respawn rule writes, snapshot_rules.md §2.3), and in
+  modes 2 and 3 `MapMode::container_teams`, `victory_items_containers[..].team`
+  by `id`. A playable id whose project has no respawn point, or (modes 2 and 3)
+  not two containers of ids 0 and 1, one of each team, stops srp at start.
+- **Names** (srp's web page): `ui.map_name` and `ui.mode_name` of the config
+  (`st_level_0N_name`, `st_mode_0N_name`) in the game's English and Ukrainian
+  localizations (`localization/<language>/localization`, kept in the server
+  data; `survarium::v026g::localization`), else English, else the project's
+  folder.
+- Checked: on the test data (0.26g) the projects give the hand tables srp had
+  before for every level 1 to 8 (`maps::tests::the_projects_give_what_srp_had_by_hand`);
+  on 0.26g with skhid's patches 12 and 14 the playable ids are the 72 and 181
+  to 183, every value as before, London 20 respawn points in each mode and
+  container 0 team 1's, named "London" / "Лондон" (an ignored test:
+  `SRP_TEST_RESOURCES_DB=<…>/resources.db SRP_TEST_SKHID_PATCHES="<…>/resources.db.patch_12
+  <…>/resources.db.patch_14" cargo test --release -p survarium -- --ignored
+  the_live_data`). A made-up
+  map of a level 12 with Team Deathmatch only is played in mode 4 alone, with
+  its project's respawn points, and drawn by the matchmaker
+  (`maps::fixtures`).

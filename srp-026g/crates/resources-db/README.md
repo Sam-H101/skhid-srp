@@ -122,8 +122,17 @@ srp reads, of the archive the players mount:
   (`gameplay/players/default.player`), drops, quests, the skills tree, the
   unique awards, the test profiles, the bundles. The whole folder (4 MB), so
   an item a patch adds comes with its config without a list to keep;
-- each project's marker `projects/<project>/client_project`, kept empty:
-  srp only asks whether a map's project is there;
+- the game's texts in the languages of srp's web page,
+  `localization/english/localization` and `localization/ukrainian/localization`
+  (`server::LOCALIZATIONS`): the names of the maps and modes it shows;
+- each project's `projects/<project>/client_project`, cut to its
+  `server_objects` (`server::server_objects_of`): a binary config of that one
+  table as the project has it (its respawn points, battery containers,
+  spawners and stations), or of none for a project without it
+  (`lobby_scene/day`). srp counts a map's respawn points and reads its battery
+  containers' teams there; the rest of a project, its world, is the client's
+  (0.26g's 73 projects are 60 MB, their server objects about 3 MB). A project that
+  is not a binary config stops the build;
 - and the data adds `srp/provenance`.
 
 ## Provenance
@@ -131,7 +140,7 @@ srp reads, of the archive the players mount:
 `srp/provenance` in the output, text, fields by one space:
 
 ```
-skhid server game data 2
+skhid server game data 3
 db resources.db 6285533906 c74078be702d17113b9ca23f59aa2b0087238481e7f01fb793620d51d875492c
 patch resources.db.patch_14 43691157 7535d0d0…d4c6c3 http://203.0.113.5/patches/resources.db.patch_14
 patch resources.db.patch_15 46429158 191b24fb…b993ea0 http://203.0.113.5/patches/resources.db.patch_15
@@ -153,7 +162,8 @@ provenance and so other bytes.
 over an earlier one, new files, folders merging over three archives, a file
 over a folder or an empty folder refused, the empty folders no archive
 fills, patches given out of order, gaps in the numbers, the names the game
-does not mount, the same bytes twice, other bytes for another URL or patch,
+does not mount, a project cut to its server objects and one that is not a
+config refused, the same bytes twice, other bytes for another URL or patch,
 the provenance read back and wrong ones refused, a file unlike its table
 refused), resource-porter's `tests/fixture.db` for the reader (damaged
 tables, a short header, sizes past the end of the file refused before
@@ -189,11 +199,11 @@ cargo test --release -p resources-db -- --ignored --nocapture
 names its folder as `write` does. `the_server_data_of_0_26g_with_its_patches`
 builds the data of 0.26g's archive with patches 14 (menus), 15 (the Bandit
 balaclava 1810) and 16 (the SVD's damage) and compares every file with the
-archives read one over the other again: 2 845 784 bytes, 509 `gameplay/`
-files and 73 projects (581 files from `resources.db`, 0 from patch 14, 2 from
-15 of which 1 over the stock dictionary, 1 from 16 over the stock SVD), in
-under 5 s with the archives cached, and the same bytes twice. With the URLs
-above its sha256 is `5a712084…0c8ebc`. With the old `srp/provenance` of the
-scratch build in its place (`skhid server game data 1` / `plan none`), the
-same files give byte for byte the scratch `server-game-data.db` (sha256
-`072cb41a…cf806`) made earlier with the two writer fixes.
+archives read one over the other again (each project cut to its server
+objects, which read back as the project's own): 6 496 917 bytes, 509
+`gameplay/` files, the 2 localizations and 73 projects (583 files from
+`resources.db`, 0 from patch 14, 4 from 15 of which 3 over the stock
+dictionary and localizations, 1 from 16 over the stock SVD), in about 6 s
+with the archives cached, and the same bytes twice. With the URLs above its
+sha256 is `edad431e…458ebb30`. (Data 2, of empty projects and no
+localizations, was 2 845 784 bytes, `5a712084…0c8ebc`.)

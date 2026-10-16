@@ -460,6 +460,10 @@ pub struct Bots {
     level: u8,
     /// The mode's id (2 batteries, 3 timed batteries, 4 TDM).
     mode: u8,
+    /// Whose the battery containers are, by id, as the server's game
+    /// data has the map (`MapMode::container_teams`); without it, as the
+    /// built map has them ([`Self::with_container_teams`]).
+    container_teams: Option<[u8; 2]>,
     /// The static info's seed (`registry::static_id`): every anomaly's
     /// random stream starts from it (`anomalies.rs`).
     static_seed: u32,
@@ -522,6 +526,7 @@ impl Bots {
         Self {
             level,
             mode,
+            container_teams: None,
             static_seed: crate::v026g::registry::static_id(match_id),
             tracker: Tracker::new(mode, teams, driven, Vec::new()),
             tactics: None,
@@ -540,6 +545,14 @@ impl Bots {
             kit_choices: Vec::new(),
             _search_memory: SearchMemory::hold(),
         }
+    }
+
+    /// The map's battery containers' teams by container id, as the
+    /// server's game data has them (`MapMode::container_teams`): they win
+    /// over the built map's, which may be of other data.
+    pub fn with_container_teams(mut self, teams: Option<[u8; 2]>) -> Self {
+        self.container_teams = teams;
+        self
     }
 
     /// The kit choices the bots made since the last call: each place and
@@ -609,7 +622,7 @@ impl Bots {
         // cloud) run on the match clock from the seed.
         let anomalies = anomalies::Anomalies::new(&tactics.world.map, self.static_seed);
         tactics.hazards.attach(anomalies);
-        let teams = survarium::v026g::match_msgs::rules::container_teams(self.level);
+        let teams = self.container_teams;
         let mut containers: Vec<(u8, Vec3)> = Vec::new();
         for container in &tactics.world.map.containers {
             let id = container.id.max(0) as usize;

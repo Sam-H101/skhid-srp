@@ -4,13 +4,20 @@
 //! A 0.26g match names its map, weather and mode by one byte: an id of
 //! `maps_dict` in the client's own `gameplay/db_static_dictionaries`, which
 //! names a file under `gameplay/game_modes/`. That file holds the mode, its
-//! rules and every timing, and the project the client loads. The server
-//! sends only the id, so its own clock and scores must use the same values:
-//! the table here is derived from the players' files when first used
-//! ([`all`], [`super::game_data`]).
+//! rules and every timing, the names the client shows, and the project the
+//! client loads. The server sends only the id, so its own clock and scores
+//! must use the same values: the table here is derived from the players'
+//! files when first used ([`all`], [`super::game_data`]), and so is what
+//! the server needs of each project: how many respawn points it has and
+//! whose its battery containers are (its `server_objects`).
 //!
-//! Of the 89 ids, 72 can be played ([`playable`]): modes 2, 3 and 4 on
-//! eight maps in three weathers. The rest must never be sent:
+//! An id can be played ([`MapMode::is_playable`]) when the game data has
+//! its config, the config is of a mode srp plays (2, 3 or 4) and the data
+//! has its project. No level or id is known here beforehand: a map a patch
+//! adds is played as soon as the server runs on the data with it. Of
+//! 0.26g's 89 ids, 72 can be played (modes 2, 3 and 4 of its maps in their
+//! weathers); with London (`level_09`, patch 14 of skhid) 75. The others
+//! must never be sent:
 //! - 114 and 143..=151 name a config the client does not have ("Wrong map
 //!   config. Map id = %u", 0x2C9D18);
 //! - 107 and 108 (level_08 at night) and the test maps 11, 45 and 115 name a
@@ -21,6 +28,9 @@ use binary_config_parser::tree::{ConfigError, ConfigValue};
 
 use super::dictionary::Dictionary;
 use super::game_data::{GameData, GameDataError};
+
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixtures;
 
 /// Where `maps_dict`'s `cfg_mode_name` is.
 pub const GAME_MODES_DIR: &str = "gameplay/game_modes/";
@@ -35,6 +45,8 @@ pub mod mode {
     pub const TEAM_DEATHMATCH: u8 = 4;
     /// The modes a match can be.
     pub const ALL: [u8; 3] = [BATTERIES, TIMED_BATTERIES, TEAM_DEATHMATCH];
+    /// The modes whose maps have the teams' battery containers.
+    pub const WITH_BATTERIES: [u8; 2] = [BATTERIES, TIMED_BATTERIES];
 }
 
 /// `match_making_params.map_weather_id`.
@@ -46,8 +58,8 @@ pub mod weather {
     pub const PRERAIN: u8 = 5;
 }
 
-/// One `maps_dict` id and its `gameplay/game_modes/` config. A parameter the
-/// config lacks is 0.
+/// One `maps_dict` id and its `gameplay/game_modes/` config, with what the
+/// server reads of its project. A parameter the config lacks is 0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapMode {
     /// The `maps_dict` id: the match options' `u8 map_id`.
@@ -58,18 +70,23 @@ pub struct MapMode {
     pub name: &'static str,
     /// `mode.mode` ([`mode`]).
     pub mode: u8,
-    /// `match_making_params.map_id`: 1..=8 are level_01..=level_08, 9 is
-    /// London (level_09, resources.db.patch_13), 88 the test maps.
+    /// `match_making_params.map_id`: the map, whatever the weather and mode
+    /// (`level_0N` is N; the test maps are 88). A number of the data's.
     pub level: u8,
     /// `match_making_params.map_weather_id` ([`weather`]).
     pub weather: u8,
     /// `match_making_params.map_name`: the project under `projects/`.
     pub project: &'static str,
-    /// Whether `resources.db` has that project's `client_project`.
+    /// Whether the game data has that project's `client_project`.
     pub has_project: bool,
     /// `ui.loading_screen_id` and `ui.icon`.
     pub loading_screen_id: u8,
     pub icon: u8,
+    /// `ui.map_name` and `ui.mode_name`: the keys of the map's and the
+    /// mode's names in the game's localizations (`st_level_01_name`,
+    /// `st_mode_04_name`; [`super::localization`]).
+    pub map_name_key: &'static str,
+    pub mode_name_key: &'static str,
     /// `rules`: the rule resource classes the client loads.
     pub rules: &'static [u8],
     /// Seconds a match lasts.
@@ -90,15 +107,26 @@ pub struct MapMode {
     pub spawn_points_count: u32,
     /// Mode 4: a team's tickets.
     pub tickets_count: u32,
+    /// How many respawn points the project has: every entry of its
+    /// `server_objects.respawn_points`, whatever its team or layer, is
+    /// loaded (`player_respawn_rule_cook` 0x2C6910), so this is how many
+    /// pairs of bytes the respawn rule writes into a snapshot
+    /// (snapshot_rules.md §2.3). PROVEN (code and data). 0 without a
+    /// project.
+    pub respawn_points: usize,
+    /// Modes 2 and 3: whose the two battery containers are, by container
+    /// id: `victory_items_containers[..].team` of the project by its `id`.
+    /// PROVEN (data). A battery's container id in a snapshot is this id,
+    /// not the team. `None` in mode 4 and without a project.
+    pub container_teams: Option<[u8; 2]>,
 }
 
 impl MapMode {
-    /// Whether a match can be played on it: a real mode, on a map whose
-    /// project the client has. Level 9 is London: its modes and projects
-    /// come with resources.db.patch_13 (day only), so the stock data has no
-    /// level 9 to play.
+    /// Whether a match can be played on it: a mode srp plays ([`mode::ALL`]),
+    /// on a map whose project the game data has. Its config is there, or
+    /// it would have no row.
     pub fn is_playable(&self) -> bool {
-        self.has_project && mode::ALL.contains(&self.mode) && (1..=9).contains(&self.level)
+        self.has_project && mode::ALL.contains(&self.mode)
     }
 }
 
@@ -117,16 +145,83 @@ fn leak_str(text: &str) -> &'static str {
     Box::leak(text.to_owned().into_boxed_str())
 }
 
+/// What the server reads of a project (its `client_project`, or the
+/// server data's cut of it: [`resources_db::server::server_objects_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProjectObjects {
+    /// [`MapMode::respawn_points`].
+    pub respawn_points: usize,
+    /// The battery containers' teams by container id, if the project has
+    /// containers ([`MapMode::container_teams`]).
+    pub container_teams: Option<[u8; 2]>,
+}
+
+impl ProjectObjects {
+    /// The respawn points and the battery containers of the project
+    /// `project`, a parsed `client_project`. Containers there must be two,
+    /// ids 0 and 1, of teams 0 and 1, one each: the gather rules and the
+    /// scores know no other.
+    /// `with_batteries`: the containers are read (and must be one of each
+    /// team) only for a mode that has batteries; a Team Deathmatch project
+    /// copied from a batteries one may keep containers it never uses.
+    pub fn from_project(project: &ConfigValue, with_batteries: bool) -> Result<Self, ConfigError> {
+        let objects = project.get("server_objects");
+        let respawn_points = objects
+            .and_then(|objects| objects.get("respawn_points"))
+            .map_or(0, |points| points.children().len());
+        let containers = objects
+            .filter(|_| with_batteries)
+            .and_then(|objects| objects.get("victory_items_containers"))
+            .map(ConfigValue::children)
+            .unwrap_or_default();
+        let container_teams = if containers.is_empty() {
+            None
+        } else {
+            let mut teams: [Option<u8>; 2] = [None, None];
+            for container in &containers {
+                let id = container.i32_at("id")?;
+                let team = container.i32_at("team")?;
+                let place = usize::try_from(id)
+                    .ok()
+                    .filter(|&id| id < 2)
+                    .ok_or_else(|| ConfigError(format!("a battery container has id {id}")))?;
+                if !(0..2).contains(&team) {
+                    return Err(ConfigError(format!(
+                        "battery container {id} is of team {team}"
+                    )));
+                }
+                if teams[place].replace(team as u8).is_some() {
+                    return Err(ConfigError(format!("two battery containers have id {id}")));
+                }
+            }
+            match teams {
+                [Some(first), Some(second)] if first != second => Some([first, second]),
+                _ => {
+                    return Err(ConfigError(format!(
+                        "the battery containers are not one of each team: {teams:?}"
+                    )));
+                }
+            }
+        };
+        Ok(Self {
+            respawn_points,
+            container_teams,
+        })
+    }
+}
+
 impl MapMode {
     /// The row of a `maps_dict` id's config (`gameplay/game_modes/`
-    /// `cfg_mode_name`); whether the archive has its project is the
-    /// caller's to know. The strings are leaked: the rows live as long as
-    /// the process.
+    /// `cfg_mode_name`) and what the server reads of its project, if the
+    /// data has the project ([`ProjectObjects::from_project`]). A playable
+    /// id ([`MapMode::is_playable`]) must have a respawn point, and one of
+    /// modes 2 and 3 the two teams' battery containers. The strings are
+    /// leaked: the rows live as long as the process.
     pub fn from_config(
         id: u8,
         cfg_mode_name: &str,
         config: &ConfigValue,
-        has_project: bool,
+        project: Option<&ConfigValue>,
     ) -> Result<Self, ConfigError> {
         let mode = config.req("mode")?;
         let p = mode.get("parameters");
@@ -159,17 +254,29 @@ impl MapMode {
                 .as_f32()
                 .ok_or_else(|| ConfigError("`wait_player_percent` is not a number".into()))?,
         };
-        Ok(Self {
+        let game_mode: u8 = int(Some(mode), "mode")?;
+        let objects = project
+            .map(|project| {
+                ProjectObjects::from_project(project, mode::WITH_BATTERIES.contains(&game_mode))
+            })
+            .transpose()?
+            .unwrap_or(ProjectObjects {
+                respawn_points: 0,
+                container_teams: None,
+            });
+        let row = Self {
             id,
             config: leak_str(cfg_mode_name),
             name: text(Some(mode), "name")?,
-            mode: int(Some(mode), "mode")?,
+            mode: game_mode,
             level: int(making, "map_id")?,
             weather: int(making, "map_weather_id")?,
             project: text(making, "map_name")?,
-            has_project,
+            has_project: project.is_some(),
             loading_screen_id: int(ui, "loading_screen_id")?,
             icon: int(ui, "icon")?,
+            map_name_key: text(ui, "map_name")?,
+            mode_name_key: text(ui, "mode_name")?,
             rules: if rules.is_empty() {
                 &[]
             } else {
@@ -185,7 +292,26 @@ impl MapMode {
             vi_spawn_variation: int(p, "vi_spawn_variation")?,
             spawn_points_count: int(p, "spawn_points_count")?,
             tickets_count: int(p, "tickets_count")?,
-        })
+            respawn_points: objects.respawn_points,
+            container_teams: objects
+                .container_teams
+                .filter(|_| mode::WITH_BATTERIES.contains(&game_mode)),
+        };
+        if row.is_playable() {
+            if row.respawn_points == 0 {
+                return Err(ConfigError(format!(
+                    "its project {} has no respawn points",
+                    row.project
+                )));
+            }
+            if mode::WITH_BATTERIES.contains(&row.mode) && row.container_teams.is_none() {
+                return Err(ConfigError(format!(
+                    "its project {} has no battery containers, and it is mode {}",
+                    row.project, row.mode
+                )));
+            }
+        }
+        Ok(row)
     }
 }
 
@@ -198,9 +324,9 @@ pub fn all() -> &'static [MapMode] {
 }
 
 /// A row for each `maps_dict` id of `dictionary` whose config `data` has,
-/// by id. An id whose config the game lacks is left out, and so never sent
-/// (114 and 143..=151 of 0.26g); `has_project` is whether `data` has the
-/// config's project.
+/// by id, with what the server reads of its project if `data` has it
+/// ([`MapMode::from_config`]). An id whose config the game lacks is left
+/// out, and so never sent (114 and 143..=151 of 0.26g).
 pub fn derive(data: &GameData, dictionary: &Dictionary) -> Result<Vec<MapMode>, GameDataError> {
     let mut rows = Vec::new();
     for entry in &dictionary.maps {
@@ -208,19 +334,25 @@ pub fn derive(data: &GameData, dictionary: &Dictionary) -> Result<Vec<MapMode>, 
         let Some(config) = super::game_data::config(data, &path)? else {
             continue;
         };
-        let project = config
+        let project_name = config
             .get("mode")
             .and_then(|mode| mode.get("match_making_params"))
             .and_then(|making| making.get("map_name"))
             .and_then(ConfigValue::as_str)
             .unwrap_or("");
-        let row = MapMode::from_config(
-            entry.id,
-            &entry.cfg_mode_name,
-            &config,
-            data.has_project(project),
-        )
-        .map_err(|cause| GameDataError(format!("{path}: {}", cause.0)))?;
+        let project = data
+            .project(project_name)
+            .map(|bytes| {
+                ConfigValue::parse(bytes).map_err(|cause| {
+                    GameDataError(format!(
+                        "projects/{project_name}/client_project: {}",
+                        cause.0
+                    ))
+                })
+            })
+            .transpose()?;
+        let row = MapMode::from_config(entry.id, &entry.cfg_mode_name, &config, project.as_ref())
+            .map_err(|cause| GameDataError(format!("{path}: {}", cause.0)))?;
         rows.push(row);
     }
     rows.sort_by_key(|row| row.id);
@@ -251,7 +383,7 @@ pub fn playable_in(mode: u8) -> impl Iterator<Item = &'static MapMode> {
     playable().filter(move |map| map.mode == mode)
 }
 
-/// The id for a level (1..=8), weather and mode, if it can be played.
+/// The id for a level, weather and mode, if it can be played.
 pub fn find(level: u8, weather: u8, mode: u8) -> Option<&'static MapMode> {
     playable().find(|map| (map.level, map.weather, map.mode) == (level, weather, mode))
 }
@@ -379,6 +511,243 @@ mod tests {
             } else {
                 assert_eq!((map.vi_spawn_time, map.spawn_points_count), (0, 0));
             }
+        }
+    }
+
+    /// What srp had by hand before it read the projects, levels 1 to 9:
+    /// the respawn points of modes 2 and 3 and of mode 4, and the battery
+    /// containers' teams by id.
+    const GATHER_BEFORE: [usize; 9] = [39, 30, 28, 36, 29, 30, 31, 26, 20];
+    const TDM_BEFORE: [usize; 9] = [43, 31, 22, 75, 29, 30, 31, 26, 20];
+    fn teams_before(level: u8) -> [u8; 2] {
+        if matches!(level, 2 | 7) {
+            [0, 1]
+        } else {
+            [1, 0]
+        }
+    }
+
+    /// Every playable row of `table` of a level of 1 to 9 has what srp
+    /// had by hand.
+    fn as_before(table: &[MapMode]) {
+        for map in table.iter().filter(|map| map.is_playable()) {
+            let level = usize::from(map.level);
+            assert!((1..=9).contains(&level), "{}", map.id);
+            let (points, teams) = match map.mode {
+                mode::TEAM_DEATHMATCH => (TDM_BEFORE[level - 1], None),
+                _ => (GATHER_BEFORE[level - 1], Some(teams_before(map.level))),
+            };
+            assert_eq!(map.respawn_points, points, "{} ({})", map.id, map.project);
+            assert_eq!(map.container_teams, teams, "{} ({})", map.id, map.project);
+        }
+    }
+
+    #[test]
+    fn the_projects_give_what_srp_had_by_hand() {
+        // The test data: 0.26g's maps, levels 1 to 8, all 72.
+        assert_eq!(playable().count(), 72);
+        as_before(all());
+        // Spot checks: level_04's Team Deathmatch has 75 points (39 of
+        // layer `tdm`), level_02's 31 (one of team 2).
+        assert_eq!(find(4, weather::RAIN, 4).unwrap().respawn_points, 75);
+        assert_eq!(find(2, weather::DAY, 4).unwrap().respawn_points, 31);
+        assert_eq!(
+            find(7, weather::DAY, 3).unwrap().container_teams,
+            Some([0, 1])
+        );
+        // Without a project, nothing: level_08 at night.
+        let night = map_mode(107).unwrap();
+        assert_eq!((night.respawn_points, night.container_teams), (0, None));
+        // The names are the localizations' keys.
+        let map = map_mode(61).unwrap();
+        assert_eq!(
+            (map.map_name_key, map.mode_name_key),
+            ("st_level_01_name", "st_mode_02_name")
+        );
+    }
+
+    #[test]
+    fn a_map_of_a_patch_is_played_from_its_data() {
+        // Team Deathmatch on a level 12, a map no code names.
+        let added = fixtures::AddedMap::level_12_tdm();
+        let data = fixtures::with_map(&added);
+        let table = fixtures::table_of(&data).unwrap();
+        // The stock rows are as they were; the map is one more.
+        assert_eq!(table.len(), all().len() + 1);
+        let map = *table.iter().find(|map| map.id == added.id).unwrap();
+        assert_eq!(
+            table.iter().filter(|row| row.id != added.id).count(),
+            all().len()
+        );
+        assert!(
+            table
+                .iter()
+                .filter(|row| row.id != added.id)
+                .eq(all().iter())
+        );
+        assert!(map.is_playable());
+        assert_eq!(
+            (map.level, map.mode, map.project),
+            (12, 4, "level_12/day_4")
+        );
+        // Its respawn points are its project's, and it has no containers.
+        assert_eq!(map.respawn_points, 17);
+        assert_eq!(map.container_teams, None);
+        // It is played in mode 4 only.
+        let playable_in = |game_mode: u8| -> Vec<u8> {
+            table
+                .iter()
+                .filter(|map| map.is_playable() && map.mode == game_mode)
+                .map(|map| map.id)
+                .collect()
+        };
+        assert!(playable_in(mode::TEAM_DEATHMATCH).contains(&added.id));
+        assert_eq!(playable_in(mode::TEAM_DEATHMATCH).len(), 25);
+        for game_mode in mode::WITH_BATTERIES {
+            assert!(!playable_in(game_mode).contains(&added.id));
+            assert_eq!(playable_in(game_mode), ids(game_mode));
+        }
+        assert_eq!(table.iter().filter(|map| map.is_playable()).count(), 73);
+    }
+
+    #[test]
+    fn a_map_whose_project_the_server_cannot_play_stops_it() {
+        // Batteries on a map without its two containers, or with two of
+        // one team; a map without a respawn point.
+        let batteries = |containers: Vec<(i32, i32)>, respawn_points| fixtures::AddedMap {
+            id: 201,
+            config: "level_12_day_2.options",
+            project: "level_12/day_2",
+            mode: mode::BATTERIES,
+            containers,
+            respawn_points,
+            ..fixtures::AddedMap::level_12_tdm()
+        };
+        for (map, why) in [
+            (batteries(Vec::new(), 10), "no battery containers"),
+            (batteries(vec![(0, 1), (1, 1)], 10), "not one of each team"),
+            (
+                batteries(vec![(0, 1), (0, 0)], 10),
+                "two battery containers have id 0",
+            ),
+            (batteries(vec![(0, 1), (2, 0)], 10), "id 2"),
+            (batteries(vec![(0, 1), (1, 0)], 0), "no respawn points"),
+        ] {
+            let message = fixtures::table_of(&fixtures::with_map(&map))
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains("level_12_day_2.options"), "{message}");
+            assert!(message.contains(why), "{message}");
+        }
+        // With them: played, its containers' teams by id.
+        let table =
+            fixtures::table_of(&fixtures::with_map(&batteries(vec![(1, 0), (0, 1)], 12))).unwrap();
+        let map = table.iter().find(|map| map.id == 201).unwrap();
+        assert!(map.is_playable());
+        assert_eq!(
+            (map.respawn_points, map.container_teams),
+            (12, Some([1, 0]))
+        );
+        // Team Deathmatch reads no containers: a project copied from a
+        // batteries one with a stray container (one, of an odd id) is played.
+        let tdm = fixtures::AddedMap {
+            containers: vec![(3, 1)],
+            ..fixtures::AddedMap::level_12_tdm()
+        };
+        let table = fixtures::table_of(&fixtures::with_map(&tdm)).unwrap();
+        let map = table.iter().find(|map| map.id == 200).unwrap();
+        assert!(map.is_playable());
+        assert_eq!(map.container_teams, None);
+        // A mode srp does not play is in the table, not played, whatever
+        // its project.
+        let other = fixtures::AddedMap {
+            mode: 5,
+            respawn_points: 0,
+            ..fixtures::AddedMap::level_12_tdm()
+        };
+        let table = fixtures::table_of(&fixtures::with_map(&other)).unwrap();
+        assert!(
+            !table
+                .iter()
+                .find(|map| map.id == 200)
+                .unwrap()
+                .is_playable()
+        );
+    }
+
+    fn env_path(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
+    }
+
+    /// The live game data: 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
+    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces: patch 12 and
+    /// patch 14, London) over it. The maps of 0.26g, levels 1 to 8, have
+    /// what srp had by hand; London is played too (ids 181 to 183) with
+    /// its project's values, and named by its patch.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db and skhid's patches"]
+    fn the_live_data_gives_what_srp_had_by_hand_and_london() {
+        use resources_db::server::{PatchFile, build, url_in};
+        let db = env_path("SRP_TEST_RESOURCES_DB");
+        let patches: Vec<PatchFile> = std::env::var("SRP_TEST_SKHID_PATCHES")
+            .expect("SRP_TEST_SKHID_PATCHES")
+            .split_whitespace()
+            .map(|path| {
+                let path = std::path::PathBuf::from(path);
+                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+                PatchFile {
+                    urls: vec![url_in("http://203.0.113.5/patches", &name)],
+                    path,
+                }
+            })
+            .collect();
+        let built = build(&db, &patches).unwrap();
+        let mut archive = resources_db::Archive::new(std::io::Cursor::new(built.bytes)).unwrap();
+        let data = GameData::from_archive(&mut archive, "live".into()).unwrap();
+        super::super::tables::check(&data).unwrap();
+        let table = fixtures::table_of(&data).unwrap();
+        let played: Vec<&MapMode> = table.iter().filter(|map| map.is_playable()).collect();
+        let stock: Vec<u8> = playable().map(|map| map.id).collect();
+        let mut expected = stock.clone();
+        expected.extend([181, 182, 183]);
+        assert_eq!(
+            played.iter().map(|map| map.id).collect::<Vec<_>>(),
+            expected
+        );
+        for map in &played {
+            eprintln!(
+                "{:3} level {} weather {} mode {} {:24} respawn points {:2} containers {:?}",
+                map.id,
+                map.level,
+                map.weather,
+                map.mode,
+                map.project,
+                map.respawn_points,
+                map.container_teams
+            );
+        }
+        // The stock maps are as in the test data, and as before.
+        for map in table.iter().filter(|map| stock.contains(&map.id)) {
+            assert_eq!(Some(map), map_mode(map.id), "{}", map.id);
+        }
+        as_before(&table);
+        let london: Vec<&&MapMode> = played.iter().filter(|map| map.level == 9).collect();
+        assert_eq!(london.len(), 3);
+        for map in london {
+            assert_eq!(map.respawn_points, 20, "{}", map.id);
+            if map.mode != mode::TEAM_DEATHMATCH {
+                assert_eq!(map.container_teams, Some([1, 0]), "{}", map.id);
+            }
+            let names = |language| {
+                super::super::localization::of(&data, language)
+                    .unwrap()
+                    .unwrap()
+                    .get(map.map_name_key)
+                    .map(str::to_owned)
+            };
+            use super::super::localization::Language;
+            assert_eq!(names(Language::English).as_deref(), Some("London"));
+            assert_eq!(names(Language::Ukrainian).as_deref(), Some("Лондон"));
         }
     }
 }

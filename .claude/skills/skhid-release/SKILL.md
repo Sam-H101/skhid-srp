@@ -394,7 +394,11 @@ nixpkgs#shellcheck -c release/test.sh`); it sends nothing anywhere.
   stores the stock db). It serves `/patches` from what that file records,
   so it can only advertise the patches it runs on; it refuses to start when
   `SRP_MIN_PATCH_REVISION` is below its highest patch, or when srp.db or
-  its code name what the data lacks.
+  its code name what the data lacks. Every map, its modes, respawn points,
+  battery containers and names come from that file (format 3: the gameplay
+  files, each project's `server_objects`, the en/ua texts); srp and the file
+  go out together (a format the image does not read stops its start, and
+  the rollback puts back both).
 - Login, lobby, match and web are one process (container `srp26-srp26-1`):
   a restart ends every match and drops every lobby link; games reconnect by
   themselves. A planned maintenance lives in its memory: a restart ends it.

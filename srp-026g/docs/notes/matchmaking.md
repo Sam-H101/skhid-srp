@@ -174,7 +174,7 @@ players are of one level, which is what the original's narrow range gave.
 "The history of players' matches is taken into account now. The system selects the less played
 map" (patch notes 0.25a). No mode choice in 0.26 (added in 0.27a).
 
-- A map is a level (`match_making_params.map_id`, 1..=9: level_09 is London, from `resources.db.patch_14`), whatever the mode and weather.
+- A map is a level (`match_making_params.map_id` of its configs: 1 to 8 in 0.26g, 9 is London, from skhid's `resources.db.patch_14`; srp takes the numbers from the game data, any a patch adds included), whatever the mode and weather.
 - Each account counts the matches it was **put in** on each map (`Account::map_plays`, table
   `g26_map_plays`), counted when the match is made at the match server. [choice: not when it
   ends; a player who leaves early has still seen the map.]

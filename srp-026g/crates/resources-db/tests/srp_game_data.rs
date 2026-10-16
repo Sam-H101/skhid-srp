@@ -65,6 +65,10 @@ fn listing(folder: &Path) -> Vec<String> {
 /// The patches' base URL.
 const BASE: &str = "http://203.0.113.5/patches";
 
+/// A project of nothing: a binary config of an empty table (the root value,
+/// its children at 24, none; `server_objects_of` keeps it as it is).
+const PROJECT: &str = "\x18\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x03\0\0\0";
+
 /// A game folder: resources.db and resources.db.patch_1.
 fn game(folder: &Folder) -> (String, String) {
     let db = folder.archive(
@@ -72,7 +76,7 @@ fn game(folder: &Folder) -> (String, String) {
         &[
             ("gameplay/a", "db a"),
             ("gameplay/b", "db b"),
-            ("projects/p/client_project", ""),
+            ("projects/p/client_project", PROJECT),
             ("models/m", "not read"),
         ],
     );
