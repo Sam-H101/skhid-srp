@@ -755,9 +755,18 @@ those matches use (`maps::KEEP`):
 | two playing and one kept (level_06, level_02, level_03) | about 540 MB, past 512 |
 
 So one match of bots at a time fits with room; two at a time on the large
-maps, with a third map kept, would pass the container's 512 MB. That is
-item 10's choice: a larger limit, one bots' map at a time, or the kept map
-dropped while two play.
+maps, with a third map kept, would pass the container's 512 MB.
+
+**The host itself** (read 2026-10-16 03:49 UTC, no bots on it): 955 MB in
+all, 779 used, 176 MB available, 307 MB of its 2.3 GB swap file in use.
+The server's container held 204 MB of its 512 MB, Caddy 19 MB; by
+process, `dockerd` 258 MB, `srp` 187 MB, `containerd` 28 MB, the kernel's
+slab 97 MB. A larger container limit would not help: one bots' map
+(up to 145 MB) takes nearly all the memory the host has free, and a
+second would push the server into swap whatever the limit. The limit
+stays 512 MB. What could make room: `dockerd` at 258 MB is far over its
+usual size (a restart or a look at its logs and caches, an action on the
+live host), or one bots' map at a time on the server.
 
 ## 7. Anomalies on the match server
 
