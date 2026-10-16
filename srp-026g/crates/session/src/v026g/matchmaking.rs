@@ -27,7 +27,9 @@
 //! **The map** is drawn, more likely the less the match's players have
 //! played it ("the history of players' matches is taken into account now.
 //! The system selects the less played map", patch notes 0.25a): a map is
-//! a level (`level_01`..`level_09`), whatever its mode and weather.
+//! a level (`match_making_params.map_id`: `level_01`..`level_09`, and 10
+//! and 11 for 0.21d's RLS Vostok and Mamayev Kurgan), whatever its mode and
+//! weather.
 //! [choice] Not always the least played one, or a new map would be in
 //! every match until the players' counts caught up: each level of the pool
 //! has a weight from its players' average matches on it ([`map_weight`]), a
@@ -704,6 +706,92 @@ mod tests {
             choose_map(&[added.id], |_| 0, 1, DEFAULT_MAP_SKEW, |_| 0),
             None
         );
+    }
+
+    /// How often each id of `pool` is drawn from `table` over every number
+    /// the level's draw can take and twelve of the weather's (the mode's
+    /// draw has one choice).
+    fn id_counts(
+        table: &[maps::MapMode],
+        pool: &[u8],
+        plays: impl Fn(u8) -> u64,
+    ) -> BTreeMap<u8, u32> {
+        let mut levels = 0;
+        choose_map_in(table, pool, &plays, 1, DEFAULT_MAP_SKEW, |bound| {
+            levels = levels.max(bound);
+            0
+        });
+        let mut counts = BTreeMap::new();
+        for level_number in 0..levels {
+            for weather_number in 0..12 {
+                let mut first = true;
+                let below = |bound: u32| {
+                    if std::mem::take(&mut first) {
+                        level_number
+                    } else {
+                        weather_number % bound
+                    }
+                };
+                let id = choose_map_in(table, pool, &plays, 1, DEFAULT_MAP_SKEW, below).unwrap();
+                *counts.entry(id).or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn an_imported_map_of_its_own_level_is_its_own_map() {
+        // Revision 17's RLS Vostok of 0.21d (id 166, batteries by day) has
+        // level 10: a map of its own, drawn as often as each native level,
+        // its plays counted apart from level_03's. Had it kept the native
+        // level 3, it would be a fourth weather of level_03: drawn a quarter
+        // as often as level_03, and its plays counted as level_03's.
+        use maps::fixtures::{AddedMap, table_of, with_map};
+        let import = |level| AddedMap {
+            id: 166,
+            config: "v021d_level_03_day_2.options",
+            level,
+            weather: maps::weather::DAY,
+            project: "v021d_level_03/day_2",
+            mode: maps::mode::BATTERIES,
+            respawn_points: 22,
+            containers: vec![(0, 1), (1, 0)],
+        };
+        for (level, levels) in [(10, 9), (3, 8)] {
+            let table = table_of(&with_map(&import(level))).unwrap();
+            let map = table.iter().find(|map| map.id == 166).unwrap();
+            assert_eq!(
+                (map.level, map.respawn_points, map.container_teams),
+                (level, 22, Some([1, 0]))
+            );
+            let level_of = |id: u8| table.iter().find(|map| map.id == id).unwrap().level;
+            let pool: Vec<u8> = table
+                .iter()
+                .filter(|map| map.is_playable() && map.mode == maps::mode::BATTERIES)
+                .map(|map| map.id)
+                .collect();
+            assert!(pool.contains(&166));
+            let mut pool_levels: Vec<u8> = pool.iter().map(|&id| level_of(id)).collect();
+            pool_levels.sort_unstable();
+            pool_levels.dedup();
+            assert_eq!(pool_levels.len(), levels);
+            let counts = id_counts(&table, &pool, |_| 10);
+            let of_level = |wanted: u8| -> u32 {
+                counts
+                    .iter()
+                    .filter(|(id, _)| level_of(**id) == wanted)
+                    .map(|(_, count)| count)
+                    .sum()
+            };
+            if level == 10 {
+                // Every draw of level 10 is 166, as many as level 3's.
+                assert_eq!(counts[&166], of_level(10));
+                assert_eq!(of_level(10), of_level(3));
+            } else {
+                // A quarter of level 3's draws: day, evening, rain or 166.
+                assert_eq!(counts[&166] * 4, of_level(3));
+            }
+        }
     }
 
     #[test]

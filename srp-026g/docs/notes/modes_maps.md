@@ -45,6 +45,8 @@ PROVEN from `projects/*` and `gameplay/game_modes/*.options` (`match_making_para
 | 7 | level_07 | Vector Laboratory | same | **new** |
 | 8 | level_08 | Cologne | day/evening/prerain × _2 _3 _4 | **new** |
 | 9 | level_09 | London (skhid's `resources.db.patch_14`, ids 181 to 183) | day × _2 _3 _4 | — |
+| 10 | v021d_level_03 | RLS Vostok (v0.21): retail 0.21d's level_03 (skhid's `resources.db.patch_18`, ids 166 batteries and 152 Team Deathmatch) | day × _2 _4 | the original |
+| 11 | v021d_level_06 | Mamayev Kurgan (v0.21): retail 0.21d's level_06 (`resources.db.patch_18`, ids 175 batteries and 153 Team Deathmatch) | day × _2 _4 | the original |
 | 88 | test/tt5, test/tdm_test, test/artefact_testlevel | test maps | **no `projects/test/*` in the db** | — |
 
 - `lobby_scene/day` still exists (client only). PROVEN.
@@ -65,6 +67,8 @@ PROVEN from `projects/*` and `gameplay/game_modes/*.options` (`match_making_para
 | level_07 | — | 31 (16/15), 39, 2 | 31, 3, 18 | 31 (16/15) |
 | level_08 | — | 26 (13/13), 22, 2 | 26, 2, 16 | 26 (13/13) |
 | level_09 (London) | — | 20, 2 (container 0 is team 1's) | 20 | 20 |
+| v021d_level_03 (level 10) | its source: level_03 above | 22 (11/11), 45, 2 (container 0 is team 1's) | — | 22 (11/11) |
+| v021d_level_06 (level 11) | its source: level_06 above | 20 (10/10), 32, 2 (container 0 is team 1's) | — | 20 (10/10) |
 
 - Every map has ≥ 13 respawn points per team in every mode, so the 0.21d "≤ 10 per team" guidance still holds; mode 4 has no containers or spawners. PROVEN (counts); team cap LIKELY 10 (20 profiles in match_options per sibling).
 - Respawn point gained `invulnerability_time` (6), `enemy_check_radius` (1.2), `ally_check_radius` (0.8), `is_temporary`. PROVEN (`projects/level_01/day_3/client_project`).
@@ -264,4 +268,20 @@ is played as soon as the server runs on data with it.
   the_live_data`). A made-up
   map of a level 12 with Team Deathmatch only is played in mode 4 alone, with
   its project's respawn points, and drawn by the matchmaker
-  (`maps::fixtures`).
+  (`maps::fixtures`). With revision 18's patch over them
+  (`SRP_TEST_PATCH_18=<…>/resources.db.patch_18`, the ignored test
+  `revision_18_plays_rls_vostok_and_mamayev_kurgan_of_021d`), 166 and 175
+  (batteries) and 152 and 153 (Team Deathmatch) are played too, by day,
+  levels 10 and 11, 22 and 20 respawn points in both modes, container 0
+  team 1's in batteries, every other row as before. Their Team Deathmatch
+  project is the battery one without the battery game, as 0.26g's own are:
+  only the respawn points in `server_objects`, no collectors, their zones
+  and props, no bases' effect zones (`vostok-port add-021d-deathmatch`).
+- **A map imported from another build has a level of its own.** The level
+  (`match_making_params.map_id`) is only the server's: the 0.26g exe has no
+  `map_id` (nor `map_weather_id`) key, it reads the config's `map_name`s and
+  `loading_screen_id`. srp counts a player's matches by it and the
+  matchmaker draws a level first, then a mode, then a weather: an import
+  that kept its source's level 3 would be a fourth weather of the native
+  level_03, drawn a quarter as often and counted as it
+  (`session::v026g::matchmaking::tests::an_imported_map_of_its_own_level_is_its_own_map`).

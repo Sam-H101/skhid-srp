@@ -679,21 +679,18 @@ mod tests {
         std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
     }
 
-    /// The live game data: 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
-    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces: patch 12 and
-    /// patch 14, London) over it. The maps of 0.26g, levels 1 to 8, have
-    /// what srp had by hand; London is played too (ids 181 to 183) with
-    /// its project's values, and named by its patch.
-    #[test]
-    #[ignore = "needs 0.26g's resources.db and skhid's patches"]
-    fn the_live_data_gives_what_srp_had_by_hand_and_london() {
+    /// The server data of 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
+    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces) and then
+    /// `more` over it, checked as srp checks it at start.
+    fn live_data(more: &[std::path::PathBuf]) -> GameData {
         use resources_db::server::{PatchFile, build, url_in};
         let db = env_path("SRP_TEST_RESOURCES_DB");
         let patches: Vec<PatchFile> = std::env::var("SRP_TEST_SKHID_PATCHES")
             .expect("SRP_TEST_SKHID_PATCHES")
             .split_whitespace()
+            .map(std::path::PathBuf::from)
+            .chain(more.iter().cloned())
             .map(|path| {
-                let path = std::path::PathBuf::from(path);
                 let name = path.file_name().unwrap().to_str().unwrap().to_owned();
                 PatchFile {
                     urls: vec![url_in("http://203.0.113.5/patches", &name)],
@@ -705,6 +702,176 @@ mod tests {
         let mut archive = resources_db::Archive::new(std::io::Cursor::new(built.bytes)).unwrap();
         let data = GameData::from_archive(&mut archive, "live".into()).unwrap();
         super::super::tables::check(&data).unwrap();
+        data
+    }
+
+    /// The live data (`SRP_TEST_SKHID_PATCHES`: patches 12, 14 and 17) and
+    /// revision 18's patch (`SRP_TEST_PATCH_18`): the two maps of retail
+    /// 0.21d, RLS Vostok and Mamayev Kurgan, in batteries by day (ids 166
+    /// and 175) and in Team Deathmatch by day (152 and 153). Each is a map
+    /// of its own (levels 10 and 11, not a weather of level 3 or 6) with its
+    /// project's 22 and 20 respawn points in both modes, container 0 team
+    /// 1's in batteries and none in Team Deathmatch, its own name and the
+    /// 0.21d loading screen (the same picture 0.26g shows for level_03 and
+    /// level_06 by day); a mode's rules and values are the native level's.
+    /// Every other map is as before, and none of them is offered against
+    /// bots.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db, skhid's patches and revision 18's patch"]
+    fn revision_18_plays_rls_vostok_and_mamayev_kurgan_of_021d() {
+        use super::super::localization::{self, Language};
+        let before = fixtures::table_of(&live_data(&[])).unwrap();
+        let data = live_data(&[env_path("SRP_TEST_PATCH_18")]);
+        let table = fixtures::table_of(&data).unwrap();
+        let mut added: Vec<&MapMode> = table
+            .iter()
+            .filter(|map| !before.iter().any(|old| old.id == map.id))
+            .collect();
+        added.sort_by_key(|map| map.id);
+        assert_eq!(
+            added.iter().map(|map| map.id).collect::<Vec<_>>(),
+            [152, 153, 166, 175]
+        );
+        assert!(
+            table
+                .iter()
+                .filter(|map| !added.iter().any(|new| new.id == map.id))
+                .eq(before.iter())
+        );
+        let names = |map: &MapMode, language| {
+            localization::of(&data, language)
+                .unwrap()
+                .unwrap()
+                .get(map.map_name_key)
+                .map(str::to_owned)
+        };
+        for (id, level, mode, project, points, screen, english, ukrainian) in [
+            (
+                166,
+                10,
+                mode::BATTERIES,
+                "v021d_level_03/day_2",
+                22,
+                2,
+                "RLS Vostok (v0.21)",
+                "РЛС \"Восток\" (v0.21)",
+            ),
+            (
+                152,
+                10,
+                mode::TEAM_DEATHMATCH,
+                "v021d_level_03/day_4",
+                22,
+                2,
+                "RLS Vostok (v0.21)",
+                "РЛС \"Восток\" (v0.21)",
+            ),
+            (
+                175,
+                11,
+                mode::BATTERIES,
+                "v021d_level_06/day_2",
+                20,
+                15,
+                "Mamayev Kurgan (v0.21)",
+                "Мамаїв курган (v0.21)",
+            ),
+            (
+                153,
+                11,
+                mode::TEAM_DEATHMATCH,
+                "v021d_level_06/day_4",
+                20,
+                15,
+                "Mamayev Kurgan (v0.21)",
+                "Мамаїв курган (v0.21)",
+            ),
+        ] {
+            let map = added.iter().find(|map| map.id == id).unwrap();
+            assert!(map.is_playable(), "{}", map.id);
+            assert_eq!(
+                (map.level, map.weather, map.mode, map.project),
+                (level, weather::DAY, mode, project),
+                "{id}"
+            );
+            assert_eq!(map.respawn_points, points, "{id}");
+            assert_eq!(map.loading_screen_id, screen, "{id}");
+            assert_eq!(
+                (
+                    map.match_time,
+                    map.wait_time,
+                    map.countdown_time,
+                    map.respawn_time
+                ),
+                (900, 5, 20, 8),
+                "{id}"
+            );
+            assert_eq!(map.wait_player_percent, 0.8, "{id}");
+            if mode == mode::BATTERIES {
+                assert_eq!(map.container_teams, Some([1, 0]), "{id}");
+                assert_eq!(map.rules, [93, 91, 88, 94], "{id}");
+                assert_eq!(
+                    (map.icon, map.victory_items_count, map.tickets_count),
+                    (0, 10, 0),
+                    "{id}"
+                );
+                assert_eq!(map.mode_name_key, "st_mode_02_name", "{id}");
+            } else {
+                assert_eq!(map.container_teams, None, "{id}");
+                assert_eq!(map.rules, [93, 91, 90, 94], "{id}");
+                assert_eq!(
+                    (map.icon, map.victory_items_count, map.tickets_count),
+                    (2, 0, 100),
+                    "{id}"
+                );
+                assert_eq!(map.mode_name_key, "st_mode_04_name", "{id}");
+            }
+            assert_eq!((map.vi_spawn_time, map.spawn_points_count), (0, 0), "{id}");
+            // Its level's two maps: batteries and Team Deathmatch, by day.
+            let mut modes: Vec<(u8, u8)> = table
+                .iter()
+                .filter(|row| row.level == level)
+                .map(|row| (row.mode, row.weather))
+                .collect();
+            modes.sort();
+            assert_eq!(
+                modes,
+                [
+                    (mode::BATTERIES, weather::DAY),
+                    (mode::TEAM_DEATHMATCH, weather::DAY)
+                ]
+            );
+            // One name for the level, the mode's own beside it.
+            assert_eq!(
+                names(map, Language::English).as_deref(),
+                Some(english),
+                "{id}"
+            );
+            assert_eq!(
+                names(map, Language::Ukrainian).as_deref(),
+                Some(ukrainian),
+                "{id}"
+            );
+        }
+        for native in [3, 6] {
+            assert_eq!(
+                table.iter().filter(|row| row.level == native).count(),
+                before.iter().filter(|row| row.level == native).count()
+            );
+        }
+        let hand: Vec<MapMode> = table.iter().filter(|map| map.level <= 9).copied().collect();
+        as_before(&hand);
+    }
+
+    /// The live game data: 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
+    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces: patch 12 and
+    /// patch 14, London) over it. The maps of 0.26g, levels 1 to 8, have
+    /// what srp had by hand; London is played too (ids 181 to 183) with
+    /// its project's values, and named by its patch.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db and skhid's patches"]
+    fn the_live_data_gives_what_srp_had_by_hand_and_london() {
+        let data = live_data(&[]);
         let table = fixtures::table_of(&data).unwrap();
         let played: Vec<&MapMode> = table.iter().filter(|map| map.is_playable()).collect();
         let stock: Vec<u8> = playable().map(|map| map.id).collect();

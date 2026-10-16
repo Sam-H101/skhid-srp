@@ -72,7 +72,10 @@ use super::join::{JOIN_REFUSED, MAINTENANCE_WINDOW};
 /// The maps offered, by `maps_dict` id (the owner's list of 2026-10-16):
 /// the day of each of the eight levels in batteries (mode 2: 61 Rudnya to
 /// 103) and in Team Deathmatch (mode 4: 117 to 138). No timed batteries
-/// (mode 3), no London (level 9, maps 181 to 183) and no level 88. The
+/// (mode 3), no London (level 9, maps 181 to 183), no map of retail 0.21d
+/// (RLS Vostok and Mamayev Kurgan, levels 10 and 11, maps 166, 175, 152
+/// and 153 of revision 18: the bots have no map files of them) and no level
+/// 88. The
 /// movie shows only the maps the status lists.
 pub const MAPS: [u8; 16] = [
     61, 67, 73, 79, 85, 91, 97, 103, 117, 120, 123, 126, 129, 132, 135, 138,
@@ -438,7 +441,8 @@ mod tests {
 
     /// The owner's list: the day of each level in batteries and in Team
     /// Deathmatch, every one playable on this server's data; no London
-    /// (level 9: maps 181 to 183), no level 88 and no timed batteries.
+    /// (level 9: maps 181 to 183), no 0.21d map (levels 10 and 11: maps 166,
+    /// 175, 152 and 153), no level 88 and no timed batteries.
     #[test]
     fn the_maps_are_the_days_of_batteries_and_team_deathmatch_and_playable() {
         assert_eq!(offered_maps().count(), MAPS.len());
@@ -465,11 +469,11 @@ mod tests {
         }
         // Each of the eight levels in both modes.
         assert_eq!(seen.len(), 16);
-        for london in [181, 182, 183] {
-            assert!(!MAPS.contains(&london));
+        for patched in [181, 182, 183, 166, 175, 152, 153] {
+            assert!(!MAPS.contains(&patched));
         }
         for map in maps::all() {
-            if map.level == 9 || map.level == 88 || map.mode == maps::mode::TIMED_BATTERIES {
+            if map.level > 8 || map.mode == maps::mode::TIMED_BATTERIES {
                 assert!(!MAPS.contains(&map.id), "{} is offered", map.id);
             }
         }
