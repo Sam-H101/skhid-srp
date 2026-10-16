@@ -315,6 +315,7 @@ mod tests {
             points: [0, 0],
             places,
             batteries: vec![],
+            marks: vec![],
             containers: vec![],
             sounds,
             deaths: vec![],

@@ -171,6 +171,9 @@ pub struct MatchView {
     pub points: [u32; 2],
     pub places: Vec<PlaceView>,
     pub batteries: Vec<BatteryState>,
+    /// By battery number: the HUD masks that came with the batteries
+    /// (`WorldFacts::marks`); empty when that world gave none.
+    pub marks: Vec<u32>,
     pub containers: Vec<ContainerView>,
     /// The sounds of the last few seconds.
     pub sounds: Vec<Sound>,
@@ -243,6 +246,10 @@ pub struct WorldFacts {
     pub points: Option<[u32; 2]>,
     /// By battery number.
     pub batteries: Vec<BatteryState>,
+    /// By battery number: a lying battery's `m_spotted_mask`, the client's
+    /// HUD (team `t`'s HUD shows it when bit `1 << t` is set); 0 for one
+    /// carried or home. Empty when the world did not say.
+    pub marks: Vec<u32>,
     /// By container id: the batteries in it.
     pub container_counts: Vec<usize>,
     /// Whether each team may still respawn (Team Deathmatch clears a
@@ -287,6 +294,7 @@ pub struct Tracker {
     /// Container id → (team, place on the map).
     containers: Vec<(u8, Vec3)>,
     batteries: Vec<BatteryState>,
+    marks: Vec<u32>,
     carriers: Vec<Option<Place>>,
     container_counts: Vec<usize>,
     points: [u32; 2],
@@ -315,6 +323,7 @@ impl Tracker {
             container_counts: vec![0; containers.len()],
             containers,
             batteries: Vec::new(),
+            marks: Vec::new(),
             carriers: Vec::new(),
             points: [0, 0],
             can_respawn: [true, true],
@@ -549,6 +558,7 @@ impl Tracker {
             }
         }
         self.batteries = facts.batteries;
+        self.marks = facts.marks;
         new_deaths
     }
 
@@ -649,6 +659,7 @@ impl Tracker {
             points: self.points,
             places,
             batteries,
+            marks: self.marks.clone(),
             containers,
             sounds: self.sounds.iter().copied().collect(),
             deaths: self.deaths.iter().copied().collect(),
