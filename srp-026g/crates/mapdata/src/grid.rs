@@ -384,8 +384,13 @@ impl WalkGrid {
                 LinkKind::Drop
             } else if rise > 0.0
                 && rise <= body.max_jump
-                && ca - hb >= body.crouch_height
-                && cb - hb >= body.crouch_height
+                // A jump lands a standing body: room to stand over the
+                // floor it lands on, under both ceilings (no crouch-jump
+                // into a window or under a low roof: the client's is not
+                // proven, and a body that cannot get in walks into the
+                // wall below).
+                && ca - hb >= body.stand_height
+                && cb - hb >= body.stand_height
             {
                 LinkKind::Jump
             } else {
@@ -2074,6 +2079,30 @@ pub(crate) mod tests {
         crate::free_search_memory();
         assert_eq!(crate::search_memory_bytes(), 0);
         assert_eq!(grid.search(0, n - 1, |_| true, usize::MAX), before);
+    }
+
+    /// A jump lands a standing body: a ledge 1 m up under a roof 1.4 m
+    /// over it (a window's sill under its lintel) is no jump, the same
+    /// ledge under 2 m is (the bots walked into walls below windows, a
+    /// crouch-jump through not being proven in the client).
+    #[test]
+    fn a_jump_needs_room_to_stand_where_it_lands() {
+        let ledge_under = |roof: f32| {
+            let mut tris = floor(0.0, 0.0, 5.0, 10.0, 0.0).to_vec();
+            tris.extend(floor(5.0, 0.0, 10.0, 10.0, 1.0));
+            tris.extend(wall_x(5.0, 0.0, 10.0, 1.0));
+            // A roof over the ledge only.
+            tris.extend(floor(5.0, 0.0, 10.0, 10.0, 1.0 + roof));
+            let grid = WalkGrid::build(&tris, [0.0, 0.0, 10.0, 10.0], 0.5, Body::default());
+            let low = grid.locate(Vec3::new(2.0, 0.0, 5.0), 1.0).unwrap();
+            let ledge = grid.locate(Vec3::new(7.5, 1.0, 5.0), 0.5).unwrap();
+            (
+                grid.distances_from(&[low]).reaches(ledge),
+                grid.can_stand(ledge),
+            )
+        };
+        assert_eq!(ledge_under(1.4), (false, false), "a crouch-only ledge");
+        assert_eq!(ledge_under(2.0), (true, true));
     }
 
     #[test]

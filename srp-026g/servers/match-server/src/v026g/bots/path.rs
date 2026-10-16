@@ -28,6 +28,9 @@ pub struct Waypoint {
     pub node: NodeId,
     /// Reached by a jump from the waypoint before.
     pub jump: bool,
+    /// The leg to it from the waypoint before goes over a floor a standing
+    /// body does not fit under (`WalkGrid::can_stand`): walked crouched.
+    pub low: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -307,10 +310,12 @@ fn pull_straight(
             .find(|(next, _)| *next == nodes[k])
             .map_or(LinkKind::Walk, |(_, kind)| kind);
     }
+    let low = |from: usize, to: usize| nodes[from..=to].iter().any(|&n| !grid.can_stand(n));
     let mut points = vec![Waypoint {
         at: grid.position(nodes[0]),
         node: nodes[0],
         jump: false,
+        low: false,
     }];
     let mut i = 0;
     while i + 1 < nodes.len() {
@@ -321,6 +326,7 @@ fn pull_straight(
                 at: grid.position(nodes[i]),
                 node: nodes[i],
                 jump: into[i] == LinkKind::Jump,
+                low: low(i - 1, i),
             });
             continue;
         }
@@ -331,11 +337,13 @@ fn pull_straight(
         } {
             j += 1;
         }
+        let from = i;
         i = j;
         points.push(Waypoint {
             at: grid.position(nodes[i]),
             node: nodes[i],
             jump: false,
+            low: low(from, i),
         });
     }
     Route::new(points)
@@ -501,6 +509,15 @@ impl Route {
             .map(|k| (k, self.along[k - 1] - s))
     }
 
+    /// Whether the route from `s` to `within` metres on goes over a floor
+    /// a standing body does not fit under ([`Waypoint::low`]).
+    pub fn low_ahead(&self, s: f32, within: f32) -> bool {
+        let first = self.along.partition_point(|&a| a <= s).max(1);
+        (first..self.points.len())
+            .take_while(|&k| self.along[k - 1] <= s + within)
+            .any(|k| self.points[k].low)
+    }
+
     /// How much the route turns at waypoint `k`, radians (0 at the ends).
     pub fn turn_at(&self, k: usize) -> f32 {
         if k == 0 || k + 1 >= self.points.len() {
@@ -656,6 +673,7 @@ mod tests {
             at: Vec3::new(x, 0.0, z),
             node: 0,
             jump: false,
+            low: false,
         };
         let mut route = Route::new(vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0)]);
         assert_eq!(route.length(), 20.0);

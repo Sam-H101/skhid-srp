@@ -117,6 +117,11 @@ pub enum Walked {
     Off(f32),
 }
 
+/// A jump not yet up its ledge is tried again after this long, seconds.
+pub const JUMP_AGAIN_S: f32 = 1.0;
+/// A low leg this near ahead, metres, is walked crouched already.
+pub const LOW_AHEAD_M: f32 = 1.0;
+
 /// One bot's hands.
 #[derive(Clone, Debug)]
 pub struct Motor {
@@ -127,7 +132,9 @@ pub struct Motor {
     sprinting: bool,
     /// Ticks faced the way well enough to sprint.
     facing_ticks: u32,
-    jumped_at: Option<usize>,
+    /// The waypoint last jumped to and the ticks since
+    /// ([`Motor::jump_key`]).
+    jumped_at: Option<(usize, u32)>,
     /// The sway's phase and the time, seconds, for it.
     phase: f32,
     t: f32,
@@ -251,22 +258,23 @@ impl Motor {
         {
             self.sprinting = false;
         }
+        // Crouched where a standing body does not fit (a low passage):
+        // no sprint there.
+        let low = route.low_ahead(s, LOW_AHEAD_M);
+        if low {
+            self.sprinting = false;
+        }
         let mut keys = 0;
         if self.walking {
             keys |= key::FORWARD;
             if self.sprinting {
                 keys |= key::SPRINT;
             }
+            if low {
+                keys |= key::CROUCH;
+            }
         }
-        // A jump up a ledge: once, just before it, walking into it.
-        if let Some((k, before)) = route.next_jump(s)
-            && self.walking
-            && before < 0.8
-            && self.jumped_at != Some(k)
-        {
-            keys |= key::JUMP;
-            self.jumped_at = Some(k);
-        }
+        keys |= self.jump_key(route, s);
         (Decision { keys, turn }, Walked::OnTheWay)
     }
 
@@ -303,8 +311,37 @@ impl Motor {
         }
         let (dx, dz) = (target.x - pose.feet.x, target.z - pose.feet.z);
         self.walking = true;
-        let keys = keys_toward(wrap(yaw_of([dx, dz]) - (pose.yaw + turn.0)));
+        let mut keys = keys_toward(wrap(yaw_of([dx, dz]) - (pose.yaw + turn.0)));
+        if route.low_ahead(s, LOW_AHEAD_M) {
+            keys |= key::CROUCH;
+        }
+        // Up a ledge while aiming too (the walk aiming had no jump: a body
+        // walked into the ledge's wall for as long as it aimed).
+        keys |= self.jump_key(route, s);
         (Decision { keys, turn }, Walked::OnTheWay)
+    }
+
+    /// The jump of this tick up the route's next ledge: just before it,
+    /// walking into it; again every [`JUMP_AGAIN_S`] while the body is still
+    /// short of it (a jump that did not get it up: it hit the edge, or it
+    /// came too early).
+    fn jump_key(&mut self, route: &Route, s: f32) -> u32 {
+        if let Some((_, ticks)) = self.jumped_at.as_mut() {
+            *ticks = ticks.saturating_add(1);
+        }
+        let Some((k, before)) = route.next_jump(s) else {
+            return 0;
+        };
+        let again = match self.jumped_at {
+            Some((at, ticks)) => at != k || ticks as f32 * TICK_S >= JUMP_AGAIN_S,
+            None => true,
+        };
+        if self.walking && before < 0.8 && again {
+            self.jumped_at = Some((k, 0));
+            key::JUMP
+        } else {
+            0
+        }
     }
 
     /// The decision of one tick standing and looking at `aim`.
@@ -393,9 +430,101 @@ mod tests {
                     at: Vec3::new(x, 0.0, z),
                     node: 0,
                     jump: false,
+                    low: false,
                 })
                 .collect(),
         )
+    }
+
+    /// A route along x with waypoint 1 (at x = 5) up a ledge, and the leg
+    /// to waypoint 2 low (from x = 5 to 10).
+    fn ledge_then_low() -> Route {
+        let p = |x: f32, jump, low| Waypoint {
+            at: Vec3::new(x, 0.0, 0.0),
+            node: 0,
+            jump,
+            low,
+        };
+        Route::new(vec![
+            p(0.0, false, false),
+            p(5.0, true, false),
+            p(10.0, false, true),
+            p(20.0, false, false),
+        ])
+    }
+
+    fn facing_x(feet: Vec3) -> Pose {
+        Pose {
+            feet,
+            yaw: yaw_of([1.0, 0.0]),
+            pitch: 0.0,
+            speed: 0.0,
+        }
+    }
+
+    /// A body kept short of a ledge (it hits the edge) jumps again every
+    /// [`JUMP_AGAIN_S`], walking or aiming; once up, it does not.
+    #[test]
+    fn a_jump_that_did_not_get_up_is_tried_again_also_aiming() {
+        let mut rng = Rng::new(3);
+        for aiming in [false, true] {
+            let mut motor = Motor::new(Feel::default(), &mut rng);
+            let mut route = ledge_then_low();
+            let pose = facing_x(Vec3::new(4.5, 0.0, 0.0));
+            let mut jumps = Vec::new();
+            for tick in 0..100 {
+                let (decision, _) = if aiming {
+                    motor.walk_aiming(&mut route, &pose, 5.0, |_| true, (pose.yaw, 0.0))
+                } else {
+                    motor.walk(&mut route, &pose, 5.0, |_| true)
+                };
+                if decision.keys & key::JUMP != 0 {
+                    jumps.push(tick);
+                }
+            }
+            // 5 s held short of it: a jump at once and every second.
+            let again = (JUMP_AGAIN_S / TICK_S) as usize;
+            assert_eq!(jumps.len(), 100 / again, "{aiming}: {jumps:?}");
+            assert!(jumps.windows(2).all(|w| w[1] - w[0] == again), "{jumps:?}");
+            // Up on the ledge: no more jumps.
+            let up = facing_x(Vec3::new(5.5, 0.0, 0.0));
+            for _ in 0..40 {
+                let (decision, _) = motor.walk(&mut route, &up, 5.0, |_| true);
+                assert_eq!(decision.keys & key::JUMP, 0);
+            }
+        }
+    }
+
+    /// A low leg is walked crouched, from a metre before it, and not
+    /// sprinted; past it the body stands again.
+    #[test]
+    fn a_low_leg_is_walked_crouched() {
+        let mut rng = Rng::new(5);
+        let mut motor = Motor::new(Feel::default(), &mut rng);
+        let mut route = ledge_then_low();
+        let crouched = |motor: &mut Motor, route: &mut Route, x: f32| {
+            let (decision, _) = motor.walk(route, &facing_x(Vec3::new(x, 0.0, 0.0)), 5.0, |_| true);
+            decision.keys & key::CROUCH != 0
+        };
+        assert!(!crouched(&mut motor, &mut route, 2.0));
+        assert!(crouched(&mut motor, &mut route, 4.5));
+        assert!(crouched(&mut motor, &mut route, 7.0));
+        let (decision, _) =
+            motor.walk(&mut route, &facing_x(Vec3::new(7.0, 0.0, 0.0)), 5.0, |_| {
+                true
+            });
+        assert_eq!(decision.keys & key::SPRINT, 0);
+        assert!(!crouched(&mut motor, &mut route, 12.0));
+        // Aiming too (a route of its own: a route keeps where the body was).
+        let mut route = ledge_then_low();
+        let (decision, _) = motor.walk_aiming(
+            &mut route,
+            &facing_x(Vec3::new(7.0, 0.0, 0.0)),
+            5.0,
+            |_| true,
+            (0.0, 0.0),
+        );
+        assert_ne!(decision.keys & key::CROUCH, 0, "aiming too");
     }
 
     /// Walks a body that does what the keys and turns say, with the
