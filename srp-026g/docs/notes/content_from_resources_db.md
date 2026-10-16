@@ -3,7 +3,7 @@
 > **Version scope: 0.26g.** Written 2026-10-15 with the change that made srp
 > read its game data at start instead of compiling it in; made over
 > 2026-10-16 for the patches the game mounts over `resources.db` (client
-> patch revision 14).
+> patch revision 12).
 
 ## What and why
 

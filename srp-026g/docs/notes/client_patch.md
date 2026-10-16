@@ -173,7 +173,7 @@ Every C→S id is fixed length (transport.md §4), so no id carries a length; 0x
 | file size | 12 894 840 | + 0x200 |
 
 - **The Authenticode blob.** The attribute certificate table is found by the **file offset** in the security data directory and is the last thing in the file (0xC4AA00 + 0x1878 = file size), right after `.reloc`'s raw data. The new section's raw data must follow `.reloc` (sections are contiguous in the file), so the blob moves 0x200 bytes towards the end and the directory's offset follows it; it stays 8-byte aligned and last, as the PE format asks. Its bytes are unchanged.
-- **Why it must stay readable.** At start `vostok::crypt::verify_sign` 0x13310 calls `CryptQueryObject(CERT_QUERY_OBJECT_FILE, own path, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED 0x400, CERT_QUERY_FORMAT_FLAG_BINARY 2, …, &store, &msg, …)` (0x13336..0x1335B), then looks up "survarium.com" in that store and uses the certificate's key on the resources.db file table (§0; the default build skips that check since revision 14, §0.1, but still opens the store and finds the certificate first: verify_sign returns 1, a failure, at 0x1342F when `CryptQueryObject` fails). Dropping the blob would stop every start.
+- **Why it must stay readable.** At start `vostok::crypt::verify_sign` 0x13310 calls `CryptQueryObject(CERT_QUERY_OBJECT_FILE, own path, CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED_EMBED 0x400, CERT_QUERY_FORMAT_FLAG_BINARY 2, …, &store, &msg, …)` (0x13336..0x1335B), then looks up "survarium.com" in that store and uses the certificate's key on the resources.db file table (§0; the default build skips that check since revision 12, §0.1, but still opens the store and finds the certificate first: verify_sign returns 1, a failure, at 0x1342F when `CryptQueryObject` fails). Dropping the blob would stop every start.
 - **A changed file does not break it.** `CryptQueryObject` only extracts and decodes the PKCS#7 blob; it does not compare the Authenticode hash with the file (that is `WinVerifyTrust`; the exe has no `WinVerifyTrust`/wintrust or imagehlp checksum import, its only use of the signature is this `CryptQueryObject`). PROVEN two ways: the cert-only build already runs (§0), and `selftest_026g.py` makes the client's exact call on each built file: the store opens and the survarium.com certificate (1545 bytes, sha1 4b330026…eea6) is byte-identical to the original's, for the section, hash-mismatch and cert-only builds.
 - **Relocations.** `.reloc` is untouched except the one entry under the request hook (0x27A507 → type 0). The new code needs none.
 - **Risk, LIKELY harmless:** whether anything in the client minds an 8th section (a packer or anti-tamper check of its own image). None was seen: no code reads its own section table apart from the CRT/TLS startup (not searched exhaustively). If the section build misbehaves live, use the fallback.
@@ -574,7 +574,7 @@ Both came up while watching `.sur` files made from match recordings (`replay_sur
   - push_back's full test uses the same two fields as the cave;
   - `test_seek_clear`: the seek's site and steps, its two callers, the vtable's two writers, the destructor's clear, and the cave's start and end.
 
-### 3.25 The sign-in reports a stale shell_32.dll in the temporary folder (written 2026-10-15, patch revision 13) — PROVEN bytes, run with Unicorn, not run in a game
+### 3.25 The sign-in reports a stale shell_32.dll in the temporary folder (written 2026-10-15 as patch revision 13, never released; in revision 12 since 2026-10-16) — PROVEN bytes, run with Unicorn, not run in a game
 
 One known cheat, "Survarium 0.26e ESP NAT" (`surv_26e_esp_hack_v21`,
 `cmtme.exe`, 2014), is an external wallhack: it reads the game's memory from
@@ -611,7 +611,7 @@ also catches a PC where the cheat ran in an earlier session.
   address. Nothing else is done with it (the owner: only count at first). A
   shadowban, if wanted, should be delayed, so a caught player cannot tell
   which sign-in flagged them.
-- **Nothing a match computes changes**: revisions 12 and 13 play together.
+- **Nothing a match computes changes**: revisions 11 and 12 play together.
   The two writes do what the originals did; the stack and every kept register
   are restored; the field's length is unchanged.
 - **Run with Unicorn** (`check_stale_dll_026g.py`): the hook and its code run
@@ -694,7 +694,7 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   **2015-06-06**, so the chain check always fails today.
 - Patch: 0x12A10 `83 EC 2C` -> `31 C0 C3` (`xor eax,eax; ret`; cdecl, no
   relocations in those bytes). The file table signature was still verified
-  with the certificate's key afterwards, until revision 14 (§0.1). Live:
+  with the certificate's key afterwards, until revision 12 (§0.1). Live:
   the patched client gets past the check and opens its window.
 - Ruled out: a damaged unpack (resources.db CRC 0x4A01F332 equals the 7z
   record) and a half-applied update (the leftover
@@ -702,7 +702,7 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   our resources.db).
 - 0.21d has `verify_sign` too, but its clients start; not checked why.
 
-### 0.1 What is signed, and why it is no longer checked (patch revisions 12 and 14, 2026-10-15)
+### 0.1 What is signed, and why it is no longer checked (patch revision 12, 2026-10-15/16)
 
 - **The bytes** [V, PROVEN with the retail archive]: the file table, the
   node buffer after the 24-byte header, `[24, 24 + u32 at 20)`; RSA PKCS#1
@@ -721,11 +721,12 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   0x135DC, `mov eax,ebx` 0x13601) and returns it; the mounter's
   `test eax,eax` / `jz` at 0x432DD mounts on 0 and pushes "Resources archive
   is corrupted" (0x432E1) on anything else. So 0 is success at this call.
-- **Revision 12** (README patch 24, never in a download): the call at
+- **The first revision 12** (README patch 24 as first written, never released): the call at
   0x135D3 went to 413 bytes at `.srp`+C00h, which called 0x12CB0 once with a
   context made on the stack whose key was Skhid's. Only a Skhid-signed table
   started the game.
-- **Revision 14** (README patch 24): the call at 0x135D3, `E8 D8 F6 FF FF`,
+- **Revision 12** (README patch 24; numbered 14 while it was written, owner
+  2026-10-16: it is revision 12): the call at 0x135D3, `E8 D8 F6 FF FF`,
   is `31 C0 90 90 90` (`xor eax,eax` and three nops), the same skip as
   resource-porter's `tools/patch-026-map-resources.py`; the `add esp,10h`
   after it still takes the four arguments off, and the caller still frees
@@ -735,7 +736,7 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   sha256. The 413 bytes at `.srp`+C00h are int3 padding again; the
   shell_32.dll check stays at +E00h. Not run in a game.
 
-### 0.2 resources.db's patches: more archives over it (patch revision 14, README patch 27, 2026-10-16)
+### 0.2 resources.db's patches: more archives over it (patch revision 12, README patch 27, 2026-10-16)
 
 - **The design** (the owner, 2026-10-16): `resources.db` stays the retail
   file; content comes as `resources.db.patch_<n>`, each a small archive of
@@ -753,12 +754,31 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   first; mount ids only grow (`archive_mounter` 0x42D30, `lock xadd
   [1F1D33Ch]` at 0x42E44); the file system's tasks run in the order they
   were added (`add_fs_task` 0xF8480). A folder over a folder merges, a file
-  over a file replaces it. `windows_hdd_file_system::open` 0x40000 keeps one
-  handle for any path that ends in `.db`, so a patch must not.
+  over a file replaces it.
+- **The handles** [V]: `windows_hdd_file_system` (vtable 0x9DE6D4: the
+  destructor 0x3FFC0, `open` 0x40000, `close` 0x40510) keeps one handle at
+  [fs+4] (-1 for none). `open` first asks whether the path ends in `.db`
+  (0x40590 with ".db" 0x9DE5A0, at 0x4008C): if so and [fs+4] holds a
+  handle, that handle is the result, whatever the path; else `CreateFileA`
+  (0x400C8), and a handle of a path ending in `.db` is put at [fs+4]
+  (0x40160..0x40174). `close` does not close [fs+4] (`cmp [ecx+4],eax`,
+  0x40514); the destructor does. So resources.db stays open, and a second
+  archive whose name ended in `.db` would be read through resources.db's
+  handle: a patch's name must not end in `.db`. A patch's file is opened
+  and closed by each read. The archive mount holds no handle of its own:
+  in the engine's source (`resources_device_manager_thread.cpp`,
+  `device_manager::process_query`) each query opens the file, reads and
+  closes it, and the mount (`vfs_mount_archive.cpp`) opens the file table
+  only while it mounts; the 0x40000 cache is the one handle kept that was
+  found in the exe. The 0.26g device manager (process_query 0x10B890, bound
+  at 0x10B75C) was not followed to its open and close instruction by
+  instruction. A patch is small and read once per file, so the cost is an
+  open per file read of a patch.
 - **The start-up mount** [V]: the start-up (0x14E8A) makes a
   `mount_by_config_helper` (0xE7D20) for "resources" with the callback
-  `on_mounted_resources` 0x147E0 bound to engine_world+2C0h and +2D4h
-  (0x14E1F..0x14E50; `mov dword [esp+1Ch],147E0h` at 0x14E34 is the
+  `on_mounted_resources` 0x147E0 bound to engine_world+2D4h, where the
+  mount is kept (m_resources_mount, the first argument), and +2C0h, the
+  shaders' masks (m_shader_mask_config) (0x14E1F..0x14E50; `mov dword [esp+1Ch],147E0h` at 0x14E34 is the
   function's only reference in the file). `query_db` 0xE7D90 formats
   `"../../%s.db"` (`push 9E705Ch` at 0xE7DAD; 0x18190 formats with `/` made
   the string's separator, `\`) into a native path string on its stack
@@ -784,34 +804,42 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
   zero) and starts the next step (0x176D0, 0xE5B60: the shaders' masks).
   `link_mount_ptr`, the engine's way to hold several mounts as one, is not
   in this build.
-- **The patch** (`mount_patches_026g.asm`, 549 bytes at `.srp`+400h, after
+- **The patch** (`mount_patches_026g.asm`, 707 bytes at `.srp`+400h, after
   the upload code and the longest default server's stub and name, which end
   at +21Dh, and before the pickup code at +800h):
-  - 0xE7E3E `E8 AD 00 00 00` (`call 0E7EF0h`) becomes `E8 25 D6 33 0A`,
-    `call 0A425468h`, mount_all. It looks for
+  - 0xE7E3E `E8 AD 00 00 00` (`call 0E7EF0h`) becomes `E8 45 D6 33 0A`,
+    `call 0A425488h`, mount_all. It looks for
     `..\..\resources.db.patch_<n>` for every n from 1 to 255 (the same
     0x18190 with `"../../%s.db.patch_%u"` and the descriptor; `CreateFileA`
     with no access and OPEN_EXISTING, then `CloseHandle`, the imports at
     0x870048 and 0x870040) and writes down, in order, the n of each one
-    that is there; a missing n is skipped. It writes the count of callbacks
-    to come (1 + patches) to its state before it queues anything, then
-    calls 0xE7EF0 with the game's five arguments, then once for each patch
-    written down with its own path string in place of the two paths. All registers are kept
-    (pushad / popad); nothing it needs survives a call in a register.
+    that is there. A failed `CreateFileA` asks `GetLastError` (0x87005C):
+    2 (file not found) and 3 (path not found) are a missing n, skipped; any
+    other error (a folder by that name and access denied give 5, a sharing
+    violation 32) is the fatal "Cannot open resources.db.patch_<n> (error
+    <e>). Please run the Skhid launcher again." before anything is queued.
+    It writes the count of callbacks to come (1 + patches) to its state
+    before it queues anything, then calls 0xE7EF0 with the game's five
+    arguments, then once for each patch written down with its own path
+    string in place of the two paths. All registers are kept (pushad /
+    popad); nothing it needs survives a call in a register.
   - 0x147E0 `55 8B EC 83 E4 F8` (`push ebp` / `mov ebp,esp` / `and esp,-8`)
     becomes `E9 1B 0C 41 0A 90` (`jmp 0A425400h` / nop), on_mounted. When no
     start-up mount is pending it runs the six bytes and jumps to 0x147E6:
     the game's own. A null mount for the k-th callback: k = 0 the game's own
     (its fatal), else the fatal "Cannot mount resources.db.patch_<n>.
     Please run the Skhid launcher again." with the n of the k-th patch
-    written down. Otherwise it takes a reference
-    (`lock inc [mount+1Ch]`), keeps the mount at the next of the state's
-    256 slots and counts the callback down (`lock dec`); for all but the
-    last it returns (the caller takes the arguments and lets its own
-    reference go). The last puts the address of slot 0 (resources.db's
-    mount) in place of its third argument and goes on into the game:
-    engine_world+2C0h holds resources.db's mount, as without patches, and
-    the start-up goes on after every archive is mounted.
+    written down. Otherwise it takes a reference (`lock inc [mount+1Ch]`),
+    keeps the mount at the next of the state's 256 slots and counts the
+    callback down (`lock dec`); all but the last return (the caller takes
+    the arguments and lets its own reference go). The last calls the six
+    bytes and 0x147E6 as a function, with the address of slot 0
+    (resources.db's mount) in place of its third argument: the game's code
+    takes engine_world's reference, stores the mount at engine_world+2D4h,
+    lets the one there go (none at start) and starts the next step; back
+    in the patch, slot 0's reference is let go as the game lets a mount go
+    (`lock xadd [mount+1Ch],-1`, 0xDFE30 at zero, which never happens:
+    engine_world holds it).
   - The state: 0x800 of `.srpd` (0xA428800 with the late-join code as
     built; the late join's own state is its first 60 bytes), 0x507 bytes:
     the count of callbacks to come, the count held, 256 mounts and the 255
@@ -820,15 +848,56 @@ Please reinstall the application and try again" (string 0x9DEF00, pushed at
     for another one. Neither site holds an address (no base relocation
     under them) and nothing aims inside them but their first byte (a
     `call 3DB6F0h` at 0x3C6F0A has the bytes of 0x147E1, no relocation).
+- **The references, and the quit** [V]: a mount's count is at +1Ch; one
+  nobody holds is unmounted (0xDFE30, `intrusive_fs_task_unmount_base::
+  destroy` in the 0.10b names: it queues an unmount task, `add_fs_task`'s
+  list and event). The file system holds a mount while its callback runs
+  and lets it go after. In the retail game resources.db ends held once, by
+  engine_world+2D4h. With the patch: resources.db once (engine_world's;
+  the state's reference is let go after the game takes its own), each
+  patch once (the state's), with any number of patches. (The first writing
+  kept the state's reference of resources.db as well: two.) Nothing lets
+  them go at quit, and the retail game never lets resources.db go either:
+  `engine_world`'s destructor (vtable 0x9DB60C slot 0, 0x13C10 → 0x13C20 →
+  0x15C80, the engine being the static object 0xA7B6B8) lets
+  engine_world+2C0h go (the shaders' masks, 0xE0210 at zero), logs any
+  leaked resource of class 0xC (0x102E30, a log line, no assert), stops its
+  threads and ends in `0x1135E0("", 0)` → 0x1134E0 → 0x1148D0:
+  `TerminateProcess(GetCurrentProcess(), 0)`. No code of the exe lets
+  engine_world+2D4h..2DCh go: their only writes are the constructor's
+  zeros (0x138DC..0x138E8) and the callbacks', +2D4h is read nowhere, and
+  none of 0xDFE30's nine callers (0x14822, 0x148EB, 0x1493B: the three
+  callbacks' release of the one there before; 0xDFF09, 0xE7F7D, 0xF8178,
+  0xF832C, 0x10549C, 0x1058CC) reaches them. (The 0.10b source's
+  `engine_world::finalize_resources` sets the three to NULL; 0.26g has no
+  such code.) So the patches stay mounted until the process ends, as
+  resources.db does, and no unmount runs at quit with or without them.
 - **The order of the callbacks**: FIFO, so the k-th callback is the k-th
-  patch's and the fatal names the right file. If the file system ever ran two
-  mounts at once only the number in the message could be wrong; which
-  call goes on into the game does not depend on the order.
+  mount's, and the order is what the patch relies on: the fatal names the
+  k-th patch, and slot 0, which the last callback hands to the game and
+  whose reference it lets go, is resources.db only if resources.db's
+  callback came first. If the order differed, engine_world would hold a
+  patch and the state resources.db (each mount would still be held once,
+  nothing unmounted), and a fatal could name the wrong patch. The evidence
+  [the review of #105, not re-read here]: the file system's tasks are put
+  in order on one list (`intrusive_list::push_back` in `add_fs_task`
+  0xF8480), run one after another on the one resources thread, each mount
+  synchronous (`query_mount_and_wait`), and the finished tasks' callbacks
+  are dispatched in order on the main thread.
 - **Checked**: `selftest_026g.py` check 27, and
   `check_mount_patches_026g.py` (Unicorn 2.1.4, the image as is and
-  rebased by 1 MiB with its relocations): the two hooks and the code run on
-  made-up folders and callbacks, the formatting, the file checks, the
-  mount, the fatal and the game's code after the six bytes being stubs.
-  **Not run: a game.** Not known from the code alone: whether a small
-  archive mounts as the retail one does (the mounter reads the 256
-  signature bytes after the file table, section 0.1).
+  rebased by 1 MiB with its relocations): the two hooks, the code and the
+  game's own on_mounted_resources from 0x147E6 to its next step (0x14827)
+  run on made-up folders and callbacks (each mount held by its caller while
+  the callback runs): the mounts queued, the reference counts at the end
+  (resources.db 1, each patch 1, nothing unmounted), a folder, access
+  denied and a sharing violation stopping before any mount, path not found
+  skipped, the first, a middle and the last patch failing to mount; the
+  formatting, the file checks, the mount, the fatal, the unmount and the
+  next step being stubs. **In a game**: the first writing (the build
+  numbered 14, sha256 `770f7c04…5b09`) mounted patches 14, 15 and 16 made
+  by our writer in Wine on 2026-10-16, and they worked; its quit was not
+  watched, and the build with this section's changes has not been run.
+  Not known from the code alone: whether every small archive mounts as the
+  retail one does (the mounter reads the 256 signature bytes after the
+  file table, section 0.1).

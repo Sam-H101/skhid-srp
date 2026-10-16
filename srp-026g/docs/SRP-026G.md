@@ -120,7 +120,7 @@ A port that is not a number stops srp at start.
 srp takes every table of game data from the archives the players' game
 mounts, once, before anything else (`crates/survarium/src/v026g/game_data.rs`):
 the stock `resources.db` and every `resources.db.patch_<n>` over it, n
-ascending, a later file over an earlier one (client patch revision 14). It
+ascending, a later file over an earlier one (client patch revision 12). It
 reads them from the server's game data (`server-game-data.db`), which
 `srp-game-data build` makes of exactly those archives (`crates/resources-db`,
 `server`): the files srp reads (every `gameplay/` file and the project

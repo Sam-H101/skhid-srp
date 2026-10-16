@@ -1,4 +1,4 @@
-; The game mounts resources.db's patches (build 2777, patch revision 14,
+; The game mounts resources.db's patches (build 2777, patch revision 12,
 ; client_patch.md section 0.2). Two entries; patch_026g.py checks the hooks'
 ; targets and the state address at the end:
 ;   nasm -f bin -DCAVE=0xA425400 -DSTATE=0xA428800 mount_patches_026g.asm -o mount_patches_026g.section.bin
@@ -17,18 +17,27 @@
 ;
 ; Each mount calls the same callback when it is done, on_mounted_resources
 ; 0x147E0, in the order they were queued (the file system runs its tasks
-; one after another). It keeps the mount in engine_world+2C0h and goes on
-; with the start-up, so only the last call may get there. Its first six
-; bytes jump here (on_mounted): the calls of the start-up mounts but the
-; last take a reference of their mount (a mount nobody holds is unmounted)
-; and keep it in the state, then return; the last one goes on into the
-; game's code with resources.db's mount, as the game without patches. A call
-; when no start-up mount is pending is the game's own.
+; one after another). It keeps the mount in engine_world+2D4h
+; (m_resources_mount) and goes on with the start-up, so only the last call
+; may get there. Its first six bytes jump here (on_mounted): the call of
+; each start-up mount takes a reference of its mount (a mount nobody holds
+; is unmounted) and keeps it in the state; all but the last return. The
+; last calls the game's code with resources.db's mount, which takes its own
+; reference for engine_world and goes on with the start-up, as the game
+; without patches; then resources.db's reference taken here goes, so
+; resources.db is held by engine_world alone, as in the retail game. Each
+; patch is held by the state alone, for the life of the process: the game
+; never lets engine_world+2D4h go either (the engine's end, 0x15C80, ends
+; in TerminateProcess with the mounts held). A call when no start-up mount
+; is pending is the game's own.
 ;
-; A mount that failed gives a null mount: for resources.db the game's own
-; "Cannot mount resources", for a patch "Cannot mount resources.db.patch_<n>"
-; (fatal 0x113580, which does not return). A patch that is there is never
-; skipped.
+; A patch file is "not there" when CreateFileA fails with
+; ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND. Any other failure (a folder
+; by that name, access denied, a sharing violation) stops the game with
+; "Cannot open resources.db.patch_<n> (error <e>)". A mount that failed
+; gives a null mount: for resources.db the game's own "Cannot mount
+; resources", for a patch "Cannot mount resources.db.patch_<n>" (fatal
+; 0x113580, which does not return). A patch that is there is never skipped.
 ;
 ; The state is in `.srpd`, the late join's writable page (STATE, at its
 ; 0x800). The image may be rebased: every address of the exe and of this
@@ -40,11 +49,15 @@ QUERY_MOUNT_ARCHIVE equ 0xE7EF0         ; esi = allocator; five arguments, cdecl
 FORMAT_PATH         equ 0x18190         ; esi = native path string; (format, ...), cdecl
 FATAL               equ 0x113580        ; (format, ...), never returns
 ON_MOUNTED_BODY     equ 0x147E6         ; on_mounted_resources after the six bytes
+UNMOUNT             equ 0xDFE30         ; eax = a mount nobody holds: queues its unmount
 CloseHandle         equ 0x870040        ; the import table's slots
 CreateFileA         equ 0x870048
+GetLastError        equ 0x87005C
 
 MAX_PATCHES equ 255                     ; the patch revision is a byte
 REFERENCES  equ 0x1C                    ; a mount's reference count
+ERROR_FILE_NOT_FOUND equ 2
+ERROR_PATH_NOT_FOUND equ 3
 
 ; The state (zeroed with the page).
 REMAINING   equ 0                       ; start-up mounts whose callback has not come
@@ -79,7 +92,7 @@ on_mounted:
     sub edx, .pc                        ; edx = the rebase delta, 0 if none
     lea ecx, [edx+STATE]
     cmp dword [ecx+REMAINING], 0
-    je .game                            ; not a start-up mount
+    je game                             ; not a start-up mount
     mov eax, [esp+0xC]
     mov eax, [eax]
     test eax, eax
@@ -95,21 +108,35 @@ on_mounted:
     jz .last
     ret                                 ; cdecl: the caller takes the arguments
 .last:
-    ; Every archive is mounted: the start-up goes on, with resources.db's
-    ; mount kept in engine_world as without patches.
-    lea eax, [ecx+MOUNTS]
-    mov [esp+0xC], eax
-    jmp .game
+    ; Every archive is mounted: the game's code with resources.db's mount,
+    ; as without patches (it takes engine_world's reference and starts the
+    ; next step), then resources.db's reference of the state goes.
+    push esi
+    lea esi, [ecx+MOUNTS]
+    push esi                            ; &resources.db's mount
+    push dword [esp+0x10]               ; the next step
+    push dword [esp+0x10]               ; where it is kept
+    call game                           ; cdecl; esi is kept
+    add esp, 0xC
+    mov eax, [esi]
+    or ecx, -1
+    lock xadd [eax+REFERENCES], ecx     ; as the game lets a mount go
+    dec ecx
+    jnz .held                           ; engine_world holds it: always
+    call UNMOUNT
+.held:
+    pop esi
+    ret
 .failed:
     mov eax, [ecx+SEEN]                 ; 0: resources.db, k: the k-th patch
     test eax, eax
-    jz .game                            ; the game's own "Cannot mount resources"
+    jz game                             ; the game's own "Cannot mount resources"
     movzx eax, byte [ecx+NUMBERS-1+eax] ; its n
     push eax
     lea eax, [edx+failed]
     push eax
     call FATAL
-.game:
+game:
     push ebp                            ; the six bytes the hook replaced
     mov ebp, esp
     and esp, -8
@@ -154,7 +181,20 @@ mount_all:
     push eax
     call [edx+CreateFileA]
     cmp eax, -1                         ; INVALID_HANDLE_VALUE
+    jne .there
+    mov edx, [esp+DELTA]
+    call [edx+GetLastError]
+    cmp eax, ERROR_FILE_NOT_FOUND
+    je .probe                           ; not there
+    cmp eax, ERROR_PATH_NOT_FOUND
     je .probe
+    push eax                            ; there, and it cannot be opened
+    push dword [esp+4+INDEX]
+    mov edx, [esp+8+DELTA]
+    lea eax, [edx+unreadable]
+    push eax
+    call FATAL
+.there:
     mov edx, [esp+DELTA]
     push eax
     call [edx+CloseHandle]
@@ -221,4 +261,5 @@ format_patch:
 
 patch_format:   db "../../%s.db.patch_%u", 0
 failed:         db "Cannot mount resources.db.patch_%u. Please run the Skhid launcher again.", 0
+unreadable:     db "Cannot open resources.db.patch_%u (error %u). Please run the Skhid launcher again.", 0
 state_at:       dd STATE                ; for patch_026g.py: where the code keeps its state
