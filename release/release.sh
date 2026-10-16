@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # usage: release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
 #                           [--server-code auto|yes|no] [--minutes <n>]
-#                           [--label <word>] [--dry-run] [--yes --i-know]
+#                           [--label <word>] [--ref <branch>] [--dry-run]
+#                           [--yes --i-know]
 #
 # A whole release of origin/main in one run. Players get a maintenance
 # countdown; everything is prepared while it runs, and at its end it is all
@@ -63,6 +64,8 @@
 #   --minutes <n>       the countdown, 1-10080 (default $SKHID_MAINT_MINUTES,
 #                       else 20)
 #   --label <word>      ends the release folder's name
+#   --ref <branch>      with --test only: release that pushed branch instead
+#                       of main (a branch under review); live is always main
 #   --dry-run           runs the read-only checks of step 1, prints every
 #                       other command; plans no maintenance, writes nothing
 #   --yes --i-know      answer both y/N questions yes (both flags or neither)
@@ -78,7 +81,7 @@ BUILD_ZIP=${SKHID_TEST_BUILD_ZIP:-$here/build-zip}
 MINUTE=${SKHID_TEST_SECONDS_PER_MINUTE:-60}
 STOCK_SHA=${SKHID_TEST_STOCK_SHA256:-$STOCK_DB_SHA256}
 
-resources='' test_server=0 server_code=auto minutes='' label='' yes=0 i_know=0
+ref=main resources='' test_server=0 server_code=auto minutes='' label='' yes=0 i_know=0
 while (($#)); do
     case $1 in
     -h | --help) usage ;;
@@ -87,6 +90,7 @@ while (($#)); do
     --server-code) (($# >= 2)) || usage 1; server_code=$2; shift 2 ;;
     --minutes) (($# >= 2)) || usage 1; minutes=$2; shift 2 ;;
     --label) (($# >= 2)) || usage 1; label=$2; shift 2 ;;
+    --ref) (($# >= 2)) || usage 1; ref=$2; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes) yes=1; shift ;;
     --i-know) i_know=1; shift ;;
@@ -95,6 +99,8 @@ while (($#)); do
 done
 ((yes == i_know)) || die "--yes goes with --i-know (both or neither): without a terminal to ask, this restarts the live server"
 [[ $server_code =~ ^(auto|yes|no)$ ]] || die "--server-code is auto, yes or no"
+[[ $ref == main || $test_server == 1 ]] || die "--ref goes with --test only: a live release is of main"
+[[ $ref =~ ^[A-Za-z0-9._/-]+$ && $ref != -* ]] || die "$ref: not a branch name"
 [[ -z $label || $label =~ ^[A-Za-z0-9._-]+$ ]] || die "$label: a label is letters, digits, . _ -"
 need_cmds ssh curl jq sha256sum od git tar awk df
 load_env SKHID_JUMP SKHID_SITE SKHID_STOCK_DB SKHID_GAME SKHID_LOCALIZATION
@@ -332,17 +338,19 @@ if bin=$(game_data_bin 2>"$work/game-data-build.log"); then okay "srp-game-data:
 
 # The revision: main's, the live exe's.
 main_rev='' main_commit='' live_rev=unknown
-if git -C "$REPO" fetch --quiet origin main:refs/remotes/origin/main 2>"$work/fetch.log"; then
-    main_commit=$(git -C "$REPO" rev-parse origin/main)
+if git -C "$REPO" fetch --quiet origin "$ref:refs/remotes/origin/$ref" 2>"$work/fetch.log"; then
+    main_commit=$(git -C "$REPO" rev-parse "origin/$ref")
     main_rev=$(revision_at "$REPO" "$main_commit")
-    if is_revision "${main_rev:-x}"; then okay "origin/main: $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), REVISION $main_rev"; else problem "no REVISION in patch_026g.py of origin/main"; main_rev=''; fi
+    if is_revision "${main_rev:-x}"; then okay "origin/$ref: $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), REVISION $main_rev"; else problem "no REVISION in patch_026g.py of origin/$ref"; main_rev=''; fi
 else
-    problem "git fetch origin main failed ($(tr '\n' ' ' <"$work/fetch.log"))"
+    problem "git fetch origin $ref failed ($(tr '\n' ' ' <"$work/fetch.log"))"
 fi
 if (fetch_site_zip "$TARGET_SITE" "$work/live.zip") 2>"$work/live-zip.log"; then
     live_rev=$(zip_revision "$work/live.zip" "$work/live.exe")
     if [[ $live_rev == unknown ]]; then
         problem "the exe in $TARGET_SITE/download says no revision this script can read"
+    elif [[ -n $main_rev ]] && ((main_rev <= live_rev && test_server)); then
+        okay "the test exe is revision $live_rev, $ref has $main_rev (not above it: fine for the test environment)"
     elif [[ -n $main_rev ]] && ((main_rev <= live_rev)); then
         problem "main's REVISION $main_rev is not above the $TARGET exe's $live_rev: merge the bump PR first"
     else
@@ -616,7 +624,7 @@ else
     say_offered
     progress "3. staging in the release folder $TARGET_DIR/$REL (not in place yet)"
     {
-        say "release $REL: origin/main $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), revision $live_rev -> $rev"
+        say "release $REL: origin/$ref $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), revision $live_rev -> $rev"
         say
         say "server source, main's srp-026g against the $TARGET tree$( ((build_code)) || printf ' (not built)'):"
         if [[ -n $code_report ]]; then say "$code_report"; else say "  (the same)"; fi
