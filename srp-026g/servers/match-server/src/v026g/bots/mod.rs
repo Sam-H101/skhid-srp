@@ -94,6 +94,13 @@ const NO_WAY_RETRY_MS: u32 = 500;
 /// How long the plays leave a goal no way was found to (`Bot::no_way_to`):
 /// a zone on a timer may open meanwhile, and the bot does something else.
 pub const NO_WAY_KEEP_MS: u32 = 20_000;
+/// How long the whole team leaves a goal one of its bots proved no way to
+/// (`TeamState::no_way_to`): in the owner's match of 2026-10-16 all six
+/// bots tried one battery 183 times, each learning on its own, for 20 s.
+/// A pocket that zones on all match close is left for the match anyway
+/// (`Ctx::reachable`); this is for the rest (a switching zone's, a spawn
+/// area's).
+pub const TEAM_NO_WAY_KEEP_MS: u32 = 60_000;
 /// Grid searches a poll may make for all the match's bots: a search costs
 /// up to tens of ms on the host, and the match loop is the server's one
 /// thread. A bot left without one plans at its next tick, its old route
@@ -130,6 +137,9 @@ struct TeamState {
     cheats: CheatClock,
     signals: MatchSignals,
     next_commander: u32,
+    /// Goals a bot of the team proved no way to, and until when the
+    /// team's plays leave them ([`TEAM_NO_WAY_KEEP_MS`]).
+    no_way_to: Vec<(Vec3, u32)>,
 }
 
 /// One bot.
@@ -478,6 +488,7 @@ impl Bots {
             cheats: CheatClock::default(),
             signals: MatchSignals::default(),
             next_commander: 0,
+            no_way_to: Vec::new(),
         };
         let bots = teams
             .iter()
@@ -1035,6 +1046,12 @@ impl Bots {
         let state = &mut self.teams[usize::from(team)];
         state.next_commander = now + tuning.think.commander_ms;
         state.knowledge.forget_old(now);
+        // What a bot of the team proved no way to lately, the whole team
+        // leaves for longer, from the proof on.
+        state.no_way_to.retain(|&(_, until)| now < until);
+        for bot in self.bots.iter().flatten().filter(|b| b.team == team) {
+            learn_no_way(&mut state.no_way_to, &bot.no_way_to, now);
+        }
         let since_theft = state
             .knowledge
             .thefts
@@ -1101,6 +1118,7 @@ impl Bots {
             let Some(me) = view.place(bot.place).filter(|p| p.alive) else {
                 continue;
             };
+            let no_way = team_no_way(&bot.no_way_to, &state.no_way_to);
             let cx = Ctx {
                 now,
                 view,
@@ -1112,7 +1130,7 @@ impl Bots {
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
-                    no_way_to: &bot.no_way_to,
+                    no_way_to: &no_way,
                     set_aside: &bot.set_aside,
                 },
                 memory: &bot.memory,
@@ -1151,6 +1169,7 @@ impl Bots {
                 bot.last_ran.retain(|(k, _)| *k != kind);
                 bot.last_ran.push((kind, now));
             }
+            let no_way = team_no_way(&bot.no_way_to, &state.no_way_to);
             let cx = Ctx {
                 now,
                 view,
@@ -1162,7 +1181,7 @@ impl Bots {
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
-                    no_way_to: &bot.no_way_to,
+                    no_way_to: &no_way,
                     set_aside: &bot.set_aside,
                 },
                 memory: &bot.memory,
@@ -1476,6 +1495,31 @@ impl Bots {
 /// How far `me` is from any fight, metres: the nearest enemy in the match
 /// and alive, shot heard (the view keeps the last few seconds of them) or
 /// death of the last [`FIGHT_DEATH_MS`]; infinite with none.
+/// A team learns its bot's goals with no way lately (`Bot::no_way_to`,
+/// kept [`NO_WAY_KEEP_MS`] from the proof): each is left by the team
+/// [`TEAM_NO_WAY_KEEP_MS`] from its latest proof.
+fn learn_no_way(team: &mut Vec<(Vec3, u32)>, own: &[(Vec3, u32)], now: u32) {
+    for &(goal, until) in own {
+        let until = until - NO_WAY_KEEP_MS.min(until) + TEAM_NO_WAY_KEEP_MS;
+        if now >= until {
+            continue;
+        }
+        match team
+            .iter_mut()
+            .find(|(old, _)| old.distance_xz(goal) <= REPLAN_MOVED_M)
+        {
+            Some(old) => old.1 = old.1.max(until),
+            None => team.push((goal, until)),
+        }
+    }
+}
+
+/// A bot's goals with no way lately and its team's
+/// ([`TEAM_NO_WAY_KEEP_MS`]), for the commander's choice.
+fn team_no_way(own: &[(Vec3, u32)], team: &[(Vec3, u32)]) -> Vec<(Vec3, u32)> {
+    own.iter().chain(team).copied().collect()
+}
+
 fn from_fight(view: &MatchView, me: &PlaceView) -> f32 {
     let enemies = view.enemies_of(me.team).map(|enemy| enemy.feet);
     let shots = view

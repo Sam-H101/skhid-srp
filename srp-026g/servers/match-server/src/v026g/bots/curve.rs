@@ -132,6 +132,13 @@ pub enum Input {
     Current,
     /// Seconds since a battery of ours was taken (large if none).
     SinceTheft,
+    /// How far behind on points the team is, late in the match, `[0, 1]`
+    /// (`signals::MatchSignals::behind_late`).
+    BehindLate,
+    /// Seconds left, fewer the farther behind the team is
+    /// (`signals::MatchSignals::time_left_behind`): a team far behind
+    /// reads the match's end as nearer.
+    TimeLeftBehind,
 }
 
 /// One consideration: `curve((clamp(input, lo, hi) - lo) / (hi - lo))`,

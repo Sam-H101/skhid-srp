@@ -5,10 +5,13 @@
 //! stands still and looks at the pickup point. The reflex shoots once he
 //! is seen and noticed (the play keeps fire allowed and never aims).
 //!
-//! - "Heading to it" is read from what the bot knows: a known track
-//!   (seen, heard, told or the radar's) within `enemy_max_m` of the
-//!   battery, for whom it is the nearest free battery (tracks carry no
-//!   heading).
+//! - "Heading to it" is read from what the bot knows: a fresh track of
+//!   the team's own senses (seen, heard or told, within `enemy_fresh_s`
+//!   and since his spawn) within `enemy_max_m` of the battery, for whom
+//!   it is the nearest free battery (tracks carry no heading).
+//! - Only a battery the team could take itself (`Ctx::can_take`): one
+//!   no way leads to is not worth waiting at (in the owner's match of
+//!   2026-10-16, 56 ambushes at batteries nobody ever took).
 //! - The bot goes only if it gets there first: its path to the battery
 //!   is no longer than his (`first_ratio`); otherwise play 2 answers him
 //!   once he carries it.
@@ -23,6 +26,7 @@
 
 use super::*;
 use crate::v026g::bots::curve::{Consideration, Curve, Input};
+use crate::v026g::bots::know::Source;
 use crate::v026g::bots::tactics::SpotQuery;
 use crate::v026g::bots::view::BatteryState;
 
@@ -30,6 +34,10 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // An enemy this near a battery (it the nearest free one to him) heads
     // to it.
     ("enemy_max_m", 80.0),
+    // Only an enemy the team sensed itself (seen, heard, told by a
+    // teammate) this lately, and since his last spawn, heads anywhere: not
+    // a radar's mark, a ghost of a dead one or an old place.
+    ("enemy_fresh_s", 6.0),
     // A teammate this near the battery covers it.
     ("cover_m", 20.0),
     // The bot's path to the battery at most this times his.
@@ -59,6 +67,7 @@ pub fn tuning() -> PlayTuning {
             considerations::near(150.0),
             considerations::personality(),
             considerations::holding(),
+            considerations::not_behind_late(),
             considerations::health_above(0.3),
             considerations::modifier(Input::ObjectiveUrgency, 0.6),
             // One or two enemies by the battery are the point; a squad is
@@ -83,12 +92,21 @@ impl Ctx<'_> {
     /// nearest such.
     fn ambush_enemy(&self, at: Vec3) -> Option<Track> {
         let far = self.num(PlayKind::Ambush, "enemy_max_m");
+        let fresh = (self.num(PlayKind::Ambush, "enemy_fresh_s") * 1000.0) as u32;
         let free: Vec<Vec3> = (0..self.view.batteries.len())
             .filter_map(|b| self.battery_lying(b))
             .collect();
         self.memory
             .tracks()
             .iter()
+            .filter(|t| {
+                matches!(t.source, Source::Seen | Source::Heard | Source::Told { .. })
+                    && t.time + fresh >= self.now
+                    && self
+                        .view
+                        .place(t.who)
+                        .is_some_and(|p| p.alive && p.spawned <= t.time)
+            })
             .filter(|t| {
                 let d = t.at.distance_xz(at);
                 d < far && free.iter().all(|other| t.at.distance_xz(*other) >= d)
@@ -128,7 +146,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
                 .is_none_or(|p| p.team != cx.me.team),
             _ if !running => cx
                 .battery_lying(battery)
-                .is_some_and(|at| cx.ambush_worth(at)),
+                .is_some_and(|at| cx.can_take(at) && cx.ambush_worth(at)),
             _ => false,
         };
         if worth {
@@ -370,6 +388,54 @@ mod tests {
             step(&mut state, TargetRef::Battery(0), &s.cx(0), &mut rng),
             Step::Done(_)
         ));
+    }
+
+    /// Only a fresh track of the team's own senses heads anywhere: not
+    /// the radar's, not one older than `enemy_fresh_s`, not one from
+    /// before his last spawn (a ghost); and a battery no way leads to is
+    /// not waited at.
+    #[test]
+    fn only_a_fresh_sensed_enemy_heads_to_a_battery_the_team_could_take() {
+        use crate::v026g::bots::know::CheatKind;
+        let s = scene(true);
+        assert_eq!(ambushes(&s, 0).len(), 1);
+        let mut s = scene(false);
+        s.enemy(
+            1,
+            1,
+            Vec3::new(60.0, 0.0, 10.0),
+            Some(Source::Told { by: 2 }),
+        );
+        assert_eq!(ambushes(&s, 0).len(), 1, "a teammate's callout counts");
+        let mut s = scene(false);
+        s.enemy(
+            1,
+            1,
+            Vec3::new(60.0, 0.0, 10.0),
+            Some(Source::Cheat(CheatKind::Radar)),
+        );
+        assert!(ambushes(&s, 0).is_empty(), "the radar's mark");
+        let mut s = scene(true);
+        s.view.clock += 7_000;
+        assert!(ambushes(&s, 0).is_empty(), "7 s old");
+        let mut s = scene(true);
+        s.view.clock += 1_000;
+        s.view.places[1].spawned = s.view.clock;
+        assert!(ambushes(&s, 0).is_empty(), "sensed before his spawn");
+        let mut s = scene(true);
+        s.no_way_to = vec![(BATTERY, s.view.clock + 5_000)];
+        assert!(ambushes(&s, 0).is_empty(), "no way to it");
+    }
+
+    /// Far behind late in the match an ambush (a hold) is not worth it.
+    #[test]
+    fn a_team_far_behind_late_does_not_ambush() {
+        let mut s = scene(true);
+        s.time_left(100.0).points(0, 3);
+        assert!(ambushes(&s, 0).is_empty());
+        let mut s = scene(true);
+        s.time_left(100.0).points(3, 3);
+        assert_eq!(ambushes(&s, 0).len(), 1);
     }
 
     #[test]

@@ -24,9 +24,13 @@ pub fn tuning() -> PlayTuning {
     PlayTuning {
         rank: Rank::Objective,
         considerations: vec![
-            // 0 above 4 minutes left, full in the last two.
+            // 0 above 4 minutes left, full in the last two; a team far
+            // behind reads the time left as up to half
+            // (`Input::TimeLeftBehind`): from 8 minutes left at 3 points
+            // behind (in the owner's match of 2026-10-16 the bots 1-5
+            // behind came to it only at 740 s of 922).
             Consideration::new(
-                Input::TimeLeft,
+                Input::TimeLeftBehind,
                 0.0,
                 240.0,
                 Curve::Piecewise {
@@ -142,5 +146,36 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             };
             Step::Continue(Intent::stay().crouched().looking(Look::At(at)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::Scenario;
+    use super::*;
+    use crate::v026g::bots::view::Mode;
+
+    fn denials(s: &Scenario) -> Vec<Candidate> {
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        out
+    }
+
+    /// From 4 minutes left with the score close; a team 3 behind from 8
+    /// (it reads the time left as half).
+    #[test]
+    fn a_team_far_behind_starts_late_denial_earlier() {
+        let scene = |left: f32, ours: u32, theirs: u32| {
+            let mut s = Scenario::field(Mode::Batteries);
+            s.bot(0, 0, Vec3::new(40.0, 0.0, 30.0));
+            s.container_count(1, 3);
+            s.time_left(left).points(ours, theirs);
+            denials(&s)
+        };
+        assert!(scene(400.0, 1, 1).is_empty());
+        assert!(scene(400.0, 1, 2).is_empty());
+        assert_eq!(scene(400.0, 0, 3).len(), 1);
+        assert_eq!(scene(200.0, 1, 1).len(), 1);
+        assert!(scene(500.0, 0, 3).is_empty());
     }
 }

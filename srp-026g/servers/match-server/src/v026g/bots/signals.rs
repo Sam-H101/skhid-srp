@@ -71,10 +71,39 @@ impl MatchSignals {
             Input::ScoreGap => self.score_gap,
             Input::EnemiesDead => self.enemies_dead,
             Input::SinceTheft => self.since_theft_s,
+            Input::BehindLate => self.behind_late(),
+            Input::TimeLeftBehind => self.time_left_behind(),
             _ => return None,
         })
     }
+
+    /// Behind on points, `[0, 1]`: 1 from [`BEHIND_FULL`] points down.
+    pub fn behind(&self) -> f32 {
+        (-self.score_gap / BEHIND_FULL).clamp(0.0, 1.0)
+    }
+
+    /// Behind on points, late in the match, `[0, 1]`: [`Self::behind`]
+    /// times the play time gone, full from [`LATE_FULL`] of it. A team
+    /// far behind with little time left gains nothing by holding a spot
+    /// (in the owner's match of 2026-10-16 the bots 1-3 to 1-5 behind
+    /// spent 26 % of their time in hold plays).
+    pub fn behind_late(&self) -> f32 {
+        self.behind() * (self.progress / LATE_FULL).clamp(0.0, 1.0)
+    }
+
+    /// Seconds left, fewer the farther behind: down to half at
+    /// [`BEHIND_FULL`] points behind, so a team far behind starts the
+    /// endgame (play 16, late denial) earlier.
+    pub fn time_left_behind(&self) -> f32 {
+        self.time_left_s * (1.0 - 0.5 * self.behind())
+    }
 }
+
+/// [`MatchSignals::behind`] is full this many points behind.
+pub const BEHIND_FULL: f32 = 3.0;
+/// [`MatchSignals::behind_late`] is full from this share of the play time
+/// gone.
+pub const LATE_FULL: f32 = 0.75;
 
 /// A team's modifiers, `[min, max]`.
 #[derive(Clone, Debug, PartialEq)]
