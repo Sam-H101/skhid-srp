@@ -18,8 +18,8 @@
 //! - The posts are drawn per run within their bands, so two escorts do not
 //!   look alike; a post that is no goal (an enemy spawn area, off the
 //!   floors) is pulled in toward him.
-//! - It ends when he is home or no longer carries, or after a time drawn
-//!   per run.
+//! - None for a carrier near home (`near_home_m`): it ends there, when he
+//!   no longer carries, or after a time drawn per run.
 
 use super::*;
 
@@ -38,7 +38,11 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // behind him.
     ("look_ahead_m", 25.0),
     ("look_back_m", 25.0),
-    // A carrier this near home needs no escort.
+    // A carrier this near home needs no escort (the owner's word,
+    // 2026-10-16: none for a battery picked up close to the base), and an
+    // escort ends there.
+    ("near_home_m", 25.0),
+    // The post ahead stays this far short of home at least (half of it).
     ("home_m", 8.0),
     ("within_m", 3.0),
     // Farther than this from its post it hurries (`Ctx::pace_toward`);
@@ -102,7 +106,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     let Some(home) = cx.view.container_of(cx.me.team).map(|c| c.at) else {
         return;
     };
-    let home_m = cx.num(PlayKind::Escort, "home_m");
+    let home_m = cx.num(PlayKind::Escort, "near_home_m");
     for carrier in cx.view.team(cx.me.team) {
         let Some(battery) = carrier.carrying else {
             continue;
@@ -155,7 +159,7 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
     };
     let him = carrier.feet;
     let left = him.distance_xz(home);
-    if left < num("home_m") {
+    if left < num("near_home_m") {
         return Step::Done("he is home");
     }
     let (State::Ahead { until, .. } | State::Behind { until, .. }) = *state;
