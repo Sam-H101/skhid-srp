@@ -1664,3 +1664,50 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
     });
     assert!(made.iter().all(|made| made.place != 3));
 }
+
+/// A place's ammo lasts the match: a bot's kit keeps what it has left from
+/// life to life, and when it runs low the bot picks its second kit (its
+/// backup's weapon and another ammo) for its next life, once.
+#[test]
+fn a_bot_spent_of_its_first_kit_picks_its_second_for_the_next_life() {
+    let mut bots = Bots::new(
+        0x417,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &[0, 1],
+        &[true, true],
+        &[Some("flanker"), Some("rusher")],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    let bot = bots.bots[0].as_mut().unwrap();
+    let (uzi, ak) = (bot.kits[0].0, bot.kits[1].0);
+    assert_eq!(uzi.primary.0.item, "uzi");
+    assert_eq!(ak.primary.0.item, "ak_74u");
+    assert_eq!((bot.kits[0].1, bot.kits[1].1), (600, 600));
+    // Full: no choice. A life that spends all but 40 rounds: still a
+    // magazine left, and it keeps the kit.
+    assert_eq!(bot.pick_kit(), None);
+    let hands = bot.reflex.hands();
+    (hands.primary.rounds, hands.primary.spare) = (32, 8);
+    assert_eq!(bot.pick_kit(), None);
+    // The next life in the same kit has those 40, not a full kit.
+    bot.new_life(0.5, None, Vec3::ZERO);
+    assert_eq!((bot.kit, bot.reflex.left()), (0, 40));
+    assert_eq!(bot.reflex.hands().primary.rounds, 32);
+    // Down to 10: kit 2 for its next life, chosen once.
+    let hands = bot.reflex.hands();
+    (hands.primary.rounds, hands.primary.spare) = (10, 0);
+    assert_eq!(bot.pick_kit(), Some((1, 10, 600)));
+    assert_eq!(bot.pick_kit(), None);
+    // Its next life is in kit 2, with the AK-74U and its 600 rounds; kit
+    // 1 keeps its 10.
+    bot.new_life(0.5, None, Vec3::ZERO);
+    assert_eq!(bot.kit, 1);
+    assert_eq!(bot.reflex.held_gun().item, "ak_74u");
+    assert_eq!(bot.reflex.left(), 600);
+    assert_eq!(bot.kits[0].1, 10);
+    // The rusher's second kit is the Uzi.
+    let rusher = bots.bots[1].as_ref().unwrap();
+    assert_eq!(rusher.kits[1].0.primary.0.item, "uzi");
+}

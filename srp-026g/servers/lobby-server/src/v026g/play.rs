@@ -177,18 +177,18 @@ fn server_bot_name(n: usize) -> String {
 }
 
 /// The match server's own bot of `role` on `team`, number `n` of its match
-/// (1 on): a place with no account, its player in the role's kit
-/// (`loadouts::bot_kit`): the role's weapon in slot 7 with a clip, the
-/// starter's TT-33 in slot 10 with a clip (so never a spawn with nothing
-/// in the weapon slots, `match_profile`), the role's armour, a backpack
-/// and trousers that open three pockets (four for a support), and in them
-/// medkits, the radio and two RGD-5 grenades. The match server reads the
+/// (1 on): a place with no account, its player with the role's two kits
+/// (`loadouts::bot_kits`): the role's weapon in slot 7 with the most ammo
+/// players carry, the role's armour, a backpack and trousers that open
+/// three pockets (four for a support), and in them medkits, the radio and
+/// two RGD-5 grenades; the second the same with another weapon and its
+/// ammo (`BotRole::backup`), for when the first kit's ammo is spent. The match server reads the
 /// role back from the profile (`loadouts::bot_role_of`).
 pub fn server_bot(n: usize, team: u8, role: BotRole) -> MatchPlayer {
-    let mut profile = MatchProfile::from_loadout(
+    let mut profile = MatchProfile::from_loadouts(
         &server_bot_name(n),
         team,
-        survarium::v026g::loadouts::bot_kit(role),
+        &survarium::v026g::loadouts::bot_kits(role),
         [0.0; survarium::v026g::skills::MODIFIERS],
         survarium::v026g::dictionary::Dictionary::shared(),
         1,
@@ -1578,7 +1578,7 @@ mod tests {
     #[test]
     fn a_server_bot_wears_its_roles_kit_and_a_client_reads_it() {
         use survarium::v026g::dictionary::Dictionary;
-        use survarium::v026g::loadouts::{self, bot_kit_items, bot_role_of};
+        use survarium::v026g::loadouts::{self, bot_kit_items, bot_role_of, bot_second_kit_items};
         use survarium::v026g::match_msgs::static_info::{
             KIT_USABLE, MatchOptions, SCORE_WEIGHTS, StaticInfo, parse_payload,
         };
@@ -1591,26 +1591,44 @@ mod tests {
             .collect();
         for (bot, role) in bots.iter().zip(BotRole::ALL) {
             let profile = &bot.profile;
-            assert_eq!(profile.kits.len(), 1);
-            let kit = &profile.kits[0];
-            assert_eq!(kit.state, KIT_USABLE);
-            // Every piece of the role's kit in its slot, the count as
-            // given; nothing else.
-            assert_eq!(
-                kit.slots.iter().filter(|slot| slot.is_some()).count(),
-                bot_kit_items(role).count()
-            );
-            for wanted in bot_kit_items(role) {
-                let (index, count) = kit.slots[usize::from(wanted.slot)]
-                    .unwrap_or_else(|| panic!("{role}: nothing in slot {}", wanted.slot));
-                let item = &profile.items[usize::from(index)];
+            // Its role's kit, then the second (its backup's weapon and
+            // ammo), no item in both.
+            assert_eq!(profile.kits.len(), 2);
+            let used: Vec<u16> = profile
+                .kits
+                .iter()
+                .flat_map(|kit| kit.slots.iter().flatten().map(|(index, _)| *index))
+                .collect();
+            let mut once = used.clone();
+            once.sort_unstable();
+            once.dedup();
+            assert_eq!(once.len(), used.len(), "{role}: an item in two kits");
+            for (k, kit) in profile.kits.iter().enumerate() {
+                assert_eq!(kit.id, k as u32 + 1);
+                assert_eq!(kit.state, KIT_USABLE);
+                let items: Vec<_> = if k == 0 {
+                    bot_kit_items(role).collect()
+                } else {
+                    bot_second_kit_items(role).collect()
+                };
+                // Every piece of the kit in its slot, the count as given;
+                // nothing else.
                 assert_eq!(
-                    dictionary.item(item.dict_id).unwrap().name,
-                    wanted.name,
-                    "{role}: slot {}",
-                    wanted.slot
+                    kit.slots.iter().filter(|slot| slot.is_some()).count(),
+                    items.len()
                 );
-                assert_eq!(u32::from(count), wanted.count, "{}", wanted.name);
+                for wanted in items {
+                    let (index, count) = kit.slots[usize::from(wanted.slot)]
+                        .unwrap_or_else(|| panic!("{role}: nothing in slot {}", wanted.slot));
+                    let item = &profile.items[usize::from(index)];
+                    assert_eq!(
+                        dictionary.item(item.dict_id).unwrap().name,
+                        wanted.name,
+                        "{role}: slot {}",
+                        wanted.slot
+                    );
+                    assert_eq!(u32::from(count), wanted.count, "{}", wanted.name);
+                }
             }
             // The medkits, the radio and the grenades in the open pockets.
             let (pockets, _) = loadouts::pockets(loadouts::bot_kit(role));

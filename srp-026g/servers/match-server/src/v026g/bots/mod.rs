@@ -178,6 +178,15 @@ pub struct Bot {
     /// ([`Pending`]): the goal and the route, or none. Taken at its next
     /// tick, and used if it still heads there.
     found: Option<(Vec3, Option<Route>)>,
+    /// Its kits by index (the profile's: its role's, then its backup's,
+    /// `survarium::v026g::loadouts::bot_kits`) and the rounds of weapon 1
+    /// each has left: a place's ammo lasts the match, a spawn does not
+    /// refill it. Empty for a bot of no role.
+    kits: Vec<(&'static guns::Arms, u32)>,
+    /// The kit of this life, and the one it picked for its next (a kit
+    /// choice, 0xF3, takes effect at the spawn).
+    kit: usize,
+    kit_chosen: usize,
 }
 
 impl Bot {
@@ -202,6 +211,18 @@ impl Bot {
             });
         // What it carries: its role's gear, else its personality's name as
         // a role (the tests' bots), else the fallback.
+        let kits: Vec<(&'static guns::Arms, u32)> = role
+            .and_then(|role| {
+                let role = survarium::v026g::loadouts::BotRole::ALL
+                    .into_iter()
+                    .find(|each| each.name() == role)?;
+                Some([role, role.backup()])
+            })
+            .into_iter()
+            .flatten()
+            .filter_map(|role| guns::Arms::of_role(role.name()))
+            .map(|arms| (arms, arms.primary.1))
+            .collect();
         let arms = role.and_then(guns::Arms::of_role).or_else(|| {
             tuning
                 .personalities
@@ -237,7 +258,37 @@ impl Bot {
             partner: None,
             medkits_used: 0,
             found: None,
+            kits,
+            kit: 0,
+            kit_chosen: 0,
         }
+    }
+
+    /// The kit for its next life, when it changes: the present one runs
+    /// low (less than a magazine left) and another has more than a
+    /// magazine (the owner's word, 2026-10-16: a second kit with another
+    /// ammo, switched to when the first is spent). Its index, and the
+    /// rounds left in the two.
+    fn pick_kit(&mut self) -> Option<(usize, u32, u32)> {
+        let left = |bot: &Self, i: usize| {
+            if i == bot.kit {
+                bot.reflex.left()
+            } else {
+                bot.kits[i].1
+            }
+        };
+        let low = |bot: &Self, i: usize| left(bot, i) < bot.kits[i].0.primary.0.magazine;
+        if self.kits.len() < 2 || !low(self, self.kit) {
+            return None;
+        }
+        let best = (0..self.kits.len())
+            .filter(|&i| i != self.kit && !low(self, i))
+            .max_by_key(|&i| left(self, i))?;
+        if best == self.kit_chosen {
+            return None;
+        }
+        self.kit_chosen = best;
+        Some((best, left(self, self.kit), left(self, best)))
     }
 
     fn note(&self, notes: &mut Vec<Note>, time: u32, text: String) {
@@ -277,7 +328,15 @@ impl Bot {
         self.intent = Intent::stay();
         self.stuck.reset();
         self.unstick = None;
-        self.reflex = Reflex::armed(self.reflex.arms());
+        // The kit it picked is the one it spawned in, with what it left.
+        if let Some(kit) = self.kits.get_mut(self.kit) {
+            kit.1 = self.reflex.left();
+        }
+        self.kit = self.kit_chosen.min(self.kits.len().saturating_sub(1));
+        self.reflex = match self.kits.get(self.kit) {
+            Some(&(arms, left)) => Reflex::armed_carrying(Some(arms), left),
+            None => Reflex::armed(self.reflex.arms()),
+        };
         self.memory = Memory::default();
         self.skill = skill;
         self.medkits_used = 0;
@@ -387,6 +446,9 @@ pub struct Bots {
     routes: Vec<routes::HumanRoute>,
     /// This poll's route searches ([`Searching`]).
     searching: Searching,
+    /// Kit choices made since they were last taken
+    /// ([`Bots::take_kit_choices`]): the place and the kit's index.
+    kit_choices: Vec<(Place, u8)>,
     /// Last, so a search left under way is dropped before it.
     _search_memory: SearchMemory,
 }
@@ -440,8 +502,16 @@ impl Bots {
                 floors: 0,
                 pending: None,
             },
+            kit_choices: Vec::new(),
             _search_memory: SearchMemory::hold(),
         }
+    }
+
+    /// The kit choices the bots made since the last call: each place and
+    /// the index of the kit for its next life, to be relayed as a
+    /// player's 0xDE is (0xF3).
+    pub fn take_kit_choices(&mut self) -> Vec<(Place, u8)> {
+        std::mem::take(&mut self.kit_choices)
     }
 
     /// Every place's weapon 1 kind (the matchup, play 11).
@@ -877,6 +947,22 @@ impl Bots {
                 self.think(index, &view, &mut rays, &mut notes);
             }
             self.ticks(index, &clock, &view, &mut made);
+            if let Some(bot) = self.bots[index].as_mut()
+                && bot.entered.is_some()
+                && let Some((kit, left, other)) = bot.pick_kit()
+            {
+                bot.note(
+                    &mut notes,
+                    now,
+                    format!(
+                        "picks kit {} for its next life: kit {} has {left} rounds left, kit {} {other}",
+                        kit + 1,
+                        bot.kit + 1,
+                        kit + 1
+                    ),
+                );
+                self.kit_choices.push((bot.place, kit as u8));
+            }
         }
         (made, notes)
     }

@@ -500,6 +500,10 @@ pub struct Reflex {
     /// from life to life; and this life's rounds, from the first tick or
     /// think of the life.
     arms: Option<&'static Arms>,
+    /// The rounds of weapon 1 at this life's spawn: what the kit has left
+    /// (a place's ammo lasts the match, a spawn does not refill it);
+    /// `None`: the arms' whole count.
+    carried: Option<u32>,
     hands: Option<Hands>,
     /// An automatic weapon: the trigger held this long without a break,
     /// ms (its shots, [`super::guns::Gun::shots_held`]).
@@ -580,8 +584,27 @@ impl Reflex {
         }
     }
 
+    /// A reflex for a bot carrying `arms` with `carried` rounds of weapon
+    /// 1 left in its kit.
+    pub fn armed_carrying(arms: Option<&'static Arms>, carried: u32) -> Self {
+        Self {
+            carried: Some(carried),
+            ..Self::armed(arms)
+        }
+    }
+
     pub fn arms(&self) -> Option<&'static Arms> {
         self.arms
+    }
+
+    /// The rounds of weapon 1 its kit has left, in it and to load.
+    pub fn left(&self) -> u32 {
+        match &self.hands {
+            Some(hands) => hands.primary.rounds + hands.primary.spare,
+            None => self
+                .carried
+                .unwrap_or(self.arms.unwrap_or_else(Arms::fallback).primary.1),
+        }
     }
 
     /// The weapon in hand (weapon 1 before the life's first use).
@@ -595,7 +618,13 @@ impl Reflex {
     /// This life's weapons, from its arms at the first use.
     pub fn hands(&mut self) -> &mut Hands {
         let arms = self.arms.unwrap_or_else(Arms::fallback);
-        self.hands.get_or_insert_with(|| Hands::of(arms))
+        let carried = self.carried.unwrap_or(arms.primary.1);
+        self.hands.get_or_insert_with(|| {
+            Hands::of(&Arms {
+                primary: (arms.primary.0, carried),
+                ..*arms
+            })
+        })
     }
 
     pub fn target(&self) -> Option<Place> {
@@ -731,12 +760,12 @@ impl Reflex {
         }
     }
 
-    /// A new life: the per-life counts start again (the rounds with a full
-    /// kit); what it carries stays.
+    /// A new life: the per-life counts start again; what it carries stays,
+    /// and the rounds its kit has left.
     fn new_life(&mut self, me: &PlaceView) {
         if self.life != Some(me.spawned) {
             if self.life.is_some() {
-                *self = Self::armed(self.arms);
+                *self = Self::armed_carrying(self.arms, self.left());
             }
             self.life = Some(me.spawned);
         }

@@ -439,6 +439,21 @@ impl BotRole {
         }
     }
 
+    /// The role whose weapon 1 and ammo a bot of this role carries in its
+    /// second kit ([`bot_kits`]): another kind of ammo, so the second kit
+    /// is full when the first is spent (the owner's word, 2026-10-16: a
+    /// place's ammo lasts the match, a spawn does not refill it). The Uzi
+    /// and the AK-74U back each other up; the shotgun and the Mosin, slow
+    /// to fire, get the one nearer their range.
+    pub fn backup(self) -> BotRole {
+        match self {
+            BotRole::Flanker => BotRole::Support,
+            BotRole::Support => BotRole::Flanker,
+            BotRole::Rusher => BotRole::Flanker,
+            BotRole::Camper => BotRole::Support,
+        }
+    }
+
     /// The role whose weapon 1 is `dict_id`.
     pub fn of_weapon(dict_id: u16) -> Option<BotRole> {
         let dictionary = Dictionary::shared();
@@ -476,26 +491,45 @@ impl std::fmt::Display for BotRole {
 
 /// Every piece a bot of `role` wears: its [`BotRole::gear`], then
 /// [`BOT_KIT`].
-pub fn bot_kit_items(role: BotRole) -> impl Iterator<Item = BotKitItem> {
+pub fn bot_kit_items(role: BotRole) -> impl Iterator<Item = BotKitItem> + Clone {
     role.gear().iter().copied().chain(BOT_KIT)
 }
 
-/// A bot of `role`'s kit as a loadout ([`bot_kit_items`]).
-pub fn bot_kit(role: BotRole) -> &'static Loadout {
-    static SHARED: std::sync::OnceLock<Vec<Loadout>> = std::sync::OnceLock::new();
+/// Every piece of a bot of `role`'s second kit: its [`BotRole::backup`]'s
+/// weapon 1 and ammo (the first four of that gear), then the rest of the
+/// first kit (armour and [`BOT_KIT`]).
+pub fn bot_second_kit_items(role: BotRole) -> impl Iterator<Item = BotKitItem> + Clone {
+    role.backup().gear()[..1 + BOT_AMMO_SLOTS.len()]
+        .iter()
+        .copied()
+        .chain(role.gear()[1 + BOT_AMMO_SLOTS.len()..].iter().copied())
+        .chain(BOT_KIT)
+}
+
+fn bot_loadout(items: impl Iterator<Item = BotKitItem> + Clone) -> Loadout {
+    let mut loadout = Loadout::from_names(
+        Dictionary::shared(),
+        items.clone().map(|item| (item.slot, item.name)),
+    )
+    .expect("the bot kit's items exist and fit their slots");
+    for (slot, item) in loadout.items.iter_mut().zip(items) {
+        slot.count = item.count;
+    }
+    loadout
+}
+
+/// A bot of `role`'s two kits as loadouts: its own ([`bot_kit_items`])
+/// and the second ([`bot_second_kit_items`]).
+pub fn bot_kits(role: BotRole) -> [&'static Loadout; 2] {
+    static SHARED: std::sync::OnceLock<Vec<[Loadout; 2]>> = std::sync::OnceLock::new();
     let kits = SHARED.get_or_init(|| {
         BotRole::ALL
             .into_iter()
             .map(|role| {
-                let mut loadout = Loadout::from_names(
-                    Dictionary::shared(),
-                    bot_kit_items(role).map(|item| (item.slot, item.name)),
-                )
-                .expect("the bot kit's items exist and fit their slots");
-                for (slot, item) in loadout.items.iter_mut().zip(bot_kit_items(role)) {
-                    slot.count = item.count;
-                }
-                loadout
+                [
+                    bot_loadout(bot_kit_items(role)),
+                    bot_loadout(bot_second_kit_items(role)),
+                ]
             })
             .collect()
     });
@@ -503,7 +537,13 @@ pub fn bot_kit(role: BotRole) -> &'static Loadout {
         .iter()
         .position(|&each| each == role)
         .expect("a role");
-    &kits[index]
+    let [first, second] = &kits[index];
+    [first, second]
+}
+
+/// A bot of `role`'s first kit as a loadout ([`bot_kit_items`]).
+pub fn bot_kit(role: BotRole) -> &'static Loadout {
+    bot_kits(role)[0]
 }
 
 /// The role a profile's weapon 1 (slot 7 of its first kit) says: what the
@@ -699,6 +739,47 @@ mod tests {
         // Something that does not fit its slot is refused.
         assert!(Loadout::from_names(dictionary, [(0, "tt_33")]).is_err());
         assert!(Loadout::from_names(dictionary, [(7, "no_such_item")]).is_err());
+    }
+
+    #[test]
+    fn a_bots_second_kit_has_another_weapon_and_another_ammo_at_the_most() {
+        let dictionary = Dictionary::shared();
+        for role in BotRole::ALL {
+            let [first, second] = bot_kits(role);
+            assert!(std::ptr::eq(first, bot_kit(role)));
+            let weapon = |kit: &Loadout| kit.slot(7).unwrap().dict_id;
+            let ammo = |kit: &Loadout| kit.slot(BOT_AMMO_SLOTS[0]).unwrap().dict_id;
+            assert_ne!(weapon(first), weapon(second), "{role}");
+            assert_ne!(ammo(first), ammo(second), "{role}: the same ammo");
+            assert_eq!(
+                BotRole::of_weapon(weapon(second)),
+                Some(role.backup()),
+                "{role}"
+            );
+            assert!(second.slot(10).is_none(), "{role}: no weapon 2");
+            for slot in BOT_AMMO_SLOTS {
+                let item = second.slot(slot).unwrap();
+                assert!(
+                    dictionary.compatible(weapon(second), item.dict_id),
+                    "{role}"
+                );
+                assert_eq!(item.dict_id, ammo(second));
+                // The backup role's own count: the most players carry.
+                let own = bot_kit(role.backup()).slot(slot).unwrap();
+                assert_eq!(item.count, own.count, "{role}");
+            }
+            // The rest is the first kit's: its armour, pockets and keys.
+            let rest = |kit: &Loadout| -> Vec<(u8, u16, u32)> {
+                kit.items
+                    .iter()
+                    .filter(|item| item.slot != 7 && !BOT_AMMO_SLOTS.contains(&item.slot))
+                    .map(|item| (item.slot, item.dict_id, item.count))
+                    .collect()
+            };
+            assert_eq!(rest(first), rest(second), "{role}");
+            assert_eq!(pockets(first), pockets(second), "{role}");
+            assert!(second.fits_carry_limit(), "{role}: {}", second.weight());
+        }
     }
 
     #[test]
