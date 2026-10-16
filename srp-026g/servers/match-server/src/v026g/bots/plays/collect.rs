@@ -258,12 +258,17 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // A look where an enemy carrier died with a battery (`LookSpot`):
     // this times its score, above any spawner's spot.
     ("look_weight", 1.0),
+    // A look round our container after a theft whose thief dropped the
+    // battery alive (`LookSpot::theft`): this times its score.
+    ("theft_look_weight", 1.0),
 ];
 
 /// Spawners' slots come after the batteries'.
 const SPAWNER_SLOT: u32 = 0x1_0000;
 /// Look spots' slots (by battery) after the spawners'.
 const LOOK_SLOT: u32 = 0x2_0000;
+/// The one slot of all the team's looks after a theft dropped alive.
+const THEFT_LOOK_SLOT: u32 = 0x3_0000;
 
 /// Where `at` lies between the team's container (0) and the enemy's (1),
 /// along the line between them; none without both containers.
@@ -374,17 +379,25 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     // A battery an enemy carrier dropped where he died, which the team
     // cannot see: a look where the team last sensed him, near the top of
     // the band (one bot a spot).
-    for look in &cx.team.looks {
-        if cx.team.battery(look.battery).is_some() || !cx.can_take(look.at) {
+    // A battery of ours a thief dropped alive: the spots round our
+    // container and where the team last sensed him, all one bot's (one
+    // slot), each spot once.
+    for (index, look) in cx.team.looks.iter().enumerate() {
+        if cx.team.battery(look.battery).is_some()
+            || cx.team.looks[..index].iter().any(|l| l.at == look.at)
+            || !cx.can_take(look.at)
+        {
             continue;
         }
-        if let Some(mut candidate) = cx.candidate(
-            PlayKind::Collect,
-            TargetRef::Point(look.at),
-            Some(LOOK_SLOT + look.battery as u32),
-        ) {
-            candidate.score =
-                Score::new(candidate.score.get() * cx.num(PlayKind::Collect, "look_weight"));
+        let (slot, weight) = if look.theft {
+            (THEFT_LOOK_SLOT, "theft_look_weight")
+        } else {
+            (LOOK_SLOT + look.battery as u32, "look_weight")
+        };
+        if let Some(mut candidate) =
+            cx.candidate(PlayKind::Collect, TargetRef::Point(look.at), Some(slot))
+        {
+            candidate.score = Score::new(candidate.score.get() * cx.num(PlayKind::Collect, weight));
             if !candidate.score.is_zero() {
                 out.push(candidate);
             }
@@ -1320,6 +1333,8 @@ mod tests {
             battery: 0,
             at: look,
             time: s.view.clock,
+            until: s.view.clock + crate::v026g::bots::know::LOOK_KEEP_MS,
+            theft: false,
         });
         let mut out = Vec::new();
         candidates(&s.cx(0), &mut out);
@@ -1359,6 +1374,51 @@ mod tests {
         candidates(&s.cx(0), &mut out);
         out.sort_by(|a, b| b.score.get().total_cmp(&a.score.get()));
         assert_eq!(out[0].target, TargetRef::Battery(0));
+    }
+
+    /// Two batteries of ours a thief dropped alive: the spots round our
+    /// container are offered once each (both batteries' rings are the same
+    /// spots), all under one slot (one bot looks), and go at their time.
+    #[test]
+    fn looks_after_a_dropped_theft_share_one_slot_and_end_in_time() {
+        let (mut s, items) = fair();
+        s.battery(BatteryState::Free(Vec3::new(14.0, 0.0, 33.0)));
+        s.battery(BatteryState::Free(Vec3::new(10.0, 0.0, 33.0)));
+        s.battery(BatteryState::Free(items[2]));
+        let now = s.view.clock;
+        let ring = [
+            Vec3::new(16.0, 0.0, 30.0),
+            Vec3::new(12.0, 0.0, 34.0),
+            Vec3::new(8.0, 0.0, 30.0),
+        ];
+        s.team.add_theft_looks(0, &ring, now, now + 30_000);
+        s.team.add_theft_looks(1, &ring, now, now + 30_000);
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        let looks: Vec<&Candidate> = out
+            .iter()
+            .filter(|c| matches!(c.target, TargetRef::Point(_)))
+            .collect();
+        assert_eq!(looks.len(), ring.len(), "{looks:?}");
+        assert!(looks.iter().all(|c| c.slot == looks[0].slot), "{looks:?}");
+        for at in ring {
+            assert!(looks.iter().any(|c| c.target == TargetRef::Point(at)));
+        }
+        // Their weight 0: none offered.
+        s.tuning
+            .plays
+            .entry(PlayKind::Collect)
+            .or_insert_with(|| crate::v026g::bots::plays::default_tuning(PlayKind::Collect))
+            .numbers
+            .insert("theft_look_weight".into(), 0.0);
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        assert!(!out.iter().any(|c| matches!(c.target, TargetRef::Point(_))));
+        // Gone after their time.
+        s.team.forget_old(now + 30_000);
+        assert_eq!(s.team.looks.len(), 2 * ring.len());
+        s.team.forget_old(now + 30_001);
+        assert!(s.team.looks.is_empty());
     }
 
     /// A battery in a pocket that toxic ground (on all match) rings: the

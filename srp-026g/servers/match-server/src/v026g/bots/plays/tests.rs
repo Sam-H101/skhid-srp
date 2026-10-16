@@ -64,6 +64,7 @@ impl Scenario {
             points: [0, 0],
             places: Vec::new(),
             batteries: Vec::new(),
+            marks: vec![],
             containers: vec![
                 ContainerView {
                     id: 0,

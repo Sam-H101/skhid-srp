@@ -382,6 +382,19 @@ fn world_facts(time: u32, decoded: &Decoded) -> WorldFacts {
                 .collect()
         })
         .unwrap_or_default();
+    // The client's HUD of each lying battery (`m_spotted_mask`).
+    let marks = gather
+        .map(|gather| {
+            gather
+                .batteries
+                .iter()
+                .map(|battery| match battery {
+                    Battery::Free { spotted_mask, .. } => *spotted_mask,
+                    Battery::Carried | Battery::InContainer(_) => 0,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let container_counts = gather
         .map(|gather| gather.containers.iter().map(|c| c.items.len()).collect())
         .unwrap_or_default();
@@ -390,6 +403,7 @@ fn world_facts(time: u32, decoded: &Decoded) -> WorldFacts {
         stats,
         points,
         batteries,
+        marks,
         container_counts,
         can_respawn: rules.map(|rules| rules.team_respawn),
         next_battery: gather

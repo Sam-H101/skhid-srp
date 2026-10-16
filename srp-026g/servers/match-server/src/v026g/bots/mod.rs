@@ -110,6 +110,15 @@ const SEARCHES_PER_POLL: u32 = 2;
 /// A dead enemy carrier's look spot is made only from a sense of him this
 /// recent, ms.
 const LOOK_SENSED_MS: u32 = 30_000;
+/// After a theft whose thief dropped the battery alive ([`Bots::theft_drop`]):
+/// the team looks round its container at this many spots this far off it
+/// (each looked at within `battery_near_m`, 3 m: the ring 1-7 m off),
+/// while the theft is this recent (ms); the looks go after
+/// [`THEFT_LOOK_KEEP_MS`].
+const THEFT_RING_POINTS: usize = 6;
+const THEFT_RING_M: f32 = 4.0;
+const THEFT_RING_MS: u32 = 20_000;
+const THEFT_LOOK_KEEP_MS: u32 = 30_000;
 /// A death this recent is a fight where it fell, for the choice of the bot
 /// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
 const FIGHT_DEATH_MS: u32 = 10_000;
@@ -970,6 +979,54 @@ impl Bots {
                 });
             }
         }
+        // A battery of ours stolen and dropped by its thief alive, or (in
+        // one world) taken from home and dropped: the team looks for it.
+        if !self.tuning.cheats.batteries {
+            for (battery, (now, then)) in after.batteries.iter().zip(&before.batteries).enumerate()
+            {
+                if !matches!(now, BatteryState::Free(_)) {
+                    continue;
+                }
+                match *then {
+                    BatteryState::Carried(Some(thief))
+                        if after.place(thief).is_some_and(|p| p.alive) =>
+                    {
+                        let Some(thief_team) = after.place(thief).map(|p| usize::from(p.team & 1))
+                        else {
+                            continue;
+                        };
+                        let team = 1 - thief_team;
+                        let Some(theft) = self.teams[team]
+                            .knowledge
+                            .thefts
+                            .iter()
+                            .rev()
+                            .find(|t| t.battery == battery && t.thief.is_none_or(|p| p == thief))
+                            .copied()
+                        else {
+                            continue;
+                        };
+                        self.theft_drop(
+                            team,
+                            battery,
+                            theft.at,
+                            theft.time,
+                            Some(thief),
+                            time,
+                            &mut notes,
+                        );
+                    }
+                    BatteryState::Home(id) => {
+                        let Some(container) = after.containers.iter().find(|c| c.id == id) else {
+                            continue;
+                        };
+                        let team = usize::from(container.team & 1);
+                        self.theft_drop(team, battery, container.at, time, None, time, &mut notes);
+                    }
+                    _ => {}
+                }
+            }
+        }
         notes
     }
 
@@ -1016,6 +1073,36 @@ impl Bots {
             .filter(|(a, b)| usize::from(a.team & 1) == team && a.kills > b.kills)
             .map(|(a, _)| a.place)
             .collect();
+        let Some((killer, sensed, at)) = self.last_sensed(who, team, &killers) else {
+            return;
+        };
+        if sensed + LOOK_SENSED_MS < time {
+            return;
+        }
+        self.teams[team].knowledge.add_look(LookSpot {
+            battery,
+            at,
+            time,
+            until: time + know::LOOK_KEEP_MS,
+            theft: false,
+        });
+        notes.push(Note {
+            place: usize::MAX,
+            time,
+            text: format!(
+                "team {team} looks for battery {battery} where its carrier died ({}, {:.1} s before)",
+                if killer { "the killer's sight" } else { "last sensed" },
+                time.saturating_sub(sensed) as f32 / 1000.0
+            ),
+        });
+    }
+
+    /// Where team `team` last sensed the enemy at `who` itself: the sight
+    /// of one of `killers` first, else the newest sight, hearing or
+    /// callout of him (never the thief cheat's place). (Whether a killer's
+    /// sight, when, where.)
+    fn last_sensed(&self, who: Place, team: usize, killers: &[Place]) -> Option<(bool, u32, Vec3)> {
+        let knowledge = &self.teams[team].knowledge;
         // (the killer's sight, when, where)
         let mut best: Option<(bool, u32, Vec3)> = None;
         let mut take = |killer: bool, sensed: u32, at: Vec3| {
@@ -1039,20 +1126,76 @@ impl Bots {
         for seen in knowledge.carriers_seen.iter().filter(|s| s.who == who) {
             take(false, seen.time, seen.at);
         }
-        let Some((killer, sensed, at)) = best else {
-            return;
-        };
-        if sensed + LOOK_SENSED_MS < time {
+        best
+    }
+
+    /// F2 of the analysis of the owner's matches 0x652d/0x1a09 of
+    /// 2026-10-16: a battery of team `team` stolen at `theft_time` from its
+    /// container at `container` lies now, and its thief (`thief`, if the
+    /// team can tell) lives: he dropped it (the owner took batteries out
+    /// and dropped them 2-5 m off; they lay unknown 23-40 s). The HUD gave
+    /// the theft and the container's count; the drop is on his team's HUD
+    /// only. Unless the team knows where it lies, it looks round its
+    /// container (a ring of [`THEFT_RING_POINTS`] spots [`THEFT_RING_M`]
+    /// off it, while the theft is [`THEFT_RING_MS`] recent) and where it
+    /// last sensed him itself, if that is off the ring; one bot does it
+    /// (Collect), and the spots go after [`THEFT_LOOK_KEEP_MS`].
+    #[allow(clippy::too_many_arguments)]
+    fn theft_drop(
+        &mut self,
+        team: usize,
+        battery: usize,
+        container: Vec3,
+        theft_time: u32,
+        thief: Option<Place>,
+        time: u32,
+        notes: &mut Vec<Note>,
+    ) {
+        if self.teams[team].knowledge.battery(battery).is_some() {
             return;
         }
-        self.teams[team].knowledge.add_look(LookSpot { battery, at, time });
+        let mut spots = Vec::new();
+        let ring = time.saturating_sub(theft_time) <= THEFT_RING_MS;
+        if ring {
+            spots.extend((0..THEFT_RING_POINTS).map(|i| {
+                let angle = i as f32 * std::f32::consts::TAU / THEFT_RING_POINTS as f32;
+                container + Vec3::new(angle.cos(), 0.0, angle.sin()) * THEFT_RING_M
+            }));
+        }
+        let sensed = thief
+            .and_then(|who| self.last_sensed(who, team, &[]))
+            .filter(|&(_, sensed, _)| sensed + LOOK_SENSED_MS >= time)
+            .map(|(_, sensed, at)| (sensed, at));
+        let far = THEFT_RING_M + self.tuning.sense.battery_near_m;
+        if let Some((_, at)) = sensed
+            && (!ring || at.distance_xz(container) > far)
+        {
+            spots.push(at);
+        }
+        if spots.is_empty() {
+            return;
+        }
+        self.teams[team].knowledge.add_theft_looks(
+            battery,
+            &spots,
+            time,
+            time + THEFT_LOOK_KEEP_MS,
+        );
         notes.push(Note {
             place: usize::MAX,
             time,
             text: format!(
-                "team {team} looks for battery {battery} where its carrier died ({}, {:.1} s before)",
-                if killer { "the killer's sight" } else { "last sensed" },
-                time.saturating_sub(sensed) as f32 / 1000.0
+                "team {team} looks for battery {battery}, stolen {:.1} s before, its thief no longer carrying it ({}{})",
+                time.saturating_sub(theft_time) as f32 / 1000.0,
+                if ring { "round the container" } else { "" },
+                match sensed {
+                    Some((sensed, _)) if spots.len() > THEFT_RING_POINTS || !ring => format!(
+                        "{}where last sensed {:.1} s before",
+                        if ring { ", " } else { "" },
+                        time.saturating_sub(sensed) as f32 / 1000.0
+                    ),
+                    _ => String::new(),
+                }
             ),
         });
     }
@@ -1316,7 +1459,8 @@ impl Bots {
                 current: current.as_ref(),
             })
             .collect();
-        for (place, assignment, changed) in team::assign(asking, now) {
+        let gap = state.signals.score_gap;
+        for (place, assignment, changed) in team::assign_at(asking, now, gap) {
             let Some(me) = view.place(place) else {
                 continue;
             };
@@ -1375,8 +1519,8 @@ impl Bots {
                     .find(|(p, _, _)| *p == place)
                     .map(|(_, c, _)| c.clone())
                     .unwrap_or_default();
-                let bands = team::Bands::default();
-                top.sort_by(|a, b| bands.better(a, b));
+                let bands = team::Bands::used();
+                top.sort_by(|a, b| bands.better(a, b, gap < 0.0));
                 let top: Vec<serde_json::Value> = top
                     .into_iter()
                     .take(5)

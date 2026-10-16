@@ -87,7 +87,10 @@ struct Body {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Lying {
-    Free(Vec3),
+    /// Where, and the HUD mask as the client keeps it
+    /// (`TeamKnowledge::hud_update`): 0 when it appears, the carrier's
+    /// team's bit alone when he drops it or dies with it.
+    Free(Vec3, u32),
     Carried(Place),
     Home(u8),
 }
@@ -96,6 +99,10 @@ type Recorded = (u32, Vec<Fix>, Vec<f32>, WorldFacts);
 /// An input for a tick: the tick, the keys, the turn, the bot's target
 /// and weapon in hand.
 type Queued = (u32, u32, (f32, f32), Option<Place>, &'static Gun);
+
+/// A stolen battery: the team it was stolen from, and when (ms) and how
+/// (alive) it fell since, if it did.
+type StolenMark = (u8, Option<(u32, bool)>);
 
 /// The stand-in game.
 struct Game {
@@ -132,6 +139,14 @@ struct Game {
     /// Carriers killed with a battery: (the shooter, the carrier), in
     /// order (the bench reads them by the shooter's play).
     carrier_kills: Vec<(Place, Place)>,
+    /// By battery: stolen from this team's container, and when (ms) and
+    /// how (alive: dropped by a live carrier) it fell since, if it did.
+    stolen_marks: Vec<Option<StolenMark>>,
+    /// A stolen battery that fell, until it was home again: its owners'
+    /// container (true) or the thief's side's, ms from the fall, alive.
+    stolen_drops: Vec<(bool, u32, bool)>,
+    /// What befell stolen batteries, for the bench's log.
+    stolen_log: Vec<String>,
     /// Lying batteries taken.
     taken: u32,
     /// Whether a use's ray stops at the bullet mesh short of a lying
@@ -193,7 +208,7 @@ impl Game {
                 .map
                 .battery_spawners
                 .iter()
-                .map(|s| Lying::Free(s.item))
+                .map(|s| Lying::Free(s.item, 0))
                 .collect()
         };
         let gun = Arms::fallback().primary.0;
@@ -238,6 +253,9 @@ impl Game {
             stolen: 0,
             thieves: Vec::new(),
             carrier_kills: Vec::new(),
+            stolen_marks: Vec::new(),
+            stolen_drops: Vec::new(),
+            stolen_log: Vec::new(),
             taken: 0,
             use_line: false,
             world,
@@ -377,7 +395,7 @@ impl Game {
             let stations = &self.world.map.stations;
             let at = stations[self.batteries.len() % stations.len()];
             self.batteries
-                .push(Lying::Free(at + Vec3::new(1.5, 0.3, 0.0)));
+                .push(Lying::Free(at + Vec3::new(1.5, 0.3, 0.0), 0));
             self.timed = Some((next + every, every));
         }
     }
@@ -458,8 +476,14 @@ impl Game {
             other.alive = false;
             other.dead_at = tick;
             if let Some(battery) = other.carrying.take() {
-                self.batteries[battery] = Lying::Free(other.feet);
+                self.batteries[battery] = Lying::Free(other.feet, 1 << other.team);
                 self.carrier_kills.push((shooter, target));
+                if let Some(Some((_, fell @ None))) = self.stolen_marks.get_mut(battery) {
+                    *fell = Some((tick, false));
+                    self.stolen_log.push(format!(
+                        "{tick} battery {battery} fell at its carrier's death"
+                    ));
+                }
             }
             self.stats[target].1 += 1;
             self.stats[target].2 = 0;
@@ -515,8 +539,9 @@ impl Game {
             if pressed[place] & key::DROP != 0
                 && let Some(battery) = body.carrying
             {
-                self.batteries[battery] = Lying::Free(body.feet);
+                self.batteries[battery] = Lying::Free(body.feet, 1 << body.team);
                 self.bodies[place].carrying = None;
+                self.stolen_fell(battery, self.tick, true);
             }
             if pressed[place] & key::USE == 0 {
                 continue;
@@ -530,13 +555,14 @@ impl Game {
                     {
                         self.batteries[battery] = Lying::Home(id as u8);
                         self.bodies[place].carrying = None;
+                        self.stolen_home(battery, team);
                         self.points[usize::from(team)] += 1;
                         self.delivered[usize::from(team)] += 1;
                     }
                 }
                 None => {
                     let free = self.batteries.iter().position(
-                        |b| matches!(b, Lying::Free(at) if self.uses_battery(&body, *at)),
+                        |b| matches!(b, Lying::Free(at, _) if self.uses_battery(&body, *at)),
                     );
                     let theirs = self.containers.iter().position(|(t, at)| {
                         *t != team && Self::uses(&body, *at + USE_BOX_UP, USE_BOX_M)
@@ -556,9 +582,44 @@ impl Game {
                         self.points[usize::from(1 - team)] -= 1;
                         self.stolen += 1;
                         self.thieves.push(place);
+                        if self.stolen_marks.len() <= battery {
+                            self.stolen_marks.resize(battery + 1, None);
+                        }
+                        self.stolen_marks[battery] = Some((1 - team, None));
                     }
                 }
             }
+        }
+    }
+
+    /// A stolen battery fell (its first fall since the theft counts).
+    fn stolen_fell(&mut self, battery: usize, tick: u32, alive: bool) {
+        if let Some(Some((_, fell @ None))) = self.stolen_marks.get_mut(battery) {
+            *fell = Some((tick, alive));
+            self.stolen_log.push(format!(
+                "{tick} battery {battery} fell {}",
+                if alive { "alive" } else { "at death" }
+            ));
+        }
+    }
+
+    /// A battery was put into team `team`'s container.
+    fn stolen_home(&mut self, battery: usize, team: u8) {
+        if let Some(mark) = self.stolen_marks.get_mut(battery).and_then(Option::take)
+            && let (owner, Some((fell, alive))) = mark
+        {
+            self.stolen_drops
+                .push((owner == team, self.tick.saturating_sub(fell), alive));
+            self.stolen_log.push(format!(
+                "{} battery {battery} home with {}, {} ms after it fell",
+                self.tick,
+                if owner == team {
+                    "its owners"
+                } else {
+                    "the thieves"
+                },
+                self.tick.saturating_sub(fell)
+            ));
         }
     }
 
@@ -591,9 +652,17 @@ impl Game {
                 .batteries
                 .iter()
                 .map(|b| match b {
-                    Lying::Free(at) => BatteryState::Free(*at),
+                    Lying::Free(at, _) => BatteryState::Free(*at),
                     Lying::Carried(_) => BatteryState::Carried(None),
                     Lying::Home(id) => BatteryState::Home(*id),
+                })
+                .collect(),
+            marks: self
+                .batteries
+                .iter()
+                .map(|b| match b {
+                    Lying::Free(_, mask) => *mask,
+                    Lying::Carried(_) | Lying::Home(_) => 0,
                 })
                 .collect(),
             container_counts: (0..self.containers.len())
@@ -1513,6 +1582,192 @@ fn a_battery_a_killed_thief_dropped_in_a_nook_is_looked_for_and_taken() {
     assert!(without.took.is_none(), "{without:?}");
 }
 
+/// How a dropped-theft run went (`theft_drop_run`), match ms: when the
+/// thief dropped the battery, when the team got its looks, when its bot
+/// first went to look, when the team knew where the battery lies, when
+/// the bot took it.
+#[derive(Debug, Default)]
+struct TheftDrop {
+    dropped: Option<u32>,
+    look: Option<u32>,
+    sent: Option<u32>,
+    seen: Option<u32>,
+    took: Option<u32>,
+}
+
+/// F2 of the analysis of the owner's matches 0x652d/0x1a09 of 2026-10-16
+/// in small: an enemy (place 1, no bot) takes battery 0 out of team 0's
+/// container at 3 s and drops it at `drop_at` at `drop_ms` (4 s: a world
+/// shows him carrying it; 3.5 s: none does, the next shows it lying), then
+/// is gone (at his spawn, behind the wall). Bot 0 of team 0 stands 18 m off the container
+/// facing away from it. The thief cheat and the battery cheat are off: the
+/// team has the HUD's theft and its own sight. `weight` is Collect's
+/// `theft_look_weight` (0: no look is offered). Runs to `limit` ms.
+fn theft_drop_run(weight: Option<f32>, drop_at: Vec3, drop_ms: u32, limit: u32) -> TheftDrop {
+    let world = soak_world();
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = false;
+    tuning.cheats.thief_every_ms = 0;
+    if let Some(weight) = weight {
+        tuning
+            .plays
+            .entry(super::plays::PlayKind::Collect)
+            .or_insert_with(|| super::plays::default_tuning(super::plays::PlayKind::Collect))
+            .numbers
+            .insert("theft_look_weight".into(), weight);
+    }
+    let teams = [0u8, 1];
+    let mut bots = Bots::new(
+        0xF2,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, false],
+        &[None, None],
+        Arc::new(tuning),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world.clone(), &teams, 3, None, None);
+    // Battery 0 in team 0's container (id 0, at (12, 0, 30)); the thief
+    // stands by it. Battery 1 lies at its spawner for the first worlds
+    // (the bots tell the batteries' frame by it), then is in team 1's
+    // container.
+    game.batteries.truncate(2);
+    game.batteries[0] = Lying::Home(0);
+    game.points[0] = 1;
+    let by_container = Vec3::new(13.0, 0.0, 31.5);
+    game.bodies[1].node = world.grid.locate(by_container, 1.0);
+    game.bodies[1].feet = by_container;
+    // The bot a little way off, its back to the container.
+    let bot_at = Vec3::new(14.0, 0.0, 12.0);
+    game.bodies[0].node = world.grid.locate(bot_at, 1.0);
+    game.bodies[0].feet = bot_at;
+    game.bodies[0].yaw = kin::yaw_of([bot_at.x - by_container.x, bot_at.z - by_container.z]);
+    bots.entered(0, true, 0);
+    bots.entered(1, true, 0);
+    let mut out = TheftDrop::default();
+    let (mut clock, mut next_world) = (0, 1_000);
+    while clock < limit && out.took.is_none() {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        if clock == 2_500 {
+            game.batteries[1] = Lying::Home(1);
+            game.points[1] = 1;
+        }
+        if clock == 3_000 {
+            game.batteries[0] = Lying::Carried(1);
+            game.bodies[1].carrying = Some(0);
+            game.points[0] = 0;
+        }
+        if clock == drop_ms {
+            game.batteries[0] = Lying::Free(drop_at, 1 << game.bodies[1].team);
+            game.bodies[1].carrying = None;
+            out.dropped = Some(clock);
+        }
+        if clock == 4_500 {
+            let away = Vec3::new(75.0, 0.0, 5.0);
+            game.bodies[1].node = world.grid.locate(away, 1.0);
+            game.bodies[1].feet = away;
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        if out.look.is_none() && bots.teams[0].knowledge.looks.iter().any(|l| l.theft) {
+            out.look = Some(clock);
+        }
+        if out.seen.is_none()
+            && out.dropped.is_some()
+            && bots.teams[0].knowledge.battery(0).is_some()
+        {
+            out.seen = Some(clock);
+        }
+        let (made, _) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 900.0,
+            playing: true,
+        });
+        if out.sent.is_none()
+            && bots.bots[0].as_ref().is_some_and(|b| {
+                b.assignment.as_ref().is_some_and(|a| {
+                    a.kind == super::plays::PlayKind::Collect
+                        && matches!(a.target, super::plays::TargetRef::Point(_))
+                })
+            })
+        {
+            out.sent = Some(clock);
+        }
+        for made in made {
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            let gun = Arms::fallback().primary.0;
+            game.inputs[made.place].push_back((made.time, made.input.actions, turn, None, gun));
+        }
+        if game.bodies[0].carrying == Some(0) {
+            out.took = Some(clock);
+        }
+    }
+    out
+}
+
+/// F2 of the analysis of the owner's matches 0x652d/0x1a09 of 2026-10-16:
+/// a thief takes our battery out and drops it 2-5 m from our container
+/// (on the side away from the bot, or beside it), seen carrying it or
+/// not (taken and dropped between two worlds). The team's looks come
+/// with the world showing the drop, the bot is sent within 5 s, sees the
+/// battery and takes it. Without the looks (their weight 0) it is found
+/// later or not at all.
+#[test]
+fn a_battery_a_thief_dropped_by_our_container_is_looked_for_and_taken() {
+    for (drop_at, drop_ms) in [
+        (Vec3::new(12.0, 0.0, 33.0), 4_000),
+        (Vec3::new(8.0, 0.0, 31.5), 4_000),
+        (Vec3::new(15.5, 0.0, 34.0), 4_000),
+        (Vec3::new(12.0, 0.0, 33.0), 3_500),
+    ] {
+        let run = theft_drop_run(None, drop_at, drop_ms, 60_000);
+        let dropped = run.dropped.expect("dropped");
+        let look = run.look.unwrap_or_else(|| panic!("no look: {run:?}"));
+        // The world showing the drop comes 300 ms behind, a second apart.
+        assert!(
+            look >= dropped && look <= dropped + 2_500,
+            "{drop_at:?} {run:?}"
+        );
+        let sent = run
+            .sent
+            .unwrap_or_else(|| panic!("nobody sent: {drop_at:?} {run:?}"));
+        assert!(sent <= look + 5_000, "{drop_at:?} {run:?}");
+        let seen = run
+            .seen
+            .unwrap_or_else(|| panic!("not seen: {drop_at:?} {run:?}"));
+        assert!(seen <= dropped + 15_000, "{drop_at:?} {run:?}");
+        let took = run
+            .took
+            .unwrap_or_else(|| panic!("not taken: {drop_at:?} {run:?}"));
+        let without = theft_drop_run(Some(0.0), drop_at, drop_ms, took + 30_000);
+        eprintln!("{drop_at:?} at {drop_ms}: with the looks {run:?}; without {without:?}");
+        assert!(without.look.is_some(), "{without:?}");
+        assert!(without.sent.is_none(), "{without:?}");
+        assert!(
+            without.seen.is_none_or(|s| s > seen),
+            "{drop_at:?}: with {run:?}; without {without:?}"
+        );
+    }
+}
+
 /// Where the time of the bots' polls goes, seconds.
 #[derive(Default)]
 struct Times {
@@ -1788,8 +2043,33 @@ fn real_bot_cost() {
                     items.swap(i, j);
                 }
                 items.truncate(count);
-                game.batteries = items.into_iter().map(Lying::Free).collect();
+                game.batteries = items.into_iter().map(|at| Lying::Free(at, 0)).collect();
             }
+            // One side behind from the start (F0): `SRP_BENCH_START=a,b`
+            // puts `a` of the lying batteries in team 0's container and
+            // `b` in team 1's, with the points, the rest left lying.
+            let start: [u32; 2] = std::env::var("SRP_BENCH_START")
+                .ok()
+                .and_then(|s| {
+                    let (a, b) = s.split_once(',')?;
+                    Some([a.trim().parse().ok()?, b.trim().parse().ok()?])
+                })
+                .filter(|_| mode != mode::TEAM_DEATHMATCH)
+                .unwrap_or([0, 0]);
+            let mut lying = 0..game.batteries.len();
+            for team in 0..2u8 {
+                let Some(id) = game.containers.iter().position(|(t, _)| *t == team) else {
+                    continue;
+                };
+                for _ in 0..start[usize::from(team)] {
+                    let Some(battery) = lying.next() else {
+                        break;
+                    };
+                    game.batteries[battery] = Lying::Home(id as u8);
+                    game.points[usize::from(team)] += 1;
+                }
+            }
+            let start = game.points;
             for place in 0..teams.len() {
                 bots.entered(place, true, 0);
             }
@@ -1798,6 +2078,11 @@ fn real_bot_cost() {
             let mut plays: std::collections::BTreeMap<String, u32> = Default::default();
             // Takes: plays ended "could not take it", and stands given up.
             let (mut take_ends, mut stands_given_up) = (0u32, 0u32);
+            let mut theft_looks = 0u32;
+            let mut stolen_known: Vec<(usize, u32)> = Vec::new();
+            // World-seconds a stolen battery that fell lay unknown to its
+            // owners (fell alive, at death).
+            let mut lying_unknown = [0u32; 2];
             super::path::reset_worst();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
@@ -1810,6 +2095,12 @@ fn real_bot_cost() {
             // By the bot's play: takes (and those scoring under 0.05),
             // kills, deaths, steals (the objective plays' yield, F2).
             let mut by_play: std::collections::BTreeMap<String, [u32; 5]> = Default::default();
+            // By team, the attacks on the enemy's container (F0): takes,
+            // living bot ticks on one, those with a teammate on one too,
+            // kills and deaths on one; and all steals; attacks replaced
+            // within 10 s of their take (the churn PR 123 cut).
+            let mut by_team = [[0u64; 7]; 2];
+            let mut last_take: Vec<Option<(bool, u32)>> = vec![None; teams.len()];
             // Living bots' ticks looking at a spawner's spot (Collect at a
             // `TargetRef::Spawner`), and their deaths while at it.
             let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
@@ -1830,16 +2121,42 @@ fn real_bot_cost() {
                             .and_then(|b| b.assignment.as_ref())
                             .map_or("none".to_owned(), |a| format!("{:?}", a.kind))
                     };
+                    let attacking = |place: Place| {
+                        bots.bots[place]
+                            .as_ref()
+                            .and_then(|b| b.assignment.as_ref())
+                            .is_some_and(|a| super::team::attack(a.kind))
+                    };
                     for (place, (now, before)) in game.stats.iter().zip(&stats_before).enumerate() {
+                        let side = &mut by_team[usize::from(teams[place])];
                         if now.0 > before.0 {
                             by_play.entry(play_of(place)).or_default()[2] += now.0 - before.0;
+                            if attacking(place) {
+                                side[3] += u64::from(now.0 - before.0);
+                            }
                         }
                         if now.1 > before.1 {
                             by_play.entry(play_of(place)).or_default()[3] += now.1 - before.1;
+                            if attacking(place) {
+                                side[4] += u64::from(now.1 - before.1);
+                            }
                         }
                     }
                     for place in std::mem::take(&mut game.thieves) {
                         by_play.entry(play_of(place)).or_default()[4] += 1;
+                        by_team[usize::from(teams[place])][5] += 1;
+                    }
+                    let mut on_attack = [0u64; 2];
+                    for bot in bots.bots.iter().flatten() {
+                        if game.bodies[bot.place].alive && attacking(bot.place) {
+                            on_attack[usize::from(bot.team)] += 1;
+                        }
+                    }
+                    for (side, n) in by_team.iter_mut().zip(on_attack) {
+                        side[1] += n;
+                        if n >= 2 {
+                            side[2] += n;
+                        }
                     }
                     for (shooter, carrier) in std::mem::take(&mut game.carrier_kills) {
                         *carrier_kills.entry(play_of(shooter)).or_default() += 1;
@@ -1887,6 +2204,40 @@ fn real_bot_cost() {
                         }
                         for note in bots.facts(facts) {
                             decisions.note(&note);
+                            if note.text.contains("its thief no longer carrying it") {
+                                theft_looks += 1;
+                                game.stolen_log.push(format!("{} {}", note.time, note.text));
+                            }
+                        }
+                        // When a stolen battery that fell is known to its
+                        // owners again (seen, or carried by one of them).
+                        for (battery, mark) in game.stolen_marks.iter().enumerate() {
+                            if let Some((owner, Some((_, alive)))) = *mark
+                                && matches!(game.batteries.get(battery), Some(Lying::Free(..)))
+                                && bots.teams[usize::from(owner)]
+                                    .knowledge
+                                    .battery(battery)
+                                    .is_none()
+                            {
+                                lying_unknown[usize::from(!alive)] += 1;
+                            }
+                            if let Some((owner, Some((fell, _)))) = *mark
+                                && !stolen_known.contains(&(battery, fell))
+                                && (bots.teams[usize::from(owner)]
+                                    .knowledge
+                                    .battery(battery)
+                                    .is_some()
+                                    || game.batteries.get(battery).is_some_and(|b| {
+                                        matches!(b, Lying::Carried(p)
+                                            if game.bodies[*p].team == owner)
+                                    }))
+                            {
+                                stolen_known.push((battery, fell));
+                                game.stolen_log.push(format!(
+                                    "{clock} battery {battery} known to its owners, {} ms after it fell",
+                                    clock.saturating_sub(fell)
+                                ));
+                            }
                         }
                     }
                 }
@@ -1908,9 +2259,23 @@ fn real_bot_cost() {
                             .and_then(|s| s.split(':').next())
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(1.0);
+                        let is_attack = matches!(kind.as_str(), "Raid" | "Sneak" | "LateDenial");
+                        let side = &mut by_team[usize::from(teams[note.place])];
+                        if is_attack {
+                            side[0] += 1;
+                        }
+                        if let Some((true, at)) = last_take[note.place]
+                            && note.time < at + 10_000
+                        {
+                            side[6] += 1;
+                        }
+                        last_take[note.place] = Some((is_attack, note.time));
                         let row = by_play.entry(kind).or_default();
                         row[0] += 1;
                         row[1] += u32::from(score < 0.05);
+                    }
+                    if note.text.contains("its thief no longer carrying it") {
+                        theft_looks += 1;
                     }
                     if note.text.starts_with("ends Collect: could not take it") {
                         take_ends += 1;
@@ -2030,6 +2395,36 @@ fn real_bot_cost() {
                 "  takes: {} taken, {take_ends} could-not-take ends, {stands_given_up} stands given up",
                 game.taken
             );
+            // F2: stolen batteries that fell, alive (dropped) or at the
+            // carrier's death: (home again with their owners, ms each),
+            // home with the thief's side, still out at the end.
+            for alive in [true, false] {
+                let home: Vec<u32> = game
+                    .stolen_drops
+                    .iter()
+                    .filter(|d| d.0 && d.2 == alive)
+                    .map(|d| d.1)
+                    .collect();
+                let theirs = game
+                    .stolen_drops
+                    .iter()
+                    .filter(|d| !d.0 && d.2 == alive)
+                    .count();
+                let out = game
+                    .stolen_marks
+                    .iter()
+                    .flatten()
+                    .filter(|m| m.1.is_some_and(|(_, a)| a == alive))
+                    .count();
+                eprintln!(
+                    "  stolen fallen {}: home again ms {home:?}, home with the thieves {theirs}, still out {out}; lying unknown to its owners {} s; theft looks {theft_looks}",
+                    if alive { "alive" } else { "at death" },
+                    lying_unknown[usize::from(!alive)],
+                );
+            }
+            for line in &game.stolen_log {
+                eprintln!("  stolen log: {line}");
+            }
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
@@ -2037,6 +2432,28 @@ fn real_bot_cost() {
                 .iter()
                 .map(|(k, r)| format!("{k} {} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]))
                 .collect();
+            let tick_s = f64::from(TICK_MS) / 1000.0;
+            let sides: Vec<String> = by_team
+                .iter()
+                .map(|r| {
+                    format!(
+                        "[{}, {:.0}, {:.0}, {}, {}, {}, {}]",
+                        r[0],
+                        r[1] as f64 * tick_s,
+                        r[2] as f64 * tick_s,
+                        r[3],
+                        r[4],
+                        r[5],
+                        r[6]
+                    )
+                })
+                .collect();
+            eprintln!(
+                "  by team (attack takes, attack bot-s, of them with a teammate attacking, attack kills, attack deaths, steals, attacks replaced within 10 s): {}; started {:?}, points {:?}",
+                sides.join(" "),
+                start,
+                game.points
+            );
             eprintln!(
                 "  by play (takes, under 0.05, kills, deaths, steals): {}",
                 rows.join("; ")
@@ -2208,6 +2625,56 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
         playing: true,
     });
     assert!(made.iter().all(|made| made.place != 3));
+}
+
+/// The world's HUD mask reaches the teams' knowledge (`WorldFacts::marks`
+/// through the tracker to `TeamKnowledge::hud_update`): team 1's dropped
+/// battery that falls through level_01's floor and is put back 2 m away
+/// stays known to team 1 (matches 0x1a09…/0x7298…), never to team 0.
+#[test]
+fn a_dropped_battery_put_back_after_a_fall_stays_on_its_teams_hud() {
+    let teams = [0, 1];
+    let mut bots = Bots::new(
+        0xF1,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, true],
+        &[None; 2],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    assert!(!bots.tuning.cheats.batteries);
+    for place in 0..2 {
+        bots.entered(place, true, 100);
+    }
+    let lying = |time: u32, at: Vec3, mask: u32| WorldFacts {
+        time,
+        batteries: vec![BatteryState::Free(at)],
+        marks: vec![mask],
+        ..WorldFacts::default()
+    };
+    let known = |bots: &Bots, team: usize| bots.teams[team].knowledge.battery(0).copied();
+    let dropped = Vec3::new(-43.58, 19.55, 3.80);
+    let reset = Vec3::new(-41.6, 21.6, 3.5);
+    bots.facts(lying(1_000, Vec3::new(-14.0, 21.7, -61.4), 0));
+    assert!(known(&bots, 0).is_none() && known(&bots, 1).is_none());
+    bots.facts(WorldFacts {
+        time: 2_000,
+        batteries: vec![BatteryState::Carried(None)],
+        marks: vec![0],
+        ..WorldFacts::default()
+    });
+    bots.facts(lying(3_000, dropped, 2));
+    assert!(known(&bots, 1).is_some_and(|k| k.hud));
+    bots.facts(lying(4_000, Vec3::new(dropped.x, -86.0, dropped.z), 2));
+    bots.facts(lying(5_000, reset, 2));
+    let kept = known(&bots, 1).expect("still on team 1's HUD");
+    assert!(kept.hud && kept.time == 5_000);
+    // In the bots' frame (without a map, the mirrored one).
+    let reset_frame = Vec3::new(reset.x, reset.y, -reset.z);
+    assert!((kept.at - reset_frame).length() < 1e-3, "{kept:?}");
+    assert!(known(&bots, 0).is_none());
 }
 
 /// A place's ammo lasts the match: a bot's kit keeps what it has left from
