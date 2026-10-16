@@ -979,6 +979,11 @@ fn real_bot_cost() {
         .ok()
         .map(|s| s.split(',').filter_map(|n| n.parse().ok()).collect())
         .unwrap_or(vec![4, 8, 10]);
+    // Another match of the same map and size (0: the digests' runs).
+    let seed: u32 = std::env::var("SRP_BENCH_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     use survarium::v026g::maps::mode;
     let maps: Vec<(u8, u8)> = std::env::var("SRP_BENCH_MAPS")
         .ok()
@@ -1006,7 +1011,7 @@ fn real_bot_cost() {
             let driven = vec![true; teams.len()];
             let roles: Vec<Option<&str>> = vec![None; teams.len()];
             let mut bots = Bots::new(
-                0xBE7C + per_team as u32,
+                0xBE7C + per_team as u32 + seed * 1000,
                 mode,
                 level,
                 &teams,
@@ -1026,7 +1031,13 @@ fn real_bot_cost() {
                 mode::TIMED_BATTERIES => (None, Some(20_000)),
                 _ => (None, None),
             };
-            let mut game = Game::new(world.clone(), &teams, per_team as u64, tickets, timed);
+            let mut game = Game::new(
+                world.clone(),
+                &teams,
+                per_team as u64 + u64::from(seed) * 1000,
+                tickets,
+                timed,
+            );
             for place in 0..teams.len() {
                 bots.entered(place, true, 0);
             }
@@ -1037,10 +1048,31 @@ fn real_bot_cost() {
             let rays_before = super::aimpoint::rays_cast();
             let limit_ms = limit_s * 1000;
             let (mut clock, mut next_world) = (0, 1_000);
+            // Living bots' ticks with a goal to walk to, and those of them
+            // with no route: a bot standing where it means to walk.
+            let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
+            let mut stood_by: std::collections::BTreeMap<String, u64> = Default::default();
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
                     game.step();
+                    for bot in bots.bots.iter().flatten() {
+                        let body = &game.bodies[bot.place];
+                        if let Go::To { at, within_m } = bot.intent.go
+                            && body.alive
+                            && body.feet.distance_xz(at) > within_m
+                        {
+                            goal_ticks += 1;
+                            if bot.route.is_none() {
+                                stood_ticks += 1;
+                                let play = bot
+                                    .assignment
+                                    .as_ref()
+                                    .map_or("none".into(), |a| format!("{:?}", a.kind));
+                                *stood_by.entry(play).or_default() += 1;
+                            }
+                        }
+                    }
                 }
                 if clock >= next_world {
                     next_world += 1_000;
@@ -1149,6 +1181,14 @@ fn real_bot_cost() {
             let mut top: Vec<_> = plays.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  notes: {:?}", &top[..top.len().min(12)]);
+            eprintln!(
+                "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}",
+                100.0 * stood_ticks as f64 / goal_ticks.max(1) as f64,
+                game.delivered
+            );
+            let mut by: Vec<_> = stood_by.into_iter().collect();
+            by.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
             let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
             eprintln!("  {line}");
             if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {

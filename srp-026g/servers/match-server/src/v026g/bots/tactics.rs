@@ -27,6 +27,15 @@ use super::view::{EYE_CROUCHED, EYE_STANDING};
 pub const SPAWN_AREA_M: f32 = 20.0;
 /// A point is looked for on the grid within this, metres.
 const LOCATE_M: f32 = 3.0;
+/// A use reaches this far from the eye, metres: the client's ray is
+/// `usable_objects_detection_distance`, 2.0 (PROVEN), and must hit the
+/// object's own shape; 0.2 is kept for the aim and the body's sway.
+pub const USE_REACH_M: f32 = 1.8;
+/// A way out of a zone is looked for over at most this many floors.
+const ESCAPE_FLOORS: usize = 20_000;
+/// A way out ends at least this far from where it starts, metres: past the
+/// motor's arrival distance, so the body really walks out.
+const ESCAPE_MIN_M: f32 = 1.5;
 
 /// What one map's tactics hold for one hazard margin: the same for every
 /// match on the map, so matches share it ([`Tactics::of`]). Read-only once
@@ -46,6 +55,10 @@ pub struct TacticsBase {
     /// spawn areas), so [`Tactics::allowed`] is the same on every floor of
     /// a region (`mapdata::regions`).
     regions: Regions,
+    /// Per floor, a bit: a walk from a spawn gets there (any link, every
+    /// zone off). A goal on any other floor (a roof one only drops from, a
+    /// shelf's top past the jump) has no way from where bots are.
+    walkable: Vec<u64>,
 }
 
 /// One map's tactics for a match: the shared [`TacticsBase`] and the
@@ -67,7 +80,7 @@ const SPAWN_BITS: u32 = 8;
 /// the spawn areas, the regions, the exits and the searches they come
 /// from), so a stored base of the old build is never read for the new.
 /// `the_base_and_its_digest_are_fixed` fails until then.
-pub const TACTICS_ALGO: u32 = 1;
+pub const TACTICS_ALGO: u32 = 2;
 
 /// What a spot is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,12 +154,14 @@ impl TacticsBase {
         // the hazards' own.
         let spawn_areas = labels.iter().map(|&label| label as u8).collect();
         drop(labels);
+        let walkable = walkable_from_spawns(&world);
         let mut base = Self {
             world,
             hazards,
             exits: Vec::new(),
             spawn_areas,
             regions,
+            walkable,
         };
         let sides: Vec<i32> = {
             let mut sides: Vec<i32> = base.world.map.spawns.iter().map(|s| s.team).collect();
@@ -194,6 +209,7 @@ impl TacticsBase {
                 self.hazards.marks().write_body(out)?;
                 out.plain(&self.spawn_areas, |&bits| [bits])?;
                 self.regions.write_body(out)?;
+                out.plain(&self.walkable, |&bits| bits.to_le_bytes())?;
                 out.plain(&self.exits, |(side, exits)| {
                     let mut bytes = [0u8; 8];
                     bytes[..4].copy_from_slice(&side.to_le_bytes());
@@ -231,6 +247,7 @@ impl TacticsBase {
                 let marks = HazardMarks::read_body(input, floors, zones.len())?;
                 let spawn_areas: Vec<u8> = input.plain(|[bits]: [u8; 1]| bits)?;
                 let regions = Regions::read_body(input, floors)?;
+                let walkable: Vec<u64> = input.plain(u64::from_le_bytes)?;
                 let sides: Vec<(i32, u32)> = input.plain(|bytes: [u8; 8]| {
                     let (side, count) = bytes.split_at(4);
                     (
@@ -248,7 +265,10 @@ impl TacticsBase {
                     Vec3::new(v[0], v[1], v[2])
                 })?;
                 let total: u64 = sides.iter().map(|&(_, count)| u64::from(count)).sum();
-                if spawn_areas.len() != floors || total != points.len() as u64 {
+                if spawn_areas.len() != floors
+                    || walkable.len() != floors.div_ceil(64)
+                    || total != points.len() as u64
+                {
                     return Err("tactics out of range".into());
                 }
                 let mut rest = points.as_slice();
@@ -266,6 +286,7 @@ impl TacticsBase {
                     exits,
                     spawn_areas,
                     regions,
+                    walkable,
                 })
             },
             Self::digest,
@@ -277,6 +298,7 @@ impl TacticsBase {
         self.hazards.marks().memory_bytes()
             + self.spawn_areas.len()
             + self.regions.memory_bytes()
+            + self.walkable.len() * 8
             + self
                 .exits
                 .iter()
@@ -285,7 +307,8 @@ impl TacticsBase {
     }
 
     /// What the tactics answer, as one number (`mapdata::digest`): the
-    /// zones, their marks, the spawn areas, the regions and the exits.
+    /// zones, their marks, the spawn areas, the regions, the walkable
+    /// floors and the exits.
     /// Equal digests, equal answers.
     pub fn digest(&self) -> u64 {
         let mut digest = mapdata::digest::Digest::new();
@@ -304,6 +327,8 @@ impl TacticsBase {
             .iter()
             .for_each(|&bits| digest.u32(u32::from(bits)));
         self.regions.digest_into(&mut digest);
+        digest.len(self.walkable.len());
+        self.walkable.iter().for_each(|&bits| digest.u64(bits));
         digest.len(self.exits.len());
         for (side, exits) in &self.exits {
             digest.u32(*side as u32);
@@ -323,6 +348,13 @@ impl TacticsBase {
             .iter()
             .find(|(s, _)| *s == side)
             .map_or(&[], |(_, exits)| exits.as_slice())
+    }
+
+    /// [`Tactics::walkable`].
+    fn walkable(&self, node: NodeId) -> bool {
+        self.walkable
+            .get(node as usize / 64)
+            .is_some_and(|bits| bits >> (node % 64) & 1 == 1)
     }
 
     /// [`Tactics::in_spawn_area`].
@@ -418,6 +450,13 @@ impl Tactics {
     /// The human routes out of `side`'s base.
     pub fn routes_of(&self, side: i32) -> impl Iterator<Item = &super::routes::HumanRoute> {
         self.routes.iter().filter(move |route| route.team == side)
+    }
+
+    /// Whether a walk from a spawn gets to `node` (any link, every zone
+    /// off): bots are only ever on such floors, so a goal elsewhere has no
+    /// way.
+    pub fn walkable(&self, node: NodeId) -> bool {
+        self.base.walkable(node)
     }
 
     /// Whether `point` is in a spawn area of `side` (any side if `None`).
@@ -519,6 +558,43 @@ impl Tactics {
         )
     }
 
+    /// The way out for a body on `from`, a floor it may not walk on now
+    /// (inside a zone it was pushed or stepped into): to the nearest floor
+    /// at least [`ESCAPE_MIN_M`] off that it may walk on and every floor
+    /// next to it too (clear of the zone's edge), over any floors, so the
+    /// stretch in the zone is short. No route to any goal starts there, so
+    /// without it the body would stand in the fire.
+    pub fn escape(
+        &self,
+        from: NodeId,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+    ) -> Option<Route> {
+        let grid = &self.world.grid;
+        let mut seen = std::collections::HashSet::from([from]);
+        let mut queue = std::collections::VecDeque::from([from]);
+        let start = grid.position(from);
+        let ok = |n: NodeId| self.allowed(n, time, side, objective);
+        while let Some(a) = queue.pop_front() {
+            if grid.position(a).distance_xz(start) >= ESCAPE_MIN_M
+                && ok(a)
+                && grid.links(a).all(|(b, _)| ok(b))
+            {
+                return path::plan(grid, from, a);
+            }
+            if seen.len() > ESCAPE_FLOORS {
+                return None;
+            }
+            for (b, _) in grid.links(a) {
+                if seen.insert(b) {
+                    queue.push_back(b);
+                }
+            }
+        }
+        None
+    }
+
     /// Whether a body walks from `a` to `b` in a line, on allowed floors.
     pub fn clear_line(&self, a: Vec3, b: Vec3, time: u32, side: Option<i32>) -> bool {
         self.clear_line_for(a, b, time, side, false)
@@ -542,13 +618,43 @@ impl Tactics {
         })
     }
 
-    /// Whether `point` is a place a goal may be: on a floor, off hazards
-    /// and the other side's spawn area.
+    /// Whether `point` is a place a goal may be: on a floor a walk gets to,
+    /// off hazards and the other side's spawn area.
     pub fn fine_goal(&self, point: Vec3, time: u32, side: Option<i32>) -> bool {
         self.world
             .grid
             .locate(point, LOCATE_M)
-            .is_some_and(|node| self.allowed(node, time, side, false))
+            .is_some_and(|node| self.walkable(node) && self.allowed(node, time, side, false))
+    }
+
+    /// Where a body stands to take a battery lying at `at`: `at` itself
+    /// when the floor there is one a walk gets to (nearly every battery);
+    /// else the walkable floor whose crouched eye is nearest it, within a
+    /// use's reach ([`USE_REACH_M`]) and in a clear line (a battery on a
+    /// shelf, taken from the floor beside it, as players do); none if no
+    /// floor is so.
+    pub fn stand_to_take(&self, at: Vec3) -> Option<Vec3> {
+        let grid = &self.world.grid;
+        if grid
+            .locate(at, LOCATE_M)
+            .is_some_and(|node| self.walkable(node))
+        {
+            return Some(at);
+        }
+        let r = USE_REACH_M;
+        let mut best: Option<(f32, Vec3)> = None;
+        for node in grid.floors_in([at.x - r, at.z - r, at.x + r, at.z + r]) {
+            if !self.walkable(node) {
+                continue;
+            }
+            let feet = grid.position(node);
+            let eye = feet + Vec3::new(0.0, EYE_CROUCHED, 0.0);
+            let d = (at - eye).length();
+            if d <= r && best.is_none_or(|(b, _)| d < b) && self.sees(eye, at) {
+                best = Some((d, feet));
+            }
+        }
+        best.map(|(_, feet)| feet)
     }
 
     /// Whether `b` is seen from `a` (points at the eyes).
@@ -573,7 +679,11 @@ impl Tactics {
             };
             let at = grid.position(node);
             let d = at.distance_xz(query.around);
-            if d < query.min_m || d > query.max_m || !self.allowed(node, time, query.side, false) {
+            if d < query.min_m
+                || d > query.max_m
+                || !self.walkable(node)
+                || !self.allowed(node, time, query.side, false)
+            {
                 continue;
             }
             if found.iter().any(|spot| spot.node == node) {
@@ -613,6 +723,35 @@ impl Tactics {
     pub fn exits(&self, side: i32) -> &[Vec3] {
         self.base.exits(side)
     }
+}
+
+/// The floors a walk from a spawn's floor gets to, a bit each; every
+/// floor when no spawn is on a floor (a map without spawns).
+fn walkable_from_spawns(world: &World) -> Vec<u64> {
+    let grid = &world.grid;
+    let mut bits = vec![0u64; grid.len().div_ceil(64)];
+    let mut queue: Vec<NodeId> = Vec::new();
+    let mark = |bits: &mut Vec<u64>, node: NodeId, queue: &mut Vec<NodeId>| {
+        let (word, bit) = (node as usize / 64, node % 64);
+        if bits[word] >> bit & 1 == 0 {
+            bits[word] |= 1 << bit;
+            queue.push(node);
+        }
+    };
+    for spawn in &world.map.spawns {
+        if let Some(node) = grid.locate(spawn.position, 1.5) {
+            mark(&mut bits, node, &mut queue);
+        }
+    }
+    if queue.is_empty() {
+        return vec![u64::MAX; grid.len().div_ceil(64)];
+    }
+    while let Some(a) = queue.pop() {
+        for (b, _) in grid.links(a) {
+            mark(&mut bits, b, &mut queue);
+        }
+    }
+    bits
 }
 
 fn centroid(points: &[Vec3]) -> Option<Vec3> {
@@ -729,10 +868,10 @@ pub(super) mod tests {
     fn the_base_and_its_digest_are_fixed() {
         let base = TacticsBase::build(field(), 1.0);
         assert_eq!(base.digest(), PINNED_FIELD);
-        assert_eq!(TACTICS_ALGO, 1);
+        assert_eq!(TACTICS_ALGO, 2);
     }
 
-    const PINNED_FIELD: u64 = 5_789_686_057_576_583_692;
+    const PINNED_FIELD: u64 = 736_835_410_510_453_169;
 
     #[test]
     fn a_written_base_reads_back_the_same_and_a_damaged_one_is_refused() {
@@ -800,5 +939,90 @@ pub(super) mod tests {
             // Behind the wall from the enemy's side: x < 40.
             assert!(spot.at.x < 40.0, "{spot:?}");
         }
+    }
+
+    /// A body inside a zone (always on) has no route to anywhere, but a
+    /// way out: to the nearest floor it may walk on, a few metres off.
+    #[test]
+    fn a_body_in_a_fire_walks_out_to_the_nearest_floor_it_may() {
+        use mapdata::{Rotation, Shape, ShapeKind, Zone, ZoneKind};
+        let world = field_with(|map| {
+            map.zones.push(Zone {
+                kind: ZoneKind::Damage,
+                name: "fire".into(),
+                team: -1,
+                position: Vec3::new(25.0, 0.0, 32.0),
+                damage_type: "fire".into(),
+                damage: None,
+                shapes: vec![Shape {
+                    kind: ShapeKind::Sphere,
+                    center: Vec3::new(25.0, 1.0, 32.0),
+                    rotation: Rotation::IDENTITY,
+                    half: Vec3::new(3.0, 3.0, 3.0),
+                }],
+            });
+        });
+        let tactics = Tactics::new(world.clone(), 1.0);
+        let grid = &world.grid;
+        let inside = grid.locate(Vec3::new(25.0, 0.0, 32.0), 1.0).unwrap();
+        assert!(!tactics.allowed(inside, 0, Some(0), false));
+        let goal = Vec3::new(10.0, 0.0, 30.0);
+        let to = grid.locate(goal, 1.0).unwrap();
+        assert!(
+            tactics
+                .route_nodes(inside, to, 0, Some(0), false, |_| true)
+                .is_none()
+        );
+        let out = tactics.escape(inside, 0, Some(0), false).unwrap();
+        let end = out.point_at(out.length());
+        let end_node = grid.locate(end, 0.3).unwrap();
+        assert!(tactics.allowed(end_node, 0, Some(0), false));
+        // The zone and its margin are 4 m round its centre: out within 5 m.
+        assert!(out.length() < 5.0, "{}", out.length());
+        // From there the goal has a way.
+        assert!(
+            tactics
+                .route_nodes(end_node, to, 0, Some(0), false, |_| true)
+                .is_some()
+        );
+    }
+
+    /// A roof one only drops from (3 m up; the jump is 1.3 m) is no goal:
+    /// not walkable, no spot on it even preferring height, `fine_goal`
+    /// says no; the ground beside it is all three.
+    #[test]
+    fn a_roof_no_walk_gets_to_is_no_goal() {
+        let mut triangles = floor(0.0, 0.0, 80.0, 40.0, 0.0).to_vec();
+        triangles.extend(floor(50.0, 10.0, 60.0, 20.0, 3.0));
+        let grid = WalkGrid::build(
+            &triangles,
+            [0.0, 0.0, 80.0, 40.0],
+            0.25,
+            mapdata::Body::default(),
+        );
+        let world = field_with(|_| {});
+        let map = world.map.clone();
+        let world = Arc::new(World::assemble(
+            map,
+            grid.into(),
+            RayTree::build(&triangles).into(),
+        ));
+        let tactics = Tactics::new(world.clone(), 1.0);
+        let grid = &world.grid;
+        let roof = grid.locate(Vec3::new(55.0, 3.0, 15.0), 1.0).unwrap();
+        let ground = grid.locate(Vec3::new(40.0, 0.0, 30.0), 1.0).unwrap();
+        assert!(!tactics.walkable(roof));
+        assert!(tactics.walkable(ground));
+        assert!(grid.path(roof, ground).is_some(), "one drops from it");
+        assert!(!tactics.fine_goal(Vec3::new(55.0, 3.0, 15.0), 0, Some(0)));
+        assert!(tactics.fine_goal(Vec3::new(40.0, 0.0, 30.0), 0, Some(0)));
+        let query = SpotQuery {
+            prefer_high: 1.0,
+            side: Some(0),
+            ..SpotQuery::ring(Vec3::new(55.0, 1.5, 15.0), 0.0, 8.0)
+        };
+        let spots = tactics.spots(&query, 0, 10, &mut Rng::new(1));
+        assert!(!spots.is_empty());
+        assert!(spots.iter().all(|spot| spot.at.y < 1.0), "{spots:?}");
     }
 }

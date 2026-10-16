@@ -50,12 +50,14 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         }
         return;
     }
-    // A battery no way leads to now (inside a hazard) is left for later.
+    // A battery no way leads to now (inside a hazard) is left for later;
+    // one on a shelf is taken from the floor beside it.
     for (battery, state) in cx.view.batteries.iter().enumerate() {
         if matches!(state, BatteryState::Free(_))
             && cx
                 .battery_at(battery)
-                .is_some_and(|at| cx.reachable(at, false))
+                .and_then(|at| cx.tactics.stand_to_take(at))
+                .is_some_and(|stand| cx.reachable(stand, false) && !cx.no_way_lately(stand))
         {
             out.extend(cx.candidate(
                 PlayKind::Collect,
@@ -108,17 +110,22 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
                 return Step::Failed("someone took it");
             }
             // A hazard switched on round it (the cloud's energy rose).
-            if !cx.reachable(at, false) {
+            let Some(stand) = cx.tactics.stand_to_take(at) else {
+                return Step::Failed("no way to it");
+            };
+            // Or every way in crosses a hazard (a battery ringed by fire):
+            // the search said so, and the bot does something else.
+            if !cx.reachable(stand, false) || cx.no_way_lately(stand) {
                 return Step::Failed("no way to it");
             }
-            if cx.me.feet.distance_xz(at) <= num("reach_m") {
+            if cx.me.feet.distance_xz(stand) <= num("reach_m") {
                 *state = State::Take {
                     tries: 0,
                     last_use: 0,
                 };
                 return Step::Continue(Intent::stay().looking(Look::At(at)));
             }
-            Step::Continue(Intent::to(at, cx.pace_toward(at)).within(num("reach_m") * 0.6))
+            Step::Continue(Intent::to(stand, cx.pace_toward(stand)).within(num("reach_m") * 0.6))
         }
         State::Take { tries: n, last_use } => {
             let at = cx.point_of(target);
@@ -250,6 +257,77 @@ mod tests {
             .locate(Vec3::new(25.0, 0.0, 30.1), 3.0)
             .unwrap();
         assert!(!s.tactics.allowed(edge, s.view.clock, Some(0), false));
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
+    }
+
+    /// A battery on a shelf 2 m up (past the jump): its own floor is no
+    /// walk's, but from the ground beside it a crouched eye is within a
+    /// use's reach in a clear line, so it is taken from there; one in the
+    /// shelf's middle, out of reach from every side, is left.
+    #[test]
+    fn a_battery_on_a_shelf_is_taken_from_the_floor_beside_it() {
+        use crate::v026g::bots::body::tests::floor;
+        use mapdata::{RayTree, WalkGrid, World};
+
+        let mut s = Scenario::field(Mode::Batteries);
+        let mut triangles = floor(0.0, 0.0, 80.0, 40.0, 0.0).to_vec();
+        triangles.extend(floor(47.0, 13.0, 51.0, 17.0, 2.0));
+        let grid = WalkGrid::build(
+            &triangles,
+            [0.0, 0.0, 80.0, 40.0],
+            0.25,
+            mapdata::Body::default(),
+        );
+        let map = s.tactics.world.map.clone();
+        let world = std::sync::Arc::new(World::assemble(
+            map,
+            grid.into(),
+            RayTree::build(&triangles).into(),
+        ));
+        s.tactics = Tactics::new(world, 1.0);
+        s.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+        let edge = Vec3::new(51.0, 2.2, 15.0);
+        let middle = Vec3::new(49.0, 2.2, 15.0);
+        s.battery(BatteryState::Free(edge));
+        s.battery(BatteryState::Free(middle));
+        let stand = s.tactics.stand_to_take(edge).unwrap();
+        assert!(stand.y.abs() < 0.01 && stand.x > 51.0, "{stand:?}");
+        assert_eq!(s.tactics.stand_to_take(middle), None);
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
+        // The fetch walks to the floor beside it, then takes it there.
+        let target = TargetRef::Battery(0);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        let Step::Continue(intent) = step(&mut state, target, &s.cx(0), &mut rng) else {
+            panic!("goes for it");
+        };
+        assert!(matches!(intent.go, Go::To { at, .. } if at == stand));
+        s.bot(0, 0, stand);
+        step(&mut state, target, &s.cx(0), &mut rng);
+        assert!(matches!(state, State::Take { .. }));
+    }
+
+    /// A battery whose search lately proved no way (every way in crosses a
+    /// fire) is left until that is forgotten, and a fetch of it gives up.
+    #[test]
+    fn a_battery_no_way_was_found_to_lately_is_left_for_a_while() {
+        let mut s = with_toxic(0.3);
+        let at = Vec3::new(45.0, 0.0, 32.0);
+        s.battery(BatteryState::Free(at));
+        assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
+        let target = TargetRef::Battery(0);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        s.no_way_to = vec![(at + Vec3::new(1.0, 0.0, 0.0), s.view.clock + 5_000)];
+        assert!(collects(&s).is_empty());
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Failed("no way to it")
+        );
+        // Forgotten: fetched again.
+        s.view.clock += 5_000;
         assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
     }
 
