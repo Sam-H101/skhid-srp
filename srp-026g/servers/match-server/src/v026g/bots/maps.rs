@@ -873,6 +873,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// "Player vs Bots" (`SRP_PVB=on`): as many maps in memory as matches
+    /// against bots may run (`SRP_PVB_MAX_MATCHES`, 5): five matches on five
+    /// maps each have theirs at once, a sixth map waits, and gets in once a
+    /// match lets its map go.
+    #[test]
+    fn five_matches_against_bots_hold_five_maps_at_once() {
+        let dir = temp_dir("pvb-five");
+        let projects = [
+            "a/day_4", "b/day_4", "c/day_4", "d/day_4", "e/day_4", "f/day_4",
+        ];
+        for project in projects {
+            tiny_map(project)
+                .write(&dir.join(mapdata::format::file_name(project)))
+                .unwrap();
+        }
+        let at_once = session::v026g::pvb::maps_at_once(AT_ONCE, true, 5);
+        assert_eq!(at_once, 5);
+        let maps = Maps::configured(Some(dir.clone()), KEEP, at_once, None);
+        let wait = Duration::from_secs(10);
+        let mut held: Vec<Arc<TacticsBase>> = projects[..5]
+            .iter()
+            .map(|project| wait_ready(&maps, project, wait))
+            .collect();
+        // All five still there, each its own.
+        for (project, base) in projects.iter().zip(&held) {
+            let MapState::Ready(again) = maps.get(project) else {
+                panic!("{project} is in memory");
+            };
+            assert!(Arc::ptr_eq(&again, base));
+        }
+        let MapState::Waiting(why) = maps.get("f/day_4") else {
+            panic!("a sixth map waits while five are held");
+        };
+        assert!(why.contains("at most 5"), "{why}");
+        // One match is over: the sixth gets its map.
+        held.remove(0);
+        wait_ready(&maps, "f/day_4", wait);
+        drop(held);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The memory of the bots' maps of "Player vs Bots" held at once, as
+    /// matches on as many maps hold them (the owner's 2 GB host; all eight
+    /// levels, of which five at most at once with `SRP_PVB_MAX_MATCHES` 5):
+    /// `SRP_MAPDATA_DIR=<dir> cargo test -p match-server --release
+    /// pvb_maps_held_at_once -- --ignored --nocapture` (the built files of
+    /// `<dir>/built` are read, as the server reads them). Each map's world
+    /// and tactics as counted, and on Linux the process's resident memory.
+    #[test]
+    #[ignore = "a measurement; needs SRP_MAPDATA_DIR"]
+    fn pvb_maps_held_at_once() {
+        let Some(dir) = real_dir() else { return };
+        let built = Some(dir.join(BUILT_DIR));
+        let mb = |bytes: usize| bytes as f64 / f64::from(1 << 20);
+        let resident = || {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+            let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+            Some(kb / 1024.0)
+        };
+        let show = |value: Option<f64>| value.map_or("-".to_owned(), |mb| format!("{mb:.0} MB"));
+        // The battery day of each level: what the lobby offers (its TDM
+        // days are the same projects).
+        let mut projects: Vec<&str> = [61_u8, 67, 73, 79, 85, 91, 97, 103]
+            .iter()
+            .filter_map(|&id| survarium::v026g::maps::map_mode(id))
+            .map(|map| map.project)
+            .collect();
+        projects.dedup();
+        let maps = Maps::configured(
+            Some(dir),
+            KEEP,
+            session::v026g::pvb::maps_at_once(AT_ONCE, true, projects.len()),
+            built,
+        );
+        let before = resident();
+        eprintln!("before any map: {}", show(before));
+        let mut held = Vec::new();
+        let mut counted = 0;
+        for project in &projects {
+            let base = wait_ready(&maps, project, Duration::from_secs(300));
+            mapdata::trim_freed_memory();
+            let bytes = world_bytes(&base.world) + base.memory_bytes();
+            counted += bytes;
+            held.push(base);
+            eprintln!(
+                "{project}: {:.0} MB counted (world and tactics); held {}: {:.0} MB counted, \
+                 resident {}",
+                mb(bytes),
+                held.len(),
+                mb(counted),
+                show(resident())
+            );
+        }
+        if let (Some(before), Some(after)) = (before, resident()) {
+            eprintln!(
+                "{} maps held: {:.0} MB resident more, {:.0} MB a map",
+                held.len(),
+                after - before,
+                (after - before) / held.len() as f64
+            );
+        }
+        assert_eq!(held.len(), projects.len());
+    }
+
     /// The directory of real maps, if the environment names one.
     fn real_dir() -> Option<PathBuf> {
         let dir = std::env::var_os("SRP_MAPDATA_DIR").map(PathBuf::from);

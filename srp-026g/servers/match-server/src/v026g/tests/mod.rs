@@ -77,6 +77,7 @@ pub fn setup(players: usize, map_id: u8) -> MatchSetup {
             })
             .collect(),
         score_weights: None,
+        vs_bots: false,
     }
 }
 
@@ -165,6 +166,14 @@ impl Bench {
         place
     }
 
+    /// A match of one player against the server's own bots at `driven`
+    /// ("Player vs Bots": `MatchSetup::vs_bots`), of growing rosters.
+    pub fn vs_bots(players: usize, map_id: u8, settings: Settings, driven: &[usize]) -> Self {
+        let mut setup = setup(players, map_id);
+        setup.vs_bots = true;
+        Self::with_setup(setup, settings, &[], driven, true)
+    }
+
     fn with_dialect(
         players: usize,
         map_id: u8,
@@ -173,10 +182,20 @@ impl Bench {
         driven: &[usize],
         growing: bool,
     ) -> Self {
+        Self::with_setup(setup(players, map_id), settings, bots, driven, growing)
+    }
+
+    fn with_setup(
+        mut setup: MatchSetup,
+        settings: Settings,
+        bots: &[usize],
+        driven: &[usize],
+        growing: bool,
+    ) -> Self {
         log_to_stderr();
+        let (players, map_id) = (setup.players.len(), setup.map_id);
         let start = Instant::now();
         let registry = Arc::new(MatchRegistry::new("127.0.0.1", 1236));
-        let mut setup = setup(players, map_id);
         for place in bots {
             setup.players[*place].bot = true;
         }

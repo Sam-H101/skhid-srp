@@ -505,6 +505,7 @@ impl Server {
                     played_ms: None,
                     trusted_snapshot_ms: None,
                     trusted_by: 0,
+                    vs_bots: formed.vs_bots,
                     players: formed
                         .places
                         .iter()

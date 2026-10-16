@@ -135,6 +135,7 @@ impl MatchHost for RegistryHost {
             // The game's own weights: the ones the rewards are counted
             // with (`rewards::Terms::at`).
             score_weights: None,
+            vs_bots: setup.vs_bots,
         };
         let ticket = match pool {
             session::QueuePool::Standard => self.0.create(setup),
@@ -231,6 +232,7 @@ pub fn match_result(result: matches::MatchResult) -> rewards::MatchResult {
         played_ms: result.played_ms,
         trusted_snapshot_ms: result.trusted_snapshot_ms,
         trusted_by: result.trusted_by,
+        vs_bots: result.vs_bots,
         players: result
             .players
             .into_iter()

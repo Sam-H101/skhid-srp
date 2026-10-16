@@ -82,7 +82,13 @@
 //!   file, bots keep their script. `SRP_MAPDATA_BUILT=<dir>` (default
 //!   `<SRP_MAPDATA_DIR>/built`; `off`: build at each load): where the
 //!   built grids, sight trees and tactics are kept and read back
-//!   (`mapdata::built`);
+//!   (`mapdata::built`). With `SRP_PVB=on` ("Player vs Bots", the lobby's
+//!   `pvb`) at least `SRP_PVB_MAX_MATCHES` (default 5) maps may be in
+//!   memory at once, one for each match against bots that may run;
+//! - `SRP_PVB_STALL_S` (default 60, 10 to 3600): a match against the
+//!   server's bots whose only player has been asked for its world this
+//!   long and uploaded none is over (as deserted): its bots see the world
+//!   only through that player's uploads;
 //! - `SRP_BOTS_GIVE_WAY=on|off` (default `on`): whether one of the
 //!   server's own bots of a side leaves the match when a late joiner comes
 //!   onto that side and it needs the room (`game/driven.rs`, `give_way`).
@@ -189,6 +195,11 @@ pub(crate) struct Timing {
     /// way before the sync starts over (`SRP_ENTRY_STATE_SECONDS`). A game
     /// that plays is resynced within the 1.75 s of the client's own table.
     pub entry_state: Duration,
+    /// A match against the server's bots ([`MatchSetup::vs_bots`]) whose
+    /// only player has been asked for its world this long and sent none
+    /// is over (`SRP_PVB_STALL_S`): its bots see the world through that
+    /// player's uploads alone.
+    pub pvb_stall: Duration,
 }
 
 impl Default for Timing {
@@ -207,9 +218,13 @@ impl Default for Timing {
             linger: Duration::from_secs(5),
             final_wait: Duration::from_secs(7),
             entry_state: Duration::from_secs(4),
+            pvb_stall: Duration::from_secs(DEFAULT_PVB_STALL_S),
         }
     }
 }
+
+/// `SRP_PVB_STALL_S` when unset.
+pub(crate) const DEFAULT_PVB_STALL_S: u64 = 60;
 
 /// How the match server behaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,11 +321,17 @@ impl Settings {
                     var("SRP_MAPDATA_KEEP").as_deref(),
                     bots::maps::KEEP as u32,
                 ),
-                parse_number(
-                    "SRP_MAPDATA_AT_ONCE",
-                    var("SRP_MAPDATA_AT_ONCE").as_deref(),
-                    bots::maps::AT_ONCE as u32,
-                ),
+                // With "Player vs Bots" on, one map for each match against
+                // bots that may run at once (`SRP_PVB_MAX_MATCHES`).
+                session::v026g::pvb::maps_at_once(
+                    parse_number(
+                        "SRP_MAPDATA_AT_ONCE",
+                        var("SRP_MAPDATA_AT_ONCE").as_deref(),
+                        bots::maps::AT_ONCE as u32,
+                    ) as usize,
+                    session::v026g::pvb::enabled(),
+                    session::v026g::pvb::max_matches(),
+                ) as u32,
                 var("SRP_MAPDATA_BUILT").as_deref(),
             ),
             bots_give_way: parse_switch(
@@ -353,6 +374,16 @@ impl Settings {
                             5,
                         )
                         .clamp(3, 15),
+                    )),
+                    // Never under 10 s: an upload asked for is taken for
+                    // 6 s (`game.rs`, `ASKED_FOR`).
+                    pvb_stall: Duration::from_secs(u64::from(
+                        parse_number(
+                            "SRP_PVB_STALL_S",
+                            var("SRP_PVB_STALL_S").as_deref(),
+                            DEFAULT_PVB_STALL_S as u32,
+                        )
+                        .clamp(10, 3600),
                     )),
                     ..Timing::default()
                 }

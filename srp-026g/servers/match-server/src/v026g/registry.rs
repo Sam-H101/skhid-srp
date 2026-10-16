@@ -82,6 +82,12 @@ pub struct MatchSetup {
     pub players: Vec<MatchPlayer>,
     /// The clients' score weights; `None` for the game's own.
     pub score_weights: Option<[f32; SCORE_EVENTS]>,
+    /// A match of one player against the server's own bots ("Player vs
+    /// Bots", the lobby's `pvb`): its teams are fixed and it takes no late
+    /// joiner (the lobby's rule), it ends when its only player stops
+    /// uploading worlds it is asked for (`Timing::pvb_stall`), and its
+    /// result says so ([`MatchResult::vs_bots`]: the rewards pay less).
+    pub vs_bots: bool,
 }
 
 /// Where the players of a made match connect.
@@ -178,6 +184,8 @@ pub(crate) struct Formed {
     /// Every connecting client must advertise the matching capability.
     pub growing_roster: bool,
     pub initial_players: usize,
+    /// [`MatchSetup::vs_bots`].
+    pub vs_bots: bool,
 }
 
 /// How far a match is.
@@ -462,6 +470,7 @@ impl MatchRegistry {
                 formed_at: now,
                 growing_roster,
                 initial_players: options.players.len(),
+                vs_bots: setup.vs_bots,
             }),
         );
         let count = |which: fn(&Place) -> bool| {
@@ -473,11 +482,16 @@ impl MatchRegistry {
         };
         let (bots, driven) = (count(|place| place.bot), count(|place| place.driven));
         log::info!(
-            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}{}",
+            "Match {match_id:#x} made: map {} ({}, mode {}), {} players{}{}{}",
             map.id,
             map.name,
             map.mode,
             options.players.len(),
+            if setup.vs_bots {
+                ", one player against the server's bots"
+            } else {
+                ""
+            },
             if bots == 0 {
                 String::new()
             } else {
@@ -906,6 +920,8 @@ pub struct MatchResult {
     pub trusted_by: u8,
     /// By roster place.
     pub players: Vec<PlayerResult>,
+    /// [`MatchSetup::vs_bots`].
+    pub vs_bots: bool,
 }
 
 /// Where finished matches go: the lobby's results and rewards code.

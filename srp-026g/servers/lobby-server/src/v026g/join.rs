@@ -417,6 +417,8 @@ impl Core<'_> {
     pub(super) fn join_request(&mut self, who: &Who, key: u32, now: Instant) {
         self.holds.retain(|_, hold| hold.until > now);
         self.holds.remove(&who.account_id);
+        // A match against bots it chose before is not what it wants now.
+        self.pvb_holds.remove(&who.account_id);
         let target = self
             .listing
             .match_of(key)

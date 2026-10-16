@@ -23,6 +23,10 @@
 //! once or nowhere, and the late joins of the queue pass a match with a
 //! place held in it by.
 //!
+//! A player who chose a match against the server's bots ("Player vs
+//! Bots", `pvb`) has that choice held: its Play makes that match at once,
+//! with it alone against the bots, or is refused, and is never queued.
+//!
 //! The reward match level is fixed at formation. Map selection still favors
 //! maps played least by the initial roster.
 //!
@@ -253,6 +257,9 @@ pub struct MatchSetup {
     /// (`session::v026g::matchmaking::match_level`).
     pub match_level: u16,
     pub players: Vec<MatchPlayer>,
+    /// One player against the server's own bots (`pvb`): the match
+    /// server's `MatchSetup::vs_bots`.
+    pub vs_bots: bool,
 }
 
 /// Where the players of a made match connect.
@@ -282,6 +289,8 @@ pub(super) struct Running {
     pub names: Vec<String>,
     /// When the log last had what the sides count for.
     pub predicted_at: Option<Instant>,
+    /// One player against the server's own bots (`pvb`).
+    pub vs_bots: bool,
 }
 
 /// One player as the log's "sides" and "late join" lines have it: what it
@@ -811,6 +820,12 @@ impl Core<'_> {
             .holds
             .remove(&who.account_id)
             .filter(|hold| hold.until > now);
+        // A choice of a match against bots, live or run out within
+        // `pvb::EXPIRED_REFUSED`: used up by this Play, whatever comes of it.
+        let pvb_hold = self
+            .pvb_holds
+            .remove(&who.account_id)
+            .filter(|held| now < held.until + super::pvb::EXPIRED_REFUSED);
         let Some(pool) = self.pool_for_sessions([who.session_id]) else {
             return;
         };
@@ -837,6 +852,24 @@ impl Core<'_> {
         self.check_matches(now);
         if let Some(hold) = hold {
             self.play_held(who, kit_id, hold, now);
+            return;
+        }
+        if let Some(held) = pvb_hold {
+            if held.until > now {
+                self.play_vs_bots(who, kit_id, held, now);
+            } else {
+                // The player meant bots: never the queue.
+                log::info!(
+                    "{}: Play vs bots ({} v {} on map {}): refused (its choice ran out {} ms \
+                     ago); not queued",
+                    who.name,
+                    held.size,
+                    held.size,
+                    held.map_id,
+                    now.saturating_duration_since(held.until).as_millis()
+                );
+                self.deny(who.addr, id::PLAY, super::join::JOIN_REFUSED);
+            }
             return;
         }
         if self
@@ -1185,10 +1218,16 @@ impl Core<'_> {
 
     /// Make the match the queue formed at the match server. `false` when
     /// that failed: its players are back in the lobby.
+    ///
+    /// A match against bots (`pvb`, [`Core::pvb_launching`]) has the map
+    /// chosen and 2N − 1 of the server's bots for its one player
+    /// ([`server_bot_teams`] puts N − 1 of them on the player's side), and
+    /// counts towards no player's map rotation.
     fn launch(&mut self, match_id: u32) -> bool {
         let Some(formed) = self.store.matchmaking().formed_match(match_id) else {
             return false;
         };
+        let pvb = self.pvb_launching.get(&match_id).copied();
         let unix = quests::now();
         // The matches its players were put in on each map, and their
         // levels.
@@ -1228,13 +1267,14 @@ impl Core<'_> {
                 })
             })
             .collect();
-        // The match server's own bots, after the players (`SRP_SERVER_BOTS`).
+        // The match server's own bots, after the players (`SRP_SERVER_BOTS`;
+        // against bots, 2N - 1 of them).
         let seat_teams: Vec<u8> = formed.seats.iter().map(|seat| seat.team).collect();
-        let bot_teams = server_bot_teams(
-            &seat_teams,
-            [sides[0].0, sides[1].0],
-            usize::from(self.settings.server_bots),
-        );
+        let bots = match pvb {
+            Some(choice) => (2 * usize::from(choice.size)).saturating_sub(formed.seats.len()),
+            None => usize::from(self.settings.server_bots),
+        };
+        let bot_teams = server_bot_teams(&seat_teams, [sides[0].0, sides[1].0], bots);
         let bot_roles = server_bot_roles(&bot_teams);
         let players = players.map(|mut players| {
             players.extend(
@@ -1247,13 +1287,16 @@ impl Core<'_> {
             players
         });
         let rng = &mut self.rng;
-        let map_id = matchmaking::choose_map(
-            &self.settings.maps,
-            |map| plays[usize::from(map)],
-            |bound| rng.below(bound),
-        )
-        .or_else(|| maps::playable().next().map(|map| map.id))
-        .unwrap_or(0);
+        let map_id = match pvb {
+            Some(choice) => choice.map_id,
+            None => matchmaking::choose_map(
+                &self.settings.maps,
+                |map| plays[usize::from(map)],
+                |bound| rng.below(bound),
+            )
+            .or_else(|| maps::playable().next().map(|map| map.id))
+            .unwrap_or(0),
+        };
         let match_level = matchmaking::match_level(&levels);
         let compatible = self
             .pool_for_sessions(formed.seats.iter().map(|seat| seat.player.session_id))
@@ -1264,6 +1307,7 @@ impl Core<'_> {
                 map_id,
                 match_level,
                 players,
+                vs_bots: pvb.is_some(),
             }),
             None => Err("a seated player is unavailable or uses an incompatible client".to_owned()),
         };
@@ -1288,7 +1332,26 @@ impl Core<'_> {
                     sides[1].0,
                     sides[1].1.join(", ")
                 );
-                if !bot_teams.is_empty() {
+                if let Some(choice) = pvb {
+                    let mode = maps::map_mode(map_id).map_or(0, |map| map.mode);
+                    log::info!(
+                        "Match {:#x} vs bots: {} with {} of the server's bots against {}, {} v {} \
+                         on map {map_id} (level_{map:02}, mode {mode}); {} bot matches of {} at \
+                         most",
+                        ticket.match_id,
+                        sides[0]
+                            .1
+                            .first()
+                            .or(sides[1].1.first())
+                            .map_or("?", String::as_str),
+                        usize::from(choice.size).saturating_sub(formed.seats.len()),
+                        choice.size,
+                        choice.size,
+                        choice.size,
+                        self.pvb_running() + 1,
+                        self.settings.pvb.max_matches
+                    );
+                } else if !bot_teams.is_empty() {
                     log::info!(
                         "Match {:#x}: {} of the server's bots (SRP_SERVER_BOTS) after the                          players, on teams {bot_teams:?}",
                         ticket.match_id,
@@ -1309,8 +1372,9 @@ impl Core<'_> {
                     );
                     self.store.matchmaking().add_bots(match_id, &bot_teams);
                 }
-                // The map is one more that each of them has played.
-                for seat in &formed.seats {
+                // The map is one more that each of them has played; a
+                // match against bots counts towards no map rotation.
+                for seat in formed.seats.iter().filter(|_| pvb.is_none()) {
                     let account_id = seat.player.account_id;
                     if let Some(account) = self.accounts.get(account_id) {
                         matchmaking::count_map_play(&mut account.locked(), map);
@@ -1325,7 +1389,10 @@ impl Core<'_> {
                         teams[usize::from(seat.team.min(1))].push(account.locked().name.clone());
                     }
                 }
-                self.announce_match(&accounts, teams);
+                // Nobody is told in the chat of a match against bots.
+                if pvb.is_none() {
+                    self.announce_match(&accounts, teams);
+                }
                 // Its key in the players' list of the matches, from now on.
                 self.listing.key(ticket.match_id);
                 self.matches.insert(
@@ -1350,6 +1417,7 @@ impl Core<'_> {
                             .chain((1..=bot_teams.len()).map(server_bot_name))
                             .collect(),
                         predicted_at: None,
+                        vs_bots: pvb.is_some(),
                     },
                 );
                 true

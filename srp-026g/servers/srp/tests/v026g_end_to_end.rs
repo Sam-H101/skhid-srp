@@ -112,6 +112,16 @@ fn start(dir: &Path, gather: Duration) -> Stack {
 
 /// As [`start`], with `SRP_BOT_ACCOUNTS` naming `bots`.
 fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
+    start_with(dir, gather, bots, |_| {})
+}
+
+/// As [`start_with_bots`], the options changed by `change` last.
+fn start_with(
+    dir: &Path,
+    gather: Duration,
+    bots: &[&str],
+    change: impl FnOnce(&mut Options),
+) -> Stack {
     setup();
     let store = SessionStore::with_repository(
         gather,
@@ -135,6 +145,7 @@ fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
     // clients are three (`SRP_LATE_JOIN_PATIENCE_SECONDS`).
     options.lobby.late_join_patience = Duration::ZERO;
     options.bots = session::v026g::bots::parse(&bots.join(","));
+    change(&mut options);
     Stack::start(Arc::new(store), Arc::new(accounts), options).expect("the servers")
 }
 
@@ -219,6 +230,11 @@ impl Game {
     /// only for an `82` the game acts on: one that names the id of the last
     /// static info it took is dropped by it.
     fn connect_to_match(&mut self, server: SocketAddr) {
+        self.connect_to_match_of(server, 2);
+    }
+
+    /// [`Game::connect_to_match`] of a match of `players` places.
+    fn connect_to_match_of(&mut self, server: SocketAddr, players: usize) {
         let (match_id, session) = self
             .find(|message| match message {
                 Decoded::ConnectToMatch {
@@ -237,9 +253,9 @@ impl Game {
             self.static_id
         );
         let mut client = if survarium::v026g::match_msgs::late_join::spoken_by(self.revision) {
-            MatchClient::growing(session, 2, MAP)
+            MatchClient::growing(session, players, MAP)
         } else {
-            MatchClient::new(session, true, 2, MAP)
+            MatchClient::new(session, true, players, MAP)
         };
         // Every tick is reported here (see the top of the file).
         client.no_hashes = true;
@@ -2006,5 +2022,120 @@ fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
     for game in [&alice, &bob, &first, &second] {
         game.assert_clean();
     }
+    stack.stop();
+}
+
+/// "Player vs Bots" against the real servers: a player opens the match
+/// settings (the status), chooses 6 v 6 on the map the scripted clients
+/// play (Team Deathmatch on level_01), presses Play and is in a match at
+/// once, alone, with 11 of the server's bots: 5 on its side, 6 against it.
+/// The bots enter once its game is in; the match ends by the mode's rule
+/// in its world, and it is paid as a match against bots is (no daily
+/// bonus, no rating moved).
+#[test]
+fn a_player_against_the_servers_bots_plays_a_match_to_the_results() {
+    use survarium::v026g::lobby::{PVB_STATUS_START, pvb_choice_start};
+    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
+    let dir = temp_dir("pvb");
+    let stack = start_with(&dir, Duration::from_secs(1), &[], |options| {
+        options.lobby.pvb.enabled = true;
+    });
+    let mut solo = Game::signed_in_revision(&stack, "E2ePvb", "pvb-password-1", PATCH_REVISION);
+    until(&mut [&mut solo], SOON, "the sign-in pushes", |games| {
+        in_lobby(games[0])
+    });
+    solo.take();
+    solo.ask(request::ranking(PVB_STATUS_START, 32));
+    until(&mut [&mut solo], SOON, "the status", |games| {
+        reserved_rows(games[0], PVB_STATUS_START).is_some()
+    });
+    let rows = reserved_rows(&solo, PVB_STATUS_START).unwrap();
+    assert_eq!(rows[0].0, "B1;0;0;5;6.8.10;8;61;0;5");
+    assert_eq!(rows.len(), 17);
+    assert!(rows.iter().any(|row| row.0 == "117;1;4;5"), "{rows:?}");
+
+    let start = pvb_choice_start(6, MAP);
+    solo.ask(request::ranking(start, 1));
+    until(&mut [&mut solo], SOON, "the choice", |games| {
+        reserved_rows(games[0], start).is_some()
+    });
+    assert_eq!(reserved_rows(&solo, start).unwrap()[0].0, "B2;ok;6;117");
+    solo.ask(request::play(1));
+    until(&mut [&mut solo], SOON, "connect_to_match", |games| {
+        games[0].has(|message| matches!(message, Decoded::ConnectToMatch { .. }))
+    });
+    let (match_id, team) = solo
+        .find(|message| match message {
+            Decoded::ConnectToMatch { match_id, team, .. } => Some((*match_id, *team)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(team, 0);
+    assert_eq!(stack.registry.match_count(), 1);
+
+    solo.connect_to_match_of(stack.match_addr, 12);
+    until(&mut [&mut solo], SOON, "the static info", |games| {
+        games[0].of_match().model.options.is_some()
+    });
+    let options = solo.of_match().model.options.clone().unwrap();
+    assert_eq!(options.players.len(), 12);
+    assert_eq!(options.players[0].name, "E2ePvb");
+    let on = |team: u8| {
+        options
+            .players
+            .iter()
+            .filter(|player| player.team == team)
+            .count()
+    };
+    assert_eq!((on(0), on(1)), (6, 6));
+    assert!(options.players[1..].iter().all(|bot| bot.clan_tag == "BOT"));
+    solo.of_match_mut().ready();
+    until(&mut [&mut solo], SOON, "everyone in the match", |games| {
+        let client = games[0].of_match();
+        client.model.is_synced() && client.entered().len() == 12
+    });
+    let place = solo.of_match().model.local_index.unwrap();
+    assert_eq!(place, 0);
+    run_for(&mut [&mut solo], Duration::from_millis(2_600));
+    until(&mut [&mut solo], SOON, "an upload", |games| {
+        games[0].of_match().uploads >= 2
+    });
+    let before = held(&stack, "E2ePvb");
+    solo.assert_clean();
+
+    // Team 1, the bots', has no tickets left in the player's world.
+    let at = solo.of_match().clock() / 50 * 50 + 150;
+    let mut rule = solo.of_match().sim.rule_at(at);
+    rule.state = 3;
+    rule.start = Some(INITIAL_MS);
+    let sim = &mut solo.of_match_mut().sim;
+    sim.force_rule(rule);
+    sim.tdm_from = Some((
+        at,
+        Tdm {
+            tickets: [64, 0],
+            alive_players_mask: 1,
+            active_players_mask: (1 << 12) - 1,
+        },
+    ));
+    until(&mut [&mut solo], MATCH_END, "the match's end", |games| {
+        games[0].of_match().told_to_leave
+    });
+    until(&mut [&mut solo], SOON, "the results screen", |games| {
+        games[0].has(|message| matches!(message, Decoded::MatchStats { .. }))
+    });
+    let report = stack.results.find(match_id).expect("the match's report");
+    assert_eq!(report.players.len(), 12);
+    let player = &report.players[0];
+    assert!(player.reward.won && !player.reward.daily_bonus);
+    assert_eq!(player.reward.quest_money, 0);
+    assert_eq!(player.reward.rating_after, player.reward.rating_before);
+    let paid = held(&stack, "E2ePvb");
+    assert!(paid.0 > before.0 && paid.2 > before.2);
+    assert_eq!(told(&solo), paid);
+    solo.assert_clean();
+    until(&mut [&mut solo], SOON, "the match closed", |_| {
+        !stack.registry.is_open(match_id) && stack.store.match_count() == 0
+    });
     stack.stop();
 }

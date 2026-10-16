@@ -119,6 +119,54 @@ fn a_match_left_to_the_servers_bot_is_over() {
     bench.assert_no_faults();
 }
 
+/// A match of one player against the server's bots ("Player vs Bots") goes
+/// on while its player uploads the worlds it is asked for; one that stops
+/// uploading for `Timing::pvb_stall` ends it, as one everyone left, and
+/// the result says it was a match against bots.
+#[test]
+fn a_match_against_bots_whose_player_stops_uploading_is_over() {
+    let mut settings = Settings::default();
+    settings.timing.pvb_stall = std::time::Duration::from_secs(12);
+    let mut bench = Bench::vs_bots(4, MAP_TDM, settings, &[1, 2, 3]);
+    bench.join(0);
+    assert!(bench.until(3_000, |bench| bench.clients[0].entered().len() == 4));
+    // Its uploads keep it going well past the stall time.
+    bench.run_long(30_000);
+    assert!(bench.results.try_recv().is_err());
+    assert_eq!(bench.game().rule_state(), state::IN_PROCESS);
+
+    // Its game stops answering: over within the stall time and a request.
+    bench.clients[0].no_uploads = true;
+    let mut result = None;
+    for _ in 0..25 {
+        bench.run_long(1_000);
+        if let Ok(over) = bench.results.try_recv() {
+            result = Some(over);
+            break;
+        }
+    }
+    let result = result.expect("the match is over");
+    assert_eq!(result.end, MatchEnd::Deserted);
+    assert!(result.vs_bots);
+    assert!(bench.until(10_000, |bench| bench.clients[0].told_to_leave));
+}
+
+/// The stall rule is only for a match against bots: the same match of
+/// the server's bots for testing (`SRP_SERVER_BOTS`) goes on.
+#[test]
+fn a_match_with_bots_for_testing_has_no_stall_rule() {
+    let mut settings = Settings::default();
+    settings.timing.pvb_stall = std::time::Duration::from_secs(12);
+    let mut bench = Bench::growing_with_driven(4, MAP_TDM, settings, &[1, 2, 3]);
+    bench.join(0);
+    assert!(bench.until(3_000, |bench| bench.clients[0].entered().len() == 4));
+    bench.run_long(5_000);
+    bench.clients[0].no_uploads = true;
+    bench.run_long(30_000);
+    assert!(bench.results.try_recv().is_err());
+    assert_eq!(bench.game().rule_state(), state::IN_PROCESS);
+}
+
 #[test]
 fn a_match_only_the_servers_bots_are_in_is_never_started_and_is_given_up() {
     // No client ever comes: the match is never run, and given up as one

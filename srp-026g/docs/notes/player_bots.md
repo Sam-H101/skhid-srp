@@ -494,3 +494,51 @@ How to build them (what shipped games did, and a module layout for this
 server: layers, utility scoring with rank bands, runtime modifiers from the
 match state, self-balancing, tuning files, decision traces and tests), from
 web research with its sources: `player_bots_research.md`.
+
+## 8. Player vs Bots (2026-10-16)
+
+The first use of the server's bots outside tests: one player against them,
+chosen in srp's changed lobby movie ("Player vs Bots"; the wire is
+`lobby.md` §2.16.2, the lobby's rule `matchmaking.md` §9.8, the settings
+`servers/lobby-server/src/v026g/pvb.rs`). Off unless `SRP_PVB=on`.
+
+- **The match.** The player alone on team 0 and 2N − 1 of the server's
+  bots (stage 1's places, `play::server_bot`), N − 1 on its side: 6, 8 or
+  10 a side, on one of 16 maps (the day of each level, batteries and Team
+  Deathmatch). Its teams are fixed: no late joiner, so no bot ever gives
+  its place up (`SRP_BOTS_GIVE_WAY` has nothing to do in it).
+  `MatchSetup::vs_bots` marks it for the match server and the rewards.
+- **One witness.** The player's game is the only one that simulates: its
+  uploads are trusted on its word alone (one voucher, as with a test bot),
+  and the bots see the world only through them. A game that stops
+  uploading (a window out of focus, a stalled link; match 0x225dc391
+  showed what that does to bots) ends the match: asked for its world for
+  `SRP_PVB_STALL_S` (60 s) with none uploaded while it plays, the match is
+  over as deserted (`game.rs` `check_pvb_stall`). A game that is gone
+  ends it by `BOTS_ALONE` (45 s), one that waits for a world by the lost
+  world rule, as before.
+- **Its pay.** Half the silver and experience (`SRP_PVB_PAY`), no quest,
+  no daily bonus; and as every match with a server's bot it moves no
+  rating and no balance rating. The one witness could fake its numbers
+  within what the server's checks allow: that is why it pays less.
+- **Maps in memory.** Each match against bots may be on another map, and a
+  bot match without its map plays on the script (stage 0) until it gets
+  one. With `SRP_PVB=on` the store keeps up to `SRP_PVB_MAX_MATCHES` (5)
+  maps in memory at once, or `SRP_MAPDATA_AT_ONCE` if that is more
+  (`session::v026g::pvb::maps_at_once`, `bots::maps`): five matches on
+  five maps each have theirs, a sixth map waits for one to be let go.
+  The search arrays are the match thread's, one set however many matches
+  run (sized to the largest grid searched, about 11 MB on level_06), and
+  a match adds about 3 MB of its own (§ "On host-like limits" of
+  `player_bots_mapdata.md`).
+- **What a map costs** (2026-10-16, the Linux release build in WSL, the
+  built files read as the server reads them: `bots::maps` test
+  `pvb_maps_held_at_once`): resident memory 33-71 MB a map, 53 MB a map
+  on average over the eight levels (day_2), all eight held at once 423 MB
+  over the process's 11 MB. The five largest (levels 6, 7, 4, 3, 5) held
+  at once: about 300 MB. With the server's own 190-200 MB that is about
+  500 MB: the container's 512 MB (`SRP26_MEMORY`) is too little for five,
+  1 GB is enough. The sizes the code counts (world and tactics,
+  `world_bytes` + `TacticsBase::memory_bytes`) are within 2 MB of these.
+- **CPU.** A 10 v 10 of bots costs 30-65 ms a second on the host's core
+  (`player_bots_mapdata.md`), so five at once may take a third of it.

@@ -530,6 +530,37 @@ refused, never queued. While a place is held, nobody else gets one in that
 match, the queue's late joins included: the match server takes one joiner
 at a time. A player who waits in the queue does not see JOIN on.
 
+### 9.8 A match against the server's bots ("Player vs Bots", 2026-10-16)
+
+The owner's decisions of 2026-10-16. A player of equipment level 5 or
+lower (`SRP_PVB_MAX_GEAR`), alone (no squad), not searching, not in a
+match, chooses a size (6, 8 or 10 a side) and a map in the changed lobby
+movie (`lobby.md` §2.16.2); its Play then makes the match at once:
+
+- no queue, no rule of two parties, no gather window, no levels:
+  `Matchmaking::seat_solo` seats it alone on team 0, the teams fixed;
+- the lobby adds 2N − 1 of the server's bots after it
+  (`play::server_bot_teams`, each to the side with fewer places: N − 1 on
+  the player's side, N on the other), on the map chosen (not
+  `choose_map`); the play is no map play of the player's (the rotation
+  of §5 is the PvP queue's);
+- the match's level is the player's own (§4, a match of one level);
+- fixed teams: it takes no late joiner (§9.2's `late_admission` is
+  `None`, the list says code 7), and nobody of the queue goes into it;
+- at most `SRP_PVB_MAX_MATCHES` (5) run at once, counting the choices held
+  for players who have not pressed Play yet: the sixth is refused (code
+  7), and each map's `free` in the status says how many more may start;
+- its rewards: half the silver and experience (`SRP_PVB_PAY`), no quest,
+  no daily bonus, no rating and no balance rating (`results.md`;
+  `session::v026g::rewards`).
+
+The log: one line for the choice (`<name>: vs bots, 8 v 8 on map 61: ok,
+held for 10 s`, or `no, code n (why)` with the numbers), one for the Play
+(`<name> pressed Play vs bots …` or `refused (…); not queued`), and one
+for the match (`Match 0x… vs bots: <player> with 7 of the server's bots
+against 8, 8 v 8 on map 61 (level_01, mode 2); 1 bot matches of 5 at
+most`).
+
 ## The growing-roster placement before 2026-10-13 (kept for the record)
 
 Until 2026-10-13 a late join was placed by the sides' sizes with the players

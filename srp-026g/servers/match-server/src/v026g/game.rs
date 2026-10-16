@@ -626,6 +626,10 @@ struct Peer {
     asked: Option<Instant>,
     /// The match clock when that request went.
     asked_clock: Option<u32>,
+    /// When it was first asked for an upload after the last one it gave
+    /// (or ever): how long a match against bots has waited for its world
+    /// (`check_pvb_stall`).
+    unanswered_since: Option<Instant>,
     /// A request waiting for its moment (match clock): aimed at a tick.
     ask_at: Option<u32>,
     /// Bounds `[low, high)` on its upload offset: asked at match clock
@@ -1183,6 +1187,7 @@ impl Game {
             preparing: None,
             asked: None,
             asked_clock: None,
+            unanswered_since: None,
             ask_at: None,
             upload_offset: None,
             reassembler: Reassembler::new(),
@@ -2136,6 +2141,7 @@ impl Game {
             send(peer, &ServerMessage::UploadRequest);
             peer.asked = Some(now);
             peer.asked_clock = Some(clock);
+            peer.unanswered_since.get_or_insert(now);
         }
     }
 
@@ -3495,6 +3501,7 @@ impl Game {
             }
         }
         peer.asked = None;
+        peer.unanswered_since = None;
         if !initial && let Some(asked_at) = peer.wrong_world_asked.take() {
             // Asked for as it was found out of step: a world to look at,
             // no vote (`ask_wrong_world`).
@@ -4633,6 +4640,7 @@ impl Game {
             trusted_snapshot_ms: state.map(|state| state.time),
             trusted_by: state.map_or(0, |state| state.vouchers),
             players,
+            vs_bots: self.formed.vs_bots,
         }
     }
 
@@ -4990,6 +4998,7 @@ impl Game {
         self.check_end(clock, now);
         self.check_world_lost(now);
         self.check_bots_alone(now);
+        self.check_pvb_stall(now);
 
         if self.clock_start.is_some()
             && self.finished_at.is_none()
@@ -5183,6 +5192,49 @@ impl Game {
                 "Match {:#x}: only bots for {} s; it is over",
                 self.id,
                 BOTS_ALONE.as_secs()
+            );
+            self.finish(MatchEnd::Deserted, now);
+        }
+    }
+
+    /// A match of one player against the server's bots
+    /// ([`Formed::vs_bots`]) whose player plays (in the match, its world
+    /// given) and has been asked for its world for `Timing::pvb_stall`
+    /// with none uploaded is over, as one everyone left
+    /// (`MatchEnd::Deserted`): the bots see the world only through that
+    /// player's uploads, and a game that stands still (a window out of
+    /// focus, a stalled link) would hold the match, and one of the few
+    /// bots' places, to its time limit. A player in no stage to upload
+    /// (loading, resynced, waiting for a world) has the other rules:
+    /// `check_world_lost`, the client timeout, `check_bots_alone`.
+    fn check_pvb_stall(&mut self, now: Instant) {
+        if !self.formed.vs_bots || self.finished_at.is_some() || self.ending.is_some() {
+            return;
+        }
+        let stall = self.settings.timing.pvb_stall;
+        // The wait is counted in play only: a request a game did not
+        // answer before it was resynced or left is no stall of the game it
+        // is now.
+        for peer in self.peers.iter_mut().flatten() {
+            if peer.stage != Stage::Live {
+                peer.unanswered_since = None;
+            }
+        }
+        let stalled = (0..self.peers.len()).find(|&index| {
+            !self.is_bot(index)
+                && self.peers[index].as_ref().is_some_and(|peer| {
+                    peer.stage == Stage::Live
+                        && peer
+                            .unanswered_since
+                            .is_some_and(|since| now.saturating_duration_since(since) >= stall)
+                })
+        });
+        if let Some(index) = stalled {
+            log::warn!(
+                "Match {:#x} (vs bots): player {index} was asked for its world for {} s and \
+                 uploaded none; the match is over",
+                self.id,
+                stall.as_secs()
             );
             self.finish(MatchEnd::Deserted, now);
         }
