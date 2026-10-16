@@ -547,6 +547,22 @@ impl Ctx<'_> {
             })
     }
 
+    /// Whether no way leads to a battery lying at `at` all match, for any
+    /// side: no floor to take it from, or that floor is past zones on all
+    /// match ([`Tactics::past_fixed_zones`]: level_01's swamp). Whatever
+    /// lies there stays there.
+    pub fn shut_all_match(&self, at: Vec3) -> bool {
+        let Some(stand) = self.tactics.stand_to_take(at) else {
+            return true;
+        };
+        let grid = &self.tactics.world.grid;
+        let Some(goal) = grid.locate(stand, 3.0) else {
+            return true;
+        };
+        let past = |b| self.tactics.past_fixed_zones(b);
+        !self.tactics.walkable(goal) || !(past(goal) || grid.entered_from(goal, past))
+    }
+
     /// Whether this bot's search to a goal at `at` (the motor's, within
     /// its replan distance) proved no way lately (`Bot::no_way_to`).
     pub fn no_way_lately(&self, at: Vec3) -> bool {
