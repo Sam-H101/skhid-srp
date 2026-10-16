@@ -69,7 +69,7 @@ const UNMADE_MATCH: Duration = Duration::from_secs(10);
 const PREDICTION_EVERY: Duration = Duration::from_secs(60);
 
 /// The game's text for a Play with a kit that is none of the account's, or
-/// the premium account's without one.
+/// one it may not use.
 const PLAY_KIT: &str = "st_profile_check_failed";
 
 /// The match server, as the lobby needs it. `servers/srp` gives the lobby

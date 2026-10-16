@@ -323,7 +323,7 @@ mod tests {
     use survarium::v026g::loadouts::Loadouts;
     use survarium::v026g::lobby::client_model::{Client, Decoded, ModelError};
     use survarium::v026g::lobby::requests::{INVENTORY_SLOT, Relocation};
-    use survarium::v026g::lobby::{Delivery, FULL_CONDITION, KIT_PREMIUM, KIT_READY, ServerId};
+    use survarium::v026g::lobby::{Delivery, FULL_CONDITION, KIT_READY, ServerId};
     use survarium::v026g::prices;
 
     const NOW: u64 = 1_000;
@@ -370,8 +370,8 @@ mod tests {
             // Kit 2: empty.
             0,  2, 0, 0, 0,  0,  0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
-            // Kit 3: the premium account's.
-            2,  3, 0, 0, 0,  0,  0, 0, 0, 0,
+            // Kit 3: empty, and usable without premium.
+            0,  3, 0, 0, 0,  0,  0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,
         ];
         // The item table: the two items the kits wear, as in the inventory
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn the_premium_kit_is_marked_without_premium() {
+    fn no_kit_is_marked_premium() {
         let mut account = Account::new("Alice");
         let states = |account: &Account| -> Vec<u8> {
             account_body(account, NOW)
@@ -632,7 +632,7 @@ mod tests {
                 .map(|kit| kit.state)
                 .collect()
         };
-        assert_eq!(states(&account), [KIT_READY, KIT_READY, KIT_PREMIUM]);
+        assert_eq!(states(&account), [KIT_READY, KIT_READY, KIT_READY]);
         account.premium_until = NOW + 1;
         assert_eq!(states(&account), [KIT_READY, KIT_READY, KIT_READY]);
         assert_eq!(

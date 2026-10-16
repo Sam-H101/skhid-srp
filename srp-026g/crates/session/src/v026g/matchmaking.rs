@@ -8,9 +8,9 @@
 //! 1. a kit's level is the highest `match_making_level` of what its 23
 //!    slots hold, each times its slot's `slots_weight` (all 1 in the data),
 //!    rounded; a stack counts only while it has units;
-//! 2. the account's is the highest of its kits that can be played (not the
-//!    premium kit without a premium account, and only a kit that passes the
-//!    Play check);
+//! 2. the account's is the highest of its kits that can be played (the
+//!    client skips a kit of state 2, the premium kit, which srp sends for
+//!    none; only a kit that passes the Play check);
 //! 3. the rating adds the `modifier_value` of the last `elo_modifiers` row
 //!    whose `elo_min` it reaches;
 //! 4. the sum is a row of `items_levels_modifiers`: its `item_level_min`
@@ -346,13 +346,10 @@ mod tests {
         account.kits[1].slots[8] = None;
         assert!(rules::check_play(&account, account.kits[1].id, 0).is_err());
         assert_eq!(gear_level(&account, 0), 0);
-        // The premium kit counts only with a premium account.
+        // The third kit counts without a premium account.
         put(&mut account, 2, 7, "ak_74m", 1);
         put(&mut account, 2, 8, "ammo_5.45x39_7n10", 30);
-        assert_eq!(gear_level(&account, 100), 0);
-        account.premium_until = 1000;
         assert_eq!(gear_level(&account, 100), 10);
-        assert_eq!(gear_level(&account, 2000), 0);
     }
 
     #[test]

@@ -319,8 +319,6 @@ impl Web {
                     .ok()
                     .filter(|at| *at > now)
                     .unwrap_or(0);
-                // Its premium kit is no longer usable: back to the first.
-                changed.settle_active_kit(now);
             }
             if let Some(faction) = faction {
                 if reputation >= 0 {

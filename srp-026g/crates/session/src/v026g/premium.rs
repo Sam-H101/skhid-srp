@@ -25,7 +25,8 @@
 //! buttons open a web shop srp does not have.
 //!
 //! The premium account itself: half again of a match's pay
-//! ([`super::rewards`]) and the third kit ([`Account::kit_usable`]).
+//! ([`super::rewards`]). Not the third kit: every account has all three
+//! since 2026-10-17 ([`Account::kit_usable`]).
 
 use std::sync::OnceLock;
 
@@ -419,8 +420,8 @@ pub fn premium_days(offer_id: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use survarium::v026g::lobby;
     use survarium::v026g::lobby::client_model::{Client, Decoded};
-    use survarium::v026g::lobby::{self, KIT_PREMIUM, KIT_READY};
 
     const NOW: u64 = 1_000_000;
 
@@ -524,7 +525,6 @@ mod tests {
     fn premium_time_is_bought_for_gold_and_adds_up() {
         let settings = Settings::default();
         let mut account = rich(350);
-        assert_eq!(account.kit_state(2, NOW), KIT_PREMIUM);
         // A day: 100 gold.
         let bought = buy_offer(&mut account, &settings, 7, 0.0, NOW).unwrap();
         assert_eq!(
@@ -537,8 +537,6 @@ mod tests {
         assert_eq!(account.premium_money, 250);
         assert_eq!(account.premium_until, NOW + 86_400);
         assert_eq!(account.premium_hours(NOW), Some(24));
-        // The third kit opens.
-        assert_eq!(account.kit_state(2, NOW), KIT_READY);
         // Three days more are added to what is left.
         buy_offer(&mut account, &settings, 1, 0.0, NOW + 3600).unwrap();
         assert_eq!(account.premium_until, NOW + 4 * 86_400);

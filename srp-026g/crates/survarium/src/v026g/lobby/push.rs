@@ -27,7 +27,8 @@ pub const KIT_READY: u8 = 0;
 /// `st_premium_profile_hint` ("Available with premium account") and skips
 /// its own checks of the kit (`ProfileSelector.setupProfiles`,
 /// `lobby_menu.swf`; exe 0x22201B). PROVEN. It is also the constructor's
-/// default.
+/// default. srp sends it for no kit: every kit is every account's
+/// (`session::v026g::Account::kit_usable`, since 2026-10-17).
 pub const KIT_PREMIUM: u8 = 2;
 
 /// `inventory_item_descr::modification`.

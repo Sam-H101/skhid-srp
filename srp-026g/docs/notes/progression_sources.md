@@ -318,7 +318,7 @@ list):
 | Gold to silver | exists since 0.23a ("The possibility to convert premium currency into game rubles added"); the rate is nowhere | PN 0.23a; KB 244 | official | no number | `rules.rs` `PREMIUM_EXCHANGE_RATE = 100` | not found |
 | Skill reset price | not found | - | - | - | 100 silver or 1 gold | not found |
 | Nickname change | by a "Бланк для смены имени" or for gold; no price | KB 163 | official | no number | 250 gold (the voucher's `base_cost`) | keep |
-| Third kit | "Added the ability to purchase premium from the locked (3rd) equipment profile" | PN 0.26g | official | official | the third kit is premium's (`account.rs` `PREMIUM_KIT_INDEX`) | keep |
+| Third kit | "Added the ability to purchase premium from the locked (3rd) equipment profile" | PN 0.26g | official | official | every account's, premium or not, since 2026-10-17 (`account.rs` `kit_usable`) | the owner's choice over the source |
 | Premium compensation | 12 hours given for an outage | N `kompensaciya-premiuma`, Nov 2014 | official | - | - | - |
 | Promo code of the time | "1 неделю премиума и 5000 внутриигровой валюты" | itc.ua, 25 Jan 2015 | press | - | - | - |
 | Starting silver and gold of a new account | not found | - | - | - | 2,000 and 1,000 | not found |
