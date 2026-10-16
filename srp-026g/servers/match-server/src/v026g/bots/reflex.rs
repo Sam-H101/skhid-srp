@@ -2649,9 +2649,11 @@ mod tests {
                 "mosin_nagant" => 10,
                 _ => arms.primary.1,
             };
+            // And the TT-33 as weapon 2, for the switch (the bots carry
+            // none; a kit with one switches when weapon 1 is dry).
             &*Box::leak(Box::new(Arms {
                 primary: (arms.primary.0, spare),
-                pistol: arms.pistol,
+                pistol: crate::v026g::bots::guns::gun("tt_33").map(|gun| (gun, 50)),
             }))
         });
         let mut reflex = Reflex::armed(arms);

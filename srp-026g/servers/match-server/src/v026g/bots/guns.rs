@@ -59,7 +59,7 @@
 //! the weapon's [`Gun::cycle_ms`], so each press is one shot whatever that
 //! answer is.
 
-use survarium::v026g::loadouts::{BOT_PISTOL, BOT_PISTOL_AMMO, BotRole};
+use survarium::v026g::loadouts::{BOT_AMMO_SLOTS, BotRole};
 
 /// How a weapon reloads, ms (see the module's notes for where each comes
 /// from).
@@ -302,9 +302,8 @@ pub struct Arms {
 
 impl Arms {
     /// A role's (`BotRole::name`, the personality of that name): weapon 1
-    /// and the clip after it in its gear, the pistol and its ammo of every
-    /// bot's kit. The counts are the kit's: a life's ammo, not a clip each
-    /// (the support's AK-74U has its 30 and no more).
+    /// and every round of its ammo slots (`BOT_AMMO_SLOTS`): a life's
+    /// ammo, not a clip each. No pistol: the bots carry none.
     pub fn of_role(role: &str) -> Option<&'static Arms> {
         static ALL: std::sync::OnceLock<Vec<(&'static str, Arms)>> = std::sync::OnceLock::new();
         ALL.get_or_init(|| {
@@ -312,9 +311,19 @@ impl Arms {
                 .into_iter()
                 .filter_map(|role| {
                     let gear = role.gear();
-                    let primary = (gun(gear[0].name)?, gear.get(1)?.count);
-                    let pistol = gun(BOT_PISTOL.name).map(|gun| (gun, BOT_PISTOL_AMMO.count));
-                    Some((role.name(), Arms { primary, pistol }))
+                    let rounds = gear
+                        .iter()
+                        .filter(|item| BOT_AMMO_SLOTS.contains(&item.slot))
+                        .map(|item| item.count)
+                        .sum();
+                    let primary = (gun(gear[0].name)?, rounds);
+                    Some((
+                        role.name(),
+                        Arms {
+                            primary,
+                            pistol: None,
+                        },
+                    ))
                 })
                 .collect()
         })
@@ -389,7 +398,7 @@ mod tests {
         for role in BotRole::ALL {
             let arms = Arms::of_role(role.name()).unwrap();
             assert_eq!(arms.primary.0.item, role.gear()[0].name);
-            assert_eq!(arms.pistol.unwrap().0.item, "tt_33");
+            assert!(arms.pistol.is_none(), "the bots carry no weapon 2");
         }
         assert!(Arms::of_role("steady").is_none());
         assert_eq!(Arms::fallback().primary.0.item, "ak_74u");
@@ -416,13 +425,31 @@ mod tests {
         assert_eq!(uzi.shots_held(300), 3);
     }
 
+    /// A role's arms with the TT-33 and a clip of its ammo as weapon 2:
+    /// the switch is kept for kits that have one.
+    fn with_pistol(role: &str) -> &'static Arms {
+        let arms = Arms::of_role(role).unwrap();
+        Box::leak(Box::new(Arms {
+            primary: (arms.primary.0, 30),
+            pistol: gun("tt_33").map(|gun| (gun, 50)),
+        }))
+    }
+
     #[test]
     fn a_life_loads_from_its_ammo_and_reloads_what_is_left() {
-        // The support: 120 rounds, 30 in the magazine, 90 to load.
+        // The support: 600 rounds (three slots of 200), 30 in the
+        // magazine, 570 to load.
         let support = Hands::of(Arms::of_role("support").unwrap());
-        assert_eq!((support.primary.rounds, support.primary.spare), (30, 90));
-        // The camper: 30 rounds, 5 in, 25 to load; down to its last 5.
-        let mut camper = Hands::of(Arms::of_role("camper").unwrap());
+        assert_eq!((support.primary.rounds, support.primary.spare), (30, 570));
+        // Dry with no weapon 2: no switch, ever.
+        let mut bare = Hands::of(Arms::of_role("camper").unwrap());
+        let mosin = bare.held_mut();
+        (mosin.rounds, mosin.spare) = (0, 0);
+        assert!(bare.held().dry());
+        assert_eq!(bare.switch_ms(), None);
+        // The camper with a pistol: 30 rounds, 5 in, 25 to load; down to
+        // its last 5.
+        let mut camper = Hands::of(with_pistol("camper"));
         let mosin = camper.held_mut();
         assert_eq!((mosin.rounds, mosin.spare), (5, 25));
         mosin.spare = 5;
