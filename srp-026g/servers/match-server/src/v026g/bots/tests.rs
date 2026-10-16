@@ -139,6 +139,8 @@ struct Game {
     /// A stolen battery that fell, until it was home again: its owners'
     /// container (true) or the thief's side's, ms from the fall, alive.
     stolen_drops: Vec<(bool, u32, bool)>,
+    /// What befell stolen batteries, for the bench's log.
+    stolen_log: Vec<String>,
     /// Lying batteries taken.
     taken: u32,
     /// Whether a use's ray stops at the bullet mesh short of a lying
@@ -246,6 +248,7 @@ impl Game {
             thieves: Vec::new(),
             stolen_marks: Vec::new(),
             stolen_drops: Vec::new(),
+            stolen_log: Vec::new(),
             taken: 0,
             use_line: false,
             world,
@@ -469,6 +472,9 @@ impl Game {
                 self.batteries[battery] = Lying::Free(other.feet);
                 if let Some(Some((_, fell @ None))) = self.stolen_marks.get_mut(battery) {
                     *fell = Some((tick, false));
+                    self.stolen_log.push(format!(
+                        "{tick} battery {battery} fell at its carrier's death"
+                    ));
                 }
             }
             self.stats[target].1 += 1;
@@ -582,6 +588,10 @@ impl Game {
     fn stolen_fell(&mut self, battery: usize, tick: u32, alive: bool) {
         if let Some(Some((_, fell @ None))) = self.stolen_marks.get_mut(battery) {
             *fell = Some((tick, alive));
+            self.stolen_log.push(format!(
+                "{tick} battery {battery} fell {}",
+                if alive { "alive" } else { "at death" }
+            ));
         }
     }
 
@@ -592,6 +602,16 @@ impl Game {
         {
             self.stolen_drops
                 .push((owner == team, self.tick.saturating_sub(fell), alive));
+            self.stolen_log.push(format!(
+                "{} battery {battery} home with {}, {} ms after it fell",
+                self.tick,
+                if owner == team {
+                    "its owners"
+                } else {
+                    "the thieves"
+                },
+                self.tick.saturating_sub(fell)
+            ));
         }
     }
 
@@ -2010,6 +2030,7 @@ fn real_bot_cost() {
             // Takes: plays ended "could not take it", and stands given up.
             let (mut take_ends, mut stands_given_up) = (0u32, 0u32);
             let mut theft_looks = 0u32;
+            let mut stolen_known: Vec<(usize, u32)> = Vec::new();
             super::path::reset_worst();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
@@ -2090,6 +2111,31 @@ fn real_bot_cost() {
                         }
                         for note in bots.facts(facts) {
                             decisions.note(&note);
+                            if note.text.contains("its thief no longer carrying it") {
+                                theft_looks += 1;
+                                game.stolen_log.push(format!("{} {}", note.time, note.text));
+                            }
+                        }
+                        // When a stolen battery that fell is known to its
+                        // owners again (seen, or carried by one of them).
+                        for (battery, mark) in game.stolen_marks.iter().enumerate() {
+                            if let Some((owner, Some((fell, _)))) = *mark
+                                && !stolen_known.contains(&(battery, fell))
+                                && (bots.teams[usize::from(owner)]
+                                    .knowledge
+                                    .battery(battery)
+                                    .is_some()
+                                    || game.batteries.get(battery).is_some_and(|b| {
+                                        matches!(b, Lying::Carried(p)
+                                            if game.bodies[*p].team == owner)
+                                    }))
+                            {
+                                stolen_known.push((battery, fell));
+                                game.stolen_log.push(format!(
+                                    "{clock} battery {battery} known to its owners, {} ms after it fell",
+                                    clock.saturating_sub(fell)
+                                ));
+                            }
                         }
                     }
                 }
@@ -2260,6 +2306,9 @@ fn real_bot_cost() {
                     "  stolen fallen {}: home again ms {home:?}, home with the thieves {theirs}, still out {out}; theft looks {theft_looks}",
                     if alive { "alive" } else { "at death" },
                 );
+            }
+            for line in &game.stolen_log {
+                eprintln!("  stolen log: {line}");
             }
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
