@@ -1007,6 +1007,24 @@ fn bench_tuning() -> Tuning {
     if std::env::var_os("SRP_BENCH_FAIR").is_some() {
         tuning.cheats.batteries = false;
     }
+    if let Some(m) = std::env::var("SRP_BENCH_BATTERY_SIGHT_M")
+        .ok()
+        .and_then(|m| m.parse().ok())
+    {
+        tuning.sense.battery_sight_m = m;
+    }
+    // Collect's numbers: `name=value,...`.
+    if let Ok(numbers) = std::env::var("SRP_BENCH_COLLECT") {
+        let play = tuning
+            .plays
+            .entry(super::plays::PlayKind::Collect)
+            .or_insert_with(|| super::plays::default_tuning(super::plays::PlayKind::Collect));
+        for pair in numbers.split(',').filter(|p| !p.is_empty()) {
+            let (name, value) = pair.split_once('=').expect("SRP_BENCH_COLLECT: name=value");
+            play.numbers
+                .insert(name.to_owned(), value.parse().expect("a number"));
+        }
+    }
     if let Ok(floors) = std::env::var("SRP_BENCH_SEARCH_FLOORS") {
         tuning.think.search_floors_per_poll = if floors == "max" {
             u32::MAX

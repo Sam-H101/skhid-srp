@@ -979,21 +979,22 @@ impl Bots {
                 }
             }
         }
-        // The bots checking spawners' spots now (no more of them than
-        // batteries missing, `plays::collect`).
-        let searchers = self
+        // The bots checking spawners' spots now, and where (no more of
+        // them than batteries missing, and apart, `plays::collect`).
+        let searching = self
             .bots
             .iter()
             .flatten()
             .filter(|b| b.team == team)
-            .filter(|b| {
-                b.assignment.as_ref().is_some_and(|a| {
-                    a.kind == plays::PlayKind::Collect
-                        && matches!(a.target, plays::TargetRef::Spawner(_))
-                })
+            .filter_map(|b| match b.assignment.as_ref()? {
+                a if a.kind == plays::PlayKind::Collect => match a.target {
+                    plays::TargetRef::Spawner(index) => Some((b.place, index)),
+                    _ => None,
+                },
+                _ => None,
             })
-            .count() as u32;
-        self.teams[usize::from(team)].knowledge.searchers = searchers;
+            .collect();
+        self.teams[usize::from(team)].knowledge.searching = searching;
         let state = &self.teams[usize::from(team)];
         let mut asked: Vec<(Place, Vec<plays::Candidate>, Option<Assignment>)> = Vec::new();
         for bot in self

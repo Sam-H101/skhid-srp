@@ -26,9 +26,13 @@ pub const NUMBERS: &[(&str, f32)] = &[
     ("tries", 4.0),
     ("give_up_s", 120.0),
     // A spawner's spot weighs this times the chance a missing battery lies
-    // there (missing batteries / spots worth a look), at least `search_min`.
+    // in sight of it (missing batteries x spots worth a look within
+    // `cluster_m` of it / all spots worth a look), at least `search_min`.
     ("search_weight", 0.9),
     ("search_min", 0.25),
+    ("cluster_m", 30.0),
+    // A spot within this of one a teammate is going to look at is his.
+    ("spread_m", 20.0),
 ];
 
 /// Spawners' slots come after the batteries'.
@@ -83,13 +87,22 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         return;
     }
     // The batteries the team cannot place are looked for at the spawners'
-    // spots, by no more bots than are missing.
+    // spots, by no more bots than are missing, apart from each other, the
+    // spots with more spots in sight of them first (one look checks them
+    // all, as a human looks round a yard).
     let missing = cx.batteries_unaccounted();
     let searching = matches!(
         cx.bot.current,
         Some((PlayKind::Collect, TargetRef::Spawner(_), _))
     );
-    if missing == 0 || (!searching && cx.team.searchers as usize >= missing) {
+    let others: Vec<usize> = cx
+        .team
+        .searching
+        .iter()
+        .filter(|(place, _)| *place != cx.me.place)
+        .map(|(_, index)| *index)
+        .collect();
+    if missing == 0 || (!searching && others.len() >= missing) {
         return;
     }
     let spawners = &cx.tactics.world.map.battery_spawners;
@@ -100,12 +113,26 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         return;
     }
     let num = |name| cx.num(PlayKind::Collect, name);
-    let chance = (missing as f32 / worth.len() as f32).min(1.0);
-    let weight = (num("search_weight") * chance).max(num("search_min"));
-    for i in worth {
-        if !can_take(spawners[i].item) {
+    let (cluster, spread) = (num("cluster_m"), num("spread_m"));
+    for &i in &worth {
+        let item = spawners[i].item;
+        // Its own spot it keeps (else bots near each other trade spots
+        // every tick); a new one is not one near a teammate's.
+        let own = matches!(cx.bot.current, Some((_, TargetRef::Spawner(j), _)) if j == i);
+        let taken = others.iter().any(|&j| {
+            spawners
+                .get(j)
+                .is_some_and(|s| s.item.distance_xz(item) < spread)
+        });
+        if (taken && !own) || !can_take(item) {
             continue;
         }
+        let near = worth
+            .iter()
+            .filter(|&&j| spawners[j].item.distance_xz(item) <= cluster)
+            .count();
+        let chance = (missing as f32 * near as f32 / worth.len() as f32).min(1.0);
+        let weight = (num("search_weight") * chance).max(num("search_min"));
         if let Some(mut candidate) = cx.candidate(
             PlayKind::Collect,
             TargetRef::Spawner(i),
@@ -459,10 +486,11 @@ mod tests {
         let spawners = (0..3).map(TargetRef::Spawner).collect::<Vec<_>>();
         assert_eq!(collects(&s), spawners);
         // Two bots looking already: no more.
-        s.team.searchers = 2;
+        s.team.searching = vec![(1, 0), (2, 1)];
         assert!(collects(&s).is_empty());
-        s.team.searchers = 1;
-        assert_eq!(collects(&s), spawners);
+        // One looking at spawner 2: the others are left to this bot.
+        s.team.searching = vec![(1, 2)];
+        assert_eq!(collects(&s), spawners[..2].to_vec());
         // A bot saw battery 0 at spawner 1: it comes first, spawner 1
         // needs no look, and one battery is missing.
         s.team.set_battery(
@@ -473,6 +501,7 @@ mod tests {
                 hud: false,
             }),
         );
+        s.team.searching.clear();
         let mut out = Vec::new();
         candidates(&s.cx(0), &mut out);
         out.sort_by(|a, b| b.score.get().total_cmp(&a.score.get()));
@@ -480,9 +509,9 @@ mod tests {
         assert_eq!(targets[0], TargetRef::Battery(0), "{out:?}");
         assert!(!targets.contains(&TargetRef::Spawner(1)));
         assert_eq!(s.cx(0).batteries_unaccounted(), 1);
-        s.team.searchers = 1;
+        s.team.searching = vec![(1, 2)];
         assert_eq!(collects(&s), vec![TargetRef::Battery(0)]);
-        s.team.searchers = 0;
+        s.team.searching.clear();
         // Looking at spawner 0: it walks there until the spot is seen.
         let target = TargetRef::Spawner(0);
         s.current = Some((PlayKind::Collect, target, s.view.clock));

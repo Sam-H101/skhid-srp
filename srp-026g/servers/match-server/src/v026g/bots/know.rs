@@ -222,8 +222,9 @@ pub struct TeamKnowledge {
     pub batteries: Vec<Option<KnownBattery>>,
     /// By battery spawner: when a bot of the team last saw its spot.
     pub spawners_seen: Vec<Option<u32>>,
-    /// The team's bots checking spawners now (the commander's count).
-    pub searchers: u32,
+    /// The team's bots checking spawners now and the spawner each looks
+    /// at (the commander's, from the plays it handed out).
+    pub searching: Vec<(Place, usize)>,
 }
 
 impl TeamKnowledge {
