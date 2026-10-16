@@ -1612,9 +1612,9 @@ impl Reflex {
             self.held_ms = 0;
             self.strafe = 0;
             self.strafe_until = 0;
-            // Play 21: the partner's death spot, weapon up, unless a shot
-            // was heard near lately (play 6 first: the killer is there, not
-            // at the body); else play 6.
+            // Play 21: the partner's death spot within `trade_m`, weapon
+            // up, unless a shot was heard lately (play 6 first: the killer
+            // is there, not at the body); else play 6.
             let shot = self.sound.is_some_and(|(_, until)| now < until);
             if let Some((at, _)) = self.trade.filter(|(at, until)| {
                 now < *until && !shot && at.distance_xz(me.feet) <= c.trade_m
@@ -3533,23 +3533,34 @@ mod tests {
         }
     }
 
-    /// With no target, a shot heard near lately is looked at before the
-    /// partner's death spot (the killer is there, not at the body); a far
-    /// one is not.
+    /// With no target, a shot heard lately is looked at before the
+    /// partner's death spot (the killer is there, not at the body); with
+    /// none, the spot is watched if it lies within `trade_m`.
     #[test]
-    fn a_shot_heard_near_is_looked_at_before_the_partners_death_spot() {
+    fn a_shot_heard_is_looked_at_before_the_partners_death_spot() {
         let me = body(0, 0, Vec3::ZERO, 0.0);
-        let spot = Vec3::new(8.0, 0.0, 8.0);
-        for (shooter_at, first) in [
-            (Vec3::new(-10.0, 0.0, -6.0), true),
-            (Vec3::new(-40.0, 0.0, -6.0), false),
+        let near_spot = Vec3::new(8.0, 0.0, 8.0);
+        let far_spot = Vec3::new(45.0, 0.0, 8.0);
+        let shooter_at = Vec3::new(-10.0, 0.0, -6.0);
+        for (spot, heard, want) in [
+            (near_spot, true, Some(shooter_at)),
+            (near_spot, false, Some(near_spot)),
+            (far_spot, false, None),
         ] {
             let mut view = view_of(vec![
                 me.clone(),
                 body(1, 1, shooter_at, 0.0),
                 body(3, 0, spot, 0.0),
             ]);
-            view.sounds = vec![shot(1, shooter_at, 1_100)];
+            let mut memory = Memory::default();
+            if heard {
+                view.sounds = vec![shot(1, shooter_at, 1_100)];
+                sense(
+                    &mut memory,
+                    &[percept(1, shooter_at, 1_100, Source::Heard)],
+                    1_200,
+                );
+            }
             let mut team = TeamKnowledge::default();
             team.danger.push(DangerSpot {
                 at: spot,
@@ -3557,12 +3568,6 @@ mod tests {
                 victim: 3,
             });
             let aim = AimTuning::default();
-            let mut memory = Memory::default();
-            sense(
-                &mut memory,
-                &[percept(1, shooter_at, 1_100, Source::Heard)],
-                1_200,
-            );
             let mut reflex = Reflex::default();
             let mut rng = Rng::new(34);
             let sit = Situation {
@@ -3572,9 +3577,13 @@ mod tests {
             };
             reflex.think_with(&me, &sit, &memory, 1_200, &aim, 0.5, &mut rng);
             let o = reflex.tick(&me, &view, &memory, 1_250, true, &aim, 0.5, &mut rng);
-            let look = o.look_at.expect("looks");
-            let want = if first { shooter_at } else { spot };
-            assert!(look.distance_xz(want) < 0.1, "{shooter_at:?}: {look:?}");
+            match want {
+                Some(want) => {
+                    let look = o.look_at.expect("looks");
+                    assert!(look.distance_xz(want) < 0.1, "{spot:?} {heard}: {look:?}");
+                }
+                None => assert!(o.look_at.is_none(), "{o:?}"),
+            }
         }
     }
 

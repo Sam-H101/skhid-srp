@@ -1599,10 +1599,12 @@ fn drive_tick(
         let (dx, dz) = (p.x - eye.x, p.z - eye.z);
         (kin::yaw_of([dx, dz]), (p.y - eye.y).atan2(dx.hypot(dz)))
     };
-    // A glance at a heard shot gives way to a play that runs, uses
-    // something or carries (`Override::glance`).
+    // A glance at a heard shot gives way to a play that uses something or
+    // carries, and to one that runs unless the shot was near
+    // (`Override::glance`).
+    let far = |p: Vec3| p.distance_xz(me.feet) > tuning.aim.combat.threat_heard_m;
     let glance_yields = over.glance
-        && (intent.pace == Pace::Run
+        && ((intent.pace == Pace::Run && over.look_at.is_some_and(far))
             || matches!(intent.look, Look::Use(_))
             || me.carrying.is_some());
     let aim = over
