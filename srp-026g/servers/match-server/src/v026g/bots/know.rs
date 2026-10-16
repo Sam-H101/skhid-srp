@@ -47,6 +47,11 @@ impl Source {
         }
     }
 
+    /// The team's own senses: a bot's sight or hearing, a teammate's word.
+    pub fn own(self) -> bool {
+        matches!(self, Self::Seen | Self::Heard | Self::Told { .. })
+    }
+
     /// A track of this kind sensed within this, ms, is fresh: a weaker
     /// report does not replace it. A sight for a moment (as before: a heard
     /// shot from where he went is better than a sight half a second old),
@@ -89,6 +94,9 @@ pub struct Track {
     pub sight_since: Option<u32>,
     /// The noticing delay for this sight, ms.
     pub notice_ms: u32,
+    /// The last place the bot's or its team's own senses gave (seen,
+    /// heard, told) and when: a cheat's place does not count.
+    pub own: Option<(Vec3, u32)>,
 }
 
 /// An enemy seen, and noticed: the only thing the motor may aim at. Made
@@ -145,6 +153,11 @@ impl Memory {
                         track.error_m = percept.error_m;
                         track.source = percept.source;
                     }
+                    if percept.source.own()
+                        && track.own.is_none_or(|(_, time)| percept.time >= time)
+                    {
+                        track.own = Some((percept.at, percept.time));
+                    }
                     if seen {
                         // A sight goes on if the last one was a moment ago.
                         let continuing =
@@ -171,6 +184,7 @@ impl Memory {
                     source: percept.source,
                     sight_since: (percept.source == Source::Seen).then_some(percept.time),
                     notice_ms: notice,
+                    own: percept.source.own().then_some((percept.at, percept.time)),
                 }),
             }
         }
@@ -247,6 +261,48 @@ pub struct KnownBattery {
     pub hud: bool,
 }
 
+/// A teammate's death (the kill feed), kept longer than a danger spot for
+/// the spawners' search: a spot where the team keeps dying is worth less.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loss {
+    pub at: Vec3,
+    pub time: u32,
+    /// The spawner the bot was going to look at, if it was.
+    pub spawner: Option<usize>,
+}
+
+/// Losses are kept this long, ms.
+pub const LOSS_KEEP_MS: u32 = 120_000;
+
+/// An enemy a bot of the team saw carrying a battery (a carrier holds it in
+/// his hands, in sight).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarrierSeen {
+    pub who: Place,
+    pub battery: usize,
+    pub at: Vec3,
+    pub time: u32,
+}
+
+/// Seen carriers are kept this long, ms.
+pub const CARRIER_SEEN_KEEP_MS: u32 = 60_000;
+
+/// A battery an enemy carrier dropped where he died, unseen: the kill feed
+/// says he died, the team knew he carried it (a theft of ours, or seen
+/// carrying), and the game's HUD shows the dropped battery only to his
+/// team. A human walks to where he last saw him; the bots look there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LookSpot {
+    pub battery: usize,
+    /// His last place the team itself sensed (the killer's sight, else
+    /// its last own sight, hearing or callout of him).
+    pub at: Vec3,
+    pub time: u32,
+}
+
+/// A look spot nobody has looked at is dropped after this, ms.
+pub const LOOK_KEEP_MS: u32 = 120_000;
+
 /// What a team's bots share: callouts (one bot's sense, the others' a
 /// moment later), danger spots, thefts, and with the battery cheat off
 /// what they know of the batteries and the spawners they have looked at.
@@ -264,6 +320,12 @@ pub struct TeamKnowledge {
     /// The team's bots checking spawners now and the spawner each looks
     /// at (the commander's, from the plays it handed out).
     pub searching: Vec<(Place, usize)>,
+    /// The team's deaths of the last [`LOSS_KEEP_MS`].
+    pub losses: Vec<Loss>,
+    /// Enemies seen carrying lately.
+    pub carriers_seen: Vec<CarrierSeen>,
+    /// Where enemy carriers died with a battery the team cannot see.
+    pub looks: Vec<LookSpot>,
 }
 
 impl TeamKnowledge {
@@ -412,6 +474,62 @@ impl TeamKnowledge {
     pub fn forget_old(&mut self, now: u32) {
         self.danger.retain(|spot| spot.time + 30_000 >= now);
         self.thefts.retain(|theft| theft.time + 60_000 >= now);
+        self.losses.retain(|loss| loss.time + LOSS_KEEP_MS >= now);
+        self.carriers_seen
+            .retain(|seen| seen.time + CARRIER_SEEN_KEEP_MS >= now);
+        self.looks.retain(|look| look.time + LOOK_KEEP_MS >= now);
+    }
+
+    /// A bot of the team saw the enemy at `who` carrying `battery`.
+    pub fn saw_carrying(&mut self, who: Place, battery: usize, at: Vec3, time: u32) {
+        self.carriers_seen.retain(|seen| seen.who != who);
+        self.carriers_seen.push(CarrierSeen {
+            who,
+            battery,
+            at,
+            time,
+        });
+    }
+
+    /// Whether the team knows the enemy at `who` carried `battery`: he
+    /// stole it from us (the HUD's theft), or a bot saw him carrying it.
+    pub fn knew_carrying(&self, who: Place, battery: usize) -> bool {
+        self.thefts
+            .iter()
+            .any(|t| t.battery == battery && t.thief == Some(who))
+            || self
+                .carriers_seen
+                .iter()
+                .any(|s| s.who == who && s.battery == battery)
+    }
+
+    /// Where the team looks for `battery`, dropped by a carrier it lost.
+    pub fn add_look(&mut self, look: LookSpot) {
+        self.looks.retain(|l| l.battery != look.battery);
+        self.looks.push(look);
+    }
+
+    /// The look spots still worth a look for team `team`: not the ones
+    /// whose battery the team knows of now (seen lying, on its HUD, home,
+    /// or carried by a teammate).
+    pub fn settle_looks(&mut self, team: u8, view: &MatchView) {
+        if self.looks.is_empty() {
+            return;
+        }
+        let known: Vec<bool> = (0..view.batteries.len())
+            .map(|b| {
+                self.battery(b).is_some()
+                    || match view.batteries[b] {
+                        BatteryState::Home(_) => true,
+                        BatteryState::Carried(Some(p)) => {
+                            view.place(p).is_some_and(|p| p.team == team)
+                        }
+                        _ => false,
+                    }
+            })
+            .collect();
+        self.looks
+            .retain(|look| !known.get(look.battery).copied().unwrap_or(true));
     }
 }
 

@@ -63,7 +63,7 @@ use crate::v026g::drive::{half_value, key};
 use body::Fix;
 use cheats::CheatClock;
 use encode::{Decision, Encoder};
-use know::{DangerSpot, Memory, Percept, TeamKnowledge, Theft};
+use know::{DangerSpot, LookSpot, Loss, Memory, Percept, Source, TeamKnowledge, Theft};
 use motor::{Motor, Pose, Walked};
 use path::Route;
 use plays::{BotFacts, Ctx, Go, Intent, Look, Pace, PlayKind, Running, Step};
@@ -107,6 +107,9 @@ pub const TEAM_NO_WAY_KEEP_MS: u32 = 60_000;
 /// meanwhile. The floors they expand are bounded too
 /// ([`tuning::ThinkTuning::search_floors_per_poll`], [`Searching`]).
 const SEARCHES_PER_POLL: u32 = 2;
+/// A dead enemy carrier's look spot is made only from a sense of him this
+/// recent, ms.
+const LOOK_SENSED_MS: u32 = 30_000;
 /// A death this recent is a fight where it fell, for the choice of the bot
 /// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
 const FIGHT_DEATH_MS: u32 = 10_000;
@@ -892,6 +895,29 @@ impl Bots {
                     time,
                     victim: a.place,
                 });
+                // And a loss for the spawners' search: the spot the bot
+                // was sent to look at, if it was.
+                let spawner = self
+                    .bots
+                    .iter()
+                    .flatten()
+                    .find(|b| b.place == a.place)
+                    .and_then(|b| b.assignment.as_ref())
+                    .and_then(|a| match (a.kind, a.target) {
+                        (plays::PlayKind::Collect, plays::TargetRef::Spawner(i)) => Some(i),
+                        _ => None,
+                    });
+                self.teams[team].knowledge.losses.push(Loss {
+                    at: death.at,
+                    time,
+                    spawner,
+                });
+            }
+            // An enemy known to carry a battery died: his team's HUD shows
+            // where it fell, ours does not. The team looks where it last
+            // sensed him itself (never the thief cheat's place).
+            if !self.tuning.cheats.batteries {
+                self.lost_carrier(a.place, 1 - team, (&before, &after), time, &mut notes);
             }
             // Self-balancing counts duels between bots and humans.
             if a.bot && human_kills {
@@ -920,9 +946,9 @@ impl Bots {
         // batteries.
         if !self.tuning.cheats.batteries {
             for team in 0..2u8 {
-                self.teams[usize::from(team)]
-                    .knowledge
-                    .hud_update(team, &before, &after, time);
+                let knowledge = &mut self.teams[usize::from(team)].knowledge;
+                knowledge.hud_update(team, &before, &after, time);
+                knowledge.settle_looks(team, &after);
             }
         }
         // A battery of ours taken from home.
@@ -945,6 +971,90 @@ impl Bots {
             }
         }
         notes
+    }
+
+    /// The enemy at `who` died, and team `team` (his enemies) knew he
+    /// carried a battery: it stole from us (the HUD's theft), or a bot of
+    /// the team saw him carrying it. The battery fell where he died, shown
+    /// on his team's HUD only (`TeamKnowledge::hud_update`), and a nook may
+    /// hide it from sight (match 0x15aa5b99: 126 s 3.6 m from our
+    /// container). The team gets a spot to look at: where it last sensed
+    /// him itself, the killer's own sight first, else the newest sight,
+    /// hearing or callout of him (never the thief cheat's place).
+    fn lost_carrier(
+        &mut self,
+        who: Place,
+        team: usize,
+        (before, after): (&MatchView, &MatchView),
+        time: u32,
+        notes: &mut Vec<Note>,
+    ) {
+        let knowledge = &self.teams[team].knowledge;
+        // His battery: carried by him, or (a world showed him dead first,
+        // and the carrier went with it) one carried by nobody known that
+        // he was known to carry, lying now or still carried.
+        let battery = (0..after.batteries.len()).find(|&b| {
+            let was = before.batteries.get(b).copied();
+            let carried = was == Some(BatteryState::Carried(Some(who)));
+            let fell = was == Some(BatteryState::Carried(None))
+                && matches!(
+                    after.batteries[b],
+                    BatteryState::Free(_) | BatteryState::Carried(None)
+                );
+            (carried || fell) && knowledge.knew_carrying(who, b)
+        });
+        let Some(battery) = battery else {
+            return;
+        };
+        if knowledge.battery(battery).is_some() {
+            return;
+        }
+        let killers: Vec<Place> = after
+            .places
+            .iter()
+            .zip(&before.places)
+            .filter(|(a, b)| usize::from(a.team & 1) == team && a.kills > b.kills)
+            .map(|(a, _)| a.place)
+            .collect();
+        // (the killer's sight, when, where)
+        let mut best: Option<(bool, u32, Vec3)> = None;
+        let mut take = |killer: bool, sensed: u32, at: Vec3| {
+            if best.is_none_or(|(k, t, _)| (killer, sensed) > (k, t)) {
+                best = Some((killer, sensed, at));
+            }
+        };
+        for bot in self
+            .bots
+            .iter()
+            .flatten()
+            .filter(|b| usize::from(b.team & 1) == team)
+        {
+            if let Some(track) = bot.memory.tracks().iter().find(|t| t.who == who)
+                && let Some((at, sensed)) = track.own
+            {
+                let killer = killers.contains(&bot.place) && track.source == Source::Seen;
+                take(killer, sensed, at);
+            }
+        }
+        for seen in knowledge.carriers_seen.iter().filter(|s| s.who == who) {
+            take(false, seen.time, seen.at);
+        }
+        let Some((killer, sensed, at)) = best else {
+            return;
+        };
+        if sensed + LOOK_SENSED_MS < time {
+            return;
+        }
+        self.teams[team].knowledge.add_look(LookSpot { battery, at, time });
+        notes.push(Note {
+            place: usize::MAX,
+            time,
+            text: format!(
+                "team {team} looks for battery {battery} where its carrier died ({}, {:.1} s before)",
+                if killer { "the killer's sight" } else { "last sensed" },
+                time.saturating_sub(sensed) as f32 / 1000.0
+            ),
+        });
     }
 
     /// The inputs due with the clock at `clock`.
@@ -1063,6 +1173,7 @@ impl Bots {
         let state = &mut self.teams[usize::from(team)];
         state.next_commander = now + tuning.think.commander_ms;
         state.knowledge.forget_old(now);
+        state.knowledge.settle_looks(team, view);
         // What a bot of the team proved no way to lately, the whole team
         // leaves for longer, from the proof on.
         state.no_way_to.retain(|&(_, until)| now < until);
@@ -1350,6 +1461,14 @@ impl Bots {
             state
                 .knowledge
                 .call_out(bot.place, percept, tuning.sense.callout_ms);
+            // An enemy seen carrying a battery (it is in his hands).
+            if percept.source == Source::Seen
+                && let Some(battery) = view.place(percept.who).and_then(|p| p.carrying)
+            {
+                state
+                    .knowledge
+                    .saw_carrying(percept.who, battery, percept.at, percept.time);
+            }
         }
         percepts.extend(cheats::cheat_percepts(
             bot.team,

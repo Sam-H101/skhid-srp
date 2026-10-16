@@ -15,7 +15,12 @@
 //! batteries are not accounted for it looks for them at the spawners' spots
 //! as a human does (`TargetRef::Spawner`): a spot is checked once a bot of
 //! the team sees it (`sense::sense_batteries`), and no more bots look than
-//! batteries are missing.
+//! batteries are missing. A spot weighs the chance a look there finds a
+//! battery it can take (spots no way leads to all match count as where the
+//! missing ones may lie; the enemy clears his side as the match runs),
+//! less where the team keeps dying and deep in the enemy's third. Where an
+//! enemy carrier the team knew of died, the team looks first
+//! (`LookSpot`, `TargetRef::Point`).
 
 use super::*;
 use crate::v026g::bots::curve::{Consideration, Curve, Input};
@@ -235,10 +240,81 @@ pub const NUMBERS: &[(&str, f32)] = &[
     ("cluster_m", 30.0),
     // A spot within this of one a teammate is going to look at is his.
     ("spread_m", 20.0),
+    // A spot whose chance times its risk (below) is under this is not
+    // looked at: a search that may find nothing takeable stops.
+    ("search_cut", 0.1),
+    // The enemy clears his side: a spot's prior falls by up to this share,
+    // the more the nearer his container (from the map's middle on) and
+    // the longer the match has run (fully after `clear_s`).
+    ("clear_share", 0.8),
+    ("clear_s", 120.0),
+    // Each loss of the team within `danger_m` of a spot, or of a bot on
+    // its way to it, takes this share off (fading over `LOSS_KEEP_MS`).
+    ("danger_cut", 0.4),
+    ("danger_m", 25.0),
+    // A spot in the enemy's third loses up to this share, the deeper the
+    // more (at his container all of it).
+    ("deep_cut", 0.5),
+    // A look where an enemy carrier died with a battery (`LookSpot`):
+    // this times its score, above any spawner's spot.
+    ("look_weight", 1.0),
 ];
 
 /// Spawners' slots come after the batteries'.
 const SPAWNER_SLOT: u32 = 0x1_0000;
+/// Look spots' slots (by battery) after the spawners'.
+const LOOK_SLOT: u32 = 0x2_0000;
+
+/// Where `at` lies between the team's container (0) and the enemy's (1),
+/// along the line between them; none without both containers.
+fn toward_enemy(cx: &Ctx, at: Vec3) -> Option<f32> {
+    let ours = cx.view.container_of(cx.me.team)?.at;
+    let theirs = cx.view.containers.iter().find(|c| c.team != cx.me.team)?.at;
+    let (dx, dz) = (theirs.x - ours.x, theirs.z - ours.z);
+    let length = dx * dx + dz * dz;
+    if length < 1.0 {
+        return None;
+    }
+    Some((((at.x - ours.x) * dx + (at.z - ours.z) * dz) / length).clamp(0.0, 1.0))
+}
+
+/// How likely a spawner's spot not yet seen still holds a missing battery,
+/// against the others: a spot no way leads to all match (`shut`) keeps
+/// what lies there (1); else the enemy may have taken it, the more likely
+/// the nearer his container and the longer the match has run.
+fn search_prior(cx: &Ctx, at: Vec3, shut: bool) -> f32 {
+    if shut {
+        return 1.0;
+    }
+    let num = |name| cx.num(PlayKind::Collect, name);
+    let theirs = toward_enemy(cx, at).map_or(0.0, |s| ((s - 0.5) * 2.0).clamp(0.0, 1.0));
+    let ran = (cx.now as f32 / 1000.0 / num("clear_s").max(1.0)).min(1.0);
+    1.0 - num("clear_share") * theirs * ran
+}
+
+/// A spot's worth for the team's deaths lately: each loss within
+/// `danger_m` of it, or of a bot sent to look at it, takes `danger_cut`
+/// off, fading over [`LOSS_KEEP_MS`] (the kill feed; what a team sees).
+fn search_danger(cx: &Ctx, index: usize, at: Vec3) -> f32 {
+    use crate::v026g::bots::know::LOSS_KEEP_MS;
+    let num = |name| cx.num(PlayKind::Collect, name);
+    let (cut, near) = (num("danger_cut"), num("danger_m"));
+    cx.team
+        .losses
+        .iter()
+        .filter(|loss| loss.spawner == Some(index) || loss.at.distance_xz(at) <= near)
+        .map(|loss| {
+            let fresh = 1.0 - cx.now.saturating_sub(loss.time) as f32 / LOSS_KEEP_MS as f32;
+            1.0 - cut * fresh.clamp(0.0, 1.0)
+        })
+        .product()
+}
+
+/// A spot's worth for how deep it lies in the enemy's third.
+fn search_depth(cx: &Ctx, at: Vec3) -> f32 {
+    let deep = toward_enemy(cx, at).map_or(0.0, |s| ((s - 2.0 / 3.0) * 3.0).clamp(0.0, 1.0));
+    1.0 - cx.num(PlayKind::Collect, "deep_cut") * deep
+}
 
 pub fn tuning() -> PlayTuning {
     PlayTuning {
@@ -295,6 +371,25 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     if cx.tuning.cheats.batteries {
         return;
     }
+    // A battery an enemy carrier dropped where he died, which the team
+    // cannot see: a look where the team last sensed him, near the top of
+    // the band (one bot a spot).
+    for look in &cx.team.looks {
+        if cx.team.battery(look.battery).is_some() || !cx.can_take(look.at) {
+            continue;
+        }
+        if let Some(mut candidate) = cx.candidate(
+            PlayKind::Collect,
+            TargetRef::Point(look.at),
+            Some(LOOK_SLOT + look.battery as u32),
+        ) {
+            candidate.score =
+                Score::new(candidate.score.get() * cx.num(PlayKind::Collect, "look_weight"));
+            if !candidate.score.is_zero() {
+                out.push(candidate);
+            }
+        }
+    }
     // The batteries the team cannot place are looked for at the spawners'
     // spots, by no more bots than are missing, apart from each other, the
     // spots with more spots in sight of them first (one look checks them
@@ -323,7 +418,24 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     }
     let num = |name| cx.num(PlayKind::Collect, name);
     let (cluster, spread) = (num("cluster_m"), num("spread_m"));
-    for &i in &worth {
+    // How likely each spot not yet seen still holds a missing battery
+    // (`search_prior`): a spot no way leads to all match surely keeps
+    // what lies there; one far on the enemy's side was likely cleared by
+    // the enemy since the start.
+    let shut: Vec<bool> = worth
+        .iter()
+        .map(|&i| cx.shut_all_match(spawners[i].item))
+        .collect();
+    let prior: Vec<f32> = worth
+        .iter()
+        .zip(&shut)
+        .map(|(&i, &shut)| search_prior(cx, spawners[i].item, shut))
+        .collect();
+    let total: f32 = prior.iter().sum();
+    if total <= 0.0 {
+        return;
+    }
+    for (k, &i) in worth.iter().enumerate() {
         let item = spawners[i].item;
         // Its own spot it keeps (else bots near each other trade spots
         // every tick); a new one is not one near a teammate's.
@@ -333,15 +445,25 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
                 .get(j)
                 .is_some_and(|s| s.item.distance_xz(item) < spread)
         });
-        if (taken && !own) || !cx.can_take(item) {
+        if shut[k] || (taken && !own) || !cx.can_take(item) {
             continue;
         }
-        let near = worth
-            .iter()
-            .filter(|&&j| spawners[j].item.distance_xz(item) <= cluster)
-            .count();
-        let chance = (missing as f32 * near as f32 / worth.len() as f32).min(1.0);
-        let weight = (num("search_weight") * chance).max(num("search_min"));
+        // The missing batteries a look round here may find and take: the
+        // reachable spots in sight of it, by their share of all spots
+        // not seen yet (the shut ones too, so the missing ones may well be
+        // there).
+        let near: f32 = (0..worth.len())
+            .filter(|&m| !shut[m] && spawners[worth[m]].item.distance_xz(item) <= cluster)
+            .map(|m| prior[m])
+            .sum();
+        let chance = (missing as f32 * near / total).min(1.0);
+        // Worth less where the team keeps dying lately, and deep in the
+        // enemy's third.
+        let risk = search_danger(cx, i, item) * search_depth(cx, item);
+        if chance * risk < num("search_cut") {
+            continue;
+        }
+        let weight = (num("search_weight") * chance).max(num("search_min")) * risk;
         if let Some(mut candidate) = cx.candidate(
             PlayKind::Collect,
             TargetRef::Spawner(i),
@@ -388,7 +510,7 @@ pub enum State {
 pub fn start(target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> State {
     if cx.me.carrying.is_some() {
         State::Bring
-    } else if matches!(target, TargetRef::Spawner(_)) {
+    } else if matches!(target, TargetRef::Spawner(_) | TargetRef::Point(_)) {
         State::Search
     } else {
         State::Fetch
@@ -411,23 +533,33 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             step(state, target, cx, _rng)
         }
         State::Search => {
-            let TargetRef::Spawner(index) = target else {
-                return Step::Failed("no spawner");
-            };
             let Some(at) = cx.point_of(target) else {
                 return Step::Failed("no spawner");
             };
-            let started = cx.bot.current.map_or(0, |(_, _, since)| since);
-            if cx
-                .team
-                .spawner_seen(index)
-                .is_some_and(|seen| seen >= started)
-            {
-                // Whatever lay there is known now: the commander picks again.
-                return Step::Done("looked at the spot");
-            }
-            if !cx.spawner_worth_checking(index) {
-                return Step::Done("the spot needs no look");
+            match target {
+                TargetRef::Spawner(index) => {
+                    let started = cx.bot.current.map_or(0, |(_, _, since)| since);
+                    if cx
+                        .team
+                        .spawner_seen(index)
+                        .is_some_and(|seen| seen >= started)
+                    {
+                        // Whatever lay there is known now: the commander
+                        // picks again.
+                        return Step::Done("looked at the spot");
+                    }
+                    if !cx.spawner_worth_checking(index) {
+                        return Step::Done("the spot needs no look");
+                    }
+                }
+                // Where an enemy carrier died: looked at once a bot of the
+                // team stood by it, or the battery is known (seen there).
+                TargetRef::Point(_) => {
+                    if !cx.team.looks.iter().any(|look| look.at == at) {
+                        return Step::Done("looked where the carrier died");
+                    }
+                }
+                _ => return Step::Failed("no spawner"),
             }
             let Some(stand) = cx.tactics.stand_to_take(at) else {
                 return Step::Failed("no way to it");
@@ -1056,6 +1188,177 @@ mod tests {
             step(&mut state, target, &s.cx(0), &mut rng),
             Step::Failed("the battery is gone")
         );
+    }
+
+    /// The field with toxic ground (on all match) ringing a pocket round
+    /// (20, 0, 30) with four battery spawners in it (with `pocket`), and
+    /// one spawner at (55, 0, 12) on the enemy's side; the battery cheat
+    /// off, three batteries lying unseen in the pocket (level_01's swamp
+    /// in small).
+    fn swamp(pocket_spawners: bool) -> Scenario {
+        use mapdata::BatterySpawner;
+        let pocket = [(18.0, 28.0), (22.0, 28.0), (18.0, 32.0), (22.0, 32.0)];
+        let world = crate::v026g::bots::tactics::tests::field_with(|map| {
+            let wall = |x: f32, z: f32, hx: f32, hz: f32| Shape {
+                kind: ShapeKind::Box,
+                center: Vec3::new(x, 1.0, z),
+                rotation: Rotation::IDENTITY,
+                half: Vec3::new(hx, 1.0, hz),
+            };
+            {
+                map.zones.push(Zone {
+                    kind: ZoneKind::Damage,
+                    name: "toxic".into(),
+                    team: -1,
+                    position: Vec3::new(20.0, 0.0, 30.0),
+                    damage_type: "toxic".into(),
+                    damage: None,
+                    shapes: vec![
+                        wall(20.0, 25.0, 5.5, 0.5),
+                        wall(20.0, 35.0, 5.5, 0.5),
+                        wall(15.0, 30.0, 0.5, 5.5),
+                        wall(25.0, 30.0, 0.5, 5.5),
+                    ],
+                });
+            }
+            let inside = if pocket_spawners { &pocket[..] } else { &[] };
+            map.battery_spawners = inside
+                .iter()
+                .chain(&[(55.0, 12.0)])
+                .map(|&(x, z)| BatterySpawner {
+                    position: Vec3::new(x, 0.0, z),
+                    item: Vec3::new(x, 0.3, z),
+                    layer: "default".into(),
+                })
+                .collect();
+        });
+        let mut s = Scenario::field(Mode::Batteries);
+        s.tuning.cheats.batteries = false;
+        s.tactics = Tactics::new(world, 1.0);
+        s.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+        for &(x, z) in &pocket[..3] {
+            s.battery(BatteryState::Free(Vec3::new(x, 0.3, z)));
+        }
+        s
+    }
+
+    fn score_of(s: &Scenario, target: TargetRef) -> Option<f32> {
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        out.iter()
+            .find(|c| c.target == target)
+            .map(|c| c.score.get())
+    }
+
+    /// Match 0x7db2c16a: three batteries lay in level_01's swamp (no way
+    /// in all match) and team 0 searched spawners' spots 12.4 bot-minutes
+    /// for them, 30 deaths. The shut spots count among the spots the
+    /// missing batteries may lie at (and surely keep them), so a far spot
+    /// on the enemy's side, likely cleared by him, weighs little; the
+    /// team's deaths there lately take it off the list.
+    #[test]
+    fn a_search_counts_the_spots_no_way_leads_to_and_the_teams_losses() {
+        use crate::v026g::bots::know::Loss;
+        // Without the pocket's spots the missing three must be at the far
+        // one: offered at full chance.
+        let open_far = score_of(&swamp(false), TargetRef::Spawner(0)).expect("offered");
+        // The pocket's spots, shut all match: never offered themselves,
+        // and the far spot weighs less (the three may well lie there).
+        let far = TargetRef::Spawner(4);
+        let mut s = swamp(true);
+        assert!(s.cx(0).shut_all_match(Vec3::new(18.0, 0.3, 28.0)));
+        assert!(!s.cx(0).shut_all_match(Vec3::new(55.0, 0.3, 12.0)));
+        for i in 0..4 {
+            assert_eq!(score_of(&s, TargetRef::Spawner(i)), None);
+        }
+        let shut_far = score_of(&s, far).expect("still a chance");
+        assert!(shut_far < open_far * 0.5, "{shut_far} against {open_far}");
+        // Early in the match the enemy has had no time to clear his side:
+        // more likely there.
+        s.view.clock = 30_000;
+        assert!(score_of(&s, far).unwrap() > shut_far);
+        s.view.clock = 300_000;
+        // A teammate died on the way there a moment ago: less; a few
+        // more by it, none.
+        let now = s.view.clock;
+        s.team.losses.push(Loss {
+            at: Vec3::new(45.0, 0.0, 15.0),
+            time: now - 1_000,
+            spawner: Some(4),
+        });
+        let one = score_of(&s, far).expect("one loss");
+        assert!(one < shut_far * 0.7, "{one} against {shut_far}");
+        for _ in 0..2 {
+            s.team.losses.push(Loss {
+                at: Vec3::new(53.0, 0.0, 14.0),
+                time: now - 2_000,
+                spawner: None,
+            });
+        }
+        assert_eq!(score_of(&s, far), None);
+        // Forgotten after LOSS_KEEP_MS: as before.
+        s.view.clock += crate::v026g::bots::know::LOSS_KEEP_MS + 1;
+        s.team.forget_old(s.view.clock);
+        assert!(s.team.losses.is_empty());
+        assert!(score_of(&s, far).is_some());
+    }
+
+    /// An enemy carrier the team knew of died with a battery its sight
+    /// cannot find: the look spot is offered above the spawners' spots,
+    /// one bot walks there and ends when the spot is looked at.
+    #[test]
+    fn a_look_where_a_carrier_died_comes_first_and_ends_once_looked_at() {
+        use crate::v026g::bots::know::LookSpot;
+        let (mut s, items) = fair();
+        // Battery 0 dropped at (14, 0, 33), unseen; two more at spawners.
+        let dropped = Vec3::new(14.0, 0.0, 33.0);
+        s.battery(BatteryState::Free(dropped));
+        s.battery(BatteryState::Free(items[1]));
+        s.battery(BatteryState::Free(items[2]));
+        let look = Vec3::new(13.5, 0.0, 33.5);
+        s.team.add_look(LookSpot {
+            battery: 0,
+            at: look,
+            time: s.view.clock,
+        });
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        out.sort_by(|a, b| b.score.get().total_cmp(&a.score.get()));
+        assert_eq!(out[0].target, TargetRef::Point(look), "{out:?}");
+        assert!(
+            out.iter()
+                .any(|c| matches!(c.target, TargetRef::Spawner(_)))
+        );
+        // The play walks there.
+        let target = TargetRef::Point(look);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        assert_eq!(state, State::Search);
+        let Step::Continue(intent) = step(&mut state, target, &s.cx(0), &mut rng) else {
+            panic!("goes to look");
+        };
+        assert!(matches!(intent.go, Go::To { at, .. } if at.distance_xz(look) < 1.0));
+        // Seen there (a bot stood by it): no more look; the battery is
+        // known and fetched instead.
+        s.team.set_battery(
+            0,
+            Some(crate::v026g::bots::know::KnownBattery {
+                at: dropped,
+                time: s.view.clock,
+                hud: false,
+            }),
+        );
+        s.team.settle_looks(0, &s.view);
+        assert!(s.team.looks.is_empty());
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Done("looked where the carrier died")
+        );
+        let mut out = Vec::new();
+        candidates(&s.cx(0), &mut out);
+        out.sort_by(|a, b| b.score.get().total_cmp(&a.score.get()));
+        assert_eq!(out[0].target, TargetRef::Battery(0));
     }
 
     /// A battery in a pocket that toxic ground (on all match) rings: the
