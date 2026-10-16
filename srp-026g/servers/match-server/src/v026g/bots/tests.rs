@@ -859,6 +859,8 @@ fn a_short_soak_with_its_searches_in_slices_still_plays() {
         out.shots
     );
     assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
+    // Its bots are gone, and with them this thread's search arrays.
+    assert_eq!(mapdata::search_memory_bytes(), 0);
 }
 
 /// The whole match (minutes of play: `cargo test --release -- --ignored`).

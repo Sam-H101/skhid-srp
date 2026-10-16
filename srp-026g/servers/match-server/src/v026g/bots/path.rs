@@ -219,7 +219,7 @@ impl Planning {
     /// partial paths: a body heads that way while the search goes on.
     /// None till a floor past the start was expanded.
     pub fn partial(&self, grid: &WalkGrid, allowed: impl Fn(NodeId) -> bool) -> Option<Route> {
-        let path = self.search.partial()?;
+        let path = self.search.partial(grid)?;
         (path.nodes.len() >= 2).then(|| pull(grid, path.nodes, allowed))
     }
 }
