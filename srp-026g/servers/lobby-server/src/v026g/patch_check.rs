@@ -38,6 +38,40 @@ pub(super) fn parse_min_patch_revision(value: Option<&str>) -> Result<u8, String
     }
 }
 
+/// Whether `min` (`SRP_MIN_PATCH_REVISION`) keeps out every game without a
+/// patch of the server's game data `data`. A patch is
+/// `resources.db.patch_<n>`, n the client patch revision it was released
+/// with, and a game of revision n or later has it (its updater keeps PLAY
+/// off until it does). A game of an older revision lacks its items, and
+/// the lobby's sign-in names every item sold: the game would crash. So srp
+/// does not start with `min` under the highest n, and says what to set.
+pub fn check_min_patch_revision(
+    min: u8,
+    data: &survarium::v026g::game_data::GameData,
+) -> Result<(), String> {
+    let Some(highest) = data
+        .provenance
+        .patches
+        .iter()
+        .map(|patch| patch.number)
+        .max()
+    else {
+        return Ok(());
+    };
+    if u32::from(min) >= highest {
+        return Ok(());
+    }
+    Err(format!(
+        "SRP_MIN_PATCH_REVISION is {min}{}, but the server's game data ({}) has \
+         resources.db.patch_{highest}: a game of an older revision lacks that patch's items and \
+         crashes on them. Set SRP_MIN_PATCH_REVISION={highest} in .env and recreate the \
+         container (docker compose up -d --no-deps --force-recreate srp26; a restart keeps \
+         the old setting)",
+        if min == 0 { " (or unset)" } else { "" },
+        data.origin
+    ))
+}
+
 impl Core<'_> {
     /// Whether a lobby sign-in with `session_id` is refused for its game's
     /// revision: the account's name and the revision, if so. Only a session

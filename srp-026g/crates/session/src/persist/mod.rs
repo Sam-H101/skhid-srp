@@ -48,6 +48,10 @@ pub enum PersistError {
     NewerSchema { found: i64, known: i64 },
     #[error("account {0}: {1}")]
     BadRow(u32, String),
+    /// The kept accounts name a definition the game's data lacks
+    /// (`v026g::known`): srp does not start.
+    #[error("{0}")]
+    GameData(String),
 }
 
 /// Every durable field of one account, copied out of the store so that it

@@ -112,3 +112,35 @@ fn the_least_revision_is_a_number_or_none() {
         assert!(parse_min_patch_revision(Some(text)).is_err(), "{text}");
     }
 }
+
+/// A minimum under the server's newest patch would let in a game without
+/// it, which crashes on its items: srp does not start, and says what to set.
+/// (The test data is made of patches 14, 15 and 16.)
+#[test]
+fn the_least_revision_covers_the_newest_patch_of_the_game_data() {
+    use crate::v026g::check_min_patch_revision;
+    use survarium::v026g::game_data::GameData;
+    let data = GameData::test_archive();
+    for min in [0, 1, 14, 15] {
+        let error = check_min_patch_revision(min, &data).expect_err("refused");
+        assert!(
+            error.contains(&format!("SRP_MIN_PATCH_REVISION is {min}")),
+            "{error}"
+        );
+        assert!(error.contains("resources.db.patch_16"), "{error}");
+        assert!(error.contains("Set SRP_MIN_PATCH_REVISION=16"), "{error}");
+        assert!(error.contains("--force-recreate"), "{error}");
+    }
+    assert!(
+        check_min_patch_revision(0, &data)
+            .unwrap_err()
+            .contains("(or unset)")
+    );
+    for min in [16, 17, 255] {
+        assert_eq!(check_min_patch_revision(min, &data), Ok(()), "{min}");
+    }
+    // Data of no patch asks for nothing.
+    let mut stock = GameData::test_archive();
+    stock.provenance.patches.clear();
+    assert_eq!(check_min_patch_revision(0, &stock), Ok(()));
+}

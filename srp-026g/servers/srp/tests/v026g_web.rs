@@ -440,7 +440,7 @@ fn the_operators_text_and_a_ban_reach_the_026g_lobby() {
     stack.stop();
 }
 
-/// What the players' updater asks first after the resource step: `GET
+/// What the players' updater asks after the Skhid files: `GET
 /// /patches`, with no token, from the same page. It lists the patches the
 /// server's game data was made of (the test data: 0.26g's archive with
 /// patches 14, 15 and 16), in the game's order.

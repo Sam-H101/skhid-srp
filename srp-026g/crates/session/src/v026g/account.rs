@@ -530,19 +530,21 @@ impl Account {
     /// Make a loaded account consistent, so that what the lobby sends from
     /// it can not crash a client: the next ids past every id in use, at
     /// most three kits with distinct non-zero ids, an active kit that
-    /// exists, no item the client's dictionary lacks, no duplicate item id,
-    /// item lists within the client's limits, no slot holding an item
-    /// that is gone or does not fit, and none worn in a slot another worn
-    /// item covers ([`Self::uncover_kits`]). `true` if anything changed.
+    /// exists, no duplicate item id, item lists within the client's
+    /// limits, no slot holding an item that is gone or does not fit, and
+    /// none worn in a slot another worn item covers
+    /// ([`Self::uncover_kits`]). `true` if anything changed.
+    ///
+    /// It never deletes an item for a definition the game's data lacks:
+    /// that is data made without a patch, and the load refuses it before
+    /// this runs ([`super::known::Lacking`]).
     pub fn repair(&mut self) -> bool {
         let dictionary = Dictionary::shared();
         let before = self.clone();
 
         let mut seen = Vec::new();
         self.inventory.retain(|item| {
-            let keep = item.item_id != 0
-                && dictionary.item(item.dict_id).is_some()
-                && !seen.contains(&item.item_id);
+            let keep = item.item_id != 0 && !seen.contains(&item.item_id);
             seen.push(item.item_id);
             keep
         });
@@ -762,8 +764,9 @@ mod tests {
     #[test]
     fn a_loaded_account_is_made_safe_to_send() {
         let mut account = Account::new("Alice");
-        // An item of no dictionary, a duplicate id, a stale slot, a 4th kit,
-        // two kits with one id, a stale active kit and a low next id.
+        // An item of no dictionary (kept: the load refuses data that lacks
+        // it, `known`), a duplicate id, a stale slot, a 4th kit, two kits
+        // with one id, a stale active kit and a low next id.
         account.inventory.push(Item {
             item_id: 9,
             dict_id: 9999,
@@ -800,14 +803,15 @@ mod tests {
         account.inventory[1].modifications = vec![(7, false), (2000, true)];
         account.quest_faction = 9;
         assert!(account.repair());
-        assert_eq!(account.inventory.len(), 5);
+        assert_eq!(account.inventory.len(), 6);
+        assert!(account.item(9).is_some_and(|item| item.dict_id == 9999));
         assert_eq!(account.inventory[0].modifications.len(), 8);
         assert!(account.inventory[1].modifications.is_empty());
         assert_eq!(account.kits.len(), 3);
         let ids: Vec<u32> = account.kits.iter().map(|kit| kit.id).collect();
         assert_eq!(ids, [1, 2, 3]);
         assert_eq!(account.active_kit, 1);
-        assert_eq!(account.next_item_id, 6);
+        assert_eq!(account.next_item_id, 10);
         assert!(account.kits[1].slots.iter().all(Option::is_none));
         assert_eq!(account.quest_faction, 0);
         // And it is stable.
