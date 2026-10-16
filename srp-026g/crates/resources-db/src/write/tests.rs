@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
 use super::*;
@@ -116,4 +116,93 @@ fn the_signature_has_room_after_the_table_and_the_files_come_after_it() {
     let end = table_end(&bytes) as u64;
     assert!(end < 4096 && end + SIGNATURE_SIZE > 2048, "{end}");
     assert_eq!(bytes[4096], b'x');
+}
+
+fn stored(bytes: &[u8], share: Option<u64>) -> Stored {
+    Stored {
+        size: bytes.len() as u32,
+        hash: crc32(bytes),
+        share,
+    }
+}
+
+#[test]
+fn write_to_gives_what_write_gives() {
+    let files = files(&[
+        ("a.txt", b"1"),
+        ("gameplay/items/x.options", &[3; 5000]),
+        ("gameplay/z", b""),
+    ]);
+    let table = files
+        .iter()
+        .map(|(path, bytes)| (path.clone(), stored(bytes, None)))
+        .collect();
+    let mut out = Vec::new();
+    let size = write_to(&mut out, &table, &BTreeSet::new(), |path| {
+        Ok(files[path].clone())
+    })
+    .unwrap();
+    assert_eq!(out, write(&files).unwrap());
+    assert_eq!(size, out.len() as u64);
+}
+
+#[test]
+fn write_to_keeps_empty_folders_and_writes_shared_bytes_once() {
+    let texture = vec![9; 4000];
+    let table = BTreeMap::from([
+        ("models/a/texture".to_owned(), stored(&texture, Some(77))),
+        ("models/b/texture".to_owned(), stored(&texture, Some(77))),
+        ("models/c/other".to_owned(), stored(b"other", None)),
+    ]);
+    let empty = BTreeSet::from([
+        "collision/empty".to_owned(),
+        // Not empty after all: written once, with its file.
+        "models/c".to_owned(),
+    ]);
+    let mut asked = Vec::new();
+    let mut out = Vec::new();
+    write_to(&mut out, &table, &empty, |path| {
+        asked.push(path.to_owned());
+        Ok(if path.ends_with("texture") {
+            texture.clone()
+        } else {
+            b"other".to_vec()
+        })
+    })
+    .unwrap();
+    assert_eq!(asked, ["models/a/texture", "models/c/other"]);
+    let mut archive = Archive::new(Cursor::new(out.clone())).unwrap();
+    assert_eq!(
+        archive.empty_folders().collect::<Vec<_>>(),
+        [b"collision/empty".as_slice()]
+    );
+    let (a, b) = (
+        *archive.entry("models/a/texture").unwrap(),
+        *archive.entry("models/b/texture").unwrap(),
+    );
+    assert_eq!(a, b, "one copy of the shared bytes");
+    assert_eq!(archive.read("models/b/texture").unwrap().unwrap(), texture);
+    assert_eq!(archive.read("models/c/other").unwrap().unwrap(), b"other");
+    assert_eq!(out.len() as u64, a.offset + 4000 + 5);
+}
+
+#[test]
+fn write_to_refuses_bytes_unlike_their_table_and_shares_that_differ() {
+    let table = BTreeMap::from([("a".to_owned(), stored(b"one", None))]);
+    let wrong = |bytes: &'static [u8]| {
+        let mut out = Vec::new();
+        write_to(&mut out, &table, &BTreeSet::new(), |_| Ok(bytes.to_vec())).is_err()
+    };
+    assert!(!wrong(b"one"));
+    assert!(wrong(b"two"), "the same size, another checksum");
+    assert!(wrong(b"three"), "another size");
+
+    let clash = BTreeMap::from([
+        ("a".to_owned(), stored(b"one", Some(1))),
+        ("b".to_owned(), stored(b"other", Some(1))),
+    ]);
+    let mut out = Vec::new();
+    assert!(write_to(&mut out, &clash, &BTreeSet::new(), |_| Ok(Vec::new())).is_err());
+    let file_and_folder = BTreeSet::from(["a/b".to_owned()]);
+    assert!(write_to(&mut out, &table, &file_and_folder, |_| Ok(b"one".to_vec())).is_err());
 }
