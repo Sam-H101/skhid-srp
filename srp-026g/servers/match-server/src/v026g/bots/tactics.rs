@@ -548,13 +548,73 @@ impl Tactics {
         objective: bool,
         open: impl Fn(NodeId) -> bool,
     ) -> Option<Route> {
-        path::plan_in(
+        let mut iters = usize::MAX;
+        match self.start_route(start, goal, time, side, objective, open, &mut iters) {
+            Ok(route) => route,
+            Err(_) => unreachable!("an unbounded search ends"),
+        }
+    }
+
+    /// [`Self::route_nodes`] for at most `iters` floors expanded (taken off
+    /// it, [`path::plan_start`]): the route, or none, once the search ends
+    /// within them; else the search, to go on with in
+    /// [`Self::resume_route`] with the same arguments.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_route(
+        &self,
+        start: NodeId,
+        goal: NodeId,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+        open: impl Fn(NodeId) -> bool,
+        iters: &mut usize,
+    ) -> Result<Option<Route>, path::Planning> {
+        path::plan_start(
             &self.world.grid,
             &self.base.regions,
             start,
             goal,
             |node| self.allowed(node, time, side, objective) && open(node),
             |region| self.region_allowed(region, time, side, objective),
+            iters,
+        )
+    }
+
+    /// The way so far of a [`Self::start_route`] search under way
+    /// ([`path::Planning::partial`]), with the arguments it started with.
+    pub fn partial_route(
+        &self,
+        planning: &path::Planning,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+        open: impl Fn(NodeId) -> bool,
+    ) -> Option<Route> {
+        planning.partial(&self.world.grid, |node| {
+            self.allowed(node, time, side, objective) && open(node)
+        })
+    }
+
+    /// A [`Self::start_route`] search goes on: the route, or none, once it
+    /// ends; `None` while it goes on. The floors let through must be those
+    /// it started with: the same arguments, and the hazards as they were
+    /// ([`Hazards::version`]).
+    pub fn resume_route(
+        &self,
+        planning: &mut path::Planning,
+        time: u32,
+        side: Option<i32>,
+        objective: bool,
+        open: impl Fn(NodeId) -> bool,
+        iters: &mut usize,
+    ) -> Option<Option<Route>> {
+        planning.resume(
+            &self.world.grid,
+            &self.base.regions,
+            |node| self.allowed(node, time, side, objective) && open(node),
+            |region| self.region_allowed(region, time, side, objective),
+            iters,
         )
     }
 

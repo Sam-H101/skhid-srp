@@ -633,6 +633,27 @@ fn soak_mode(
     limit_s: u32,
     seed: u64,
 ) -> Outcome {
+    soak_tuned(
+        per_team,
+        win,
+        tdm_tickets,
+        timed_s,
+        limit_s,
+        seed,
+        bench_tuning(),
+    )
+}
+
+/// [`soak_mode`] with the bots' `tuning`.
+fn soak_tuned(
+    per_team: usize,
+    win: u32,
+    tdm_tickets: u32,
+    timed_s: Option<u32>,
+    limit_s: u32,
+    seed: u64,
+    tuning: Tuning,
+) -> Outcome {
     let world = soak_world();
     let teams: Vec<u8> = (0..2 * per_team).map(|p| u8::from(p >= per_team)).collect();
     let driven = vec![true; teams.len()];
@@ -651,7 +672,7 @@ fn soak_mode(
         &teams,
         &driven,
         &roles,
-        Arc::new(Tuning::default()),
+        Arc::new(tuning),
         Trace::none(0),
     );
     bots.map_ready(world.clone());
@@ -814,6 +835,32 @@ fn a_short_soak_has_fights_and_keeps_the_input_rules() {
     );
 }
 
+/// The short run with a tiny search budget: nearly every route search goes
+/// on over several polls ([`Searching`]), its bot walking the way so far,
+/// and the bots still move, fight and keep the input rules.
+#[test]
+fn a_short_soak_with_its_searches_in_slices_still_plays() {
+    let before = super::path::searches();
+    let mut tuning = Tuning::default();
+    tuning.think.search_floors_per_poll = 300;
+    let out = soak_tuned(4, 3, 0, None, 120, 3, tuning);
+    let after = super::path::searches();
+    assert!(
+        after.sliced - before.sliced >= 50,
+        "{} of {} searches sliced",
+        after.sliced - before.sliced,
+        after.searches - before.searches
+    );
+    assert!(
+        out.kills[0] + out.kills[1] >= 2,
+        "{:?} ({} hits of {} shots)",
+        out.kills,
+        out.hits,
+        out.shots
+    );
+    assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
+}
+
 /// The whole match (minutes of play: `cargo test --release -- --ignored`).
 #[test]
 #[ignore = "a whole match; run in release"]
@@ -897,6 +944,23 @@ struct Times {
     worst: [f32; 4],
 }
 
+/// The default tuning, with `SRP_BENCH_SEARCH_FLOORS=<n>` (`max`: no bound)
+/// as the floors a poll's searches may expand: the whole matches and the
+/// real-map runs at other budgets.
+fn bench_tuning() -> Tuning {
+    let mut tuning = Tuning::default();
+    if let Ok(floors) = std::env::var("SRP_BENCH_SEARCH_FLOORS") {
+        tuning.think.search_floors_per_poll = if floors == "max" {
+            u32::MAX
+        } else {
+            floors
+                .parse()
+                .expect("SRP_BENCH_SEARCH_FLOORS: a number or max")
+        };
+    }
+    tuning
+}
+
 /// [`Bots::poll`] with each part timed; the same steps in the same order.
 fn timed_poll(bots: &mut Bots, clock: Clock, times: &mut Times) -> (Vec<Made>, Vec<Note>) {
     use std::time::Instant;
@@ -922,7 +986,11 @@ fn timed_poll(bots: &mut Bots, clock: Clock, times: &mut Times) -> (Vec<Made>, V
     let commanded = Instant::now();
     let (mut think, mut ticks) = (0.0, 0.0);
     let mut rays = RayBudget(bots.tuning.think.rays_per_poll);
-    bots.searches_left = SEARCHES_PER_POLL;
+    bots.searching.left = SEARCHES_PER_POLL;
+    bots.searching.floors = bots.tuning.think.search_floors_per_poll as usize;
+    let a = Instant::now();
+    bots.go_on_searching();
+    ticks += a.elapsed().as_secs_f64();
     for index in 0..bots.bots.len() {
         if bots.bots[index].is_none() {
             continue;
@@ -1017,7 +1085,7 @@ fn real_bot_cost() {
                 &teams,
                 &driven,
                 &roles,
-                Arc::new(Tuning::default()),
+                Arc::new(bench_tuning()),
                 Trace::none(0),
             );
             if let Some(table) = &table {
@@ -1044,6 +1112,7 @@ fn real_bot_cost() {
             let mut times = Times::default();
             let mut decisions = Decisions::default();
             let mut plays: std::collections::BTreeMap<String, u32> = Default::default();
+            super::path::reset_worst();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
             let limit_ms = limit_s * 1000;
@@ -1141,6 +1210,17 @@ fn real_bot_cost() {
             eprintln!(
                 "  by stage (no way, corridor, widened, whole): (searches, ms each) {stages:?}; worst search {:.1} ms",
                 searches.worst_us / 1e3
+            );
+            let by_expanded: Vec<u64> = (0..8)
+                .map(|k| searches.by_expanded[k] - searches_before.by_expanded[k])
+                .collect();
+            eprintln!(
+                "  floors expanded: {} in all, worst search {}; searches by floors expanded (up to {:?}, more): {by_expanded:?}; sliced {} in {} slices",
+                searches.expanded - searches_before.expanded,
+                searches.worst_expanded,
+                super::path::EXPANDED_BUCKETS,
+                searches.sliced - searches_before.sliced,
+                searches.slices - searches_before.slices,
             );
             eprintln!(
                 "  grid searches {searched} ({:.1} a bot a second), {failed} failed; {:.2} ms each on average; {:.0} % of the bots' time",

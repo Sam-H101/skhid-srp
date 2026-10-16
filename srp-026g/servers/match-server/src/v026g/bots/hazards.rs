@@ -387,6 +387,13 @@ impl Hazards {
         self.anomalies.as_ref()
     }
 
+    /// Changes whenever the zones' activities are made again: a route
+    /// search left under way while it changed is not gone on with (the
+    /// floors it lets through are no longer those it started with).
+    pub fn version(&self) -> u64 {
+        self.seen
+    }
+
     /// The cores run to the match clock (`match_ms`); the zones' activity
     /// follows when a prediction changed.
     pub fn advance(&mut self, match_ms: u32) {

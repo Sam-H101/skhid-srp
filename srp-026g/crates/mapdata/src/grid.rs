@@ -1010,79 +1010,70 @@ impl WalkGrid {
         allowed: impl Fn(NodeId) -> bool,
         budget: usize,
     ) -> Search {
+        match self.start_search(from, to, budget) {
+            Ok(mut search) => {
+                let mut iters = usize::MAX;
+                search
+                    .step(self, allowed, &mut iters)
+                    .expect("an unbounded step ends the search")
+            }
+            Err(done) => done,
+        }
+    }
+
+    /// [`Self::search`] in slices, as Detour's sliced queries: the search
+    /// is set up here and runs in [`SlicedSearch::step`]s of a few floors
+    /// expanded each, the same floors in the same order as one search, so
+    /// it ends with the same answer. `Err` when it is answered at once (a
+    /// floor out of the grid, floors in different pieces).
+    pub fn start_search(
+        &self,
+        from: NodeId,
+        to: NodeId,
+        budget: usize,
+    ) -> Result<SlicedSearch, Search> {
         let n = self.len();
         if from as usize >= n || to as usize >= n || !self.may_reach(from, to) {
-            return Search::NoWay;
+            return Err(Search::NoWay);
         }
-        SCRATCH.with(|scratch| {
-            let mut scratch = scratch.borrow_mut();
-            let Scratch {
-                mark,
-                cost,
-                parent,
-                search,
-                open,
-            } = &mut *scratch;
-            if mark.len() < n {
-                mark.resize(n, 0);
-                cost.resize(n, f32::INFINITY);
-                parent.resize(n, NONE);
-            }
-            // A mark of `2 * search` is a floor reached in this search,
-            // `2 * search + 1` one expanded (closed).
-            *search += 1;
-            if *search >= u32::MAX / 2 - 1 {
-                mark.fill(0);
-                *search = 1;
-            }
-            let (seen, closed) = (2 * *search, 2 * *search + 1);
-            open.clear();
-            let goal = self.position(to);
-            mark[from as usize] = seen;
-            cost[from as usize] = 0.0;
-            parent[from as usize] = NONE;
-            open.push(Entry(self.position(from).distance_xz(goal), from));
-            let mut expanded = 0usize;
-            while let Some(Entry(_, u)) = open.pop() {
-                // A floor met again by a cheaper way is in the heap twice:
-                // the later entry is stale.
-                if mark[u as usize] == closed {
-                    continue;
-                }
-                mark[u as usize] = closed;
-                if u == to {
-                    let mut nodes = vec![to];
-                    let mut at = to;
-                    while at != from {
-                        at = parent[at as usize];
-                        nodes.push(at);
-                    }
-                    nodes.reverse();
-                    return Search::Found(Path {
-                        nodes,
-                        cost: cost[to as usize],
-                    });
-                }
-                expanded += 1;
-                if expanded > budget {
-                    return Search::TooFar;
-                }
-                let cu = cost[u as usize];
-                for (v, kind) in self.links(u) {
-                    let m = mark[v as usize];
-                    if m == closed || (v != to && !allowed(v)) {
-                        continue;
-                    }
-                    let c = cu + self.link_cost(u, v, kind);
-                    if m != seen || c < cost[v as usize] {
-                        mark[v as usize] = seen;
-                        cost[v as usize] = c;
-                        parent[v as usize] = u;
-                        open.push(Entry(c + self.position(v).distance_xz(goal), v));
-                    }
-                }
-            }
-            Search::NoWay
+        let mut scratch = Scratch::take();
+        let Scratch {
+            mark,
+            cost,
+            parent,
+            search,
+            open,
+        } = &mut scratch;
+        if mark.len() < n {
+            mark.resize(n, 0);
+            cost.resize(n, f32::INFINITY);
+            parent.resize(n, NONE);
+        }
+        // A mark of `2 * search` is a floor reached in this search,
+        // `2 * search + 1` one expanded (closed).
+        *search += 1;
+        if *search >= u32::MAX / 2 - 1 {
+            mark.fill(0);
+            *search = 1;
+        }
+        let (seen, closed) = (2 * *search, 2 * *search + 1);
+        open.clear();
+        let goal = self.position(to);
+        mark[from as usize] = seen;
+        cost[from as usize] = 0.0;
+        parent[from as usize] = NONE;
+        open.push(Entry(self.position(from).distance_xz(goal), from));
+        Ok(SlicedSearch {
+            scratch,
+            from,
+            to,
+            goal,
+            seen,
+            closed,
+            expanded: 0,
+            budget,
+            best: from,
+            best_h: f32::INFINITY,
         })
     }
 
@@ -1270,8 +1261,139 @@ pub enum Search {
     TooFar,
 }
 
+/// A search under way ([`WalkGrid::start_search`]): its own arrays, taken
+/// from the thread's for as long as it runs and given back when dropped.
+pub struct SlicedSearch {
+    scratch: Scratch,
+    from: NodeId,
+    to: NodeId,
+    goal: Vec3,
+    seen: u32,
+    closed: u32,
+    expanded: usize,
+    budget: usize,
+    /// The floor expanded so far that is nearest the goal (by the
+    /// heuristic), and how near: where [`Self::partial`] leads.
+    best: NodeId,
+    best_h: f32,
+}
+
+impl SlicedSearch {
+    /// Goes on for at most `iters` floors expanded (taken off it): the
+    /// answer once the search ends, `None` while it goes on. `allowed` must
+    /// let through the same floors at every step.
+    pub fn step(
+        &mut self,
+        grid: &WalkGrid,
+        allowed: impl Fn(NodeId) -> bool,
+        iters: &mut usize,
+    ) -> Option<Search> {
+        let Self {
+            scratch:
+                Scratch {
+                    mark,
+                    cost,
+                    parent,
+                    open,
+                    ..
+                },
+            from,
+            to,
+            goal,
+            seen,
+            closed,
+            expanded,
+            budget,
+            best,
+            best_h,
+        } = self;
+        let (from, to, goal, seen, closed) = (*from, *to, *goal, *seen, *closed);
+        loop {
+            if *iters == 0 {
+                return None;
+            }
+            let Some(Entry(f, u)) = open.pop() else {
+                return Some(Search::NoWay);
+            };
+            // A floor met again by a cheaper way is in the heap twice:
+            // the later entry is stale.
+            if mark[u as usize] == closed {
+                continue;
+            }
+            mark[u as usize] = closed;
+            if u == to {
+                let mut nodes = vec![to];
+                let mut at = to;
+                while at != from {
+                    at = parent[at as usize];
+                    nodes.push(at);
+                }
+                nodes.reverse();
+                return Some(Search::Found(Path {
+                    nodes,
+                    cost: cost[to as usize],
+                }));
+            }
+            *expanded += 1;
+            if *expanded > *budget {
+                return Some(Search::TooFar);
+            }
+            *iters -= 1;
+            let cu = cost[u as usize];
+            // A floor's first entry out of the heap is its cheapest: its
+            // key less its cost is its heuristic.
+            if f - cu < *best_h {
+                (*best, *best_h) = (u, f - cu);
+            }
+            for (v, kind) in grid.links(u) {
+                let m = mark[v as usize];
+                if m == closed || (v != to && !allowed(v)) {
+                    continue;
+                }
+                let c = cu + grid.link_cost(u, v, kind);
+                if m != seen || c < cost[v as usize] {
+                    mark[v as usize] = seen;
+                    cost[v as usize] = c;
+                    parent[v as usize] = u;
+                    open.push(Entry(c + grid.position(v).distance_xz(goal), v));
+                }
+            }
+        }
+    }
+
+    /// Floors expanded so far.
+    pub fn expanded(&self) -> usize {
+        self.expanded
+    }
+
+    /// The way so far to the floor expanded that lies nearest the goal, as
+    /// Detour's `finalizeSlicedFindPathPartial`: a body heads that way while
+    /// the search goes on. Only the start while nothing was expanded.
+    pub fn partial(&self) -> Path {
+        let Scratch { cost, parent, .. } = &self.scratch;
+        let mut nodes = vec![self.best];
+        let mut at = self.best;
+        while at != self.from {
+            at = parent[at as usize];
+            nodes.push(at);
+        }
+        nodes.reverse();
+        Path {
+            nodes,
+            cost: cost[self.best as usize],
+        }
+    }
+}
+
+impl Drop for SlicedSearch {
+    fn drop(&mut self) {
+        std::mem::take(&mut self.scratch).give_back();
+    }
+}
+
 /// A search's arrays, kept by each thread between searches (a few MB on the
-/// big maps, once).
+/// big maps, once). A search left under way ([`SlicedSearch`]) holds its own
+/// meanwhile, so the thread keeps up to [`SPARE_SCRATCHES`] of them.
 #[derive(Default)]
 struct Scratch {
     mark: Vec<u32>,
@@ -1281,8 +1403,38 @@ struct Scratch {
     open: BinaryHeap<Entry>,
 }
 
+/// Arrays a thread keeps for its searches: one for the searches that run
+/// at once, one for a search left under way.
+const SPARE_SCRATCHES: usize = 2;
+
+impl Scratch {
+    /// The thread's largest spare arrays, or new ones.
+    fn take() -> Self {
+        SCRATCH
+            .try_with(|spare| spare.borrow_mut().pop())
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Back to the thread's spares, the largest kept.
+    fn give_back(self) {
+        if self.mark.is_empty() {
+            return;
+        }
+        let _ = SCRATCH.try_with(|spare| {
+            let mut spare = spare.borrow_mut();
+            spare.push(self);
+            spare.sort_by_key(|scratch| scratch.mark.len());
+            if spare.len() > SPARE_SCRATCHES {
+                spare.remove(0);
+            }
+        });
+    }
+}
+
 thread_local! {
-    static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    static SCRATCH: RefCell<Vec<Scratch>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A path of floors and its cost (metres plus link penalties).
@@ -1388,6 +1540,52 @@ pub(crate) mod tests {
     }
 
     const PINNED_TWO_ROOMS: u64 = 11_945_545_835_143_266_436;
+
+    /// A search in slices of a few floors ends with the one search's answer
+    /// (the same path, cost and floors expanded), with other searches made
+    /// on the thread between its slices; a budget ends it as it ends one.
+    #[test]
+    fn a_search_in_slices_ends_as_one_search() {
+        let grid = two_rooms();
+        let n = grid.len() as NodeId;
+        let some = |v: NodeId| !v.is_multiple_of(7);
+        let mut slices = 0;
+        for (k, (a, b)) in [(0, n - 1), (n / 3, 2 * n / 3), (5, n / 2), (n - 2, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            for allowed in [&(|_| true) as &dyn Fn(NodeId) -> bool, &some] {
+                let whole = grid.search(a, b, allowed, usize::MAX);
+                let mut sliced = grid.start_search(a, b, usize::MAX).unwrap();
+                let found = loop {
+                    let mut iters = 3 + k;
+                    if let Some(found) = sliced.step(&grid, allowed, &mut iters) {
+                        break found;
+                    }
+                    assert_eq!(iters, 0);
+                    slices += 1;
+                    // Another search between two slices.
+                    assert!(matches!(
+                        grid.search(b, a, |_| true, usize::MAX),
+                        Search::Found(_)
+                    ));
+                };
+                assert_eq!(found, whole);
+                assert!(matches!(found, Search::Found(_)));
+            }
+        }
+        assert!(slices > 1_000, "{slices}");
+        // Out of budget: as one search.
+        let mut sliced = grid.start_search(0, n - 1, 50).unwrap();
+        let mut iters = 20;
+        assert_eq!(sliced.step(&grid, |_| true, &mut iters), None);
+        let mut iters = 100;
+        assert_eq!(
+            sliced.step(&grid, |_| true, &mut iters),
+            Some(Search::TooFar)
+        );
+        assert_eq!(grid.search(0, n - 1, |_| true, 50), Search::TooFar);
+    }
 
     #[test]
     fn a_written_grid_reads_back_the_same_and_a_damaged_one_is_refused() {

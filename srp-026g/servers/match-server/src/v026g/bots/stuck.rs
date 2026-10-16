@@ -119,7 +119,7 @@ impl Stuck {
     }
 
     /// The spots to keep clear of at `time`.
-    fn avoided(&self, time: u32) -> impl Iterator<Item = Vec3> + '_ {
+    pub fn avoided(&self, time: u32) -> impl Iterator<Item = Vec3> + '_ {
         self.spots
             .iter()
             .filter(move |spot| spot.times >= AVOID_AFTER && spot.last + SPOT_KEPT_MS > time)

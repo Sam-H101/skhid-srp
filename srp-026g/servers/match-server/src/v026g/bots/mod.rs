@@ -56,7 +56,7 @@ pub mod view;
 
 use std::sync::Arc;
 
-use mapdata::{Vec3, World};
+use mapdata::{NodeId, Vec3, World};
 use survarium::v026g::match_msgs::PlayerInput;
 
 use crate::v026g::drive::{half_value, key};
@@ -96,7 +96,9 @@ const NO_WAY_RETRY_MS: u32 = 500;
 pub const NO_WAY_KEEP_MS: u32 = 20_000;
 /// Grid searches a poll may make for all the match's bots: a search costs
 /// up to tens of ms on the host, and the match loop is the server's one
-/// thread. A bot left without one plans at a later poll (5 ms on).
+/// thread. A bot left without one plans at its next tick, its old route
+/// meanwhile. The floors they expand are bounded too
+/// ([`tuning::ThinkTuning::search_floors_per_poll`], [`Searching`]).
 const SEARCHES_PER_POLL: u32 = 2;
 /// A death this recent is a fight where it fell, for the choice of the bot
 /// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
@@ -172,6 +174,10 @@ pub struct Bot {
     partner: Option<Place>,
     /// Medkits used this life.
     medkits_used: u8,
+    /// The answer of its route search that went on over several polls
+    /// ([`Pending`]): the goal and the route, or none. Taken at its next
+    /// tick, and used if it still heads there.
+    found: Option<(Vec3, Option<Route>)>,
 }
 
 impl Bot {
@@ -230,6 +236,7 @@ impl Bot {
             last_trace: 0,
             partner: None,
             medkits_used: 0,
+            found: None,
         }
     }
 
@@ -266,6 +273,7 @@ impl Bot {
         self.running = None;
         self.assignment = None;
         self.route = None;
+        self.found = None;
         self.intent = Intent::stay();
         self.stuck.reset();
         self.unstick = None;
@@ -277,6 +285,43 @@ impl Bot {
             self.side = tactics.and_then(|tactics| tactics.side_at(feet));
         }
     }
+}
+
+/// A poll's route searches, as Detour's crowd runs its path queue: at most
+/// [`SEARCHES_PER_POLL`] searches and `floors` floors expanded, all the
+/// match's bots together. A search that runs past the floors is left under
+/// way (`pending`, one a match) and goes on first at the next polls; no
+/// other search starts meanwhile, and its bot keeps its old route. The
+/// floors are counted, not timed, so the bots stay deterministic.
+struct Searching {
+    left: u32,
+    floors: usize,
+    pending: Option<Pending>,
+}
+
+/// A route search left under way, and what it is for: it lets through the
+/// floors it started with ([`Tactics::resume_route`]).
+struct Pending {
+    place: Place,
+    goal: Vec3,
+    time: u32,
+    side: Option<i32>,
+    objective: bool,
+    /// From and to.
+    ends: (NodeId, NodeId),
+    /// The spots it got stuck at, kept clear of: the first search of two
+    /// (the second goes through them).
+    spots: Option<Vec<Vec3>>,
+    /// [`hazards::Hazards::version`] when it started.
+    hazards: u64,
+    planning: path::Planning,
+}
+
+/// Whether `point` is near one of `spots` ([`Stuck::near_spot`]).
+fn near_any(spots: &[Vec3], point: Vec3) -> bool {
+    spots
+        .iter()
+        .any(|spot| spot.distance_xz(point) < stuck::SPOT_M)
 }
 
 /// A match's bots.
@@ -302,8 +347,8 @@ pub struct Bots {
     /// The human routes of this map and mode (play 17), till the map is
     /// built and they are put on its floors.
     routes: Vec<routes::HumanRoute>,
-    /// Grid searches left to this poll ([`SEARCHES_PER_POLL`]).
-    searches_left: u32,
+    /// This poll's route searches ([`Searching`]).
+    searching: Searching,
 }
 
 impl Bots {
@@ -350,7 +395,11 @@ impl Bots {
             battery_votes: (0, 0),
             routes: Vec::new(),
             weapons: Vec::new(),
-            searches_left: SEARCHES_PER_POLL,
+            searching: Searching {
+                left: SEARCHES_PER_POLL,
+                floors: 0,
+                pending: None,
+            },
         }
     }
 
@@ -764,7 +813,9 @@ impl Bots {
             }
         }
         let mut rays = RayBudget(self.tuning.think.rays_per_poll);
-        self.searches_left = SEARCHES_PER_POLL;
+        self.searching.left = SEARCHES_PER_POLL;
+        self.searching.floors = self.tuning.think.search_floors_per_poll as usize;
+        self.go_on_searching();
         for index in 0..self.bots.len() {
             if self.bots[index].is_none() {
                 continue;
@@ -773,6 +824,59 @@ impl Bots {
             self.ticks(index, &clock, &view, &mut made);
         }
         (made, notes)
+    }
+
+    /// The route search left under way goes on, first in the poll (as
+    /// Detour's path queue goes on with its head): its answer to its bot,
+    /// for its next tick. Dropped when its bot left or the hazards changed.
+    fn go_on_searching(&mut self) {
+        let Some(mut pending) = self.searching.pending.take() else {
+            return;
+        };
+        let Some(tactics) = self.tactics.as_ref() else {
+            return;
+        };
+        if tactics.hazards.version() != pending.hazards
+            || self.bots.get(pending.place).is_none_or(Option::is_none)
+        {
+            return;
+        }
+        if self.searching.left == 0 {
+            self.searching.pending = Some(pending);
+            return;
+        }
+        self.searching.left -= 1;
+        let floors = &mut self.searching.floors;
+        let (time, side, objective) = (pending.time, pending.side, pending.objective);
+        let grid = &tactics.world.grid;
+        let spots = pending.spots.take();
+        let open = |node: NodeId| {
+            spots
+                .as_deref()
+                .is_none_or(|spots| !near_any(spots, grid.position(node)))
+        };
+        let ended =
+            tactics.resume_route(&mut pending.planning, time, side, objective, open, floors);
+        let Some(mut route) = ended else {
+            pending.spots = spots;
+            self.searching.pending = Some(pending);
+            return;
+        };
+        // None round the spots it got stuck at: through them.
+        if route.is_none() && spots.is_some() {
+            let (from, to) = pending.ends;
+            match tactics.start_route(from, to, time, side, objective, |_| true, floors) {
+                Ok(through) => route = through,
+                Err(planning) => {
+                    pending.planning = planning;
+                    self.searching.pending = Some(pending);
+                    return;
+                }
+            }
+        }
+        if let Some(Some(bot)) = self.bots.get_mut(pending.place) {
+            bot.found = Some((pending.goal, route));
+        }
     }
 
     /// A team's commander tick: signals, modifiers, skill, and a play for
@@ -1120,7 +1224,7 @@ impl Bots {
             return;
         };
         let world = self.tactics.as_ref().map(|t| t.world.clone());
-        let searches = &mut self.searches_left;
+        let searching = &mut self.searching;
         for time in bot.encoder.ticks(clock.clock, entered + START_AFTER_MS) {
             let estimate = self
                 .tracker
@@ -1137,7 +1241,7 @@ impl Bots {
                         velocity: at.velocity,
                         ..me.clone()
                     };
-                    drive_tick(bot, &me, view, tactics, &tuning, time, searches)
+                    drive_tick(bot, &me, view, tactics, &tuning, time, searching)
                 }
                 _ => bot.motor.rest(),
             };
@@ -1197,7 +1301,7 @@ fn drive_tick(
     tactics: &Tactics,
     tuning: &Tuning,
     time: u32,
-    searches: &mut u32,
+    searching: &mut Searching,
 ) -> Decision {
     // [recoil] The weapon's update first, as the client's; the view is the
     // base pitch and the kick the last tick left (the reflex takes back
@@ -1278,49 +1382,127 @@ fn drive_tick(
             let no_way = bot.no_way.is_some_and(|(goal, until)| {
                 time < until && goal.distance_xz(at) <= REPLAN_MOVED_M
             });
-            if replan && no_way {
+            // The answer of its search that went on over several polls, if
+            // it is for this goal (it walks the way so far meanwhile).
+            let found = bot
+                .found
+                .take()
+                .filter(|(goal, _)| goal.distance_xz(at) <= REPLAN_MOVED_M);
+            // Its own search under way: for this goal, else no longer
+            // wanted.
+            let waiting = match searching.pending.as_ref() {
+                Some(pending) if pending.place == bot.place => {
+                    let still = pending.goal.distance_xz(at) <= REPLAN_MOVED_M;
+                    if !still {
+                        searching.pending = None;
+                    }
+                    still
+                }
+                _ => false,
+            };
+            if let Some((goal, route)) = found {
+                bot.no_way = route.is_none().then_some((goal, time + NO_WAY_RETRY_MS));
+                // Both ends were on floors, from one it may walk on: proven.
+                if route.is_none() {
+                    bot.no_way_to.retain(|&(old, until)| {
+                        time < until && old.distance_xz(goal) > REPLAN_MOVED_M
+                    });
+                    bot.no_way_to.push((goal, time + NO_WAY_KEEP_MS));
+                }
+                bot.route = route.map(|route| (route, goal));
+            } else if replan && no_way {
                 bot.route = None;
-            } else if replan && *searches == 0 {
-                // No search left to this poll: the old route meanwhile.
+            } else if waiting
+                || (replan
+                    && (searching.left == 0
+                        || searching.floors == 0
+                        || searching.pending.is_some()))
+            {
+                // Its search goes on, or none left to this poll: the old
+                // route meanwhile.
             } else if replan {
-                *searches -= 1;
+                searching.left -= 1;
                 let grid = &tactics.world.grid;
-                let stuck = &bot.stuck;
                 let side = bot.side;
                 let objective = intent.objective;
                 // Round the spots it got stuck at, if there is a way; else
                 // through them (a second search only when there are any).
-                let avoiding = stuck.avoids_any(time);
+                let spots: Vec<Vec3> = bot.stuck.avoided(time).collect();
+                let avoiding = !spots.is_empty();
                 let ends = grid.locate(me.feet, 1.5).zip(grid.locate(at, 3.0));
                 // On a floor it may not walk on (in a fire it stepped
                 // into): out to the nearest one it may first; the goal is
                 // planned from there.
                 let escaping =
                     ends.is_some_and(|(from, _)| !tactics.allowed(from, time, side, objective));
+                let floors = &mut searching.floors;
+                // Left under way past this poll's floors: whether round the
+                // spots, and the search.
+                let mut left = None;
                 let route = if escaping {
                     ends.and_then(|(from, _)| tactics.escape(from, time, side, objective))
+                } else if let Some((from, to)) = ends {
+                    let open = |node: NodeId| !(avoiding && near_any(&spots, grid.position(node)));
+                    match tactics.start_route(from, to, time, side, objective, open, floors) {
+                        Ok(None) if avoiding => {
+                            match tactics.start_route(
+                                from,
+                                to,
+                                time,
+                                side,
+                                objective,
+                                |_| true,
+                                floors,
+                            ) {
+                                Ok(route) => route,
+                                Err(planning) => {
+                                    left = Some((false, planning));
+                                    None
+                                }
+                            }
+                        }
+                        Ok(route) => route,
+                        Err(planning) => {
+                            left = Some((avoiding, planning));
+                            None
+                        }
+                    }
                 } else {
-                    ends.and_then(|(from, to)| {
-                        tactics.route_nodes(from, to, time, side, objective, |node| {
-                            !(avoiding && stuck.near_spot(time, grid.position(node)))
-                        })
-                    })
-                    .or_else(|| {
-                        avoiding
-                            .then(|| tactics.route_for(me.feet, at, time, side, objective))
-                            .flatten()
-                    })
+                    None
                 };
-                bot.no_way = route.is_none().then_some((at, time + NO_WAY_RETRY_MS));
-                // Both ends on floors, from one it may walk on, and no way:
-                // proven, for the plays.
-                if route.is_none() && ends.is_some() && !escaping {
-                    bot.no_way_to.retain(|&(goal, until)| {
-                        time < until && goal.distance_xz(at) > REPLAN_MOVED_M
+                if let (Some((round, planning)), Some(ends)) = (left, ends) {
+                    // It goes on at the next polls (`Bots::go_on_searching`).
+                    // Meanwhile the way so far, as Detour's partial paths:
+                    // toward the goal, not standing (else the old route).
+                    let open = |node: NodeId| !(round && near_any(&spots, grid.position(node)));
+                    if let Some(partial) =
+                        tactics.partial_route(&planning, time, side, objective, open)
+                    {
+                        bot.route = Some((partial, at));
+                    }
+                    searching.pending = Some(Pending {
+                        place: bot.place,
+                        goal: at,
+                        time,
+                        side,
+                        objective,
+                        ends,
+                        spots: round.then_some(spots),
+                        hazards: tactics.hazards.version(),
+                        planning,
                     });
-                    bot.no_way_to.push((at, time + NO_WAY_KEEP_MS));
+                } else {
+                    bot.no_way = route.is_none().then_some((at, time + NO_WAY_RETRY_MS));
+                    // Both ends on floors, from one it may walk on, and no way:
+                    // proven, for the plays.
+                    if route.is_none() && ends.is_some() && !escaping {
+                        bot.no_way_to.retain(|&(goal, until)| {
+                            time < until && goal.distance_xz(at) > REPLAN_MOVED_M
+                        });
+                        bot.no_way_to.push((at, time + NO_WAY_KEEP_MS));
+                    }
+                    bot.route = route.map(|route| (route, at));
                 }
-                bot.route = route.map(|route| (route, at));
             }
             match bot.route.as_mut() {
                 Some((route, _)) => {

@@ -528,6 +528,66 @@ Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.
 
+### Searches in slices (2026-10-16)
+
+A route search ran to its end inside the poll that asked for it: the worst
+took 115,000 floors expanded, 26 ms here, and a poll up to 81 ms (level_04
+10 v 10), about 0.2 s on the host's core. Now a poll's searches share a
+budget of floors expanded, as Detour's crowd shares its path queue's
+iterations (`dtPathQueue::update`, `MAX_ITERS_PER_UPDATE`):
+- `WalkGrid::start_search` and `SlicedSearch::step`: the A* set up once and
+  run a few floors at a time, the same floors in the same order, so it ends
+  with the same answer. A search under way holds its own arrays; the thread
+  keeps two sets (12 bytes a floor each), one for a search left under way.
+- `Regions::start_route_search` and `RouteSearch::step`: the regions'
+  search the same way, each stage (the corridor, widened, the whole grid)
+  in slices. Its corridor is a bit a region of its own, not the thread's
+  marks.
+- `Bots::poll`: at most `search_floors_per_poll` floors a poll for all the
+  match's bots (`ThinkTuning`, default 10,000: about 2 ms here, 5 ms on the
+  host), besides the 2 searches. A search past them is left under way, one
+  a match, and goes on first at the next polls (`go_on_searching`); no
+  other search starts meanwhile. Its bot walks the way so far (Detour's
+  partial path, `finalizeSlicedFindPathPartial`: to the floor expanded
+  nearest the goal) and takes the route at its next tick. A search whose
+  bot left, whose goal moved or whose hazards changed is dropped. The floors
+  are counted, not timed: the bots stay deterministic.
+
+**Proof.** With no bound (`SRP_BENCH_SEARCH_FLOORS=max`), every decisions
+digest is the one before (the three whole matches, level_01-06 4 v 4 and
+10 v 10). A bound changes when a route comes, so the decisions differ; the
+play was compared over ten seeds of each of the 12 real-map runs (120
+matches of 180 s a budget):
+
+| budget | stood | delivered | kills | failed searches | sliced |
+|---|---|---|---|---|---|
+| none | 5.4 % | 1,491 | 1,364 | 16,729 | 0 |
+| 20,000 | 5.3 % | 1,481 | 1,396 | 15,700 | 8,291 |
+| 10,000 | 5.5 % | 1,477 | 1,381 | 16,067 | 22,378 |
+
+Per seed the totals spread: kills 114-164 (sd 15), delivered 137-159 (sd
+7), stood 4.6-5.8 %; so the budgets play as no bound does. Without the
+partial path (the bot stood till its next tick) three seeds gave kills 447
+to 411 and 426 and delivered 441 to 429 and 430, every seed lower: that
+version was not kept. The bots' time over the 120 runs: 2,052, 2,055 and
+2,064 ms a second summed: no more work.
+
+**Polls** (one run alone, the default seed, fast desktop core; the host
+is about 2.6 times slower):
+
+| run | worst poll, no bound | 10,000 | p99.9, no bound | 10,000 |
+|---|---|---|---|---|
+| level_04 10 v 10 | 80.7 ms | 7.0 ms | 8.1 ms | 3.7 ms |
+| level_02 10 v 10 | 33.2 ms | 5.2 ms | 5.6 ms | 3.3 ms |
+| level_03 10 v 10 | 31.1 ms | 9.7 ms | 8.8 ms | 4.3 ms |
+| level_01 10 v 10 | 26.1 ms | 3.3 ms | 12.9 ms | 2.8 ms |
+| level_06 10 v 10 | 13.4 ms | 5.7 ms | 5.2 ms | 2.8 ms |
+| level_05 10 v 10 | 9.9 ms | 3.6 ms | 3.9 ms | 2.7 ms |
+
+Every 4 v 4 run's worst poll is 2.7-3.7 ms (was 5-22 ms). What is left of
+the worst is the commander's tick and the bots' thinks (level_03 10 v 10:
+the commander 4.8 ms), not the searches.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map

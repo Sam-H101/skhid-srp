@@ -276,6 +276,14 @@ impl Default for ModTuning {
     }
 }
 
+/// [`ThinkTuning::search_floors_per_poll`] by default: a floor expanded
+/// costs about 0.2 µs on a fast desktop core and 0.5 µs on the host's, so
+/// a poll searches for at most about 2 ms here and 5 ms there. Measured on
+/// six maps, ten seeds each (`docs/notes/player_bots_mapdata.md` §6): the
+/// bots play as with no bound, and the worst poll fell from up to 81 ms to
+/// 3-10 ms.
+pub const SEARCH_FLOORS_PER_POLL: u32 = 10_000;
+
 /// How often what runs (research B5).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -286,6 +294,10 @@ pub struct ThinkTuning {
     pub commander_ms: u32,
     /// Sight rays a poll may cast, all bots together.
     pub rays_per_poll: u32,
+    /// Floors a poll's route searches may expand, all bots together, as
+    /// Detour's crowd shares its path queue's iterations: a search that
+    /// runs past them goes on at the next polls (`Bots::poll`).
+    pub search_floors_per_poll: u32,
     /// A trace line at least this often per bot, ms.
     pub trace_every_ms: u32,
 }
@@ -296,6 +308,7 @@ impl Default for ThinkTuning {
             think_ms: (200, 400),
             commander_ms: 500,
             rays_per_poll: 400,
+            search_floors_per_poll: SEARCH_FLOORS_PER_POLL,
             trace_every_ms: 5_000,
         }
     }
