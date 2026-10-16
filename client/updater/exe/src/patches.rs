@@ -1,11 +1,19 @@
 //! The patch step: after the overlay and the restore of resources.db, at
 //! every run, the game folder's `resources.db.patch_<n>` files are made the
 //! server's list (`GET <site>/patches`, `updater_logic::patches`): every
-//! listed patch's file is hashed (the launcher shows "checking" with its
+//! listed patch's file is checked (the launcher shows "checking" with its
 //! bar), a patch file the list has not is deleted, and a listed patch that
-//! is missing or damaged is downloaded from the address the list gives it
-//! (plain HTTP or HTTPS, any host: the list's SHA-256 decides).
-//! `client/updater/README.md`, "Patches".
+//! is missing or damaged is downloaded from the first of its addresses that
+//! gives it (plain HTTP or HTTPS, any host, redirects followed: the list's
+//! SHA-256 decides). `client/updater/README.md`, "Patches".
+//!
+//! A file is checked by its SHA-256, or, when it is still the file hashed
+//! last time (its size, last-write time and file ID) and that was less than
+//! a week ago, by the record of that hash (`updater_logic::checked`,
+//! `updater_skhid.patches.checked`): a start then reads no patch file.
+//! `updater_skhid.exe check` hashes them all ([`Look::Full`]). Each file is
+//! hashed once a run at most: a download is hashed once, read back, and is
+//! known in its place by its file ID.
 //!
 //! Required: PLAY stays off ([`Outcome::Blocked`]) until every listed patch
 //! is there with its checksum and no other patch file is; the next start
@@ -31,8 +39,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use updater_logic::checked::{Identity, Record, parse_record, write_record};
 use updater_logic::patches::{
-    FILE_PREFIX, List, ListError, Local, MAX_LIST, Patch, Problem, check, overlay_patch,
+    Address, FILE_PREFIX, List, ListError, Local, MAX_LIST, Patch, Problem, check, overlay_patch,
     parse_list, todo, write_list,
 };
 use updater_logic::pipe::{ToLauncher, state, step};
@@ -54,6 +63,8 @@ use crate::win::{self, Code, File};
 const LIST_FILE: &str = "updater_skhid.patches";
 /// `ready` once the folder was checked against that list, else `blocked <why>`.
 const STATUS_FILE: &str = "updater_skhid.patches.status";
+/// What each patch file was when it was last hashed (`updater_logic::checked`).
+const CHECKED_FILE: &str = "updater_skhid.patches.checked";
 /// The game's own db, in the game folder: the game holds it while it runs.
 const DB_NAME: &str = "resources.db";
 /// A patch while it is downloaded, beside its place. It is a
@@ -64,7 +75,9 @@ const PART: &str = ".skhid-part";
 const DISK_MARGIN: u64 = 64 << 20;
 /// The largest patch taken: a bound only, the disk decides first.
 const MAX_PATCH: u64 = 1 << 40;
-/// How often the list, and each patch, is asked for in one run.
+/// How often the list is asked for in one run, and how many rounds over a
+/// patch's addresses are made (only an address that failed on the network
+/// is tried in the second).
 const LIST_TRIES: u32 = 3;
 const FETCH_TRIES: u32 = 2;
 const RETRY_PAUSE_MS: u32 = 3000;
@@ -81,6 +94,15 @@ pub enum Outcome {
     Stopped,
     /// PLAY stays off, with these words.
     Blocked(String),
+}
+
+/// How the patch files are looked at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// A file still as it was hashed in the last week is not read again.
+    Quick,
+    /// Every file is hashed (`updater_skhid.exe check`: the repair).
+    Full,
 }
 
 fn hex(sha256: &[u8; 32]) -> String {
@@ -100,11 +122,52 @@ fn files(layout: &Layout) -> Vec<String> {
     win::list(&layout.game_dir, &format!("{FILE_PREFIX}*"))
 }
 
-/// A listed patch's file, hashed now.
-fn look(layout: &Layout, patch: &Patch) -> Local {
+/// The record of the last hashes, or none (every file is hashed).
+fn read_record(layout: &Layout, look: Look) -> Record {
+    match win::read_file(&beside(layout, CHECKED_FILE), 1 << 20) {
+        Ok(bytes) => {
+            let record = parse_record(&bytes);
+            if record.files.is_empty() && look == Look::Quick {
+                log!("patches: {CHECKED_FILE} has no file in it: every patch file is hashed");
+            }
+            record
+        }
+        Err(code) => {
+            if look == Look::Quick {
+                log!(
+                    "patches: {CHECKED_FILE}: {}: every patch file is hashed",
+                    win::error_text(code)
+                );
+            }
+            Record::default()
+        }
+    }
+}
+
+/// Keeps the record, if it changed. Best effort: without it the next start
+/// hashes every file.
+fn save_record(layout: &Layout, record: &Record) {
+    let path = beside(layout, CHECKED_FILE);
+    if let Err(code) = save(&path, &write_record(record)) {
+        log!(
+            "patches: {CHECKED_FILE} cannot be written ({}): the next start hashes every file",
+            win::error_text(code)
+        );
+    }
+}
+
+/// A file just downloaded, checked again in its place: by its file ID when
+/// the rename kept it (the same file that was hashed), else hashed now.
+fn look_in_place(layout: &Layout, patch: &Patch, record: &mut Record) -> Local {
     let path = place(layout, &patch.file_name());
-    match win::hash_file(&path) {
-        Ok((_, sha256)) => Local::Found(sha256),
+    match win::hash_file_identity(&path, &mut |_| true) {
+        Ok((_, sha256, identity)) => {
+            match identity {
+                Some(identity) => record.hashed(patch.number, sha256, identity, win::now()),
+                None => record.forget(patch.number),
+            }
+            Local::Found(sha256)
+        }
         Err(code) if win::is_missing(code) => Local::Missing,
         Err(code) => {
             log!("patches: {path} cannot be read ({})", win::error_text(code));
@@ -113,21 +176,42 @@ fn look(layout: &Layout, patch: &Patch) -> Local {
     }
 }
 
-/// Every listed patch's file hashed once, by number. With a launcher it is
-/// told: "checking", and the bar over all the bytes. `None`: told to stop.
-fn hash_listed(
+/// Every listed patch's file looked at once, by number: with [`Look::Quick`]
+/// a file the record vouches for is not read; every other one is hashed,
+/// and the record notes what it found. With a launcher it is told:
+/// "checking", and the bar over all the bytes hashed. `None`: told to stop.
+fn survey(
     layout: &Layout,
     list: &List,
+    record: &mut Record,
+    look: Look,
     mut session: Option<&mut Session>,
 ) -> Option<Vec<(u8, Local)>> {
-    let paths: Vec<String> = list
-        .patches
+    let now = win::now();
+    let mut found = Vec::new();
+    let mut to_hash: Vec<(&Patch, String)> = Vec::new();
+    for patch in &list.patches {
+        let path = place(layout, &patch.file_name());
+        if look == Look::Quick {
+            match win::identity(&path) {
+                Ok(identity) if record.still(patch.number, &patch.sha256, &identity, now) => {
+                    found.push((patch.number, Local::Found(patch.sha256)));
+                    continue;
+                }
+                Err(code) if win::is_missing(code) => {
+                    record.forget(patch.number);
+                    found.push((patch.number, Local::Missing));
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        to_hash.push((patch, path));
+    }
+    let quick = found.len();
+    let total: u64 = to_hash
         .iter()
-        .map(|patch| place(layout, &patch.file_name()))
-        .collect();
-    let total: u64 = paths
-        .iter()
-        .filter_map(|path| win::file_size(path).ok())
+        .filter_map(|(_, path)| win::file_size(path).ok())
         .sum();
     if total > 0
         && let Some(session) = session.as_deref_mut()
@@ -137,20 +221,23 @@ fn hash_listed(
     }
     let started = win::ticks();
     let mut done = 0_u64;
-    let mut hashed = Vec::new();
-    for (patch, path) in list.patches.iter().zip(&paths) {
+    for (patch, path) in &to_hash {
         if let Some(session) = session.as_deref_mut()
             && !session.pump()
         {
             return None;
         }
-        let result = win::hash_file_with(path, &mut |read| match session.as_deref_mut() {
+        let result = win::hash_file_identity(path, &mut |read| match session.as_deref_mut() {
             Some(session) => session.progress(done + read, total),
             None => true,
         });
         let local = match result {
-            Ok((size, sha256)) => {
+            Ok((size, sha256, identity)) => {
                 done += size;
+                match identity {
+                    Some(identity) => record.hashed(patch.number, sha256, identity, now),
+                    None => record.forget(patch.number),
+                }
                 Local::Found(sha256)
             }
             Err(code) if win::is_missing(code) => Local::Missing,
@@ -160,21 +247,27 @@ fn hash_listed(
                 Local::Unreadable
             }
         };
-        hashed.push((patch.number, local));
+        if local != Local::Found(patch.sha256) {
+            record.forget(patch.number);
+        }
+        found.push((patch.number, local));
+    }
+    if quick > 0 {
+        log!("patches: {quick} file(s) as they were when hashed in the last week: not read again");
     }
     if total > 0 {
         log!(
             "patches: {} file(s), {done} bytes, hashed in {} ms",
-            list.patches.len(),
+            to_hash.len(),
             win::ticks().saturating_sub(started)
         );
     }
-    Some(hashed)
+    Some(found)
 }
 
-/// What [`hash_listed`] found for `patch`.
-fn lookup(hashed: &[(u8, Local)], patch: &Patch) -> Local {
-    hashed
+/// What [`survey`] found for `patch`.
+fn lookup(found: &[(u8, Local)], patch: &Patch) -> Local {
+    found
         .iter()
         .find(|(number, _)| *number == patch.number)
         .map_or(Local::Missing, |(_, local)| *local)
@@ -192,8 +285,15 @@ fn problem(problem: &Problem) -> String {
 
 /// The folder checked against the list kept beside the updater, after a
 /// run that ended `ready`: `Err(Some(why))` says what is not in place, for
-/// the log; `Err(None)`: told to stop.
-fn kept_in_place(layout: &Layout, session: Option<&mut Session>) -> Result<(), Option<String>> {
+/// the log; `Err(None)`: told to stop. `record` is used and brought up to
+/// date (the caller keeps it, or not); `look`: [`Look::Full`] hashes every
+/// file.
+fn kept_in_place(
+    layout: &Layout,
+    session: Option<&mut Session>,
+    record: &mut Record,
+    look: Look,
+) -> Result<(), Option<String>> {
     let status = win::read_file(&beside(layout, STATUS_FILE), 4096)
         .map_err(|code| Some(format!("{STATUS_FILE}: {}", win::error_text(code))))?;
     if status.trim_ascii() != b"ready" {
@@ -205,15 +305,22 @@ fn kept_in_place(layout: &Layout, session: Option<&mut Session>) -> Result<(), O
     let bytes = win::read_file(&beside(layout, LIST_FILE), MAX_LIST)
         .map_err(|code| Some(format!("{LIST_FILE}: {}", win::error_text(code))))?;
     let list = parse_list(&bytes).map_err(|error| Some(format!("{LIST_FILE}: {error:?}")))?;
-    let hashed = hash_listed(layout, &list, session).ok_or(None)?;
-    check(&list, &files(layout), &mut |patch| lookup(&hashed, patch)).map_err(|p| Some(problem(&p)))
+    record.keep_only(&numbers(&list));
+    let found = survey(layout, &list, record, look, session).ok_or(None)?;
+    check(&list, &files(layout), &mut |patch| lookup(&found, patch)).map_err(|p| Some(problem(&p)))
+}
+
+fn numbers(list: &List) -> Vec<u8> {
+    list.patches.iter().map(|patch| patch.number).collect()
 }
 
 /// `updater_skhid.exe ready`, from play_skhid.bat and play_skhid.sh: reads
-/// only. `Err` (the words for the player) unless the last run ended with
-/// every patch in place and the folder still is so.
+/// only (the quick check too: the record is not written). `Err` (the words
+/// for the player) unless the last run ended with every patch in place and
+/// the folder still is so.
 pub fn ready(layout: &Layout) -> Result<(), String> {
-    match kept_in_place(layout, None) {
+    let mut record = read_record(layout, Look::Quick);
+    match kept_in_place(layout, None, &mut record, Look::Quick) {
         Ok(()) => {
             log!("ready: the patches are in place");
             Ok(())
@@ -259,6 +366,26 @@ enum Fail {
     Offline(String, String),
 }
 
+/// Why one address did not give a patch's file.
+enum Miss {
+    Stopped,
+    /// Here: the disk, a file that cannot be written. No other address
+    /// would do better: the fetch ends.
+    Here(Fail),
+    /// The address: the network, its answer, the file it sent. The next
+    /// address is tried.
+    There {
+        /// A sentence for the player.
+        reason: String,
+        /// For the log.
+        why: String,
+        /// It sent a file with another SHA-256.
+        wrong: bool,
+        /// A second round may do better (the network, a cut, a 5xx).
+        again: bool,
+    },
+}
+
 /// A code of a file that another program has open, or is deleting.
 fn held(code: Code) -> bool {
     code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION || code == ERROR_ACCESS_DENIED
@@ -301,10 +428,16 @@ fn file_fail(path: &str, code: Code, what: &str) -> Fail {
     }
 }
 
+/// What the sink calls a write of the download that failed: a failure
+/// here, not of the address.
+const WRITE_STEP: &str = "write the patch";
+
 struct Run<'a> {
     session: &'a mut Session,
     layout: &'a Layout,
     server: &'a Url,
+    look: Look,
+    record: &'a mut Record,
     /// The folder is about to change, or has: the status says so.
     changing: bool,
 }
@@ -388,95 +521,154 @@ impl Run<'_> {
         ))
     }
 
-    fn delete(&self, name: &str) -> Result<(), Fail> {
+    fn delete(&mut self, name: &str) -> Result<(), Fail> {
         self.guard()?;
         let path = place(self.layout, name);
         match retried("deleted", &path, &mut || win::delete(&path)) {
             Ok(()) => {
                 log!("patches: deleted {name}");
+                if let Some(number) = updater_logic::patches::file_number(name) {
+                    self.record.forget(number);
+                }
                 Ok(())
             }
             Err(code) => Err(file_fail(&path, code, "deleted")),
         }
     }
 
-    /// Downloads one patch into its place.
-    fn fetch(&mut self, patch: &Patch) -> Result<(), Fail> {
+    /// Downloads one patch into its place, from the first of its addresses
+    /// that gives it: `true` when the file in place is known by its file ID
+    /// to be the one hashed (else it is hashed there again).
+    fn fetch(&mut self, patch: &Patch) -> Result<bool, Fail> {
         let name = patch.file_name();
         let target = place(self.layout, &name);
         let part = format!("{target}{PART}");
-        let mut last = Fail::Stopped;
-        for attempt in 1..=FETCH_TRIES {
-            self.session.state(state::DOWNLOADING);
-            self.session.begin_progress();
-            match self.download(&part, patch) {
-                Ok(()) => {}
-                Err(Fail::Stopped) => {
-                    let _ = win::delete(&part);
+        let count = patch.addresses.len();
+        // Which addresses a second round tries, and the first failure's
+        // words.
+        let mut again = alloc::vec![true; count];
+        let mut first: Option<(String, bool, &Address)> = None;
+        for round in 1..=FETCH_TRIES {
+            if round > 1 {
+                if !again.contains(&true) {
+                    break;
+                }
+                if !self.session.pause(RETRY_PAUSE_MS) {
                     return Err(Fail::Stopped);
                 }
-                Err(fail) => {
-                    let _ = win::delete(&part);
-                    if let Fail::Blocked(_, why) = &fail {
-                        log!("patches: {name}: try {attempt} of {FETCH_TRIES}: {why}");
-                    }
-                    let disk = matches!(&fail, Fail::Blocked(_, why) if why.starts_with("disk:"));
-                    last = fail;
-                    if disk {
-                        break;
-                    }
-                    if attempt < FETCH_TRIES && !self.session.pause(RETRY_PAUSE_MS) {
-                        return Err(Fail::Stopped);
-                    }
+            }
+            for (at, address) in patch.addresses.iter().enumerate() {
+                if !again[at] {
                     continue;
                 }
+                if !self.session.pump() {
+                    return Err(Fail::Stopped);
+                }
+                self.session.state(state::DOWNLOADING);
+                self.session.begin_progress();
+                let result = self.download(&part, patch, address);
+                let identity = match result {
+                    Ok(identity) => identity,
+                    Err(miss) => {
+                        let _ = win::delete(&part);
+                        match miss {
+                            Miss::Stopped => return Err(Fail::Stopped),
+                            Miss::Here(fail) => return Err(fail),
+                            Miss::There {
+                                reason,
+                                why,
+                                wrong,
+                                again: worth,
+                            } => {
+                                log!(
+                                    "patches: {name}: address {} of {count}, {} (try {round} of \
+                                     {FETCH_TRIES}): {why}",
+                                    at + 1,
+                                    address.text
+                                );
+                                again[at] = worth && round < FETCH_TRIES;
+                                if first.is_none() {
+                                    first = Some((reason, wrong, address));
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                };
+                // Checked: into its place, unless the game runs now.
+                if let Err(fail) = self.guard() {
+                    let _ = win::delete(&part);
+                    return Err(fail);
+                }
+                if let Err(code) =
+                    retried("renamed", &part, &mut || win::rename(&part, &target, true))
+                {
+                    let _ = win::delete(&part);
+                    return Err(file_fail(&target, code, "replaced"));
+                }
+                self.session.state(state::INSTALLING);
+                self.session.send(ToLauncher::InstallInfo {
+                    step: step::EXTRACT,
+                    text: &name,
+                });
+                self.session.named_file = true;
+                log!(
+                    "patches: {name}: downloaded {} (address {} of {count}), checksum right ({})",
+                    address.text,
+                    at + 1,
+                    hex(&patch.sha256)
+                );
+                // The file hashed is the one in place when the rename kept
+                // its ID.
+                let kept = identity
+                    .filter(|identity| win::identity(&target).ok() == Some(*identity))
+                    .inspect(|identity| {
+                        self.record
+                            .hashed(patch.number, patch.sha256, *identity, win::now());
+                    });
+                return Ok(kept.is_some());
             }
-            // Checked: into its place, unless the game runs now.
-            if let Err(fail) = self.guard() {
-                let _ = win::delete(&part);
-                return Err(fail);
-            }
-            if let Err(code) = retried("renamed", &part, &mut || win::rename(&part, &target, true))
-            {
-                let _ = win::delete(&part);
-                return Err(file_fail(&target, code, "replaced"));
-            }
-            self.session.state(state::INSTALLING);
-            self.session.send(ToLauncher::InstallInfo {
-                step: step::EXTRACT,
-                text: &name,
-            });
-            self.session.named_file = true;
-            log!(
-                "patches: {name}: downloaded {}, checksum right ({})",
-                patch.address,
-                hex(&patch.sha256)
-            );
-            return Ok(());
         }
-        Err(last)
+        let (reason, wrong, address) = first.expect("an address failed");
+        let message = if count > 1 {
+            text::patches_no_address(&name, count, &reason)
+        } else if wrong {
+            text::patches_wrong(&address.url, &name)
+        } else {
+            text::patches_download(&name, &reason)
+        };
+        Err(Fail::Blocked(
+            message,
+            format!("{name}: none of its {count} address(es) gave it"),
+        ))
     }
 
-    /// One try: the file at the patch's address into `part`, flushed, read
-    /// back and checked.
-    fn download(&mut self, part: &str, patch: &Patch) -> Result<(), Fail> {
+    /// One try of one address: its file into `part`, flushed, read back and
+    /// checked. What Windows says of `part` then (to know it in its place).
+    fn download(
+        &mut self,
+        part: &str,
+        patch: &Patch,
+        address: &Address,
+    ) -> Result<Option<Identity>, Miss> {
         let output = retried("written", part, &mut || File::create(part))
-            .map_err(|code| file_fail(part, code, "written"))?;
+            .map_err(|code| Miss::Here(file_fail(part, code, "written")))?;
         let folder = self.layout.game_dir.clone();
+        let name = patch.file_name();
         let mut no_room: Option<(u64, u64)> = None;
         let mut announced: Option<u64> = None;
         let mut asked = false;
         let mut written = 0_u64;
         let session = &mut *self.session;
-        let result = http::get_stream(
-            &patch.url,
-            "",
+        let result = http::get_file(
+            &address.url,
             MAX_PATCH,
+            &mut |to| log!("patches: {name}: {} redirects to {to}", address.text),
             &mut |chunk| {
                 written += chunk.len() as u64;
                 output
                     .write(chunk)
-                    .map_err(|code| HttpError::Network("write the patch", code))
+                    .map_err(|code| HttpError::Network(WRITE_STEP, code))
             },
             &mut |done, total| {
                 // Before the first byte: is there room for what the server
@@ -497,15 +689,15 @@ impl Run<'_> {
         );
         if let Some((needed, free)) = no_room {
             drop(output);
-            return Err(Fail::Blocked(
+            return Err(Miss::Here(Fail::Blocked(
                 text::disk_full(&folder, needed, free),
                 format!("disk: {free} bytes free in {folder}, {needed} needed"),
-            ));
+            )));
         }
         match result {
             Ok(()) => {}
-            Err(HttpError::Stopped) => return Err(Fail::Stopped),
-            Err(HttpError::Network(_, code))
+            Err(HttpError::Stopped) => return Err(Miss::Stopped),
+            Err(HttpError::Network(WRITE_STEP, code))
                 if code == ERROR_DISK_FULL || code == ERROR_HANDLE_DISK_FULL =>
             {
                 // What the patch needs, measured without what was written
@@ -514,37 +706,51 @@ impl Run<'_> {
                 let _ = win::delete(part);
                 let free = win::free_space(&folder).unwrap_or(0);
                 let needed = announced.unwrap_or(written).saturating_add(DISK_MARGIN);
-                return Err(Fail::Blocked(
+                return Err(Miss::Here(Fail::Blocked(
                     text::disk_full(&folder, needed, free),
                     format!(
                         "disk: the disk is full ({free} bytes free in {folder}, {needed} needed)"
                     ),
-                ));
+                )));
+            }
+            Err(HttpError::Network(WRITE_STEP, code)) => {
+                return Err(Miss::Here(file_fail(part, code, "written")));
             }
             Err(error) => {
-                let message = text::http(&patch.url, &patch.url.prefix, &error);
-                return Err(Fail::Blocked(
-                    text::patches_download(&patch.file_name(), &message),
-                    message,
-                ));
+                let message = text::http(&address.url, &address.url.prefix, &error);
+                let again = matches!(
+                    error,
+                    HttpError::Network(..) | HttpError::Cut { .. } | HttpError::Status(500..=599)
+                );
+                return Err(Miss::There {
+                    why: message.clone(),
+                    reason: message,
+                    wrong: false,
+                    again,
+                });
             }
         }
         output
             .flush()
-            .map_err(|code| file_fail(part, code, "written"))?;
+            .map_err(|code| Miss::Here(file_fail(part, code, "written")))?;
         drop(output);
-        match win::hash_file(part) {
-            Ok((_, sha256)) if sha256 == patch.sha256 => Ok(()),
-            Ok((size, sha256)) => Err(Fail::Blocked(
-                text::patches_wrong(&patch.url, &patch.file_name()),
-                format!(
+        match win::hash_file_identity(part, &mut |_| true) {
+            Ok((_, sha256, identity)) if sha256 == patch.sha256 => Ok(identity),
+            Ok((size, sha256, _)) => Err(Miss::There {
+                reason: format!(
+                    "{} sent a file with another checksum than the list says.",
+                    address.url.host
+                ),
+                why: format!(
                     "{} ({size} bytes) has SHA-256 {}, the list says {}",
-                    patch.address,
+                    address.text,
                     hex(&sha256),
                     hex(&patch.sha256)
                 ),
-            )),
-            Err(code) => Err(file_fail(part, code, "read back")),
+                wrong: true,
+                again: false,
+            }),
+            Err(code) => Err(Miss::Here(file_fail(part, code, "read back"))),
         }
     }
 
@@ -558,9 +764,16 @@ impl Run<'_> {
             ));
         }
         let list = self.list()?;
+        self.record.keep_only(&numbers(&list));
         let found = files(self.layout);
-        let hashed =
-            hash_listed(self.layout, &list, Some(&mut *self.session)).ok_or(Fail::Stopped)?;
+        let hashed = survey(
+            self.layout,
+            &list,
+            self.record,
+            self.look,
+            Some(&mut *self.session),
+        )
+        .ok_or(Fail::Stopped)?;
         let todo = todo(&list, &found, &mut |patch| lookup(&hashed, patch));
         log!(
             "patches: the list has {} patch(es){}; {} to download, {} to delete",
@@ -604,7 +817,8 @@ impl Run<'_> {
         for name in &todo.delete {
             self.delete(name)?;
         }
-        let mut downloaded = Vec::new();
+        // Downloaded: whether known in place by the file ID.
+        let mut downloaded: Vec<(u8, bool)> = Vec::new();
         for fetch in &todo.fetch {
             if !self.session.pump() {
                 return Err(Fail::Stopped);
@@ -616,19 +830,22 @@ impl Run<'_> {
                 );
                 self.delete(&fetch.patch.file_name())?;
             }
-            self.fetch(&fetch.patch)?;
-            downloaded.push(fetch.patch.number);
+            let known = self.fetch(&fetch.patch)?;
+            downloaded.push((fetch.patch.number, known));
         }
         // The folder against the list, as `ready` checks it: no other patch
-        // file, the files downloaded hashed in their place, the others as
-        // they were hashed above (nothing has changed them since).
+        // file, the files downloaded as they were checked (by their file ID,
+        // else hashed in their place), the others as they were looked at
+        // above (nothing has changed them since).
         let layout = self.layout;
-        check(&list, &files(layout), &mut |patch| {
-            if downloaded.contains(&patch.number) {
-                look(layout, patch)
-            } else {
-                lookup(&hashed, patch)
-            }
+        let record = &mut *self.record;
+        check(&list, &files(layout), &mut |patch| match downloaded
+            .iter()
+            .find(|(number, _)| *number == patch.number)
+        {
+            Some((_, true)) => Local::Found(patch.sha256),
+            Some((_, false)) => look_in_place(layout, patch, record),
+            None => lookup(&hashed, patch),
         })
         .map_err(|problem| {
             Fail::Blocked(
@@ -652,6 +869,7 @@ fn list_error(error: &ListError) -> String {
         ListError::BadEntry(name) => format!("bad entry {}", name.escape_debug()),
         ListError::BadHash(name) => format!("bad checksum of {}", name.escape_debug()),
         ListError::BadUrl(name) => format!("bad address of {}", name.escape_debug()),
+        ListError::SameUrl(name) => format!("an address of {} twice", name.escape_debug()),
         ListError::Duplicate(name) => format!("{} twice", name.escape_debug()),
     }
 }
@@ -672,8 +890,14 @@ fn save(path: &str, data: &[u8]) -> Result<(), Code> {
 /// The server, or its list, could not be fetched: the game may be played
 /// when the folder is as the list kept says, after a run that ended
 /// `ready`. Else PLAY stays off with `message`.
-fn offline(session: &mut Session, layout: &Layout, message: &str) -> Outcome {
-    match kept_in_place(layout, Some(session)) {
+fn offline(
+    session: &mut Session,
+    layout: &Layout,
+    record: &mut Record,
+    look: Look,
+    message: &str,
+) -> Outcome {
+    match kept_in_place(layout, Some(session), record, look) {
         Ok(()) => {
             log!("patches: the server could not be asked; the patches kept are in place");
             Outcome::Ready
@@ -692,25 +916,55 @@ fn offline(session: &mut Session, layout: &Layout, message: &str) -> Outcome {
 /// The patch step. `server`: `Err(why)` when the server could not be asked
 /// this run: the folder is then checked against the list kept from the last
 /// run. `overlay`: the files the overlay installed (the ZIP's names).
+/// `look`: [`Look::Full`] hashes every file.
 pub fn run(
     session: &mut Session,
     layout: &Layout,
     server: Result<&Url, &str>,
     overlay: &[&str],
+    look: Look,
 ) -> Outcome {
-    let server = match server {
-        Ok(server) => server,
-        Err(reason) => return offline(session, layout, &text::patches_offline(reason)),
+    if look == Look::Full {
+        log!("patches: every patch file is hashed (check)");
+    }
+    let mut record = read_record(layout, look);
+    let before = record.clone();
+    let outcome = match server {
+        Ok(server) => step(session, layout, server, overlay, look, &mut record),
+        Err(reason) => offline(
+            session,
+            layout,
+            &mut record,
+            look,
+            &text::patches_offline(reason),
+        ),
     };
+    if record != before {
+        save_record(layout, &record);
+    }
+    outcome
+}
+
+fn step(
+    session: &mut Session,
+    layout: &Layout,
+    server: &Url,
+    overlay: &[&str],
+    look: Look,
+    record: &mut Record,
+) -> Outcome {
     let mut run = Run {
         session,
         layout,
         server,
+        look,
+        record,
         changing: false,
     };
     let outcome = run.step(overlay);
     let changing = run.changing;
     let session = run.session;
+    let record = run.record;
     let status = |text: &[u8]| {
         if let Err(code) = save(&beside(layout, STATUS_FILE), text) {
             log!(
@@ -726,7 +980,7 @@ pub fn run(
         }
         Err(Fail::Offline(message, why)) => {
             log!("patches: {why}: the folder is checked against the list kept");
-            offline(session, layout, &message)
+            offline(session, layout, record, look, &message)
         }
         Err(Fail::Stopped) => {
             log!("patches: stopped; the rest next time");

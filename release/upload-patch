@@ -13,7 +13,8 @@
 #   4. GET $SKHID_PATCHES_URL/<name> must answer 200 with the local file's
 #      sha256;
 #   5. adds `<name> <sha256> <size> <url>` to the list: commit it (the
-#      release's record PR).
+#      release's record PR). Mirrors go after <url> in the row:
+#      release/add-mirror.
 # Each write asks y/N first, showing the command. --dry-run prints them only.
 # A published patch is never changed or deleted: a fix is the next revision.
 #
@@ -50,7 +51,7 @@ url=$PATCHES_URL/$name
 say "$name: $size bytes, sha256 $sha"
 row=$(list_row "$name")
 if [[ -n $row ]]; then
-    [[ $row == "$name $sha $size $url" ]] ||
+    [[ $row == "$name $sha $size $url" || $row == "$name $sha $size $url "* ]] ||
         die "$name is in $PATCH_LIST already, with OTHER bytes ($row); a published patch is never replaced: make the next revision"
     die "$name is in $PATCH_LIST already, with these same bytes: nothing to do"
 fi

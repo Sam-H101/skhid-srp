@@ -21,8 +21,12 @@
 #      of the settings srp takes since #105 the .env sets (names only); the
 #      offered-patch list
 #      (release/patches.tsv): every row on the patches server with its size
-#      and sha256, at its URL, none above main's REVISION, and patch_12 (the
-#      menus) in it from revision 12 on (or the --resources file); with
+#      and sha256, every URL of it giving that file as the players' updater
+#      fetches it (redirects followed, not a web page, the size and sha256:
+#      downloaded whole once, then checked by its first bytes; the cache is
+#      ~/.cache/skhid-release/patch-urls.checked), none above main's
+#      REVISION, and patch_12 (the menus) in it from revision 12 on (or the
+#      --resources file); with
 #      --resources, the file is resources.db.patch_<main's REVISION>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
 #      which server code differs between main and the target's tree;
@@ -421,28 +425,34 @@ else
     problem "$(cat "$work/live-zip.log")"
 fi
 
-# The offered patches: the list, each on the patches server and at its URL.
+# The offered patches: the list, each on the patches server and at every
+# URL of its row.
 published=''
 listed=$(grep -c . <<<"$LIST" || true)
 if ((patches_ok && listed)); then
     names=$(cut -d' ' -f1 <<<"$LIST" | tr '\n' ' ')
     there=$(on_patches "cd $(q "$PATCHES_DIR") && for f in $names; do if test -f \"\$f\"; then echo \"\$f \$(stat -c %s \"\$f\") \$(sha256sum < \"\$f\" | cut -d' ' -f1)\"; else echo \"\$f missing\"; fi; done" || echo "unreadable")
     bad=0
-    while read -r name sha size url; do
+    urls_checked=0
+    while read -r name sha size urls; do
         [[ -n $name ]] || continue
         if ! grep -qx "$name $size $sha" <<<"$there"; then
             bad=1
             problem "$PATCH_LIST: $name ($size bytes, sha256 ${sha:0:12}…) is not so on $PATCHES_LABEL: $(grep "^$name " <<<"$there" || echo "$there")"
             continue
         fi
-        head=$(curl -sS --max-time 20 -o /dev/null -I -D - "$url" 2>/dev/null | tr -d '\r' |
-            awk 'NR == 1 { status = $2 } tolower($1) == "content-length:" { size = $2 } END { print status " " size }' || true)
-        if [[ $head != "200 $size" ]]; then
-            bad=1
-            problem "$url answers \"$head\", not 200 with $size bytes"
-        fi
+        read -r -a each <<<"$urls"
+        for url in "${each[@]}"; do
+            say "  ...      $name at $url"
+            if check_patch_url "$url" "$sha" "$size" "$work"; then
+                urls_checked=$((urls_checked + 1))
+            else
+                bad=1
+                problem "$PATCH_LIST: $name: $URL_PROBLEM"
+            fi
+        done
     done <<<"$LIST"
-    ((bad)) || okay "the offered-patch list: $listed patch(es), each on $PATCHES_LABEL with its sha256 and at its URL"
+    ((bad)) || okay "the offered-patch list: $listed patch(es), each on $PATCHES_LABEL with its sha256, and its $urls_checked URL(s) giving it"
 elif ((patches_ok)); then
     okay "the offered-patch list ($PATCH_LIST) is empty"
 fi

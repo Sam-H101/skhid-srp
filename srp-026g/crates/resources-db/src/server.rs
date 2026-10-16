@@ -13,10 +13,10 @@
 //!
 //! [`PROVENANCE`] names what it was made of ([`Provenance`]): `resources.db`
 //! (its file name, size and sha256) and every patch (its file name, size,
-//! sha256 and the URL the players download it from, on the patches
-//! server). The server tells the players' updater which patches to fetch
-//! from it ([`Provenance::offered`]): it can only offer the patches it runs
-//! on. The same inputs give the same bytes.
+//! sha256 and the URLs the players download it from, in the order they try
+//! them: the patches server, and mirrors). The server tells the players'
+//! updater which patches to fetch from it ([`Provenance::offered`]): it can
+//! only offer the patches it runs on. The same inputs give the same bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -81,6 +81,9 @@ pub fn archives_in(game: &Path) -> Result<(PathBuf, Vec<PathBuf>), Error> {
 
 /// The longest URL of a patch the players' updater takes.
 pub const MAX_URL: usize = 1024;
+/// The most URLs a patch may have: the players' updater takes up to this
+/// many (client/updater/logic/src/patches.rs, `MAX_URLS`).
+pub const MAX_URLS: usize = 8;
 
 /// Whether the players' updater takes `url` as a patch's address: exactly
 /// the URLs its `url::patch` takes (client/updater/logic/src/url.rs), rule
@@ -138,6 +141,40 @@ fn is_host(host: &str) -> bool {
         && host
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+/// Whether the players' updater takes `urls` as a patch's addresses: 1 to
+/// [`MAX_URLS`] of them, each one it takes ([`is_url`]), none twice.
+/// `Err` says what is wrong.
+pub fn check_urls(urls: &[String]) -> Result<(), String> {
+    if urls.is_empty() {
+        return Err("no URL".into());
+    }
+    if urls.len() > MAX_URLS {
+        return Err(format!(
+            "{} URLs; the players' updater takes at most {MAX_URLS}",
+            urls.len()
+        ));
+    }
+    if let Some(url) = urls.iter().find(|url| !is_url(url)) {
+        return Err(format!(
+            "{url:?} is not a URL the players' updater takes for a patch (http:// or https://, \
+             a host name or a bare IPv4 address, an optional port, a path; no credentials, no #, \
+             no spaces, quotes or backslashes; printable ASCII, at most {MAX_URL} bytes)"
+        ));
+    }
+    if let Some((at, url)) = urls
+        .iter()
+        .enumerate()
+        .find(|(at, url)| urls[..*at].contains(url))
+    {
+        return Err(format!(
+            "{url} is given twice (URL {} of {})",
+            at + 1,
+            urls.len()
+        ));
+    }
+    Ok(())
 }
 
 /// The URL of the file `name` in the folder `base` of the patches server:
@@ -203,8 +240,9 @@ pub struct Patch {
     /// Its n, of its name `resources.db.patch_<n>`.
     pub number: u32,
     pub input: Input,
-    /// Where the players' updater downloads it.
-    pub url: String,
+    /// Where the players' updater downloads it: 1 to [`MAX_URLS`] URLs,
+    /// tried in this order.
+    pub urls: Vec<String>,
 }
 
 impl Patch {
@@ -218,13 +256,19 @@ impl Patch {
 /// it in the game's order (ascending n).
 ///
 /// As text ([`PROVENANCE`]), the [`FORMAT`] line, a line for `resources.db`
-/// and a line for each patch, fields by one space:
+/// and a line for each patch, fields by one space, the patch's URLs last
+/// (a URL has no space):
 ///
 /// ```text
 /// skhid server game data 2
 /// db resources.db 6285533906 <sha256>
 /// patch resources.db.patch_14 43691157 <sha256> http://203.0.113.5/resources.db.patch_14
+/// patch resources.db.patch_15 1048576 <sha256> http://203.0.113.5/resources.db.patch_15 https://mirror.example/p15
 /// ```
+///
+/// A patch of one URL is written as before mirrors were (the data of a
+/// patch with one URL is the same bytes); an srp before them refuses a
+/// line of more (loudly: "a wrong line").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Provenance {
     pub db: Input,
@@ -253,7 +297,10 @@ impl Provenance {
             let input = &patch.input;
             text.push_str(&format!(
                 "patch {} {} {} {}\n",
-                input.name, input.size, input.sha256, patch.url
+                input.name,
+                input.size,
+                input.sha256,
+                patch.urls.join(" ")
             ));
         }
         text
@@ -283,13 +330,17 @@ impl Provenance {
         let mut patches: Vec<Patch> = Vec::new();
         for line in lines {
             let patch = match line.split(' ').collect::<Vec<_>>()[..] {
-                ["patch", name, size, sha256, url] if is_url(url) => patch_number(name)
-                    .zip(input(name, size, sha256))
-                    .map(|(number, input)| Patch {
-                        number,
-                        input,
-                        url: url.to_owned(),
-                    }),
+                ["patch", name, size, sha256, ref urls @ ..] => {
+                    let urls: Vec<String> = urls.iter().map(|url| (*url).to_owned()).collect();
+                    patch_number(name)
+                        .zip(input(name, size, sha256))
+                        .filter(|_| check_urls(&urls).is_ok())
+                        .map(|(number, input)| Patch {
+                            number,
+                            input,
+                            urls,
+                        })
+                }
                 _ => None,
             }
             .filter(|patch| patches.last().is_none_or(|last| last.number < patch.number))
@@ -301,19 +352,24 @@ impl Provenance {
 
     /// What the server offers the players' updater: each patch, in the
     /// game's order, as `patch_<n>` ([`Patch::key`]) with its sha256 and
-    /// URL.
-    pub fn offered(&self) -> impl Iterator<Item = (String, &str, &str)> {
-        self.patches
-            .iter()
-            .map(|patch| (patch.key(), patch.input.sha256.as_str(), patch.url.as_str()))
+    /// URLs.
+    pub fn offered(&self) -> impl Iterator<Item = (String, &str, &[String])> {
+        self.patches.iter().map(|patch| {
+            (
+                patch.key(),
+                patch.input.sha256.as_str(),
+                patch.urls.as_slice(),
+            )
+        })
     }
 }
 
-/// A patch to build with: its file and the URL players download it from.
+/// A patch to build with: its file and the URLs players download it from,
+/// in the order they try them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatchFile {
     pub path: PathBuf,
-    pub url: String,
+    pub urls: Vec<String>,
 }
 
 /// What one archive gave the server's data.
@@ -341,7 +397,7 @@ pub struct Built {
 
 /// `patches` in the game's order, by their n. A patch must be called as the
 /// game calls one (`resources.db.patch_<n>`, [`patch_number`]), once each
-/// n, with a URL ([`is_url`]).
+/// n, with 1 to [`MAX_URLS`] URLs ([`check_urls`]).
 fn in_order(patches: &[PatchFile]) -> Result<Vec<(u32, &PatchFile)>, Error> {
     let mut numbered = Vec::new();
     for patch in patches {
@@ -353,15 +409,8 @@ fn in_order(patches: &[PatchFile]) -> Result<Vec<(u32, &PatchFile)>, Error> {
                 patch.path.display()
             ))
         })?;
-        if !is_url(&patch.url) {
-            return Err(content(format!(
-                "{}: {:?} is not a URL the players' updater takes for a patch \
-                 (http:// or https://, a host name or a bare IPv4 address, an optional \
-                 port, a path; no credentials, no #, no spaces, quotes or backslashes; \
-                 printable ASCII, at most {MAX_URL} bytes)",
-                patch.path.display(),
-                patch.url
-            )));
+        if let Err(why) = check_urls(&patch.urls) {
+            return Err(content(format!("{}: {why}", patch.path.display())));
         }
         numbered.push((number, patch));
     }
@@ -391,7 +440,7 @@ fn provenance_in_order(db: &Path, patches: &[(u32, &PatchFile)]) -> Result<Prove
                 Ok(Patch {
                     number,
                     input: Input::of(&patch.path)?,
-                    url: patch.url.clone(),
+                    urls: patch.urls.clone(),
                 })
             })
             .collect::<Result<_, Error>>()?,

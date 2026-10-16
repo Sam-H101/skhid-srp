@@ -45,25 +45,65 @@ fn db_and_patches_are_named_with_their_urls() {
     .unwrap();
     assert_eq!(db, PathBuf::from("r/resources.db"));
     assert_eq!(out, Some(PathBuf::from("o")));
-    let given: Vec<(&str, &str)> = patches
+    let given: Vec<(&str, String)> = patches
         .iter()
-        .map(|patch| (patch.path.to_str().unwrap(), patch.url.as_str()))
+        .map(|patch| (patch.path.to_str().unwrap(), patch.urls.join(" ")))
         .collect();
     // Split at the first `=`; the base URL for a patch without one; the
     // order as given (build puts them in the game's).
     assert_eq!(
         given,
         [
-            ("a/resources.db.patch_2", "http://h/x=y"),
+            ("a/resources.db.patch_2", "http://h/x=y".to_owned()),
             (
                 "b/resources.db.patch_1",
-                "http://h/base/resources.db.patch_1"
+                "http://h/base/resources.db.patch_1".to_owned()
             ),
         ]
     );
     let (_, patches, out) = parsed("--db resources.db").unwrap();
     assert!(patches.is_empty());
     assert_eq!(out, None);
+}
+
+/// Mirrors: `<file>=<URL> <URL>...` as one argument, the URLs one space
+/// apart, in their order.
+#[test]
+fn a_patch_takes_its_urls_one_space_apart() {
+    let options: Vec<String> = [
+        "--db",
+        "resources.db",
+        "--patch",
+        "p/resources.db.patch_12=http://h/p12 https://drive.usercontent.google.com/download?id=a&export=download&confirm=t",
+        "--patch",
+        "p/resources.db.patch_14=http://h/p14",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let (_, patches, _) = archives(&options).unwrap();
+    assert_eq!(
+        patches[0].urls,
+        [
+            "http://h/p12",
+            "https://drive.usercontent.google.com/download?id=a&export=download&confirm=t"
+        ]
+    );
+    assert_eq!(patches[1].urls, ["http://h/p14"]);
+    // Two spaces, a space at an end: an empty URL, which build refuses.
+    for bad in ["http://h/a  http://h/b", "http://h/a ", " http://h/a"] {
+        let options: Vec<String> = ["--db", "resources.db", "--patch"]
+            .map(str::to_owned)
+            .into_iter()
+            .chain([format!("p/resources.db.patch_12={bad}")])
+            .collect();
+        let (_, patches, _) = archives(&options).unwrap();
+        assert!(
+            resources_db::server::check_urls(&patches[0].urls)
+                .unwrap_err()
+                .contains("\"\" is not a URL"),
+            "{bad:?}"
+        );
+    }
 }
 
 #[test]
@@ -80,12 +120,12 @@ fn a_game_folder_gives_its_db_and_patches() {
     let dir = game.0.display().to_string();
     let (db, patches, _) = parsed(&format!("--dir {dir} --patch-url http://h/p")).unwrap();
     assert_eq!(db, game.0.join("resources.db"));
-    let urls: Vec<&str> = patches.iter().map(|patch| patch.url.as_str()).collect();
+    let urls: Vec<&[String]> = patches.iter().map(|patch| patch.urls.as_slice()).collect();
     assert_eq!(
         urls,
         [
-            "http://h/p/resources.db.patch_1",
-            "http://h/p/resources.db.patch_3"
+            ["http://h/p/resources.db.patch_1".to_owned()],
+            ["http://h/p/resources.db.patch_3".to_owned()]
         ]
     );
     // Every patch of the folder needs a URL.

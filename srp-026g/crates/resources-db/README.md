@@ -37,7 +37,7 @@ the patches it runs on.
 
 ```
 srp-game-data build --dir <game folder> [--patch-url <base URL>] --out server-game-data.db
-srp-game-data build --db resources.db [--patch <file>[=<URL>]]... [--patch-url <base URL>] --out server-game-data.db
+srp-game-data build --db resources.db [--patch "<file>[=<URL>[ <URL>]...]"]... [--patch-url <base URL>] --out server-game-data.db
 srp-game-data info server-game-data.db
 srp-game-data check server-game-data.db <the same archives as build>
 srp-game-data pack --dir <folder> --out resources.db.patch_<n>
@@ -51,17 +51,33 @@ srp-game-data pack --dir <folder> --out resources.db.patch_<n>
   `resources.db.patch_<n>` (the game mounts no other name), once per n; they
   are laid over `resources.db` in ascending n whatever their order on the
   command line.
-- Every patch needs the URL the players' updater downloads it from:
-  `--patch <file>=<URL>` (split at the first `=`), or `--patch-url <base>`,
-  which gives each patch without one `<base>/<its file name>` (one `/`
-  added unless the base ends with one). Plain `http://` and a bare IP are
-  fine. A URL must be one the players' updater takes for a patch, or the
-  build fails (`server::is_url`, the same rules as the updater's
+- Every patch needs the URLs the players' updater downloads it from, 1 to
+  8, tried in their order (the patches server, then mirrors), none twice:
+  `--patch <file>=<URL>` (split at the first `=`), `--patch "<file>=<URL>
+  <URL>..."` (one argument, the URLs one space apart), or `--patch-url
+  <base>`, which gives each patch without any `<base>/<its file name>` (one
+  `/` added unless the base ends with one). Plain `http://` and a bare IP
+  are fine. A URL must be one the players' updater takes for a patch, or
+  the build fails (`server::is_url`, the same rules as the updater's
   `url::patch`, both tested with
   `client/updater/logic/tests/data/patch_urls.txt`): `http://` or
   `https://`, a host name or a bare IPv4 address, an optional port, a path;
   no credentials, no `#`, no spaces, quotes or backslashes; printable ASCII,
   at most 1024 bytes.
+
+  Why one argument split on spaces, not `--patch-url <name>=<URL>` once
+  per mirror: `--patch-url` is the base URL already, a URL has no space
+  (the rule above), so the split is never ambiguous; the argument is the
+  url column of `release/patches.tsv` as it is, and the provenance's line
+  (below) the same words; and a patch's URLs stay in one place, in their
+  order, with no second option to merge by a path written two ways.
+- The provenance (`srp/provenance`) names each patch's URLs after its
+  sha256, one space apart: `patch resources.db.patch_14 <size> <sha256>
+  <URL> [<URL>...]`. A patch of one URL is written as before mirrors (so
+  its data is the same bytes); an srp before mirrors refuses a line of more
+  ("a wrong line"), loudly. `info` and `check` print them:
+  `resources.db.patch_14 <size> bytes sha256 <sha256> urls <URL> [<URL>...]`,
+  and srp's `/patches` offers them as the patch's `urls`.
 - `build` never overwrites `--out`: it writes `<out>.part`, reads its
   provenance back and renames it; if anything fails the `.part` is removed.
   It prints what each archive gave, the output's size and sha256, and the
@@ -69,7 +85,8 @@ srp-game-data pack --dir <folder> --out resources.db.patch_<n>
 - `info` checks every file of the data against its table and prints the
   provenance. `check` builds the data again of the archives given, with
   those URLs (as `build`, in memory), and says whether the file is those
-  bytes, exit status 1 if not: made of other archives or URLs (both
+  bytes, exit status 1 if not: made of other archives or URLs (other
+  mirrors, or the same in another order, are other URLs; both
   provenances are printed), or of these but not the bytes they give now
   (another srp-game-data's, or changed). It writes nothing.
 

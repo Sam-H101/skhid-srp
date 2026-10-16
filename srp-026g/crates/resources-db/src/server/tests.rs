@@ -34,7 +34,7 @@ const URL: &str = "http://203.0.113.5/files";
 fn patch(path: &Path) -> PatchFile {
     PatchFile {
         path: path.to_owned(),
-        url: url_in(URL, path.file_name().unwrap().to_str().unwrap()),
+        urls: vec![url_in(URL, path.file_name().unwrap().to_str().unwrap())],
     }
 }
 
@@ -190,8 +190,8 @@ fn the_server_data_is_the_files_srp_reads_of_the_patches_over_the_db() {
     assert_eq!(numbers, [2, 14]);
     assert_eq!(provenance.patches[1].input, Input::of(&fourteen).unwrap());
     assert_eq!(
-        provenance.patches[1].url,
-        "http://203.0.113.5/files/resources.db.patch_14"
+        provenance.patches[1].urls,
+        ["http://203.0.113.5/files/resources.db.patch_14"]
     );
     let text = provenance.text();
     let lines: Vec<&str> = text.lines().collect();
@@ -212,19 +212,19 @@ fn the_server_data_is_the_files_srp_reads_of_the_patches_over_the_db() {
     assert_eq!(data.provenance, *provenance);
     assert_eq!((data.gameplay, data.projects), (5, 2));
     // What srp offers the players' updater.
-    let offered: Vec<(String, &str, &str)> = data.provenance.offered().collect();
+    let offered: Vec<(String, &str, &[String])> = data.provenance.offered().collect();
     assert_eq!(
         offered,
         [
             (
                 "patch_2".to_owned(),
                 provenance.patches[0].input.sha256.as_str(),
-                "http://203.0.113.5/files/resources.db.patch_2"
+                &["http://203.0.113.5/files/resources.db.patch_2".to_owned()][..]
             ),
             (
                 "patch_14".to_owned(),
                 provenance.patches[1].input.sha256.as_str(),
-                "http://203.0.113.5/files/resources.db.patch_14"
+                &["http://203.0.113.5/files/resources.db.patch_14".to_owned()][..]
             ),
         ]
     );
@@ -239,7 +239,7 @@ fn the_same_inputs_give_the_same_bytes_and_other_inputs_other_bytes() {
     assert_eq!(first.bytes, again.bytes);
     // Another URL: the same files, another provenance.
     let mut moved = patch(&two);
-    moved.url = "https://patches.example/resources.db.patch_2".into();
+    moved.urls = vec!["https://patches.example/resources.db.patch_2".into()];
     let other = build(&db, &[moved, patch(&fourteen)]).unwrap();
     assert_ne!(other.bytes, first.bytes);
     assert_eq!(all_files(&other.bytes).len(), all_files(&first.bytes).len());
@@ -298,7 +298,7 @@ fn what_the_game_would_not_mount_or_the_players_could_not_fetch_is_refused() {
     ] {
         let bad = PatchFile {
             path: fourteen.clone(),
-            url: url.into(),
+            urls: vec![url.into()],
         };
         assert!(build(&db, &[bad]).is_err(), "{url:?}");
     }
@@ -343,7 +343,7 @@ fn a_provenance_reads_back_and_a_wrong_one_is_refused() {
     let provenance = Provenance::parse(&text).unwrap();
     assert_eq!(provenance.text(), text);
     assert_eq!(provenance.patches[1].key(), "patch_14");
-    assert_eq!(provenance.patches[1].url, "https://h/p?x=14");
+    assert_eq!(provenance.patches[1].urls, ["https://h/p?x=14"]);
     for wrong in [
         String::new(),
         "skhid server game data 1\nplan none\n".into(),
@@ -371,6 +371,131 @@ fn a_provenance_reads_back_and_a_wrong_one_is_refused() {
     // An archive that is not server data.
     let plain = archive_of(&[("gameplay/x", "x")]);
     assert!(read(&mut Archive::new(Cursor::new(plain)).unwrap()).is_err());
+}
+
+/// A patch with mirrors: its URLs, in their order, in the provenance and
+/// in what is offered; one URL is written as before mirrors.
+#[test]
+fn a_patch_may_have_mirrors_in_its_order() {
+    let folder = Folder::new("mirrors");
+    let (db, two, fourteen) = game(&folder);
+    let mut mirrored = patch(&fourteen);
+    mirrored.urls.push(
+        "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t".into(),
+    );
+    mirrored
+        .urls
+        .push("http://198.51.100.7:8090/resources.db.patch_14".into());
+    let built = build(&db, &[patch(&two), mirrored.clone()]).unwrap();
+    assert_eq!(built.provenance.patches[1].urls, mirrored.urls);
+    let text = built.provenance.text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[2].ends_with(" http://203.0.113.5/files/resources.db.patch_2"));
+    assert!(
+        lines[3].ends_with(
+            " http://203.0.113.5/files/resources.db.patch_14 \
+             https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t \
+             http://198.51.100.7:8090/resources.db.patch_14"
+        ),
+        "{}",
+        lines[3]
+    );
+    let data = read(&mut Archive::new(Cursor::new(built.bytes.clone())).unwrap()).unwrap();
+    assert_eq!(data.provenance, built.provenance);
+    let offered: Vec<(String, &str, &[String])> = data.provenance.offered().collect();
+    assert_eq!(offered[1].2, mirrored.urls.as_slice());
+    // Mirrors change the provenance, not the files.
+    let plain = build(&db, &[patch(&two), patch(&fourteen)]).unwrap();
+    let without = |bytes: &[u8]| {
+        let mut files = all_files(bytes);
+        files.remove(PROVENANCE);
+        files
+    };
+    assert_eq!(without(&built.bytes), without(&plain.bytes));
+    assert_ne!(built.bytes, plain.bytes);
+    // Up to eight.
+    let mut eight = patch(&fourteen);
+    eight.urls = (1..=8)
+        .map(|n| format!("http://m{n}.example/p14"))
+        .collect();
+    assert_eq!(
+        build(&db, &[eight.clone()]).unwrap().provenance.patches[0].urls,
+        eight.urls
+    );
+    eight.urls.push("http://m9.example/p14".into());
+    let message = build(&db, &[eight]).unwrap_err().to_string();
+    assert!(
+        message.contains("9 URLs; the players' updater takes at most 8"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_patch_needs_a_url_and_none_twice() {
+    let folder = Folder::new("mirrors-refused");
+    let (db, _, fourteen) = game(&folder);
+    for (urls, why) in [
+        (vec![], "no URL"),
+        (
+            vec!["http://h/p14".to_owned(), "http://h/p14".to_owned()],
+            "http://h/p14 is given twice (URL 2 of 2)",
+        ),
+        (
+            vec!["http://h/p14".to_owned(), "ftp://h/p14".to_owned()],
+            "\"ftp://h/p14\" is not a URL the players' updater takes",
+        ),
+    ] {
+        let bad = PatchFile {
+            path: fourteen.clone(),
+            urls,
+        };
+        let message = build(&db, &[bad]).unwrap_err().to_string();
+        assert!(message.contains(why), "{message}");
+    }
+}
+
+#[test]
+fn a_provenance_reads_its_mirrors_and_refuses_wrong_ones() {
+    let sha = "ab".repeat(32);
+    let text = format!(
+        "{FORMAT}\ndb resources.db 10 {sha}\n\
+         patch resources.db.patch_3 5 {sha} http://h/p3 https://m/p3?x=1\n"
+    );
+    let provenance = Provenance::parse(&text).unwrap();
+    assert_eq!(
+        provenance.patches[0].urls,
+        ["http://h/p3", "https://m/p3?x=1"]
+    );
+    assert_eq!(provenance.text(), text);
+    let nine: Vec<String> = (1..=9).map(|n| format!("http://m{n}/p")).collect();
+    for wrong in [
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} http://h/p http://h/p\n"
+        ),
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} http://h/p ftp://h/p\n"
+        ),
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} http://h/p  http://m/p\n"
+        ),
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} http://h/p \n"
+        ),
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} {}\n",
+            nine.join(" ")
+        ),
+    ] {
+        assert!(Provenance::parse(&wrong).is_err(), "{wrong:?}");
+    }
+    let eight = format!(
+        "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha} {}\n",
+        nine[..8].join(" ")
+    );
+    assert_eq!(
+        Provenance::parse(&eight).unwrap().patches[0].urls,
+        nine[..8]
+    );
 }
 
 #[test]
@@ -453,12 +578,12 @@ fn a_build_refuses_a_url_the_updater_refuses() {
     for (url, taken) in updater_patch_urls() {
         let patches = [PatchFile {
             path: patch.clone(),
-            url: url.clone(),
+            urls: vec![url.clone()],
         }];
         match build(&db, &patches) {
             Ok(built) => {
                 assert!(taken, "{url:?}");
-                assert_eq!(built.provenance.patches[0].url, url);
+                assert_eq!(built.provenance.patches[0].urls, [url]);
             }
             Err(error) => {
                 assert!(!taken, "{url:?}: {error}");
@@ -484,7 +609,10 @@ fn the_server_data_of_0_26g_with_its_patches() {
         .map(|path| {
             let path = PathBuf::from(path);
             let url = url_in(&base, path.file_name().unwrap().to_str().unwrap());
-            PatchFile { path, url }
+            PatchFile {
+                path,
+                urls: vec![url],
+            }
         })
         .collect();
     let started = std::time::Instant::now();

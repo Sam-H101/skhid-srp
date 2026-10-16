@@ -91,6 +91,102 @@ http_get() {
     curl -sS --max-time "${HTTP_TIMEOUT:-600}" -o "$2" -w '%{http_code}' "$1" || true
 }
 
+# The most URLs a patch may have (the players' updater takes up to 8).
+MAX_PATCH_URLS=8
+
+# Whether <url> has the form of a patch's URL: http:// or https://, a host
+# name or a bare IPv4 address, an optional port, a path; no credentials, no
+# #, no space, quote or backslash; at most 1024 bytes. srp-game-data checks
+# each with the updater's own rules when the server data is built
+# (client/updater/logic/tests/data/patch_urls.txt); this refuses the plain
+# mistakes early.
+is_patch_url() {
+    # Bytes, whatever the locale: printable ASCII only.
+    local LC_ALL=C url=$1 form='^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[!-~]+$'
+    ((${#url} <= 1024)) && [[ $url =~ $form && $url != *[\\\"#]* ]]
+}
+
+# The players' updater follows a patch's redirects, up to 5, to http:// and
+# https:// only; so do the checks here.
+CURL_AS_UPDATER=(-L --max-redirs 5 --proto "=http,https" --proto-redir "=http,https")
+
+# What release/release.sh, build-server-db and add-mirror found good: one
+# `<sha256> <size> <url>` line each URL that gave that patch whole (200,
+# not a web page, its size and sha256), kept across runs so that a big
+# patch is not downloaded again at every release.
+URL_CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/skhid-release/patch-urls.checked
+
+# check_patch_url <url> <sha256> <size> <scratch folder> [full]: whether
+# <url> gives the players that patch, as their updater fetches it. Its
+# first check is a whole download: 200, not a web page (Content-Type
+# text/html: Google Drive's virus-scan page, a sign-in page), the size and
+# the sha256; then the line in URL_CACHE. A URL in the cache for that
+# sha256 is asked for its first 13 bytes only: 200 or 206, not a web page,
+# the whole file's size the row's when the answer says it (a 206's
+# Content-Range, a 200's Content-Length: a file replaced since by one of
+# another size), the game archive's `little-endian`. A file replaced by
+# one of the same size and header is seen only by a whole download: the
+# players' updater checks the sha256 all the same and moves on to the next
+# URL. `full`: the whole download all the
+# same (add-mirror). False, with URL_PROBLEM saying why, otherwise; CHECKED
+# says how it was checked (`downloaded`, `as checked before`).
+URL_PROBLEM='' CHECKED=''
+# shellcheck disable=SC2034 # CHECKED: the callers read it
+check_patch_url() {
+    local url=$1 sha=$2 size=$3 dir=$4 full=${5:-} out head status type total got
+    out=$dir/url-check.$$ head=$dir/url-check.$$.head
+    URL_PROBLEM='' CHECKED=''
+    if [[ -z $full ]] && grep -qxF -- "$sha $size $url" "$URL_CACHE" 2>/dev/null; then
+        { curl -sS "${CURL_AS_UPDATER[@]}" --max-time 60 -r 0-12 -D "$head" "$url" 2>/dev/null || true; } |
+            head -c 13 >"$out"
+        # The last answer's (a redirect's head comes first, with its own).
+        status=$(awk 'toupper($1) ~ /^HTTP\// { s = $2 } END { print s }' "$head" 2>/dev/null || true)
+        type=$(tr -d '\r' <"$head" 2>/dev/null |
+            awk 'toupper($1) ~ /^HTTP\// { t = "" } tolower($1) == "content-type:" { t = tolower($2) } END { print t }' || true)
+        # The whole file's size, as the last answer says it: a 206's
+        # Content-Range (`bytes 0-12/<size>`), a 200's Content-Length;
+        # nothing when it does not say.
+        total=$(tr -d '\r' <"$head" 2>/dev/null |
+            awk -v status="$status" 'toupper($1) ~ /^HTTP\// { r = ""; l = "" }
+                tolower($1) == "content-range:" { n = split($0, part, "/"); r = part[n] }
+                tolower($1) == "content-length:" { l = $2 }
+                END { print (status == 206 ? r : l) }' || true)
+        got=$(cat "$out")
+        rm -f "$out" "$head"
+        if [[ $status != 200 && $status != 206 ]]; then
+            URL_PROBLEM="$url answers ${status:-nothing} now (it gave the file before)"
+        elif [[ $type == text/html* ]]; then
+            URL_PROBLEM="$url answers with a web page now (it gave the file before)"
+        elif [[ $total =~ ^[0-9]+$ && $total != "$size" ]]; then
+            URL_PROBLEM="$url says the file is $total bytes now, not $size (it gave the file before)"
+        elif [[ $got != little-endian ]]; then
+            URL_PROBLEM="$url does not start as a patch now (it gave the file before)"
+        else
+            CHECKED='as checked before: its first bytes now'
+            return 0
+        fi
+        return 1
+    fi
+    got=$(curl -sS "${CURL_AS_UPDATER[@]}" --max-time "${HTTP_TIMEOUT:-600}" -o "$out" -w '%{http_code} %{content_type}' "$url" 2>/dev/null || true)
+    status=${got%% *} type=${got#* }
+    type=${type,,}
+    if [[ $status != 200 ]]; then
+        URL_PROBLEM="$url answers ${status:-nothing}, not 200"
+    elif [[ $type == text/html* ]]; then
+        URL_PROBLEM="$url answers with a web page ($type), not the file (Google Drive: use https://drive.usercontent.google.com/download?id=<id>&export=download&confirm=t)"
+    elif [[ $(size_of "$out") != "$size" ]]; then
+        URL_PROBLEM="$url gave $(size_of "$out") bytes, not $size"
+    elif [[ $(sha256_of "$out") != "$sha" ]]; then
+        URL_PROBLEM="$url gave sha256 $(sha256_of "$out"), not $sha"
+    fi
+    rm -f "$out"
+    [[ -z $URL_PROBLEM ]] || return 1
+    CHECKED='downloaded whole'
+    if ! grep -qxF -- "$sha $size $url" "$URL_CACHE" 2>/dev/null; then
+        { mkdir -p "${URL_CACHE%/*}" && printf '%s %s %s\n' "$sha" "$size" "$url" >>"$URL_CACHE"; } 2>/dev/null || true
+    fi
+}
+
 # Our srp-game-data: $SRP_GAME_DATA_BIN, else built from this checkout (at
 # nice 10).
 game_data_bin() {
@@ -239,14 +335,17 @@ use_patches() {
 on_patches() { ssh "$PATCHES_SSH" "$1" <"${2:-/dev/null}"; }
 
 # The offered-patch list (use_patches first), a committed file: one patch a
-# line, `<name> <sha256> <size> <url>` with tabs between, in revision order;
-# `#` starts a comment. The server data is built of exactly these and
-# /patches offers exactly these; a file on the patches server that is not in
-# it is offered to no one. Checks every row; sets LIST (the rows, spaces
-# between) and LIST_TOP (the highest revision in it, 0 for none).
+# line, `<name> <sha256> <size> <urls>` with tabs between, in revision order;
+# `#` starts a comment. <urls> is the patch's URLs, one space apart, in the
+# order the players' updater tries them: the patches server's first, then
+# mirrors (release/add-mirror), 1 to 8, none twice. The server data is built
+# of exactly these and /patches offers exactly these; a file on the patches
+# server that is not in it is offered to no one. Checks every row; sets LIST
+# (the rows, spaces between) and LIST_TOP (the highest revision in it, 0 for
+# none).
 LIST='' LIST_TOP=0
 read_patch_list() {
-    local line name sha size url extra n=0 number rows=()
+    local line name sha size url extra n=0 number rows=() urls=() seen u
     [[ -f $PATCH_LIST ]] || die "$PATCH_LIST: no such file (the offered-patch list)"
     LIST_TOP=0
     while IFS= read -r line || [[ -n $line ]]; do
@@ -254,12 +353,21 @@ read_patch_list() {
         line=${line%$'\r'}
         [[ -n $line && $line != '#'* ]] || continue
         IFS=$'\t' read -r name sha size url extra <<<"$line"
-        [[ -n $url && -z $extra ]] || die "$PATCH_LIST:$n: not <name> <sha256> <size> <url> with tabs between"
+        [[ -n $url && -z $extra ]] || die "$PATCH_LIST:$n: not <name> <sha256> <size> <urls> with tabs between"
         number=$(patch_number "$name") || die "$PATCH_LIST:$n: $name is not resources.db.patch_<n>"
         ((number > LIST_TOP)) || die "$PATCH_LIST:$n: $name is not above the row before it (revision order, each patch once)"
         [[ $sha =~ ^[0-9a-f]{64}$ ]] || die "$PATCH_LIST:$n: $sha is not a sha256"
         [[ $size =~ ^[1-9][0-9]*$ ]] || die "$PATCH_LIST:$n: $size is not a size in bytes"
-        [[ $url == "$PATCHES_URL/$name" ]] || die "$PATCH_LIST:$n: $url is not $PATCHES_URL/$name (the list of another patches server?)"
+        [[ $url != *'  '* && $url != ' '* && $url != *' ' ]] || die "$PATCH_LIST:$n: the URLs are one space apart"
+        read -r -a urls <<<"$url"
+        ((${#urls[@]} <= MAX_PATCH_URLS)) || die "$PATCH_LIST:$n: ${#urls[@]} URLs; the players' updater takes at most $MAX_PATCH_URLS"
+        [[ ${urls[0]} == "$PATCHES_URL/$name" ]] || die "$PATCH_LIST:$n: ${urls[0]} is not $PATCHES_URL/$name (the list of another patches server?)"
+        seen=' '
+        for u in "${urls[@]}"; do
+            is_patch_url "$u" || die "$PATCH_LIST:$n: $u is not a URL the players' updater takes"
+            [[ $seen != *" $u "* ]] || die "$PATCH_LIST:$n: $u is there twice"
+            seen+="$u "
+        done
         LIST_TOP=$number
         rows+=("$name $sha $size $url")
     done <"$PATCH_LIST"
@@ -270,8 +378,9 @@ read_patch_list() {
 # The row of <name> in LIST, or nothing.
 list_row() { grep -m1 -- "^$1 " <<<"$LIST" || true; }
 
-# What /patches offers for LIST [+ one more row]: `patch_<n> <sha256> <url>`
-# lines, as check_release_files reads them from server data.
+# What /patches offers for LIST [+ one more row]: `patch_<n> <sha256>
+# <urls>` lines (the URLs one space apart), as check_release_files reads
+# them from server data.
 offered_of_list() {
     local name sha _ url
     while read -r name sha _ url; do
@@ -386,7 +495,7 @@ lock_drop() {
 # ZIP's exe says patch revision <n>, the server data reads (srp-game-data
 # info), offers no patch above <n>, and offers patch_12 (the menus) from
 # revision 12 on. Sets ZIP_SHA ZIP_SIZE DATA_SHA, OFFERED (`patch_<n>
-# <sha256> <url>` lines) and EXPECTED (/patches as JSON). <scratch> is a
+# <sha256> <urls>` lines) and EXPECTED (/patches as JSON). <scratch> is a
 # folder for the exe.
 check_release_files() {
     local zip=$1 data=$2 revision=$3 scratch=$4 got bin info key
@@ -394,7 +503,7 @@ check_release_files() {
     [[ $got == "$revision" ]] || die "$zip: its exe says patch revision $got, not $revision"
     bin=$(game_data_bin)
     info=$("$bin" info "$data") || die "$data: srp-game-data info refused it"
-    OFFERED=$(sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) url \(.*\)$/\1 \2 \3/p' <<<"$info")
+    OFFERED=$(offered_in "$info")
     while read -r key _; do
         [[ -n $key ]] || continue
         ((${key#patch_} <= revision)) || die "$data offers $key, above revision $revision"
@@ -407,10 +516,17 @@ check_release_files() {
     EXPECTED=$(patches_json "$OFFERED")
 }
 
-# /patches as JSON (keys sorted) of `patch_<n> <sha256> <url>` lines.
+# The patches `srp-game-data info` (or build, or check) says data offers:
+# `patch_<n> <sha256> <urls>` lines.
+offered_in() {
+    sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) urls \(.*\)$/\1 \2 \3/p' <<<"$1"
+}
+
+# /patches as JSON (keys sorted; each patch's URLs in their order) of
+# `patch_<n> <sha256> <urls>` lines, as srp writes it.
 patches_json() {
     jq -cnS --arg list "$1" '$list | split("\n") | map(select(length > 0) | split(" ")
-        | {key: .[0], value: {sha256: .[1], url: .[2]}}) | from_entries'
+        | {key: .[0], value: {sha256: .[1], urls: .[2:]}}) | from_entries'
 }
 
 # What /patches will offer, one line each (or `nothing ({})`).

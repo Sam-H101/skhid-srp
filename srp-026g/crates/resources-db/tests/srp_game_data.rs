@@ -226,3 +226,65 @@ fn pack_writes_only_a_name_the_game_mounts() {
         assert!(packed.status.success(), "{name}: {}", stderr(&packed));
     }
 }
+
+/// A patch with mirrors, as release/build-server-db gives it (the url
+/// column of patches.tsv): `info` and `check` name its URLs in their order,
+/// and other mirrors, or another order, are another provenance.
+#[test]
+fn mirrors_are_given_one_space_apart_and_shown_by_info_and_check() {
+    let folder = Folder::new("mirrors");
+    let (db, patch) = game(&folder);
+    let data = folder.path("server-game-data.db");
+    let urls = "http://203.0.113.5/patches/resources.db.patch_1 \
+                https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t";
+    let given = format!("{patch}={urls}");
+    let archives = ["--db", &db, "--patch", &given];
+    let built = run(&[&["build"][..], &archives, &["--out", &data]].concat());
+    assert!(built.status.success(), "{}", stderr(&built));
+    let line = format!(" urls {urls}\n");
+    assert!(String::from_utf8_lossy(&built.stdout).contains(&line));
+
+    let info = run(&["info", &data]);
+    assert!(info.status.success(), "{}", stderr(&info));
+    let info = String::from_utf8_lossy(&info.stdout).into_owned();
+    assert!(
+        info.contains("  resources.db.patch_1 ") && info.contains(&line),
+        "{info}"
+    );
+
+    let check = |given: &str| run(&["check", &data, "--db", &db, "--patch", given]);
+    let same = check(&given);
+    assert!(same.status.success(), "{}", stderr(&same));
+    assert!(String::from_utf8_lossy(&same.stdout).contains(&line));
+    let reversed: Vec<&str> = urls.split(' ').rev().collect();
+    for other in [
+        format!("{patch}={}", reversed.join(" ")),
+        format!("{patch}={}", urls.split(' ').next().unwrap()),
+        format!("{patch}={urls} http://198.51.100.7/p1"),
+    ] {
+        let found = check(&other);
+        assert_eq!(found.status.code(), Some(1), "{other}");
+        assert!(stderr(&found).contains("made of something else"), "{other}");
+    }
+
+    // A URL twice, nine of them: refused, nothing written.
+    let out = folder.path("refused.db");
+    let twice = format!("{patch}=http://h/p http://h/p");
+    let refused = run(&["build", "--db", &db, "--patch", &twice, "--out", &out]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        stderr(&refused).contains("is given twice"),
+        "{}",
+        stderr(&refused)
+    );
+    let nine: Vec<String> = (1..=9).map(|n| format!("http://m{n}/p")).collect();
+    let nine = format!("{patch}={}", nine.join(" "));
+    let refused = run(&["build", "--db", &db, "--patch", &nine, "--out", &out]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        stderr(&refused).contains("at most 8"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!Path::new(&out).exists());
+}

@@ -131,6 +131,74 @@ pub fn patch(text: &str) -> Option<Url> {
     Some(url)
 }
 
+impl Url {
+    /// The address as text: `http://` or `https://`, the host, the port
+    /// when it is not the scheme's own, and the prefix (a patch's path and
+    /// query).
+    pub fn text(&self) -> String {
+        let scheme = if self.secure { "https" } else { "http" };
+        let default = if self.secure { 443 } else { 80 };
+        if self.port == default {
+            alloc::format!("{scheme}://{}{}", self.host, self.prefix)
+        } else {
+            alloc::format!("{scheme}://{}:{}{}", self.host, self.port, self.prefix)
+        }
+    }
+}
+
+/// The most redirects one download of a patch follows ([`redirect`]).
+pub const MAX_REDIRECTS: u32 = 5;
+
+/// Where a redirect from the patch address `from` ([`patch`]) leads: its
+/// `Location` resolved against `from` (an absolute URL as it is; `//host/x`
+/// with `from`'s scheme; `/x` and `?x` on `from`'s host; `x` beside
+/// `from`'s path), and taken only if [`patch`] takes the result, as it
+/// takes an address of the list: http or https, no credentials, no
+/// fragment, and so on. From https to http is taken too: the file is
+/// checked against the list's SHA-256 all the same. `None` for anything
+/// else.
+pub fn redirect(from: &Url, location: &str) -> Option<(String, Url)> {
+    if location.is_empty() {
+        return None;
+    }
+    let scheme = if from.secure { "https:" } else { "http:" };
+    let origin = Url {
+        prefix: String::new(),
+        ..from.clone()
+    }
+    .text();
+    let path = from.prefix.split('?').next().unwrap_or("");
+    let text = if has_scheme(location) {
+        location.into()
+    } else if location.starts_with("//") {
+        alloc::format!("{scheme}{location}")
+    } else if location.starts_with('/') {
+        alloc::format!("{origin}{location}")
+    } else if location.starts_with('?') {
+        alloc::format!("{origin}{path}{location}")
+    } else {
+        let folder = &path[..path.rfind('/').map_or(0, |at| at + 1)];
+        alloc::format!("{origin}{folder}{location}")
+    };
+    let url = patch(&text)?;
+    Some((text, url))
+}
+
+/// Whether `text` starts with a scheme (a letter, then letters, digits,
+/// `+`, `-` or `.`, then `:`), as an absolute URL does.
+fn has_scheme(text: &str) -> bool {
+    match text.find(':') {
+        Some(at) if at > 0 => {
+            let scheme = &text.as_bytes()[..at];
+            scheme[0].is_ascii_alphabetic()
+                && scheme
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -204,6 +272,85 @@ pub(crate) mod tests {
         for (url, taken) in shared_patch_urls() {
             assert_eq!(patch(&url).is_some(), taken, "{url:?}");
         }
+    }
+
+    #[test]
+    fn an_address_reads_back_as_its_text() {
+        for text in [
+            "http://203.0.113.5/patch_14",
+            "https://files.example.org:8443/db/patch_14?v=2",
+            "http://127.0.0.1:8080/x",
+            "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t",
+        ] {
+            assert_eq!(patch(text).unwrap().text(), text);
+        }
+        // The scheme's own port is not written; the host is lowercase.
+        assert_eq!(
+            patch("https://Host:443/x").unwrap().text(),
+            "https://host/x"
+        );
+        assert_eq!(patch("http://host:80/x").unwrap().text(), "http://host/x");
+    }
+
+    #[test]
+    fn a_redirect_is_resolved_against_the_address_and_checked() {
+        let from = patch("https://files.example.org:8443/db/patch_14?v=2").unwrap();
+        let to = |location: &str| redirect(&from, location).map(|(text, _)| text);
+        for (location, expected) in [
+            ("https://other.example/x", "https://other.example/x"),
+            // Down to plain HTTP: the list's SHA-256 decides.
+            (
+                "http://203.0.113.5:8090/p/patch_14",
+                "http://203.0.113.5:8090/p/patch_14",
+            ),
+            ("//cdn.example/f?id=1", "https://cdn.example/f?id=1"),
+            (
+                "/elsewhere/patch_14",
+                "https://files.example.org:8443/elsewhere/patch_14",
+            ),
+            ("?v=3", "https://files.example.org:8443/db/patch_14?v=3"),
+            ("patch_15", "https://files.example.org:8443/db/patch_15"),
+            (
+                "sub/patch_15?x=1",
+                "https://files.example.org:8443/db/sub/patch_15?x=1",
+            ),
+            (
+                "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t",
+                "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t",
+            ),
+        ] {
+            assert_eq!(to(location).as_deref(), Some(expected), "{location}");
+        }
+        let (_, url) = redirect(&from, "http://203.0.113.5:8090/p/patch_14").unwrap();
+        assert_eq!(
+            (url.secure, url.host.as_str(), url.port, url.prefix.as_str()),
+            (false, "203.0.113.5", 8090, "/p/patch_14")
+        );
+        // What a list may not name, a redirect may not lead to.
+        for location in [
+            "",
+            "ftp://203.0.113.5/patch_14",
+            "file:///C:/Windows/patch_14",
+            "javascript:alert(1)",
+            "data:text/plain,x",
+            "HTTP://host/patch_14",
+            "https://user:pw@host/patch_14",
+            "https://host/patch_14#x",
+            "https://host",
+            "https://host/",
+            "//",
+            "https://[::1]/x",
+            "/a b",
+            "/a\\b",
+            "/a\"b",
+        ] {
+            assert_eq!(to(location), None, "{location:?}");
+        }
+        assert_eq!(to(&alloc::format!("/{}", "a".repeat(1100))), None);
+        // From an address without a query or a folder.
+        let from = patch("http://h/p").unwrap();
+        assert_eq!(redirect(&from, "q").unwrap().0, "http://h/q");
+        assert_eq!(redirect(&from, "?x").unwrap().0, "http://h/p?x");
     }
 
     #[test]

@@ -62,8 +62,10 @@ def make_zip(files):
 
 class Site:
     """The web server: `/api/client-files` and `/download`, as told; the
-    list of resources.db's patches at `/patches` (by default none: `{}`),
-    and the patch files at `/store/patch_<n>`."""
+    list of resources.db's patches at `/patches` (by default none: `{}`;
+    each patch with its `urls`, as srp writes it), and the patch files at
+    `/store/patch_<n>`; `/hop/<k>/patch_<n>` redirects k times before it is
+    `/store/patch_<n>`."""
 
     def __init__(self):
         self.archive = b""
@@ -83,6 +85,9 @@ class Site:
         self.patch_bodies = {}          # n -> other bytes than the listed ones
         self.patch_lengths = {}         # n -> a Content-Length announced in the place of the file
         self.patch_redirects = {}       # n -> a Location answered with 302 in the place of the file
+        self.patch_html = set()         # n: a web page (text/html) answered in the place of the file
+        self.patch_urls = {}            # n -> the addresses the list gives it (default: one, on patch_base)
+        self.old_list = False           # the list in the form before updater 0.3.0: one "url"
         self.patch_cut = {}             # n -> bytes sent of the file, its whole length announced
         self.patch_slow = 0.0           # seconds between pieces of a patch file
         self.replays = {}               # /replays/<token>: token -> bytes
@@ -133,6 +138,26 @@ class Site:
                     else:
                         body = site.patch_list if site.patch_list is not None else site.true_patch_list()
                         self.answer(200, body, "application/json")
+                elif self.path.startswith("/hop/"):
+                    # /hop/<k>/patch_<n>: k redirects, by turns an absolute
+                    # address and one on this host, then the file.
+                    _, _, hops, name = self.path.split("/", 3)
+                    hops = int(hops)
+                    if hops == 0:
+                        self.path = f"/store/{name}"
+                        return self.do_GET()
+                    target = f"/hop/{hops - 1}/{name}"
+                    if hops % 2:
+                        target = site.url + target
+                    # As Google's: the redirect itself is a web page; only
+                    # the last answer is the file's.
+                    body = b"<html><body>Moved</body></html>"
+                    self.send_response(302)
+                    self.send_header("Location", target)
+                    self.send_header("Content-Type", "text/html; charset=UTF-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                 elif self.path.startswith("/store/patch_"):
                     name = self.path[len("/store/patch_"):]
                     number = int(name) if name.isdigit() else None
@@ -144,6 +169,10 @@ class Site:
                         self.end_headers()
                     elif status != 200:
                         self.answer(status, b"")
+                    elif number in site.patch_html:
+                        # Google Drive's "cannot scan this file for viruses".
+                        self.answer(200, b"<!DOCTYPE html><html><title>Google Drive - Virus scan warning"
+                                         b"</title></html>", "text/html; charset=utf-8")
                     elif number in site.patch_cut:
                         # The connection ends before the file does.
                         body = site.patch_bodies.get(number, site.patches[number])
@@ -213,8 +242,15 @@ class Site:
 
     def true_patch_list(self):
         base = self.patch_base or self.url
-        return json.dumps({f"patch_{n}": {"sha256": sha256(data), "url": f"{base}/store/patch_{n}"}
-                           for n, data in self.patches.items()}).encode()
+        listed = {}
+        for n, data in self.patches.items():
+            urls = self.patch_urls.get(n, [f"{base}/store/patch_{n}"])
+            if self.old_list:
+                (url,) = urls
+                listed[f"patch_{n}"] = {"sha256": sha256(data), "url": url}
+            else:
+                listed[f"patch_{n}"] = {"sha256": sha256(data), "urls": urls}
+        return json.dumps(listed).encode()
 
     def close(self):
         self.server.shutdown()

@@ -20,7 +20,7 @@ fn the_test_archive_is_0_26g_with_the_test_patches() {
     let provenance = &data.provenance;
     assert_eq!(provenance.db.name, "resources.db");
     assert_eq!(provenance.db.size, 6_285_533_906);
-    let offered: Vec<(String, &str, &str)> = provenance.offered().collect();
+    let offered: Vec<(String, &str, &[String])> = provenance.offered().collect();
     let keys: Vec<&str> = offered.iter().map(|(key, _, _)| key.as_str()).collect();
     assert_eq!(keys, ["patch_14", "patch_15", "patch_16"]);
     assert_eq!(
@@ -29,7 +29,7 @@ fn the_test_archive_is_0_26g_with_the_test_patches() {
     );
     assert_eq!(
         offered[0].2,
-        "http://203.0.113.5/patches/resources.db.patch_14"
+        ["http://203.0.113.5/patches/resources.db.patch_14"]
     );
     assert!(
         data.made_of()
@@ -181,7 +181,7 @@ fn the_test_data_is_0_26g_with_the_test_patches() {
             let path = PathBuf::from(path);
             let name = path.file_name().unwrap().to_str().unwrap().to_owned();
             PatchFile {
-                url: url_in("http://203.0.113.5/patches", &name),
+                urls: vec![url_in("http://203.0.113.5/patches", &name)],
                 path,
             }
         })

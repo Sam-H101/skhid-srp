@@ -403,7 +403,7 @@ enum Done {
 
 /// The update: the overlay, then the restore of resources.db, then the
 /// patch step, all under the installation lock.
-fn update(session: &mut Session, layout: &Layout) -> Done {
+fn update(session: &mut Session, layout: &Layout, patch_look: patches::Look) -> Done {
     let _lock = match win::install_lock(&layout.exe_dir) {
         Ok(lock) => lock,
         Err(code) => {
@@ -452,7 +452,7 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         .iter()
         .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str()))
         .collect();
-    match patches::run(session, layout, server, &overlay) {
+    match patches::run(session, layout, server, &overlay, patch_look) {
         patches::Outcome::Ready => done,
         patches::Outcome::Stopped => Done::Stopped,
         patches::Outcome::Blocked(message) => Done::Failed(message),
@@ -650,6 +650,9 @@ struct Options {
     /// `ready`: only whether the game's files are updated (play_skhid.bat).
     ready: bool,
     quiet: bool,
+    /// `check`: every patch file is hashed, whatever was hashed before (the
+    /// repair); the launcher's update takes the quick check.
+    look: patches::Look,
 }
 
 /// The command line: the launcher's (`"<exe>" "update" "<pipe>" ...`, the
@@ -691,18 +694,25 @@ fn options_of(arguments: &[String]) -> Result<Options, String> {
             quiet: rest
                 .iter()
                 .any(|argument| argument.eq_ignore_ascii_case("quiet")),
+            look: if action == "check" {
+                patches::Look::Full
+            } else {
+                patches::Look::Quick
+            },
         }),
         "update" | "full_update" => Ok(Options {
             pipe_name: pipe_name(),
             copy: false,
             ready: false,
             quiet: false,
+            look: patches::Look::Quick,
         }),
         "copy" => Ok(Options {
             pipe_name: pipe_name(),
             copy: true,
             ready: false,
             quiet: false,
+            look: patches::Look::Quick,
         }),
         _ => Err(text::usage()),
     }
@@ -783,7 +793,7 @@ fn run() -> u32 {
         return exit::OK;
     }
 
-    let code = match update(&mut session, &layout) {
+    let code = match update(&mut session, &layout, options.look) {
         Done::UpToDate => {
             // "Checking" clears a file name the restore or the patch step
             // left in the launcher's line.

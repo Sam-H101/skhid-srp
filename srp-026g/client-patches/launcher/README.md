@@ -288,11 +288,14 @@ folder when that is named `game` (as the game is unpacked), else into it.
 Updating itself: the launcher was replaced → the updater tells the launcher
 it is done (state 15) and closes the pipe, on which the launcher closes; the
 updater waits until the launcher's "only one of me" mutex is gone and starts
-the new `launcher_skhid.exe`. Only the updater was replaced → nothing more:
-the old one finishes this run, the new one runs next time.
+the new `launcher_skhid.exe`. Only the updater was replaced → the same: the
+launcher is closed and started again, and that start runs the new updater,
+which does the restore and the patch step (the old one does neither after
+its install: so updater 0.2.0 never reads the `/patches` of 0.3.0).
 
-`updater_skhid.exe check` does the same by hand, without a launcher
-(`check quiet`: no message box; the exit code is 0 or 1).
+`updater_skhid.exe check` does the same by hand, without a launcher, and
+hashes every patch file whole where the launcher's run takes the quick
+check (the repair; `check quiet`: no message box; the exit code is 0 or 1).
 
 ## When something goes wrong
 

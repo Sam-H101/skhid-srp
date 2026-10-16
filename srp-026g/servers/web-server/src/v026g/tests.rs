@@ -775,11 +775,11 @@ fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
     assert!(!home.0.contains("script-src"));
 }
 
-fn offered(n: u32, sha: char, url: &str) -> crate::OfferedPatch {
+fn offered(n: u32, sha: char, urls: &[&str]) -> crate::OfferedPatch {
     crate::OfferedPatch {
         name: format!("patch_{n}"),
         sha256: sha.to_string().repeat(64),
-        url: url.into(),
+        urls: urls.iter().map(|url| (*url).to_owned()).collect(),
     }
 }
 
@@ -822,18 +822,27 @@ fn the_patches_are_listed_for_the_updater_as_json() {
     assert!(head.contains("\r\nCache-Control: no-store\r\n"), "{head}");
     assert_eq!(body, "{}");
 
-    // Those of the game data, in its order, each with its sha256 and URL.
-    // Public: no token, no admin page, any language.
+    // Those of the game data, in its order, each with its sha256 and its
+    // URLs in their order (`urls` always, one or several). Public: no
+    // token, no admin page, any language.
     let mut world = world();
     world.web.token = None;
     world.web.admin_path = None;
     world.web.game.as_mut().unwrap().patches = vec![
-        offered(14, 'a', "http://203.0.113.5/patches/resources.db.patch_14"),
-        offered(16, '0', "https://files.example/db/resources.db.patch_16"),
+        offered(
+            14,
+            'a',
+            &[
+                "http://203.0.113.5/patches/resources.db.patch_14",
+                "https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t",
+            ],
+        ),
+        offered(16, '0', &["https://files.example/db/resources.db.patch_16"]),
     ];
     let expected = format!(
-        "{{\"patch_14\":{{\"sha256\":\"{}\",\"url\":\"http://203.0.113.5/patches/resources.db.patch_14\"}},\
-         \"patch_16\":{{\"sha256\":\"{}\",\"url\":\"https://files.example/db/resources.db.patch_16\"}}}}",
+        "{{\"patch_14\":{{\"sha256\":\"{}\",\"urls\":[\"http://203.0.113.5/patches/resources.db.patch_14\",\
+         \"https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t\"]}},\
+         \"patch_16\":{{\"sha256\":\"{}\",\"urls\":[\"https://files.example/db/resources.db.patch_16\"]}}}}",
         "a".repeat(64),
         "0".repeat(64)
     );
@@ -858,10 +867,10 @@ fn a_patch_list_string_is_always_escaped() {
     let odd = crate::OfferedPatch {
         name: "patch_1".into(),
         sha256: "a\"b\\c\n".into(),
-        url: "http://x/y".into(),
+        urls: vec!["http://x/y".into(), "http://x/\"".into()],
     };
     assert_eq!(
         crate::patches::json(&[odd]),
-        r#"{"patch_1":{"sha256":"a\"b\\c\u000a","url":"http://x/y"}}"#
+        r#"{"patch_1":{"sha256":"a\"b\\c\u000a","urls":["http://x/y","http://x/\""]}}"#
     );
 }

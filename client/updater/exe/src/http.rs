@@ -1,25 +1,26 @@
-//! One HTTP GET into memory, through Windows' own WinHTTP: its TLS, its
-//! certificate store, the system's proxy settings.
+//! HTTP GETs, through Windows' own WinHTTP: its TLS, its certificate
+//! store, the system's proxy settings. A patch's file follows its
+//! redirects ([`get_file`]); nothing else does.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
-use updater_logic::url::Url;
+use updater_logic::url::{self, MAX_REDIRECTS, Url};
 use windows_sys::Win32::Networking::WinHttp::{
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
     WINHTTP_DISABLE_COOKIES, WINHTTP_FLAG_BYPASS_PROXY_CACHE, WINHTTP_FLAG_SECURE,
     WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2, WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3,
     WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_OPTION_REDIRECT_POLICY,
     WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_OPTION_SECURE_PROTOCOLS,
-    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
-    WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders,
-    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
-    WinHttpSetTimeouts,
+    WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
 };
 
-use crate::win::{Code, last_error, wide};
+use crate::win::{Code, from_wide, last_error, wide};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpError {
@@ -34,6 +35,14 @@ pub enum HttpError {
     Cut { got: u64, expected: u64 },
     /// The caller's progress function said stop.
     Stopped,
+    /// A patch's file answered with a web page (`text/html`), not the
+    /// file.
+    Html,
+    /// A patch's file was redirected more than `url::MAX_REDIRECTS` times.
+    Redirects,
+    /// A patch's file was redirected to an address a list may not name
+    /// (its `Location`, at most 200 characters of it).
+    BadRedirect(String),
 }
 
 struct Internet(*mut c_void);
@@ -136,6 +145,70 @@ pub fn get_stream(
     sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
     progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
 ) -> Result<(), HttpError> {
+    let session = open_session()?;
+    let mut full_path = String::from(&*url.prefix);
+    full_path.push_str(path);
+    let answer = ask(&session, url, &full_path)?;
+    if answer.status != 200 {
+        return Err(HttpError::Status(answer.status));
+    }
+    receive(&answer.request, limit, sink, progress)
+}
+
+/// A patch's file at `url` (an address of the list, `url::patch`: its
+/// prefix is the whole path): up to `url::MAX_REDIRECTS` redirects are
+/// followed, each only to an address the list could name
+/// (`url::redirect`), and `hop(to)` is told of each. An answer of a web
+/// page (`Content-Type: text/html`) is no file: a sign-in page, Google
+/// Drive's "cannot scan this file for viruses" page.
+pub fn get_file(
+    url: &Url,
+    limit: u64,
+    hop: &mut dyn FnMut(&str),
+    sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<(), HttpError> {
+    let session = open_session()?;
+    let mut url = url.clone();
+    let mut redirects = 0;
+    let answer = loop {
+        let answer = ask(&session, &url, &url.prefix)?;
+        if !matches!(answer.status, 301 | 302 | 303 | 307 | 308) {
+            break answer;
+        }
+        let Some(location) = text_header(&answer.request, WINHTTP_QUERY_LOCATION, 2048) else {
+            return Err(HttpError::Status(answer.status));
+        };
+        if redirects == MAX_REDIRECTS {
+            return Err(HttpError::Redirects);
+        }
+        redirects += 1;
+        let Some((text, next)) = url::redirect(&url, &location) else {
+            let mut shown: String = location.chars().take(200).collect();
+            if shown.len() < location.len() {
+                shown.push_str("...");
+            }
+            return Err(HttpError::BadRedirect(shown));
+        };
+        hop(&text);
+        url = next;
+    };
+    if answer.status != 200 {
+        return Err(HttpError::Status(answer.status));
+    }
+    if text_header(&answer.request, WINHTTP_QUERY_CONTENT_TYPE, 256).is_some_and(|kind| {
+        kind.trim_start()
+            .get(..9)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("text/html"))
+    }) {
+        return Err(HttpError::Html);
+    }
+    receive(&answer.request, limit, sink, progress)
+}
+
+/// The WinHTTP session of one download: no step waits longer than its
+/// timeouts; TLS 1.2 and newer.
+fn open_session() -> Result<Internet, HttpError> {
     let agent = wide("SkhidUpdater/1");
     let mut session = unsafe {
         WinHttpOpen(
@@ -176,19 +249,30 @@ pub fn get_stream(
             WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2,
         );
     }
+    Ok(session)
+}
+
+/// A request sent and its answer's headers received.
+struct Answer {
+    request: Internet,
+    status: u32,
+    // After `request`: a request is closed before its connection.
+    _connection: Internet,
+}
+
+/// GET `full_path` of `url`'s host: the answer's status and headers.
+fn ask(session: &Internet, url: &Url, full_path: &str) -> Result<Answer, HttpError> {
     let connection = handle(
         unsafe { WinHttpConnect(session.0, wide(&url.host).as_ptr(), url.port, 0) },
         "connect",
     )?;
-    let mut full_path = String::from(&*url.prefix);
-    full_path.push_str(path);
     let flags = WINHTTP_FLAG_BYPASS_PROXY_CACHE | if url.secure { WINHTTP_FLAG_SECURE } else { 0 };
     let request = handle(
         unsafe {
             WinHttpOpenRequest(
                 connection.0,
                 wide("GET").as_ptr(),
-                wide(&full_path).as_ptr(),
+                wide(full_path).as_ptr(),
                 null(),
                 null(),
                 null(),
@@ -197,8 +281,8 @@ pub fn get_stream(
         },
         "request",
     )?;
-    // The answer is this server's own or nothing: no redirect is followed,
-    // and no cookie is kept or sent.
+    // WinHTTP follows no redirect itself (`get_file` follows a patch's,
+    // checking each address), and no cookie is kept or sent.
     if !set_option(
         &request,
         WINHTTP_OPTION_REDIRECT_POLICY,
@@ -221,10 +305,39 @@ pub fn get_stream(
     }
     let status = number_header(&request, WINHTTP_QUERY_STATUS_CODE)
         .ok_or_else(|| HttpError::Network("status", last_error()))?;
-    if status != 200 {
-        return Err(HttpError::Status(status));
-    }
-    let expected = content_length(&request);
+    Ok(Answer {
+        request,
+        status,
+        _connection: connection,
+    })
+}
+
+/// A header of the answer as text, if it is there and at most `limit`
+/// UTF-16 units.
+fn text_header(request: &Internet, which: u32, limit: usize) -> Option<String> {
+    let mut text = alloc::vec![0_u16; limit + 1];
+    let mut size = (text.len() * 2) as u32;
+    let ok = unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            which,
+            null(),
+            text.as_mut_ptr().cast::<c_void>(),
+            &mut size,
+            null_mut(),
+        )
+    };
+    (ok != 0).then(|| from_wide(&text[..(size as usize / 2).min(text.len())]))
+}
+
+/// The body of a 200 answer, into `sink`.
+fn receive(
+    request: &Internet,
+    limit: u64,
+    sink: &mut dyn FnMut(&[u8]) -> Result<(), HttpError>,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<(), HttpError> {
+    let expected = content_length(request);
     if expected.is_some_and(|expected| expected > limit) {
         return Err(HttpError::TooLarge);
     }
