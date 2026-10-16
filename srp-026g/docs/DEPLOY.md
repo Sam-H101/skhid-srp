@@ -208,14 +208,20 @@ the new one, and recreate the container.
 
 ## Updating
 
+Skhid's own releases go through `release/release.sh` (the skhid-release
+skill): it builds the image on the release PC and ships it to the host. By
+hand:
+
 1. Run the tests (`cargo test --workspace`).
-2. Copy the changed source to the host.
-3. When no match runs: `docker compose build srp26`. On a host with one CPU
-   a build takes from a running match.
-4. Still no match: `docker compose up -d srp26`. A match runs while the log
+2. Build the image elsewhere, never on the host (on a host with one CPU a
+   build takes from a running match): `docker build -t srp-026g:latest .`
+   in `srp-026g`, then `docker save srp-026g:latest | zstd -T0 | ssh <host>
+   'zstd -d | docker load'`. Copy the changed source to the host too (the
+   compose file).
+3. When no match runs: `docker compose up -d srp26`. A match runs while the log
    has more `Match 0x.. made` lines than `Match 0x.. is over` and `no client
    came; given up` lines together.
-5. Check the log: no error, the schema line if the database changed, players
+4. Check the log: no error, the schema line if the database changed, players
    signing in again.
 
 A restart ends every match (no results for it) and drops every lobby link.

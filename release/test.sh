@@ -13,12 +13,13 @@
 #
 #   nix shell nixpkgs#python3 nixpkgs#shellcheck -c release/test.sh
 #
-# Needs python3 (the HTTP servers, a ZIP) and the release srp-game-data
-# (built if missing); shellcheck runs if there is one.
+# Needs python3 (the HTTP servers, a ZIP), zstd (the image shipped) and the
+# release srp-game-data (built if missing); shellcheck runs if there is one.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 command -v python3 >/dev/null || { echo "test.sh: python3 is needed" >&2; exit 1; }
+command -v zstd >/dev/null || { echo "test.sh: zstd is needed" >&2; exit 1; }
 
 if command -v shellcheck >/dev/null; then
     (cd "$here" && shellcheck -x -s bash lib.sh build-patch upload-patch build-server-db build-zip deploy rollback setup-patches-server release.sh test.sh &&
@@ -77,7 +78,11 @@ done
 # restarting and logs that file's line (why), backing srp.db up first only
 # when the accounts are the reason. `exec` runs in the running container
 # (the volume is $TEST_DIR/volume); `run` is refused (no other container is
-# ever run on a release's hosts). A build fails with $TEST_DIR/build-fails.
+# ever run on a release's hosts), and so is `compose build` (an image is
+# built on the release PC only: podman, below). `load` takes a docker save
+# archive on stdin: the ID of its image is its config's sha256 (another
+# with $TEST_DIR/load-other-id), named as its RepoTags say. `info`: the
+# storage driver (the containerd store with $TEST_DIR/containerd-store).
 cat >"$T/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >>"$TEST_LOG"
@@ -114,9 +119,7 @@ started() { # the container runs: what srp does at a start
 case $1 in
 compose)
     case " $* " in
-    *" build "*)
-        if [[ -e $TEST_DIR/build-fails ]]; then echo "build: cargo failed" >&2; exit 1; fi
-        echo "sha256:$(date +%s%N | sha256sum | cut -c1-64)" >"$state/latest" ;;
+    *" build "*) echo "docker compose build: never on a release's hosts" >&2; exit 1 ;;
     *" ps "*) echo c0ffee ;;
     *" stop "*) echo stopped >"$state/state" ;;
     *" start "*) started ;;
@@ -158,7 +161,27 @@ inspect)
     esac ;;
 volume) echo "mount $TEST_DIR/volume" ;;
 image)
-    if [[ "$*" == *"latest {{.Id}}"* ]]; then echo "latest $(cat "$state/latest")"; fi ;;
+    if [[ "$*" == *"latest {{.Id}}"* ]]; then
+        echo "latest $(cat "$state/latest")"
+    elif [[ "$*" == *"{{.Id}}"* ]]; then
+        ref=${*: -1}
+        if [[ $ref == srp-026g:latest ]]; then cat "$state/latest"; else cat "$state/tags/${ref//[:\/]/_}" 2>/dev/null || { echo "No such image: $ref" >&2; exit 1; }; fi
+    fi ;;
+info)
+    if [[ -e $TEST_DIR/containerd-store ]]; then echo 'overlayfs [["driver-type","io.containerd.snapshotter.v1"]]'; else echo 'overlay2 [["Backing Filesystem","extfs"]]'; fi ;;
+load)
+    loaded=$(python3 -I -c '
+import hashlib, json, sys, tarfile
+with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as t:
+    files = {m.name: t.extractfile(m).read() for m in t if m.isfile()}
+manifest = json.loads(files["manifest.json"])[0]
+tag = manifest["RepoTags"][0].removeprefix("docker.io/library/")
+print(tag, "sha256:" + hashlib.sha256(files[manifest["Config"]]).hexdigest())
+') || { echo "docker load: not an archive" >&2; exit 1; }
+    read -r tag id <<<"$loaded"
+    if [[ -e $TEST_DIR/load-other-id ]]; then id="sha256:$(echo other | sha256sum | cut -c1-64)"; fi
+    echo "$id" >"$state/tags/${tag//[:\/]/_}"
+    echo "Loaded image: $tag" ;;
 tag)
     if [[ $3 == srp-026g:latest ]]; then echo "$2" >"$state/tags/latest"; cp "$state/tags/latest" "$state/latest"; else echo "$2" >"$state/tags/${3//[:\/]/_}"; fi ;;
 rmi) rm -f "$state/tags/${2//[:\/]/_}" ;;
@@ -167,6 +190,36 @@ exec) # exec <id> <command> <path in /srv/srp/data>...: a running container only
     shift 2
     exec "${@//\/srv\/srp\/data/$TEST_DIR/volume}" ;;
 run) echo "docker run: not on a release's hosts" >&2; exit 1 ;;
+esac
+EOF
+# podman: the image builder on the release PC. `build` makes an image of
+# the context's files (its config: their sha256 and the time; it fails with
+# $TEST_DIR/build-fails), `save` its docker save archive, `info` answers.
+cat >"$T/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+printf 'podman %s\n' "$*" >>"$TEST_LOG"
+store=$TEST_DIR/podman
+case $1 in
+info) echo "host: the release PC" ;;
+build)
+    if [[ -e $TEST_DIR/build-fails ]]; then echo "build: cargo failed" >&2; exit 1; fi
+    while (($#)); do if [[ $1 == -t ]]; then tag=$2; fi; shift; done
+    mkdir -p "$store"
+    printf '{"files": "%s", "at": "%s"}' "$(find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-64)" "$(date +%s%N)" >"$store/${tag//[:\/]/_}" ;;
+save)
+    [[ -f $store/${2//[:\/]/_} ]] || { echo "podman save: no image $2" >&2; exit 1; }
+    python3 -I -c '
+import hashlib, io, json, sys, tarfile
+config = open(sys.argv[1], "rb").read()
+name = hashlib.sha256(config).hexdigest() + ".json"
+manifest = json.dumps([{"Config": name, "RepoTags": [sys.argv[2]], "Layers": []}]).encode()
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as t:
+    for n, data in ((name, config), ("manifest.json", manifest)):
+        info = tarfile.TarInfo(n)
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+' "$store/${2//[:\/]/_}" "$2" ;;
+*) echo "podman $1: not in this test" >&2; exit 1 ;;
 esac
 EOF
 chmod +x "$T/bin/"*
@@ -649,6 +702,7 @@ SKHID_GAME_SERVER=127.0.0.1:1234
 SKHID_LOCALIZATION=english
 SKHID_MIN_FREE_MB=1
 SKHID_LIVE_MIN_FREE_MB=1
+SKHID_IMAGE_BUILDER=podman
 ENV
 export SKHID_TEST_REPO=$T/repo SKHID_TEST_BUILD_ZIP=$T/build-zip XDG_CACHE_HOME=$T/cache TMPDIR=$T/tmp
 SKHID_TEST_STOCK_SHA256=$(sha256sum <"$T/resources.db" | cut -d' ' -f1)
@@ -724,7 +778,7 @@ check "release: ... and freed it" test ! -e "$T/lock"
 
 # New content and new server code.
 echo "crates 2" >"$src/crates/a/src/lib.rs"
-printf 'services:\n  srp26:\n    environment:\n      - SRP_DAILY_BONUS\n' >"$src/docker-compose.yml"
+printf 'services:\n  srp26:\n    build: .\n    image: srp-026g:latest\n    environment:\n      - SRP_DAILY_BONUS\n' >"$src/docker-compose.yml"
 commit 13 "revision 13, server code"
 mkdir -p "$T/p13/gameplay/items" "$T/r13"
 echo "item 13" >"$T/p13/gameplay/items/d.options"
@@ -739,8 +793,17 @@ check "release --resources: /patches offers it" grep -q patch_13 "$T/site/patche
 check "release --resources: says to commit the list" has "$out" "Commit $T/patches.tsv"
 check "release: finds the changed server code" has "$out" "CHANGED   crates/a/src/lib.rs"
 check "release: tags the running image by its ID" grep -q "docker tag $running_before srp-026g:before-rev13-[0-9-]*-b" "$T/log"
-check "release: builds main's source, staged in the folder" grep -q "docker compose --env-file $T/live/.env -f release-rev13-[0-9-]*-b/src/docker-compose.yml build srp26" "$T/log"
+check "release: builds the image here (podman), of main's srp-026g" grep -qx "podman build --pull=always --format docker -t docker.io/library/srp-026g:rev13-[0-9-]*-b -f Dockerfile ." "$T/log"
+check "release: ... never on the live host" bash -c "! grep -q '^docker .*build' $T/log"
+check "release: ships it: zstd -d | docker load on the live host, through the jump host" bash -c "grep -q '^docker load' $T/log && grep -q '^ssh jump ssh live zstd.\{1,2\}-dc.\{1,3\}|.\{1,2\}docker.\{1,2\}load' $T/args"
+check "release: ... and checks its ID there is the one built here" has "$out" "srp-026g:rev13-[0-9-]*-b on the live host: ID sha256:[0-9a-f]*, as here"
+shipped=$(cat "$T"/docker/tags/srp-026g_rev13-*-b 2>/dev/null || echo none)
+check "release: the image there is tagged srp-026g:rev13-<stamp>-b" test "$shipped" = "$(sed -n 's/^image built here: srp-026g:rev13-[0-9-]*-b, ID \(sha256:[0-9a-f]*\);.*/\1/p' <<<"$out")"
+check "release: says how much it shipped" has "$out" "[0-9]* bytes to ship (zstd)"
 check "release: runs the new image" test "$(cat "$T/docker/running")" != "$running_before"
+check "release: srp26 runs the image shipped (by its ID)" test "$(cat "$T/docker/running")|$(cat "$(folder 13 b)/image.new")" = "$shipped|$shipped"
+check "release: ... and says so" has "$out" "srp26 runs the image shipped: $shipped"
+check "release: srp-026g:latest is it" test "$(cat "$T/docker/latest")" = "$shipped"
 check "release: the source is in place after" grep -qx "crates 2" "$T/live/crates/a/src/lib.rs"
 check "release: the old source is kept in the folder" bash -c "tar -xzOf $(folder 13 b)/old-src.tgz crates/a/src/lib.rs | grep -qx 'crates/a/src/lib.rs 1'"
 check "release: the rollback puts the image back" grep -qx "OLD_IMAGE=$running_before" "$(folder 13 b)/rollback.env"
@@ -785,6 +848,11 @@ expect_refused "release: revision 14 needs patch_12 (the menus) listed" "needs r
 sed "s/^\(resources.db.patch_3\t\)[0-9a-f]*/\1$sha12/" "$T/patches.tsv" >"$T/wrong.tsv"
 expect_refused "release: a listed patch that is not so on the patches server" "patch_3 .* is not so on the patches server" \
     env SKHID_RELEASE_ENV="$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/wrong.tsv|")" "$here/release.sh"
+touch "$T/containerd-store"
+expect_refused "release: server code, and the target's docker keeps images in containerd" "keeps images in the containerd store" "$here/release.sh"
+rm "$T/containerd-store"
+expect_refused "release: server code, and no image builder" "SKHID_IMAGE_BUILDER is docker or podman" \
+    env SKHID_RELEASE_ENV="$(changed_env "s|^SKHID_IMAGE_BUILDER=.*|SKHID_IMAGE_BUILDER=kaniko|")" "$here/release.sh"
 cat >>"$T/release.env" <<ENV
 SKHID_TEST=test-host
 SKHID_TEST_DIR=$T/live
@@ -806,12 +874,14 @@ check "release --dry-run: no file changes on the live host" test "$(tree)" = "$b
 check "release --dry-run: no patch is published" test "$(ls "$T/patches")" = "$published_before"
 check "release --dry-run: no row is added" test "$(rows "$T/patches.tsv")" = "resources.db.patch_3 resources.db.patch_12 resources.db.patch_13"
 check "release --dry-run: plans no maintenance" test ! -s "$T/state/admin.log"
-check "release --dry-run: runs no docker but reads" bash -c "! grep -qE '^docker (compose .* (up|stop|start|build) |tag |run |rmi )' $T/log"
+check "release --dry-run: runs no docker but reads" bash -c "! grep -qE '^docker (compose .* (up|stop|start|build) |tag |run |rmi |load)' $T/log"
+check "release --dry-run: builds no image here" bash -c "! grep -qE '^podman (build|save)' $T/log"
 check "release --dry-run: takes no lock" test ! -e "$T/lock"
 check "release --dry-run: shows the POST, not its secrets" has "$out" "POST http://127.0.0.1:$site_port/<SRP_ADMIN_PATH> token=<SRP_ADMIN_TOKEN> tab=maint minutes=2"
 check "release --dry-run: shows what /patches will offer" has "$out" "  patch_14 [0-9a-f]* $P/resources.db.patch_14"
 check "release --dry-run: shows the swap and the restart" has "$out" "docker compose up -d --no-deps --force-recreate srp26"
-check "release --dry-run: shows the build" has "$out" "build srp26"
+check "release --dry-run: shows the build here" has "$out" "build the image here: cd .* build .* -t docker.io/library/srp-026g:rev14-"
+check "release --dry-run: shows the shipping" has "$out" "zstd -dc | docker load < .*srp-026g-image.tar.zst"
 check "release --dry-run: says so" has "$out" "dry run: nothing was planned, uploaded or changed"
 
 # A no at the first question: nothing at all.
@@ -821,15 +891,32 @@ check "release: ... and says so" has "$out" "stopped: not confirmed (nothing was
 check "release: ... and changes nothing" test "$(tree)" = "$before"
 check "release: ... and frees the lock" test ! -e "$T/lock"
 
-# A failure before the swap: the build of the image.
+# A failure before the swap: the build of the image here.
 touch "$T/build-fails"
 run yes --minutes 2 --label c || true
 rm "$T/build-fails"
-check "release: a failed build stops before the swap" has "$out" "STOPPED before the swap"
+check "release: a failed build here stops before the swap" has "$out" "STOPPED before the swap"
+check "release: ... says so, with the build's last lines" bash -c "grep -q 'the image did not build here' <<<\"\$1\" && grep -q '  | build: cargo failed' <<<\"\$1\"" _ "$out"
+check "release: ... cancels the maintenance" test "$(admin_log)" = "plan 2 cancel"
+check "release: ... removes the staged files" nothing_staged
+check "release: ... ships and tags nothing" bash -c "! grep -qE '^docker (load|tag)' $T/log"
+check "release: ... srp-026g:latest is the running image" test "$(cat "$T/docker/latest")" = "$(cat "$T/docker/running")"
+check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
+check "release: ... restarts nothing" bash -c "! grep -q ' up ' $T/log"
+
+# A failure before the swap: the image loaded on the live host is not the
+# one built here.
+: >"$T/state/admin.log"
+touch "$T/load-other-id"
+run yes --minutes 2 --label i || true
+rm "$T/load-other-id"
+check "release: another image ID there stops before the swap" has "$out" "STOPPED before the swap"
+check "release: ... says which" has "$out" "srp-026g:rev14-[0-9-]*-i on the live host has the ID sha256:[0-9a-f]*, not sha256:[0-9a-f]*, the image built here"
 check "release: ... cancels the maintenance" test "$(admin_log)" = "plan 2 cancel"
 check "release: ... removes the staged files" nothing_staged
 check "release: ... puts the image tag back" grep -q "docker tag $(cat "$T/docker/running") srp-026g:latest" "$T/log"
 check "release: ... srp-026g:latest is the running image" test "$(cat "$T/docker/latest")" = "$(cat "$T/docker/running")"
+check "release: ... removes the image shipped and the before tag" bash -c "! ls $T/docker/tags/srp-026g_rev14-*-i $T/docker/tags/srp-026g_before-rev14-*-i 2>/dev/null"
 check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
 check "release: ... restarts nothing" bash -c "! grep -q ' up ' $T/log"
 

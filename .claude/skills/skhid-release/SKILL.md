@@ -44,7 +44,9 @@ Ask, in this order:
    unless patch_12 is offered (in the list, or the `--resources` file).
 3. **Any server-code change?** `release.sh` compares main's `srp-026g`
    build inputs with the target's tree and builds the image when they
-   differ; the owner may know better (`--server-code yes|no`).
+   differ; the owner may know better (`--server-code yes|no`). The image is
+   built **on the release PC** and shipped; never on the live host (one
+   CPU, which the matches need).
 
 Then, first on the test environment, then live:
 
@@ -104,7 +106,12 @@ everything while the countdown runs, and at its end swaps it all in at once
    srp-game-data reads it over the stock db, it is neither published nor
    listed yet. Last, which server-code files differ, and which settings
    main's compose file newly passes that the target's `.env` sets (names
-   only: their values take effect at the recreate).
+   only: their values take effect at the recreate). With server code to
+   build: the image builder here (below), `zstd` here and on the target,
+   the same machine type (`uname -m`) on both, the target's docker keeping
+   images by their config's ID (overlay2, not the containerd image store:
+   the ID check below relies on it), main's compose file building srp26
+   with `build: .` alone (release.sh passes no build args).
 2. **The lock, y/N, then maintenance**: a POST to the admin page
    (`tab=maint`, `minutes`) from the jump host, whose address must be in
    the target's `SRP_ADMIN_IPS` (behind Caddy with
@@ -117,10 +124,19 @@ everything while the countdown runs, and at its end swaps it all in at once
    checked in step 1); the checks of `deploy` on both files; then the
    **release folder** on the target (below) with both files staged in it
    (sha256 checked there, `chmod 644`) and `changed.txt`. With server
-   code: the running image tagged `srp-026g:before-rev<rev>-<stamp>` by
-   its ID, main's source unpacked in the folder's `src/` and
-   `docker compose build srp26` run on it (the running container is not
-   touched). The local builds run at nice 10.
+   code: **the image is built here**, of main's `srp-026g` with its
+   Dockerfile, base images pulled anew (`--pull`: what `rust:1-slim-bookworm`
+   and `debian:bookworm-slim` name now, not what this PC kept), as
+   `srp-026g:rev<rev>-<stamp>[-<label>]`; then `docker save | zstd -T0`
+   here, the source staged in the folder (`src.tar`, for the compose file
+   and the rollback), the running image tagged
+   `srp-026g:before-rev<rev>-<stamp>` by its ID, `zstd -dc | docker load`
+   on the target (live: through the jump host's nested ssh), the loaded
+   image's ID checked to be the one built here (its config's sha256), and
+   it tagged `srp-026g:latest`. Nothing is built on the target; the
+   running container is not touched. The local builds run at nice 10.
+   A failed build, shipping or ID check stops before the swap, like any
+   failed step: there is no build on the host to fall back to.
 4. **At the planned time**, once the launcher page says the server is down
    and `/api/stats` says `"matches":0` (it waits up to `--match-wait`,
    default `$SKHID_MATCH_WAIT_MINUTES`, else 15, more): it shows what changes,
@@ -151,7 +167,8 @@ srp26 is up and `/patches` is as before.
 
 A **stop before step 4** (a failure, a no, Ctrl-C) removes the staged
 files (the folder stays, state `stopped`, with its release.log), puts the
-image tag back and cancels the maintenance: the server is as it was (a
+image tag back, removes the image shipped and cancels the maintenance:
+the server is as it was (a
 published patch stays with its row; the next run goes without
 `--resources`). A stop in the swap before anything moved starts srp26
 again as it was.
@@ -180,6 +197,25 @@ made anew and reconnect by themselves; the launcher shows no countdown.
 The progress lines show the time since the go-ahead instead of the time to
 the planned end. `--minutes` and `--no-maintenance` are refused together.
 
+### The image: built here, shipped there
+
+The builder on the release PC: `$SKHID_IMAGE_BUILDER` (`docker` or
+`podman`), else docker when its daemon answers, else rootless podman (the
+system's, else nixpkgs': `nix build nixpkgs#podman`; it needs the user's
+`/etc/subuid` range and NixOS's `newuidmap` wrappers, both there by
+default). When the user has no containers settings (no
+`/etc/containers/policy.json`, no `~/.config/containers/policy.json`: NixOS
+without `virtualisation.podman`), the script gives podman Docker's in a home
+of its own in the run's work folder: short names from docker.io, no
+signature policy; its images and build caches stay in
+`~/.local/share/containers`. A cold build takes a minute or two on the
+release PC; the image is ~95 MB, ~30 MB shipped (zstd). It is kept in the
+work folder (`srp-026g-image.tar.zst`).
+
+The Dockerfile's base images are tags, not digests (`rust:1-slim-bookworm`,
+`debian:bookworm-slim`): each build pulls what they name that day, wherever
+it runs, so the image does not depend on what the release PC has cached.
+
 ### The release folder
 
 Every release keeps a folder on its target:
@@ -194,9 +230,9 @@ Every release keeps a folder on its target:
 | `new.sha`, `old.sha` | sha256sum of the new files, and of `download/`'s before |
 | `old-Survarium-0.26g-srp-files.zip`, `old-server-game-data.db` | `download/`'s files before the swap (hard links) |
 | `srp-<unix>.db`, `srp-db.name` | srp.db as it was before the release (srp's own start backup) |
-| `image.old`, `image.new`, `min.old` | the image IDs before and after, `SRP_MIN_PATCH_REVISION` before |
+| `image.old`, `image.new`, `min.old` | the image IDs before and after (with server code, `image.new` must be the ID built here and shipped, else the release rolls back), `SRP_MIN_PATCH_REVISION` before |
 | `changed.txt` | the server source files that changed, the ZIP's changed entries |
-| `src.tar`, `old-src.tgz` | with server code: main's source, the tree's files it replaced |
+| `src.tar`, `old-src.tgz` | with server code: main's source (unpacked into the tree at the swap: the image itself was built on the release PC), the tree's files it replaced |
 | `rollback.sh`, `rollback.env` | the rollback (`release/host-rollback.sh`) and what it puts back |
 
 A folder left in `staging` or `swapping` (a run that died) blocks the next
@@ -255,7 +291,7 @@ its own patches server and list (`$SKHID_TEST_PATCHES_SSH/_DIR/_URL`,
 `release/patches-test.tsv`; the scripts refuse settings that are the
 production folder or URL), its own release folders and lock. The admin
 page there allows the jump host. srp.db is not copied to the jump host for
-it (it is there). The host also has `/opt/srp-test/redeploy` (a branch on
+it (it is there). The image is built here and shipped there as for live. The host also has `/opt/srp-test/redeploy` (a branch on
 it, built and recreated) and `/opt/srp-test/teardown`; read
 `/opt/srp-test/README-test.txt` there.
 

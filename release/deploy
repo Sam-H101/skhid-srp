@@ -32,9 +32,10 @@
 #   --label <word>  ends the folder's name
 #   --dry-run       prints every command, runs none on the live host
 #
-# Server code changed? Build the image first (docker compose build srp26):
-# the restart runs what srp-026g:latest is then; the rollback tags the image
-# that ran before.
+# Server code changed? Use release/release.sh: it builds the image on the
+# release PC and ships it (never a build on the live host, whose one CPU
+# runs the matches). deploy restarts on what srp-026g:latest is; the
+# rollback tags the image that ran before.
 . "$(dirname "$0")/lib.sh"
 
 zip='' data='' revision='' label=''

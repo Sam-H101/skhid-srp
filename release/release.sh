@@ -25,7 +25,12 @@
 #      menus) in it from revision 12 on (or the --resources file); with
 #      --resources, the file is resources.db.patch_<main's REVISION>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
-#      which server code differs between main and the target's tree;
+#      which server code differs between main and the target's tree; with
+#      server code to build: the image builder here (docker, else rootless
+#      podman), zstd here and on the target, the same machine type here and
+#      there, the target's docker keeping images by their config's ID
+#      (overlay2, not the containerd store), main's compose file building
+#      srp26 with `build: .` only;
 #   2. takes the release lock, y/N, then plans maintenance in <n> minutes on
 #      the admin page, POSTed from the jump host (its address is in the
 #      SRP_ADMIN_IPS of the target; the token and the page's path go to curl
@@ -37,9 +42,15 @@
 #      files as release/deploy does; makes the release folder
 #      $TARGET_DIR/release-rev<rev>-<UTC YYYYMMDD-HHMM>[-<label>] and stages
 #      both in it (sha256 checked there, chmod 644), with changed.txt; with
-#      server code to build: tags the running image (by its ID)
-#      srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
-#      folder's src/ and runs docker compose build srp26 there;
+#      server code to build: builds the image HERE, of main's srp-026g with
+#      its Dockerfile (base images pulled anew), as
+#      srp-026g:rev<rev>-<stamp>[-<label>], never on the target (its one CPU
+#      runs the matches); stages main's source (src.tar) in the folder; tags
+#      the running image (by its ID) srp-026g:before-rev<rev>-<stamp>, ships
+#      the new one (docker save | zstd -T0, then zstd -d | docker load on
+#      the target, through the jump host to live), checks its ID there is
+#      the one here and tags it srp-026g:latest. A failed build or shipping
+#      stops the release before the swap, as any failed step does;
 #   4. at the planned time, once $SKHID_SITE/api/stats says "matches":0
 #      (waiting up to --match-wait more): shows what changes, y/N (no answer
 #      in $SKHID_SWAP_ANSWER_MINUTES, default 10: no), then the swap of
@@ -50,7 +61,8 @@
 #      and server data (hard links), their sha256, the image ID, the setting
 #      (and the source) kept in the folder with its rollback, srp.db copied
 #      to the jump host too (live only); the server data (and source) in
-#      place, SRP_MIN_PATCH_REVISION=<rev>, srp26 made anew;
+#      place, SRP_MIN_PATCH_REVISION=<rev>, srp26 made anew (on the image
+#      shipped, checked by its ID);
 #   5. checks the container, the log's game data line and /patches (exactly
 #      the list's patches), and only then puts the ZIP in place and checks
 #      /api/client-files. A failed check prints srp's log and runs the
@@ -67,8 +79,9 @@
 #                       test patches server ($SKHID_TEST_PATCHES_*, never the
 #                       production one) and its list release/patches-test.tsv;
 #                       its ZIP (build-zip --test); the same steps as live
-#   --server-code auto  (default) build when main's srp-026g differs from the
-#                       target's tree; yes: build anyway; no: never
+#   --server-code auto  (default) build the image (here) when main's srp-026g
+#                       differs from the target's tree; yes: build anyway; no:
+#                       never
 #   --minutes <n>       the countdown, 1-10080 (default $SKHID_MAINT_MINUTES,
 #                       else 20)
 #   --no-maintenance    no countdown, the admin page never asked: prepare at
@@ -85,7 +98,8 @@
 #                       other command; plans no maintenance, writes nothing
 #   --yes --i-know      answer both y/N questions yes (both flags or neither)
 #
-# Settings: release.env (.claude/skills/skhid-release/release.env.example).
+# Settings: release.env (.claude/skills/skhid-release/release.env.example);
+# SKHID_IMAGE_BUILDER (docker or podman) picks the image builder here.
 . "$(dirname "$0")/lib.sh"
 here=$(cd "$(dirname "$0")" && pwd)
 
@@ -178,7 +192,7 @@ say "working in $work"
 # maintenance planned unless --no-maintenance: a stop puts things back),
 # swapping (a stop rolls back), finished. maint_planned: the maintenance
 # was asked for (a stop cancels it).
-phase=preflight start=0 end=0 image_tagged=0 maint_planned=0
+phase=preflight start=0 end=0 image_tagged=0 image_loaded=0 maint_planned=0
 
 clock() { date -u -d "@$1" +%H:%M:%S; }
 span() { local s=$1; printf '%d:%02d' $((s / 60)) $((s % 60)); }
@@ -329,6 +343,13 @@ on_exit() {
                 say "image: $IMAGE is the running one again ($RUN_IMAGE)"
             else
                 say "image: NOT put back: docker tag $RUN_IMAGE $IMAGE"
+            fi
+        fi
+        if ((image_loaded)); then
+            if on_target "docker rmi $NEW_TAG >/dev/null"; then
+                say "image: the one shipped ($NEW_TAG) removed from the $TARGET host"
+            else
+                say "image: the one shipped is still on the $TARGET host: docker rmi $NEW_TAG"
             fi
         fi
         if ((maint_planned)); then cancel_maintenance; fi
@@ -598,6 +619,39 @@ if [[ -n $main_commit ]]; then
     fi
 fi
 
+# The image, when there is server code to build: built here, shipped there.
+if ((build_code)); then
+    builder_pick
+    if ! builder_setup "$work"; then
+        problem "image builder here: no docker daemon answers, and podman is neither on the PATH nor in nixpkgs (nix build nixpkgs#podman)"
+    elif builder info >/dev/null 2>"$work/builder.log"; then
+        okay "image builder here: $BUILDER (${BUILDER_CMD[*]: -1})"
+    else
+        problem "image builder here: $BUILDER info fails: $(tail -n 3 "$work/builder.log" | tr '\n' ' ')"
+    fi
+    if command -v zstd >/dev/null; then okay "zstd here"; else problem "zstd is not installed here (the image is shipped compressed)"; fi
+    if ((target_ok)); then
+        t_zstd='' t_arch='' t_driver=''
+        there=$(on_target "if command -v zstd >/dev/null; then echo zstd; else echo none; fi; uname -m; docker info -f '{{.Driver}} {{json .DriverStatus}}'" || true)
+        { read -r t_zstd; read -r t_arch; read -r t_driver; } <<<"$there" || true
+        if [[ $t_zstd == zstd ]]; then okay "zstd on the $TARGET host"; else problem "zstd is not installed on the $TARGET host (apt install zstd): the image is shipped compressed"; fi
+        if [[ $t_arch == "$(uname -m)" ]]; then okay "machine type: $t_arch here and there"; else problem "machine type: $(uname -m) here, ${t_arch:-unknown} on the $TARGET host: the image built here would not run there"; fi
+        if [[ -z $t_driver ]]; then
+            problem "docker info on the $TARGET host names no storage driver"
+        elif [[ $t_driver == *containerd.snapshotter* ]]; then
+            problem "the $TARGET host's docker keeps images in the containerd store ($t_driver): a loaded image's ID there would not be its config's, and the release checks that ID"
+        else
+            okay "the $TARGET host's docker: ${t_driver%% *} (an image's ID is its config's)"
+        fi
+    fi
+    builds=$(git -C "$REPO" show "$main_commit:srp-026g/docker-compose.yml" 2>/dev/null | grep -E '^[[:space:]]+build:' || true)
+    if [[ $(grep -c . <<<"$builds") == 1 && $builds =~ ^[[:space:]]+build:[[:space:]]+\.[[:space:]]*$ ]]; then
+        okay "main's compose file builds srp26 with \`build: .\` (built here the same way)"
+    else
+        problem "main's compose file does not build srp26 with \`build: .\` alone (${builds:-no build line}): release.sh builds its Dockerfile with no build args; teach it the new ones first"
+    fi
+fi
+
 if ((${#problems[@]})); then
     say
     say "preflight: ${#problems[@]} problem(s), nothing was done:"
@@ -619,7 +673,7 @@ say "the release: revision $live_rev -> $rev to the $TARGET server ($TARGET_SITE
 say "  new content: ${resources:-none}"
 say "  /patches will offer:"
 say_offered
-say "  server code: $(if ((build_code)); then say "built before the swap (docker compose build srp26)"; else say "not built"; fi)"
+say "  server code: $(if ((build_code)); then say "the image built here ($BUILDER), shipped to the $TARGET host as $NEW_TAG before the swap"; else say "not built"; fi)"
 scale=""
 ((MINUTE == 60)) || scale=" (a minute here is $MINUTE s)"
 if ((no_maint)); then
@@ -727,15 +781,40 @@ else
     stage_upload "$zip" "$ZIP_NAME" "$ZIP_SHA"
 fi
 if ((build_code)); then
-    progress "3. the server code: building the image from main's source"
+    # The image: built here, never on the target; shipped, checked by its ID.
+    image_file=$work/srp-026g-image.tar
+    if ((DRY_RUN)); then
+        NEW_ID='<its ID>'
+        say "[dry run] 3. build the image here: cd $work/src && ${BUILDER_CMD[*]} build ... -t $(builder_ref "$NEW_TAG") -f Dockerfile ."
+        say "[dry run]    then: $BUILDER save $(builder_ref "$NEW_TAG") | zstd -T0 > $image_file.zst"
+    else
+        progress "3. the server code: building the image here ($BUILDER, main's srp-026g; its log: $work/image-build.log)"
+        if ! builder_build "$work/src" "$NEW_TAG" </dev/null >"$work/image-build.log" 2>&1; then
+            tail -n 30 "$work/image-build.log" | sed 's/^/  | /'
+            die "the image did not build here (its log: $work/image-build.log)"
+        fi
+        builder save "$(builder_ref "$NEW_TAG")" >"$image_file" 2>"$work/image-save.log" || die "$BUILDER save failed: $(tail -n 3 "$work/image-save.log" | tr '\n' ' ')"
+        NEW_ID=$(archive_image_id "$image_file") || die "$image_file: no image ID read from it"
+        zstd -T0 -q -f --rm "$image_file" -o "$image_file.zst" || die "zstd of the image failed"
+        say "image built here: $NEW_TAG, ID $NEW_ID; $(size_of "$image_file.zst") bytes to ship (zstd)"
+    fi
     write_on live "cat > $REL_DIR/src.tar" "$src_tar"
     if ((!DRY_RUN)); then
         there=$(on_target "sha256sum < $REL_DIR/src.tar")
         [[ ${there%% *} == "$(sha256_of "$src_tar")" ]] || die "$REL/src.tar has sha256 ${there%% *} on the host, not the one here"
     fi
-    write_on live "cd $REL_DIR && mkdir src && tar -xf src.tar -C src && docker tag $(q "$RUN_IMAGE") $BEFORE_TAG"
+    write_on live "docker tag $(q "$RUN_IMAGE") $BEFORE_TAG"
     ((DRY_RUN)) || image_tagged=1
-    write_on live "cd $D && docker compose --env-file $D/.env -f $REL/src/docker-compose.yml build srp26"
+    progress "3. the server code: shipping the image to the $TARGET host"
+    write_on live "zstd -dc | docker load" "$image_file.zst"
+    ((DRY_RUN)) || image_loaded=1
+    if ((!DRY_RUN)); then
+        there=$(on_target "docker image inspect -f '{{.Id}}' $NEW_TAG" || true)
+        [[ $there == "$NEW_ID" ]] || die "$NEW_TAG on the $TARGET host has the ID ${there:-(none)}, not $NEW_ID, the image built here"
+        say "$NEW_TAG on the $TARGET host: ID $NEW_ID, as here"
+    fi
+    write_on live "docker tag $NEW_ID $IMAGE"
+    SWAP_IMAGE=$NEW_ID
 fi
 if ((!DRY_RUN)); then progress "3. staged"; fi
 
@@ -778,7 +857,7 @@ if ((!DRY_RUN)); then
     say "  download/$DATA_NAME: sha256 $DATA_SHA"
     say "  .env: SRP_MIN_PATCH_REVISION $OLD_MIN -> $rev"
     say "  /patches: ${OLD_PATCHES:-(no list)} -> $EXPECTED"
-    if ((build_code)); then say "  the image: main's source, built (the running one, $RUN_IMAGE, is tagged $BEFORE_TAG)"; fi
+    if ((build_code)); then say "  the image: $NEW_TAG ($NEW_ID), built here of main's source (the running one, $RUN_IMAGE, is tagged $BEFORE_TAG)"; fi
     say "  the ZIP's entries, against the live ZIP:"
     grep -E '^  (CHANGED|ADDED|REMOVED) |^updater_skhid.exe' "$work/build-zip.log" | sed 's/^ */    /' || say "    (no entry changed)"
     say "Next: srp26 stopped, the old files kept in the release folder, the server data in place, the revision set,"
@@ -816,6 +895,7 @@ fi
 phase=finished
 say
 say "released revision $rev to the $TARGET server. Its folder: $TARGET_DIR/$REL (the files before it, srp.db before it, the image IDs, changed.txt, release.log); the old image is $BEFORE_TAG ($RUN_IMAGE)"
+if ((build_code)); then say "The image runs as $NEW_TAG ($NEW_ID, built here; its archive: $image_file.zst)."; fi
 say "Rollback: release/rollback${step_flags[*]:+ ${step_flags[*]}} $REL (on the $TARGET host: sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL)"
 say "  (srp.db back as it was before the release; --keep-db keeps today's)"
 say "Kept here: $zip, $data (their hashes go in the changelog PR)."

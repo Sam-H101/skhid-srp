@@ -118,6 +118,67 @@ python() {
     fi
 }
 
+# srp's image is built here, on the release PC, and shipped to the target
+# (docker save | zstd, then zstd -d | docker load there): never built on the
+# target, whose one CPU runs the matches. The builder (builder_pick):
+# $SKHID_IMAGE_BUILDER (docker or podman), else docker when its daemon
+# answers, else podman (rootless; nixpkgs' when the system has none).
+BUILDER='' BUILDER_CMD=()
+builder_pick() {
+    case ${SKHID_IMAGE_BUILDER:-} in
+    docker | podman) BUILDER=$SKHID_IMAGE_BUILDER ;;
+    '') if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILDER=docker; else BUILDER=podman; fi ;;
+    *) die "SKHID_IMAGE_BUILDER is docker or podman, not $SKHID_IMAGE_BUILDER" ;;
+    esac
+}
+# builder_setup <folder>: BUILDER_CMD, the builder's command. A podman whose
+# user has no containers settings (NixOS without virtualisation.podman) gets
+# Docker's, in a home of its own in <folder> (its images stay where they
+# are): short names from docker.io, no signature policy.
+builder_setup() {
+    local podman home
+    if [[ $BUILDER == docker ]]; then
+        BUILDER_CMD=(env DOCKER_BUILDKIT=1 docker)
+        return 0
+    fi
+    if ! podman=$(command -v podman); then
+        podman=$(nix build --no-link --print-out-paths 'nixpkgs#podman^out' 2>/dev/null) || return 1
+        podman=$podman/bin/podman
+    fi
+    BUILDER_CMD=("$podman")
+    if [[ ! -f /etc/containers/policy.json && ! -f $HOME/.config/containers/policy.json ]]; then
+        home=$1/podman-home
+        mkdir -p "$home/.config/containers"
+        printf '%s\n' 'unqualified-search-registries = ["docker.io"]' 'short-name-mode = "permissive"' >"$home/.config/containers/registries.conf"
+        printf '%s\n' '{"default": [{"type": "insecureAcceptAnything"}]}' >"$home/.config/containers/policy.json"
+        BUILDER_CMD=(env "HOME=$home" "XDG_CONFIG_HOME=$home/.config" "XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}" "$podman")
+    fi
+}
+builder() { "${BUILDER_CMD[@]}" "$@"; }
+# The name of <tag> here: podman's own are localhost/<name>; from
+# docker.io/library/<tag> a docker load makes <tag>.
+builder_ref() { if [[ $BUILDER == podman ]]; then printf 'docker.io/library/%s' "$1"; else printf '%s' "$1"; fi; }
+# builder_build <context> <tag>: the image of <context>'s Dockerfile (what
+# `docker compose build` does with `build: .`), its base images pulled anew
+# (what their tags name now, not what this PC kept), at nice 10.
+builder_build() {
+    local flags=(--pull)
+    if [[ $BUILDER == podman ]]; then flags=(--pull=always --format docker); fi
+    (cd "$1" && nice -n 10 "${BUILDER_CMD[@]}" build "${flags[@]}" -t "$(builder_ref "$2")" -f Dockerfile .)
+}
+# The image ID a classic `docker load` gives the image of a docker save
+# archive: the sha256 of its config (manifest.json's Config).
+archive_image_id() {
+    python -I -c '
+import hashlib, json, sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    manifest = json.load(t.extractfile("manifest.json"))
+    if len(manifest) != 1:
+        sys.exit("%s holds %d images, not one" % (sys.argv[1], len(manifest)))
+    print("sha256:" + hashlib.sha256(t.extractfile(manifest[0]["Config"]).read()).hexdigest())
+' "$1"
+}
+
 # `<sha256> <name>` of every file entry of a ZIP, in name order. (Python's
 # zipfile, not unzip: an unzip may be sandboxed to its working folder.)
 zip_hashes() {
@@ -447,17 +508,22 @@ served_patches() {
 #   srp-<unix>.db    srp.db as it was before the release: the copy the new
 #                    srp made at its start (srp-db.name names it)
 #   image.old image.new  the image ID that ran before the swap, and after
+#                    (with server code: the one built here and shipped,
+#                    srp-026g:rev<n>-<stamp>[-<label>] there)
 #   min.old          SRP_MIN_PATCH_REVISION before (`none`: no line)
 #   changed.txt      the server source files that changed, the ZIP's changed
 #                    entries (release.sh)
-#   src.tar src/ old-src.tgz  with server code: main's source (src/, where
-#                    the image is built), the tree's files before
+#   src.tar old-src.tgz  with server code: main's source (the image is
+#                    built of it here; the swap unpacks it into the tree, for
+#                    the compose file), the tree's files it replaces
 #   rollback.sh rollback.env  release/host-rollback.sh and what it puts back
-REL='' REL_DIR='' BEFORE_TAG='' STAGED=0
+REL='' REL_DIR='' BEFORE_TAG='' NEW_TAG='' STAGED=0
 release_folder() { # <revision> <stamp> [label]
     REL=release-rev$1-$2${3:+-$3}
     REL_DIR=$D/$REL
     BEFORE_TAG=srp-026g:before-rev$1-$2${3:+-$3}
+    # shellcheck disable=SC2034 # release.sh uses it
+    NEW_TAG=srp-026g:rev$1-$2${3:+-$3}
 }
 
 # The folder made (never one that is there), state staging.
@@ -596,6 +662,8 @@ restart_command() {
 #                      tree too, SWAP_SRC_INPUTS (quoted paths) kept first
 #   SWAP_BEFORE_STOP   a function run right before srp26 is stopped (it
 #                      dies to stop the release there), or empty
+#   SWAP_IMAGE         the image ID srp26 must run after the restart (the
+#                      one shipped), or empty
 # In order:
 #   swap_prepare <revision>  srp26 stopped; srp.db, the old files, the image
 #                            ID, the setting kept in the folder; the image
@@ -607,7 +675,7 @@ restart_command() {
 # SWAP_STATE says how far it got, for swap_failed: `` (nothing), stopped
 # (only srp26 stopped and copies made: it is started again), moved (the
 # rollback runs), finished.
-SWAP_STATE='' SWAP_SRC=0 SWAP_SRC_INPUTS='' SWAP_BEFORE_STOP=''
+SWAP_STATE='' SWAP_SRC=0 SWAP_SRC_INPUTS='' SWAP_BEFORE_STOP='' SWAP_IMAGE=''
 OLD_MIN=none HAVE_ZIP=0 HAVE_DATA=0 OLD_PATCHES=''
 RUN_CONTAINER='' RUN_IMAGE='' RUN_VOLUME='' RUN_VOLUME_DIR='' LATEST_IMAGE=''
 
@@ -811,6 +879,12 @@ swap_server() {
     SWAP_DONE+=("srp26 made anew")
     write_on live "cd $D && id=\$($TARGET_COMPOSE ps -aq srp26 | head -n 1) && docker inspect -f '{{.Image}}' \"\$id\" > $REL/image.new"
     ((DRY_RUN)) && return 0
+    if [[ -n $SWAP_IMAGE ]]; then
+        local runs
+        runs=$(on_target "cat $REL_DIR/image.new" || true)
+        [[ $runs == "$SWAP_IMAGE" ]] || die "srp26 runs the image ${runs:-(unknown)}, not the one shipped ($SWAP_IMAGE)"
+        say "srp26 runs the image shipped: $SWAP_IMAGE"
+    fi
     check_server || die "the new server did not come up as it must"
     keep_db_backup || die "the pre-release copy of srp.db is not kept: rolling back rather than going on without it"
 }
