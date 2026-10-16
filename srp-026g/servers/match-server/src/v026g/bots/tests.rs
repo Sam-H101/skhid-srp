@@ -2031,6 +2031,9 @@ fn real_bot_cost() {
             let (mut take_ends, mut stands_given_up) = (0u32, 0u32);
             let mut theft_looks = 0u32;
             let mut stolen_known: Vec<(usize, u32)> = Vec::new();
+            // World-seconds a stolen battery that fell lay unknown to its
+            // owners (fell alive, at death).
+            let mut lying_unknown = [0u32; 2];
             super::path::reset_worst();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
@@ -2119,6 +2122,15 @@ fn real_bot_cost() {
                         // When a stolen battery that fell is known to its
                         // owners again (seen, or carried by one of them).
                         for (battery, mark) in game.stolen_marks.iter().enumerate() {
+                            if let Some((owner, Some((_, alive)))) = *mark
+                                && matches!(game.batteries.get(battery), Some(Lying::Free(_)))
+                                && bots.teams[usize::from(owner)]
+                                    .knowledge
+                                    .battery(battery)
+                                    .is_none()
+                            {
+                                lying_unknown[usize::from(!alive)] += 1;
+                            }
                             if let Some((owner, Some((fell, _)))) = *mark
                                 && !stolen_known.contains(&(battery, fell))
                                 && (bots.teams[usize::from(owner)]
@@ -2303,8 +2315,9 @@ fn real_bot_cost() {
                     .filter(|m| m.1.is_some_and(|(_, a)| a == alive))
                     .count();
                 eprintln!(
-                    "  stolen fallen {}: home again ms {home:?}, home with the thieves {theirs}, still out {out}; theft looks {theft_looks}",
+                    "  stolen fallen {}: home again ms {home:?}, home with the thieves {theirs}, still out {out}; lying unknown to its owners {} s; theft looks {theft_looks}",
                     if alive { "alive" } else { "at death" },
+                    lying_unknown[usize::from(!alive)],
                 );
             }
             for line in &game.stolen_log {
