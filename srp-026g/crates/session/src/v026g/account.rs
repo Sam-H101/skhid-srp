@@ -410,6 +410,62 @@ impl Account {
         (before + 1..=self.reputation_level(faction)).collect()
     }
 
+    /// The slots of `kit` whose item is worn in a slot another worn item
+    /// covers ([`item_params::covered_slots`]), and which the rule of the
+    /// lobby (`rules::move_items`) never lets be filled. An item covering
+    /// more slots is kept before one covering fewer (then by slot): it
+    /// takes off what it covers, and an item that would cover a kept one is
+    /// itself taken off.
+    pub fn covered_items(&self, kit: &Kit) -> Vec<usize> {
+        let covers = |slot: usize| -> &'static [u8] {
+            kit.slots[slot]
+                .and_then(|held| self.item(held.item_id))
+                .map_or(&[], |item| item_params::covered_slots(item.dict_id))
+        };
+        let mut worn: Vec<usize> = (0..KIT_SLOTS)
+            .filter(|&slot| kit.slots[slot].is_some())
+            .collect();
+        worn.sort_by_key(|&slot| (std::cmp::Reverse(covers(slot).len()), slot));
+        let mut kept: Vec<usize> = Vec::new();
+        let mut covered = [false; KIT_SLOTS];
+        let mut off = Vec::new();
+        for slot in worn {
+            let over_kept = covers(slot).iter().any(|&c| kept.contains(&usize::from(c)));
+            if covered[slot] || over_kept {
+                off.push(slot);
+                continue;
+            }
+            for &c in covers(slot) {
+                if let Some(c) = covered.get_mut(usize::from(c)) {
+                    *c = true;
+                }
+            }
+            kept.push(slot);
+        }
+        off.sort_unstable();
+        off
+    }
+
+    /// Takes off, to the inventory, every item [`Self::covered_items`]
+    /// names, in every kit: a kit saved before the rule (a mask under a
+    /// helmet that has one built in). How many it took off.
+    pub fn uncover_kits(&mut self) -> usize {
+        let mut taken = 0;
+        for index in 0..self.kits.len() {
+            let off = self.covered_items(&self.kits[index]);
+            if off.is_empty() {
+                continue;
+            }
+            let kit = &mut self.kits[index];
+            for slot in &off {
+                kit.slots[*slot] = None;
+            }
+            kit.revision = kit.revision.wrapping_add(1);
+            taken += off.len();
+        }
+        taken
+    }
+
     /// What a kit weighs, as the lobby counts it
     /// ([`item_params::carried_weight`]).
     pub fn kit_weight(&self, kit: &Kit) -> f32 {
@@ -475,8 +531,9 @@ impl Account {
     /// it can not crash a client: the next ids past every id in use, at
     /// most three kits with distinct non-zero ids, an active kit that
     /// exists, no item the client's dictionary lacks, no duplicate item id,
-    /// item lists within the client's limits, and no slot holding an item
-    /// that is gone or does not fit. `true` if anything changed.
+    /// item lists within the client's limits, no slot holding an item
+    /// that is gone or does not fit, and none worn in a slot another worn
+    /// item covers ([`Self::uncover_kits`]). `true` if anything changed.
     pub fn repair(&mut self) -> bool {
         let dictionary = Dictionary::shared();
         let before = self.clone();
@@ -531,6 +588,7 @@ impl Account {
                 }
             }
         }
+        self.uncover_kits();
         self.sync_kits();
         self.name = cap_name(&self.name);
         self.clan_tag =
