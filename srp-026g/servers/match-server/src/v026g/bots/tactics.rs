@@ -27,6 +27,10 @@ use super::view::{EYE_CROUCHED, EYE_STANDING};
 pub const SPAWN_AREA_M: f32 = 20.0;
 /// A point is looked for on the grid within this, metres.
 const LOCATE_M: f32 = 3.0;
+/// A use reaches this far from the eye, metres: the client's ray is
+/// `usable_objects_detection_distance`, 2.0 (PROVEN), and must hit the
+/// object's own shape; 0.2 is kept for the aim and the body's sway.
+pub const USE_REACH_M: f32 = 1.8;
 
 /// What one map's tactics hold for one hazard margin: the same for every
 /// match on the map, so matches share it ([`Tactics::of`]). Read-only once
@@ -579,6 +583,36 @@ impl Tactics {
             .grid
             .locate(point, LOCATE_M)
             .is_some_and(|node| self.walkable(node) && self.allowed(node, time, side, false))
+    }
+
+    /// Where a body stands to take a battery lying at `at`: `at` itself
+    /// when the floor there is one a walk gets to (nearly every battery);
+    /// else the walkable floor whose crouched eye is nearest it, within a
+    /// use's reach ([`USE_REACH_M`]) and in a clear line (a battery on a
+    /// shelf, taken from the floor beside it, as players do); none if no
+    /// floor is so.
+    pub fn stand_to_take(&self, at: Vec3) -> Option<Vec3> {
+        let grid = &self.world.grid;
+        if grid
+            .locate(at, LOCATE_M)
+            .is_some_and(|node| self.walkable(node))
+        {
+            return Some(at);
+        }
+        let r = USE_REACH_M;
+        let mut best: Option<(f32, Vec3)> = None;
+        for node in grid.floors_in([at.x - r, at.z - r, at.x + r, at.z + r]) {
+            if !self.walkable(node) {
+                continue;
+            }
+            let feet = grid.position(node);
+            let eye = feet + Vec3::new(0.0, EYE_CROUCHED, 0.0);
+            let d = (at - eye).length();
+            if d <= r && best.is_none_or(|(b, _)| d < b) && self.sees(eye, at) {
+                best = Some((d, feet));
+            }
+        }
+        best.map(|(_, feet)| feet)
     }
 
     /// Whether `b` is seen from `a` (points at the eyes).
