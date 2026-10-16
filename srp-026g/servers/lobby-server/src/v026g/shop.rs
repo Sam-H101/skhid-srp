@@ -187,7 +187,7 @@ impl Core<'_> {
 
     /// The premium account or the inventory changed by a purchase: the
     /// services (the client never asks for them after one), then the
-    /// inventory, the account (the third kit's state) and the money.
+    /// inventory, the account and the money.
     fn premium_changed(&mut self, who: &Who) {
         let services = wire::services(&who.account.locked(), quests::now());
         self.send(who.addr, services);

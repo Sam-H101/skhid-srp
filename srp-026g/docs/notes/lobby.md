@@ -156,7 +156,7 @@ Profile record (Q = +0x58 + i·0x704):
 
 | type | field | dest | note |
 |---|---|---|---|
-| u8 | state (ctor default 2, 0x2F7BF3) | Q+0x700 | 2 → passed to Flash as 2; anything else → the UI computes 0 (complete) or 1 (incomplete + `hint_text`) from the slots (0x222010, 0x2F7DA0). **2 = a premium account's profile (PROVEN in the UI):** `ProfileSelector.setupProfiles` (`lobby_menu.swf`) shows a state-2 tab highlighted, with the tip `st_premium_profile_hint` = "Available with premium account". Which profiles the original server marked is not known; srp marks the third when the account has no premium |
+| u8 | state (ctor default 2, 0x2F7BF3) | Q+0x700 | 2 → passed to Flash as 2; anything else → the UI computes 0 (complete) or 1 (incomplete + `hint_text`) from the slots (0x222010, 0x2F7DA0). **2 = a premium account's profile (PROVEN in the UI):** `ProfileSelector.setupProfiles` (`lobby_menu.swf`) shows a state-2 tab highlighted, with the tip `st_premium_profile_hint` = "Available with premium account". Which profiles the original server marked is not known (LIKELY the third); srp marks none: every account uses all three kits, premium or not (the owner's choice, 2026-10-17; `Account::kit_usable`) |
 | u32 | profile_id | Q+0x6FC | matched against the active id (§2.7) |
 | str | profile name (**≤ 63**); empty → localized default name per index (table 0xA7482C) | Q+0x00 | |
 | u32 | slot mask, bits 0..22 | | |
@@ -537,7 +537,7 @@ Paths in `srp-021d` (the srp-026g copy has the same layout). Request handling is
 ## 8. Open questions
 
 1. The 0x80 second byte and the client's `32 00 <flag>` reply: meaning and expected answer (lobby_requests.md §1.2).
-2. Account body: the u8 at +0x45EC (LIKELY team), the second string at +0x48 (≤ 14; the clan abbreviation, static_info.md §3), the u32 at +0x45F4 (new-player protection, static_info.md §3). The profile state: 2 = premium profile (§2.5); which profiles the original server marked is open.
+2. Account body: the u8 at +0x45EC (LIKELY team), the second string at +0x48 (≤ 14; the clan abbreviation, static_info.md §3), the u32 at +0x45F4 (new-player protection, static_info.md §3). The profile state: 2 = premium profile (§2.5); which profiles the original server marked is open; srp marks none (§2.5).
 3. Names and order of the 68 `player_params_modifiers_enum` bits (u128 mask): **now in static_info.md §3.1** (same reader 0x1F1070; that note also proves the account u32 at +0x45F4 is the new-player protection value and names the second string the clan abbreviation). Until the skill values are mapped, send mask 0 until the skill boosters are mapped (0.21d sent skill boosters here; in a match the player reads its modifiers only from here in 0.21d — re-check for 0.26g in the match notes).
 4. ~~Upgrade record fields other than id and param (u32, u64).~~ The cosmetic's dict id and the decal editor's value (items.md §2).
 5. ~~Whether the reroll-cost pair in 0x8D is (generic, premium).~~ It is (§2.13).

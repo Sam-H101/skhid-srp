@@ -534,8 +534,8 @@ fn a_refusal_carries_the_games_own_text() {
         denial(&world.take(alice), 0x46).as_deref(),
         Some("st_cannot_relocate_item")
     );
-    // The premium account's kit without one.
-    world.ask(alice, request::active_kit(3));
+    // A kit that is none of its own made the active one.
+    world.ask(alice, request::active_kit(77));
     assert!(denial(&world.take(alice), 0x49).is_some());
     // Play without a weapon.
     world.ask(alice, request::move_item(1, 1, 18, 7, INVENTORY_SLOT, 1));
@@ -866,8 +866,8 @@ fn the_match_profile_carries_the_skills_modifiers() {
         survarium::v026g::skills::SkillsTree::shared().modifiers(&account.skills)
     );
     assert!(profile.kits[0].modifiers.iter().any(|value| *value != 0.0));
-    // Only the kit with a weapon is loaded in the match: the second is
-    // empty, the third a premium account's (and empty).
+    // Only the kit with a weapon is loaded in the match: the second and
+    // the third are empty.
     assert_eq!(
         profile.kits.iter().map(|kit| kit.state).collect::<Vec<_>>(),
         [0, 2, 2]
@@ -923,9 +923,9 @@ fn a_kit_without_a_weapon_is_not_loaded_in_a_match() {
     // The second kit gets the first one's weapon and ammunition: loaded.
     account.kits[1].slots = account.kits[0].slots;
     assert_eq!(states(&account), [0, 0, 2]);
-    // A premium account's third kit is its to use in the lobby, and is
-    // still not loaded while it is empty.
-    account.premium_until = 2_000;
+    // The third kit is the account's to use in the lobby without premium,
+    // and is still not loaded while it is empty.
+    assert!(!account.is_premium(1_000));
     assert_eq!(account.kit_state(2, 1_000), 0);
     assert_eq!(states(&account), [0, 0, 2]);
     account.kits[2].slots = account.kits[0].slots;
@@ -2448,7 +2448,7 @@ fn a_sign_in_brings_the_shop_the_tutorial_and_the_daily_bonus() {
 }
 
 #[test]
-fn premium_time_is_bought_and_opens_the_third_kit() {
+fn premium_time_is_bought_for_gold() {
     let mut world = World::new(Duration::from_secs(60));
     let alice = world.connect("Alice");
     world.take(alice);
@@ -2456,9 +2456,12 @@ fn premium_time_is_bought_and_opens_the_third_kit() {
     world.change(alice, |account| account.premium_money = 1_000);
     let gold = world.account(alice).premium_money;
     assert!(gold >= 100);
-    // The third kit is the premium account's.
+    // The third kit is every account's, premium or not.
     world.ask(alice, request::active_kit(3));
-    assert!(denial(&world.take(alice), 0x49).is_some());
+    assert!(matches!(
+        world.take(alice)[..],
+        [Decoded::Permitted(Permitted::ActiveKit(3))]
+    ));
 
     // A day (offer 7) for 100 gold.
     world.ask(alice, request::buy_offer(7, 0));
@@ -2469,16 +2472,6 @@ fn premium_time_is_bought_and_opens_the_third_kit() {
     ));
     assert_eq!(told_premium(&decoded), Some(Some(24)));
     assert_eq!(told_money(&decoded).unwrap().1, gold - 100);
-    // The account shows the third kit ready.
-    assert!(decoded.iter().any(|message| matches!(
-        message,
-        Decoded::Account(own) if own.body.kits[2].state == survarium::v026g::lobby::KIT_READY
-    )));
-    world.ask(alice, request::active_kit(3));
-    assert!(matches!(
-        world.take(alice)[..],
-        [Decoded::Permitted(Permitted::ActiveKit(3))]
-    ));
     // The services say so when asked.
     world.ask(alice, request::query(0x3E));
     assert!(matches!(

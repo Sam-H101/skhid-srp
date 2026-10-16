@@ -20,12 +20,6 @@ use survarium::v026g::quests::FACTIONS;
 pub const KITS: usize = limits::KITS;
 /// Slots of a kit.
 pub const KIT_SLOTS: usize = limits::KIT_SLOTS;
-/// The kit only a premium account may use: the last one. That a kit can be
-/// premium-only is PROVEN (the client's state 2, `st_premium_profile_hint`);
-/// that it was the third is LIKELY (the premium account's "additional
-/// equipment profile").
-pub const PREMIUM_KIT_INDEX: usize = 2;
-
 /// A new 0.26g account's silver and gold (the owner's choice, 2026-10-12:
 /// 2,000 silver and no gold; no source of the time gives the numbers).
 pub const STARTING_MONEY: u32 = 2_000;
@@ -331,14 +325,18 @@ impl Account {
         })
     }
 
-    /// Whether the kit at `index` may be used at `now`.
-    pub fn kit_usable(&self, index: usize, now: u64) -> bool {
-        index < self.kits.len() && (index != PREMIUM_KIT_INDEX || self.is_premium(now))
+    /// Whether the kit at `index` may be used at `now`: every kit of the
+    /// account, premium or not. The original game kept a kit for a premium
+    /// account (the client's state 2, `st_premium_profile_hint`, PROVEN;
+    /// that it was the third, LIKELY); srp gives all three to everyone (the
+    /// owner's choice, 2026-10-17), so no kit is sent as [`KIT_PREMIUM`].
+    pub fn kit_usable(&self, index: usize, _now: u64) -> bool {
+        index < self.kits.len()
     }
 
-    /// The premium account ran out while its kit was the one played: back
-    /// to the first kit. Call it before the account goes out (a sign-in, a
-    /// Play). Returns whether the active kit changed.
+    /// The active kit is none the account may use: back to the first kit.
+    /// Call it before the account goes out (a sign-in, a Play). Returns
+    /// whether the active kit changed.
     pub fn settle_active_kit(&mut self, now: u64) -> bool {
         let usable = self
             .kit_index(self.active_kit)
@@ -709,22 +707,24 @@ mod tests {
     }
 
     #[test]
-    fn the_third_kit_needs_premium() {
+    fn the_third_kit_needs_no_premium() {
         let mut account = Account::new("Alice");
+        assert_eq!(account.premium_hours(100), None);
         assert_eq!(account.kit_state(0, 100), KIT_READY);
         assert_eq!(account.kit_state(1, 100), KIT_READY);
-        assert_eq!(account.kit_state(2, 100), KIT_PREMIUM);
-        assert_eq!(account.premium_hours(100), None);
+        assert_eq!(account.kit_state(2, 100), KIT_READY);
         account.premium_until = 100 + 2 * 3600 + 1;
         assert_eq!(account.kit_state(2, 100), KIT_READY);
         assert_eq!(account.premium_hours(100), Some(3));
         assert!(!account.is_premium(account.premium_until));
-        // Playing the premium kit when the premium runs out: the first kit.
+        // Playing the third kit when the premium runs out: it stays.
         account.active_kit = 3;
-        assert!(!account.settle_active_kit(100));
-        assert!(account.settle_active_kit(account.premium_until));
-        assert_eq!(account.active_kit, 1);
         assert!(!account.settle_active_kit(account.premium_until));
+        assert_eq!(account.active_kit, 3);
+        // An active kit that is none of the account's: the first kit.
+        account.active_kit = 9;
+        assert!(account.settle_active_kit(100));
+        assert_eq!(account.active_kit, 1);
     }
 
     #[test]

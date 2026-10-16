@@ -30,7 +30,7 @@ own ranking row, `90`).
 `0x2CA9B0`:
 
 1. For each kit of the account (count at account+0x57, stride 0x704): skip a kit whose state is
-   2 (the premium kit without premium) and a kit that fails the Play check `0x2F7DA0` (the same
+   2 (the premium kit; srp sends that state for no kit) and a kit that fails the Play check `0x2F7DA0` (the same
    check as before Play: `rules::check_play`). Of the rest take the **highest**
    `0x2F79A0(kit)` (0x2CA9C7..0x2CAA42).
 2. `match_maker_defines.elo_modifiers`: walk the rows in order while `rating >= elo_min`; the

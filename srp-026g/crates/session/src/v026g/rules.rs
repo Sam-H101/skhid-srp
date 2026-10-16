@@ -61,8 +61,9 @@ pub fn service_prices() -> ServicePrices {
 pub enum ActionError {
     /// No kit with that id.
     NoSuchKit,
-    /// The kit is the premium account's and the account has none.
-    KitNeedsPremium,
+    /// The account may not use the kit ([`Account::kit_usable`]; today it
+    /// may use every kit of its own).
+    KitNotUsable,
     /// No such item in the inventory (or its dict id is not the one named).
     NoSuchItem,
     /// The item is not in the slot it is moved from.
@@ -110,7 +111,7 @@ impl ActionError {
     pub fn text_key(&self) -> &'static str {
         match self {
             Self::NoSuchKit
-            | Self::KitNeedsPremium
+            | Self::KitNotUsable
             | Self::NoSuchItem
             | Self::NotInSlot
             | Self::WrongSlot
@@ -178,7 +179,7 @@ pub fn move_items(
     let mut changed = account.clone();
     let kit_index = changed.kit_index(kit_id).ok_or(ActionError::NoSuchKit)?;
     if !changed.kit_usable(kit_index, now) {
-        return Err(ActionError::KitNeedsPremium);
+        return Err(ActionError::KitNotUsable);
     }
     let mut resolved = Vec::with_capacity(moves.len());
     for &relocation in moves {
@@ -461,7 +462,7 @@ pub fn buy(
     if target_slot != INVENTORY_SLOT {
         let kit_index = changed.kit_index(kit_id).ok_or(ActionError::NoSuchKit)?;
         if !changed.kit_usable(kit_index, now) {
-            return Err(ActionError::KitNeedsPremium);
+            return Err(ActionError::KitNotUsable);
         }
         let first = bought[0];
         let relocation = Relocation {
@@ -742,7 +743,7 @@ pub fn set_autobuy(account: &mut Account, on: bool) {
 pub fn set_active_kit(account: &mut Account, kit_id: u32, now: u64) -> Result<(), ActionError> {
     let index = account.kit_index(kit_id).ok_or(ActionError::NoSuchKit)?;
     if !account.kit_usable(index, now) {
-        return Err(ActionError::KitNeedsPremium);
+        return Err(ActionError::KitNotUsable);
     }
     account.active_kit = kit_id;
     Ok(())
@@ -779,7 +780,7 @@ const AMMO_SLOTS: [usize; 8] = [8, 9, 11, 12, 19, 20, 21, 22];
 pub fn check_play(account: &Account, kit_id: u32, now: u64) -> Result<(), ActionError> {
     let index = account.kit_index(kit_id).ok_or(ActionError::NoSuchKit)?;
     if !account.kit_usable(index, now) {
-        return Err(ActionError::KitNeedsPremium);
+        return Err(ActionError::KitNotUsable);
     }
     let kit = &account.kits[index];
     // Never a kit the lobby's rule would not have let be: the match gets
@@ -845,7 +846,7 @@ const _: () = assert!(limits::KITS * limits::KIT_SLOTS == limits::ACCOUNT_ITEMS)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v026g::account::{Item, PREMIUM_KIT_INDEX};
+    use crate::v026g::account::Item;
     use survarium::v026g::loadouts;
 
     const NOW: u64 = 1_000;
@@ -905,7 +906,7 @@ mod tests {
         ];
         let errors = [
             ActionError::NoSuchKit,
-            ActionError::KitNeedsPremium,
+            ActionError::KitNotUsable,
             ActionError::NoSuchItem,
             ActionError::NotInSlot,
             ActionError::WrongSlot,
@@ -1269,23 +1270,15 @@ mod tests {
     }
 
     #[test]
-    fn the_premium_kit_needs_premium() {
+    fn the_third_kit_needs_no_premium() {
         let mut account = account();
+        assert!(!account.is_premium(NOW));
         let pistol = account.inventory[0].clone();
-        let premium_kit = account.kits[PREMIUM_KIT_INDEX].id;
+        let third_kit = account.kits[2].id;
         let moves = [relocation(&pistol, INVENTORY_SLOT, 7, 1)];
-        assert_eq!(
-            move_items(&mut account, premium_kit, &moves, NOW),
-            Err(ActionError::KitNeedsPremium)
-        );
-        assert_eq!(
-            set_active_kit(&mut account, premium_kit, NOW),
-            Err(ActionError::KitNeedsPremium)
-        );
-        account.premium_until = NOW + 60;
-        move_items(&mut account, premium_kit, &moves, NOW).unwrap();
-        set_active_kit(&mut account, premium_kit, NOW).unwrap();
-        assert_eq!(account.active_kit, premium_kit);
+        move_items(&mut account, third_kit, &moves, NOW).unwrap();
+        set_active_kit(&mut account, third_kit, NOW).unwrap();
+        assert_eq!(account.active_kit, third_kit);
         assert_eq!(
             set_active_kit(&mut account, 77, NOW),
             Err(ActionError::NoSuchKit)
@@ -2085,12 +2078,9 @@ mod tests {
     fn play_needs_a_weapon_with_ammo() {
         let mut account = account();
         assert_eq!(check_play(&account, 1, NOW), Ok(()));
-        // The second kit is empty.
+        // The second and third kits are empty.
         assert_eq!(check_play(&account, 2, NOW), Err(ActionError::NoWeapon));
-        assert_eq!(
-            check_play(&account, 3, NOW),
-            Err(ActionError::KitNeedsPremium)
-        );
+        assert_eq!(check_play(&account, 3, NOW), Err(ActionError::NoWeapon));
         assert_eq!(check_play(&account, 9, NOW), Err(ActionError::NoSuchKit));
         // The pistol with its ammo slot emptied.
         let ammo = account.inventory[1].clone();
