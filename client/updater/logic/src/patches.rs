@@ -2,7 +2,7 @@
 //! "Patches"): the server's list of them, and what is to be done with the
 //! files in the game folder.
 //!
-//! The game (client patch revision 14, patch 27) mounts `resources.db` and
+//! The game (client patch revision 12, patch 27) mounts `resources.db` and
 //! then every `resources.db.patch_<n>` beside it, n = 1 to 255 in order, a
 //! missing number skipped. A later patch's file wins over the same file in
 //! the db and in the patches before it. n is the patch revision that
@@ -12,7 +12,7 @@
 //! (over the update server's own address, HTTPS), and where each one is:
 //!
 //! ```text
-//! {"patch_14": {"sha256": "<64 hex>", "url": "http://203.0.113.5/patch_14"},
+//! {"patch_12": {"sha256": "<64 hex>", "url": "http://203.0.113.5/patch_12"},
 //!  "patch_17": {"sha256": "<64 hex>", "url": "https://files.example/patch_17"}}
 //! ```
 //!
@@ -49,7 +49,7 @@ use crate::url::{self, Url};
 pub const MAX_LIST: usize = 512 * 1024;
 /// What every patch file's name starts with, in the game folder.
 pub const FILE_PREFIX: &str = "resources.db.patch_";
-/// What a patch is named in the list (`patch_14`).
+/// What a patch is named in the list (`patch_12`).
 const NAME_PREFIX: &str = "patch_";
 
 /// One patch of the list.
@@ -65,12 +65,12 @@ pub struct Patch {
 }
 
 impl Patch {
-    /// Its name in the list and on the server: `patch_14`.
+    /// Its name in the list and on the server: `patch_12`.
     pub fn name(&self) -> String {
         alloc::format!("{NAME_PREFIX}{}", self.number)
     }
 
-    /// Its file in the game folder: `resources.db.patch_14`.
+    /// Its file in the game folder: `resources.db.patch_12`.
     pub fn file_name(&self) -> String {
         alloc::format!("{FILE_PREFIX}{}", self.number)
     }
@@ -414,14 +414,15 @@ pub fn check(
     Ok(())
 }
 
-/// A file of the overlay (the ZIP's names) that is a patch file: the
-/// patches come from the list alone.
+/// A file of the overlay (the ZIP's names) that is a patch file, in any of
+/// its folders: the patches come from the list alone. (`game/` is the game
+/// folder, but so is the ZIP's top when the game folder is not named
+/// `game`, and a patch file has no business anywhere else either.)
 pub fn overlay_patch<'a>(overlay: &[&'a str]) -> Option<&'a str> {
-    overlay.iter().copied().find(|name| {
-        name.get(..5)
-            .is_some_and(|game| game.eq_ignore_ascii_case("game/"))
-            && is_patch_file(&name[5..])
-    })
+    overlay
+        .iter()
+        .copied()
+        .find(|name| is_patch_file(name.rsplit(['/', '\\']).next().unwrap_or(name)))
 }
 
 #[cfg(test)]
@@ -909,6 +910,19 @@ mod tests {
             overlay_patch(&["GAME/Resources.db.patch_x"]),
             Some("GAME/Resources.db.patch_x")
         );
-        assert_eq!(overlay_patch(&["game/binaries/resources.db.patch_1"]), None);
+        // Anywhere: the ZIP's top is the game folder when that is not
+        // named `game`.
+        assert_eq!(
+            overlay_patch(&["README.txt", "resources.db.patch_1"]),
+            Some("resources.db.patch_1")
+        );
+        assert_eq!(
+            overlay_patch(&["game/binaries/resources.db.patch_1"]),
+            Some("game/binaries/resources.db.patch_1")
+        );
+        assert_eq!(
+            overlay_patch(&["game/resources.db", "game/resources.db.skhid-keep"]),
+            None
+        );
     }
 }
