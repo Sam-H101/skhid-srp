@@ -149,7 +149,8 @@ The order, as it runs:
    `<n>` (below the live exe's: the last record's PR is not merged; `<n>` or
    above: that revision went out before and was rolled back), the tag
    `026g-rev<n>` and the branch `release/record-rev<n>` are not on origin,
-   and `gh` is signed in; the
+   git has a user here (`user.name`, `user.email`: the tag and the commit
+   are made as that user), and `gh` is signed in; the
    admin page answers the jump host (not with `--no-maintenance` or `--now`); no
    maintenance planned already; no
    release folder left unfinished; `download/` on the file system of the

@@ -26,8 +26,8 @@
 #      release's revision <n> (the target exe's + 1, or --revision <n> above
 #      it), not below main's REVISION; live: main's REVISION (the last
 #      release's) not below the live exe's and below <n>, the tag
-#      026g-rev<n> and the branch release/record-rev<n> not on origin, gh
-#      signed in; the admin page answering the jump
+#      026g-rev<n> and the branch release/record-rev<n> not on origin, a git
+#      user here (user.name/email) and gh signed in; the admin page answering the jump
 #      host (not with --no-maintenance or --now), no maintenance planned already, no
 #      other release running (the lock on the jump host), no release folder
 #      left unfinished, download/ on the same file system as the folder;
@@ -531,7 +531,7 @@ count_ended_matches() {
 # is said in RECORD_PROBLEMS (the run then ends with 1).
 release_tag() { printf '026g-rev%s' "$1"; }
 record_branch() { printf 'release/record-rev%s' "$1"; }
-RECORD_PROBLEMS=()
+RECORD_PROBLEMS=() RECORDING=0
 record_problem() {
     RECORD_PROBLEMS+=("$*")
     say "  NOT DONE  $*"
@@ -651,11 +651,13 @@ record_release() {
         say "Built from this commit with patch revision $rev (release/build-zip --revision $rev);"
         say "patch_026g.py here says REVISION $main_rev, the release before."
     } >"$work/tag.msg"
-    if git -C "$REPO" tag -a "$tag" "$main_commit" -F "$work/tag.msg" 2>"$work/tag.log" &&
-        git -C "$REPO" push --quiet origin "refs/tags/$tag" 2>>"$work/tag.log"; then
+    if ! git -C "$REPO" tag -a "$tag" "$main_commit" -F "$work/tag.msg" 2>"$work/tag.log"; then
+        record_problem "the tag $tag: $(tr '\n' ' ' <"$work/tag.log")— by hand: git -C $(q "$REPO") tag -a $tag $main_commit -F $(q "$work/tag.msg") && git -C $(q "$REPO") push origin refs/tags/$tag"
+    elif git -C "$REPO" push --quiet origin "refs/tags/$tag" 2>>"$work/tag.log"; then
         say "  done     tag $tag on ${main_commit:0:7}, pushed"
     else
-        record_problem "the tag $tag: $(tr '\n' ' ' <"$work/tag.log")— by hand: git tag -a $tag $main_commit -F $work/tag.msg && git push origin refs/tags/$tag"
+        # The tag is made here: only its push is left.
+        record_problem "the push of the tag $tag: $(tr '\n' ' ' <"$work/tag.log")— by hand: git -C $(q "$REPO") push origin refs/tags/$tag"
     fi
     # The commit, on a branch from the commit that was built, and its PR.
     if ! git -C "$REPO" worktree add --quiet --detach "$wt" "$main_commit" 2>"$work/record.log"; then
@@ -683,7 +685,7 @@ record_release() {
     if ! { git -C "$wt" add -A && git -C "$wt" commit --quiet -F "$work/record.msg"; } >>"$work/record.log" 2>&1; then
         record_problem "the record's commit: $(tail -n 3 "$work/record.log" | tr '\n' ' ')"
     elif ! git -C "$wt" push --quiet origin "HEAD:refs/heads/$branch" >>"$work/record.log" 2>&1; then
-        record_problem "the push of $branch: $(tail -n 3 "$work/record.log" | tr '\n' ' ')— the commit is $(git -C "$wt" rev-parse HEAD) (in $REPO)"
+        record_problem "the push of $branch: $(tail -n 3 "$work/record.log" | tr '\n' ' ')— the commit is $(git -C "$wt" rev-parse HEAD) (in $REPO); by hand: git -C $(q "$REPO") push origin $(git -C "$wt" rev-parse HEAD):refs/heads/$branch && gh pr create --base main --head $branch --title $(q "Release revision $rev") --body-file $(q "$work/record.msg") && gh pr merge $branch --merge"
     else
         say "  done     the commit \"Release revision $rev\" ($(git -C "$wt" log -1 --format=%h)) on $branch, pushed"
         if ! answer=$(cd "$wt" && gh pr create --base main --head "$branch" --title "Release revision $rev" --body-file "$work/record.msg" 2>&1); then
@@ -732,6 +734,12 @@ on_exit() {
         fi
         ;;
     swapping) swap_failed ;;
+    finished)
+        if ((RECORDING)); then
+            say
+            say "RELEASED, BUT THE RECORD IS NOT COMPLETE: stopped during step 7 (players have revision $rev). On origin, see what is there of the tag $(release_tag "$rev"), the branch $(record_branch "$rev") and its PR, and finish the record by hand (the PR merged as a merge commit) before the next release."
+        fi
+        ;;
     esac
     case $phase in
     planned | swapping | finished) save_release_log "$work/release.log" ;;
@@ -829,7 +837,7 @@ if [[ -n $rev && -n $main_rev ]]; then
     elif ((!test_server && main_rev >= rev)); then
         problem "main's REVISION $main_rev says revision $main_rev went out already, and the live exe says $live_rev (rolled back since?): a revision once released is never used again: --revision $((main_rev + 1))"
     elif ((!test_server && main_rev < live_rev)); then
-        problem "main's REVISION $main_rev is below the live exe's $live_rev: the record of revision $live_rev is not on main (its PR still open?): merge it first"
+        problem "main's REVISION $main_rev is below the live exe's $live_rev: the record of revision $live_rev is not on main (its PR still open? the end of that release's log says what was not done): merge it, or finish it by hand, first"
     fi
 fi
 # The record of a live release: its tag and branch free, gh signed in.
@@ -842,6 +850,9 @@ if ((!test_server)) && [[ -n $rev && -n $main_commit ]]; then
         problem "a tag $(release_tag "$rev") is in $REPO, not on origin (left by a run?): git -C $REPO tag -d $(release_tag "$rev")"
     else
         okay "the record: tag $(release_tag "$rev") and branch $(record_branch "$rev") are free on origin"
+    fi
+    if ! git -C "$REPO" var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+        problem "git in $REPO has no user.name and user.email: the record's tag and commit are made as the git user (git config user.name/user.email)"
     fi
     if ! command -v gh >/dev/null; then
         problem "gh is not installed here: the record of a release is a PR it opens and merges"
@@ -1287,7 +1298,11 @@ if ((test_server)); then
     say "No record (--test): no commit, no tag."
 else
     say
+    # RECORDING: a stop in the middle of it (Ctrl-C, a closed terminal) is
+    # said loudly too (on_exit).
+    RECORDING=1
     if ! record_release; then record_problem "the record stopped part way (above)"; fi
+    RECORDING=0
 fi
 say
 say "Rollback: release/rollback${step_flags[*]:+ ${step_flags[*]}} $REL (on the $TARGET host: sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL)"

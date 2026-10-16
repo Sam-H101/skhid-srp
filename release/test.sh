@@ -1034,6 +1034,12 @@ expect_refused "release: --revision is a revision" "--revision 256: a revision i
 touch "$T/gh-no-auth"
 expect_refused "release: needs gh signed in (the record's PR)" "gh is not signed in" "$here/release.sh"
 rm "$T/gh-no-auth"
+git -C "$T/repo" config user.useConfigOnly true
+git -C "$T/repo" config --unset user.email
+expect_refused "release: needs a git user (the record's tag and commit)" "has no user.name and user.email" \
+    env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$here/release.sh"
+git -C "$T/repo" config user.email owner@example.org
+git -C "$T/repo" config --unset user.useConfigOnly
 git -C "$T/repo" tag -a 026g-rev14 -m "left by a run" HEAD
 expect_refused "release: a tag of its revision left here" "a tag 026g-rev14 is in $T/repo, not on origin" "$here/release.sh"
 git -C "$T/repo" tag -d 026g-rev14 >/dev/null
@@ -1572,22 +1578,36 @@ check "release: ... the folder's rollback" test -f "$(folder 16 auto)/rollback.s
 rm -f "$T/state/ends-in"
 
 # Staging that ends after the planned time: the swap at once. gh may not
-# merge the record's PR (a rule of the repository): the PR stays open, the
-# run says so and ends with 1; the next release waits for its merge.
+# merge the record's PR (a rule of the repository), and origin refuses the
+# tag ($T/tag-push-fails): the PR stays open, the tag is made here only, the
+# run says so, with what to do, and ends with 1; the next release waits for
+# the merge.
 commit "for 17"
 : >"$T/state/admin.log"
 echo 3 >"$T/build-zip-sleep"
-touch "$T/gh-merge-fails"
+cat >"$T/origin.git/hooks/pre-receive" <<HOOK
+#!/usr/bin/env bash
+while read -r old new ref; do
+    if [[ -e $T/tag-push-fails && \$ref == refs/tags/* ]]; then echo "tags are refused here" >&2; exit 1; fi
+done
+HOOK
+chmod +x "$T/origin.git/hooks/pre-receive"
+touch "$T/gh-merge-fails" "$T/tag-push-fails"
 run yes --minutes 1 --label late && fail "release.sh, staged late, the PR not merged: ended 0"
-rm -f "$T/build-zip-sleep" "$T/gh-merge-fails"
+rm -f "$T/build-zip-sleep" "$T/gh-merge-fails" "$T/tag-push-fails"
 check "release: gh cannot merge the record's PR: said loudly at the end" bash -c \
     "tail -n 4 <<<\"\$1\" | grep -q 'RELEASED, BUT THE RECORD IS NOT COMPLETE' && tail -n 3 <<<\"\$1\" | grep -q 'record.s PR https://github.com/srp/skhid-srp/pull/[0-9]* is OPEN, NOT MERGED: gh could not merge it (GraphQL: Repository rule violations'" _ "$out"
-check "release: ... the tag pushed all the same, the branch there, main's REVISION still 16" bash -c \
-    "test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/tags/026g-rev17)\" && test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/heads/release/record-rev17)\" && test \"\$1\" = 16" _ "$(main_revision)"
-expect_refused "release: the next one waits for the record's merge" "main's REVISION 16 is below the live exe's 17: the record of revision 17 is not on main (its PR still open?)" "$here/release.sh"
+check "release: origin refuses the tag: said, with the push to do by hand (the tag is made here)" bash -c \
+    "grep -q '^  - the push of the tag 026g-rev17: .*tags are refused here.*by hand: git -C [^ ]*repo push origin refs/tags/026g-rev17\$' <<<\"\$1\" && ! grep -q 'tag -a 026g-rev17' <<<\"\$1\" && git -C $T/repo rev-parse -q --verify refs/tags/026g-rev17 >/dev/null" _ "$out"
+check "release: ... the tag not on origin; the branch there, main's REVISION still 16" bash -c \
+    "test -z \"\$(git -C $T/origin.git rev-parse -q --verify refs/tags/026g-rev17)\" && test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/heads/release/record-rev17)\" && test \"\$1\" = 16" _ "$(main_revision)"
+expect_refused "release: the next one waits for the record's merge" "main's REVISION 16 is below the live exe's 17: the record of revision 17 is not on main (its PR still open? the end of that release.s log says what was not done)" "$here/release.sh"
 pr17=$(grep -l '^release/record-rev17$' "$T"/gh/*/head | head -n 1)
 quiet gh pr merge "https://github.com/srp/skhid-srp/pull/$(basename "$(dirname "$pr17")")" --merge
 check "release: ... merged by hand: main has REVISION 17" test "$(main_revision)" = 17
+push_tag=$(sed -n 's/^  - the push of the tag 026g-rev17: .*by hand: //p' <<<"$out")
+bash -c "$push_tag" >/dev/null 2>&1
+check "release: ... the tag pushed by hand as said: on origin, on the commit built" test "$(git -C "$T/origin.git" rev-parse -q --verify '026g-rev17^{commit}')" = "$(git -C "$T/origin.git" rev-parse 'main^1')"
 check "release: staged after the planned time: the swap at once" has "$out" "5. staged after the planned time: the swap at once"
 check "release: ... no wait for the planned time" bash -c "! grep -q 'waiting for the planned time' <<<\"\$1\"" _ "$out"
 check "release: ... then releases" cmp -s "$T/work/r17.zip" "$T/live/download/Survarium-0.26g-srp-files.zip"
