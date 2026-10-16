@@ -887,6 +887,12 @@ impl Bots {
             for bot in self.bots.iter_mut().flatten() {
                 bot.memory.forget(a.place);
             }
+            // Nor do the team's callouts of him bring him back (match
+            // 0x5402a730: 115 of 125 bot lines 1.5-5 s after a death still
+            // knew the dead enemy, told).
+            for state in &mut self.teams {
+                state.knowledge.forget_callouts(a.place);
+            }
         }
         // With the battery cheat off, what each team's HUD shows of the
         // batteries.
@@ -1114,6 +1120,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
                     set_aside: &bot.set_aside,
+                    dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1164,6 +1171,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
                     set_aside: &bot.set_aside,
+                    dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1367,6 +1375,7 @@ impl Bots {
                 medkits_used: bot.medkits_used,
                 no_way_to: &bot.no_way_to,
                 set_aside: &bot.set_aside,
+                dry: bot.reflex.dry(),
             },
             memory: &bot.memory,
             team: &state.knowledge,

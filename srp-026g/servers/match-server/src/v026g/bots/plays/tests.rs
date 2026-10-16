@@ -40,6 +40,7 @@ pub struct Scenario {
     pub personality: usize,
     pub medkits_used: u8,
     pub no_way_to: Vec<(Vec3, u32)>,
+    pub dry: bool,
 }
 
 impl Scenario {
@@ -96,6 +97,7 @@ impl Scenario {
             personality: 0,
             medkits_used: 0,
             no_way_to: Vec::new(),
+            dry: false,
         };
         s.signals();
         s
@@ -236,6 +238,7 @@ impl Scenario {
                 medkits_used: self.medkits_used,
                 no_way_to: &self.no_way_to,
                 set_aside: &[],
+                dry: self.dry,
             },
             memory: &self.memory,
             team: &self.team,
@@ -358,6 +361,27 @@ fn late_denial_goes_there_steals_and_drops() {
         "{:?}",
         steps.last()
     );
+}
+
+/// A dry bot (nothing to fire) takes no play that seeks a fight: no hunt
+/// of the last enemy; it still collects a battery and roams.
+#[test]
+fn a_dry_bot_takes_no_fight_play_and_still_collects() {
+    let mut s = Scenario::field(Mode::TeamDeathmatch);
+    s.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+    s.enemy(1, 1, Vec3::new(60.0, 0.0, 30.0), Some(Source::Heard));
+    s.view.can_respawn = [true, false];
+    assert_eq!(s.candidates(0)[0].kind, PlayKind::Hunt);
+    s.dry = true;
+    let best = s.candidates(0);
+    assert!(best.iter().all(|c| !c.kind.seeks_fight()), "{best:#?}");
+    let mut b = Scenario::field(Mode::Batteries);
+    b.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+    b.battery(BatteryState::Free(Vec3::new(30.0, 0.0, 35.0)));
+    b.dry = true;
+    let best = b.candidates(0);
+    assert_eq!(best[0].kind, PlayKind::Collect, "{best:#?}");
+    assert!(best.iter().any(|c| c.kind == PlayKind::Roam));
 }
 
 #[test]

@@ -35,6 +35,35 @@ pub enum Source {
     Cheat(CheatKind),
 }
 
+impl Source {
+    /// How much the bot trusts a report of this kind: its own sight over
+    /// its own hearing over a teammate's word (and the HUD) over a cheat.
+    pub fn strength(self) -> u8 {
+        match self {
+            Self::Seen => 3,
+            Self::Heard => 2,
+            Self::Told { .. } | Self::Hud => 1,
+            Self::Cheat(_) => 0,
+        }
+    }
+
+    /// A track of this kind sensed within this, ms, is fresh: a weaker
+    /// report does not replace it. A sight for a moment (as before: a heard
+    /// shot from where he went is better than a sight half a second old),
+    /// the rest for [`FRESH_MS`].
+    pub fn fresh_ms(self) -> u32 {
+        match self {
+            Self::Seen => 500,
+            _ => FRESH_MS,
+        }
+    }
+}
+
+/// A heard or told track sensed within this, ms, is fresh: a weaker report
+/// does not replace it (a teammate's callout does not wipe what the bot
+/// heard itself a moment ago; play 6's heard shot is as long).
+pub const FRESH_MS: u32 = 1_500;
+
 /// A sense's report: who, where (with its error), when.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Percept {
@@ -103,11 +132,15 @@ impl Memory {
             match self.tracks.iter_mut().find(|t| t.who == percept.who) {
                 Some(track) => {
                     let seen = percept.source == Source::Seen;
-                    // A better or newer report replaces the place; a vague
-                    // one does not overwrite a fresh sight.
-                    let fresh_sight =
-                        track.source == Source::Seen && track.time + 500 >= percept.time;
-                    if seen || !fresh_sight {
+                    // A report replaces the place only if it is no older
+                    // than the track and not weaker than a fresh one: a
+                    // teammate's callout (sensed a second or more ago) does
+                    // not wipe the bot's own hearing, a cheat not a
+                    // callout, and nothing a sight.
+                    let fresh = track.time + track.source.fresh_ms() >= now;
+                    let weaker = percept.source.strength() < track.source.strength();
+                    let replaces = percept.time >= track.time && !(fresh && weaker);
+                    if replaces {
                         track.at = percept.at;
                         track.error_m = percept.error_m;
                         track.source = percept.source;
@@ -123,7 +156,12 @@ impl Memory {
                     } else if track.time + 400 < percept.time {
                         track.sight_since = None;
                     }
-                    track.time = track.time.max(percept.time);
+                    // When it was last sensed by a report it took: a weaker
+                    // one it did not take keeps no sight alive (a cheat's
+                    // place of a thief is no sight of him).
+                    if replaces {
+                        track.time = percept.time;
+                    }
                 }
                 None => self.tracks.push(Track {
                     who: percept.who,
@@ -214,8 +252,9 @@ pub struct KnownBattery {
 /// what they know of the batteries and the spawners they have looked at.
 #[derive(Clone, Debug, Default)]
 pub struct TeamKnowledge {
-    /// Callouts: (when the others know it, the percept).
-    callouts: Vec<(u32, Percept)>,
+    /// Callouts: (when the others know it, the percept, the places that
+    /// took it already as a bit mask).
+    callouts: Vec<(u32, Percept, u64)>,
     pub danger: Vec<DangerSpot>,
     pub thefts: Vec<Theft>,
     /// By battery number.
@@ -240,18 +279,31 @@ impl TeamKnowledge {
                 source: Source::Told { by },
                 ..*percept
             },
+            0,
         ));
     }
 
-    /// The callouts the bot at `me` hears by `now` (not its own), and the
-    /// old ones dropped.
+    /// The callouts the bot at `me` hears by `now` (not its own), each
+    /// once (handed back at every think, a callout came again with its old
+    /// time and place over what the bot sensed since), and the old ones
+    /// dropped.
     pub fn heard_by(&mut self, me: Place, now: u32) -> Vec<Percept> {
-        self.callouts.retain(|(at, _)| *at + 3_000 >= now);
-        self.callouts
-            .iter()
-            .filter(|(at, percept)| *at <= now && percept.source != Source::Told { by: me })
-            .map(|(_, percept)| *percept)
-            .collect()
+        self.callouts.retain(|(at, _, _)| *at + 3_000 >= now);
+        // Places past the mask's 64 take a callout at every think, as
+        // before (the memory takes none older than what it knows).
+        let bit = (me < 64).then(|| 1u64 << me);
+        let mut out = Vec::new();
+        for (at, percept, taken) in &mut self.callouts {
+            if *at > now
+                || percept.source == (Source::Told { by: me })
+                || bit.is_some_and(|bit| *taken & bit != 0)
+            {
+                continue;
+            }
+            *taken |= bit.unwrap_or(0);
+            out.push(*percept);
+        }
+        out
     }
 
     /// Danger spots of the last `ms`.
@@ -263,12 +315,19 @@ impl TeamKnowledge {
     /// and no theft names it. The battery it took is still where it was
     /// last known.
     pub fn forget(&mut self, who: Place) {
-        self.callouts.retain(|(_, percept)| percept.who != who);
+        self.forget_callouts(who);
         for theft in &mut self.thefts {
             if theft.thief == Some(who) {
                 theft.thief = None;
             }
         }
+    }
+
+    /// The enemy at `who` died: no callout about him is heard any more (he
+    /// is not where he was; a callout of the moment before his death would
+    /// bring him back to the memories that forgot him).
+    pub fn forget_callouts(&mut self, who: Place) {
+        self.callouts.retain(|(_, percept, _)| percept.who != who);
     }
 
     /// Where the team believes battery `battery` lies.
@@ -533,5 +592,85 @@ mod tests {
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].source, Source::Told { by: 1 });
         assert!(team.heard_by(1, 2_000).is_empty(), "not its own");
+    }
+
+    /// Match 0x5402a730: the human's track in the enemy bots' memories was
+    /// told 252 times, heard 3. A teammate's callout (older, or weaker
+    /// than a fresh report) does not replace what the bot heard itself; a
+    /// cheat does not replace a fresh callout; a stale report gives way to
+    /// a newer one of any kind.
+    #[test]
+    fn a_callout_does_not_wipe_the_bots_own_hearing() {
+        let at = |x: f32| Vec3::new(x, 0.0, 0.0);
+        let report = |source, x, time| Percept {
+            source,
+            at: at(x),
+            ..seen(7, time)
+        };
+        let told = Source::Told { by: 2 };
+        let mut memory = Memory::default();
+        let update = |memory: &mut Memory, p: Percept, now| {
+            memory.update(&[p], now, |_| 300, 3_000, 20_000);
+            let t = memory.tracks()[0];
+            (t.source, t.at.x, t.time)
+        };
+        assert_eq!(
+            update(&mut memory, report(Source::Heard, 1.0, 5_000), 5_000),
+            (Source::Heard, 1.0, 5_000)
+        );
+        // A callout of a moment before (its old time and place): kept.
+        assert_eq!(
+            update(&mut memory, report(told, 2.0, 4_200), 5_200),
+            (Source::Heard, 1.0, 5_000)
+        );
+        // A callout newer but weaker while the hearing is fresh: kept.
+        assert_eq!(
+            update(&mut memory, report(told, 3.0, 5_100), 5_400),
+            (Source::Heard, 1.0, 5_000)
+        );
+        // Heard again: the newer hearing.
+        assert_eq!(
+            update(&mut memory, report(Source::Heard, 4.0, 5_500), 5_500),
+            (Source::Heard, 4.0, 5_500)
+        );
+        // The hearing stale (1.5 s): a newer callout takes it.
+        assert_eq!(
+            update(&mut memory, report(told, 5.0, 6_100), 7_100),
+            (told, 5.0, 6_100)
+        );
+        // A cheat does not replace a fresh callout, then does.
+        let radar = Source::Cheat(CheatKind::Radar);
+        assert_eq!(
+            update(&mut memory, report(radar, 6.0, 7_200), 7_200),
+            (told, 5.0, 6_100)
+        );
+        assert_eq!(
+            update(&mut memory, report(radar, 6.0, 7_700), 7_700),
+            (radar, 6.0, 7_700)
+        );
+        // A sight replaces anything; a cheat's newer place keeps no sight
+        // alive.
+        assert_eq!(
+            update(&mut memory, report(Source::Seen, 8.0, 7_800), 7_800),
+            (Source::Seen, 8.0, 7_800)
+        );
+        update(&mut memory, report(Source::Seen, 8.0, 8_100), 8_100);
+        assert!(memory.seen(7, 8_150).is_some());
+        let thief = Source::Cheat(CheatKind::Thief);
+        update(&mut memory, report(thief, 9.0, 8_300), 8_300);
+        assert!(memory.seen(7, 8_550).is_none(), "no sight since 8.1 s");
+    }
+
+    #[test]
+    fn a_callout_is_heard_once_and_a_dead_enemys_not_at_all() {
+        let mut team = TeamKnowledge::default();
+        team.call_out(1, &seen(5, 1_000), 1_000);
+        team.call_out(1, &seen(6, 1_000), 1_000);
+        assert_eq!(team.heard_by(2, 2_000).len(), 2);
+        assert!(team.heard_by(2, 2_200).is_empty(), "taken already");
+        assert_eq!(team.heard_by(3, 2_200).len(), 2, "another bot's own");
+        team.forget_callouts(5);
+        let left: Vec<Place> = team.heard_by(4, 2_300).iter().map(|p| p.who).collect();
+        assert_eq!(left, vec![6]);
     }
 }
