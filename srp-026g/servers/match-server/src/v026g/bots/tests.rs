@@ -136,6 +136,9 @@ struct Game {
     /// The places that took a battery out of the enemy's container, in
     /// order (the bench reads them by the thief's play).
     thieves: Vec<Place>,
+    /// Carriers killed with a battery: (the shooter, the carrier), in
+    /// order (the bench reads them by the shooter's play).
+    carrier_kills: Vec<(Place, Place)>,
     /// By battery: stolen from this team's container, and when (ms) and
     /// how (alive: dropped by a live carrier) it fell since, if it did.
     stolen_marks: Vec<Option<StolenMark>>,
@@ -249,6 +252,7 @@ impl Game {
             delivered: [0, 0],
             stolen: 0,
             thieves: Vec::new(),
+            carrier_kills: Vec::new(),
             stolen_marks: Vec::new(),
             stolen_drops: Vec::new(),
             stolen_log: Vec::new(),
@@ -473,6 +477,7 @@ impl Game {
             other.dead_at = tick;
             if let Some(battery) = other.carrying.take() {
                 self.batteries[battery] = Lying::Free(other.feet, 1 << other.team);
+                self.carrier_kills.push((shooter, target));
                 if let Some(Some((_, fell @ None))) = self.stolen_marks.get_mut(battery) {
                     *fell = Some((tick, false));
                     self.stolen_log.push(format!(
@@ -1813,14 +1818,22 @@ fn bench_tuning() -> Tuning {
     {
         tuning.sense.battery_sight_m = m;
     }
-    // Collect's numbers: `name=value,...`.
-    if let Ok(numbers) = std::env::var("SRP_BENCH_COLLECT") {
+    // Collect's and Intercept's numbers: `name=value,...`.
+    for (var, kind) in [
+        ("SRP_BENCH_COLLECT", super::plays::PlayKind::Collect),
+        ("SRP_BENCH_INTERCEPT", super::plays::PlayKind::Intercept),
+    ] {
+        let Ok(numbers) = std::env::var(var) else {
+            continue;
+        };
         let play = tuning
             .plays
-            .entry(super::plays::PlayKind::Collect)
-            .or_insert_with(|| super::plays::default_tuning(super::plays::PlayKind::Collect));
+            .entry(kind)
+            .or_insert_with(|| super::plays::default_tuning(kind));
         for pair in numbers.split(',').filter(|p| !p.is_empty()) {
-            let (name, value) = pair.split_once('=').expect("SRP_BENCH_COLLECT: name=value");
+            let (name, value) = pair
+                .split_once('=')
+                .unwrap_or_else(|| panic!("{var}: name=value"));
             play.numbers
                 .insert(name.to_owned(), value.parse().expect("a number"));
         }
@@ -2092,6 +2105,11 @@ fn real_bot_cost() {
             // `TargetRef::Spawner`), and their deaths while at it.
             let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
             let mut was_alive: Vec<bool> = game.bodies.iter().map(|b| b.alive).collect();
+            // Carriers killed with a battery, by the shooter's play and by
+            // the carrier's team; and every play taken (F3: churn).
+            let mut carrier_kills: std::collections::BTreeMap<String, u32> = Default::default();
+            let mut carriers_killed = [0u32; 2];
+            let mut takes_all = 0u32;
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
@@ -2139,6 +2157,10 @@ fn real_bot_cost() {
                         if n >= 2 {
                             side[2] += n;
                         }
+                    }
+                    for (shooter, carrier) in std::mem::take(&mut game.carrier_kills) {
+                        *carrier_kills.entry(play_of(shooter)).or_default() += 1;
+                        carriers_killed[usize::from(game.bodies[carrier].team)] += 1;
                     }
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
@@ -2229,6 +2251,7 @@ fn real_bot_cost() {
                 for note in notes {
                     decisions.note(&note);
                     if let Some(rest) = note.text.strip_prefix("takes ") {
+                        takes_all += 1;
                         let kind = rest.split(' ').next().unwrap_or("").to_owned();
                         let score: f32 = rest
                             .split("(score ")
@@ -2434,6 +2457,15 @@ fn real_bot_cost() {
             eprintln!(
                 "  by play (takes, under 0.05, kills, deaths, steals): {}",
                 rows.join("; ")
+            );
+            eprintln!(
+                "  carriers: killed carrying {:?} (by team carrying), by the shooter's play {:?}; delivered {:?}; picked up {} lying + {} stolen; plays taken {takes_all} = {:.2} a bot-minute",
+                carriers_killed,
+                carrier_kills,
+                game.delivered,
+                game.taken,
+                game.stolen,
+                f64::from(takes_all) / teams.len() as f64 / (f64::from(limit_s) / 60.0)
             );
             eprintln!(
                 "  search: {:.0} bot-s at spawners' spots, {search_deaths} deaths in it",

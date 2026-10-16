@@ -12,20 +12,34 @@
 //!   area, as his own routes are); points along it are tried from him on,
 //!   the first one the bot reaches `lead` seconds before him is the meet.
 //!   It is planned again every few seconds and once he is past it.
-//! - A recent theft of ours is an alarm (rank Alarm) for the 1-2 nearest
-//!   bots of the team: two slot keys per theft, so at most two take it.
-//!   Any other enemy carrier is an objective for one bot.
+//! - Who goes is chosen by how well it can stop him (its *reach*, a
+//!   factor on its score): a bot that gets ahead of him on his way (the
+//!   straight way, cheap; the step plans the route) first; behind him,
+//!   one whose weapon's band already reaches him; then one that gets into
+//!   its band before he is home; last one that does not.
+//! - A recent theft of ours is an alarm (rank Alarm) for the bots of the
+//!   team that can stop him (reach `reach_closing` or better): two slot
+//!   keys per theft, so at most two take it, the best placed first (the
+//!   commander serves bots by their best score). Any other enemy carrier
+//!   is an objective for one bot.
+//! - **Commitment** (F3 of the owner's match 0x7298fb57, 706-752 s: six
+//!   defenders 21-60 m from a carrier took Intercept, PairUp, Cut,
+//!   HoldExit in turn, none stopped him): a running intercept is kept at
+//!   its target and in the alarm band, so no fight or roam play replaces
+//!   it, while he still carries, is short of his container and is known
+//!   fairly: the team's own senses (seen, heard, told) placed him lately,
+//!   or the theft is recent (the HUD's notice). It may keep either of the
+//!   carry's two slots, so a better placed bot can still join it.
 //! - It ends when he no longer carries (dropped, home, dead), gives up
 //!   when he is lost, gets into his base, or after a time drawn per run.
 
 use super::*;
+use crate::v026g::bots::reflex::WeaponKind;
 use crate::v026g::bots::view::BatteryState;
 
 pub const NUMBERS: &[(&str, f32)] = &[
     // A theft this recent is an alarm.
     ("theft_recent_s", 30.0),
-    // The alarm goes to this many of the nearest bots.
-    ("alarm_bots", 2.0),
     // A walk is the ground distance times this (as `Ctx::path_dist`).
     ("path_factor", 1.25),
     // The bot's speed on the way (sprinting where it may; GUESS between
@@ -49,6 +63,20 @@ pub const NUMBERS: &[(&str, f32)] = &[
     ("chase_reach_m", 2.0),
     ("give_up_min_s", 45.0),
     ("give_up_max_s", 60.0),
+    // Commitment: the team's own senses placed him within this, seconds
+    // (else a theft of ours within `theft_recent_s`) ...
+    ("commit_known_s", 10.0),
+    // ... and he is farther than this from his container, metres.
+    ("commit_home_m", 5.0),
+    // The reach, a factor on the score: ahead of him on his way; behind
+    // him within its weapon's band; behind him and in band before he is
+    // home; he is home first. By the bench (F3, 20 seeds): 1, 0.9, 0.45,
+    // 0.15 left fewer bots on intercepts and the carriers killed fell by
+    // 19 of 248 (deliveries +48); these hold both.
+    ("reach_cut", 1.0),
+    ("reach_in_band", 1.0),
+    ("reach_closing", 0.8),
+    ("reach_late", 0.5),
 ];
 
 pub fn tuning() -> PlayTuning {
@@ -146,19 +174,110 @@ impl Ctx<'_> {
             || self.intercept_meet(him, home, num("lead_min_s")).is_none()
     }
 
-    /// Whether this bot is among the `n` bots of its team nearest `at`.
-    fn intercept_among_nearest(&self, at: Vec3, n: usize) -> bool {
-        let mine = self.me.feet.distance_xz(at);
-        self.view
-            .team(self.me.team)
-            .filter(|p| p.bot && p.place != self.me.place && p.feet.distance_xz(at) < mine)
-            .count()
-            < n
+    /// The battery a (running) intercept's target is about: the one its
+    /// carrier carries, or its theft's.
+    fn intercept_battery(&self, target: TargetRef) -> Option<usize> {
+        match target {
+            TargetRef::Place(p) => self
+                .view
+                .batteries
+                .iter()
+                .position(|b| *b == BatteryState::Carried(Some(p))),
+            TargetRef::Point(at) => self
+                .team
+                .thefts
+                .iter()
+                .rev()
+                .find(|t| t.at == at)
+                .map(|t| t.battery),
+            _ => None,
+        }
+    }
+
+    /// Whether the bot's running intercept at `target` holds (commitment):
+    /// he still carries, a run would not fail at once, he is short of his
+    /// container, and he is known fairly: the team's own senses placed
+    /// him within `commit_known_s`, or a theft of the battery is recent
+    /// (`theft_recent`, the HUD's notice). No cheat counts.
+    fn intercept_committed(&self, target: TargetRef, theft_recent: bool) -> bool {
+        let num = |name| self.num(PlayKind::Intercept, name);
+        let Some(carry) = self.intercept_carry(target) else {
+            return false;
+        };
+        if self.intercept_fails_at_once(target) {
+            return false;
+        }
+        let (Some(him), Some(home)) = (
+            self.intercept_him(target, &carry),
+            self.intercept_home(&carry),
+        ) else {
+            return false;
+        };
+        if him.distance_xz(home) <= num("commit_home_m") {
+            return false;
+        }
+        let window = (num("commit_known_s") * 1000.0) as u32;
+        let sensed = carry
+            .carrier
+            .and_then(|p| self.memory.tracks().iter().find(|t| t.who == p))
+            .and_then(|t| t.own)
+            .is_some_and(|(_, time)| time + window >= self.now);
+        sensed || theft_recent
+    }
+
+    /// The top of the bot's weapon's band, metres (play 11's; its role's
+    /// weapon 1, the support's for a tuning's own personality).
+    fn intercept_band_top(&self) -> f32 {
+        let kind = WeaponKind::of_role(&self.bot.personality.name).unwrap_or(WeaponKind::Rifle);
+        self.tuning.aim.combat.band(kind).1
+    }
+
+    /// How well the bot can stop the carrier the target stands for, a
+    /// factor on its score: `reach_cut` if it gets ahead of him on his way
+    /// (the straight way: cheap, for every bot at every commander tick);
+    /// behind him, `reach_in_band` within its weapon's band,
+    /// `reach_closing` if it gets into its band before he is home,
+    /// `reach_late` if not. 1 when it cannot tell.
+    fn intercept_reach(&self, target: TargetRef) -> f32 {
+        let num = |name| self.num(PlayKind::Intercept, name);
+        let Some(carry) = self.intercept_carry(target) else {
+            return 1.0;
+        };
+        let (Some(him), Some(home)) = (
+            self.intercept_him(target, &carry),
+            self.intercept_home(&carry),
+        ) else {
+            return 1.0;
+        };
+        if self
+            .intercept_meet_by(him, home, num("lead_min_s"), false)
+            .is_some()
+        {
+            return num("reach_cut");
+        }
+        let d = self.me.feet.distance_xz(him);
+        let top = self.intercept_band_top();
+        if d <= top {
+            return num("reach_in_band");
+        }
+        let gain = (num("my_speed") - num("carrier_speed")).max(0.1);
+        let his_s = him.distance_xz(home) * num("path_factor") / num("carrier_speed").max(0.1);
+        if (d - top) / gain < his_s {
+            num("reach_closing")
+        } else {
+            num("reach_late")
+        }
     }
 
     /// The point on his way home the bot reaches `lead_s` before him, the
     /// first from him on.
     fn intercept_meet(&self, him: Vec3, home: Vec3, lead_s: f32) -> Option<Vec3> {
+        self.intercept_meet_by(him, home, lead_s, true)
+    }
+
+    /// [`Self::intercept_meet`], along his route if `routed`, else along
+    /// the straight way with the detour factor.
+    fn intercept_meet_by(&self, him: Vec3, home: Vec3, lead_s: f32, routed: bool) -> Option<Vec3> {
         let num = |name| self.num(PlayKind::Intercept, name);
         let his_side = self.bot.side.and_then(|side| self.enemy_side(side));
         let step = num("meet_step_m").max(0.5);
@@ -167,7 +286,12 @@ impl Ctx<'_> {
             let n = (length / step).ceil() as usize;
             (1..=n).map(|i| at((i as f32 * step).min(length))).collect()
         };
-        let points = match self.tactics.route(him, home, self.now, his_side) {
+        let route = if routed {
+            self.tactics.route(him, home, self.now, his_side)
+        } else {
+            None
+        };
+        let points = match route {
             Some(route) => along(route.length(), &|s| (s, route.point_at(s))),
             None => {
                 // No route known: the straight way, with a detour factor.
@@ -192,7 +316,19 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         return;
     }
     let recent = (cx.num(PlayKind::Intercept, "theft_recent_s") * 1000.0) as u32;
-    let alarm_bots = cx.num(PlayKind::Intercept, "alarm_bots") as usize;
+    let running = match cx.bot.current {
+        Some((PlayKind::Intercept, target, _)) => Some(target),
+        _ => None,
+    };
+    // Scored, times the reach.
+    let scored = |target: TargetRef, slot: u32, reach: f32| {
+        cx.candidate(PlayKind::Intercept, target, Some(slot))
+            .map(|mut candidate| {
+                candidate.score = Score::new(candidate.score.get() * reach);
+                candidate
+            })
+            .filter(|candidate| !candidate.score.is_zero())
+    };
     for (battery, state) in cx.view.batteries.iter().enumerate() {
         let BatteryState::Carried(carrier) = *state else {
             continue;
@@ -206,6 +342,23 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
             .iter()
             .filter(|t| t.battery == battery && t.time + recent >= cx.now)
             .max_by_key(|t| t.time);
+        let key = battery as u32 * 2;
+        // Its running intercept of this carry, committed: kept at its
+        // target (a theft's spot does not turn into his place and back) in
+        // the alarm band, on either of the carry's slots.
+        if let Some(target) = running
+            && cx.intercept_battery(target) == Some(battery)
+            && cx.intercept_committed(target, theft.is_some())
+        {
+            let reach = cx.intercept_reach(target);
+            for slot in [key, key + 1] {
+                if let Some(mut candidate) = scored(target, slot, reach) {
+                    candidate.rank = Rank::Alarm;
+                    out.push(candidate);
+                }
+            }
+            continue;
+        }
         // His place if known, else the theft's spot.
         let target = match carrier.filter(|&p| cx.known_place(p).is_some()) {
             Some(p) => TargetRef::Place(p),
@@ -214,9 +367,9 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
                 None => continue,
             },
         };
-        let Some(at) = cx.point_of(target) else {
+        if cx.point_of(target).is_none() {
             continue;
-        };
+        }
         // A chase that fails at its first step (he is in his base, with
         // no meet left on his way) is no candidate: else it is taken and
         // dropped again at once (27 times in the owner's match of
@@ -224,16 +377,16 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         if cx.intercept_fails_at_once(target) {
             continue;
         }
-        let key = battery as u32 * 2;
-        if theft.is_some() && cx.intercept_among_nearest(at, alarm_bots) {
+        let reach = cx.intercept_reach(target);
+        if theft.is_some() && reach >= cx.num(PlayKind::Intercept, "reach_closing") {
             for slot in [key, key + 1] {
-                if let Some(mut candidate) = cx.candidate(PlayKind::Intercept, target, Some(slot)) {
+                if let Some(mut candidate) = scored(target, slot, reach) {
                     candidate.rank = Rank::Alarm;
                     out.push(candidate);
                 }
             }
         } else {
-            out.extend(cx.candidate(PlayKind::Intercept, target, Some(key)));
+            out.extend(scored(target, key, reach));
         }
     }
 }
@@ -357,7 +510,7 @@ mod tests {
     use super::super::tests::Scenario;
     use super::*;
     use crate::v026g::bots::know::{CheatKind, Source, Theft};
-    use crate::v026g::bots::team::{Asking, assign};
+    use crate::v026g::bots::team::{Asking, Assignment, assign};
     use crate::v026g::bots::view::Mode;
 
     const THIEF: Vec3 = Vec3::new(22.0, 0.0, 36.0);
@@ -390,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn a_theft_is_an_alarm_for_the_two_nearest_bots_and_any_carrier_an_objective() {
+    fn a_theft_is_an_alarm_for_the_bots_that_can_stop_him_and_any_carrier_an_objective() {
         let s = scene(true);
         let found = intercepts(&s, 0);
         assert_eq!(found.len(), 2, "{found:#?}");
@@ -401,12 +554,18 @@ mod tests {
         let found = intercepts(&scene(false), 0);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].rank, Rank::Objective);
-        // Two bots nearer him: no alarm for this one.
+        // Far behind him, near his home (the flanker's band 25 m): it
+        // would be in its band only after he is home; no alarm, and its
+        // score is cut to the reach.
         let mut s = scene(true);
-        s.bot(2, 0, Vec3::new(25.0, 0.0, 37.0));
-        s.bot(3, 0, Vec3::new(26.0, 0.0, 34.0));
-        assert!(intercepts(&s, 0).iter().all(|c| c.rank == Rank::Objective));
-        assert!(intercepts(&s, 2).iter().all(|c| c.rank == Rank::Alarm));
+        s.enemy(1, 1, Vec3::new(55.0, 0.0, 31.0), Some(Source::Seen));
+        s.bot(0, 0, Vec3::new(4.0, 0.0, 31.0));
+        let late = intercepts(&s, 0);
+        assert!(!late.is_empty() && late.iter().all(|c| c.rank == Rank::Objective));
+        assert!(
+            (s.cx(0).intercept_reach(TargetRef::Place(1)) - 0.5).abs() < 1e-6,
+            "{late:#?}"
+        );
         // A friend carrying, or a battery lying about: none.
         let mut s = scene(false);
         s.human(1, 0, THIEF);
@@ -471,6 +630,150 @@ mod tests {
         let out = assign(asking, s.view.clock);
         assert_eq!(out.len(), 2, "{out:?}");
         assert_ne!(out[0].1.slot, out[1].1.slot);
+    }
+
+    /// F3 (the owner's match 0x7298fb57, 706-752 s): a running intercept
+    /// is kept, at its target and in the alarm band, while he is known
+    /// fairly and short of his container; PairUp at 0.98 (bot 7 at
+    /// 709.1 s) does not replace it. A cheat's place, an old sight or his
+    /// container near end it.
+    #[test]
+    fn a_running_intercept_is_kept_while_he_is_known_and_short_of_home() {
+        // No theft: a carrier of a battery from the field, seen.
+        let mut s = scene(false);
+        s.enemy(1, 1, THIEF, Some(Source::Seen));
+        assert!(intercepts(&s, 0).iter().all(|c| c.rank == Rank::Objective));
+        s.current = Some((
+            PlayKind::Intercept,
+            TargetRef::Place(1),
+            s.view.clock - 5_000,
+        ));
+        let kept = intercepts(&s, 0);
+        assert_eq!(kept.len(), 2, "{kept:#?}");
+        assert!(
+            kept.iter()
+                .all(|c| c.rank == Rank::Alarm && c.target == TargetRef::Place(1))
+        );
+        let current = Assignment {
+            kind: PlayKind::Intercept,
+            target: TargetRef::Place(1),
+            slot: kept[0].slot,
+            score: kept[0].score.get(),
+            since: s.view.clock - 5_000,
+            reason: "the best play",
+        };
+        let mut all = kept.clone();
+        all.push(Candidate {
+            kind: PlayKind::PairUp,
+            target: TargetRef::Place(1),
+            rank: Rank::Fight,
+            score: Score::new(0.98),
+            why: Default::default(),
+            slot: None,
+        });
+        let out = assign(
+            vec![Asking {
+                place: 0,
+                candidates: all,
+                current: Some(&current),
+            }],
+            s.view.clock,
+        );
+        assert_eq!((out[0].1.kind, out[0].2), (PlayKind::Intercept, false));
+        // Known by the thief cheat alone: not committed.
+        let mut cheat = scene(false);
+        cheat.current = s.current;
+        assert!(
+            intercepts(&cheat, 0)
+                .iter()
+                .all(|c| c.rank == Rank::Objective)
+        );
+        // Seen 12 s ago, the cheat's place since: not committed.
+        let mut old = scene(false);
+        old.memory = Default::default();
+        let now = old.view.clock;
+        for (time, source) in [
+            (now - 12_000, Source::Seen),
+            (now, Source::Cheat(CheatKind::Thief)),
+        ] {
+            old.memory.update(
+                &[crate::v026g::bots::know::Percept {
+                    who: 1,
+                    at: THIEF,
+                    error_m: 0.0,
+                    time,
+                    source,
+                    busy: false,
+                }],
+                time,
+                |_| 200,
+                3_000,
+                20_000,
+            );
+        }
+        old.current = s.current;
+        assert!(
+            intercepts(&old, 0)
+                .iter()
+                .all(|c| c.rank == Rank::Objective)
+        );
+        // By his container: not committed.
+        let mut home = scene(false);
+        home.enemy(1, 1, Vec3::new(64.0, 0.0, 30.0), Some(Source::Seen));
+        home.current = s.current;
+        assert!(intercepts(&home, 0).iter().all(|c| c.rank != Rank::Alarm));
+    }
+
+    /// A run at a theft's spot (the thief not known yet) keeps that target
+    /// once he is seen, while the theft is recent: no Point, Place, Point
+    /// churn (bot 3 at 693.7-694.8 s).
+    #[test]
+    fn a_committed_run_at_a_thefts_spot_keeps_its_target() {
+        let mut s = scene(true);
+        s.memory = Default::default();
+        let spot = TargetRef::Point(Vec3::new(12.0, 0.0, 30.0));
+        assert!(intercepts(&s, 0).iter().all(|c| c.target == spot));
+        s.current = Some((PlayKind::Intercept, spot, s.view.clock - 1_000));
+        s.enemy(1, 1, THIEF, Some(Source::Seen));
+        let kept = intercepts(&s, 0);
+        assert_eq!(kept.len(), 2, "{kept:#?}");
+        assert!(
+            kept.iter()
+                .all(|c| c.target == spot && c.rank == Rank::Alarm)
+        );
+        // Without the run: his place.
+        s.current = None;
+        assert!(
+            intercepts(&s, 0)
+                .iter()
+                .all(|c| c.target == TargetRef::Place(1))
+        );
+    }
+
+    /// The reach by weapon: behind him at 30 m a flanker's Uzi (band top
+    /// 25 m) must close in, a support's AK-74U (45 m) has him in its band;
+    /// a bot ahead of him on his way cuts him off whatever it carries.
+    #[test]
+    fn the_reach_reads_the_weapons_band_and_the_cut_off() {
+        let mut s = scene(false);
+        s.enemy(1, 1, Vec3::new(40.0, 0.0, 31.0), Some(Source::Seen));
+        s.bot(0, 0, Vec3::new(10.0, 0.0, 31.0));
+        let reach = |s: &Scenario| s.cx(0).intercept_reach(TargetRef::Place(1));
+        s.personality = 0;
+        assert_eq!(s.tuning.personalities[0].name, "flanker");
+        assert!((reach(&s) - 0.8).abs() < 1e-6);
+        s.personality = 1;
+        assert_eq!(s.tuning.personalities[1].name, "support");
+        assert!((reach(&s) - 1.0).abs() < 1e-6);
+        // Further back the Uzi would be in band only after he is home.
+        s.bot(0, 0, Vec3::new(2.0, 0.0, 31.0));
+        s.personality = 0;
+        s.enemy(1, 1, Vec3::new(55.0, 0.0, 31.0), Some(Source::Seen));
+        assert!((reach(&s) - 0.5).abs() < 1e-6);
+        s.personality = 2;
+        s.enemy(1, 1, Vec3::new(40.0, 0.0, 31.0), Some(Source::Seen));
+        s.bot(0, 0, Vec3::new(52.0, 0.0, 31.0));
+        assert!((reach(&s) - 1.0).abs() < 1e-6);
     }
 
     #[test]
