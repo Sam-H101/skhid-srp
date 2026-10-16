@@ -203,8 +203,11 @@ serve "$T/patches-test" "$T/patches-test.port"
 # maintenance countdown of $T/state/maint), the admin page at
 # /$(cat $T/state/admin-path) (its maintenance tab; the token of
 # $T/state/admin-token; the answer holds the token, as the real page's
-# does), /api/stats saying a match runs for the first $T/state/busy asks,
-# /api/client-files of the ZIP in place when asked.
+# does; every request of it, GET or POST, is a line of
+# $T/state/admin-seen.log), /api/stats saying a match runs for the first
+# $T/state/busy asks, or (with $T/state/matches) the next line of that file
+# for each ask (its last line once it is the only one), /api/client-files of
+# the ZIP in place when asked.
 python3 - "$T/site" "$T/site.port" "$T/state" "$T/live/download/Survarium-0.26g-srp-files.zip" >/dev/null 2>&1 <<'EOF' &
 import functools, hashlib, http.server, math, os, sys, time, urllib.parse
 root, port_file, state, zip_path = sys.argv[1:5]
@@ -232,6 +235,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 left = math.ceil(max(0.0, float(at) - time.time()) / minute)
                 text = '<div class="cap warn">' + (f"Maintenance in {left} min" if left else "Maintenance: the server is down") + "</div>"
             return self.answer(200, "<table></table>" + text)
+        if self.path == "/api/stats" and read("matches"):
+            lines = read("matches").split("\n")
+            if len(lines) > 1:
+                open(os.path.join(state, "matches"), "w").write("\n".join(lines[1:]) + "\n")
+            n = int(lines[0])
+            return self.answer(200, '{"online":3,"registered":3,"matches":%d,"queued":0}' % n)
         if self.path == "/api/stats" and read("busy"):
             busy = int(read("busy"))
             open(os.path.join(state, "busy"), "w").write(str(busy - 1))
@@ -245,9 +254,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.answer(404, "no client files are offered here\n")
             return self.answer(200, f"skhid-client-files 1\nsha256 {hashlib.sha256(data).hexdigest()}\nsize {len(data)}\n")
         if self.path == "/" + read("admin-path", "-"):
+            open(os.path.join(state, "admin-seen.log"), "a").write("GET\n")
             return self.answer(200, "<form>the admin page</form>")
         return super().do_GET()
     def do_POST(self):
+        open(os.path.join(state, "admin-seen.log"), "a").write(f"POST {self.path}\n")
         if self.path != "/" + read("admin-path", "-"):
             return self.answer(404, "Not found.")
         length = int(self.headers.get("Content-Length", 0))
@@ -480,7 +491,7 @@ expect_refused "setup refuses another site on the port" "another site on port" "
 python3 - "$T/work" <<'EOF'
 import sys, zipfile
 at = 0x380862 - 0x11000 + 0x400
-for revision in (2, 11, 12, 13, 14):
+for revision in (2, 11, 12, 13, 14, 15):
     exe = bytearray(at + 16)
     exe[at:at + 6] = bytes([0xC6, 0x44, 0x24, 0x27, revision, 0x90])
     with zipfile.ZipFile(f"{sys.argv[1]}/r{revision}.zip", "w") as z:
@@ -939,6 +950,61 @@ run quiet --test --dry-run --resources "$T/r14/resources.db.patch_14" || true
 check "release --test: compose project srptest" has "$out" "docker compose -p srptest up -d --no-deps --force-recreate srp26"
 check "release --test: the TEST patches server" has "$out" "On the TEST patches server"
 check "release --test: no copy of srp.db to the jump host" bash -c "! grep -q 'copied to the jump host' <<<\"\$1\"" _ "$out"
+
+# --no-maintenance: no countdown, the admin page never asked; prepared at
+# once, swapped as soon as "matches":0 (and once more right before the stop).
+commit 15 "revision 15"
+: >"$T/state/admin.log"
+: >"$T/state/admin-seen.log"
+before=$(tree)
+run quiet --no-maintenance --dry-run || fail "release.sh --no-maintenance --dry-run: $out"
+check "release --no-maintenance --dry-run: the preflight needs no admin page" has "$out" "the admin page: not needed (--no-maintenance)"
+check "release --no-maintenance --dry-run: plans no maintenance" has "$out" "no maintenance (--no-maintenance): the admin page is not asked"
+check "release --no-maintenance --dry-run: ... shows no POST" bash -c "! grep -q 'POST ' <<<\"\$1\"" _ "$out"
+check "release --no-maintenance --dry-run: the swap once \"matches\":0, up to 120 min" has "$out" 'wait for "matches":0 on .*/api/stats (up to 120 min), then y/N'
+check "release --no-maintenance --dry-run: \"matches\":0 once more, right before the stop" bash -c \
+    "grep -A3 'matches\":0 once more right before the stop' <<<\"\$1\" | grep -q 'compose stop srp26'" _ "$out"
+check "release --no-maintenance --dry-run: says the lobby reconnects" has "$out" '~30 s "server sync" and reconnect'
+check "release --no-maintenance --dry-run: changes nothing" test "$(tree)" = "$before"
+check "release --no-maintenance --dry-run: asks no admin page" test ! -s "$T/state/admin-seen.log"
+expect_refused "release: --minutes and --no-maintenance refused together" "and --no-maintenance has none" \
+    "$here/release.sh" --no-maintenance --minutes 5
+expect_refused "release: --match-wait is a number" "match-wait: a whole number" "$here/release.sh" --no-maintenance --match-wait soon
+
+# The limit passes with a match still running: a clean stop.
+echo 1000 >"$T/state/busy"
+run yes --no-maintenance --match-wait 2 --label nme || true
+rm -f "$T/state/busy"
+check "release --no-maintenance: a match past --match-wait stops it" has "$out" "match(es) still running after 2 min of waiting (--match-wait): nothing was swapped"
+check "release --no-maintenance: ... removes the staged files" nothing_staged
+check "release --no-maintenance: ... its folder says stopped" grep -qx stopped "$(folder 15 nme)/state"
+check "release --no-maintenance: ... leaves the live files as they were" test "$(tree)" = "$before"
+check "release --no-maintenance: ... restarts nothing" bash -c "! grep -qE ' (up|stop) ' $T/log"
+check "release --no-maintenance: ... cancels no maintenance (none was planned)" bash -c "! grep -qE '^maintenance: ' <<<\"\$1\"" _ "$out"
+check "release --no-maintenance: ... the clock counts from the go-ahead" bash -c "grep -q 'since the go-ahead\]' <<<\"\$1\" && ! grep -q 'planned time\]' <<<\"\$1\"" _ "$out"
+check "release --no-maintenance: ... frees the lock" test ! -e "$T/lock"
+check "release --no-maintenance: ... asked no admin page" test ! -s "$T/state/admin-seen.log"
+
+# A match, then none, then one begun during the y/N: the check before the
+# stop waits for it, and the stop comes right after a "matches":0.
+printf '1\n1\n0\n2\n0\n' >"$T/state/matches"
+args_before=$(grep -c '' "$T/args")
+run yes --no-maintenance --label nm || fail "release.sh --no-maintenance: $out"
+rm -f "$T/state/matches"
+check "release --no-maintenance: waits while a match runs" has "$out" "1 match(es) still running; waiting"
+check "release --no-maintenance: ... the check before the stop waits for the new one" bash -c \
+    "grep -q '2 match(es) still running; waiting' <<<\"\$1\" && grep -q 'matches\":0 once more: stopping srp26 now' <<<\"\$1\"" _ "$out"
+# The ssh to the jump host that stops srp26 (its command quoted: \ before a
+# space), and what came just before it.
+stop_at=$(tail -n +"$((args_before + 1))" "$T/args" | grep -n 'compose.\{1,2\}stop.\{1,2\}srp26' | head -n 1 | cut -d: -f1)
+check "release --no-maintenance: ... the stop right after /api/stats said 0" \
+    bash -c "tail -n +$((args_before + 1)) $T/args | sed -n '$((${stop_at:-1} - 1))p' | grep -q '^curl .*/api/stats$'"
+check "release --no-maintenance: ... then releases" cmp -s "$T/work/r15.zip" "$T/live/download/Survarium-0.26g-srp-files.zip"
+check "release --no-maintenance: ... SRP_MIN_PATCH_REVISION=15" grep -qx "SRP_MIN_PATCH_REVISION=15" "$T/live/.env"
+check "release --no-maintenance: ... its folder says released" grep -qx released "$(folder 15 nm)/state"
+check "release --no-maintenance: ... asked no admin page" test ! -s "$T/state/admin-seen.log"
+check "release --no-maintenance: ... planned nothing" test ! -s "$T/state/admin.log"
+check "release --no-maintenance: ... frees the lock" test ! -e "$T/lock"
 
 # No secret in any output or command line.
 check "release: the admin token is in no output" bash -c "! grep -qF -- '$token' $T/outputs"

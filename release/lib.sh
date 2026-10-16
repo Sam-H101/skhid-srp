@@ -594,6 +594,8 @@ restart_command() {
 #   OLD_PATCHES        /patches now (JSON, or empty): checked after a rollback
 #   SWAP_SRC           1: src.tar of the folder (main's source) goes into the
 #                      tree too, SWAP_SRC_INPUTS (quoted paths) kept first
+#   SWAP_BEFORE_STOP   a function run right before srp26 is stopped (it
+#                      dies to stop the release there), or empty
 # In order:
 #   swap_prepare <revision>  srp26 stopped; srp.db, the old files, the image
 #                            ID, the setting kept in the folder; the image
@@ -605,7 +607,7 @@ restart_command() {
 # SWAP_STATE says how far it got, for swap_failed: `` (nothing), stopped
 # (only srp26 stopped and copies made: it is started again), moved (the
 # rollback runs), finished.
-SWAP_STATE='' SWAP_SRC=0 SWAP_SRC_INPUTS=''
+SWAP_STATE='' SWAP_SRC=0 SWAP_SRC_INPUTS='' SWAP_BEFORE_STOP=''
 OLD_MIN=none HAVE_ZIP=0 HAVE_DATA=0 OLD_PATCHES=''
 RUN_CONTAINER='' RUN_IMAGE='' RUN_VOLUME='' RUN_VOLUME_DIR='' LATEST_IMAGE=''
 
@@ -689,6 +691,7 @@ swap_prepare() {
         BACKUP_BEFORE=$(newest_backup) || die "srp's backups/ cannot be listed (docker exec)"
         say "srp's newest backup of srp.db before the swap: ${BACKUP_BEFORE:-none}"
     fi
+    if [[ -n $SWAP_BEFORE_STOP ]]; then "$SWAP_BEFORE_STOP"; fi
     write_on live "cd $D && $TARGET_COMPOSE stop srp26"
     ((DRY_RUN)) || SWAP_STATE=stopped
     write_on live "$(archive_command)"

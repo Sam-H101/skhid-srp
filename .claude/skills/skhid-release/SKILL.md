@@ -76,8 +76,9 @@ patches server (size, sha256, served at its URL).
 
 ```
 release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
-                   [--server-code auto|yes|no] [--minutes <n>]
-                   [--label <word>] [--dry-run] [--yes --i-know]
+                   [--server-code auto|yes|no]
+                   [--minutes <n> | --no-maintenance] [--match-wait <minutes>]
+                   [--label <word>] [--ref <branch>] [--dry-run] [--yes --i-know]
 ```
 
 Matches last up to 15 minutes, so it plans the maintenance
@@ -90,7 +91,8 @@ everything while the countdown runs, and at its end swaps it all in at once
    release lock free; nix; `$SKHID_GAME`; `$SKHID_STOCK_DB` with the stock
    sha256 (cached by size and time); free disk here and there;
    srp-game-data builds; main's `REVISION` above the target exe's; the
-   admin page answers the jump host; no maintenance planned already; no
+   admin page answers the jump host (not with `--no-maintenance`); no
+   maintenance planned already; no
    release folder left unfinished; `download/` on the file system of the
    target's folder; `download/resources/` keeps the original menus' blobs
    (main_menu `0ff118a8…`, lobby_menu `ab6f22d8…`, login_menu `805ea5f8…`:
@@ -120,8 +122,8 @@ everything while the countdown runs, and at its end swaps it all in at once
    `docker compose build srp26` run on it (the running container is not
    touched). The local builds run at nice 10.
 4. **At the planned time**, once the launcher page says the server is down
-   and `/api/stats` says `"matches":0` (it waits up to
-   `$SKHID_MATCH_WAIT_MINUTES`, default 15, more): it shows what changes,
+   and `/api/stats` says `"matches":0` (it waits up to `--match-wait`,
+   default `$SKHID_MATCH_WAIT_MINUTES`, else 15, more): it shows what changes,
    **y/N** (no answer in `$SKHID_SWAP_ANSWER_MINUTES`, default 10, is a
    no), then: notes srp's newest backup of srp.db, stops srp26, keeps the
    old files in the folder, puts the folder's rollback in, puts the server
@@ -157,6 +159,27 @@ again as it was.
 `--yes --i-know` (both or neither) answers both questions; only for a run
 the owner watches anyway.
 
+### A quick release: --no-maintenance
+
+When the owner doesn't want a countdown (a small fix, few players on),
+`--no-maintenance` skips it: no maintenance is planned and the admin page is
+never asked (the preflight doesn't check it, nor `SRP_ADMIN_*` and
+`SRP_WEB_TRUST_PROXY`). After the lock and the first y/N, step 3 (publish
+the patch, build the server data and the ZIP, stage them, build the image)
+runs at once; then it waits for `"matches":0` on `$TARGET_SITE/api/stats`
+(`--match-wait`, default 120 min here; past it, a clean stop: nothing
+swapped, the staged files removed, state `stopped`), shows what changes and
+asks the second y/N (no answer in `$SKHID_SWAP_ANSWER_MINUTES` is a no). Right
+before it stops srp26 it asks `/api/stats` once more: a match begun during
+the question is waited for (within the same limit), and the stop follows a
+`"matches":0` by one ssh. The swap, the checks and the rollback are the same.
+
+What players see: those in a running match lose nothing (the swap waits for
+`matches:0`); those in the lobby get a ~30 s "server sync" while srp26 is
+made anew and reconnect by themselves; the launcher shows no countdown.
+The progress lines show the time since the go-ahead instead of the time to
+the planned end. `--minutes` and `--no-maintenance` are refused together.
+
 ### The release folder
 
 Every release keeps a folder on its target:
@@ -183,7 +206,8 @@ preflight: look at its `release.log`, finish or roll it back, then write
 ### What to watch
 
 - The preflight: every line `ok`.
-- After the first yes: the launcher countdown (players see it now).
+- After the first yes: the launcher countdown (players see it now; none
+  with `--no-maintenance`).
 - The ZIP's entries against the current ZIP (build-zip's list, shown again
   at the second question and in `changed.txt`): `survarium_skhid.exe`
   always differs (the revision); `updater_skhid.exe` only if the updater
