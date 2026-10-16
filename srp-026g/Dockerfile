@@ -16,6 +16,7 @@ COPY crates crates
 COPY servers servers
 COPY scripts scripts
 COPY resources/binary-config-examples resources/binary-config-examples
+COPY resources/game-026g resources/game-026g
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \

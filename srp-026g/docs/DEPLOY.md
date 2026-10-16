@@ -52,15 +52,21 @@ use the game's own 1234, 1235, 1236.
    says) into `./download`, or set `SRP_DOWNLOAD_URL`. A zip made with
    resource regions comes with blobs: they go into `./download/resources/`
    first (`client-patches/launcher/README.md`, "Putting it on a server").
-4. `docker compose config` (checks the file and the settings), then
+4. Put the server's game data (`server-game-data.db`, made by
+   `srp-game-data build` of `resources.db` and the patches the players
+   mount: "The game's files" below) into `./download` too, and each patch
+   at the URL it names. srp takes its game data from it, lists its patches
+   at `/patches`, and does not start without it.
+5. `docker compose config` (checks the file and the settings), then
    `docker compose build srp26`, then `docker compose up -d srp26`.
-5. For HTTPS on the web page, on a host whose port 443 is free: point a
+6. For HTTPS on the web page, on a host whose port 443 is free: point a
    domain at the host, set `SRP_WEB_DOMAIN` (several names: commas between
    them, the whole in quotes) and `SRP_WEB_TRUST_PROXY=on`,
    then `docker compose --profile tls up -d`.
-6. Check: `docker compose ps` shows the container healthy (the check opens
+7. Check: `docker compose ps` shows the container healthy (the check opens
    the web page's port; the game ports are UDP), and the log's first lines
-   say which servers started on which ports.
+   say which servers started on which ports, and where the game data was
+   read from (`game data: ...`).
 
 Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 (`client-patches/README.md`).
@@ -76,6 +82,7 @@ Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 | `SRP26_WEB_PORT` | The web page's port on the host's 127.0.0.1 (default 8098) |
 | `SRP26_HTTPS_PORT` | caddy's port (default 443) |
 | `SRP26_DOWNLOAD_DIR` | The folder with the download (default `./download`) |
+| `SRP_GAME_DATA` | The server's game data (default `/srv/srp/download/server-game-data.db`: `./download/server-game-data.db` on the host) |
 | `SRP26_CPUS`, `SRP26_MEMORY` | The container's limits (1 CPU, 512 MB) |
 | `SRP_ADMIN_TOKEN`, `SRP_ADMIN_PATH`, `SRP_ADMIN_IPS`, `SRP_WEB_TRUST_PROXY`, `SRP_WEB_DOMAIN` | The admin page and the web page, as for 0.21d: the admin page is on only with a token and a path, for the listed addresses only |
 | `SRP_DOWNLOAD_FILE`, `SRP_DOWNLOAD_URL`, `SRP_DOWNLOAD_SHA256`, `SRP_GAME_URL`, `SRP_OTHER_SERVER_URL`, `SRP_TEST_SERVER` | The home page's download, where the original game is had, the link to another server of ours, and `on` for a test server: every page then says that it is one and names the other server as the players' |
@@ -102,6 +109,48 @@ gets the lobby's sign-in, whose price list names every item sold.
 Left out (or 0), every game is let in; a value that is not a number from 0
 to 255 stops srp at start. `SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT`
 and `SRP_OUTDATED_TEXT` are no more read: take them out of `.env`.
+
+## The game's files
+
+srp takes every table of game data from the server's game data
+(`SRP-026G.md`, "Game data"): one file of about 3 MB,
+`server-game-data.db`, the files srp reads of the stock `resources.db` and
+the `resources.db.patch_<n>` archives the players' game mounts over it, with
+what it was made of. `srp-game-data build` makes it where the game's
+archives are (the release machine; `crates/resources-db/README.md`):
+
+    srp-game-data build --dir <the game folder> --patch-url <where the players download the patches> --out server-game-data.db
+
+The host keeps it in the download folder (mounted already):
+
+    /opt/srp-026g/download/server-game-data.db    (SRP_GAME_DATA=/srv/srp/download/server-game-data.db)
+
+It names each patch with its sha256 and the URL given to `build`, and the
+web page hands exactly that list to the players' updater at `GET /patches`
+(public, no token; `{}` when there are no patches). So the players fetch
+the patches the server runs on and no others. srp does not serve the patch
+files themselves: each must be downloadable at its URL (any plain file
+server; the updater checks it against the list's sha256). The host needs
+neither the 6.3 GB `resources.db` nor the patches to run srp.
+
+Without `SRP_GAME_DATA`, or with a file that is missing, damaged (a file
+unlike its table) or not made by `srp-game-data build`, srp does not start
+and its log says why and how to make the file.
+
+- **It is read once, at start.** A release that adds or changes a patch
+  goes out in this order: the patch file at its URL, then the new
+  `server-game-data.db` over the old one in `download/`, then the restart
+  (`docker compose restart srp26`). The log's
+  `game data: ...` line names what it was made of; `curl
+  https://<the page>/patches` shows the list the updaters now get, and a
+  player's launcher fetches the new patch at its next start. A patch every
+  game must have goes with `SRP_MIN_PATCH_REVISION` (above).
+- **Before the restart:** `srp-game-data info server-game-data.db` checks the
+  file and prints its patches and URLs; `srp-game-data check
+  server-game-data.db --dir <the game folder> --patch-url <base>` says
+  whether it was made of exactly those archives.
+- **A rollback** is the old `server-game-data.db` and a restart: the
+  updaters then delete the patch the list no longer names.
 
 ## Data, logs, backups
 

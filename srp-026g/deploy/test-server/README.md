@@ -51,7 +51,9 @@ itself takes changes only through pull requests.
 
 1. Docker with the compose plugin, `git`, `curl`.
 2. `/opt/srp-test` (mode 700, root's): a copy of `srp-026g/docker-compose.yml`,
-   a `download/` folder, and a `.env` (mode 600) made from
+   a `download/` folder (the test ZIP, and the server's game data,
+   `server-game-data.db`, made of the test server's patches: srp does not
+   start without it, `DEPLOY.md`, "The game's files"), and a `.env` (mode 600) made from
    `deploy/env-026g.example` with at least:
    `SRP_PUBLIC_HOST` and `SRP_WEB_DOMAIN` (the test server's name),
    `SRP26_LOGIN_PORT=1234`, `SRP26_LOBBY_PORT=1235`, `SRP26_MATCH_PORT=1236`,
