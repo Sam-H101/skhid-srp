@@ -1,6 +1,6 @@
 ---
 name: skhid-release
-description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which prepares and stages everything first, then plans the maintenance to start 2 minutes after the last running match ends and swaps it all in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision bump, the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
+description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which at the owner's go plans the maintenance at once to start 30 seconds after the last running match ends, prepares and stages everything during the countdown and swaps it all in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision bump, the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
 ---
 
 # Making a Skhid 0.26g release
@@ -56,8 +56,10 @@ release/release.sh                   [--resources ...]
 ```
 
 Show the owner each dry run's output (every read-only check runs; every
-other command is printed; nothing is planned or written). When they say go,
-the same without `--dry-run`, from a terminal: it asks y/N twice.
+other command is printed; nothing is planned or written). Then the same
+without `--dry-run`: after its preflight it waits for **the go**, and the
+go is the owner's to give (below); before the swap it asks one y/N
+(`--yes --i-know` answers it, never the go).
 
 ## What is offered: release/patches.tsv
 
@@ -106,22 +108,27 @@ line, or the file, to have a URL downloaded whole again.
 ```
 release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
                    [--server-code auto|yes|no]
-                   [--minutes <n> | --no-maintenance] [--match-wait <minutes>]
-                   [--label <word>] [--ref <branch>] [--dry-run] [--yes --i-know]
+                   [--minutes <n> | --no-maintenance] [--now]
+                   [--match-wait <minutes>] [--label <word>] [--ref <branch>]
+                   [--dry-run] [--yes --i-know]
 ```
 
-It prepares and stages everything first, with Play open and no countdown;
-then it plans the maintenance to start **2 minutes after the last running
-match ends**, so Play locks at once and no new match starts, and at its
-time swaps it all in at once (the downtime is the restart). Players wait
-only for the matches that run, never for the build.
+After the preflight it waits for the owner's go; at the go it plans the
+maintenance at once, to start **30 seconds after the last running match
+ends**, so Play locks and no new match starts; **during the countdown** it
+prepares and stages everything, and at the later of the planned time and
+the end of the staging, once no match runs, swaps it all in at once (the
+downtime is the restart). The countdown hides the build: players wait for
+the matches that run, or for the build when it takes longer.
+
+The order, as it runs:
 
 1. **Preflight**, nothing players see. It says exactly what's missing: ssh
    to the jump host, through it to the live host, the patches server; the
    release lock free; nix; `$SKHID_GAME`; `$SKHID_STOCK_DB` with the stock
    sha256 (cached by size and time); free disk here and there;
    srp-game-data builds; main's `REVISION` above the target exe's; the
-   admin page answers the jump host (not with `--no-maintenance`); no
+   admin page answers the jump host (not with `--no-maintenance` or `--now`); no
    maintenance planned already; no
    release folder left unfinished; `download/` on the file system of the
    target's folder; `download/resources/` keeps the original menus' blobs
@@ -138,8 +145,35 @@ only for the matches that run, never for the build.
    listed yet. Last, which server-code files differ, and which settings
    main's compose file newly passes that the target's `.env` sets (names
    only: their values take effect at the recreate).
-2. **The lock and y/N**. Nothing is planned yet.
-3. **Prepared and staged at once** (players see nothing): `upload-patch` (with `--resources`; it adds
+2. **The lock, then the go.** Right after the preflight it stops and
+   waits: y at its prompt (n stops), or `touch` the go file it prints
+   (`~/.cache/skhid-release/go-<release folder>`); `--yes` does not give
+   it. **The go is the owner's**: it is their word that players may feel
+   the release from now on, and the maintenance is planned the moment it
+   is given. Ask the owner, and give it only when they say so
+   (`SKHID_RELEASE_GO=1` gives it beforehand, for the tests). Nothing is
+   planned, built or staged before it; a Ctrl-C there only frees the lock.
+3. **The maintenance, at once after the go**: a POST to the admin page
+   (`tab=maint`, `minutes`) from the jump host, whose address must be in
+   the target's `SRP_ADMIN_IPS` (behind Caddy with
+   `SRP_WEB_TRUST_PROXY=on`). The admin path and token are read from the
+   target's `.env` into variables and handed to curl as its config on
+   stdin: never printed, in no command line. It checks the countdown on the
+   launcher page and prints the planned time. The minutes (the admin page
+   takes whole minutes, 1 to 10080):
+   - `ceil((last_match_ends_in + 30) / 60)`, at least 1, where
+     `last_match_ends_in` is what `/api/stats` says: the seconds until the
+     last running match ends at the latest (its time left; a match still
+     loading counts its whole wait, countdown and 15 min), 0 when none
+     runs. A match ending in 5 min (300 s, or 299): 6; none: 1.
+   - An srp from before that field (revision 15 and older): 1 with
+     `"matches":0`; else the most "Time left" (`≤ <m> min`) of the launcher
+     page's matches + 1 (30 s, rounded up), when the page gives one for
+     every running match (≤ 9 min: 10); else a whole match and 30 s, 16.
+     The log says which.
+   - `--minutes <n>`: `<n>`, planned at the same point (right after the go).
+   - `--no-maintenance` or `--now`: nothing is planned (below).
+4. **Prepared and staged during the countdown**: `upload-patch` (with `--resources`; it adds
    the row), `build-server-db` (of the list), `build-zip` (of the commit
    checked in step 1); the checks of `deploy` on both files; then the
    **release folder** on the target (below) with both files staged in it
@@ -148,36 +182,10 @@ only for the matches that run, never for the build.
    its ID, main's source unpacked in the folder's `src/` and
    `docker compose build srp26` run on it (the running container is not
    touched). The local builds run at nice 10.
-
-   **Then it waits for the go.** Once all of it is staged it stops and asks:
-   y at its prompt, or `touch` the go file it prints
-   (`~/.cache/skhid-release/go-<release folder>`); `--yes` does not give
-   the go. Ask the owner, and give it only when they say so: they choose the
-   moment players feel (`SKHID_RELEASE_GO=1` gives it beforehand, for the
-   tests). A Ctrl-C there stops cleanly, nothing planned.
-
-   **Then, once all of it is staged** (the folder `staging` with both files
-   and their sha256 in `new.sha`, checked on the host; never before), the
-   **maintenance**: a POST to the admin page (`tab=maint`, `minutes`) from
-   the jump host, whose address must be in the target's `SRP_ADMIN_IPS`
-   (behind Caddy with `SRP_WEB_TRUST_PROXY=on`). The admin path and token
-   are read from the target's `.env` into variables and handed to curl as
-   its config on stdin: never printed, in no command line. It checks the
-   countdown on the launcher page and prints the planned time. The minutes:
-   - `ceil((last_match_ends_in + 120) / 60)`, at least 2, where
-     `last_match_ends_in` is what `/api/stats` says: the seconds until the
-     last running match ends at the latest (its time left; a match still
-     loading counts its whole wait, countdown and 15 min), 0 when none
-     runs. A match ending in 5 min: 7; none: 2.
-   - An srp from before that field (revision 15 and older): 2 with
-     `"matches":0`; else the most "Time left" (`≤ <m> min`) of the launcher
-     page's matches + 2, when the page gives one for every running match;
-     else a whole match, 15 + 2 = 17. The log says which. The first release
-     with this script is of such an srp.
-   - `--minutes <n>`: `<n>`, planned at the same point (once staged).
-   - `--no-maintenance`: nothing is planned (below).
-4. **At the planned time**, once the launcher page says the server is down
-   and `/api/stats` says `"matches":0` (it waits up to `--match-wait`,
+5. **The swap, at the later of the planned time and the end of the
+   staging**: staged before the planned time, it waits for it; staged
+   after it, it goes on at once. Then, once the launcher page says the
+   server is down and `/api/stats` says `"matches":0` (it waits up to `--match-wait`,
    default `$SKHID_MATCH_WAIT_MINUTES`, else 15, more): it shows what changes,
    **y/N** (no answer in `$SKHID_SWAP_ANSWER_MINUTES`, default 10, is a
    no), then: notes srp's newest backup of srp.db, stops srp26, keeps the
@@ -187,7 +195,7 @@ only for the matches that run, never for the build.
    highest patch, or srp refuses to start) and runs
    `docker compose up -d --no-deps --force-recreate srp26` (after any
    `.env` change the container is made anew, never just restarted).
-5. **Checks, then the ZIP**: the container running, healthy, not
+6. **Checks, then the ZIP**: the container running, healthy, not
    restarting; the log's `game data:` line; `/patches` exactly the list's.
    Then srp.db: at its start srp copies it with `VACUUM INTO` to
    `backups/srp-<unix>.db` before it opens it, so that copy is the state
@@ -204,32 +212,33 @@ names`, `srp: SRP_MIN_PATCH_REVISION is …`, `srp: cannot load the 0.26g
 accounts: … lacks …` — and runs the folder's rollback at once, then checks
 srp26 is up and `/patches` is as before.
 
-A **stop before step 4** (a failure, a no, Ctrl-C) removes the staged
-files (the folder stays, state `stopped`, with its release.log), puts the
-image tag back and cancels the maintenance when it was planned (a stop
-before the plan asks the admin page nothing): the server is as it was (a
+A **stop after the go and before the swap** (a failure, a no, Ctrl-C,
+during the countdown's build too) cancels the maintenance when it was
+planned, removes the staged files (the folder stays, state `stopped`, with
+its release.log) and puts the image tag back: the server is as it was (a
 published patch stays with its row; the next run goes without
-`--resources`). A stop in the swap before anything moved starts srp26
+`--resources`). A stop before the go asks the admin page nothing and only
+frees the lock. A stop in the swap before anything moved starts srp26
 again as it was.
 
-`--yes --i-know` (both or neither) answers both questions; only for a run
-the owner watches anyway.
+`--yes --i-know` (both or neither) answers the y/N before the swap; only
+for a run the owner watches anyway. It never gives the go.
 
-Every wait (the y/N, the wait for the planned time, for `"matches":0`)
-answers Ctrl-C within a second or two: its sleeps are `sleep & wait`, which
-a trap interrupts.
+Every wait (the go, the y/N, the wait for the planned time, for
+`"matches":0`) answers Ctrl-C within a second or two: its sleeps are
+`sleep & wait`, which a trap interrupts.
 
 ### A quick release: --no-maintenance
 
 When the owner doesn't want a countdown (a small fix, few players on),
 `--no-maintenance` skips it: no maintenance is planned and the admin page is
 never asked (the preflight doesn't check it, nor `SRP_ADMIN_*` and
-`SRP_WEB_TRUST_PROXY`). After the lock and the first y/N, step 3 (publish
+`SRP_WEB_TRUST_PROXY`). After the lock and the go, step 4 (publish
 the patch, build the server data and the ZIP, stage them, build the image)
 runs at once; then it waits for `"matches":0` on `$TARGET_SITE/api/stats`
 (`--match-wait`, default 120 min here; past it, a clean stop: nothing
 swapped, the staged files removed, state `stopped`), shows what changes and
-asks the second y/N (no answer in `$SKHID_SWAP_ANSWER_MINUTES` is a no). Right
+asks the y/N (no answer in `$SKHID_SWAP_ANSWER_MINUTES` is a no). Right
 before it stops srp26 it asks `/api/stats` once more: a match begun during
 the question is waited for (within the same limit), and the stop follows a
 `"matches":0` by one ssh. The swap, the checks and the rollback are the same.
@@ -237,8 +246,21 @@ the question is waited for (within the same limit), and the stop follows a
 What players see: those in a running match lose nothing (the swap waits for
 `matches:0`); those in the lobby get a ~30 s "server sync" while srp26 is
 made anew and reconnect by themselves; the launcher shows no countdown.
-The progress lines show the time since the go-ahead instead of the time to
+The progress lines show the time since the go instead of the time to
 the planned end. `--minutes` and `--no-maintenance` are refused together.
+
+### Right now: --now
+
+`--now` means now: **no maintenance is planned and no notice given**.
+After the go it prepares and stages, then swaps at once, **matches running
+or not**: they end without results. Right before it stops srp26 it says
+how many matches run (`--now: <n> match(es) running: the stop ends them
+now, WITHOUT RESULTS`), and its last lines say how many it ended; both are
+in the folder's release.log. It still needs the go, still asks the y/N
+before the swap, and still rolls back by itself when the new srp doesn't
+come up. `--now --no-maintenance` is the same thing (accepted, with a
+note); `--now --minutes` is refused; `--match-wait` is ignored. Use it only
+when the owner asks for it: every player in a match loses that match.
 
 ### The release folder
 
@@ -266,12 +288,14 @@ preflight: look at its `release.log`, finish or roll it back, then write
 ### What to watch
 
 - The preflight: every line `ok`.
-- After the first yes: the builds and the staging (players see nothing
-  yet); then the plan's line, with its minutes and where they come from
-  (`/api/stats`, the launcher page, or a whole match), and the launcher
-  countdown (none with `--no-maintenance`).
+- After the go: the plan's line at once, with its minutes and where they
+  come from (`/api/stats`, the launcher page, or a whole match), and the
+  launcher countdown (none with `--no-maintenance` or `--now`); then the
+  builds and the staging, during the countdown; then `5. staged before
+  the planned time` (it waits for it) or `5. staged after the planned
+  time: the swap at once`.
 - The ZIP's entries against the current ZIP (build-zip's list, shown again
-  at the second question and in `changed.txt`): `survarium_skhid.exe`
+  at the y/N before the swap and in `changed.txt`): `survarium_skhid.exe`
   always differs (the revision); `updater_skhid.exe` only if the updater
   changed (players get it at their next launcher start); anything else
   must be explained by a merged change. Unexplained: answer no (that
