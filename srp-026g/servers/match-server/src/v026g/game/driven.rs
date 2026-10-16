@@ -126,6 +126,9 @@ pub(super) struct Walkers {
     tactics: Option<Receiver<Tactics>>,
     /// The map has no walk grid: the stage 0 script drives them.
     absent: bool,
+    /// Since when the map waits for room in the store
+    /// ([`MapState::Waiting`]), for the log.
+    waiting: Option<std::time::Instant>,
     /// The roster events handed to the bots so far.
     events_seen: usize,
 }
@@ -182,6 +185,7 @@ impl Walkers {
             world: None,
             tactics: None,
             absent: false,
+            waiting: None,
             events_seen: 0,
         })
         .map(|mut walkers| {
@@ -228,6 +232,13 @@ impl Walkers {
         if self.world.is_none() && !self.absent {
             match self.maps.get(self.project) {
                 MapState::Ready(base) => {
+                    if let Some(since) = self.waiting.take() {
+                        log::info!(
+                            "Match {id:#x}: the bots' map {} is loaded, {:.0} s after it began to wait",
+                            self.project,
+                            since.elapsed().as_secs_f32()
+                        );
+                    }
                     let world = base.world.clone();
                     let margin = self.bots.tuning.hazard_margin;
                     if margin.to_bits() == base.margin().to_bits() {
@@ -268,6 +279,15 @@ impl Walkers {
                     self.world = Some(world);
                 }
                 MapState::Loading => {}
+                MapState::Waiting(why) => {
+                    if self.waiting.is_none() {
+                        log::info!(
+                            "Match {id:#x}: the bots' map {} waits ({why}); the server's bots                              run the stage 0 script till it is loaded",
+                            self.project
+                        );
+                        self.waiting = Some(std::time::Instant::now());
+                    }
+                }
                 MapState::Absent(why) => {
                     log::warn!(
                         "Match {id:#x}: no walk grid for {} ({why}); the server's bots run the \
