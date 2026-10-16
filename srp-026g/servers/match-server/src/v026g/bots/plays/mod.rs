@@ -58,7 +58,8 @@ use super::tuning::{Personality, PlayTuning, Tuning};
 use super::view::{MatchView, Place, PlaceView};
 
 /// The rank bands, highest first: a candidate of a higher band beats any
-/// of a lower one (research B1 point 3).
+/// of a lower one (research B1 point 3); the commander counts an
+/// objective its curves all but rule out as roam (`team::Bands`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rank {
@@ -564,6 +565,22 @@ impl Ctx<'_> {
             && grid.entered_from(goal, |b| {
                 Some(b) == start || self.tactics.allowed(b, self.now, self.bot.side, objective)
             })
+    }
+
+    /// Whether no way leads to a battery lying at `at` all match, for any
+    /// side: no floor to take it from, or that floor is past zones on all
+    /// match ([`Tactics::past_fixed_zones`]: level_01's swamp). Whatever
+    /// lies there stays there.
+    pub fn shut_all_match(&self, at: Vec3) -> bool {
+        let Some(stand) = self.tactics.stand_to_take(at) else {
+            return true;
+        };
+        let grid = &self.tactics.world.grid;
+        let Some(goal) = grid.locate(stand, 3.0) else {
+            return true;
+        };
+        let past = |b| self.tactics.past_fixed_zones(b);
+        !self.tactics.walkable(goal) || !(past(goal) || grid.entered_from(goal, past))
     }
 
     /// Whether this bot's search to a goal at `at` (the motor's, within

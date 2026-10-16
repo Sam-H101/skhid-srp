@@ -1,7 +1,14 @@
 //! A team's commander (`player_bots_research.md` B1, B2; Killzone's
 //! squads): every ~0.5 s it hands each bot of the team a play.
 //!
-//! - Each bot's candidates are sorted by rank band, then score.
+//! - Each bot's candidates are sorted by rank band, then score. An
+//!   objective the curves all but rule out (under [`Bands::floor`]) is no
+//!   objective: it competes in the roam band by its score ([`Bands`]). So
+//!   the bands still put a real objective first, whatever its score
+//!   against a fight or a roam.
+//! - **One bot does the job:** a second bot on a container a teammate
+//!   already has (a second raider, a second guard of the lead) needs
+//!   [`Bands::second`] to keep the objective band.
 //! - **Commitment:** a bot keeps its play unless a candidate of a higher
 //!   band comes, or one of the same band beats it by [`MARGIN`] (research
 //!   B9: no flapping between near-equal plays).
@@ -15,11 +22,74 @@
 //! - The commander says why: each assignment carries the winner's score and
 //!   the runners-up for the trace.
 
-use super::plays::{Candidate, PlayKind, SlotKey, TargetRef};
+use super::plays::{Candidate, PlayKind, Rank, SlotKey, TargetRef};
 use super::view::Place;
 
 /// A candidate of the same band must beat the running play by this.
 pub const MARGIN: f32 = 0.12;
+
+/// How the commander reads a candidate's band (F2 of the owner's matches
+/// of 2026-10-16, `player_bots_behaviour.md` §3 "The commander's bands").
+/// In those two matches 192 of 226 raids were taken at a score under 0.05,
+/// over a roam at 1.00, and gave no steal; half were replaced within
+/// 10 s; the two raids that scored were taken at 0.21 and 0.24.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bands {
+    /// An objective candidate scoring under this competes in
+    /// [`Bands::demote_to`] by its score.
+    pub floor: f32,
+    /// The band an objective under the floor competes in: roam (in the
+    /// fight band a raid at 0.02 still beat every roam; bench, 600 s).
+    pub demote_to: Rank,
+    /// The bot's running play keeps its band down to this share of the
+    /// bars (no flapping across the floor).
+    pub keep: f32,
+    /// A second bot on the same container (a raid's or a guard's second
+    /// slot, a sneak or a late denial a teammate already has) needs this
+    /// score to keep the objective band.
+    pub second: f32,
+}
+
+impl Default for Bands {
+    fn default() -> Self {
+        Self {
+            floor: 0.10,
+            demote_to: Rank::Roam,
+            keep: 0.5,
+            second: 0.20,
+        }
+    }
+}
+
+impl Bands {
+    /// The band `c` competes in: its rank, or [`Bands::demote_to`] for an
+    /// objective under the floor, or under [`Bands::second`] when a
+    /// teammate already has its container (`second`). The bot's own
+    /// running play (`running`) is held to [`Bands::keep`] of the bar.
+    pub fn band(&self, c: &Candidate, running: bool, second: bool) -> Rank {
+        if c.rank != Rank::Objective {
+            return c.rank;
+        }
+        let bar = if second {
+            self.floor.max(self.second)
+        } else {
+            self.floor
+        };
+        let bar = if running { bar * self.keep } else { bar };
+        if c.score.get() < bar {
+            self.demote_to.min(c.rank)
+        } else {
+            c.rank
+        }
+    }
+
+    /// The order of a bot's candidates: band, then score; the best first.
+    pub fn better(&self, a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+        self.band(b, false, false)
+            .cmp(&self.band(a, false, false))
+            .then(b.score.get().total_cmp(&a.score.get()))
+    }
+}
 
 /// A bot's play from the commander.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,24 +110,33 @@ pub struct Asking<'a> {
     pub current: Option<&'a Assignment>,
 }
 
-fn better(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
-    b.rank
-        .cmp(&a.rank)
-        .then(b.score.get().total_cmp(&a.score.get()))
-}
-
 /// The assignments for one commander tick: `(place, assignment, changed)`.
 /// A bot with no candidate at all gets none.
-pub fn assign(mut asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool)> {
+pub fn assign(asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool)> {
+    assign_with(asking, now, &Bands::default())
+}
+
+/// Whether a teammate's play already goes to this container (one bot
+/// there does the job; a second needs [`Bands::second`]).
+fn on_container(c: &Candidate, given: &[(PlayKind, TargetRef)]) -> bool {
+    matches!(c.target, TargetRef::Container(_)) && given.contains(&(c.kind, c.target))
+}
+
+/// [`assign`] with the bands given.
+pub fn assign_with(
+    mut asking: Vec<Asking>,
+    now: u32,
+    bands: &Bands,
+) -> Vec<(Place, Assignment, bool)> {
     for bot in &mut asking {
-        bot.candidates.sort_by(better);
+        bot.candidates.sort_by(|a, b| bands.better(a, b));
     }
     // The best-placed bots first.
     asking.sort_by(|a, b| {
         let best = |x: &Asking| {
-            x.candidates
-                .first()
-                .map_or((super::plays::Rank::Roam, 0.0), |c| (c.rank, c.score.get()))
+            x.candidates.first().map_or((Rank::Roam, 0.0), |c| {
+                (bands.band(c, false, false), c.score.get())
+            })
         };
         let (ra, sa) = best(a);
         let (rb, sb) = best(b);
@@ -78,6 +157,8 @@ pub fn assign(mut asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool
         })
         .collect();
     let mut taken: Vec<SlotKey> = Vec::new();
+    // The plays given this tick, by kind and target.
+    let mut given: Vec<(PlayKind, TargetRef)> = Vec::new();
     let mut out = Vec::new();
     for bot in asking {
         let free = |c: &&Candidate| {
@@ -88,7 +169,24 @@ pub fn assign(mut asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool
                     })
             })
         };
-        let Some(best) = bot.candidates.iter().find(free) else {
+        let is_running = |c: &Candidate| {
+            bot.current
+                .is_some_and(|current| c.kind == current.kind && c.target == current.target)
+        };
+        let band = |c: &Candidate| bands.band(c, is_running(c), on_container(c, &given));
+        // The best free candidate, its band read with the plays given so
+        // far (the order above is the bands alone).
+        let Some(best) = bot
+            .candidates
+            .iter()
+            .filter(free)
+            .filter(|c| !is_running(c))
+            .fold(None, |best: Option<&Candidate>, c| match best {
+                Some(b) if (band(b), b.score.get()) >= (band(c), c.score.get()) => Some(b),
+                _ => Some(c),
+            })
+            .or_else(|| bot.candidates.iter().find(free))
+        else {
             continue;
         };
         // The running play, if it is still a candidate and its slot free.
@@ -101,17 +199,19 @@ pub fn assign(mut asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool
         });
         let (choice, changed, reason) = match running {
             Some((current, c))
-                if c.rank >= best.rank && best.score.get() < c.score.get() + MARGIN =>
+                if band(c) > band(best)
+                    || (band(c) == band(best) && best.score.get() < c.score.get() + MARGIN) =>
             {
                 (c, false, current.reason)
             }
-            Some((_, c)) if c.rank == best.rank => (best, true, "a better play by the margin"),
+            Some((_, c)) if band(c) == band(best) => (best, true, "a better play by the margin"),
             _ if bot.current.is_some() => (best, true, "the play ran out or a higher band came"),
             _ => (best, true, "the best play"),
         };
         if let Some(slot) = choice.slot {
             taken.push(slot);
         }
+        given.push((choice.kind, choice.target));
         let since = match (changed, bot.current) {
             (false, Some(current)) => current.since,
             _ => now,
@@ -256,5 +356,200 @@ mod tests {
             c(PlayKind::Collect, Rank::Objective, 0.1, None, 3),
         ]);
         assert_eq!(out[0].1.kind, PlayKind::Collect);
+    }
+
+    fn on(kind: PlayKind, score: f32, slot: u32) -> Candidate {
+        Candidate {
+            target: TargetRef::Container(0),
+            ..c(kind, Rank::Objective, score, Some(slot), 0)
+        }
+    }
+
+    const BANDS: Bands = Bands {
+        floor: 0.10,
+        demote_to: Rank::Roam,
+        keep: 0.5,
+        second: 0.2,
+    };
+
+    #[test]
+    fn the_default_bands_are_the_measured_ones() {
+        assert_eq!(Bands::default(), BANDS);
+    }
+
+    /// One bot's play: (kind, changed).
+    fn one(
+        bands: &Bands,
+        candidates: Vec<Candidate>,
+        current: Option<&Assignment>,
+    ) -> (PlayKind, bool) {
+        let out = assign_with(
+            vec![Asking {
+                place: 0,
+                candidates,
+                current,
+            }],
+            2_000,
+            bands,
+        );
+        (out[0].1.kind, out[0].2)
+    }
+
+    #[test]
+    fn an_objective_the_curves_all_but_rule_out_is_no_objective() {
+        // The owner's match, 15a 593.4: a raid at 0.02 over a roam at 1.00.
+        let low = || {
+            vec![
+                on(PlayKind::Raid, 0.02, 0),
+                c(PlayKind::Cut, Rank::Fight, 0.08, None, 1),
+                c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+            ]
+        };
+        assert_eq!(one(&BANDS, low(), None).0, PlayKind::Cut);
+        // Under the floor it is a roam-band play by its score.
+        let mut no_fight = low();
+        no_fight.remove(1);
+        assert_eq!(one(&BANDS, no_fight.clone(), None).0, PlayKind::Roam);
+        // In the fight band (tried) it still beat every roam.
+        let to_fight = Bands {
+            demote_to: Rank::Fight,
+            ..BANDS
+        };
+        assert_eq!(one(&to_fight, no_fight, None).0, PlayKind::Raid);
+        // A raid that means it (the two that scored were at 0.21, 0.24).
+        let real = vec![
+            on(PlayKind::Raid, 0.21, 0),
+            c(PlayKind::Cut, Rank::Fight, 0.9, None, 1),
+            c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+        ];
+        assert_eq!(one(&BANDS, real, None).0, PlayKind::Raid);
+    }
+
+    #[test]
+    fn meaningful_objectives_and_alarms_still_win() {
+        let fights = || {
+            vec![
+                c(PlayKind::Cut, Rank::Fight, 0.9, None, 1),
+                c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+            ]
+        };
+        for (play, score) in [
+            (
+                c(PlayKind::Collect, Rank::Objective, 0.15, Some(3), 3),
+                0.15,
+            ),
+            (c(PlayKind::Escort, Rank::Objective, 0.3, Some(3), 3), 0.3),
+            (
+                c(PlayKind::Intercept, Rank::Objective, 0.12, Some(3), 3),
+                0.12,
+            ),
+            (on(PlayKind::LateDenial, 0.12, 0), 0.12),
+            // An alarm is never demoted, however low.
+            (c(PlayKind::Intercept, Rank::Alarm, 0.01, Some(3), 3), 0.01),
+            (c(PlayKind::Collect, Rank::Alarm, 0.02, Some(3), 3), 0.02),
+        ] {
+            let kind = play.kind;
+            let mut all = fights();
+            all.push(play);
+            assert_eq!(one(&BANDS, all, None).0, kind, "{kind:?} at {score}");
+        }
+    }
+
+    #[test]
+    fn a_running_objective_keeps_its_band_down_to_the_keep_share_of_the_floor() {
+        let current = Assignment {
+            kind: PlayKind::Raid,
+            target: TargetRef::Container(0),
+            slot: Some(SlotKey {
+                kind: PlayKind::Raid,
+                key: 0,
+            }),
+            score: 0.2,
+            since: 100,
+            reason: "the best play",
+        };
+        let with = |raid: f32| {
+            vec![
+                on(PlayKind::Raid, raid, 0),
+                c(PlayKind::Cut, Rank::Fight, 0.5, None, 1),
+            ]
+        };
+        // 0.07: under the floor for a new take, over half of it: kept.
+        assert_eq!(
+            one(&BANDS, with(0.07), Some(&current)),
+            (PlayKind::Raid, false)
+        );
+        assert_eq!(one(&BANDS, with(0.07), None).0, PlayKind::Cut);
+        // 0.03: under both: the fight wins.
+        assert_eq!(
+            one(&BANDS, with(0.03), Some(&current)),
+            (PlayKind::Cut, true)
+        );
+    }
+
+    #[test]
+    fn a_second_bot_on_one_container_needs_the_second_bar() {
+        let run = |second: f32| {
+            let asking = vec![
+                Asking {
+                    place: 1,
+                    candidates: vec![
+                        on(PlayKind::Raid, 0.4, 0),
+                        c(PlayKind::Cut, Rank::Fight, 0.3, None, 1),
+                    ],
+                    current: None,
+                },
+                Asking {
+                    place: 2,
+                    candidates: vec![
+                        on(PlayKind::Raid, second, 0x100),
+                        c(PlayKind::Cut, Rank::Fight, 0.3, None, 2),
+                    ],
+                    current: None,
+                },
+            ];
+            let out = assign_with(asking, 1_000, &BANDS);
+            let of = |place| out.iter().find(|(p, _, _)| *p == place).unwrap().1.kind;
+            (of(1), of(2))
+        };
+        assert_eq!(run(0.15), (PlayKind::Raid, PlayKind::Cut));
+        assert_eq!(run(0.25), (PlayKind::Raid, PlayKind::Raid));
+        // Two guards of the lead the same way.
+        let guards = |score: f32| {
+            let asking = vec![
+                Asking {
+                    place: 1,
+                    candidates: vec![on(PlayKind::GuardLead, 0.6, 0)],
+                    current: None,
+                },
+                Asking {
+                    place: 2,
+                    candidates: vec![
+                        on(PlayKind::GuardLead, score, 1),
+                        c(PlayKind::HoldExit, Rank::Fight, 0.3, None, 2),
+                    ],
+                    current: None,
+                },
+            ];
+            let out = assign_with(asking, 1_000, &BANDS);
+            out.iter().find(|(p, _, _)| *p == 2).unwrap().1.kind
+        };
+        assert_eq!(guards(0.12), PlayKind::HoldExit);
+        assert_eq!(guards(0.5), PlayKind::GuardLead);
+    }
+
+    #[test]
+    fn a_floor_of_zero_is_the_old_lexicographic_order() {
+        let off = Bands {
+            floor: 0.0,
+            second: 0.0,
+            ..BANDS
+        };
+        let all = vec![
+            on(PlayKind::Raid, 0.01, 0),
+            c(PlayKind::Cut, Rank::Fight, 0.9, None, 1),
+            c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+        ];
+        assert_eq!(one(&off, all, None).0, PlayKind::Raid);
     }
 }

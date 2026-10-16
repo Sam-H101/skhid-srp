@@ -129,6 +129,13 @@ pub fn sense(
     out
 }
 
+/// Where a lying battery is looked at, metres over its position: the top
+/// (as before), the middle and near the foot. The client's battery
+/// (`gameplay/victory_items/default.options`, model `item/quest/electrobox`)
+/// collides as a box of half sizes 0.3 x 0.12 x 0.16 m set 0.12 m up
+/// (`!victory_item_collision!`, read from resources.db): 0.24 m high.
+pub const BATTERY_HEIGHTS: [f32; 3] = [0.25, 0.12, 0.04];
+
 /// What a bot may look at for its team's battery knowledge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum BatteryLook {
@@ -199,23 +206,46 @@ pub fn sense_batteries(
             consider(BatteryLook::Spawner(index, spawner.item), spawner.item);
         }
     }
+    // A spot where an enemy carrier died is looked at once a bot of the
+    // team stands by it: what lies there it sees within `battery_near_m`.
+    team.looks.retain(|look| !near(look.at));
     if looks.is_empty() {
         return;
     }
     looks.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut cast = 0;
-    for (_, look) in looks {
+    'looks: for (_, look) in looks {
         let at = match look {
             BatteryLook::Battery(_, at)
             | BatteryLook::Gone(_, at)
             | BatteryLook::Spawner(_, at) => at,
         };
+        // A battery, and a spot believed to hold one, are tried at the
+        // box's top, middle and foot (0.24 m high, `BATTERY_HEIGHTS`): a
+        // ledge or a nook may hide one and show another, and a take's
+        // stand has its line to the middle (a spot on a crate seen empty
+        // from below is forgotten, not tried at every stand). A spawner's
+        // spot only at the top, as before.
+        let heights: &[f32] = match look {
+            BatteryLook::Battery(..) | BatteryLook::Gone(..) => &BATTERY_HEIGHTS,
+            BatteryLook::Spawner(..) => &BATTERY_HEIGHTS[..1],
+        };
         let seen = near(at) || {
-            if cast >= tuning.battery_rays || !rays.take() {
+            if cast >= tuning.battery_rays {
                 break;
             }
             cast += 1;
-            super::aimpoint::sight_line(sight, eye, at + Vec3::new(0.0, 0.25, 0.0))
+            let mut seen = false;
+            for &up in heights {
+                if !rays.take() {
+                    break 'looks;
+                }
+                if super::aimpoint::sight_line(sight, eye, at + Vec3::new(0.0, up, 0.0)) {
+                    seen = true;
+                    break;
+                }
+            }
+            seen
         };
         if !seen {
             continue;
@@ -409,7 +439,8 @@ mod tests {
         assert_eq!(team.battery(0).map(|k| k.hud), Some(false));
         assert_eq!(team.spawner_seen(0), Some(view.clock));
         // The next think: battery 1 and spawner 1 lie behind the wall,
-        // battery 2 behind the bot.
+        // battery 2 behind the bot. The battery is tried at its three
+        // heights, the spot at one.
         sense_batteries(
             &me,
             &view,
@@ -420,7 +451,7 @@ mod tests {
             |i| i == 1,
             &mut rays,
         );
-        assert_eq!(rays.0, 95);
+        assert_eq!(rays.0, 93);
         assert!(team.battery(1).is_none() && team.battery(2).is_none());
         assert_eq!(team.spawner_seen(1), None);
         // Without the wall both are seen.
@@ -436,6 +467,62 @@ mod tests {
         );
         assert!(team.battery(1).is_some() && team.battery(2).is_none());
         assert_eq!(team.spawner_seen(1), Some(view.clock));
+    }
+
+    /// A battery whose top a low strip hides (a nook's lip) is still seen
+    /// by its middle, as a human sees it; so is a spot believed to hold one
+    /// that is empty (forgotten).
+    #[test]
+    fn a_battery_whose_top_is_hidden_is_seen_by_its_middle() {
+        use crate::v026g::bots::view::BatteryState;
+        let me = place(0, 0, Vec3::ZERO, 0.0);
+        let mut view = view(vec![me.clone()], vec![]);
+        view.mode = Mode::Batteries;
+        let at = Vec3::new(0.0, 0.0, 10.0);
+        view.batteries = vec![BatteryState::Free(at)];
+        // A strip 0.2-0.4 m high just short of it: the ray to the top
+        // (0.25 m) meets it, the one to the middle (0.12 m) passes under.
+        let (a, b, c, d) = (
+            Vec3::new(-1.0, 0.2, 9.9),
+            Vec3::new(1.0, 0.2, 9.9),
+            Vec3::new(1.0, 0.4, 9.9),
+            Vec3::new(-1.0, 0.4, 9.9),
+        );
+        let sight = RayTree::from_corners([[a, b, c], [a, c, d], [c, b, a], [d, c, a]].into_iter());
+        let eye = me.eye();
+        assert!(!crate::v026g::bots::aimpoint::sight_line(
+            &sight,
+            eye,
+            at + Vec3::new(0.0, BATTERY_HEIGHTS[0], 0.0)
+        ));
+        let mut team = TeamKnowledge::default();
+        let mut rays = RayBudget(100);
+        sense_batteries(
+            &me,
+            &view,
+            &sight,
+            &[],
+            &SenseTuning::default(),
+            &mut team,
+            |_| true,
+            &mut rays,
+        );
+        assert!(team.battery(0).is_some());
+        assert_eq!(rays.0, 98, "the top, then the middle");
+        // Taken since: the spot, seen empty by its middle, is forgotten.
+        view.batteries = vec![BatteryState::Carried(None)];
+        sense_batteries(
+            &me,
+            &view,
+            &sight,
+            &[],
+            &SenseTuning::default(),
+            &mut team,
+            |_| true,
+            &mut rays,
+        );
+        assert!(team.battery(0).is_none());
+        assert_eq!(rays.0, 96);
     }
 
     #[test]
