@@ -89,10 +89,17 @@ arguments, the language the launcher keeps, and `-match_replay=<file>`
 (`../../../client/updater/README.md`, "Watch replay").
 
 Gone from the window: the four social buttons, CREATE ACCOUNT (an account is
-made by the first sign-in), and the settings gear (its two options, "Allow
-torrent" and the torrent port, are of the old updater). PROJECT WEBSITE
-opens `<site>/?lang=<code>` and SHOP opens `<site>/exchange?lang=<code>` in
-the player's browser.
+made by the first sign-in), SHOP (silver and gold are exchanged in the
+lobby's exchange window since game update 11, and items bought in the
+lobby's shop), and the settings gear (its two options, "Allow torrent" and
+the torrent port, are of the old updater). PROJECT WEBSITE, in SHOP's old
+place at the right, opens `<site>/?lang=<code>` in the player's browser.
+
+The launchers built before SHOP went open `<site>/exchange?lang=<code>`
+with it. That address stays: a short page there says, in the launcher's
+language, that the exchange is in the game now
+(`../../servers/web-server/src/v026g.rs`, `in_the_game_now`). A launcher
+that is updated loses the button.
 
 ## Matching the original design
 
@@ -407,12 +414,14 @@ found: `../../docs/notes/launcher.md`.
   port mapping, and uploaded crash reports (`../../docs/notes/launcher.md`,
   "What the original updater did").
 
-### 7. One server: the page, the two buttons
+### 7. One server: the page, the button
 
-- **Where:** three `push <address>` operands point at new strings in
+- **Where:** two `push <address>` operands point at new strings in
   `.skhid`: 0x1AFA2 (the page: `<site>/launcher/v2/`, to which the launcher
-  adds `survarium/?lang=<code>`), 0x1BCBA (PROJECT WEBSITE: `<site>/?lang=`)
-  and 0x1BBFC (SHOP: `<site>/exchange?lang=`). The old texts are emptied.
+  adds `survarium/?lang=<code>`) and 0x1BCBA (PROJECT WEBSITE:
+  `<site>/?lang=`). The old texts are emptied, SHOP's
+  (`https://shop.survarium.com/` at 0x3F58C, pushed at 0x1BBFC) too: its
+  button is gone (8).
 - **The local pages:** the string `\..\game\launcher\index-` at 0x3F514
   becomes `\launcher_skhid\index-`: while the page loads, and when it does
   not, the launcher shows the pages of the bundle, not the game's own
@@ -420,12 +429,17 @@ found: `../../docs/notes/launcher.md`.
 
 ### 8. The buttons that are gone
 
-- **Where:** the click handlers of CREATE ACCOUNT, YouTube, Facebook,
-  Twitter and VK return at once (first byte → `C3` at 0x1BC45, 0x1BD03,
-  0x1BD16, 0x1BD29, 0x1BD3C); their rectangles, and the settings gear's,
-  get a left edge of 30000 (0x45854, 0x458A4, 0x458B4, 0x458C4, 0x458D4,
-  0x45814), which is outside the window; PROJECT WEBSITE moves from 478 to
-  614, beside SHOP (0x45864). Their addresses are emptied.
+- **Where:** the click handlers of SHOP, CREATE ACCOUNT, YouTube, Facebook,
+  Twitter and VK return at once (first byte → `C3` at 0x1BBEF, 0x1BC45,
+  0x1BD03, 0x1BD16, 0x1BD29, 0x1BD3C); their rectangles, and the settings
+  gear's, get a left edge of 30000 (0x45844, 0x45854, 0x458A4, 0x458B4,
+  0x458C4, 0x458D4, 0x45814), which is outside the window; PROJECT WEBSITE
+  moves from 478 to 750, SHOP's place (0x45864). Their addresses are
+  emptied.
+- **Why SHOP:** it opened the site's silver and gold exchange, which is in
+  the lobby now (`../README.md`, "Lobby exchange"). Until 2026-10-16 it
+  stayed, at `<site>/exchange?lang=`, and PROJECT WEBSITE stood beside it
+  at 614.
 
 ### 9. Nothing of the old sites is left
 

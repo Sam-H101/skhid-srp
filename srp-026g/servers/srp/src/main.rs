@@ -4,8 +4,8 @@
 //! single [`SessionStore`], so a client signed in at the login server is
 //! recognised by the lobby and the match server. The 0.26g client is
 //! started with `-server=<host>:1234`. The web page is the 0.26g one
-//! (`web_server::run_026g`): its exchange and admin act on the 0.26g accounts
-//! and tell the lobby.
+//! (`web_server::run_026g`): its admin acts on the 0.26g accounts and
+//! tells the lobby.
 //!
 //! The retained 0.21d servers (login, presence, lobby,
 //! match) are kept and tested but no longer started here: the two lobbies

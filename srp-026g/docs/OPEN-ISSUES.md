@@ -50,13 +50,11 @@ else in these items is still unverified**: the refusals' texts, 26-9,
        its two arguments are a guess, both orders are taken), the account
        after a second sign-in.
 26-11. **Chat, friends, squads** on real screens; a squad queueing as one.
-26-12. **The web page with a real account**: the exchange with a password
-       typed in the game (a password with letters outside ASCII is a GUESS:
-       the page hashes UTF-8, the client's bytes are not known), the
-       admin's changes showing in an open lobby (the account pushed again
-       outside a sign-in; the premium time through 0x90), the operator's
-       text (0xA5: where the client shows it, whether both lines show), the
-       ban's sign-out (0xAA) as the player sees it.
+26-12. **The web page with a real account**: the admin's changes showing
+       in an open lobby (the account pushed again outside a sign-in; the
+       premium time through 0x90), the operator's text (0xA5: where the
+       client shows it, whether both lines show), the ban's sign-out (0xAA)
+       as the player sees it.
 26-13. **An item given by the admin that the lobby cannot show**: every
        `items_dict` id is accepted; whether each kind is safe in an
        inventory was not checked item by item.

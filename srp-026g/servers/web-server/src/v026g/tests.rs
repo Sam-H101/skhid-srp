@@ -10,8 +10,19 @@ use session::{LockExt, Net, SessionStore, SignInError};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::lobby::FULL_CONDITION;
 
-use super::{Game, LobbyLink, level_start, sha1_hex};
+use super::{Game, LobbyLink, level_start};
 use crate::{Lang, Request, Web};
+
+/// SHA-1 as the 0.26g client sends a password: 40 lower-case hex
+/// characters (what the login server keeps the argon2id hash of).
+fn sha1_hex(bytes: &[u8]) -> Vec<u8> {
+    let digest: String = openssl::sha::sha1(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert!(session::password::is_sha1_digest(digest.as_bytes()));
+    digest.into_bytes()
+}
 
 #[derive(Default)]
 struct Told {
@@ -140,139 +151,55 @@ fn get(path: &str) -> Request {
 }
 
 #[test]
-fn the_digest_is_the_clients() {
-    // SHA-1 of the empty text and of "abc", as 40 lower-case hex characters.
-    assert_eq!(&sha1_hex(b""), b"da39a3ee5e6b4b0d3255bfef95601890afd80709");
-    assert_eq!(
-        &sha1_hex(b"abc"),
-        b"a9993e364706816aba3e25717850c26c9cd0d89d"
-    );
-    assert!(session::password::is_sha1_digest(&sha1_hex(b"anything")));
-}
-
-#[test]
-fn the_typed_password_is_checked_as_the_026g_login_keeps_it() {
+fn the_exchange_is_in_the_game_now() {
     let world = world();
-    let id = world.player("fighter", " secret ");
+    let id = world.player("fighter", "secret");
     let (silver, gold) = world.balances(id);
-    let exchange = |user: &str, password: &str, gold: &str| {
-        world
-            .web
-            .route(
-                &post(
-                    "/exchange",
-                    &[("user", user), ("password", password), ("gold", gold)],
-                ),
-                "t",
-            )
-            .body
+    // The launcher's SHOP button: `/exchange?lang=<its code>`.
+    let shop = |code: &str| {
+        let mut request = get("/exchange");
+        request.target = format!("/exchange?lang={code}");
+        request.lang = Lang::pick(code, "");
+        world.web.route(&request, "t")
     };
-    // Wrong, trimmed (the game hashes the spaces too), the digest itself
-    // (not what is typed), and a name nobody has: all the same answer.
-    let digest = String::from_utf8(sha1_hex(b" secret ").to_vec()).unwrap();
-    for (user, password) in [
-        ("fighter", "nope"),
-        ("fighter", "secret"),
-        ("fighter", digest.as_str()),
-        ("ghost", " secret "),
+    for (code, lang, text) in [
+        ("en", "en", "Silver and gold are exchanged in the game now"),
+        ("ua", "uk", "Срібло й золото тепер обмінюються в грі"),
+        ("ru", "ru", "Серебро и золото теперь обмениваются в игре"),
+        (
+            "de",
+            "de",
+            "Silber und Gold werden jetzt im Spiel getauscht",
+        ),
+        ("pl", "pl", "Srebro i złoto wymienia się teraz w grze"),
     ] {
-        let body = exchange(user, password, "1");
-        assert!(body.contains("Wrong user name or password"), "{body}");
+        let answer = shop(code);
+        assert_eq!(answer.status, "200 OK", "{code}");
+        assert!(
+            answer
+                .body
+                .contains(&format!("<section class=card lang={lang}>")),
+            "{code}"
+        );
+        assert!(answer.body.contains(text), "{code}: {}", answer.body);
+        assert!(answer.body.contains("SURVARIUM 0.26G") && !answer.body.contains("<form"));
     }
-    assert_eq!(world.balances(id), (silver, gold));
-    assert!(world.web.store.account_id_by_name("ghost").is_none());
-    assert!(world.told.changed.locked().is_empty());
-
-    let done = exchange("Fighter", " secret ", "2");
-    assert!(done.contains("Done: 200 silver for 2 gold"), "{done}");
-    assert_eq!(world.balances(id), (silver - 200, gold + 2));
-    // The lobby is told whose account changed.
-    assert_eq!(world.told.changed.locked()[..], [id]);
-    // The page is the 0.26g one.
-    assert!(done.contains("SURVARIUM 0.26G") && !done.contains("0.21D"));
-}
-
-#[test]
-fn gold_is_sold_for_silver_by_the_games_own_rule() {
-    let world = world();
-    let id = world.player("trader", "secret");
-    world.accounts.get(id).unwrap().locked().premium_money = 5;
-    let (silver, _) = world.balances(id);
-    let sell = |gold: &str| {
-        world
-            .web
-            .route(
-                &post(
-                    "/exchange",
-                    &[
-                        ("user", "trader"),
-                        ("password", "secret"),
-                        ("gold", gold),
-                        ("way", "sell"),
-                    ],
-                ),
-                "t",
-            )
-            .body
-    };
-    let refused = sell("6");
-    assert!(refused.contains("Not enough gold: you have 5"), "{refused}");
-    assert_eq!(world.balances(id), (silver, 5));
-    let done = sell("5");
-    assert!(done.contains("Done: 5 gold for 500 silver"), "{done}");
-    assert_eq!(world.balances(id), (silver + 500, 0));
-    assert!(sell("0").contains("Gold must be"));
-    // Silver that is not there buys nothing.
-    world.accounts.get(id).unwrap().locked().generic_money = 99;
-    let poor = world
-        .web
-        .route(
-            &post(
-                "/exchange",
-                &[("user", "trader"), ("password", "secret"), ("gold", "1")],
-            ),
-            "t",
-        )
-        .body;
-    assert!(poor.contains("Not enough silver"), "{poor}");
-    assert_eq!(world.balances(id), (99, 0));
-}
-
-#[test]
-fn an_account_that_never_saw_the_lobby_or_is_banned_exchanges_nothing() {
-    let world = world();
-    let id = world
-        .web
-        .store
-        .sign_in_with_digest_from(
-            "newcomer",
-            &sha1_hex(b"secret"),
-            "127.0.0.1".parse().unwrap(),
-            Instant::now(),
-        )
-        .unwrap();
-    let ask = || {
-        world
-            .web
-            .route(
-                &post(
-                    "/exchange",
-                    &[("user", "newcomer"), ("password", "secret"), ("gold", "1")],
-                ),
-                "t",
-            )
-            .body
-    };
-    assert!(ask().contains("Sign in to the game once first"));
-    world.accounts.get_or_create(id, "newcomer");
-    world.web.store.ban_account(
-        id,
-        session::Ban {
-            until: None,
-            reason: "test".into(),
-        },
+    // Without a code: the page's own language.
+    let mut browser = get("/exchange");
+    browser.lang = Lang::Uk;
+    assert!(world.web.route(&browser, "t").body.contains("Тепер у грі"));
+    // A form sent as the old page sent it is a page that is not there, and
+    // changes nothing.
+    let sent = world.web.route(
+        &post(
+            "/exchange",
+            &[("user", "fighter"), ("password", "secret"), ("gold", "1")],
+        ),
+        "t",
     );
-    assert!(ask().contains("This account is banned"));
+    assert_eq!(sent.status, "404 Not Found");
+    assert_eq!(world.balances(id), (silver, gold));
+    assert!(world.told.changed.locked().is_empty());
 }
 
 #[test]
@@ -554,8 +481,7 @@ fn the_pages_are_the_026g_ones() {
     assert!(home.contains("-mt_allocator=768 -minimum_resources_memory_size=768"));
     assert!(!home.contains("-client") && !home.contains("0.21d") && !home.contains("0.21D"));
     assert!(home.contains("Survarium 0.26g client"));
-    let exchange = world.web.route(&get("/exchange"), "t").body;
-    assert!(exchange.contains("Sell gold for silver") && exchange.contains("name=way"));
+    assert!(!home.contains("/exchange"));
     let admin = world.web.route(&get("/hidden"), "t");
     assert_eq!(admin.status, "200 OK");
     for tab in [

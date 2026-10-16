@@ -505,7 +505,7 @@ impl SessionStore {
         password: &[u8],
         now: Instant,
     ) -> Result<u32, SignInError> {
-        self.authenticate(user_name, password, None, now, true)
+        self.authenticate(user_name, password, None, now)
     }
 
     /// [`Self::sign_in`] from `ip`, as the login server hears it: the
@@ -519,7 +519,7 @@ impl SessionStore {
         ip: IpAddr,
         now: Instant,
     ) -> Result<u32, SignInError> {
-        self.authenticate(user_name, password, Some(ip), now, true)
+        self.authenticate(user_name, password, Some(ip), now)
     }
 
     /// [`Self::sign_in_from`] for the 0.26g client, which gives the SHA-1 of
@@ -537,24 +537,7 @@ impl SessionStore {
         if !password::is_sha1_digest(digest) {
             return Err(SignInError::WrongPassword);
         }
-        self.authenticate(user_name, digest, Some(ip), now, true)
-    }
-
-    /// [`Self::check_password`] from `ip` (see [`Self::sign_in_from`]).
-    pub fn check_password_from(
-        &self,
-        user_name: &str,
-        password: &[u8],
-        ip: IpAddr,
-    ) -> Result<u32, SignInError> {
-        self.authenticate(user_name, password, Some(ip), Instant::now(), false)
-    }
-
-    /// The account `user_name` has with `password`, for a caller that is not
-    /// the game's sign-in: a name not seen before is refused, not registered.
-    /// Wrong passwords count towards the same lockout as the game's.
-    pub fn check_password(&self, user_name: &str, password: &[u8]) -> Result<u32, SignInError> {
-        self.authenticate(user_name, password, None, Instant::now(), false)
+        self.authenticate(user_name, digest, Some(ip), now)
     }
 
     /// The id of the account signing in as `user_name`, if there is one.
@@ -569,7 +552,6 @@ impl SessionStore {
         password: &[u8],
         ip: Option<IpAddr>,
         now: Instant,
-        register: bool,
     ) -> Result<u32, SignInError> {
         let key = persist::user_name_key(user_name).ok_or(SignInError::InvalidUserName)?;
         // Wrong passwords count per name and address: a guesser locks out
@@ -594,7 +576,6 @@ impl SessionStore {
         let existing = self.logins.locked().get(&key).copied();
         let account_id = match existing {
             Some(account_id) => account_id,
-            None if !register => return Err(SignInError::WrongPassword),
             None => {
                 if !self.registrations_open() {
                     return Err(SignInError::RegistrationsClosed);

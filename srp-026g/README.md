@@ -17,7 +17,7 @@ survarium.exe -server=<host>:1234
       |                     queue, results
       3. match   UDP 1236   lockstep: the server relays inputs and compares world
                             hashes; the world itself comes from a patched client
-      web page   HTTP 8088  home, download, silver and gold exchange, the admin page
+      web page   HTTP 8088  home, download, the launcher's page, the admin page
 ```
 
 0.26g has no browser server and no presence pings. A match is **lockstep**, as

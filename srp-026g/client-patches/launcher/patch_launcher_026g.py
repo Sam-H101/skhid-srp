@@ -98,8 +98,9 @@ PATCHES = [
     (0x159A4, "6802000080", "6801000080", "start_updater, update server: HKLM becomes HKCU"),
     (0x16301, "6802000080", "6801000080", "restart_launcher: HKLM becomes HKCU"),
     (0x170AD, "6802000080", "6801000080", "get_game_launch_parameters: HKLM becomes HKCU"),
-    # 6. Buttons that led to the game's old sites: they do nothing (and are
-    # moved out of sight below).
+    # 6. Buttons that led to the game's old sites, and SHOP, whose exchange
+    # is in the lobby now: they do nothing (and are moved out of sight below).
+    (0x1BBEF, "55", "c3", "SHOP click: ret"),
     (0x1BC45, "55", "c3", "CREATE ACCOUNT click: ret"),
     (0x1BD03, "83", "c3", "YouTube click: ret"),
     (0x1BD16, "83", "c3", "Facebook click: ret"),
@@ -142,6 +143,7 @@ EMPTIED = [
 # (VA, original text): UTF-16 addresses of the buttons that are gone; emptied,
 # so that no address of the game's old sites is left in the file.
 EMPTIED_WIDE = [
+    (0x3F58C, "https://shop.survarium.com/"),
     (0x3F5C4, "https://forum.survarium.com/"),
     (0x3F600, "/ucp.php?mode=register"),
     (0x3F660, "http://www.youtube.com/user/vostokgames"),
@@ -157,7 +159,6 @@ URLS = [
     (0x1AFA2, 0x3F4C0, "http://survarium.com/launcher/v2/", "/launcher/v2/",
      "the page in the window"),
     (0x1BCBA, 0x3F630, "http://survarium.com/", "/?lang=", "PROJECT WEBSITE"),
-    (0x1BBFC, 0x3F58C, "https://shop.survarium.com/", "/exchange?lang=", "SHOP"),
 ]
 
 # (rect VA, original left, original top, new left, what): where a button is
@@ -166,8 +167,9 @@ URLS = [
 GONE = 30000
 RECTS = [
     (0x45814, 819, 12, GONE, "settings (torrent, port): nothing of it applies"),
+    (0x45844, 750, 47, GONE, "SHOP: silver and gold are exchanged in the lobby"),
     (0x45854, 614, 47, GONE, "CREATE ACCOUNT: an account is made by the first sign-in"),
-    (0x45864, 478, 47, 614, "PROJECT WEBSITE: moved beside SHOP"),
+    (0x45864, 478, 47, 750, "PROJECT WEBSITE: moved to SHOP's place, at the right"),
     (0x458A4, 32, 28, GONE, "YouTube"),
     (0x458B4, 68, 28, GONE, "Facebook"),
     (0x458C4, 104, 28, GONE, "Twitter"),

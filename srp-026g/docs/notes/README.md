@@ -308,8 +308,10 @@ In order; each step's failure points at one note.
 Known gaps a live session will meet:
 - The web page (`servers/web-server`) is the 0.26g one since 2026-10-12
   (corrected; this note said it still worked on the 0.21d balances): its
-  exchange and admin act on the 0.26g accounts and tell the lobby
-  (`Inbox::account_changed`), and it tells players `-server=`. Never seen
+  admin acts on the 0.26g accounts and tells the lobby
+  (`Inbox::account_changed`), and it tells players `-server=`. Its silver
+  and gold exchange is gone since 2026-10-16 (it is in the lobby's exchange
+  window; `/exchange` only says so). Never seen
   with a real client: whether an account pushed again outside a sign-in,
   and the operator's text (0xA5), show as expected is open.
 - Premium, the shop's bundles, the daily bonus, the tutorial, a nickname
