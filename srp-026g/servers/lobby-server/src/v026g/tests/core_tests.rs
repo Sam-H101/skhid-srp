@@ -2447,6 +2447,48 @@ fn a_sign_in_brings_the_shop_the_tutorial_and_the_daily_bonus() {
     )));
 }
 
+/// An account without premium: the third kit comes as one it may use, takes
+/// a move and goes to Play.
+#[test]
+fn the_third_kit_is_filled_and_played_without_premium() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let decoded = world.take(alice);
+    let Some(Decoded::Account(own)) = decoded
+        .iter()
+        .find(|message| matches!(message, Decoded::Account(_)))
+    else {
+        panic!("{decoded:?}");
+    };
+    let states: Vec<u8> = own.body.kits.iter().map(|kit| kit.state).collect();
+    assert_eq!(states, [survarium::v026g::lobby::KIT_READY; 3]);
+    let now = session::v026g::quests::now();
+    assert!(!world.account(alice).is_premium(now));
+    // The first kit's gear in the third, then its pistol out and back in
+    // by the client's own moves.
+    world.change(alice, |account| {
+        account.kits[2].slots = account.kits[0].slots;
+    });
+    let pistol = world.account(alice).kits[2].slots[7].expect("a pistol");
+    let item = pistol.item_id;
+    let dict = world.account(alice).item(item).expect("owned").dict_id;
+    let out = request::move_item(3, item, dict, 7, INVENTORY_SLOT, 1);
+    world.ask(alice, out);
+    assert_eq!(denial(&world.take(alice), 0x46), None);
+    assert_eq!(world.account(alice).kits[2].slots[7], None);
+    let back = request::move_item(3, item, dict, INVENTORY_SLOT, 7, 1);
+    world.ask(alice, back);
+    assert_eq!(denial(&world.take(alice), 0x46), None);
+    assert_eq!(world.account(alice).kits[2].slots[7], Some(pistol));
+    // Play with it: in the queue.
+    world.ask(alice, request::play(3));
+    assert!(matches!(
+        queue_state(&world.take(alice)),
+        Some(ClientState::InQueue { .. })
+    ));
+    world.assert_clean();
+}
+
 #[test]
 fn premium_time_is_bought_for_gold() {
     let mut world = World::new(Duration::from_secs(60));
