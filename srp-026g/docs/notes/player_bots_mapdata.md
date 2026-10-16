@@ -488,6 +488,42 @@ The three whole matches (no use boxes) and level_01 (Team Deathmatch) are
 unchanged. Still failing on level_06: batteries ringed by fire (a way only
 through it; players go there).
 
+**Goals with no way left, and a way out of a zone** (decision changes,
+the owner's word of 2026-10-16). The bench (`real_bot_cost`) now prints
+the living bots' ticks with a goal and no route ("stood"), by play, and
+the batteries delivered; `SRP_BENCH_SEED` gives other matches of the same
+map and size. Three causes of standing, each fixed and measured on six
+maps (level_01-06, 4 v 4 and 10 v 10, 180 s):
+- *Goals no walk gets to.* `Tactics::spots` and `fine_goal` took any floor
+  off hazards, so roofs one only drops from were spots (Station's spots
+  prefer height). `TacticsBase` keeps a bit a floor for the floors a walk
+  from a spawn gets to (`walkable`, `TACTICS_ALGO` 2; all floors on a map
+  without spawns); spots, `fine_goal` and `Ctx::reachable` take only those.
+  Stood: level_03 34 to 12 % and 29 to 6 %, level_02 15 to 3 % and 12 to
+  4.5 %, level_04 13.5 to 3 % and 11 to 4 %, level_01 11 to 4 % and 10 to
+  6 %.
+- *A battery on a shelf.* School's at (43.8, 22.7, 92.3) lies on a shelf
+  top past the jump; two on level_04 alike. `Tactics::stand_to_take`: a
+  battery on a walkable floor is fetched as before; else the bot goes to
+  the walkable floor whose crouched eye is nearest it within a use's reach
+  (`USE_REACH_M` 1.8 of the client's 2.0 m ray) in a clear line, and takes
+  it from there (School's: 0.7 m from the floor behind the shelf). Only
+  level_02 and level_04 change; delivered 15 to 17 and 26 to 27 on
+  level_02.
+- *A battery ringed by fire* (level_06) passes `reachable` (its floor is
+  fine) but every way in crosses the fire. A search that proves no way
+  from a floor the bot may walk on is kept 20 s (`Bot::no_way_to`); Collect
+  leaves the battery and a fetch gives up. And a body inside a zone's
+  margin (pushed or stepped in) had no route to anything and stood in the
+  fire: `Tactics::escape` walks it out to the nearest floor at least 1.5 m
+  off whose neighbours are all allowed. On seeds 1-3, level_06 stood 28.5
+  to 8.4, 17.3 to 4.1, 15.2 to 4.2 and 28.1 to 6.7 %; delivered 17 to 18,
+  6 to 12, 19 to 21, 14 to 18; level_02, 03 and 05 the same or nearly.
+
+The three whole matches are unchanged by all three. Not checked in a
+game: whether the client takes School's shelf battery from the floor
+behind it (the eye is 0.7 m from it, well within the ray).
+
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.
