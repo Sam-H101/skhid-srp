@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::Path;
 
 use binary_config_parser::{ConfigError, ConfigValue};
-use resources_db::{Archive, FileEntry, NodeKind};
+use vostok_resources_db::{Archive, FileEntry, NodeKind};
 
 /// The variable the tests and `mapdata-dump` read the archive's path from.
 pub const PATH_VARIABLE: &str = "SRP_RESOURCES_DB";

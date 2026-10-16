@@ -51,22 +51,24 @@ itself takes changes only through pull requests.
 
 1. Docker with the compose plugin, `git`, `curl`.
 2. `/opt/srp-test` (mode 700, root's): a copy of `srp-026g/docker-compose.yml`,
-   a `download/` folder, and a `.env` (mode 600) made from
+   a `download/` folder (the test ZIP, and the server's game data,
+   `server-game-data.db`, made of the test server's patches: srp does not
+   start without it, `DEPLOY.md`, "The game's files"), and a `.env` (mode 600) made from
    `deploy/env-026g.example` with at least:
    `SRP_PUBLIC_HOST` and `SRP_WEB_DOMAIN` (the test server's name),
    `SRP26_LOGIN_PORT=1234`, `SRP26_LOBBY_PORT=1235`, `SRP26_MATCH_PORT=1236`,
    `SRP_TEST_SERVER=on`, `SRP_OTHER_SERVER_URL` (the players' server's page),
-   `SRP_WEB_TRUST_PROXY=on`, and an admin token, path and address list of its
-   own (never the players' server's).
+   `SRP_WEB_TRUST_PROXY=on`, an admin token, path and address list of its
+   own (never the players' server's), and `SRP_MIN_PATCH_REVISION` at least
+   the number of the newest patch its game data is made of (srp does not
+   start with less: `DEPLOY.md`).
    The `download/` folder is the one thing in there the server reads, and
    the server in the container is not root: give the folder mode 755 and a
    ZIP in it mode 644. A folder only root can read gives no error at the
    start, only the log line `SRP_DOWNLOAD_FILE ... is not a file; /download
    is off`, a page with no download and `404` at `/api/client-files`. The
    ZIP is `Survarium-0.26g-srp-files.zip`, made for this server's own
-   address (`make_client_026g.py --pack-zip --server=<its name>:1234
-   --resource-grow=<grow.json> --resources-out=<blobs>`, the blobs into
-   `download/resources/`, mode 644, before the ZIP): the
+   address (`make_client_026g.py --pack-zip --server=<its name>:1234`): the
    launcher and the updater in it ask the site they were made for, so the
    players' ZIP is of no use here. A new ZIP put in its place is seen
    without a restart.
@@ -95,6 +97,10 @@ takes pull requests only.
 
 - `docker-compose.yml` and `srp-test-deploy` on the host are copies. After a
   change of either in the repository, an operator copies the new one there.
+  A deploy refuses, before it changes anything, while the host's
+  `docker-compose.yml` differs from `main`'s (it prints the differences and
+  the `install` line that copies it), and while the server's game data is
+  not in `download/`: `main` would start without what it needs.
 - The data (accounts, logs, the worlds kept to compare) is in the Docker
   volume `srptest_srp26-data`. To start from nothing: stop the project and
   remove that volume.

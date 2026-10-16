@@ -8,7 +8,7 @@
 //! and two ammo for it. Every name is a 0.26g item and fits its slot.
 //!
 //! **The carry limit.** 0.26g's player carries 30 kg
-//! (`item_params::MAX_CARRIED_WEIGHT`), and the lobby does not let a kit go
+//! (`item_params::player().max_carried_weight`), and the lobby does not let a kit go
 //! over it. With one clip of each ammo the ten profiles weigh 32.35, 32.3,
 //! 38.4, 26.9, 19.3, 26.3, 22.3, 26.3, 26.3 and 26.3 kg: **the first three
 //! are over**. (The gear alone is 30.5, 30.0 and 36.1 kg: profiles 0 and 2
@@ -39,12 +39,11 @@
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
 use super::dictionary::{Dictionary, PROFILE_SLOTS};
-use super::item_params::{self, MAX_CARRIED_WEIGHT};
+use super::item_params;
 use super::match_msgs::static_info::MatchProfile;
 
-const TEST_PLAYER_PROFILES: &[u8] = include_bytes!(
-    "../../../../resources/binary-config-examples/test_player_profiles_026g.options"
-);
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/test_player_profiles.options";
 
 /// What a new account's first kit wears, `(slot, item)`: the TT-33 in
 /// weapon slot 1 and a clip of its free ammo in that weapon's first ammo
@@ -113,7 +112,7 @@ impl Loadout {
 
     /// Whether a player can carry it.
     pub fn fits_carry_limit(&self) -> bool {
-        self.weight() <= MAX_CARRIED_WEIGHT
+        self.weight() <= item_params::player().max_carried_weight
     }
 
     pub fn slot(&self, slot: u8) -> Option<&SlotItem> {
@@ -128,12 +127,12 @@ pub struct Loadouts {
 }
 
 impl Loadouts {
-    /// The loadouts the 0.26g client ships, parsed once.
+    /// The players' test profiles ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Loadouts> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::parse(TEST_PLAYER_PROFILES, Dictionary::shared())
-                .expect("the embedded 0.26g test profiles parse")
+            Self::parse(super::game_data::file(PATH), Dictionary::shared())
+                .expect("the test profiles parse")
         })
     }
 
@@ -262,7 +261,7 @@ const fn kit_item(name: &'static str, slot: u8, count: u32, input_bit: Option<u8
 }
 
 /// The ammo slots a bot's weapon 1 fills with its ammo: one for each of a
-/// player's three ammo bags (`item_params::AMMO_BAGS_COUNT`). The eight
+/// player's three ammo bags (`item_params::player().ammo_bags_count`). The eight
 /// ammo slots are one pool for both weapons (the client's table at
 /// 0x9266A8, `session::v026g::rules::check_play`), so slot 11, weapon 2's
 /// first, holds weapon 1's ammo as well: the bots carry no weapon 2 (the
@@ -594,9 +593,9 @@ pub fn pockets(loadout: &Loadout) -> (u32, u32) {
             .sum::<f32>()
             .max(0.0) as u32
     };
-    let count = (item_params::POCKET_SLOTS_COUNT + added("pocket_slots_modifier"))
+    let count = (item_params::player().pocket_slots_count + added("pocket_slots_modifier"))
         .min(POCKET_SLOTS.len() as u32);
-    let size = item_params::POCKET_SLOT_SIZE + added("pocket_slot_size_modifier");
+    let size = item_params::player().pocket_slot_size + added("pocket_slot_size_modifier");
     (count, size)
 }
 
@@ -820,7 +819,7 @@ mod tests {
                 assert!(ammo.count >= item_params::shop_unit(ammo.dict_id), "{role}");
                 assert!(ammo.count <= 200, "{role}: more than players carry");
             }
-            assert!(BOT_AMMO_SLOTS.len() as u32 <= item_params::AMMO_BAGS_COUNT);
+            assert!(BOT_AMMO_SLOTS.len() as u32 <= item_params::player().ammo_bags_count);
             assert!(kit.fits_carry_limit(), "{role}: {}", kit.weight());
 
             // The pockets: every pocket item in an open pocket, at most a

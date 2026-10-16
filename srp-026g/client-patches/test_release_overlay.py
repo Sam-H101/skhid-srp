@@ -12,61 +12,12 @@ import time
 import unittest
 from unittest import mock
 import zipfile
-import zlib
 
 import make_client_026g as overlay
-
-S = overlay.S
-# Throwaway keys standing for Skhid's ("skhid") and the original ("retail").
-KEYS = tempfile.TemporaryDirectory(prefix='skhid-keys-')
-
-
-def key_path(name, public=False):
-    return str(Path(KEYS.name, name + ('.der' if public else '.pem')))
-
-
-def setUpModule():
-    for name in ('skhid', 'retail'):
-        S.genkey(key_path(name), key_path(name, public=True))
-
-
-def tearDownModule():
-    KEYS.cleanup()
 
 # A program that writes down how it was started (client/updater/tests).
 STAND_IN = Path(overlay.HERE, '..', '..', 'client', 'updater', 'tests', 'fake_exe', 'target',
                 'i686-pc-windows-msvc', 'release', 'fake-exe.exe').resolve()
-
-
-def forged(original, text):
-    """Bytes of the original's length that start with `text` and end in four
-    bytes chosen so that the game CRC is the original's (a CRC from 0 with
-    no final xor is linear in the bits of a message of one length)."""
-    def crc0(data):
-        return ~zlib.crc32(data, 0xFFFFFFFF) & 0xFFFFFFFF
-    body = text + original[len(text):-4]
-    need = crc0(body + b'\0' * 4) ^ crc0(original)
-    effects = []
-    for bit in range(32):
-        tail = (1 << bit).to_bytes(4, 'little')
-        effects.append(crc0(bytes(len(body)) + tail))
-    # Gaussian elimination over GF(2): which tail bits give `need`.
-    basis = {}
-    for bit, effect in enumerate(effects):
-        chosen = 1 << bit
-        while effect:
-            top = effect.bit_length() - 1
-            if top not in basis:
-                basis[top] = (effect, chosen)
-                break
-            effect ^= basis[top][0]
-            chosen ^= basis[top][1]
-    tail = 0
-    while need:
-        top = need.bit_length() - 1
-        need ^= basis[top][0]
-        tail ^= basis[top][1]
-    return body + tail.to_bytes(4, 'little')
 
 
 class ReleaseTests(unittest.TestCase):
@@ -106,20 +57,9 @@ class ReleaseTests(unittest.TestCase):
             'game/binaries/x86/7zr.exe',
             'game/binaries/x86/updater_skhid.url', 'Skhid.bat', 'Skhid.sh',
         } | {f'game/binaries/x86/launcher_skhid/index-{blank}{code}.html'
-             for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')} | {overlay.RESOURCES_PLAN}
-        # The game's resources.db, as the default exe's release grows it.
-        self.fake_db()
+             for blank in ('', 'blank-') for code in ('en', 'ru', 'ua', 'de', 'pl')}
 
-    def build(self, output, *options, grow=True):
-        """make_client_026g.py with these options; the default exe's builds
-        (no --resource-*, --no-late-join, --cert-only, --cave= or
-        --no-launcher) get the Skhid-signed db that build needs, unless
-        `grow` is False."""
-        other_exe = ('--resource', '--no-late-join', '--cert-only', '--cave=', '--no-launcher')
-        if grow and not any(option.startswith(other_exe) for option in options):
-            manifest, _, _ = self.grow_manifest((self.game / 'resources.db').read_bytes(),
-                                                folder=self.root / 'auto')
-            options += (f'--resource-grow={manifest}', f'--resources-out={self.root / "auto-blobs"}')
+    def build(self, output, *options):
         args = ['make_client_026g.py', str(self.game), str(output),
                 '--server=release.example:2234', '--localization=polish',
                 '--bugtrap=' + str(self.dll), '--updater=' + str(self.updater), *options]
@@ -127,10 +67,8 @@ class ReleaseTests(unittest.TestCase):
         # part of the real release builder, including source reads and ZIP I/O.
         launcher = mock.patch.object(
             overlay.L, 'build', return_value=(b'patched launcher fixture', 'test launcher'))
-        keys = (mock.patch.object(S, 'OWN_KEY', key_path('skhid', public=True)),
-                mock.patch.object(S, 'RETAIL_KEY', Path(key_path('retail', public=True)).read_bytes()))
         with mock.patch.object(overlay.P, 'build', return_value=(b'patched fixture', 'test patch')) as patcher:
-            with launcher as self.launcher, mock.patch('sys.argv', args), keys[0], keys[1], \
+            with launcher as self.launcher, mock.patch('sys.argv', args), \
                     contextlib.redirect_stdout(io.StringIO()) as messages:
                 overlay.main()
         self.assertEqual(self.exe.read_bytes(), b'original fixture')
@@ -227,7 +165,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_without_the_launcher_it_is_the_seven_files_of_before(self):
         archive = self.root / 'plain.zip'
-        self.build(archive, '--pack-zip', '--no-launcher', '--no-late-join')
+        self.build(archive, '--pack-zip', '--no-launcher')
         self.launcher.assert_not_called()
         with zipfile.ZipFile(archive) as z:
             self.assertEqual(set(z.namelist()), self.without_launcher)
@@ -318,238 +256,14 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn('play_skhid.sh', messages)
                 self.assertIn('LINUX.txt', messages)
 
-    # --- resource regions ---------------------------------------------------
-
-    def fake_db(self):
-        """A small resources.db with two known entries in it, and the table
-        of regions that points at them."""
-        db = bytearray(os.urandom(4096))
-        lobby, login = bytes(db[1000:1000 + 700]), bytes(db[2500:2500 + 300])
-        (self.game / 'resources.db').write_bytes(bytes(db))
-        regions = {'lobby_menu': (1000, 700, hashlib.sha256(lobby).hexdigest()),
-                   'login_menu': (2500, 300, hashlib.sha256(login).hexdigest())}
-        return bytes(db), regions
-
-    def entry(self, original, name, crc=True):
-        """A changed entry of the original's size, with its game CRC when `crc`."""
-        changed = forged(original, b'changed ' + name.encode()) if crc else b'x' * len(original)
-        path = self.root / f'{name}.bin'
-        path.write_bytes(changed)
-        return path, changed
-
-    def test_resource_regions_add_the_plan_and_the_blobs(self):
-        db, regions = self.fake_db()
-        lobby, login = db[1000:1700], db[2500:2800]
-        lobby_path, lobby_new = self.entry(lobby, 'lobby')
-        login_path, login_new = self.entry(login, 'login')
-        self.assertEqual(overlay.game_crc(lobby_new), overlay.game_crc(lobby))
-        self.assertNotEqual(lobby_new, lobby)
-        blobs = self.root / 'blobs'
-        archive = self.root / 'regions.zip'
-        sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
-        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-            # The options in any order; the plan in the order of the db.
-            # The exe that starts with the original table: regions alone.
-            self.build(archive, '--pack-zip', '--no-late-join', f'--resource-region=login_menu={login_path}',
-                       f'--resource-region=lobby_menu={lobby_path}', f'--resources-out={blobs}')
-        with zipfile.ZipFile(archive) as z:
-            self.assertEqual(set(z.namelist()), self.names | {overlay.RESOURCES_PLAN})
-            plan = z.read(overlay.RESOURCES_PLAN)
-        self.assertEqual(plan, (
-            'skhid-resources 1\r\n'
-            f'region game/resources.db 4096 1000 700 {sha(lobby)} {sha(lobby_new)} lobby_menu\r\n'
-            f'region game/resources.db 4096 2500 300 {sha(login)} {sha(login_new)} login_menu\r\n'
-            'end\r\n').encode())
-        # The targets and the originals, by their sha256, for the server.
-        self.assertEqual({p.name: p.read_bytes() for p in blobs.iterdir()},
-                         {sha(data): data for data in (lobby, lobby_new, login, login_new)})
-        self.assertEqual((self.game / 'resources.db').read_bytes(), db, 'the game is only read')
-        # Again into the same folder: the blobs there are the same ones.
-        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-            self.build(self.root / 'again.zip', '--pack-zip', '--no-late-join',
-                       f'--resource-region=lobby_menu={lobby_path}', f'--resources-out={blobs}')
-        self.assertEqual(len(list(blobs.iterdir())), 4)
-        # The same in the real table: the three entries of build 2777's db,
-        # the settings menu's ending where the lobby's begins.
-        self.assertEqual(overlay.RESOURCE_REGIONS['main_menu'][:2], (17970448, 1194596))
-        self.assertEqual(overlay.RESOURCE_REGIONS['lobby_menu'][:2], (19165044, 38985769))
-        self.assertEqual(overlay.RESOURCE_REGIONS['login_menu'][:2], (58150813, 3508744))
-        spans = sorted(entry[:2] for entry in overlay.RESOURCE_REGIONS.values())
-        self.assertTrue(all(a + n <= b for (a, n), (b, _) in zip(spans, spans[1:])))
-
-    def test_an_entry_the_game_or_the_updater_would_refuse_is_refused(self):
-        db, regions = self.fake_db()
-        lobby = db[1000:1700]
-        good, _ = self.entry(lobby, 'good')
-        blobs = f'--resources-out={self.root / "blobs"}'
-        short = self.root / 'short.bin'
-        short.write_bytes(good.read_bytes()[:-1])
-        bad_crc, _ = self.entry(lobby, 'bad', crc=False)
-        for options, said in [
-            ((f'--resource-region=lobby_menu={short}', blobs), 'it must be the same size'),
-            ((f'--resource-region=lobby_menu={bad_crc}', blobs), 'the game would refuse it'),
-            ((f'--resource-region=other_menu={good}', blobs), 'with a name of'),
-            ((f'--resource-region=lobby_menu={good}',), 'needs --resources-out'),
-            ((f'--resource-region=lobby_menu={good}', blobs, '--no-launcher'), 'needs the updater'),
-            ((f'--resource-region=lobby_menu={good}', f'--resource-region=lobby_menu={good}', blobs), 'twice'),
-            ((blobs,), 'is for --resource-region'),
-        ]:
-            with self.subTest(said=said), mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-                with self.assertRaises(SystemExit) as refused:
-                    self.build(self.root / 'refused.zip', '--pack-zip', *options)
-                self.assertIn(said, str(refused.exception))
-                self.assertFalse((self.root / 'refused.zip').exists())
-                self.assertFalse((self.root / 'blobs').exists())
-        # The original entry itself changes nothing.
-        original = self.root / 'original.bin'
-        original.write_bytes(lobby)
-        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-            with self.assertRaises(SystemExit) as refused:
-                self.build(self.root / 'refused.zip', '--pack-zip', f'--resource-region=lobby_menu={original}', blobs)
-        self.assertIn('it is the original', str(refused.exception))
-        # A db whose entry is not the original one (another build, or changed).
-        (self.game / 'resources.db').write_bytes(db[:1000] + b'y' * 700 + db[1700:])
-        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-            with self.assertRaises(SystemExit) as refused:
-                self.build(self.root / 'refused.zip', '--pack-zip', f'--resource-region=lobby_menu={good}', blobs)
-        self.assertIn('is not the original one', str(refused.exception))
-
-    def grow_manifest(self, db, head_size=500, tail=b'new entries ' * 100, folder=None, signer='skhid',
-                      claimed=None, **changes):
-        """A grow manifest as resource-porter writes it: a new head for the
-        db's first bytes (its header, a file table and the table's signature
-        by `signer`'s key, or none), and a tail. `claimed` is the table size
-        the header gives, when not the table's own."""
-        import json
-        sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
-        folder = folder or self.root
-        folder.mkdir(parents=True, exist_ok=True)
-        table = (b'new table ' + db)[:head_size - 24 - S.SIGNATURE_SIZE - 20]
-        header = b'little-endian\0\0\0' + (1).to_bytes(4, 'little') + len(table).to_bytes(4, 'little')
-        head = header + table + bytes(S.SIGNATURE_SIZE)
-        (folder / 'head.bin').write_bytes(head + db[len(head):head_size])
-        if signer:
-            S.sign_file(folder / 'head.bin', key_path(signer))
-        head = bytearray((folder / 'head.bin').read_bytes())
-        head[20:24] = (claimed or len(table)).to_bytes(4, 'little')
-        head = bytes(head)
-        (folder / 'head.bin').write_bytes(head)
-        (folder / 'tail.bin').write_bytes(tail)
-        manifest = {
-            'format': 'skhid-db-grow 1', 'path': 'game/resources.db',
-            'original_size': len(db), 'new_size': len(db) + len(tail),
-            'head': {'name': 'file_table', 'offset': 0, 'size': head_size, 'file': 'head.bin',
-                     'original_sha256': sha(db[:head_size]), 'target_sha256': sha(head)},
-            'tail': {'name': 'new_items', 'file': 'tail.bin', 'sha256': sha(tail)},
-        }
-        for key, value in changes.items():
-            part, _, field = key.partition('__')
-            if field:
-                manifest[part][field] = value
-            else:
-                manifest[part] = value
-        path = folder / 'grow.json'
-        path.write_text(json.dumps(manifest))
-        return path, head, tail
-
-    def test_a_grow_manifest_adds_a_required_plan(self):
-        db, regions = self.fake_db()
-        sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
-        manifest, head, tail = self.grow_manifest(db)
-        lobby = db[1000:1700]
-        lobby_path, lobby_new = self.entry(lobby, 'lobby')
-        blobs = self.root / 'blobs'
-        archive = self.root / 'grow.zip'
-        with mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-            self.build(archive, '--pack-zip', f'--resource-grow={manifest}',
-                       f'--resource-region=lobby_menu={lobby_path}', f'--resources-out={blobs}')
-        with zipfile.ZipFile(archive) as z:
-            plan = z.read(overlay.RESOURCES_PLAN)
-        new_size = 4096 + len(tail)
-        self.assertEqual(plan, (
-            'skhid-resources 2\r\n'
-            f'region game/resources.db 4096 0 500 {sha(db[:500])} {sha(head)} file_table\r\n'
-            f'region game/resources.db 4096 1000 700 {sha(lobby)} {sha(lobby_new)} lobby_menu\r\n'
-            f'tail game/resources.db 4096 {new_size} {sha(tail)} new_items file_table\r\n'
-            'end\r\n').encode())
-        self.assertEqual({p.name: p.read_bytes() for p in blobs.iterdir()},
-                         {sha(data): data for data in (db[:500], head, tail, lobby, lobby_new)})
-        self.assertEqual((self.game / 'resources.db').read_bytes(), db, 'the game is only read')
-        # Without a tail the plan stays format 1 (the updaters out there).
-        self.assertTrue(overlay.resources_plan(['region game/resources.db 1 0 1 a b x']).startswith(
-            b'skhid-resources 1\r\n'))
-
-    def test_a_grow_manifest_that_does_not_fit_is_refused(self):
-        db, regions = self.fake_db()
-        blobs = f'--resources-out={self.root / "blobs"}'
-        for changes, said in [
-            ({'format': 'other'}, 'manifest'),
-            ({'path': 'game/other.db'}, 'only game/resources.db can be grown'),
-            ({'original_size': 4095}, 'the manifest grows a db of 4095'),
-            ({'new_size': 4096}, 'do not fit'),
-            ({'new_size': 4097}, 'the db grows by 1'),
-            ({'head__size': 499}, 'the head has 499'),
-            ({'head__offset': 900}, 'it must start at 0'),
-            ({'head_size': 1200}, 'overlaps the region lobby_menu'),
-            ({'signer': 'retail'}, 'signed by retail'),
-            ({'signer': None}, 'signed by neither key'),
-            ({'claimed': 10_000}, 'not the head of a resources.db'),
-            ({'head__original_sha256': '0' * 64}, 'not the build it was made for'),
-            ({'head__target_sha256': '0' * 64}, "not the manifest's head"),
-            ({'tail__sha256': '0' * 64}, "not the manifest's tail"),
-            ({'tail__name': 'file_table'}, 'are taken'),
-            ({'tail__name': 'lobby_menu'}, 'are taken'),
-            ({'head__name': 'a b'}, 'is not a plan name'),
-            ({'head': None}, 'incomplete'),
-        ]:
-            with self.subTest(said=said), mock.patch.dict(overlay.RESOURCE_REGIONS, regions, clear=True):
-                manifest, _, _ = self.grow_manifest(db, **changes)
-                lobby_path, _ = self.entry(db[1000:1700], 'lobby')
-                with self.assertRaises(SystemExit) as refused:
-                    self.build(self.root / 'refused.zip', '--pack-zip', f'--resource-grow={manifest}',
-                               f'--resource-region=lobby_menu={lobby_path}', blobs)
-                self.assertIn(said, str(refused.exception))
-                self.assertFalse((self.root / 'refused.zip').exists())
-                self.assertFalse((self.root / 'blobs').exists())
-        manifest, _, _ = self.grow_manifest(db)
-        for options, said in [
-            ((f'--resource-grow={manifest}',), 'needs --resources-out'),
-            ((f'--resource-grow={manifest}', blobs, '--no-launcher'), 'needs the updater'),
-            ((f'--resource-grow={manifest}', f'--resource-grow={manifest}', blobs), 'twice'),
-        ]:
-            with self.subTest(said=said):
-                with self.assertRaises(SystemExit) as refused:
-                    self.build(self.root / 'refused.zip', '--pack-zip', *options)
-                self.assertIn(said, str(refused.exception))
-
-    def test_the_game_crc_is_the_games_formula(self):
-        # movie_db.py's crc0 and game_hash, by their definition: CRC-32 of
-        # the reflected polynomial from 0, no final xor, bits reversed.
-        def slow(data):
-            crc = 0
-            for byte in data:
-                crc ^= byte
-                for _ in range(8):
-                    crc = (crc >> 1) ^ (0xEDB88320 if crc & 1 else 0)
-            return int(f'{crc:032b}'[::-1], 2)
-        for data in (b'', b'a', b'abc', os.urandom(1000)):
-            self.assertEqual(overlay.game_crc(data), slow(data))
-
-    def test_the_default_exe_ships_with_the_skhid_signed_db(self):
-        """The default exe starts with no resources.db but the one Skhid's
-        key signed: a release of it without that db, or that db with any
-        other exe, would stop every player's game."""
-        manifest, _, _ = self.grow_manifest((self.game / 'resources.db').read_bytes())
-        blobs = f'--resources-out={self.root / "blobs"}'
-        for options in [(), ('--no-launcher',)] + [
-                (f'--resource-grow={manifest}', blobs, exe) for exe in ('--no-late-join', '--cert-only',
-                                                                         '--cave=hash-mismatch')]:
-            with self.subTest(options=options):
-                with self.assertRaises(SystemExit) as refused:
-                    self.build(self.root / 'refused.zip', '--pack-zip', *options, grow=False)
-                self.assertIn('starts only with the resources.db --resource-grow ships', str(refused.exception))
-                self.assertFalse((self.root / 'refused.zip').exists())
-                self.assertFalse((self.root / 'blobs').exists())
+    def test_no_part_of_resources_db_is_shipped_in_the_overlay(self):
+        # Content reaches the players as patches of resources.db alone
+        # (client/updater/README.md, "Patches").
+        for option in ('--resource-region=lobby_menu=x.bin', '--resource-grow=grow.json',
+                       '--resources-out=out'):
+            with self.subTest(option=option), self.assertRaises(SystemExit) as refused:
+                self.build(self.root / 'refused.zip', '--pack-zip', option)
+            self.assertIn('unknown option', str(refused.exception))
 
     def test_existing_release_is_not_overwritten(self):
         archive = self.root / 'release.zip'

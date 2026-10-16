@@ -74,6 +74,35 @@ fn number_header(request: &Internet, which: u32) -> Option<u32> {
     (ok != 0).then_some(value)
 }
 
+/// The `Content-Length` the server named, read as text: a number of the
+/// header is 32 bits, a patch or the game's archive may pass 4 GB.
+fn content_length(request: &Internet) -> Option<u64> {
+    let mut text = [0_u16; 32];
+    let mut size = (text.len() * 2) as u32;
+    let ok = unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            WINHTTP_QUERY_CONTENT_LENGTH,
+            null(),
+            text.as_mut_ptr().cast::<c_void>(),
+            &mut size,
+            null_mut(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let digits = &text[..(size as usize / 2).min(text.len())];
+    if digits.is_empty() || digits.len() > 19 || !digits.iter().all(|c| (0x30..=0x39).contains(c)) {
+        return None;
+    }
+    Some(
+        digits
+            .iter()
+            .fold(0_u64, |n, c| n * 10 + u64::from(c - 0x30)),
+    )
+}
+
 /// GET `path` from the server: the body, if the status is 200 and the body
 /// at most `limit` bytes. `progress(done, total)` is called as the bytes
 /// come (the total when the server names it); `false` from it stops the
@@ -195,7 +224,7 @@ pub fn get_stream(
     if status != 200 {
         return Err(HttpError::Status(status));
     }
-    let expected = number_header(&request, WINHTTP_QUERY_CONTENT_LENGTH).map(u64::from);
+    let expected = content_length(&request);
     if expected.is_some_and(|expected| expected > limit) {
         return Err(HttpError::TooLarge);
     }

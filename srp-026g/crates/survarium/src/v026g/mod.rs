@@ -4,6 +4,7 @@
 pub mod awards;
 pub mod dictionary;
 pub mod drops;
+pub mod game_data;
 pub mod item_params;
 pub mod loadouts;
 pub mod maps;
@@ -12,6 +13,7 @@ pub mod prices;
 pub mod quests;
 pub mod shop_offers;
 pub mod skills;
+pub mod tables;
 
 // Wire helpers.
 pub mod lzma2;

@@ -2550,6 +2550,41 @@ fn only_the_reports_kept_stay_in_the_repository() {
     );
 }
 
+/// A kept screen that shows an item the game's data lacks (data made
+/// without a patch) stops the load, named, and nothing is written.
+#[test]
+fn a_kept_report_of_an_item_the_data_lacks_stops_the_load() {
+    use crate::v026g::persist::GameRepository;
+    let players = alice_and_bob();
+    let mut repository = MemoryGameRepository::default();
+    let store = kept_accounts(&players, &repository);
+    let results = Results::attached(&store);
+    results
+        .settle(&match_of(MATCH), &store, &at(NOW), &mut Rng::new(3))
+        .unwrap();
+    store.flush();
+    drop(results);
+    drop(store);
+    let key = report_key(MATCH);
+    let rows = repository.load_results().unwrap();
+    let body = &rows.iter().find(|row| row.0 == key).unwrap().1;
+    let mut report: MatchReport = serde_json::from_str(body).unwrap();
+    report.players[1].reward.supplies_used.push((9998, 3));
+    let body = serde_json::to_string(&report).unwrap();
+    repository.save_result(&key, &body).unwrap();
+    let saves = repository.saves();
+
+    let error = GameAccounts::with_repository(Box::new(repository.clone()))
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(
+        error.contains(&format!("item dict ids 9998 (report {MATCH:#x})")),
+        "{error}"
+    );
+    assert_eq!(repository.saves(), saves);
+}
+
 /// Rows written by other code, or damaged: a screen is lost, nothing else.
 #[test]
 fn rows_that_do_not_read_are_left_out_and_cleaned_up() {

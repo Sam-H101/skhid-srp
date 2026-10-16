@@ -49,18 +49,27 @@ use the game's own 1234, 1235, 1236.
    fill it in. `SRP_PUBLIC_HOST` is required. Keep `.env` out of any
    repository: it holds the admin page's token and path.
 3. Put the players' download (the zip made as `client-patches/README.md`
-   says) into `./download`, or set `SRP_DOWNLOAD_URL`. A zip made with
-   resource regions comes with blobs: they go into `./download/resources/`
-   first (`client-patches/launcher/README.md`, "Putting it on a server").
-4. `docker compose config` (checks the file and the settings), then
+   says) into `./download`, or set `SRP_DOWNLOAD_URL`. A server whose
+   players had a ZIP with resource regions (before the patches) keeps
+   `./download/resources/` as it is: the originals there are what the
+   updater fetches (`/resources/<sha256>`) to put a player's `resources.db`
+   back to stock once, when it kept no copy of its own. A new server needs
+   no such folder.
+4. Put the server's game data (`server-game-data.db`, made by
+   `srp-game-data build` of `resources.db` and the patches the players
+   mount: "The game's files" below) into `./download` too, and each patch
+   at the URL it names. srp takes its game data from it, lists its patches
+   at `/patches`, and does not start without it.
+5. `docker compose config` (checks the file and the settings), then
    `docker compose build srp26`, then `docker compose up -d srp26`.
-5. For HTTPS on the web page, on a host whose port 443 is free: point a
+6. For HTTPS on the web page, on a host whose port 443 is free: point a
    domain at the host, set `SRP_WEB_DOMAIN` (several names: commas between
    them, the whole in quotes) and `SRP_WEB_TRUST_PROXY=on`,
    then `docker compose --profile tls up -d`.
-6. Check: `docker compose ps` shows the container healthy (the check opens
+7. Check: `docker compose ps` shows the container healthy (the check opens
    the web page's port; the game ports are UDP), and the log's first lines
-   say which servers started on which ports.
+   say which servers started on which ports, and where the game data was
+   read from (`game data: ...`).
 
 Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 (`client-patches/README.md`).
@@ -76,17 +85,25 @@ Players start the game with `-server=<SRP_PUBLIC_HOST>:<login port>`
 | `SRP26_WEB_PORT` | The web page's port on the host's 127.0.0.1 (default 8098) |
 | `SRP26_HTTPS_PORT` | caddy's port (default 443) |
 | `SRP26_DOWNLOAD_DIR` | The folder with the download (default `./download`) |
+| `SRP_GAME_DATA` | The server's game data (default `/srv/srp/download/server-game-data.db`: `./download/server-game-data.db` on the host) |
 | `SRP26_CPUS`, `SRP26_MEMORY` | The container's limits (1 CPU, 512 MB) |
 | `SRP_ADMIN_TOKEN`, `SRP_ADMIN_PATH`, `SRP_ADMIN_IPS`, `SRP_WEB_TRUST_PROXY`, `SRP_WEB_DOMAIN` | The admin page and the web page, as for 0.21d: the admin page is on only with a token and a path, for the listed addresses only |
 | `SRP_DOWNLOAD_FILE`, `SRP_DOWNLOAD_URL`, `SRP_DOWNLOAD_SHA256`, `SRP_GAME_URL`, `SRP_OTHER_SERVER_URL`, `SRP_TEST_SERVER` | The home page's download, where the original game is had, the link to another server of ours, and `on` for a test server: every page then says that it is one and names the other server as the players' |
 
 **Only the settings named under `environment:` in the compose file reach the
-server.** A game setting of `SRP-026G.md` that is not in that list (for
-example `SRP_ITEM_WEAR` or `SRP_DROP_CONDITION`) keeps its default even
-when `.env` sets it: add its name to the list first.
+server.** A game setting of `SRP-026G.md` that is not in that list keeps its
+default even when `.env` sets it: add its name to the list first. Every
+setting of `deploy/env-026g.example` is in it, except `SRP_BOT_ACCOUNTS`.
+
+**A changed `.env` takes effect only in a new container:**
+
+    docker compose up -d --no-deps --force-recreate srp26
+
+`docker compose restart srp26` starts the same container again, with the
+settings it was made with: a new value in `.env` is not seen.
 
 Never set `SRP_BOT_ACCOUNTS` on a public server (`SRP-026G.md`, "Test
-bots").
+bots"); the compose file does not pass it.
 
 A download that every game must have (new content in `resources.db`, a
 match rule older games compute otherwise) goes with the server refusing
@@ -100,8 +117,78 @@ the restart with a session from before is refused in the lobby: it goes to
 its login screen within about half a minute, and is refused there. It never
 gets the lobby's sign-in, whose price list names every item sold.
 Left out (or 0), every game is let in; a value that is not a number from 0
-to 255 stops srp at start. `SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT`
-and `SRP_OUTDATED_TEXT` are no more read: take them out of `.env`.
+to 255 stops srp at start.
+
+It must be at least the number of the newest patch of the server's game
+data (`resources.db.patch_<n>` is released with revision n, and a game of
+an older revision does not have it): with less, srp does not start, and its
+log says what to set:
+
+    srp: SRP_MIN_PATCH_REVISION is 15, but the server's game data (...) has resources.db.patch_16: ... Set SRP_MIN_PATCH_REVISION=16 in .env and recreate the container (...)
+
+## The game's files
+
+srp takes every table of game data from the server's game data
+(`SRP-026G.md`, "Game data"): one file of about 3 MB,
+`server-game-data.db`, the files srp reads of the stock `resources.db` and
+the `resources.db.patch_<n>` archives the players' game mounts over it, with
+what it was made of. `srp-game-data build` makes it where the game's
+archives are (the release machine; `crates/resources-db/README.md`):
+
+    srp-game-data build --dir <the game folder> --patch-url <where the players download the patches> --out server-game-data.db
+
+The host keeps it in the download folder (mounted already):
+
+    /opt/srp-026g/download/server-game-data.db    (SRP_GAME_DATA=/srv/srp/download/server-game-data.db)
+
+It names each patch with its sha256 and the URL given to `build`, and the
+web page hands exactly that list to the players' updater at `GET /patches`
+(public, no token; `{}` when there are no patches). So the players fetch
+the patches the server runs on and no others. srp does not serve the patch
+files themselves: each must be downloadable at its URL (any plain file
+server; the updater checks it against the list's sha256). The host needs
+neither the 6.3 GB `resources.db` nor the patches to run srp.
+
+srp does not start, and its log (a line `srp: ...`) says why, when:
+
+- `SRP_GAME_DATA` is unset, or names a file that is missing, damaged (a
+  file unlike its table) or not made by `srp-game-data build`: the line
+  says how to make it;
+- the data lacks an item the code names (the starter kit, the shop's
+  tables, the bundles, the vouchers, the tutorial's weapons and awards):
+  `... lacks what srp's code names: loadouts::STARTER tt_33, ...`;
+- `SRP_MIN_PATCH_REVISION` is under its newest patch (above);
+- `srp.db` names an item, a modification or a quest the data lacks: `srp:
+  cannot load the 0.26g accounts: the kept accounts name what the server's
+  game data (...) lacks; item dict ids 812 (account 3, account 7), ...`.
+  The data was made without a patch the players' items come from: build it
+  of every patch released and start again. Nothing of the accounts is
+  changed: srp never throws an item away because the data does not know it.
+
+Each is a release's mistake, never a player's: put the old
+`server-game-data.db` (and the old `SRP_MIN_PATCH_REVISION`) back, or fix
+the new one, and recreate the container.
+
+- **It is read once, at start.** A release that adds or changes a patch
+  goes out in this order: the patch file at its URL, then the new
+  `server-game-data.db` over the old one in `download/` and
+  `SRP_MIN_PATCH_REVISION` in `.env` set to the release's revision, then a
+  new container (`docker compose up -d --no-deps --force-recreate srp26`;
+  `restart` would keep the old setting). The log's
+  `game data: ...` line names what it was made of; `curl
+  https://<the page>/patches` shows the list the updaters now get, and a
+  player's launcher fetches the new patch at its next start. Every patch
+  goes with `SRP_MIN_PATCH_REVISION` (above): srp does not start without.
+- **Before the new container:** `srp-game-data info server-game-data.db`
+  checks the file and prints its patches and URLs; `srp-game-data check
+  server-game-data.db --dir <the game folder> --patch-url <base>` says
+  whether it was made of exactly those archives.
+- **A rollback** is the old `server-game-data.db`, with the
+  `SRP_MIN_PATCH_REVISION` of the release it goes with, and a new container:
+  the updaters then delete the patch the list no longer names. Once a
+  player was given an item of the patch (a drop, the shop), the old data
+  lacks it and srp does not start on it (above): go forward with a fixed
+  patch instead.
 
 ## Data, logs, backups
 

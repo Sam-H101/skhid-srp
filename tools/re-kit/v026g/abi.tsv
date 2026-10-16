@@ -1,0 +1,1735 @@
+va	name	source	ret_cleanup	result
+0x00014650	vostok::render::one_way_render_channel::owner_initialize	manual	0	
+0x00014710	vostok::render::one_way_render_channel::owner_finalize	manual	0	
+0x000147e0	on_mounted_resources	manual	0	
+0x000148b0	on_mounted_user_data	manual	0	
+0x0001ef10	vostok::render::one_way_render_channel::one_way_render_channel	manual	0	EAX: receiver pointer
+0x0001f090	vostok::render::one_way_render_channel::~one_way_render_channel	manual	0	
+0x0001f2c0	vostok::render::one_way_render_channel::owner_push_back	manual	0	
+0x0001f310	vostok::render::game::renderer::renderer	manual	8	
+0x0001f490	vostok::render::game::renderer::set_render_output_window_title	manual	8	
+0x0001f5f0	vostok::render::game::renderer::end_frame	manual	4	
+0x0001f710	vostok::render::game::renderer::draw_scene_impl	manual	4	
+0x0001f7f0	vostok::render::game::renderer::draw_scene	manual	16	
+0x0001f9f0	vostok::render::game::renderer::show_movie	manual	12	
+0x0001fbb0	vostok::render::game::renderer::hide_movie	manual	12	
+0x0001fd50	vostok::render::game::renderer::execute_scaleform_command	manual	8	
+0x00021260	vostok::render::one_way_render_channel::process_next_frame_commands	manual	0	
+0x00021340	vostok::render::one_way_render_channel::render_process_commands	manual	4	AL: 1 on queue exhaustion,0 after observed frame advancement; upper bits unknown
+0x00021460	vostok::render::one_way_render_channel::render_on_draw_scene	manual	12	
+0x00021700	vostok::render::one_way_render_channel::render_on_end_frame	manual	0	
+0x00021920	vostok::render::scene_renderer::scene_renderer	manual	8	
+0x000219d0	vostok::render::scene_renderer::set_view_matrix	manual	12	
+0x00021b50	vostok::render::scene_renderer::set_projection_matrix	manual	12	
+0x00021cd0	vostok::render::scene_renderer::add_model	manual	16	
+0x00021f40	vostok::render::scene_renderer::remove_model	manual	8	
+0x00022280	vostok::render::scene_renderer::update_model	manual	16	
+0x00022490	vostok::render::scene_renderer::update_skeleton	manual	16	
+0x00022520	vostok::render::scene_renderer::set_gamma_correction_factor	manual	8	
+0x00022660	vostok::render::scene_renderer::play_particle_system	manual	28	
+0x00022860	vostok::render::scene_renderer::stop_particle_system	manual	16	
+0x000229d0	vostok::render::scene_renderer::remove_particle_system_instance	manual	12	
+0x00022b30	vostok::render::scene_renderer::update_particle_system_instance	manual	20	
+0x00022c80	vostok::render::scene_renderer::update_decal	manual	16	
+0x00023010	vostok::render::scene_renderer::update_skeleton_decal	manual	24	
+0x000231b0	vostok::render::scene_renderer::remove_decal	manual	12	
+0x00023300	vostok::render::scene_renderer::update_environment_probe	manual	16	
+0x00023430	vostok::render::scene_renderer::remove_environment_probe	manual	12	
+0x00023580	vostok::render::scene_renderer::update_sky_ambient_occlusion	manual	12	
+0x000236b0	vostok::render::scene_renderer::remove_sky_ambient_occlusion	manual	12	
+0x00023800	vostok::render::scene_renderer::update_ambient_volume	manual	12	
+0x00023920	vostok::render::scene_renderer::remove_ambient_volume	manual	12	
+0x00023a70	vostok::render::scene_renderer::update_ambient_light	manual	12	
+0x00023b90	vostok::render::scene_renderer::remove_ambient_light	manual	12	
+0x00023ce0	vostok::render::scene_renderer::update_lpv_occluder	manual	12	
+0x00023e10	vostok::render::scene_renderer::remove_lpv_occluder	manual	12	
+0x00023f60	vostok::render::scene_renderer::update_volume_fog	manual	16	
+0x00024080	vostok::render::scene_renderer::remove_volume_fog	manual	12	
+0x000241d0	vostok::render::scene_renderer::add_tracer	manual	12	
+0x00024320	vostok::render::scene_renderer::update_tracer	manual	16	
+0x00024470	vostok::render::scene_renderer::remove_tracer	manual	12	
+0x000245e0	vostok::render::scene_renderer::set_portal_system	manual	12	
+0x00024750	vostok::render::scene_renderer::add_light	manual	16	
+0x00024890	vostok::render::scene_renderer::remove_light	manual	12	
+0x000249e0	vostok::render::scene_renderer::set_environment_properties	manual	12	
+0x00024b10	vostok::render::scene_renderer::reload_shaders	manual	0	
+0x00024c20	vostok::render::scene_renderer::reload_modified_textures	manual	0	
+0x00024d30	vostok::render::scene_renderer::register_material_parameter	manual	8	
+0x00024e60	vostok::render::scene_renderer::set_model_material_parameter_impl	manual	28	
+0x00024fe0	vostok::render::scene_renderer::append_model_material	manual	16	
+0x00025140	vostok::render::scene_renderer::remove_model_material	manual	16	
+0x000252a0	vostok::render::scene_renderer::set_model_foreground	manual	16	
+0x000253e0	vostok::render::scene_renderer::set_model_visible	manual	16	
+0x00025520	vostok::render::scene_renderer::build_lpv_geometry	manual	8	
+0x00025660	vostok::render::scene_renderer::set_grass	manual	12	
+0x000257d0	vostok::render::scene_renderer::reset_grass	manual	12	
+0x00025940	vostok::render::scene_renderer::begin_render_options_changing	manual	4	
+0x00025a70	vostok::render::scene_renderer::end_render_options_changing	manual	12	
+0x00025c50	vostok::render::scene_renderer::draw_render_statistics	manual	12	
+0x00027b00	vostok::render::functor_with_big_buffer_to_copy_command<vostok::render::decal_properties>::functor_with_big_buffer_to_copy_command<vostok::render::decal_properties>	manual	12	
+0x00028240	vostok::render::functor_with_big_buffer_to_copy_command<vostok::render::environment_probe_properties>::functor_with_big_buffer_to_copy_command<vostok::render::environment_probe_properties>	manual	12	
+0x000282a0	boost::bind<void,vostok::render::engine::world,vostok::resources::resource_ptr<vostok::render::base_scene,vostok::resources::unmanaged_intrusive_base> const &,unsigned int,vostok::render::environment_probe_properties const &,long volatile *,vostok::render::engine::world *,vostok::resources::resource_ptr<vostok::render::base_scene,vostok::resources::unmanaged_intrusive_base>,unsigned int,boost::arg<1>,long volatile *>	manual	0	
+0x00028fd0	boost::bind<void,vostok::render::engine::world,vostok::resources::resource_ptr<vostok::render::base_scene,vostok::resources::unmanaged_intrusive_base> const &,unsigned int,vostok::render::light_props *,vostok::render::engine::world *,vostok::resources::resource_ptr<vostok::render::base_scene,vostok::resources::unmanaged_intrusive_base>,unsigned int,vostok::render::light_props *>	manual	0	
+0x00029120	vostok::render::functor_with_big_buffer_to_copy_command<vostok::render::environment_properties>::functor_with_big_buffer_to_copy_command<vostok::render::environment_properties>	manual	12	
+0x00029180	boost::bind<void,vostok::render::engine::world,vostok::resources::resource_ptr<vostok::render::base_scene_view,vostok::resources::unmanaged_intrusive_base>,vostok::render::environment_properties const &,vostok::render::engine::world *,vostok::resources::resource_ptr<vostok::render::base_scene_view,vostok::resources::unmanaged_intrusive_base>,boost::arg<1> >	manual	0	
+0x00029300	vostok::render::functor_with_big_buffer_to_copy_command<vostok::render::material_parameter_buffer>::functor_with_big_buffer_to_copy_command<vostok::render::material_parameter_buffer>	manual	12	
+0x00029640	boost::bind<void,vostok::render::engine::world,vostok::resources::resource_ptr<vostok::render::render_model_instance,vostok::resources::unmanaged_intrusive_base> const &,unsigned int,bool,vostok::render::engine::world *,vostok::resources::resource_ptr<vostok::render::render_model_instance,vostok::resources::unmanaged_intrusive_base>,unsigned int,bool>	manual	0	
+0x00029790	boost::bind<void,vostok::render::engine::world,vostok::resources::resource_ptr<vostok::render::render_model_instance,vostok::resources::unmanaged_intrusive_base> const &,unsigned int,unsigned int,vostok::render::engine::world *,vostok::resources::resource_ptr<vostok::render::render_model_instance,vostok::resources::unmanaged_intrusive_base>,unsigned int,unsigned int>	manual	0	
+0x0002a0d0	vostok::render::environment_properties::environment_properties	manual	0	
+0x00033460	vostok::render::ui::renderer::draw_vertices	manual	20	
+0x000334e0	vostok::render::ui::renderer::draw_text	manual	40	
+0x00037230	vostok::collision::triangle_mesh_geometry::get_custom_data	manual	4	
+0x00037820	vostok::collision::box_geometry_instance::set_matrix	manual	4	
+0x000378d0	vostok::collision::box_geometry_instance::accept	manual		
+0x00037dc0	vostok::collision::box_geometry_instance::enumerate_primitives	manual	4	
+0x00037e30	vostok::collision::box_geometry_instance::enumerate_primitives	manual	8	
+0x00037eb0	vostok::collision::box_geometry_instance::get_surface_area	manual	0	
+0x00038970	vostok::collision::sphere_geometry_instance::set_matrix	manual	4	
+0x000389a0	vostok::collision::sphere_geometry_instance::accept	manual		
+0x00038a70	vostok::collision::sphere_geometry_instance::ray_test	manual	16	
+0x00038bd0	vostok::collision::sphere_geometry_instance::enumerate_primitives	manual	4	
+0x00038c60	vostok::collision::sphere_geometry_instance::enumerate_primitives	manual	8	
+0x00038ce0	vostok::collision::sphere_geometry_instance::get_surface_area	manual	0	
+0x00038d30	vostok::collision::sphere_geometry_instance::get_random_surface_point	manual	8	
+0x00038eb0	vostok::collision::sphere_geometry_instance::get_closest_point_to	manual	12	
+0x0003b5f0	vostok::collision::triangle_mesh_geometry::triangle_mesh_geometry	manual	4	
+0x0003b6e0	vostok::collision::triangle_mesh_geometry::initialize	manual	16	
+0x0003b810	vostok::collision::triangle_mesh_geometry::destroy	manual	4	
+0x0003b990		auto	4	
+0x0003b9c0		auto	28	
+0x0003ba00	vostok::collision::triangle_mesh_geometry::calculate_aabb	manual	0	
+0x0003bb50	vostok::collision::triangle_mesh_geometry::get_aabb	manual	4	
+0x0003bb80	vostok::collision::triangle_mesh_geometry::vertices	manual	0	
+0x0003bb90	vostok::collision::triangle_mesh_geometry::vertex_count	manual	0	
+0x0003bba0	vostok::collision::triangle_mesh_geometry::indices	manual	0	
+0x0003bbb0	vostok::collision::triangle_mesh_geometry::indices	manual	4	
+0x0003bbd0	vostok::collision::triangle_mesh_geometry::index_count	manual	0	
+0x0003f000		auto	4	
+0x0003f060		auto	24	
+0x0003ff50	vostok::fs_new::file_open_flags_to_string	manual	0	
+0x0003ffc0	vostok::fs_new::windows_hdd_file_system::`scalar deleting destructor'	manual	4	EAX: original owner pointer
+0x00040000	vostok::fs_new::windows_hdd_file_system::open	manual	12	
+0x00040190		auto	8	
+0x000401d0		auto	16	
+0x00040210		auto	4	
+0x00040250	vostok::fs_new::windows_hdd_file_system::setvbuf	manual	20	
+0x00040430		auto		
+0x00040440	vostok::fs_new::windows_hdd_file_system::create_folder	manual	4	
+0x00040480	vostok::fs_new::windows_hdd_file_system::erase	manual	4	
+0x000404b0		auto	16	
+0x000404e0		auto	16	
+0x00040550	vostok::strings::ends_with	manual	0	
+0x00040590	vostok::buffer_string::ends_with	manual	0	
+0x00040c30	vostok::fs_new::windows_hdd_file_system::get_physical_path_info	manual	8	
+0x00040dc0	vostok::fs_new::init_from_os_struct	manual	0	
+0x00040e00	vostok::fs_new::windows_hdd_file_system::find_first	manual	12	
+0x00040eb0	vostok::fs_new::windows_hdd_file_system::find_next	manual	8	
+0x00040f00	vostok::fs_new::windows_hdd_file_system::find_close	manual	8	
+0x000411e0	vostok::fs_new::physical_path_info_data::physical_path_info_data	manual	0	
+0x00042d30	vostok::vfs::archive_mounter::archive_mounter	manual	0	EAX: the mounter
+0x00043320	vostok::vfs::archive_mounter::mount_fat	manual	8	
+0x00044760	vostok::vfs::query_mount_arguments::query_mount_arguments	manual	0	
+0x00044bd0	vostok::vfs::query_mount_arguments::mount_archive	manual	0	
+0x00045140	vostok::vfs::vfs_hashset::find_no_branch_lock	manual	20	
+0x00045270	vostok::vfs::vfs_hashset::find_no_branch_lock	manual	8	
+0x000452e0	vostok::vfs::vfs_hashset::find_no_lock	manual	8	EAX: the first node of the path's equal range, or 0
+0x00045440	vostok::vfs::vfs_hashset::insert	manual	12	
+0x00045490	vostok::vfs::vfs_hashset::erase	manual	12	
+0x000454d0	vostok::vfs::vfs_hashset::replace	manual	16	
+0x00045530	vostok::vfs::vfs_hashset::skip_nodes_with_wrong_path	manual	0	EAX: first node whose full path equals the text, or 0
+0x000455f0	vostok::vfs::vfs_hashset::equal_range	manual	12	
+0x00045660	vostok::vfs::vfs_hashset::equal_range	manual	20	
+0x000457f0	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::erase	manual	0	
+0x000458c0	vostok::vfs::mount_id_of_node<1>	manual	0	EAX: mount id
+0x00045900	vostok::hash_multiset<vostok::vfs::base_node<1>,vostok::platform_pointer_selector<vostok::vfs::base_node<1>,1>::helper,16,vostok::detail::fixed_size_policy<32768>,vostok::detail::null_hash<vostok::vfs::base_node<1> >,vostok::detail::null_equal<vostok::vfs::base_node<1> >,vostok::threading::single_threading_policy>::insert<vostok::vfs::should_overlap_predicate>	manual	12	
+0x00047840	vostok::vfs::mounter::find_parent_to_link	manual	20	
+0x00047af0	vostok::vfs::mounter::find_overlapped_and_parent_to_link	manual	24	
+0x00047d00	vostok::vfs::mounter::find_topmost_overlapper	manual	8	EAX: topmost overlapping folder or 0
+0x00047db0	vostok::vfs::mounter::merge_node_with_tree	manual	16	
+0x0004aa80	vostok::vfs::transfer_children::find_first_and_last_overlapper	manual	16	
+0x0004abc0	vostok::vfs::transfer_children::transfer_child	manual	12	
+0x0004ad50	vostok::vfs::transfer_children::transfer_children	manual	20	
+0x0004fbd0	vostok::vfs::physical_path_mounter::mount_root	manual	4	
+0x0005afe0	vostok::sound::sound_instance_proxy_internal::stop	manual	0	
+0x000621b0	vostok::render::animated_model_instance_cook::delete_resource	manual	4	
+0x00067089		auto	0	
+0x0006771c		auto	0	
+0x0006778e		auto	0	
+0x00068133		auto	0	
+0x00068ca3		auto	0	
+0x0006979f		auto	0	
+0x0006b978		auto	0	
+0x0006be16		auto	0	
+0x0006bfc4		auto	0	
+0x0006c25a		auto	0	
+0x0006cf0a		auto	0	
+0x0006efe5		auto	0	
+0x0006f109		auto	0	
+0x0006f181		auto	0	
+0x0006f561		auto	0	
+0x0007ab30	vostok::network_core::mutable_buffer::resize	manual	4	
+0x0007ac10	vostok::network_core::buffer_writer::w	manual	8	
+0x000804e0	vostok::network_core::buffer_writer::w<float>	manual	20	
+0x00080fa0	vostok::network_core::buffer_writer::w<bool>	manual	20	
+0x000e0420	vostok::resources::resource_children::link_parent_resource	manual	12	
+0x000e0500	vostok::resources::resource_children::link_child_resource	manual	8	
+0x000e05f0	vostok::resources::resource_children::unlink_parent_resource	manual	4	
+0x000e06d0	vostok::resources::resource_children::unlink_child_resource	manual	4	
+0x000e07b0	vostok::resources::resource_children::unlink_from_children	manual	0	
+0x000e07e0	vostok::resources::resource_children::unlink_from_parents	manual	0	
+0x000e4f40	vostok::memory::doug_lea_allocator::initialize_impl	manual	16	
+0x000e4f80	vostok::memory::doug_lea_allocator::finalize_impl	manual		
+0x000e4f90	vostok::memory::doug_lea_allocator::malloc_impl	manual	4	
+0x000e5050	vostok::memory::doug_lea_allocator::realloc_impl	manual	12	
+0x000e5120	vostok::memory::doug_lea_allocator::call_malloc	manual	20	
+0x000e5140	vostok::memory::doug_lea_allocator::call_realloc	manual	24	
+0x000e5160	vostok::memory::doug_lea_allocator::call_free	manual	16	
+0x000e51a0	vostok::memory::doug_lea_allocator::total_size	manual	0	
+0x000e5270	vostok::memory::doug_lea_allocator::allocated_size	manual	0	
+0x000e7d20	vostok::resources::mount_by_config_helper::mount_by_config_helper	manual	0	EAX: the helper
+0x000e7d90	vostok::resources::mount_by_config_helper::query_db	manual	0	
+0x000e7e80	vostok::resources::query_mount_physical	manual	0	
+0x000eb600	vostok::memory::doug_lea_allocator::usable_size_impl	manual	4	
+0x000f1850	vostok::resources::unmanaged_resource::~unmanaged_resource	manual	0	
+0x000f6df0	vostok::memory::writer_base::`scalar deleting destructor'	manual	4	EAX: original owner pointer; storage may already be deleted
+0x000f6e30	vostok::memory::writer_base::open_chunk	manual	0	
+0x000f6e90	vostok::memory::writer_base::close_chunk	manual	0	
+0x000f6ee0	vostok::memory::writer::`scalar deleting destructor'	manual	4	EAX: original owner pointer; storage may already be deleted
+0x000f6f00	vostok::memory::writer::~writer	manual	0	
+0x000f6f70	vostok::memory::writer::write	manual	8	
+0x000f70e0	vostok::memory::writer::seek	manual	4	
+0x000f8480	vostok::resources::resources_manager::add_fs_task	manual	0	
+0x000fef60	vostok::render::renderer_cook::destroy_resource	manual		
+0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	manual	32	
+0x00110620	vostok::network::network_world::network_world	manual	8	EAX: Constructed receiver pointer
+0x00110970	vostok::network::network_world::initialize	manual	0	
+0x00110b70	vostok::network::network_world::finalize	manual		
+0x00110b80	vostok::network::network_world::tick	manual	4	
+0x00110dd0	vostok::network::network_world::clear_resources	manual	0	
+0x00110e10	vostok::network::network_world::dispatch_callbacks	manual	0	
+0x001166f0	vostok::render::renderer_cook::allocate_resource	manual	20	EAX: output pointer/size buffer address
+0x00116730	vostok::render::renderer_cook::deallocate_resource	manual	4	
+0x00116750	vostok::render::renderer_cook::create_resource	manual	20	
+0x00116d10	vostok::render::texture_gpu_converter_cook::~texture_gpu_converter_cook	manual	4	
+0x00116df0	vostok::render::get_dx_version_via_dxdiag	manual	0	EAX: HRESULT-shaped result:0 when both typed properties read, otherwise0x80004005
+0x00117820	vostok::render::engine::world::world	manual	20	
+0x001178b0	vostok::render::engine::world::reset_renderer	manual	4	
+0x00117960	vostok::render::engine::world::initialize	manual	4	
+0x00117af0	vostok::render::renderer_context::~renderer_context	manual	0	
+0x00117ce0	vostok::render::engine::world::~world	manual	0	
+0x00117e50	vostok::render::engine::world::reload_shaders	manual	0	
+0x00117e60	vostok::render::engine::world::reload_modified_textures	manual	0	
+0x00117e90	vostok::render::engine::world::begin_render_options_changing	manual		
+0x00118000	vostok::render::engine::world::end_render_options_changing	manual	24	
+0x001182e0	vostok::render::engine::world::set_view_matrix	manual	8	
+0x00118300	vostok::render::engine::world::set_projection_matrix	manual	8	
+0x00118320	vostok::render::engine::world::draw_scene	manual	24	
+0x001185b0	vostok::render::engine::world::register_material_parameter	manual	4	
+0x00118610	vostok::render::engine::world::set_model_material_parameter	manual	20	
+0x001186b0	vostok::render::engine::world::append_model_material	manual	12	
+0x00118740	vostok::render::engine::world::remove_model_material	manual	12	
+0x001187d0	vostok::render::engine::world::set_model_foreground_by_id	manual	12	
+0x00118890	vostok::render::engine::world::set_model_visible_by_id	manual	12	
+0x001189c0	vostok::render::engine::world::add_light	manual	12	
+0x001189e0	vostok::render::engine::world::remove_light	manual	8	
+0x00118a00	vostok::render::engine::world::add_tracer	manual	12	
+0x00118a30	vostok::render::engine::world::update_tracer	manual	12	
+0x00118a70	vostok::render::engine::world::remove_tracer	manual	8	
+0x00118ae0	vostok::render::engine::world::update_skeleton_decal	manual		
+0x00118af0	vostok::render::engine::world::update_decal	manual	12	
+0x00118b50	vostok::render::engine::world::remove_decal	manual	8	
+0x00118b70	vostok::render::engine::world::update_environment_probe	manual	16	
+0x00118b90	vostok::render::engine::world::remove_environment_probe	manual	8	
+0x00118bb0	vostok::render::engine::world::update_sky_ambient_occlusion	manual	12	
+0x00118bd0	vostok::render::engine::world::remove_sky_ambient_occlusion	manual	8	
+0x00118bf0	vostok::render::engine::world::update_ambient_volume	manual	12	
+0x00118c10	vostok::render::engine::world::remove_ambient_volume	manual	8	
+0x00118c30	vostok::render::engine::world::update_ambient_light	manual	12	
+0x00118c50	vostok::render::engine::world::remove_ambient_light	manual	8	
+0x00118c70	vostok::render::engine::world::update_lpv_occluder	manual	12	
+0x00118c90	vostok::render::engine::world::remove_lpv_occluder	manual	8	
+0x00118cb0	vostok::render::engine::world::update_volume_fog	manual	12	
+0x00118cd0	vostok::render::engine::world::remove_volume_fog	manual	8	
+0x00118cf0	vostok::render::engine::world::play_particle_system	manual	32	
+0x00118d60	vostok::render::engine::world::stop_particle_system	manual	12	
+0x00118dc0	vostok::render::engine::world::remove_particle_system_instance	manual	8	
+0x00118e10	vostok::render::engine::world::update_particle_system_instance	manual	24	
+0x00118ee0	vostok::render::engine::world::set_render_output_window_title	manual		
+0x00118f00	vostok::render::engine::world::draw_render_statistics	manual	4	
+0x00118f30	vostok::render::engine::world::set_environment_properties	manual	8	
+0x00118f80	vostok::render::engine::world::show_movie	manual	8	
+0x00118fe0	vostok::render::engine::world::hide_movie	manual	8	
+0x00119050	vostok::render::engine::world::execute_scaleform_command	manual	4	
+0x00119060	vostok::render::engine::world::set_portal_system	manual	8	
+0x001190b0	vostok::render::engine::world::set_grass	manual	8	
+0x00119110	vostok::render::engine::world::reset_grass	manual	8	
+0x00119170	vostok::render::engine::world::set_gamma_correction_factor	manual	4	
+0x001198b0	vostok::render::render_output_window::render_output_window	manual	4	EAX: owner pointer
+0x00119ab0	vostok::render::render_output_window::set_size	manual	16	
+0x00119bf0	vostok::render::render_output_window::get_window_client_size	manual	0	EAX: output storage pointer
+0x00119db0	vostok::render::scene_manager::~scene_manager	manual	4	
+0x0011b5e0	vostok::render::backend::set_vb	manual	0	
+0x0011b630	vostok::render::backend::set_ps_texture	manual	0	
+0x0011b650	vostok::render::backend::set_render_targets	manual	4	
+0x0011b6d0	vostok::render::backend::set_render_output	manual	0	
+0x0011b740	vostok::render::backend::reset	manual	0	
+0x0011c080	vostok::render::backend::set_viewports	manual	4	
+0x0011c1b0	vostok::render::res_effect::apply	manual	0	AL: normalized low-byte success from apply_pass; upper EAX unspecified
+0x0011c1d0	vostok::render::renderer_context::get_rt	manual	4	EAX: caller result-storage address; target preserves input EAX through every path
+0x0011c200	vostok::render::system_renderer::system_renderer	manual	4	
+0x0011c900	vostok::render::system_renderer::is_effects_ready	manual	0	AL: Boolean readiness; upper EAX not defined consistently
+0x0011c970	vostok::render::system_renderer::~system_renderer	manual	0	
+0x0011cd10	vostok::render::system_renderer::draw_lines	manual	20	
+0x0011d0a0	vostok::render::system_renderer::draw_screen_lines	manual	12	
+0x0011d350	vostok::render::system_renderer::draw_3D_point	manual	12	
+0x0011d950	vostok::render::system_renderer::fill_surface	manual	28	
+0x0011dd60	vostok::render::system_renderer::draw_aabb	manual	4	
+0x0011df10	vostok::render::system_renderer::draw_obb	manual	4	
+0x0011e370	vostok::render::system_renderer::draw_triangles	manual	24	
+0x0011e510	vostok::render::system_renderer::draw_ui_vertices	manual	20	
+0x0011e820	vostok::render::system_renderer::draw_render_models_selection	manual	8	
+0x0011f010	vostok::render::system_renderer::draw_particle_system_instance_selections	manual	4	
+0x00120a50	vostok::render::texture_gpu_converter_cook::texture_gpu_converter_cook	manual	0	EAX: fixed global cook object address
+0x00120bf0	vostok::render::texture_gpu_converter_cook::allocate_resource	manual	20	EAX: address of caller-supplied pointer/count result storage on both locally returning paths
+0x00120c70	vostok::render::texture_gpu_converter_cook::deallocate_resource	manual	4	
+0x00120cb0	vostok::render::texture_gpu_converter_cook::fill_surface	manual	8	
+0x00120f80	vostok::render::texture_gpu_converter_cook::filtration	manual	8	
+0x001211b0	vostok::render::texture_gpu_converter_cook::compress_surface	manual	32	
+0x001214c0	vostok::render::texture_gpu_converter_cook::compress	manual	8	
+0x00121910	vostok::render::texture_gpu_converter_cook::create_resource	manual	20	
+0x001220a0	vostok::render::texture_gpu_converter_cook::destroy_resource	manual	4	
+0x00122360	vostok::render::render_model_instance_impl::set_shadow_transform	manual	4	
+0x00122380	vostok::render::render_model_instance_impl::transform	manual	0	EAX: address owner+14C
+0x00122450	vostok::render::user_mesh_cook::allocate_resource	manual	20	EAX: same output storage pointer
+0x00122470	vostok::render::user_mesh_cook::create_resource	manual	20	
+0x001225d0	vostok::render::render_surface_instance::~render_surface_instance	manual	0	
+0x00122640	vostok::render::user_mesh_cook::destroy_resource	manual	4	
+0x00122d50	vostok::render::cook_intermediate_data::find_material_index	manual	4	EAX: first matching material index or signed -1 when no match
+0x00122d50	vostok::render::cook_intermediate_data::find_material_index	manual	4	EAX: first index or -1
+0x001231c0	vostok::render::render_model_cook::render_model_cook	manual	0	EAX: cook owner
+0x00123220	vostok::render::render_model_cook::translate_query	manual	4	
+0x001234c0	vostok::render::render_model_cook::on_fs_iterator_ready_submeshes	manual	8	
+0x00123850	vostok::render::render_model_cook::on_model_settings_loaded	manual	8	
+0x00123db0	vostok::render::render_model_cook::on_subresources_loaded	manual	8	
+0x001242b0	vostok::render::render_model_cook::on_materials_loaded	manual	8	
+0x00124550	vostok::render::render_model_cook::query_materail_effects	manual	8	
+0x00125060	vostok::render::render_model_cook::finish_model_creation	manual	8	
+0x001255f0	vostok::render::render_model_cook::delete_resource	manual	4	
+0x00126290	vostok::render::skeleton_model_instance_cook::translate_query	manual	4	
+0x00126500	vostok::render::skeleton_model_instance_cook::on_skeleton_config_loaded	manual	8	
+0x00126670	vostok::render::skeleton_model_instance_cook::on_skeleton_loaded	manual	8	
+0x00126750	vostok::render::skeleton_model_instance_cook::on_render_model_loaded	manual	8	
+0x00126af0	vostok::render::skeleton_model_instance_cook::on_all_subresources_ready	manual	4	
+0x00135900	vostok::render::material_effects_instance_cook::on_material_ready	manual	8	
+0x00135af0	vostok::render::material_effects_instance_cook::translate_query	manual	4	
+0x00135c20	vostok::render::material_effects_instance_cook::query_effects	manual	12	
+0x001363c0	vostok::render::material_effects_instance_cook::on_effect_ready	manual	20	
+0x001370c0	vostok::render::material_effects_instance_cook::gather_request_user_data	manual	40	
+0x00138030	vostok::render::render_output_window_cook::translate_query	manual	4	
+0x00138230	vostok::render::render_output_window_cook::delete_resource	manual	4	
+0x00138430	vostok::render::animated_model_instance_cook::translate_request_path	manual	8	
+0x00138450	vostok::render::animated_model_instance_cook::translate_query	manual	4	
+0x001384f0	vostok::render::animated_model_instance_cook::on_config_loaded	manual	4	
+0x00138680	vostok::render::animated_model_instance_cook::on_skeleton_config_loaded	manual	8	
+0x00138850	vostok::render::animated_model_instance_cook::on_subresources_loaded	manual	8	
+0x00139260	vostok::render::material_effects_instance_cook::delete_resource	manual	4	
+0x001392c0	vostok::render::renderer_context::push_set_p	manual	4	
+0x001392e0	vostok::render::renderer_context::get_t	manual	4	EAX: caller result-storage address; target preserves input EAX through every path
+0x00139310	vostok::render::backend::reset_render_targets	manual	0	
+0x00139350	vostok::render::renderer::do_stages_profiling	manual	0	
+0x001393d0	vostok::render::renderer::is_effects_ready	manual	0	
+0x00139510	vostok::render::effect_pick_light_luminance::compile	manual	12	
+0x00139660	vostok::render::effect_downsample::compile	manual	12	
+0x00139840	vostok::render::effect_copy::compile	manual	12	
+0x00139b40	vostok::render::renderer::renderer	manual	8	EAX: renderer receiver pointer
+0x0013acf0	vostok::render::renderer::~renderer	manual	4	
+0x0013b330	vostok::render::renderer::recreate_stage	manual	0	
+0x0013bac0	vostok::render::renderer::setup_render_output_window	manual	8	
+0x0013bca0	vostok::render::renderer::execute_stages	manual	0	
+0x0013bed0	vostok::render::renderer::fill_opaque_models	manual	0	
+0x0013bf50	vostok::render::renderer::sort_models_by_distance	manual	0	
+0x0013bfa0	vostok::render::sort_surfaces_predicate_entry::sort_surfaces_predicate_entry	manual	12	
+0x0013c090	vostok::render::sort_surfaces_predicate::operator()	manual	4	
+0x0013c160	vostok::render::renderer::sort_models	manual	12	
+0x0013c660	vostok::render::renderer::perform_surfaces_clearing	manual	4	
+0x0013c9a0	vostok::render::renderer::prepare_scene_to_render	manual	0	
+0x0013c9e0	vostok::render::renderer::is_ready_for_render	manual	16	
+0x0013ccd0	vostok::render::renderer::start_profile_stages	manual	0	
+0x0013ce00	vostok::render::renderer::render_stages	manual	0	
+0x0013ced0	vostok::render::renderer::render_flash_ui	manual	8	
+0x0013d010	vostok::render::renderer::render	manual	28	
+0x0013dfc0	vostok::render::renderer::sync_pools	manual	0	
+0x0013e010	vostok::render::renderer::foreground_begin	manual	4	
+0x0013e120	vostok::render::renderer::foreground_end	manual	0	
+0x0013f600	vostok::render::renderer::draw_stages_stats	manual	4	
+0x00140fe0	vostok::render::renderer::copy	manual	12	
+0x00141310	vostok::render::renderer::blur	manual	12	
+0x00141700	vostok::render::renderer::downsample	manual	16	
+0x00141920	vostok::render::renderer::draw_top_dip_models_list	manual	4	
+0x00148570	vostok::render::renderer_context::renderer_context	manual	4	EAX: same context storage receiver
+0x00149a90	vostok::render::renderer_context::set_scene_view	manual	4	
+0x00149b90	vostok::render::renderer_context::get_view2shadow	manual	0	EAX: interior selected matrix address
+0x00149bd0	vostok::render::renderer_context::set_target_context	manual	4	
+0x00149d10	vostok::render::renderer_context::set_w	manual	4	
+0x00149ec0	vostok::render::renderer_context::set_static_frame_parameters	manual	4	
+0x0014a240	vostok::render::renderer_context::set_v	manual	8	
+0x0014a6f0	vostok::render::renderer_context::set_p	manual	4	
+0x0014a960	vostok::render::renderer_context::reset_matrices	manual	0	
+0x0014aa50	vostok::render::renderer_context::update_eye_rays	manual	0	
+0x0014af70	vostok::render::effect_resolve_particles::compile	manual	12	
+0x0014b730	vostok::render::particle_shader_constants::particle_shader_constants	manual	0	EAX (32bits): receiver
+0x0014ba90	vostok::render::stage_particles::stage_particles	manual	4	
+0x0014bc70	vostok::render::stage_particles::render_pre_distortion_particles	manual	4	
+0x0014bfd0	vostok::render::stage_particles::render_particle_entries	manual	8	
+0x0014c1b0	vostok::render::stage_particles::debug_render	manual	0	
+0x0014c220	vostok::render::stage_particles::execute	manual	0	
+0x0014d470	vostok::render::decal_instance::decal_instance	manual	12	EAX: destination owner
+0x0014d5d0	vostok::render::decal_instance::remove_collision	manual	0	
+0x0014d640	vostok::render::decal_instance::set_materail_effects	manual	0	
+0x0014d6a0	vostok::render::decal_instance::set_properties	manual	8	
+0x0014da30	vostok::render::decal_instance::get_effects	manual	0	EAX: resolved or default effects pointer
+0x0014dde0	vostok::render::decal_instance::render	manual	8	
+0x0014deb0	vostok::render::decal_instance::draw	manual	16	
+0x0014ef90	vostok::render::scene::particle_engine::create_render_emitter_instance	manual	40	
+0x0014f000	vostok::render::scene::particle_engine::destroy	manual	4	
+0x0014f080	vostok::render::scene::particle_engine::get_scene	manual	8	
+0x0014f200	vostok::render::scene::particle_engine::add_light	manual	28	
+0x0014f260	vostok::render::scene::particle_engine::update_light	manual	128	
+0x0014f3a0	vostok::render::scene::particle_engine::remove_light	manual	4	
+0x0014f3c0	vostok::render::scene::particle_engine::get_bone_matrix	manual	12	
+0x0014f440	vostok::render::scene::particle_engine::get_old_bone_matrix	manual	12	
+0x0014f4c0	vostok::render::scene::particle_engine::get_bone_direction	manual	24	
+0x0014f500	vostok::render::scene::scene	manual	8	
+0x0014faa0	vostok::render::scene::`scalar deleting destructor'	manual	4	
+0x0014fac0	vostok::render::scene::~scene	manual		
+0x0014ff60	vostok::render::scene::remove_model	manual	8	
+0x00150270	vostok::render::scene::calculate_screen_factors	manual	12	
+0x00150560	vostok::render::scene::select_models	manual	20	
+0x001508e0	vostok::render::scene::update_environment_probe	manual	12	
+0x00150a10	vostok::render::scene::update_sky_ambient_occlusion	manual	8	
+0x00150b40	vostok::render::scene::update_ambient_light	manual	8	
+0x00150c60	vostok::render::scene::update_ambient_volume	manual	8	
+0x00150f20	vostok::render::scene::add_decal	manual	12	
+0x00151170	vostok::render::scene::update_skeleton_decal	manual	20	
+0x001512d0	vostok::render::scene::remove_decal	manual	4	
+0x00151370	vostok::render::scene::add_volume_fog	manual	8	
+0x001514a0	vostok::render::scene::select_volume_fog_instances	manual	8	
+0x00153de0	vostok::render::scene::update_streaming_texture_parameters	manual	0	
+0x00154020	vostok::render::scene::process_streaming	manual	28	
+0x00154a00	vostok::render::scene::process_ready_streaming_textures	manual	4	
+0x00154c30	vostok::render::scene::on_textures_loaded	manual	20	
+0x00154e70	vostok::render::scene::gather_streamable_textures	manual	8	
+0x00154fa0	vostok::render::scene::gather_streamable_textures	manual	8	
+0x00155300	vostok::render::scene::gather_streamable_textures	manual	4	
+0x001553c0	vostok::render::scene::gather_streamable_textures	manual	8	
+0x00155980	vostok::render::scene::update_streaming_data	manual	0	
+0x00155a00	vostok::render::scene::process_pending_remove_texture_instances	manual	4	
+0x00155c90	vostok::render::scene::remove_streamable_texture_instance	manual	4	
+0x00155d00	vostok::render::scene::remove_streamable_texture_instance	manual	8	
+0x00157730	vostok::render::register_samplers	manual		
+0x00158050	vostok::render::render_model::render_model	manual	0	EAX: owner
+0x00158140	vostok::render::render_model::~render_model	manual	4	
+0x001582c0	vostok::render::render_model::load_properties	manual	4	
+0x00158570	vostok::render::render_model::get_locators_count	manual	0	EAX: zero-extended 16-bit locator count
+0x00158580	vostok::render::render_model::get_locator	manual	8	AL: true after unconditional copy
+0x001585b0	vostok::render::render_model::get_locator	manual	8	AL: true when name found, false otherwise
+0x00158630	vostok::render::render_model::set_children	manual	12	
+0x00158870	vostok::render::render_surface::get_material_effects	manual	0	EAX: selected material-effects pointer; no non-null/valid-index guarantee
+0x001588a0	vostok::render::render_surface::set_material_effects	manual	8	
+0x00158950	vostok::render::render_surface::load	manual	8	
+0x00158c00	vostok::render::render_surface_instance::render_surface_instance	manual	0	EAX (32bits): unchanged surface-record receiver; caller advances it by element stride
+0x00158cb0	vostok::render::render_model_instance_impl::set_transform	manual	4	
+0x00158d20	vostok::render::render_surface_instance::get_shader_lod_index	manual	4	AL (8bits only): shaderLOD boolean0/1; higherEAXbits unspecified
+0x00158d80	vostok::render::render_surface_instance::calculate_screen_factor	manual	4	
+0x001591f0	vostok::render::render_model_instance_impl::render_model_instance_impl	manual	4	EAX: instance owner
+0x00159420	vostok::render::render_model_instance_impl::~render_model_instance_impl	manual	4	
+0x00159550	vostok::render::render_model_instance_impl::set_material_parameter	manual	20	
+0x001595b0	vostok::render::render_model_instance_impl::append_material	manual	12	
+0x00159630	vostok::render::render_model_instance_impl::remove_material	manual	4	
+0x00159700	vostok::render::render_model_instance_impl::get_all_surfaces	manual	8	
+0x00159d40	vostok::render::render_surface::render_surface	manual	0	EAX: surface owner
+0x00159dc0	vostok::render::skeleton_render_model_instance::get_surfaces_count	manual	0	EAX (32bits): zero-extended surface count byte
+0x0015a100	vostok::render::skeleton_render_model_instance::skeleton_render_model_instance	manual	0	EAX (32bits): owner pointer on normal return
+0x0015a1f0	vostok::render::skeleton_render_model_instance::`scalar deleting destructor'	manual	4	EAX (32bits): owner pointer on normal return
+0x0015a210	vostok::render::skeleton_render_model_instance::~skeleton_render_model_instance	manual	0	
+0x0015a290	vostok::render::skeleton_render_model_instance::assign_original	manual	4	
+0x0015a400	vostok::render::skeleton_render_model_instance::calculate_screen_factor	manual	8	
+0x0015a450	vostok::render::skeleton_render_model_instance::get_surfaces	manual	28	
+0x0015a4c0	vostok::render::skeleton_render_model_instance::get_aabb	manual	4	EAX (32bits): destination bounds pointer
+0x0015a4f0	vostok::render::skeleton_render_model_instance::update	manual		
+0x0015a520	vostok::render::skeleton_render_model_instance::set_constants	manual	8	
+0x0015a590	vostok::render::skeleton_render_model_instance::update_render_matrices	manual	16	
+0x0015a9a0	vostok::render::skeleton_render_model_instance::get_locators_count	manual		
+0x0015a9b0	vostok::render::skeleton_render_model_instance::get_locator	manual		
+0x0015a9c0	vostok::render::skeleton_render_model_instance::get_locator	manual		
+0x0015a9d0	vostok::render::skeleton_render_model_instance::get_bind_pose	manual	8	
+0x0015aa60	vostok::render::skeleton_render_model_instance::get_bone_matrix	manual	12	EAX (32bits): output matrix pointer
+0x0015ab00	vostok::render::skeleton_render_model_instance::get_bone_direction	manual	16	EAX (32bits): output three-float pointer
+0x0015af60	vostok::render::statistics_cpu_gpu::statistics_cpu_gpu	manual	4	EAX: owner address
+0x0015ba20	vostok::render::statistics_float::print	manual	4	
+0x0015bc70	vostok::render::statistics_cpu_gpu::print_name	manual	4	
+0x0015bc70	vostok::render::statistics_float::print_name	manual	4	
+0x0015bc70	vostok::render::statistics_int::print_name	manual	4	
+0x0015bcb0	vostok::render::statistics_float::print_value	manual	4	
+0x0015bd30	vostok::render::statistics_float::print_min_value	manual	4	
+0x0015bda0	vostok::render::statistics_float::print_max_value	manual	4	
+0x0015be50	vostok::render::statistics_int::print	manual	4	
+0x0015c1a0	vostok::render::statistics_int::print_value	manual	4	
+0x0015c1c0	vostok::render::statistics_int::print_min_value	manual	4	
+0x0015c1e0	vostok::render::statistics_int::print_max_value	manual	4	
+0x0015c200	vostok::render::statistics_cpu_gpu::print	manual	4	
+0x0015c250	vostok::render::statistics_cpu_gpu::print_value	manual	4	
+0x0015c270	vostok::render::statistics_cpu_gpu::print_min_value	manual	4	
+0x0015c290	vostok::render::statistics_cpu_gpu::print_max_value	manual	4	
+0x0015c2b0	vostok::render::statistics_cpu_gpu::start	manual		
+0x0015d680	vostok::render::lpv_statistics_group::~lpv_statistics_group	manual	0	
+0x0015df00	vostok::render::scene_view::scene_view	manual	0	
+0x0015e220	vostok::render::scene_view::`scalar deleting destructor'	manual	4	
+0x0015e240	vostok::render::scene_view::~scene_view	manual		
+0x0015e350	vostok::render::scene_view::need_recalc_atmosphere	manual	0	
+0x0015f800	vostok::render::grass_world::grass_world	manual	52	
+0x0015fd70	vostok::render::grass_world::on_being_set	manual	0	
+0x0015fe70	vostok::render::grass_world::~grass_world	manual		
+0x0015ff40	vostok::render::grass_world::add_template	manual	4	
+0x0015ffa0	vostok::render::grass_world::add_instance	manual	16	
+0x00160080	vostok::render::grass_world::remove_patches	manual	0	
+0x001600c0	vostok::render::grass_world::populate	manual	8	
+0x00160470	vostok::render::grass_world::process_culling	manual	4	
+0x001606f0	vostok::render::grass_world::render	manual	36	
+0x00160970	vostok::render::grass_world::clear	manual	4	
+0x00160a90	vostok::render::grass_world::initialize	manual	12	
+0x001629a0	vostok::render::renderer_context_targets::new_rt	manual	12	
+0x00162b20	vostok::render::renderer_context_targets::new_lt	manual	8	
+0x00162da0	vostok::render::renderer_context_targets::create_targets	manual	12	
+0x00164120	vostok::render::render_particle_emitter_instance::parent_ptr	manual	0	EAX (32bits): parent field value
+0x00164130	vostok::render::render_particle_emitter_instance::user_priority	manual	0	EAX (32bits): user-priority field value
+0x001642d0	vostok::render::render_particle_emitter_instance::render_particle_emitter_instance	manual	48	EAX (32bits): constructed owner pointer
+0x00164430	vostok::render::render_particle_emitter_instance::`scalar deleting destructor'	manual	4	EAX (32bits): owner pointer
+0x00164450	vostok::render::render_particle_emitter_instance::~render_particle_emitter_instance	manual		
+0x001644f0	vostok::render::render_particle_emitter_instance::render_priority	manual	0	EAX (32bits): render-priority field value
+0x00164500	vostok::render::render_particle_emitter_instance::is_occluded	manual	0	EAX (32bits): Boolean0or1 from global-enable AND instance-occluded bytes
+0x00164520	vostok::render::render_particle_emitter_instance::update_render_buffers	manual	16	
+0x001669d0	vostok::render::render_particle_emitter_instance::render_sprites	manual	36	
+0x001674b0	vostok::render::render_particle_emitter_instance::render_subuv_sprites	manual	36	
+0x001684c0	vostok::render::render_particle_emitter_instance::render	manual	4	
+0x00168680	vostok::render::render_particle_emitter_instance::render_beams	manual	8	
+0x001686e0	vostok::render::render_particle_emitter_instance::render_trails	manual	16	
+0x00169870	vostok::render::render_particle_emitter_instance::get_vertex_input_type	manual	0	EAX (32bits): vertex-input classification80/100/200/1hex
+0x001698b0	vostok::render::render_particle_emitter_instance::get_material_effects	manual	0	EAX (32bits): material-effects result or global fallback pointer; callee output type incomplete
+0x001698e0	vostok::render::render_particle_emitter_instance::change_material	manual	4	
+0x00169980	vostok::render::render_particle_emitter_instance::set_transform	manual	4	
+0x001699a0	vostok::render::render_particle_emitter_instance::set_aabb	manual	4	
+0x001699d0	vostok::render::render_particle_emitter_instance::draw_debug	manual	8	
+0x0016a530	vostok::render::render_particle_emitter_instance::sort_particles	manual	12	
+0x0016ad60	vostok::render::material_effects::material_effects	manual	0	EAX: owner
+0x0016adf0	vostok::render::material_effects::~material_effects	manual	0	
+0x0016ae40	vostok::render::material_effects::get_render_complexity	manual	0	EAX: unsigned maximum zero-extended16bit complexity, baseline0
+0x0016ae80	vostok::render::material_effects::get_max_used_texture_dimension	manual	4	
+0x0016af10	vostok::render::material_effects::get_used_textures	manual	4	
+0x0016af80	vostok::render::material_effects_instance::material_effects_instance	manual	0	EAX: owner
+0x0016b070	vostok::render::material_effects_instance::get_material_effects	manual	4	EAX: selected material-effects record pointer; fallback and null behavior described in notes
+0x0016b0c0	vostok::render::material_effects_instance::get_material_effects_or_new	manual	4	EAX: selected material-effects record pointer; fallback and null behavior described in notes
+0x0016b2c0	vostok::render::effect_system_colored::compile	manual	12	
+0x0016b640	vostok::render::effect_system_line::compile	manual	12	
+0x0016b830	vostok::render::effect_system_ui::compile	manual	12	
+0x0016bd50	vostok::render::effect_wireframe_colored::compile	manual	12	
+0x0016be00	vostok::render::effect_editor_selection::compile	manual	12	
+0x0016bee0	vostok::render::effect_editor_model_ghost::compile	manual	12	
+0x0016bfa0	vostok::render::effect_particle_selection::compile	manual	12	
+0x0016c0c0	vostok::render::effect_add_border_padding::compile	manual	12	
+0x0016c1a0	vostok::render::effect_block_compression::compile	manual	12	
+0x0016c520	vostok::render::model_factory::create_render_surface	manual	0	EAX: constructed surface pointer or null on allocation failure; invalid target dispatch does not reach a normal result
+0x0016c8b0	vostok::render::model_factory::create_render_model	manual	0	EAX: model pointer or zero on observed allocation-null branches
+0x0016e420	vostok::render::static_render_model_instance::get_aabb	manual	4	EAX (32bits): destination24-byte bounds pointer
+0x0016e460	vostok::render::static_render_model_instance::get_surfaces_count	manual	0	EAX (32bits): zero-extended byte surface count; EAX range0..255
+0x0016e500	vostok::render::static_render_surface::fill_lpv_vertex_color	manual	8	
+0x0016e550	vostok::render::static_render_surface::add_shadow_vertices	manual	8	
+0x0016e6b0	vostok::render::static_render_surface::create_shadow_pass_geometry	manual	8	
+0x0016ea30	vostok::render::static_render_surface::load	manual	8	
+0x0016ecd0	vostok::render::static_render_model_instance::`scalar deleting destructor'	manual	4	EAX (32bits): instance receiver
+0x0016ecf0	vostok::render::static_render_model_instance::~static_render_model_instance	manual	0	
+0x0016ed80	vostok::render::static_render_model_instance::assign_original	manual	4	
+0x0016ee80	vostok::render::static_render_model_instance::set_lod_params	manual	20	
+0x0016eec0	vostok::render::static_render_model_instance::select_lod	manual	8	AL (8bits only): LOD selector code0,1,2,3 orAAhex; higherEAXbits not established
+0x0016f320	vostok::render::static_render_model_instance::get_surfaces_count	manual	4	EAX (32bits): zero-extended indexed byte count
+0x0016f340	vostok::render::static_render_model_instance::calculate_screen_factor	manual	8	
+0x0016f390	vostok::render::static_render_model_instance::get_surfaces	manual	28	
+0x0016f5c0	vostok::render::static_render_model_instance::get_locators_count	manual		
+0x0016f5d0	vostok::render::static_render_model_instance::get_locator	manual		
+0x0016f5e0	vostok::render::static_render_model_instance::get_locator	manual		
+0x0016f5f0	vostok::render::static_render_model_instance::get_surface_stats	manual	8	
+0x0016f660	vostok::render::static_render_model_instance::add_sectors_holder	manual	24	
+0x001714f0	vostok::render::renderer_context::pop_v	manual	0	
+0x00172330	vostok::render::stage_shadow_direct::stage_shadow_direct	manual	4	
+0x00172960	vostok::render::stage_shadow_direct::`scalar deleting destructor'	manual	4	
+0x00172980	vostok::render::stage_shadow_direct::is_effects_ready	manual	0	
+0x001729a0	vostok::render::stage_shadow_direct::~stage_shadow_direct	manual	0	
+0x00172b10	vostok::render::stage_shadow_direct::execute_disabled	manual		
+0x00172b20	vostok::render::stage_shadow_direct::start_depth_accumulation	manual	0	
+0x00172c70	vostok::render::stage_shadow_direct::end_gather_stats	manual	0	
+0x00172ce0	vostok::render::stage_shadow_direct::flush_cascade_cache	manual	0	
+0x00172e30	vostok::render::stage_shadow_direct::execute	manual	0	
+0x00174240	vostok::render::stage_shadow_direct::calculate_matrices	manual	20	
+0x001750c0	vostok::render::stage_shadow_direct::prepare_visibile_objects	manual	8	
+0x00175680	vostok::render::stage_shadow_direct::render_grass	manual	12	
+0x00175790	vostok::render::stage_shadow_direct::render_models	manual	12	
+0x00175a80	vostok::render::stage_shadow_direct::compute_aligment	manual	8	
+0x001767a0	vostok::render::effect_copy_depth_rt::compile	manual	12	
+0x00176bd0	vostok::render::stage_gbuffer::stage_gbuffer	manual	0	EAX: original receiver pointer
+0x001770f0	vostok::render::stage_gbuffer::`scalar deleting destructor'	manual	4	EAX: original receiver pointer
+0x00177180	vostok::render::stage_gbuffer::is_effects_ready	manual	0	EAX: 0/1 readiness result, caller tests AL
+0x001771a0	vostok::render::stage_gbuffer::render_forward_models	manual	4	
+0x001773c0	vostok::render::stage_gbuffer::render_models	manual	16	
+0x00177850	vostok::render::stage_gbuffer::clear_surfaces	manual	0	
+0x00177a20	vostok::render::stage_gbuffer::execute	manual	0	
+0x00177f60	vostok::render::stage_gbuffer::render_grass	manual	0	
+0x00177fb0	vostok::render::stage_gbuffer::render_particles	manual	4	
+0x001784b0	vostok::render::stage_decals_accumulate::stage_decals_accumulate	manual	0	
+0x001789e0	vostok::render::stage_decals_accumulate::execute	manual	0	
+0x0017b4f0	vostok::render::stage_accumulate_distortion::execute	manual	0	
+0x0017b9d0	vostok::render::stage_pre_rain::stage_pre_rain	manual	0	EAX: owner
+0x0017bc70	vostok::render::stage_pre_rain::is_effects_ready	manual	0	EAX: normalized0/1 both effect pointers non-null
+0x0017bd20	vostok::render::stage_pre_rain::compute_aligment	manual	0	
+0x0017c290	vostok::render::stage_pre_rain::clear_surfaces	manual	0	
+0x0017c2f0	vostok::render::stage_pre_rain::render_rain_shadow_map	manual	8	
+0x0017ca20	vostok::render::stage_pre_rain::execute	manual	0	
+0x0017cec0	vostok::render::stage_ambient_occlusion::stage_ambient_occlusion	manual	0	
+0x0017d530	vostok::render::stage_ambient_occlusion::clear_surfaces	manual	0	
+0x0017d880	vostok::render::stage_ambient_occlusion::execute	manual	0	
+0x0017f1c0	vostok::render::effect_sky_ambient_occlusion::compile	manual	12	
+0x0017f4f0	vostok::render::stage_ambient_lighting::stage_ambient_lighting	manual	4	EAX: constructed receiver address
+0x00180300	vostok::render::stage_ambient_lighting::`scalar deleting destructor'	manual	4	EAX: saved incoming receiver address; storage may already have been deallocated
+0x00180320	vostok::render::stage_ambient_lighting::~stage_ambient_lighting	manual	0	
+0x00180610	vostok::render::stage_ambient_lighting::is_effects_ready	manual	0	EAX: 0 if any required effect pointer is null, else1; callers test AL
+0x00180820	vostok::render::stage_ambient_lighting::clear_surfaces	manual	0	
+0x00180980	vostok::render::stage_ambient_lighting::render_environment_probes	manual	4	
+0x00181eb0	vostok::render::stage_ambient_lighting::render_ambient_lights	manual	0	
+0x00182220	vostok::render::stage_ambient_lighting::render_ambient_volumes	manual	4	
+0x00182440	vostok::render::stage_ambient_lighting::render_skylight	manual	0	
+0x00182530	vostok::render::stage_ambient_lighting::apply_ssao_and_height_based_ambient	manual	4	
+0x001826f0	vostok::render::stage_ambient_lighting::execute	manual	0	
+0x0018e5e0	vostok::render::capsule_light_effect::compile	manual	12	
+0x0018ea20	vostok::render::stage_lights::new_sphere_geometry	manual	0	
+0x0018eb20	vostok::render::stage_lights::create_pyramid_geometry	manual	0	
+0x0018ed30	vostok::render::stage_lights::create_obb_geometry	manual	0	
+0x0018ee40	vostok::render::stage_lights::stage_lights	manual	8	
+0x00190270	vostok::render::stage_lights::`scalar deleting destructor'	manual	4	EAX (32bits): original receiver pointer
+0x00190290	vostok::render::stage_lights::light_geometry::~light_geometry	manual	0	
+0x001902e0	vostok::render::stage_lights::is_effects_ready	manual	0	EAX (32bits): 0 if any required handle is null,1 otherwise; caller consumesAL
+0x00190370	vostok::render::stage_lights::make_spot_light_shadowmap	manual	4	
+0x001905d0	vostok::render::stage_lights::make_plane_spot_light_shadowmap	manual	4	
+0x001908b0	vostok::render::stage_lights::has_models_for_shadow_pass	manual	4	
+0x00190980	vostok::render::stage_lights::render_to_hw_shadowmap	manual	28	
+0x00190fa0	vostok::render::stage_lights::~stage_lights	manual	0	
+0x00191370	vostok::render::stage_lights::render_model_probe_lighting	manual	12	
+0x001918c0	vostok::render::stage_lights::render_model_sun_lighting	manual	8	
+0x001920b0	vostok::render::stage_lights::render_model_lighting	manual	12	
+0x00192a30	vostok::render::stage_lights::clear_surfaces	manual	0	
+0x00192c70	vostok::render::stage_lights::execute_foreground	manual	0	
+0x00192d10	vostok::render::stage_lights::render_forward_lighting	manual	8	
+0x00193360	vostok::render::stage_lights::execute	manual	0	
+0x00193630	vostok::render::stage_lights::render_shadowed_light	manual	8	
+0x001949b0	vostok::render::stage_lights::render_light	manual	8	
+0x00195940	vostok::render::stage_lights::draw_geometry	manual	0	
+0x001959c0	vostok::render::stage_lights::debug_render	manual	0	
+0x001961b0	vostok::render::stage_lights::accumulate_particle_lighting	manual	8	
+0x001a1910	vostok::render::stage_shadow_mask::execute	manual	0	
+0x001a3690	vostok::render::stage_atmosphere::fill_surfaces	manual	16	
+0x001a39d0	vostok::render::stage_atmosphere::stage_atmosphere	manual	8	
+0x001a4200	vostok::render::stage_atmosphere::execute	manual	0	
+0x001a6ee0	vostok::render::effect_debug_modify_gbuffer::compile	manual	12	
+0x001a7280	vostok::render::stage_composition::stage_composition	manual	0	
+0x001a78d0	vostok::render::stage_composition::gather_subsurface_scattering_models	manual	4	
+0x001a7950	vostok::render::stage_composition::render_models	manual	20	
+0x001a8170	vostok::render::stage_composition::execute	manual	0	
+0x001aab30	vostok::render::stage_forward::stage_forward	manual	4	
+0x001ab020	vostok::render::stage_forward::is_effects_ready	manual	0	
+0x001ab0f0	vostok::render::stage_forward::render_forward_model	manual	4	
+0x001ab340	vostok::render::stage_forward::render_forward_models	manual	12	
+0x001ab5a0	vostok::render::stage_forward::render_opaque_models	manual	4	
+0x001ab750	vostok::render::stage_forward::execute_foreground	manual	0	
+0x001ab900	vostok::render::stage_forward::execute	manual	0	
+0x001ac870	vostok::render::stage_screen_space_reflections::stage_screen_space_reflections	manual	0	
+0x001acb90	vostok::render::stage_screen_space_reflections::render_forward_model	manual	8	
+0x001ace60	vostok::render::stage_screen_space_reflections::render_models_with_reflections	manual	12	
+0x001acf30	vostok::render::stage_screen_space_reflections::accumulate_models_local_reflections	manual	4	
+0x001ad3e0	vostok::render::stage_screen_space_reflections::execute	manual	0	
+0x001ad830	vostok::render::stage_rain::stage_rain	manual	0	
+0x001adb00	vostok::render::stage_rain::execute	manual	0	
+0x001ae200	vostok::render::backend::flush_rt_views	manual	0	
+0x001ae3b0	vostok::render::stage_apply_distortion::execute	manual	0	
+0x001aeb50	vostok::render::stage_volume_fog::execute	manual	0	
+0x001af360	vostok::render::stage_foreground::execute	manual		
+0x001afc10	vostok::render::stage_postprocess::is_effects_ready	manual	0	
+0x001afd40	vostok::render::stage_postprocess::stage_postprocess	manual	4	
+0x001b0b70	vostok::render::stage_postprocess::`scalar deleting destructor'	manual	4	
+0x001b0be0	vostok::render::stage_postprocess::~stage_postprocess	manual	4	
+0x001b1160	vostok::render::stage_postprocess::clear_surface	manual	4	
+0x001b1210	vostok::render::stage_postprocess::measure_per_pixel_luminance	manual	8	
+0x001b1400	vostok::render::stage_postprocess::compute_per_pixel_eye_adaptated_luminance	manual	0	
+0x001b1650	vostok::render::stage_postprocess::compute_luminance_parameters	manual	0	
+0x001b1700	vostok::render::stage_postprocess::execute_disabled	manual		
+0x001b18b0	vostok::render::stage_postprocess::render_models	manual	8	
+0x001b1b50	vostok::render::stage_postprocess::accumulate_motion_vectors	manual	4	
+0x001b1e70	vostok::render::stage_postprocess::clear_surfaces	manual	0	
+0x001b1f80	vostok::render::stage_postprocess::process_color_grading_texture	manual	8	
+0x001b2270	vostok::render::stage_postprocess::execute	manual	0	
+0x001b6850	vostok::render::stage_visibility::stage_visibility	manual	4	EAX: original receiver pointer
+0x001b6910	vostok::render::stage_visibility::`scalar deleting destructor'	manual	4	EAX: original receiver pointer
+0x001b69f0	vostok::render::stage_visibility::debug_render	manual	0	
+0x001b6a10	vostok::render::stage_visibility::execute_stage	manual		
+0x001b6f60	vostok::render::stage_visibility::filter_and_sort_particles	manual	8	
+0x001b7210	vostok::render::stage_visibility::filter_and_sort_ambient_lights	manual	4	
+0x001b7360	vostok::render::stage_visibility::filter_and_sort_models	manual	8	
+0x001b74d0	vostok::render::stage_visibility::frustum_culling	manual	4	
+0x001b79a0	vostok::render::stage_visibility::occlusion_culling	manual	0	
+0x001b7a70	vostok::render::stage_visibility::get_results_and_prepare_bounds_models	manual	8	
+0x001b7bd0	vostok::render::stage_visibility::get_results_and_prepare_bounds_lights	manual	12	
+0x001b7d90	vostok::render::stage_visibility::get_results_and_prepare_bounds_grass	manual	12	
+0x001b7e50	vostok::render::stage_visibility::get_results_and_prepare_bounds_decals	manual	8	
+0x001b7ff0	vostok::render::stage_visibility::get_results_and_prepare_bounds_ambient_lights	manual	8	
+0x001b8190	vostok::render::stage_visibility::get_results_and_prepare_bounds_env_probes	manual	8	
+0x001b8330	vostok::render::stage_visibility::get_results_and_prepare_bounds_ambient_volumes	manual	8	
+0x001b84c0	vostok::render::stage_visibility::get_results_and_prepare_bounds_particles	manual	12	
+0x001b8640	vostok::render::stage_visibility::get_results_and_prepare_bounds_portals	manual	8	
+0x001b8730	vostok::render::stage_visibility::gather_statistics	manual	0	
+0x001ba740	vostok::render::stage_screen_image::is_effects_ready	manual	0	EAX: Boolean0/1: effect pointer+10 nonnull
+0x001ba750	vostok::render::stage_debug::render_environment_probe_preview	manual	4	
+0x001babe0	vostok::render::stage_debug::execute	manual	0	
+0x001baed0	vostok::render::stage_view_mode::stage_view_mode	manual	0	EAX: stage owner pointer
+0x001bb330	vostok::render::stage_view_mode::~stage_view_mode	manual	4	
+0x001bb530	vostok::render::stage_view_mode::is_effects_ready	manual	0	AL: Boolean required effects nonnull; source upper EAX is not always zero on false
+0x001bb5b0	vostok::render::stage_view_mode::execute	manual	4	
+0x001bcf60	vostok::render::stage_screen_image::~stage_screen_image	manual	0	
+0x001bd200	vostok::render::stage_screen_image::stage_screen_image	manual	0	EAX: stage owner pointer
+0x001bd2c0	vostok::render::stage_screen_image::clear_surfaces	manual	0	
+0x001bd320	vostok::render::stage_screen_image::execute	manual	4	
+0x001bde20	vostok::render::lights_db::add_light	manual	4	
+0x001be690	vostok::render::effect_editor_view_mode::compile	manual	12	
+0x001be980	vostok::render::effect_fill_environment_probe_face::compile	manual	12	
+0x001bed60	vostok::render::effect_fill_sky_ao_map::compile	manual	12	
+0x001beec0	vostok::render::effect_grass_trample::compile	manual	12	
+0x001befe0	vostok::render::effect_editor_show_overdraw::compile	manual	12	
+0x001bf310	vostok::render::effect_editor_show_cascaded_shadow_map_depth::compile	manual	12	
+0x001bf430	vostok::render::effect_mask_far_plane::compile	manual	12	
+0x001bfd10	vostok::render::effect_gbuffer_nomaterial_materials::compile	manual	12	
+0x001c0d70	vostok::render::depth_accumulate_material_effect::compile	manual	12	
+0x001c2120	vostok::render::texture_streaming_async_worker::update_wanted_mips	manual	4	
+0x001c24a0	vostok::render::texture_streaming_async_worker::do_work	manual	0	
+0x001c24e0	vostok::render::texture_streaming_async_worker::start	manual	20	
+0x001c2e70	vostok::render::environment_probe::environment_probe	manual	12	EAX: constructed probe owner
+0x001c3080	vostok::render::environment_probe::remove_collision	manual	0	
+0x001c3150	vostok::render::environment_probe::calc_attenuation	manual	8	ST(0): attenuation scalar; source SSE versus target x87 result
+0x001c36f0	vostok::render::environment_probe::set_properties	manual	8	
+0x001c4270	vostok::render::ambient_light::ambient_light	manual	12	EAX (32bits): ambient receiver
+0x001c4350	vostok::render::ambient_light::remove_collision	manual	0	
+0x001c43c0	vostok::render::ambient_light::calc_attenuation	manual	8	x87 ST0: ambient attenuation scalar, consumed by paired particle-lighting caller
+0x001c4720	vostok::render::ambient_light::set_properties	manual	8	
+0x001c4c10	vostok::render::culling::portal_sector_system::portal_sector_system	manual	4	
+0x001c4e50	vostok::render::culling::portal_sector_system::~portal_sector_system	manual		
+0x001c5f20	vostok::render::culling::portal_sector_system::select_models	manual	20	
+0x001c61e0	vostok::render::culling::portal_sector_system::process_sector	manual	16	
+0x001c6260	vostok::render::culling::portal_sector_system::process_portal_by_frustum_intersection	manual	20	
+0x001c64a0	vostok::render::culling::portal_sector_system::process_sector	manual	32	
+0x001c6f30	vostok::render::culling::portal_sector_system::process_portal_in_screen_space	manual	36	
+0x001c7290	vostok::render::culling::portal_sector_system::perform_frustum_culling_and_sectors_test	manual	24	
+0x001c73f0	vostok::render::culling::portal_sector_system::initialize_portals_occlusion_bounds_and_results	manual	4	
+0x001c7610	vostok::render::culling::portal_sector_system::update_portals_occlusion_culling	manual	4	
+0x001c7660	vostok::render::culling::portal_sector_system::calculate_portal_rects_in_screen_space	manual	20	
+0x001c7dd0	vostok::render::culling::portal_sector_system::sort_portals_and_calculate_rects_in_screen_space	manual	12	
+0x001c7e60	vostok::render::culling::portal_sector_system::make_frustum_images	manual	4	
+0x001c9370	vostok::render::light::light	manual	4	EAX (32bits): light receiver
+0x001c9710	vostok::render::light::on_render_options_changed	manual	0	
+0x001c97d0	vostok::render::light::try_create_static_shadow_buffers	manual	8	
+0x001c9d40	vostok::render::light::remove_collision	manual	0	
+0x001c9dc0	vostok::render::light::is_cast_shadows	manual	0	AL (8bits): boolean shadow predicate; upper24 EAX unspecified
+0x001c9fe0	vostok::render::light::on_properties_changed	manual	4	
+0x001cafb0	vostok::render::light::xform_calc	manual	4	
+0x001cbb30	vostok::render::backend::set_vb_instance_data	manual	0	
+0x001cbcb0	vostok::render::grass_patch::grass_patch	manual	8	
+0x001cbe80	vostok::render::grass_patch::~grass_patch	manual	4	
+0x001cc070	vostok::render::grass_patch::init_collision	manual	4	
+0x001cc980	vostok::render::grass_patch::render	manual	32	
+0x001ccd20	vostok::render::grass_patch::create_render_buffer	manual	4	
+0x001cd0b0	vostok::render::effect_material_base::compile_begin	manual	24	
+0x001cdd80	vostok::render::effect_shadow_map::compile	manual	12	
+0x001cdf50	vostok::render::effect_copy_shadow_map::compile	manual	12	
+0x001ce030	vostok::render::effect_fill_reflective_shadow_map::compile	manual	12	
+0x001ce100	vostok::render::effect_wet_surface::compile	manual	12	
+0x001ce5d0	vostok::render::effect_ssao_accumulation::compile	manual	12	
+0x001cea80	vostok::render::effect_ssao_downsample_position_and_normal::compile	manual	12	
+0x001cec90	vostok::render::effect_light_mask::compile	manual	12	
+0x001cf0f0	vostok::render::effect_environment_probe_index::compile	manual	12	
+0x001cf370	vostok::render::effect_skylight::compile	manual	12	
+0x001cf650	vostok::render::effect_ambient_volume::compile	manual	12	
+0x001cf8d0	vostok::render::effect_apply_ambient_lights::compile	manual	12	
+0x001cfa40	vostok::render::effect_reflection_mask::compile	manual	12	
+0x001cfb80	vostok::render::effect_apply_ssao::compile	manual	12	
+0x001cfd70	vostok::render::effect_ssr_mask::compile	manual	12	
+0x001d0050	vostok::render::effect_probe_brdf::compile	manual	12	
+0x001d0320	vostok::render::effect_downsample_skin_irradiance_texture::compile	manual	12	
+0x001d0400	vostok::render::effect_fix_irradiance_texture::compile	manual	12	
+0x001d1b00	vostok::render::effect_shadow_mask::compile	manual	12	
+0x001d2a40	vostok::render::effect_god_rays::compile	manual	12	
+0x001d2d40	vostok::render::effect_ssr::compile	manual	12	
+0x001d3390	vostok::render::effect_gbuffer_depth::compile	manual	12	
+0x001d3420	vostok::render::effect_debug_tracer::compile	manual	12	
+0x001d34c0	vostok::render::effect_decal_mask::compile	manual	12	
+0x001d3b90	vostok::render::effect_rain::compile	manual	12	
+0x001d3e40	vostok::render::effect_apply_distortion::compile	manual	12	
+0x001d4210	vostok::render::effect_olta::compile	manual	12	
+0x001d43e0	vostok::render::effect_exponential_volume_fog::compile	manual	12	
+0x001d49a0	vostok::render::effect_gather_bloom::compile	manual	12	
+0x001d4c90	vostok::render::effect_gather_luminance::compile	manual	12	
+0x001d4e80	vostok::render::effect_gather_luminance_histogram::compile	manual	12	
+0x001d5130	vostok::render::effect_copy_image::compile	manual	12	
+0x001d5370	vostok::render::effect_eye_adaptation::compile	manual	12	
+0x001d5500	vostok::render::effect_motion_vectors_accumulation::compile	manual	12	
+0x001d56c0	vostok::render::effect_color_grading_lut_blending::compile	manual	12	
+0x001d57b0	vostok::render::effect_post_process_mlaa::compile	manual	12	
+0x001d5a20	vostok::render::effect_post_process_fxaa::compile	manual	12	
+0x001d5af0	vostok::render::effect_post_process_sraa::compile	manual	12	
+0x001d5c10	vostok::render::effect_post_process_downsample_frame::compile	manual	12	
+0x001d5e50	vostok::render::effect_post_process_sharpen::compile	manual	12	
+0x001d5fd0	vostok::render::effect_lens_flares::compile	manual	12	
+0x001d61e0	vostok::render::effect_motion_blur::compile	manual	12	
+0x001d6590	vostok::render::effect_radial_motion_blur::compile	manual	12	
+0x001d6780	vostok::render::effect_channel_blur::compile	manual	12	
+0x001d6960	vostok::render::effect_temporal_antialiasing::compile	manual	12	
+0x001d6aa0	vostok::render::hw_hiz_occlusion_manager::hw_hiz_occlusion_manager	manual	12	EAX (32 bits): owner storage pointer
+0x001d71c0	vostok::render::hw_hiz_occlusion_manager::~hw_hiz_occlusion_manager	manual	0	
+0x001d73c0	vostok::render::hw_hiz_occlusion_manager::process_culling	manual	8	
+0x001d7460	vostok::render::hw_hiz_occlusion_manager::copy_scene_depth	manual	0	
+0x001d74c0	vostok::render::hw_hiz_occlusion_manager::render_debug	manual	12	
+0x001d7620	vostok::render::hw_hiz_occlusion_manager::downsample_occlusion_buffer	manual	4	
+0x001d7aa0	vostok::render::hw_hiz_occlusion_manager::render_model_bounds	manual	16	
+0x001d7e30	vostok::render::hw_hiz_occlusion_manager::quary_and_get_results_if_ready	manual	8	AL (8 bits only): 1 on observed success/no-work returns,0 on map-not-ready return
+0x001d7ef0	vostok::render::hw_hiz_occlusion_manager::check_culling_buffer	manual	0	
+0x001d8470	vostok::render::effect_debug_environment_probe_preview::compile	manual	12	
+0x001d86c0	vostok::render::effect_editor_wireframe_accumulation::compile	manual	12	
+0x001d8990	vostok::render::effect_editor_shader_complexity::compile	manual	12	
+0x001d8a30	vostok::render::effect_editor_texture_density::compile	manual	12	
+0x001d8ad0	vostok::render::effect_editor_apply_wireframe::compile	manual	12	
+0x001d8bf0	vostok::render::effect_editor_show_miplevel::compile	manual	12	
+0x001d8cb0	vostok::render::effect_editor_show_batched_geometry::compile	manual	12	
+0x001d8d30	vostok::render::effect_editor_accumulate_overdraw::compile	manual	12	
+0x001d8e00	vostok::render::effect_editor_geometry_complexity::compile	manual	12	
+0x001d8ea0	vostok::render::effect_editor_vertex_alpha::compile	manual	12	
+0x001d8f40	vostok::render::effect_fstage_default_materials::compile	manual	12	
+0x001d9a00	vostok::render::effect_lighting_stage_default_materials::compile	manual	12	
+0x001db170	vostok::render::effect_offscreen_particle_lighting_materials::compile	manual	12	
+0x001db810	vostok::render::effect_fstage_sky_materials::compile	manual	12	
+0x001dbb60	vostok::render::effect_lighting_stage_skin_base_materials::compile	manual	12	
+0x001dc9b0	vostok::render::effect_fstage_fire_fresnel_materials::compile	manual	12	
+0x001dce70	vostok::render::effect_fstage_soft_materials::compile	manual	12	
+0x001dd0f0	vostok::render::effect_fstage_volume_sphere_base_materials::compile	manual	12	
+0x001dd410	vostok::render::effect_fstage_volume_cone_base_materials::compile	manual	12	
+0x001dd790	vostok::render::effect_distortion_stage_default_materials::compile	manual	12	
+0x001ddaf0	vostok::render::effect_distortion_stage_panner_materials::compile	manual	12	
+0x001ddd50	vostok::render::effect_gstage_default_materials::compile	manual	12	
+0x001e1f70	vostok::render::effect_fstage_fake_translucency_materials::compile	manual	12	
+0x001e2250	vostok::render::effect_fstage_blend_subuv_materials::compile	manual	12	
+0x001e26c0	vostok::render::effect_post_process_blend_texture_materials::compile	manual	12	
+0x001e2800	vostok::render::effect_post_process_distortion_materials::compile	manual	12	
+0x001e2920	vostok::render::effect_post_process_terrain_debug_materials::compile	manual	12	
+0x001e2c70	vostok::render::effect_fstage_smoke_custom_lighted_materials::compile	manual	12	
+0x001e2e80	vostok::render::effect_debug_editor_wireframe::compile	manual	12	
+0x001e3070	vostok::render::decal_default_material_effect::compile	manual	12	
+0x001e3960	vostok::render::effect_lighting_stage_organic_base_materials::compile	manual	12	
+0x001e47c0	vostok::render::effect_gstage_terrain_materials::compile	manual	12	
+0x001e5fe0	vostok::render::effect_fstage_simpe_water_materials::compile	manual	12	
+0x001e6490	vostok::render::effect_sky_sphere_default_materials::compile	manual	12	
+0x001e6870	vostok::render::effect_fstage_default_view_angle_dependent_materials::compile	manual	12	
+0x001e6cd0	vostok::render::effect_fstage_sphere_projection_materials::compile	manual	12	
+0x001e7520	vostok::render::culling::sector_double_query_preventer::sector_double_query_preventer	manual	8	EAX: owner pointer
+0x001e7600	vostok::render::culling::sector_double_query_preventer::~sector_double_query_preventer	manual	0	
+0x001e76c0	vostok::render::culling::sector_double_query_preventer::clear	manual	0	
+0x001e7700	vostok::render::culling::sector_double_query_preventer::is_possible_points_for_frustum	manual	4	AL: false if one stored frustum accepts all four points; true otherwise
+0x001e78f0	vostok::render::culling::sector_double_query_preventer::make_frustum_images	manual	8	
+0x001e8410	vostok::render::effect_hiz_occlusion::compile	manual	12	
+0x001ec250	survarium::game::on_config_loaded	manual	12	
+0x001ec510	survarium::game::load_config_query	manual	12	
+0x001edbf0	survarium::game::play_ui_sound	manual	4	
+0x001f0090	survarium::items_dictionary::item_by_id	manual	4	
+0x001f1930	survarium::player::inflicted_damage_collector::serialize	manual	0	
+0x001f3de0	vostok::network_core::buffer_writer::w<unsigned char>	manual	20	
+0x001f48a0	vostok::network_core::buffer_writer::w<unsigned int>	manual	20	
+0x001f6d50	survarium::game_world::register_cooks	manual	0	
+0x001f7620	survarium::game_world::on_after_tick	manual	0	
+0x001f7660	survarium::game_world::get_player	manual	4	
+0x001f8190	survarium::game_world::switch_to_warmup_camera	manual	0	
+0x001f8200	survarium::game_world::switch_to_player_camera	manual	4	
+0x001f8270	survarium::game_world::switch_to_free_fly_camera	manual	4	
+0x001f83d0	survarium::game_world::set_game_project	manual	4	
+0x001f8650	survarium::game_world::on_project_loaded	manual	12	
+0x001f8b40	survarium::game_world::unload	manual	0	
+0x001f8ca0	survarium::game_world::load	manual	20	
+0x001f91d0	survarium::game_world::on_portal_system_loaded	manual	4	
+0x001f9340	survarium::game_world::on_activate	manual	0	
+0x001f9520	survarium::game_world::on_deactivate	manual	0	
+0x001f95f0	survarium::game_world::show_ui	manual	4	
+0x001f9660	survarium::game_world::clear_resources	manual	0	
+0x001f96f0	survarium::game_world::on_finish_match	manual		
+0x001f9740	survarium::game_world::set_match	manual	0	
+0x001f97d0	survarium::game_world::on_resync	manual	4	
+0x001f9800	survarium::game_world::demo_play	manual	4	
+0x001feed0	survarium::text_translator::load_text_localization	manual	4	
+0x001ff0f0	survarium::text_translator::translate_text	manual	8	
+0x001ff240	survarium::text_translator::on_texts_ready	manual	4	
+0x002079d0	survarium::key_binder::id_to_action_name	manual	0	
+0x00207ad0	survarium::key_binder::action_name_to_ptr	manual	4	
+0x00207c30	survarium::key_binder::keyname_to_ptr	manual	0	
+0x002093a0	survarium::chat_handler::initialize_tabs	manual	8	
+0x00209430	survarium::chat_handler::set_mode	manual	8	
+0x00209710	survarium::chat_handler::add_new_tab	manual	8	
+0x00209ac0	survarium::chat_handler::set_local_player_name	manual	4	
+0x00209b30	survarium::chat_handler::focus	manual	4	
+0x00209f60	survarium::chat_handler::close_conversation	manual	0	
+0x00209ff0	survarium::chat_handler::add_squad_tab	manual	0	
+0x0020a070	survarium::chat_handler::remove_squad_tab	manual	0	
+0x0021c970	survarium::lobby_menu::input_handler	manual	0	EAX: Null-preserving input-handler subobject pointer adjustment
+0x0021d2e0	survarium::lobby_menu::on_activate	manual	0	
+0x0021d4a0	survarium::lobby_menu::on_deactivate	manual	0	
+0x0021d570	survarium::lobby_menu::show_ui	manual	4	
+0x0021d5e0	survarium::lobby_menu::tick	manual	12	
+0x0021d720	survarium::lobby_menu::on_client_status_received	manual	4	
+0x0021d9d0	survarium::lobby_menu::on_operation_denied_received	manual	4	
+0x0021e170	survarium::lobby_menu::set_mouse_position	manual	12	
+0x0021e260	survarium::lobby_menu::demo_play	manual	4	
+0x0021f3d0	survarium::login_menu::enable_button	manual	0	
+0x0021f430	survarium::login_menu::update_online_queue	manual	4	
+0x002206d0	survarium::lobby_menu::show_match_making	manual	0	
+0x00225220	survarium::lobby_menu::is_mouse_over_ui	manual	0	AL: Boolean OR of two observed UI result bytes
+0x002252d0	survarium::lobby_menu::set_match_making_status	manual	20	
+0x00225810	survarium::lobby_menu::on_stats_message_arrived	manual	4	
+0x00226020	survarium::lobby_menu::important_message_arrived	manual	24	
+0x00227120	survarium::lobby_menu::get_next_number_from_message	manual	4	
+0x002271b0	survarium::lobby_menu::fill_players_rating_page	manual	8	
+0x002274b0	survarium::lobby_menu::set_player_elo_rating	manual	16	
+0x002277c0	survarium::lobby_menu::fill_squad_info	manual	12	
+0x00227d80	survarium::lobby_menu::set_player_premium_access_status	manual	8	
+0x00231b50		auto	16	
+0x00231dc0	survarium::victory_item_cook::on_subresources_ready	manual	12	
+0x002326a0		auto	20	
+0x002326d0	survarium::victory_items_container_cook::create_resource	manual	20	
+0x00232a50	survarium::victory_items_container_cook::on_locators_config_ready	manual	24	
+0x0023dc00	survarium::base_game_scene::show_movie	manual	0	
+0x0023dc70	survarium::base_game_scene::hide_movie	manual	0	
+0x0023dd60	survarium::base_game_scene::on_activate	manual	0	
+0x0023eea0	survarium::damage_sound_effect::on_broken_limb	manual	12	
+0x0023efd0	survarium::damage_sound_effect::on_poisoning	manual	12	
+0x0023fe00	survarium::player_input_handler::on_keyboard_action	manual	12	AL: zero at each local return; higher EAX bits unspecified
+0x0023ff50	survarium::player_input_handler::on_mouse_key_action	manual	12	AL: zero at each local return; higher EAX bits unspecified
+0x00240050	survarium::player_input_handler::process_toggle_action	manual	4	
+0x00240170	survarium::player_input_handler::process_dependent_actions	manual	12	
+0x00240200	survarium::player_input_handler::on_mouse_move	manual	16	
+0x00241090	survarium::player_input_handler::on_before_processing	manual	4	
+0x00241170	survarium::player_input_handler::on_after_processing	manual	4	
+0x00241250	survarium::player_input_handler::process_first_person_mode	manual	8	
+0x002421c0	survarium::player_input_handler::process_third_person_mode	manual	0	
+0x00242200	survarium::player_input_handler::process_warmup_mode	manual	0	
+0x00242460	survarium::player_input_handler::action_present	manual	12	AL: boolean found; output state is queued value or2 for persistent presence; higher EAX bits unspecified
+0x00242770	survarium::game_camera::set_position_direction	manual	4	
+0x00243370	survarium::camera_director::set_position_direction	manual	4	
+0x00243440	survarium::camera_director::apply	manual	4	
+0x00243510	survarium::camera_director::switch_to_camera	manual	0	
+0x002435b0	survarium::weapon_core::get_transform	manual	4	
+0x002435d0	survarium::weapon_core::set_transform	manual	4	
+0x002435f0	survarium::weapon_core::get_skeleton	manual	4	
+0x00243640		auto	12	
+0x00243980		auto	0	
+0x002439d0		auto	0	
+0x00243a30		auto	8	
+0x00243bc0	survarium::weapon::calculate_locator	manual	16	
+0x00243cb0		auto	0	
+0x00243d40	survarium::weapon::set_foreground	manual	0	
+0x00243dd0		auto	4	
+0x00243fa0		auto	4	
+0x00244570		auto	0	
+0x002445e0		auto	4	
+0x00244610		auto	4	
+0x00244860		auto	4	
+0x002449e0		auto	0	
+0x00244a00	survarium::weapon::serialize	manual	8	
+0x00244a40		auto	12	
+0x00244ab0		auto	4	
+0x00244b60	survarium::weapon::add_aimed_rifle_scope_to_scene	manual	0	
+0x00244c50	survarium::weapon::remove_aimed_rifle_scope_from_scene	manual	0	
+0x00244e10		auto	16	
+0x00245250		auto	0	
+0x00256fa0	survarium::damage_zone_cook::delete_resource	manual	4	
+0x00257170	survarium::damage_zone_cook::calculate_max_requests_count	manual	4	
+0x00257210	survarium::damage_zone_cook::calculate_buffer_size	manual	4	
+0x002572b0	survarium::damage_zone_cook::query_resources	manual	8	
+0x00257600	survarium::damage_zone_cook::process_resources	manual	20	
+0x00258240	survarium::damage_zone_cook::construct_resource	manual	4	
+0x00258480	survarium::rifle_scope_cook::translate_query	manual	4	
+0x00258580	survarium::rifle_scope_cook::on_config_loaded	manual	4	
+0x00260e90	survarium::options_item_base::options_item_base	manual	12	
+0x0026b1b0	survarium::messaging_client::read_important_message	manual	12	
+0x0026cff0	survarium::lobby_menu::on_mouse_key_action	manual	12	AL: Observed constant1 on local return path
+0x0026d090	survarium::lobby_menu::on_mouse_move	manual	16	AL: Observed constant1 on local return path
+0x0026e4e0	survarium::player_result_brief::deserialize	manual	0	
+0x0026e610	survarium::match_stats::deserialize	manual	4	
+0x0026f060	survarium::lobby_client::lobby_client	manual	8	
+0x0026f3e0	survarium::lobby_client::~lobby_client	manual	0	
+0x0026f560	survarium::lobby_client::clear_profile_info	manual	4	
+0x0026ff90	survarium::lobby_client::query_match_stats	manual	4	
+0x00270100	survarium::lobby_client::read_status_info	manual	0	
+0x00270400	survarium::lobby_client::read_enumerate_inventory_info	manual	4	
+0x00270570	survarium::lobby_client::read_player_skills	manual	4	
+0x00270660	survarium::lobby_client::status	manual	0	
+0x002714d0	survarium::lobby_client::read_account_services	manual	4	
+0x00271540	survarium::lobby_client::read_price_items	manual	8	
+0x00271650	survarium::lobby_client::read_shop_items	manual	8	
+0x00271740	survarium::lobby_client::read_player_reputations	manual	4	
+0x002718c0	survarium::lobby_client::read_match_stats	manual	4	
+0x00271d90	survarium::lobby_client::read_player_elo_rating	manual	4	
+0x00271df0	survarium::lobby_client::read_quest_list	manual	8	
+0x00271eb0	survarium::lobby_client::read_players_elo_list	manual	8	
+0x00274720	survarium::lobby_client::read_squad_info	manual	4	
+0x002749d0	survarium::lobby_client::squad_ready_count	manual	0	
+0x0027a300	survarium::network_client::on_match_packet_received	manual	8	
+0x0027a790	survarium::network_client::close_current_match	manual	4	
+0x0027b1f0	survarium::network_client::tick	manual	8	
+0x0027b570	survarium::network_client::process_set_time_request	manual	4	
+0x0027bff0	survarium::network_client::process_dynamic_match_info	manual	0	
+0x0027c1f0	survarium::network_client::register_message_in_stats	manual	4	
+0x0027c5f0	survarium::network_client::process_player_entered_match	manual	4	
+0x0027c690	survarium::network_client::process_player_left_match	manual	4	
+0x0028de20	survarium::lobby_menu::add_quest	manual	4	
+0x0028e690	survarium::lobby_menu::create_quest_ui_message	manual	12	
+0x0028f350	survarium::object_environment_probe::`scalar deleting destructor'	manual	4	
+0x0028f3b0	survarium::object_environment_probe::load	manual	12	
+0x0028fd40	survarium::object_environment_probe::on_textures_loaded	manual	8	
+0x0028ffd0	survarium::object_environment_probe::insert	manual	0	
+0x002904a0	survarium::object_environment_probe::remove	manual	0	
+0x00293ca0	survarium::object_wire::`scalar deleting destructor'	manual	4	
+0x00293cc0	survarium::object_wire::~object_wire	manual		
+0x00293d20	survarium::create_wire_visual_source	manual	0	
+0x00293e90	survarium::object_wire::load	manual	12	
+0x00294230	survarium::object_wire::insert	manual	0	
+0x00294280	survarium::object_wire::remove	manual	0	
+0x002942c0	survarium::object_wire::resources_ready	manual	8	
+0x00294630	survarium::object_sound::object_sound	manual	0	
+0x00294670	survarium::object_sound::`scalar deleting destructor'	manual	4	
+0x00294690	survarium::object_sound::~object_sound	manual		
+0x00294700	survarium::object_sound::load	manual	12	
+0x00294870	survarium::object_sound::on_sound_resources_ready	manual	8	
+0x00294930	survarium::object_sound::insert	manual	0	
+0x00294a90	survarium::object_sound::remove	manual	0	
+0x002989d0	survarium::damage_zone::damage_zone	manual	4	
+0x0029ab20	survarium::lobby_menu::fill_match_statistic	manual	16	
+0x002aec40	vostok::render::stage_particles::is_effects_ready	manual	0	EAX: normalized0/1 effect+1C non-null result
+0x002c6f90		auto	0	
+0x002c7250		auto	4	
+0x002c75b0		auto	8	
+0x002c83e0		auto	8	
+0x002c8850		auto	0	
+0x002c88d0		auto	4	
+0x002c89a0		auto	4	
+0x002c8aa0		auto	4	
+0x002c95d0		auto	8	
+0x002ca360		auto	28	
+0x002ca640		auto	4	
+0x002ca660		auto		
+0x002ca770		auto	0	
+0x002ca7b0		auto	8	
+0x002ca910		auto	12	
+0x002cea30	survarium::animation_analysis_result_cook::translate_query	manual	4	
+0x002d09c0		auto	0	
+0x002d0b70		auto	16	
+0x002d1100		auto	20	
+0x002d1470	survarium::game_world_core::enter_match	manual	8	
+0x002d18a0	survarium::game_world_core::leave_match	manual	8	
+0x002d1e20	survarium::game_world_core::atomic_tick	manual	8	
+0x002d1ef0		auto	12	
+0x002d2040		auto	12	
+0x002d2180		auto	8	
+0x002d21e0		auto	12	
+0x002d2570		auto	8	
+0x002d2770		auto	12	
+0x002d2e10		auto	0	
+0x002d2e40	survarium::game_world_core::move	manual	4	
+0x002d6230	survarium::character_breath_vibration_params::load	manual	8	
+0x002d84c0		auto	8	
+0x002d9a60	survarium::base_player::hit	manual	40	
+0x002d9ae0	survarium::base_player::hit	manual	32	
+0x002d9b90	survarium::base_player::hit_impl	manual	8	
+0x002daf60	survarium::base_player::serialize	manual	16	
+0x002db490	survarium::base_player::deserialize	manual	28	
+0x002df0d0	survarium::weapon_core::weapon_core	manual	12	
+0x002df550	survarium::weapon_core::`scalar deleting destructor'	manual	4	
+0x002df570	survarium::weapon_core::~weapon_core	manual	4	
+0x002df720	survarium::weapon_core::register_animations	manual	4	
+0x002e09e0		auto	4	
+0x002e0ba0	survarium::weapon_core::update_logic	manual	0	
+0x002e0f60		auto	0	
+0x002e0fb0		auto	4	
+0x002e10b0	survarium::weapon_core::selected_animations	manual	8	
+0x002e1210	survarium::weapon_core::get_recoil_expression	manual	4	
+0x002e1560	survarium::weapon_core::get_recoil_animation_lexeme	manual	20	
+0x002e1730	survarium::weapon_core::update_dispersion	manual	4	
+0x002e17d0	survarium::weapon_core::load_magazine	manual	0	
+0x002e18e0	survarium::weapon_core::unload_ammo	manual	0	
+0x002e1a00	survarium::weapon_core::reload_one_round	manual	0	
+0x002e1b50		auto	0	
+0x002e1bf0		auto	0	
+0x002e1d50	survarium::weapon_core::get_dispersed_bullet_direction	manual	12	
+0x002e2120	survarium::weapon_core::get_dispersed_buckshot_direction	manual	8	
+0x002e23a0	survarium::weapon_core::instant_fire	manual	8	
+0x002e2990		auto		
+0x002e2a30		auto	0	
+0x002e2cc0		auto	4	
+0x002e2db0		auto		
+0x002e2f00		auto	0	
+0x002e2f30	survarium::weapon_core::on_player_model_added	manual	0	
+0x002e2f40	survarium::weapon_core::on_player_model_removed	manual	0	
+0x002e2f50		auto	36	
+0x002e30a0	survarium::weapon_core::is_sprinting	manual	0	
+0x002e3130	survarium::weapon_core::serialize	manual	8	
+0x002e3390	survarium::weapon_core::on_player_death	manual	0	
+0x002e3490	survarium::weapon_core::deserialize	manual	12	
+0x002e3800	survarium::weapon_core::could_be_used	manual	4	
+0x002e3840	survarium::weapon_core::computed_backward_recoil_time	manual	24	
+0x002e3900	survarium::weapon_core::computed_horizontal_recoil_time	manual	24	
+0x002e3a10	survarium::weapon_core::can_sprint	manual	0	
+0x002e3a70		auto	0	
+0x002e3aa0		auto	0	
+0x002e4280	survarium::weapon_core::time_calculator_id	manual	4	
+0x002e4300	survarium::weapon_core::time_calculator	manual	8	
+0x002e43a0	survarium::weapon_core::player_stance	manual	0	
+0x002e4d80	survarium::damage_model::damage_model	manual	0	
+0x002e4f40	survarium::damage_model::`scalar deleting destructor'	manual	4	
+0x002e4f60	survarium::damage_model::~damage_model	manual	4	
+0x002e5080	survarium::damage_model::hit_body_part	manual	0	
+0x002e5290	survarium::damage_model::reset	manual	4	
+0x002e5370	survarium::damage_model::on_broken_limb_affect	manual	12	
+0x002e53b0	survarium::damage_model::serialize	manual	4	
+0x002e5480	survarium::damage_model::deserialize	manual	12	
+0x002e5550	survarium::damage_model::get_invulnerability	manual	0	x87 ST0: Zero, one, or one minus an unsigned time ratio is left on the x87 stack before each observed return.
+0x002e9c70	survarium::generic_anomaly_core_cook::translate_query	manual	4	
+0x002e9d40	survarium::generic_anomaly_core_cook::query_for_artefacts	manual	16	
+0x002ea0e0	survarium::generic_anomaly_core_cook::on_artefacts_loaded	manual	8	
+0x002ea100	survarium::generic_anomaly_core_cook::proceed_to_create_resource	manual	16	
+0x002f0d30	survarium::character_dispersion_params::load	manual	8	
+0x002f1050	survarium::character_dispersion_skill_influence::load	manual	4	
+0x002f12a0	survarium::player_stealth::load	manual	4	
+0x002f5ac0	survarium::shared_statistics::serialize	manual	0	
+0x002f5be0	survarium::shared_statistics::deserialize	manual	0	
+0x002f5da0	vostok::network_core::buffer_writer::w<unsigned short>	manual	20	
+0x002f81f0	survarium::usable_object::load	manual	4	
+0x002f8280	survarium::usable_object::resolve_links	manual	28	
+0x002f8300	survarium::usable_object::insert	manual	8	
+0x002f83c0	survarium::usable_object::remove	manual	4	
+0x002f8440	survarium::usable_object::get_transform	manual	4	
+0x002f8460	survarium::usable_object::serialize_usable_object	manual	0	
+0x002f84c0	survarium::usable_object::deserialize_usable_object	manual	0	
+0x002f8510	survarium::usable_object::post_deserialize_resolve	manual	0	
+0x002fc4b0	survarium::inventory::inventory	manual	0	
+0x002fc560	survarium::inventory::`scalar deleting destructor'	manual	4	
+0x002fc620	survarium::inventory::set_item	manual	4	
+0x002fc680	survarium::inventory::remove_item	manual	0	
+0x002fc6e0		auto	0	
+0x002fc810	survarium::inventory::drop_carried_item	manual	0	
+0x002fc850	survarium::inventory::take_artefact	manual	4	
+0x002fcaa0	survarium::inventory::action	manual	12	
+0x002fcb70	survarium::inventory::setup_from_profile	manual	4	
+0x002fd2d0	survarium::inventory::unload_to_profile	manual	8	
+0x002fe360	survarium::inventory::serialize	manual	4	
+0x002fe550	survarium::inventory::deserialize	manual	8	
+0x002ffb80	survarium::inventory_item::inventory_item	manual	12	
+0x002ffdf0		auto	8	
+0x002fff10		auto	12	
+0x00300710		auto	4	
+0x00303da0	survarium::grenade_core::serialize	manual	8	
+0x00303f80	survarium::grenade_core::deserialize	manual	12	
+0x003052e0	survarium::booby_trap_core::serialize	manual	8	
+0x003053c0	survarium::booby_trap_core::deserialize	manual	12	
+0x0030da60	survarium::weapon_core_animation_end_aware_state::initialize	manual	0	
+0x0030db60	survarium::weapon_core_animation_end_aware_state::on_animation_end	manual	4	
+0x0030dbb0	survarium::weapon_core_animation_end_aware_state::deserialize	manual	12	
+0x0030dc90	survarium::weapon_core_animation_end_aware_state::serialize	manual	8	
+0x0030e910	survarium::weapon_core_fire_state_base::initialize	manual	0	
+0x0030ea00	survarium::weapon_core_fire_state_base::execute	manual	0	
+0x0030ea50	survarium::weapon_core_fire_state_base::on_animation_end_impl	manual	8	
+0x0030eab0	survarium::weapon_core_fire_state_base::serialize	manual	8	
+0x0030eb10	survarium::weapon_core_fire_state_base::deserialize	manual	12	
+0x0030ebf0	survarium::weapon_core_fire_state_base::on_shot_event	manual	4	
+0x003100f0	survarium::pistol_weapon_core_fire_state::initialize	manual	0	
+0x00310170	survarium::pistol_weapon_core_fire_state::on_animation_end_impl	manual	8	
+0x003108d0	survarium::weapon_core_melee_state::initialize	manual	0	
+0x00310900	survarium::weapon_core_melee_state::finalize	manual		
+0x00310980	survarium::weapon_core_melee_state::serialize	manual	8	
+0x003109c0	survarium::weapon_core_melee_state::deserialize	manual	12	
+0x00310b10	survarium::weapon_core_melee_state::weapon_and_hands_expression	manual	20	
+0x00311310	survarium::damage_zone_core_cook::query_resources	manual	8	
+0x00311360	survarium::damage_zone_core_cook::process_resources	manual	20	
+0x003114a0	survarium::damage_zone_core_cook::construct_resource	manual	4	
+0x003119a0	survarium::artefact_spring_core::serialize	manual	8	
+0x003119e0	survarium::artefact_spring_core::deserialize	manual	12	
+0x00312470	survarium::artefact_lifebone_core::serialize	manual	8	
+0x003124b0	survarium::artefact_lifebone_core::deserialize	manual	12	
+0x00312a80	survarium::artefact_onyx_core::serialize	manual	8	
+0x00312af0	survarium::artefact_onyx_core::deserialize	manual	12	
+0x00313670	survarium::artefact_base::serialize	manual	8	
+0x00313760	survarium::artefact_base::deserialize	manual	12	
+0x00317f30	survarium::timelimit_rule_core::serialize	manual	4	
+0x00317fd0	survarium::timelimit_rule_core::deserialize	manual	8	
+0x00318050	survarium::timelimit_rule_core::set_game_world_core	manual	4	
+0x003180c0	survarium::timelimit_rule_core::on_player_entered_match	manual		
+0x003180e0	survarium::timelimit_rule_core::on_player_left_match	manual		
+0x00318100	survarium::timelimit_rule_core::logic_tick	manual	8	
+0x00318360	survarium::timelimit_rule_core::rule_completed	manual	4	
+0x003190c0	survarium::damage_zone_core::damage_zone_core	manual	0	
+0x003193f0	survarium::damage_zone_core::serialize	manual	8	
+0x003193f0	survarium::damage_zone_core::serialize	manual	8	
+0x00319470	survarium::damage_zone_core::deserialize	manual	12	
+0x00319470	survarium::damage_zone_core::deserialize	manual	12	
+0x00319500	survarium::damage_zone_core::load	manual	4	
+0x0031ad70	survarium::generic_anomaly_core::~generic_anomaly_core	manual		
+0x0031add0	survarium::generic_anomaly_core::`scalar deleting destructor'	manual	4	
+0x0031adf0	survarium::generic_anomaly_core::generic_anomaly_core	manual	12	
+0x0031af20	survarium::generic_anomaly_core::serialize	manual	8	
+0x0031b0a0	survarium::generic_anomaly_core::deserialize	manual	12	
+0x0031b1d0	survarium::anomaly_state::serialize	manual	4	
+0x0031b230	survarium::anomaly_state::deserialize	manual	8	
+0x0031b2a0		auto	8	
+0x0031b390		auto	12	
+0x0031ba90	survarium::generic_anomaly_core::select_state	manual	0	
+0x0031c480	survarium::artefact_container_core::load	manual	4	
+0x0031c530	survarium::artefact_container_core::serialize	manual	8	
+0x0031c5b0	survarium::artefact_container_core::deserialize	manual	12	
+0x0031c6b0	survarium::artefact_container_core::can_use	manual	4	
+0x0031c720	survarium::artefact_container_core::use_info	manual	4	
+0x0031c780	survarium::artefact_container_core::use_execute	manual	12	
+0x0031c8a0	survarium::artefact_container_core::transfer_artefact	manual	4	
+0x0031cad0	survarium::victory_items_container_core::load	manual	4	
+0x0031cb10	survarium::victory_items_container_core::can_use	manual	4	
+0x0031cbb0	survarium::victory_items_container_core::use_info	manual	4	
+0x0031cc40	survarium::victory_items_container_core::use_initialize	manual	8	
+0x0031cdb0	survarium::victory_items_container_core::put_item	manual	4	
+0x0031cdf0	survarium::victory_items_container_core::take_item	manual	8	
+0x0031ce40	survarium::victory_items_container_core::serialize	manual	4	
+0x0031cee0	survarium::victory_items_container_core::deserialize	manual	4	
+0x0031da30	survarium::breath_vibration_calculator::serialize	manual	4	
+0x0031db00	survarium::breath_vibration_calculator::deserialize	manual	8	
+0x0031eb80	survarium::weapon_core_base_state::serialize	manual	8	
+0x0031ebb0	survarium::weapon_core_base_state::deserialize	manual	12	
+0x00321b90	survarium::bullet_manager::serialize	manual	4	
+0x00321c50	survarium::bullet_manager::deserialize	manual	4	
+0x003237e0	survarium::kd_stats_rule::on_event	manual	12	
+0x00323870	survarium::kd_stats_rule::serialize	manual	4	
+0x00323910	survarium::kd_stats_rule::deserialize	manual	8	
+0x00323980	survarium::kd_stats_rule::fill_match_hud_state	manual	8	
+0x003239e0	survarium::kd_stats_rule::set_game_world_core	manual	4	
+0x003239f0	survarium::kd_stats_rule::on_player_entered_match	manual	8	
+0x00323a00	survarium::kd_stats_rule::on_player_left_match	manual	8	
+0x00323bf0	survarium::animation_analysis_result::animation_analysis_result	manual	4	EAX: incoming EDI object receiver
+0x00323f10	survarium::player_serialized_state::clear	manual	0	
+0x00324010	survarium::bullet_manager_history_item::clear	manual	0	
+0x00324390	survarium::statistics_history_item::clear	manual	0	
+0x00324ad0	survarium::game_state_history_item::clear_buffers	manual	4	
+0x00324be0	survarium::game_state_history_item::serialize	manual	12	
+0x00324d80	survarium::game_state_history_item::deserialize	manual	8	
+0x00325150	survarium::game_state_history_item::hash	manual	4	
+0x00325a60		auto	16	
+0x00329120	survarium::stamina_base_parameters::load	manual	4	
+0x00329310	survarium::player_stamina::serialize	manual	0	
+0x00329400	survarium::player_stamina::deserialize	manual	0	
+0x00329790	survarium::player_stamina::tick	manual	12	
+0x003298c0	survarium::player_stamina::regenerate	manual	0	
+0x00329a20	survarium::player_stamina::spend	manual	4	
+0x00329a70	survarium::player_stamina::sprint	manual	4	
+0x00329c60	survarium::player_stamina::is_overburdened	manual	4	
+0x0032ae00	survarium::body_part_parameters::serialize	manual	8	
+0x0032afe0	survarium::body_part_parameters::deserialize	manual	12	
+0x0032b9f0	survarium::hit_info::hit_info	manual	32	
+0x0032bec0		auto	4	
+0x0032c950	survarium::bullet::compute_parabolic_velocity	manual	8	
+0x0032ca60	survarium::bullet::compute_trajectory_velocity	manual	4	
+0x0032cb10	survarium::bullet::compute_parabolic_position	manual	8	
+0x0032ccc0	survarium::bullet::compute_trajectory_position	manual	4	
+0x0032d4e0		auto	24	
+0x0032d960		auto	16	
+0x0032de40		auto	12	
+0x0032e460	survarium::player_shootmarks_storage::add_shootmark	manual	8	AL: new-entry count1 or incremented existing eight-bit occurrence count; higher EAX bits unspecified
+0x0032e4f0		auto	16	
+0x0032e740		auto	16	
+0x0032e970		auto	16	
+0x0032ebd0		auto	16	
+0x0032ee20	survarium::bullet::change_trajectory	manual	4	
+0x0032ee90		auto	8	
+0x0032fcc0	survarium::usable_object_user_data::serialize	manual	0	
+0x0032fee0	survarium::transition_helper::serialize	manual	0	
+0x0032ff70	survarium::transition_helper::deserialize	manual	0	
+0x003312f0	survarium::dispersion_calculator::serialize	manual	4	
+0x00334dc0	survarium::victory_item_event_manager::serialize	manual	4	
+0x00334fb0	survarium::victory_item_event_manager::deserialize	manual	4	
+0x003353c0	survarium::intermediate_shared_statistics::serialize	manual	8	
+0x003355f0	survarium::intermediate_shared_statistics::deserialize	manual	4	
+0x00335750	survarium::player_shared_statistics::serialize	manual	8	
+0x003383e0	survarium::player_logic_dead_state::serialize	manual	8	
+0x00338430	survarium::player_logic_dead_state::deserialize	manual	12	
+0x003384e0	survarium::player_logic_dead_state::on_animation_end	manual	4	
+0x00339cc0	survarium::weapon_core_throw_grenade_state::execute	manual	0	
+0x00339d70	survarium::weapon_core_throw_grenade_state::register_animations	manual	4	
+0x0033a300	survarium::weapon_core_throw_grenade_state::`scalar deleting destructor'	manual	4	
+0x0033a320	survarium::weapon_core_throw_grenade_state::~weapon_core_throw_grenade_state	manual		
+0x0033a450	survarium::weapon_core_throw_grenade_state::initialize	manual	0	
+0x0033a490	survarium::weapon_core_throw_grenade_state::finalize	manual	0	
+0x0033a4e0	survarium::weapon_core_throw_grenade_state::serialize	manual	8	
+0x0033a570	survarium::weapon_core_throw_grenade_state::deserialize	manual	12	
+0x0033a650	survarium::weapon_core_throw_grenade_state::is_ready_for_transition	manual	0	
+0x0033a6a0	survarium::weapon_core_throw_grenade_state::weapon_and_hands_expression	manual	20	
+0x0033a7e0	survarium::weapon_core_throw_grenade_state::attach_grenade	manual	0	
+0x0033cac0	survarium::medkit::medkit	manual	4	
+0x0033d2b0	survarium::medkit::`scalar deleting destructor'	manual	4	
+0x0033d2d0	survarium::medkit::~medkit	manual		
+0x0033d390	survarium::medkit::set_active	manual	8	
+0x0033d700	survarium::medkit::action	manual	8	
+0x0033d790	survarium::medkit::tick	manual	12	
+0x0033da50	survarium::medkit::remove_affects	manual	4	
+0x0033db30	survarium::medkit::reduce_damage	manual	12	
+0x0033dbd0	survarium::medkit::serialize	manual	8	
+0x0033dca0	survarium::medkit::deserialize	manual	12	
+0x0033e010	survarium::oxygen_tank::oxygen_tank	manual	4	
+0x0033e2a0	survarium::oxygen_tank::`scalar deleting destructor'	manual	4	
+0x0033e2c0	survarium::oxygen_tank::~oxygen_tank	manual	0	
+0x0033e3a0	survarium::oxygen_tank::action	manual	8	
+0x0033e400	survarium::oxygen_tank::set_active	manual	0	
+0x0033e5d0	survarium::oxygen_tank::tick	manual	12	
+0x0033e6f0	survarium::oxygen_tank::reduce_damage	manual	12	
+0x0033e740	survarium::oxygen_tank::get_item_props	manual	4	
+0x0033e790	survarium::oxygen_tank::serialize	manual	8	
+0x0033e7f0	survarium::oxygen_tank::deserialize	manual	12	
+0x0033eaa0	survarium::armor::armor	manual	8	
+0x0033efc0	survarium::armor::`scalar deleting destructor'	manual	4	
+0x0033f0c0	survarium::armor::on_holder_assigned	manual	0	
+0x0033fde0	survarium::player_history_item::serialize	manual	0	
+0x0033fee0	survarium::player_history_item::deserialize	manual	4	
+0x00341030	survarium::short_jump_start_state::selected_animations	manual	20	
+0x00341610	survarium::short_jump_start_state::initialize	manual	0	
+0x00341730	survarium::short_jump_start_state::finalize	manual	0	
+0x00341780	survarium::short_jump_start_state::on_animation_end	manual	4	
+0x003417a0	survarium::short_jump_start_state::serialize	manual	8	
+0x003417e0	survarium::short_jump_start_state::deserialize	manual	12	
+0x00342a50	survarium::jump_logic_state_prepare::on_interval_end	manual	4	
+0x00342a70	survarium::jump_logic_state_prepare::serialize	manual	8	
+0x00342ad0	survarium::jump_logic_state_prepare::deserialize	manual	12	
+0x00343470	survarium::jump_logic_state_start::on_interval_end	manual	4	
+0x003434e0	survarium::jump_logic_state_start::serialize	manual	8	
+0x00343540	survarium::jump_logic_state_start::deserialize	manual	12	
+0x003441e0	survarium::jump_logic_state_landing::on_interval_end	manual	4	
+0x00344210	survarium::jump_logic_state_landing::serialize	manual	8	
+0x00344250	survarium::jump_logic_state_landing::deserialize	manual	12	
+0x003446b0		auto	8	
+0x00344700		auto	12	
+0x00344730	survarium::victory_item_core_animation_end_aware_state::initialize	manual	0	
+0x003447f0	survarium::victory_item_core_animation_end_aware_state::finalize	manual	0	
+0x00344830	survarium::victory_item_core_animation_end_aware_state::on_animation_end	manual	4	
+0x00344870	survarium::victory_item_core_animation_end_aware_state::deserialize	manual	12	
+0x00344950	survarium::victory_item_core_animation_end_aware_state::serialize	manual	8	
+0x00344cb0	survarium::victory_item_core_base_state::serialize	manual	8	
+0x00344d70	survarium::victory_item_core_base_state::deserialize	manual	12	
+0x0034be30	vostok::render::culling::portal_sector_structure::portal_sector_structure	manual	8	EAX (32 bits): owner storage pointer
+0x0034bfd0	vostok::render::culling::portal_sector_structure::~portal_sector_structure	manual		
+0x0034c100	vostok::render::culling::portal_sector_structure::get_sector_id	manual	4	EAX (32 bits): selected or fallback sector index
+0x0034c3b0	vostok::render::culling::portal_sector_structure::load	manual	8	
+0x0034ce30	vostok::render::culling::portal_sector_structure::sort_portal_ids	manual	4	
+0x0034ce80	vostok::render::culling::portal_sector_structure::initialize_portals_geometry	manual	4	
+0x0034d040	vostok::render::culling::portal_sector_structure::update_portals_visability	manual	8	
+0x00376280	vostok::network::login_client::create_client	manual	0	
+0x003762d0	vostok::network::login_client::login_client	manual	0	EAX: receiver pointer explicitly moved intoEAX at normal return
+0x00376520	vostok::network::login_client::~login_client	manual	0	
+0x00376630	vostok::network::login_client::on_signed_in	manual	16	
+0x00376740	vostok::network::login_client::sign_in_impl	manual	0	
+0x003767b0	vostok::network::login_client::sign_in	manual	8	
+0x00376ac0	vostok::network::login_client::on_signed_out	manual	16	
+0x00376bb0	vostok::network::login_client::sign_out	manual	4	
+0x00378120	vostok::network::match_client_impl::set_connection_ports	manual	16	
+0x00378150	vostok::network::match_client_impl::send_queued_packets	manual	4	
+0x003787c0	vostok::network::match_client::create_client	manual	28	
+0x003789e0	vostok::network::match_client::create_responses_packets_allocator	manual	0	
+0x00378a40	vostok::network::match_client::match_client	manual	56	EAX: receiver pointer explicitly returned
+0x00378db0	vostok::network::match_client::~match_client	manual	4	
+0x00378f90	vostok::network::match_client::on_connected	manual	16	
+0x00379090	vostok::network::match_client::connect	manual	20	
+0x00379230	vostok::network::match_client::disconnect	manual	4	
+0x00379320	vostok::network::match_client::set_connection_ports	manual	20	
+0x00379480	vostok::network::enqueue_impl	manual	0	
+0x00379640	vostok::network::match_client::enqueue	manual	8	
+0x00379760	vostok::network::match_client::send_queued_packets	manual	8	
+0x003798b0	vostok::network::match_client::send_heart_beat	manual	0	
+0x00379930	vostok::network::match_client::on_message_received	manual	12	
+0x00379f00	vostok::network::match_client::on_disconnect_impl	manual	4	
+0x00379f20	vostok::network::match_client::on_disconnect	manual	4	
+0x0037a0e0	vostok::network::match_client::new_packet	manual	4	EAX: packet pointer
+0x0037a140	vostok::network::match_client::stats	manual	0	EAX: statistics pointer or zero
+0x003860f0	vostok::network::match_client_impl::clone_packet	manual	0	EAX: New packet pointer passed to enqueue by caller
+0x003861d0	vostok::network::match_client_impl::disconnect	manual	0	
+0x0038c970	vostok::ai::fsm::append_transition	manual	12	
+0x0038ca20	vostok::ai::fsm::tick	manual	4	
+0x0038caf0	vostok::ai::fsm::pop_state	manual	4	
+0x0038cc90	vostok::ai::fsm::serialize	manual	4	
+0x0038ccf0	vostok::ai::fsm::deserialize	manual	8	
+0x00396120		auto	0	
+0x003b9f40	vostok::render::device::device	manual	12	EAX: constructed device receiver
+0x003b9fe0	vostok::render::device::on_device_removed	manual	4	
+0x003ba320	vostok::render::device::get_max_supported_resolution	manual	0	
+0x003ba3e0	vostok::render::device::find_outputs	manual	4	
+0x003ba7b0	vostok::render::device::create_d3d	manual	4	
+0x003bb0f0	vostok::render::device::create	manual	4	
+0x003bb380	vostok::render::device::destroy	manual	0	
+0x003bb400	vostok::render::device::get_query_data	manual	12	AL: 1 for zero query result; 0 otherwise; upper EAX bits unspecified
+0x003bb800	vostok::render::shader_constant_table::shader_constant_table	manual	4	
+0x003bb870	vostok::render::render_target::set_name	manual	0	
+0x003bb8d0	vostok::render::res_geometry::res_geometry	manual	8	
+0x003bb9d0	vostok::render::resource_manager::constant_buffer_predicate::operator()	manual	0	AL: left operand orders before right; upper EAX bits unspecified
+0x003bba10	vostok::render::resource_manager::bind_samplers_to_shaders	manual	0	
+0x003bbac0	vostok::render::resource_manager::resource_manager	manual	8	EAX: resource-manager receiver
+0x003bc1d0	vostok::render::resource_manager::~resource_manager	manual	4	
+0x003bc7b0	vostok::render::resource_manager::get_default_texture	manual	4	EAX: return intrusive-pointer storage address
+0x003bc840	vostok::render::resource_manager::reload_modified_textures	manual	4	
+0x003bcaf0	vostok::render::resource_manager::create_const_table	manual	0	
+0x003bcbb0	vostok::render::resource_manager::release	manual	4	
+0x003bccc0	vostok::render::resource_manager::register_constant_binding	manual	4	EAX: backend constant host pointer or null
+0x003bcd20	vostok::render::resource_manager::create_texture	manual	40	EAX: cached or loaded resource pointer, or null sentinel
+0x003bcdd0	vostok::render::fix_texture_name	manual	0	
+0x003bd120	vostok::render::resource_manager::on_texture_loaded_res_impl	manual	40	EAX: texture pointer on normal completion;0 on explicit metadata/gate failure where present
+0x003bdce0	vostok::render::resource_manager::on_texture_loaded_res	manual	24	EAX: texture pointer on normal completion;0 on explicit metadata/gate failure where present
+0x003bdeb0	vostok::render::resource_manager::on_texture_loaded	manual	20	
+0x003be280	vostok::render::resource_manager::get_texture_video_memory_size	manual	0	EAX: 32-bit texture-memory sum excluding names containing $user$
+0x003be2d0	vostok::render::resource_manager::load_texture	manual	40	
+0x003be7f0	vostok::render::resource_manager::create_texture2d_impl	manual	24	
+0x003be7f0	vostok::render::resource_manager::create_texture2d_impl	manual	24	EAX: texture pointer on normal completion;0 on explicit metadata/gate failure where present
+0x003be9d0	vostok::render::resource_manager::create_unique_user_name	manual	0	EAX: same output-storage address
+0x003bea70	vostok::render::resource_manager::create_texture2d	manual	32	EAX: texture pointer on normal completion;0 on explicit metadata/gate failure where present
+0x003bebb0	vostok::render::resource_manager::create_texture3d	manual	8	EAX: zero on the early feature-guard exit; texture wrapper on normal construction return
+0x003bee00	vostok::render::resource_manager::release	manual	4	
+0x003bf0e0	vostok::render::resource_manager::create_buffer	manual	28	EAX: constructed object pointer or zero when allocation fails
+0x003bf150	vostok::render::resource_manager::create_state	manual	0	
+0x003bf150	vostok::render::resource_manager::create_state	manual	0	EAX: allocated24-byte composite state on successful allocation; null-allocation path still stores at address0x14
+0x003bf260	vostok::render::resource_manager::create_declaration	manual	12	EAX: existing/new resource pointer; render-target gate may return0
+0x003bf340	vostok::render::resource_manager::release	manual	4	
+0x003bf450	vostok::render::resource_manager::create_signature	manual	4	EAX: cached/new signature wrapper on ordinary return
+0x003bf520	vostok::render::resource_manager::release	manual	4	
+0x003bf640	vostok::render::resource_manager::create_input_layout	manual	12	EAX: cached/new layout resource on ordinary return
+0x003bf6f0	vostok::render::resource_manager::release	manual	4	
+0x003bf7f0	vostok::render::resource_manager::create_volume_render_target	manual	4	EAX: cached or newly created volume render target on ordinary return
+0x003bf930	vostok::render::resource_manager::create_render_target	manual	40	EAX: existing/new resource pointer; render-target gate may return0
+0x003bfbc0	vostok::render::resource_manager::release	manual	8	
+0x003bfec0	vostok::render::resource_manager::create_constant_buffer	manual	16	EAX: cached/new constant buffer on ordinary return
+0x003c0000	vostok::render::resource_manager::release	manual	4	
+0x003c0100	vostok::render::resource_manager::create_buffer_list	manual	4	
+0x003c0180	vostok::render::resource_manager::create_texture_list	manual	4	
+0x003c0210	vostok::render::resource_manager::release	manual	4	
+0x003c0330	vostok::render::resource_manager::create_sampler_list	manual	4	
+0x003c03b0	vostok::render::resource_manager::release	manual	4	
+0x003c04d0	vostok::render::resource_manager::create_vs	manual	4	
+0x003c0580	vostok::render::resource_manager::release	manual	4	
+0x003c0690	vostok::render::resource_manager::create_gs	manual	4	
+0x003c0740	vostok::render::resource_manager::release	manual	4	
+0x003c0850	vostok::render::resource_manager::create_ps	manual	4	
+0x003c0900	vostok::render::resource_manager::release	manual	4	
+0x003c0a10	vostok::render::resource_manager::create_geometry	manual	16	EAX: geometry pointer from nested factory
+0x003c0a70	vostok::render::resource_manager::create_geometry	manual	16	
+0x003c0b60	vostok::render::resource_manager::release	manual	4	
+0x003c0c70	vostok::render::resource_manager::create_render_output	manual	12	EAX: constructed registered render-output pointer
+0x003c0cd0	vostok::render::resource_manager::release	manual	4	
+0x003c0e00	vostok::render::resource_manager::copy2D	manual	8	
+0x003c0e60	vostok::render::resource_manager::register_sampler	manual	12	
+0x003c0ef0	vostok::render::resource_manager::find_registered_sampler	manual	0	EAX: matching hardware sampler pointer or zero
+0x003c1c30	vostok::render::state_cache<ID3D11DepthStencilState,D3D11_DEPTH_STENCIL_DESC,32>::get_state	manual	8	EAX: existing cache state or newly created state pointer; creation path copies it explicitly, hit path preserves lookup result
+0x003c1ca0	vostok::render::state_cache<ID3D11BlendState,D3D11_BLEND_DESC,32>::get_state	manual	8	EAX: existing cache state or newly created state pointer; creation path copies it explicitly, hit path preserves lookup result
+0x003c24f0	vostok::render::resource_manager::create_xs_hw_impl<vostok::render::vs_data>	manual	28	EAX (32bits): cached or newly constructed shader resource pointer, or0 on observed null/missing-source return paths
+0x003c2b60	vostok::render::resource_manager::create_xs_hw_impl<vostok::render::gs_data>	manual	28	EAX (32bits): cached or newly constructed shader resource pointer, or0 on observed null/missing-source return paths
+0x003c31d0	vostok::render::resource_manager::create_xs_hw_impl<vostok::render::ps_data>	manual	28	EAX (32bits): cached or newly constructed shader resource pointer, or0 on observed null/missing-source return paths
+0x003c7980	vostok::render::render_target::~render_target	manual	0	
+0x003c7f30	vostok::render::backend::backend	manual	0	EAX: receiver on normal return
+0x003c8430	vostok::render::backend::~backend	manual	4	
+0x003c87c0	vostok::render::backend::clear_depth_stencil	manual	0	
+0x003c8800	vostok::render::backend::clear_render_targets	manual	12	
+0x003c8880	vostok::render::backend::clear_render_targets	manual	8	
+0x003c8950	vostok::render::backend::clear_render_targets	manual	16	
+0x003c8bc0	vostok::render::backend::register_constant_host	manual	8	
+0x003c8cb0	vostok::render::backend::flush	manual	0	
+0x003c9230	vostok::render::backend::set_declaration	manual	0	
+0x003c9260	vostok::render::backend::render_indexed_instanced	manual	4	
+0x003c92f0	vostok::render::backend::render_indexed	manual	12	
+0x003c9870	vostok::render::shader_macros::register_available_macros	manual	0	
+0x003c9b40	vostok::render::shader_macros::fill_shader_macro_list	manual	16	
+0x003c9b80	vostok::render::shader_macros::fill_shader_configuration_macros	manual	16	
+0x003ca1a0	vostok::buffer_vector<vostok::render::shader_macro>::push_back	manual	4	
+0x003ca970	vostok::render::res_pass::res_pass	manual	12	
+0x003caa90	vostok::render::effect_manager::effect_manager	manual	0	
+0x003cabf0	vostok::render::effect_manager::~effect_manager	manual	4	
+0x003cae50	vostok::render::effect_manager::create_pass	manual	4	
+0x003caee0	vostok::render::effect_manager::delete_pass	manual	4	
+0x003caff0	vostok::render::effect_manager::add_effect	manual	16	
+0x003cb0e0	vostok::render::effect_manager::on_effect_created	manual	8	
+0x003cb220	vostok::render::effect_manager::on_async_effect_created	manual	12	
+0x003cb3c0	vostok::render::effect_manager::create_new_effect	manual	20	
+0x003cb510	vostok::render::effect_manager::create_new_effect	manual	20	
+0x003cb660	vostok::render::effect_manager::on_effects_recompiled	manual	8	
+0x003cb840	vostok::render::effect_manager::create_effect_technique	manual	4	
+0x003cb910	vostok::render::effect_manager::delete_effect_technique	manual	4	
+0x003cba30	vostok::render::effect_manager::recompile_shaders_async	manual	4	
+0x003cbec0	vostok::render::effect_manager::register_effect_desctiptor	manual	12	
+0x003cd460	vostok::render::options::use_ssr	manual	0	EAX: Boolean result0/1
+0x003cd4d0	vostok::render::options::set_default_values	manual	0	
+0x003cd870	vostok::render::options::register_console_commands	manual	0	
+0x003cf310	vostok::render::options::end_render_options_changing	manual	8	EAX: ORed changed-entry masks, initially1
+0x003cf4b0	vostok::render::event_query::wait	manual	8	
+0x003cf4f0	vostok::render::res_render_output::res_render_output	manual	4	EAX: render-output receiver
+0x003cf600	vostok::render::res_render_output::show	manual	0	
+0x003cf650	vostok::render::res_render_output::~res_render_output	manual	0	
+0x003cf6c0	vostok::render::res_render_output::initialize_swap_chain	manual	0	
+0x003cf7f0	vostok::render::res_render_output::present	manual	4	
+0x003cf920	vostok::render::res_render_output::select_resolution	manual	12	
+0x003cf980	vostok::render::res_render_output::set_size	manual	12	
+0x003cfb30	vostok::render::res_render_output::resize	manual	12	
+0x003cfef0	vostok::render::res_render_output::update_targets	manual	0	
+0x003d0040	vostok::render::res_render_output::update_depth_stencil_buffer	manual	4	
+0x003d08f0	vostok::render::res_texture::res_texture	manual	4	
+0x003d09b0	vostok::render::res_texture::`scalar deleting destructor'	manual	4	
+0x003d09d0	vostok::render::res_texture::~res_texture	manual	0	
+0x003d0a20	vostok::render::res_texture::desc_update	manual	0	
+0x003d0b40	vostok::render::res_texture::width	manual	0	
+0x003d0b60	vostok::render::res_texture::height	manual	0	
+0x003d0d70	vostok::render::res_texture::set_hw_texture	manual	20	
+0x003d0f80	vostok::render::res_texture::map2D	manual	8	
+0x003d1000	vostok::render::res_texture::clone	manual	0	
+0x003d10f0	vostok::render::untyped_buffer::untyped_buffer	manual	24	EAX: receiver pointer
+0x003d16f0	vostok::render::res_geometry::~res_geometry	manual	0	
+0x003d1740	vostok::render::res_geometry::apply	manual	4	
+0x003d1920	vostok::render::render_target::create_3d	manual	8	
+0x003d1c20	vostok::render::render_target::create	manual	20	
+0x003d1ed0	vostok::render::render_target::create	manual	28	
+0x003d2f40		auto	0	
+0x003d3280	vostok::render::texture_storage::~texture_storage	manual	0	
+0x003d33b0	vostok::render::texture_storage::get	manual	4	EAX: pool record pointer or null; resource is record+8
+0x003d33e0	vostok::render::texture_storage::total_allocated_memory	manual	0	EAX (32 bits): byte total modulo2^32
+0x003d3420	vostok::render::texture_storage::occupied_memory	manual	0	EAX (32 bits): byte total modulo2^32
+0x003d3470	vostok::render::texture_storage::supported	manual	12	AL (8 bits): boolean success
+0x003d34c0	vostok::render::texture_storage::is_texture_from_pool	manual	0	AL (8 bits): boolean success
+0x003d3550	vostok::render::texture_storage::try_release	manual	0	AL (8 bits): boolean success
+0x003d3d60	vostok::render::hw_buffer_pool_chunk::allocate_range	manual	24	AL: Range fit/commit success
+0x003d3ed0	vostok::render::hw_buffer_pool_chunk::gather_free_ranges	manual	4	AL: Output vector nonempty
+0x003d43e0	vostok::render::hw_buffer_pool::allocate	manual	20	AL: Allocation success
+0x003d4510	vostok::render::hw_buffer_pool::deallocate	manual	0	
+0x003d4560	vostok::render::hw_buffer_pool::changed	manual	0	AL: Any dirty chunk
+0x003d4590	vostok::render::hw_buffer_pool::sync	manual	0	EAX: Count of cleared dirty chunks
+0x003d45d0	vostok::render::hw_buffer_pool::total_allocated_memory	manual	0	EDX:EAX: Unsigned64 chunk capacity total
+0x003d5910	vostok::render::constants_handler<0>::apply	manual	0	
+0x003d59a0	vostok::render::constants_handler<2>::apply	manual	0	
+0x003d5a30	vostok::render::constants_handler<1>::apply	manual	0	
+0x003d5ac0	vostok::render::textures_handler<0>::apply	manual	4	
+0x003d5b50	vostok::render::textures_handler<2>::apply	manual	4	
+0x003d5c90	vostok::render::textures_handler<1>::apply	manual	4	
+0x003d5d20	vostok::render::samplers_handler<0>::apply	manual	0	
+0x003d5e10	vostok::render::samplers_handler<2>::apply	manual	0	
+0x003d5ea0	vostok::render::samplers_handler<1>::apply	manual	0	
+0x003d5f30	vostok::render::buffers_handler<0>::apply	manual	0	
+0x003d6090	vostok::render::buffers_handler<2>::apply	manual	0	
+0x003d6120	vostok::render::buffers_handler<1>::apply	manual	0	
+0x003d6fd0	vostok::render::compare	manual	0	EAX: lexicographic unsigned field comparison: -1 if left greater, +1 if left smaller, 0 if equal; fields4,10hex,8,C,14hex
+0x003d7170	vostok::render::res_effect::~res_effect	manual		
+0x003d7230	vostok::render::res_effect::apply_pass	manual	0	AL: 1 on normal return after applying first pass and releasing temporaries
+0x003d72b0	vostok::render::res_effect::get_max_used_texture_dimension	manual	12	
+0x003d73c0	vostok::render::res_effect::push_texture_unique	manual	12	
+0x003d75f0	vostok::render::vertex_buffer::vertex_buffer	manual	0	EAX: receiver on normal return
+0x003d7640	vostok::render::vertex_buffer::lock	manual	8	EAX: mapped base plus ring byte cursor
+0x003d76d0	vostok::render::index_buffer::index_buffer	manual	0	EAX: receiver on normal return
+0x003d7730	vostok::render::index_buffer::lock	manual	4	EAX: mapped base plus2*index cursor
+0x003d7900	vostok::render::shader_constant_table::fatal	manual	0	
+0x003d7960	vostok::render::shader_constant_table::get	manual	4	EAX: EAX matching0x18-byte record pointer or zero
+0x003d79d0	vostok::render::shader_constant_table::parse_constant_buffer	manual	12	AL (8bits only): 1 on recorded local normal return; higherEAXbits unspecified
+0x003d7c60	vostok::render::shader_constant_table::parse	manual	12	AL (8bits only): 1 on recorded local normal return; higherEAXbits unspecified
+0x003d7e30	vostok::render::shader_constant_table::compare	manual	0	EAX: EAX observed -1,0,+1 comparison result; ordering follows captured pointer/field comparisons
+0x003d7f40	vostok::render::shader_constant_table::apply_bindings	manual	4	
+0x003d8880	vostok::render::res_texture_list::res_texture_list	manual	8	
+0x003d94f0	vostok::render::effect_compiler::effect_compiler	manual	12	
+0x003d9720	vostok::render::effect_compiler::~effect_compiler	manual	4	
+0x003d9850	vostok::render::effect_compiler::set_stencil	manual	20	
+0x003d98b0	vostok::render::effect_compiler::set_texture	manual	32	
+0x003d9d00	vostok::render::effect_compiler::set_texture_impl	manual	4	
+0x003d9d80	vostok::render::effect_compiler::color_write_enable	manual	4	
+0x003d9dc0	vostok::render::modify_shader_configuration	manual	0	
+0x003d9f60	vostok::render::effect_compiler::begin_pass	manual	28	
+0x003da350	vostok::render::effect_compiler::shader_cache_info::shader_cache_info	manual	0	
+0x003da450	vostok::render::effect_compiler::end_pass	manual	4	
+0x003da6b0	vostok::render::effect_compiler::end_technique	manual	4	
+0x003da740	vostok::buffer_vector<vostok::intrusive_ptr<vostok::render::res_pass,vostok::render::resource_intrusive_base,vostok::threading::single_threading_policy> >::push_back	manual	4	
+0x003da7d0	vostok::buffer_vector<vostok::intrusive_ptr<vostok::render::res_shader_technique,vostok::render::resource_intrusive_base,vostok::threading::single_threading_policy> >::push_back	manual	4	
+0x003da860	vostok::buffer_vector<vostok::render::effect_compiler::shader_cache_info>::push_back	manual	4	
+0x003da8e0	vostok::buffer_vector<vostok::render::effect_compiler::texture_query_desc>::push_back	manual	4	
+0x003dab60	vostok::render::effect_compiler::shader_cache_info::shader_cache_info	manual	0	
+0x003dadd0	vostok::render::shader_buffer::shader_buffer	manual	4	EAX: receiver pointer
+0x003daee0	vostok::render::shader_buffer::lock_write_discard	manual	0	EAX: mapped result structure first pointer field
+0x003daf80	vostok::render::res_xs<vostok::render::ps_data>::apply	manual	4	
+0x003db050	vostok::render::res_xs<vostok::render::gs_data>::apply	manual	4	
+0x003db270	vostok::render::res_xs<vostok::render::vs_data>::apply	manual	4	
+0x003db360	vostok::render::res_xs<vostok::render::vs_data>::res_xs<vostok::render::vs_data>	manual	0	
+0x003db4d0	vostok::render::res_xs<vostok::render::gs_data>::res_xs<vostok::render::gs_data>	manual	0	
+0x003db5e0	vostok::render::res_xs<vostok::render::ps_data>::res_xs<vostok::render::ps_data>	manual	0	
+0x003db6f0	vostok::render::res_xs<vostok::render::vs_data>::compare	manual	8	
+0x003db6f0	vostok::render::res_xs<vostok::render::gs_data>::compare	manual	8	
+0x003db6f0	vostok::render::res_xs<vostok::render::ps_data>::compare	manual	8	
+0x003db760	vostok::render::state_cache<ID3D11RasterizerState,D3D11_RASTERIZER_DESC,32>::create_state	manual	40	
+0x003db7f0	vostok::render::state_cache<ID3D11DepthStencilState,D3D11_DEPTH_STENCIL_DESC,32>::create_state	manual	52	
+0x003db880	vostok::render::state_cache<ID3D11BlendState,D3D11_BLEND_DESC,32>::create_state	manual	264	
+0x003db910	vostok::render::state_cache<ID3D11SamplerState,D3D11_SAMPLER_DESC,32>::create_state	manual	52	
+0x003dbd20	vostok::render::res_sampler_list::res_sampler_list	manual	8	
+0x003dbe50	vostok::render::res_sampler_list::rebind	manual	0	
+0x003dc270	vostok::render::res_buffer_list::res_buffer_list	manual	8	
+0x003dc6f0	vostok::render::binary_shader_source::binary_shader_source	manual	0	
+0x003dc790	vostok::render::binary_shader_source::~binary_shader_source	manual		
+0x003dc7f0	vostok::render::binary_shader_source::`scalar deleting destructor'	manual	4	
+0x003dc810	vostok::render::shader_binary_source_cook::shader_binary_source_cook	manual	0	EAX: fixed-global cook address
+0x003dc950	vostok::render::shader_binary_source_cook::converted_shader_loaded	manual	8	
+0x003dcb90	vostok::render::shader_binary_source_cook::translate_query	manual	4	
+0x003dd0d0	vostok::render::shader_binary_source_cook::delete_resource	manual	4	
+0x003dd300	vostok::render::texture_cook::calculate_resource_size	manual	12	EAX: resource allocation byte count including20-byte header
+0x003dd320	vostok::render::texture_cook::create_resource	manual	16	
+0x003dd4a0	vostok::render::texture_mip_cook::on_dds_body_ready	manual	16	
+0x003dd560	vostok::render::texture_mip_cook::create_resource	manual	16	
+0x003dd7b0	vostok::render::texture_mip_cook::calculate_resource_size	manual	12	EAX: resource allocation byte count including20-byte header
+0x003dde90	vostok::render::shader_constant_buffer::shader_constant_buffer	manual	12	EAX: receiver pointer
+0x003ddfd0	vostok::render::shader_constant_buffer::update	manual	0	
+0x003de140	vostok::render::state_utils::operator==	manual	0	AL: field equality boolean; higher EAX bits unspecified
+0x003de1c0	vostok::render::state_utils::operator==	manual	0	AL: field equality boolean; higher EAX bits unspecified
+0x003de3c0	vostok::render::state_utils::get_hash	manual	0	EAX: descriptor field hash used by caller cache
+0x003de4d0	vostok::render::state_utils::get_hash	manual	0	EAX: descriptor field hash used by caller cache
+0x003de8a0	vostok::render::res_xs_hw<vostok::render::vs_data>::create_hw_shader	manual	0	
+0x003deff0	vostok::render::res_xs_hw<vostok::render::gs_data>::create_hw_shader	manual	0	
+0x003df1b0	vostok::render::res_xs_hw<vostok::render::ps_data>::create_hw_shader	manual	0	
+0x003df660	vostok::render::res_effect::res_effect	manual	0	EAX: res_effect owner
+0x003df800	vostok::render::effect_cook::on_binary_shaders	manual	16	
+0x003e0060	vostok::render::effect_cook::on_textures_ready	manual	20	
+0x003e0330	vostok::render::effect_cook::translate_query	manual	4	
+0x003e0c30	vostok::render::effect_cook::delete_resource	manual	4	
+0x003e1580	vostok::render::texture_cook_wrapper::translate_query	manual	4	
+0x003e1640	vostok::render::texture_cook_wrapper::on_fs_iterators_ready_converted	manual	4	
+0x003e19f0	vostok::render::texture_cook_wrapper::on_dds_header_ready	manual	32	
+0x003e1d70	vostok::render::texture_cook_wrapper::query_converted_texture_mip	manual	24	
+0x003e1f90	vostok::render::texture_cook_wrapper::query_converted_texture	manual	20	
+0x003e2020	vostok::render::texture_cook_wrapper::on_texture_loaded	manual	8	
+0x003e2100	vostok::render::texture_cook_wrapper::delete_resource	manual	4	
+0x003e2dc0	vostok::render::state_descriptor::reset	manual	0	
+0x003e2e40	vostok::render::state_descriptor::set_stencil	manual	16	
+0x003e3060	vostok::render::xs_descriptor<vostok::render::vs_data>::set_texture	manual	8	
+0x003e3060	vostok::render::xs_descriptor<vostok::render::gs_data>::set_texture	manual	8	
+0x003e3060	vostok::render::xs_descriptor<vostok::render::ps_data>::set_texture	manual	8	
+0x003e31e0	vostok::render::xs_descriptor<vostok::render::vs_data>::use_texture	manual	4	
+0x003e31e0	vostok::render::xs_descriptor<vostok::render::gs_data>::use_texture	manual	4	
+0x003e31e0	vostok::render::xs_descriptor<vostok::render::ps_data>::use_texture	manual	4	
+0x003e33e0	vostok::render::shader_constant_table::operator=	manual	4	EAX: EAX destination table pointer
+0x003f2590	vostok::network_core::udp_match_client::start_receiving	manual	0	
+0x003f2610	vostok::network_core::udp_match_client::connect_impl	manual	8	
+0x003f2990	vostok::network_core::udp_match_client::connect	manual	16	
+0x003f2af0	vostok::network_core::udp_match_client::send_queued_packets_impl	manual	4	
+0x003f2b50	vostok::network_core::udp_match_client::set_connection_ports	manual	20	
+0x003f2df0	vostok::network_core::udp_match_client::enqueue	manual	8	
+0x003f2f10	vostok::network_core::udp_match_client::enqueue	manual	8	
+0x003f33f0	vostok::network_core::udp_match_client::send_queued_packets	manual	4	
+0x003faf90		auto	None	
+0x003fb4f0		auto	None	
+0x003fbf70		auto		
+0x003fcc40		auto	12	
+0x003fdcf0		auto		
+0x003fe000		auto	0	
+0x00400940		auto	0	
+0x00401730		auto	0	
+0x004017a0		auto	0	
+0x00401870		auto	0	
+0x00401920		auto	0	
+0x00403900		auto	0	
+0x00404320		auto	0	
+0x004206bc		auto	0	
+0x0042078d		auto	0	
+0x0042087b		auto	0	
+0x00421124		auto	0	
+0x004226a0	memmove	manual	0	EAX: original destination on local return paths
+0x00422a05		auto	0	
+0x00422aba		auto	0	
+0x00423c1f		auto	0	
+0x00423c61		auto	0	
+0x00423c74		auto	0	
+0x00423c87		auto	0	
+0x00423caa		auto	0	
+0x00424500	memset	manual	0	EAX: original destination pointer on inspected direct returns
+0x00424580	memcpy	manual	0	EAX: original destination on observed local return paths
+0x004248f0		auto	16	
+0x00424b50	_ftol2_sse	manual		
+0x00424b86	_ftol2	manual	0	EDX:EAX: high/low integer result after sign-sensitive correction
+0x00424c00		auto	16	
+0x00424c34		auto	None	
+0x00424ff0		auto	0	
+0x00425080		auto	0	
+0x00425f4b		auto	0	
+0x00426e1b		auto	0	
+0x00426f7b		auto	0	
+0x004274b7		auto	0	
+0x00427528		auto	0	
+0x00428794		auto	0	
+0x004288e3		auto		
+0x00428cff		auto	0	
+0x00429430		auto	16	
+0x004294d0		auto	16	
+0x00429c10		auto	0	
+0x00429f50		auto	0	
+0x00429ff2		auto	0	
+0x0042a2f5		auto	0	
+0x0042a4f8		auto	0	
+0x0042a890		auto	0	
+0x0042affb		auto	0	
+0x0042b076		auto	0	
+0x0042b111		auto	0	
+0x0042b286		auto	0	
+0x0042dca0		auto	0	
+0x0042efa0		auto	0	
+0x0042f87b		auto	0	
+0x0042f909		auto	0	
+0x0042fcb8		auto	0	
+0x0042fd3f		auto	0	
+0x0042fe72	_get_sse2_info	manual	0	EAX: one when the CPU bit and protected OS probe both succeed; zero otherwise
+0x0042fed4	__sse2_available_init	manual	0	EAX: zero initialization status after storing the getter result
+0x00432bf3		auto	0	
+0x00432c4a		auto	0	
+0x00433dc9		auto	0	
+0x00433e29		auto	0	
+0x00433ee2		auto	0	
+0x004343f0		auto	0	
+0x00435cd5		auto	0	
+0x00435dbc		auto	0	
+0x00437bd3		auto	0	
+0x00437ca0		auto	0	
+0x004390d0		auto	16	
+0x0043a05d		auto	0	
+0x0043b714		auto	0	
+0x0043c186		auto	0	
+0x00441f42		auto	0	
+0x00442570		auto	16	
+0x00442b1c		auto	12	
+0x004436ab		auto	0	
+0x004448e0		auto	0	
+0x0044635d		auto	0	
+0x00446d42		auto	0	
+0x00447290		auto	16	
+0x00824910		auto	0	
+0x00824c68		auto	0	
+0x00824c9c		auto	0	
+0x008253dc		auto	0	
+0x00825670	_CIsqrt	manual	0	ST0: square root on normal FSQRT path; exceptional paths separately dispatch math handling
+0x00825923		auto	0	
+0x00826490		auto	0	
+0x00826b30		auto	0	
+0x00828381		auto	0	
+0x00828460		auto	0	
+0x008292b7		auto	0	
+0x0082ab9c		auto	0	
+0x00842570		auto	0	
+0x00845a40		auto	0	
+0x00846f40		auto	0	
+0x0084b1c0		auto	0	

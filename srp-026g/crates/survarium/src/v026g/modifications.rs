@@ -10,10 +10,10 @@
 //!   chances by the difference in modifications;
 //! - `gameplay/items/reroll/reroll.options`: prices by item level;
 //!
-//! and, generated from every item's config by
-//! `scripts/gen-data-026g/gen_modifications.py`, what each item may carry
-//! ([`ItemMods`]: `available_modifications_mask`, `available_defects_mask`,
-//! `camo_available`, `decal_available`).
+//! and, from every item's config, what each item may carry ([`ItemMods`]:
+//! `available_modifications_mask`, `available_defects_mask`,
+//! `camo_available`, `decal_available`). All of them are the players' own
+//! files ([`super::game_data`]).
 //!
 //! **What the client knows of this** (0.26g exe, PROVEN by its strings and
 //! readers): each modification's and defect's `id`, `modifiers`, `ui_desc`,
@@ -69,20 +69,17 @@
 //!   [LIKELY: armour and slot counts are type 1 with absolute steps, damage,
 //!   weight and wear type 2 with small fractions].
 
-mod table;
-
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
+use super::dictionary::Dictionary;
 use super::drops::Rng;
+use super::game_data::{GameData, GameDataError};
 use super::item_params::item_params;
-pub use table::ITEM_MODS;
 
-const MODIFICATIONS: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/modifications_026g.options");
-const CRAFT: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/craft_026g.options");
-const REROLL: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/reroll_026g.options");
+/// The paths of the three files in the archive.
+pub const MODIFICATIONS_PATH: &str = "gameplay/items/modifications/modifications.options";
+pub const CRAFT_PATH: &str = "gameplay/items/craft/craft.options";
+pub const REROLL_PATH: &str = "gameplay/items/reroll/reroll.options";
 
 /// The modifications of its own an item holds at most: the lobby's highest
 /// rank (`MessageCraftItem`: "rank >= 3" is refused).
@@ -101,7 +98,7 @@ pub const REROLL_WAIT_SECONDS: u32 = 6 * 3600;
 pub const DECAL_SLOTS: [u8; 2] = [0, 1];
 pub const CAMO_SLOT: u8 = 3;
 
-/// What an item may be modified with (generated, [`ITEM_MODS`]).
+/// What an item may be modified with, from its config ([`all_item_mods`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemMods {
     pub dict_id: u16,
@@ -405,10 +402,102 @@ fn weight(drop_weight: f32) -> u32 {
 /// What `dict_id` may be modified with; `None` for an item that takes
 /// nothing (stacks, cosmetics, boosters).
 pub fn item_mods(dict_id: u16) -> Option<&'static ItemMods> {
-    ITEM_MODS
-        .binary_search_by_key(&dict_id, |item| item.dict_id)
+    let all = all_item_mods();
+    all.binary_search_by_key(&dict_id, |item| item.dict_id)
         .ok()
-        .map(|index| &ITEM_MODS[index])
+        .map(|index| &all[index])
+}
+
+/// What each item may be modified with, by `dict_id`; an item that takes
+/// nothing has no row ([`derive_item_mods`]).
+pub fn all_item_mods() -> &'static [ItemMods] {
+    static SHARED: std::sync::OnceLock<Vec<ItemMods>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        derive_item_mods(super::game_data::shared(), Dictionary::shared())
+            .expect("the item configs read")
+    })
+}
+
+/// A row for each item of `dictionary` whose config (in `data`) lets it
+/// take anything, by `dict_id`.
+pub fn derive_item_mods(
+    data: &GameData,
+    dictionary: &Dictionary,
+) -> Result<Vec<ItemMods>, GameDataError> {
+    let mut rows = Vec::new();
+    for item in &dictionary.items {
+        let path = item.cfg_name.as_str();
+        let config = super::game_data::config(data, path)?.ok_or_else(|| {
+            GameDataError(format!(
+                "item {} `{}` has no {path}",
+                item.dict_id, item.name
+            ))
+        })?;
+        if let Some(row) = ItemMods::from_config(item.dict_id, &config)
+            .map_err(|cause| GameDataError(format!("{path}: {}", cause.0)))?
+        {
+            rows.push(row);
+        }
+    }
+    rows.sort_by_key(|row| row.dict_id);
+    Ok(rows)
+}
+
+/// A mask of an item's config as a number: character `j` is bit `j + 1`
+/// (`modifications.options`' `type_mask`s have one character more in
+/// front).
+fn mask_bits(mask: &str, key: &str) -> Result<u64, ConfigError> {
+    let mut bits = 0_u64;
+    for (j, byte) in mask.bytes().enumerate() {
+        match byte {
+            b'0' => {}
+            b'1' if j + 1 < 64 => bits |= 1 << (j + 1),
+            _ => {
+                return Err(ConfigError(format!(
+                    "`parameters.{key}` `{mask}` is not a mask"
+                )));
+            }
+        }
+    }
+    Ok(bits)
+}
+
+impl ItemMods {
+    /// The row of an item's config: `parameters.available_modifications_mask`
+    /// and `available_defects_mask`, `camo_available` and
+    /// `decal_available`; `None` for an item with nothing set.
+    pub fn from_config(dict_id: u16, config: &ConfigValue) -> Result<Option<Self>, ConfigError> {
+        let p = config.get("parameters");
+        let mask = |key: &str| -> Result<u64, ConfigError> {
+            match p.and_then(|p| p.get(key)) {
+                None => Ok(0),
+                Some(value) => {
+                    let text = value.as_str().ok_or_else(|| {
+                        ConfigError(format!("`parameters.{key}` is not a string"))
+                    })?;
+                    mask_bits(text, key)
+                }
+            }
+        };
+        let flag =
+            |key: &str| p.and_then(|p| p.get(key)).and_then(ConfigValue::as_bool) == Some(true);
+        let modifications = mask("available_modifications_mask")?;
+        let defects = mask("available_defects_mask")?;
+        let defects = u32::try_from(defects).map_err(|_| {
+            ConfigError("`parameters.available_defects_mask` is over 31 types".into())
+        })?;
+        let (camo, decal) = (flag("camo_available"), flag("decal_available"));
+        if modifications == 0 && defects == 0 && !camo && !decal {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            dict_id,
+            modifications,
+            defects,
+            camo,
+            decal,
+        }))
+    }
 }
 
 /// The upgrade slots `upgrade_dict_id` may go into on `host_dict_id`: a
@@ -435,12 +524,17 @@ pub fn upgrade_slots(host_dict_id: u16, upgrade_dict_id: u16) -> &'static [u8] {
 }
 
 impl Modifications {
-    /// The files the 0.26g client ships, parsed once.
+    /// The players' files ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Modifications> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::parse(MODIFICATIONS, CRAFT, REROLL)
-                .expect("the embedded 0.26g modification files parse")
+            use super::game_data::file;
+            Self::parse(
+                file(MODIFICATIONS_PATH),
+                file(CRAFT_PATH),
+                file(REROLL_PATH),
+            )
+            .expect("the modification files parse")
         })
     }
 

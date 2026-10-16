@@ -44,7 +44,9 @@ class GameDownloadTest(unittest.TestCase):
         with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("game/binaries/x86/survarium_skhid.exe", self.overlay)
         self.bundle = bundle.getvalue()
-        self.routes = {"/game": (200, b"<html>Sign in to Google</html>", {})}
+        # No patch of resources.db: an empty list.
+        self.routes = {"/game": (200, b"<html>Sign in to Google</html>", {}),
+                       "/patches": (200, b"{}", {})}
         self.requests = []
         test = self
 
@@ -153,7 +155,9 @@ class GameDownloadTest(unittest.TestCase):
         self.assertNotIn("/game", self.requests)
         self.requests.clear()
         self.assertEqual(self.run_updater(), 0, self.log)
-        self.assertEqual(self.requests, ["/api/client-files"])
+        # The overlay is up to date; the list of resources.db's patches is
+        # asked for at every start.
+        self.assertEqual(self.requests, ["/api/client-files", "/patches"])
 
     def test_a_changed_extractor_is_never_run_and_nothing_is_downloaded_for_it(self):
         # The same size, other bytes. The Skhid files are installed first, to

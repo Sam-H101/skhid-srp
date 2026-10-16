@@ -277,6 +277,11 @@ pub enum Skip {
     /// An input, roster change or correction at or before the last
     /// snapshot's time: "older than last resync".
     OlderThanResync,
+    /// A roster entry (0xE9) for a tick its game has played past by the
+    /// event horizon, once the world of its sync is loaded: "REJECTED,
+    /// reason: too old" (`enter_match` 0x2D15C2..0x2D15E8). A client never
+    /// moves it to a later tick, so every copy is refused the same way.
+    TooOld,
     /// 0xF6 on a stock client: skipped with a log line.
     NotPatched,
 }
@@ -335,9 +340,19 @@ pub struct ClientModel {
     /// The time of the last snapshot it loaded; `None` while its world is
     /// frozen (before "THE VERY FIRST SYNCHRONIZATION").
     pub last_resync: Option<u32>,
+    /// Whether the world of its latest 0xE5 is loaded: from then on its
+    /// "present" is its clock, and a roster entry older than the event
+    /// horizon is refused (`Skip::TooOld`). Before it (the 0xE5 cleared
+    /// the present to 50 ms) every entry is taken, and the event list
+    /// outlives the load (0xE8 loads in mode 1, 0x27C107).
+    pub world_loaded: bool,
     /// Snapshots loaded: 1 is the first sync, each more a "FULL RESYNC".
     pub syncs: u32,
 }
+
+/// The client's event horizon (`gwc+0x18FB4`): `max_ping_time_in_ms` +
+/// 250, 500 ms on a client.
+pub const EVENT_HORIZON_MS: u32 = 500;
 
 impl ClientModel {
     pub fn new(patched: bool) -> Self {
@@ -354,6 +369,7 @@ impl ClientModel {
             correction_left: 0.0,
             correction_carried: 0.0,
             last_resync: None,
+            world_loaded: false,
             syncs: 0,
         }
     }
@@ -473,6 +489,7 @@ impl ClientModel {
                     return Ok(Taken::Skipped(Skip::OldGeneration));
                 }
                 self.clock = Some(*match_time);
+                self.world_loaded = false;
                 reply = Some(TimeReply::to_set_time(*echo, *match_time, *match_time));
             }
             ServerMessage::Ping { a, b } => {
@@ -508,6 +525,7 @@ impl ClientModel {
                 }
                 self.generation = Generation(*generation);
                 self.last_resync = Some(*snapshot_time);
+                self.world_loaded = true;
                 self.syncs += 1;
                 time = Some(*snapshot_time);
             }
@@ -553,6 +571,14 @@ impl ClientModel {
                 let resolved = self.resolve(at)?;
                 if self.last_resync.is_some_and(|resync| resolved <= resync) {
                     return Ok(Taken::Skipped(Skip::OlderThanResync));
+                }
+                // `enter_match` 0x2D1470: an entry older than the horizon
+                // from its present, once its world is loaded.
+                if matches!(other, ServerMessage::PlayerEntered { .. })
+                    && self.world_loaded
+                    && resolved + EVENT_HORIZON_MS <= self.clock.unwrap_or(0)
+                {
+                    return Ok(Taken::Skipped(Skip::TooOld));
                 }
                 time = Some(resolved);
             }

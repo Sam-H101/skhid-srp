@@ -183,6 +183,8 @@ pub const ENTRAP_ENEMY: usize = 21;
 /// its inventory (`results.md` §3: dict ids 0xD6 and 0xD7 are never added).
 pub const GENERIC_MONEY: u16 = 214;
 pub const PREMIUM_MONEY: u16 = 215;
+/// The drop card's item name (`use_drop_card`).
+pub const DROP_CARD: &str = "drop_card";
 
 /// The reports kept for players asking again (`41 00`, `3D 00`).
 const KEPT: usize = 64;
@@ -518,6 +520,16 @@ const REPORT_KEY: &str = "report:";
 
 fn report_key(match_id: u32) -> String {
     format!("{REPORT_KEY}{match_id}")
+}
+
+/// The reports of a repository's rows that read ([`Results::restored`]
+/// keeps those a state lists), for the start's check of what they name
+/// (`super::known`).
+pub(crate) fn kept_reports(rows: &[(String, String)]) -> Vec<MatchReport> {
+    rows.iter()
+        .filter(|(key, _)| key.starts_with(REPORT_KEY))
+        .filter_map(|(_, body)| serde_json::from_str(body).ok())
+        .collect()
 }
 
 /// What of [`Inner`] is written beside the reports, as JSON under
@@ -1985,7 +1997,7 @@ pub fn use_drop_card(
     rng: &mut Rng,
 ) -> Option<Result<DropCardUse, WireError>> {
     let dictionary = Dictionary::shared();
-    let card = dictionary.item_named("drop_card")?.dict_id;
+    let card = dictionary.item_named(DROP_CARD)?.dict_id;
     let owned = account.item(card_item_id)?;
     if owned.dict_id != card || owned.condition_or_stack == 0 {
         return None;

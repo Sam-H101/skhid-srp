@@ -38,9 +38,42 @@ chmod -R u+rwX,go+rX,go-w "$SRC/srp-026g"
 rev=$(git -C "$SRC" rev-parse --short HEAD)
 echo "main is $rev: $(git -C "$SRC" log -1 --format=%s)"
 
-# The build sees the repository's 0.26g folder and nothing of the host. The
-# compose file is the host's own copy, not the checkout's: what a container
-# may reach on the host is not decided by the repository.
+# The compose file is the host's own copy, not the checkout's: what a
+# container may reach on the host is not decided by the repository. A copy
+# older than main's would start main without what it needs (the game data's
+# SRP_GAME_DATA and its mount came so): refuse, before anything is changed,
+# until an operator copies the new one.
+if ! diff -u "$RUN/docker-compose.yml" "$SRC/srp-026g/docker-compose.yml" >&2; then
+    echo "not deployed: $RUN/docker-compose.yml is not main's srp-026g/docker-compose.yml" \
+         "(the differences above). Read them, then as root:" \
+         "install -m 600 $SRC/srp-026g/docker-compose.yml $RUN/docker-compose.yml" >&2
+    exit 1
+fi
+# srp does not start without the server's game data: SRP_GAME_DATA of .env,
+# else the compose file's default, in the download folder (/srv/srp/download
+# in the container: SRP26_DOWNLOAD_DIR of .env, else download/ here).
+setting() { sed -n "s/^$1=//p" "$RUN/.env" | tail -n 1 | sed "s/^[\"']//; s/[\"']\$//"; }
+data=$(setting SRP_GAME_DATA)
+data=${data:-/srv/srp/download/server-game-data.db}
+download=$(setting SRP26_DOWNLOAD_DIR)
+download=${download:-./download}
+case $download in
+    /*) ;;
+    *) download=$RUN/$download ;;
+esac
+case $data in
+    /srv/srp/download/*)
+        host_data=$download/${data#/srv/srp/download/}
+        if [ ! -f "$host_data" ]; then
+            echo "not deployed: no server game data at $host_data (SRP_GAME_DATA" \
+                 "$data): put the test server's server-game-data.db there, mode 644" \
+                 "(README.md beside this script)" >&2
+            exit 1
+        fi
+        ;;
+esac
+
+# The build sees the repository's 0.26g folder and nothing of the host.
 docker build --tag srp-026g:latest "$SRC/srp-026g"
 compose up -d --no-build --remove-orphans
 docker image prune --force >/dev/null

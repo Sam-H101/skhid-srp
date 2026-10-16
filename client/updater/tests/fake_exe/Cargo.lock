@@ -6,8 +6,13 @@ version = 4
 name = "fake-exe"
 version = "0.1.0"
 dependencies = [
+ "skhid-updater-logic",
  "windows-sys",
 ]
+
+[[package]]
+name = "skhid-updater-logic"
+version = "0.1.0"
 
 [[package]]
 name = "windows-link"

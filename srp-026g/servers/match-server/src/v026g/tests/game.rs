@@ -1250,6 +1250,75 @@ fn a_player_back_in_the_match_starts_at_the_match_clock() {
     bench.assert_no_faults();
 }
 
+/// A game on a slow line that starts from a world older than another
+/// player's entry gets that entry before its world is loaded, never past
+/// its horizon. Live, 2026-10-15: it came once the load was proven, 600 ms
+/// and more past its tick, the game refused it ("too old", 0x2D15C2) and
+/// was out of step 3 s into the match (two of two big starts).
+#[test]
+fn a_slow_starter_gets_the_entries_since_its_world_in_time() {
+    let bench = slow_start(300);
+    let (_, world) = bench.clients[2].snapshots()[0];
+    // The entry came with its first world, which was not done again.
+    assert_eq!(generations(&bench.clients[2]), [0]);
+    assert!(
+        bench
+            .game()
+            .events()
+            .iter()
+            .any(|(at, who, entered)| *who == 1 && *entered && *at > world)
+    );
+    assert!(bench.clients[2].entered().contains(&1));
+}
+
+/// So slow a line that its 0xE5 goes unanswered (the world goes all the
+/// same, and its entries cannot go ahead of it, `Peer::time_answered`):
+/// the entry would reach it past its horizon, and its start is done again
+/// from a world that has the player.
+#[test]
+fn a_starter_too_slow_for_its_entries_starts_again_from_a_world_with_them() {
+    let bench = slow_start(600);
+    assert_eq!(generations(&bench.clients[2]), [0, 1]);
+    let (_, world) = bench.clients[2].snapshots()[1];
+    assert!(
+        bench
+            .game()
+            .events()
+            .iter()
+            .any(|(at, who, entered)| *who == 1 && *entered && *at < world)
+    );
+}
+
+/// Player 2, `one_way` ms each way, is timed for its first world when
+/// player 1 enters, after that world's tick; 15 s on, no entry was refused
+/// and it was never resynced.
+fn slow_start(one_way: u64) -> Bench {
+    let mut bench = Bench::new(3, MAP_BATTERIES, Settings::default());
+    bench.one_way = vec![0, 0, one_way];
+    bench.join(0);
+    for place in [1, 2] {
+        bench.clients[place].connect();
+        assert!(bench.until(5_000, |bench| bench.clients[place].model.options.is_some()));
+    }
+    bench.clients[2].ready();
+    // Timed for its world while the next player gets in, after that
+    // world's tick.
+    assert!(bench.until(10_000, |bench| bench.stages().as_bytes().get(2)
+        == Some(&b't')));
+    bench.clients[1].ready();
+    assert!(bench.until(10_000, |bench| bench.stages() == "LLL"));
+    bench.run_long(15_000);
+    let refused: Vec<_> = bench.clients[2]
+        .skipped
+        .iter()
+        .filter(|(id, _)| *id == id::PLAYER_ENTERED)
+        .collect();
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(bench.game().resyncs(2), 0);
+    bench.assert_no_faults();
+    bench
+}
+
 /// A Team Deathmatch of three in play, with tickets gone on both sides.
 fn deathmatch_under_way(tickets: [u16; 2]) -> Bench {
     use survarium::v026g::match_msgs::snapshot::Tdm;

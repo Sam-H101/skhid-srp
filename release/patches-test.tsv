@@ -1,0 +1,10 @@
+# The resources.db patches the test server offers, at $SKHID_TEST_PATCHES_URL (never the live one).
+# The server data is built of exactly these (release/build-server-db) and the
+# server's /patches offers exactly these; a file on the patches server that is
+# not here is offered to no one. release/upload-patch adds a row when it
+# publishes a patch: commit it with the release's record. A row is never
+# changed (a published patch is never replaced: a fix is the next revision);
+# one removed stops offering it, safe only while no player owns its items.
+# One patch a line, in revision order, tabs between:
+# name	sha256	size	url
+resources.db.patch_12	2b771e4b2040707434bb17aa27b1965aacba2ca355eb38634f504b61d6c8fab3	86199749	http://2.28.121.133:8091/resources.db.patch_12

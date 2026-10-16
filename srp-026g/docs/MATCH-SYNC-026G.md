@@ -329,8 +329,15 @@ once.
   more, with other contents. A relay acked so late that the game moved it
   keeps that client's next resync on a snapshot past it. A tie of two
   reports never ends a standing disagreement. 0xE7 goes again until
-  acked. A first world gets the others' roster changes before it, and
-  while it is on its way. All match.md §30.
+  acked. All match.md §30.
+- **A game's first world** gets the others' entries (0xE9) since its
+  snapshot with it, once its 0xE5 is answered, and those made while it is
+  on its way at once: once loaded, a game refuses an entry an event
+  horizon (500 ms) behind its present, and every copy after
+  (`enter_match` 0x2D15C2). Leaves (0xEA) still go after the load (0xEA
+  before it crashed the client). If a roster change would still reach it
+  past its horizon, its start is done again from a fresh world, twice at
+  most (`LATE_ROSTER_REDOS`). match.md §30.
 - **A late-join group** (match.md §32) enters together; a member whose game
   is not connected for 20 s, or whose time runs out, is left out, and the
   rest enter without it if the sides stay within one player (or no further
