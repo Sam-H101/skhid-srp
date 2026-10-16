@@ -235,6 +235,7 @@ impl Scenario {
                 partner: self.partner,
                 medkits_used: self.medkits_used,
                 no_way_to: &self.no_way_to,
+                set_aside: &[],
             },
             memory: &self.memory,
             team: &self.team,

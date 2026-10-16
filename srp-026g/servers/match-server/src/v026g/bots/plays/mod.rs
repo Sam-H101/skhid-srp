@@ -349,7 +349,17 @@ pub struct BotFacts<'a> {
     pub medkits_used: u8,
     /// Goals its searches proved no way to lately, and until when.
     pub no_way_to: &'a [(Vec3, u32)],
+    /// Plays that failed at once at a target, and until when they are
+    /// not taken there again ([`SET_ASIDE_MS`]).
+    pub set_aside: &'a [(PlayKind, TargetRef, u32)],
 }
+
+/// A play that fails this soon after it starts ...
+pub const QUICK_FAIL_MS: u32 = 2_000;
+/// ... is not taken at that target again for this long: no play taken and
+/// dropped every poll ("ends GuardLead: no spot with a sight line" four
+/// times a second in the owner's match of 2026-10-16).
+pub const SET_ASIDE_MS: u32 = 8_000;
 
 /// What a play sees: the match, the bot, its knowledge, the team's, the
 /// signals and modifiers, the map's tactics and the tuning.
@@ -595,6 +605,14 @@ impl Ctx<'_> {
         target: TargetRef,
         slot: Option<u32>,
     ) -> Option<Candidate> {
+        if self
+            .bot
+            .set_aside
+            .iter()
+            .any(|&(k, t, until)| k == kind && t == target && self.now < until)
+        {
+            return None;
+        }
         let play = self.play(kind);
         let (score, why) = curve::score(&play.considerations, |input| {
             self.input(input, kind, target)

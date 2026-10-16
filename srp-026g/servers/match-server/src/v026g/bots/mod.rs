@@ -183,6 +183,9 @@ pub struct Bot {
     /// each has left: a place's ammo lasts the match, a spawn does not
     /// refill it. Empty for a bot of no role.
     kits: Vec<(&'static guns::Arms, u32)>,
+    /// Plays that failed at once at a target, and until when they are not
+    /// taken there again (`plays::SET_ASIDE_MS`).
+    set_aside: Vec<(PlayKind, plays::TargetRef, u32)>,
     /// The kit of this life, and the one it picked for its next (a kit
     /// choice, 0xF3, takes effect at the spawn).
     kit: usize,
@@ -259,6 +262,7 @@ impl Bot {
             medkits_used: 0,
             found: None,
             kits,
+            set_aside: Vec::new(),
             kit: 0,
             kit_chosen: 0,
         }
@@ -1109,6 +1113,7 @@ impl Bots {
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
+                    set_aside: &bot.set_aside,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1158,6 +1163,7 @@ impl Bots {
                     partner: bot.partner,
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
+                    set_aside: &bot.set_aside,
                 },
                 memory: &bot.memory,
                 team: &state.knowledge,
@@ -1360,6 +1366,7 @@ impl Bots {
                 partner: bot.partner,
                 medkits_used: bot.medkits_used,
                 no_way_to: &bot.no_way_to,
+                set_aside: &bot.set_aside,
             },
             memory: &bot.memory,
             team: &state.knowledge,
@@ -1378,7 +1385,18 @@ impl Bots {
                 bot.press |= intent.press;
                 bot.intent = intent;
             }
-            Step::Done(why) | Step::Failed(why) => {
+            Step::Done(why) => {
+                bot.end_play(now, why, notes);
+                self.teams[team].next_commander = now;
+            }
+            Step::Failed(why) => {
+                if let Some(a) = bot.assignment.as_ref()
+                    && now < a.since + plays::QUICK_FAIL_MS
+                {
+                    bot.set_aside.retain(|&(_, _, until)| until > now);
+                    bot.set_aside
+                        .push((a.kind, a.target, now + plays::SET_ASIDE_MS));
+                }
                 bot.end_play(now, why, notes);
                 self.teams[team].next_commander = now;
             }
