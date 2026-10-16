@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# usage: release/rollback [--test] [--keep-db] [<release folder>]
+#
+# Rolls one release back on the live host (--test: the test environment) by
+# running its folder's rollback.sh there (release/host-rollback.sh): the ZIP,
+# the server data, SRP_MIN_PATCH_REVISION, the server source and the image as
+# they were before that release's swap, srp.db too unless --keep-db, then
+# srp26 made anew and waited for. Asks y/N first, showing the command.
+#
+#   <release folder>  release-rev<n>-<stamp>[-<label>] in the target's folder
+#                     (no argument: the release folders there, newest last,
+#                     with their state)
+#   --keep-db         srp.db as it is now (only when the release changed no
+#                     schema and no player got an item of its new patch)
+#
+# When srp refuses the files from before (players own items they lack), the
+# script stops srp26 and says how to put the release back: roll forward then.
+. "$(dirname "$0")/lib.sh"
+
+which=live keep=() folder=''
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --test) which='test'; shift ;;
+    --keep-db) keep=(--keep-db); shift ;;
+    -*) die "unknown option $1 (--help)" ;;
+    *) [[ -z $folder ]] || usage 1; folder=$1; shift ;;
+    esac
+done
+need_cmds ssh
+use_target "$which"
+if [[ -z $folder ]]; then
+    on_target "cd $D && for f in release-rev*/; do if test -f \"\$f/state\"; then echo \"\${f%/}  \$(cat \"\$f/state\")\"; fi; done | sort -t- -k3"
+    exit 0
+fi
+[[ $folder =~ ^release-rev[0-9]+-[0-9]{8}-[0-9]{4}(-[A-Za-z0-9._-]+)?$ ]] || die "$folder: not the name of a release folder (release-rev<n>-<YYYYMMDD-HHMM>[-<label>])"
+F=$D/$folder
+on_target "test -f $F/rollback.sh && test -f $F/rollback.env" ||
+    die "$TARGET_DIR/$folder has no rollback (a release that never got to its swap?)"
+say "$folder: $(on_target "cat $F/state 2>/dev/null || echo unknown")"
+write_on live "sh $F/rollback.sh $F${keep[*]:+ ${keep[*]}}"

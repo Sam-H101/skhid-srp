@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# usage: release/setup-patches-server [--check]
+# usage: release/setup-patches-server [--test] [--check]
 #
 # Sets up the patches server on $SKHID_PATCHES_SSH, idempotently:
-#   1. creates $SKHID_PATCHES_DIR (mode 755) if it is missing;
+#   1. creates $PATCHES_DIR (mode 755) if it is missing;
 #   2. makes sure Caddy's site block for $SKHID_PATCHES_URL is in the
 #      Caddyfile ($SKHID_PATCHES_CADDYFILE, default /etc/caddy/Caddyfile)
 #      exactly once: if missing, appended after a dated backup, then
-#      `caddy validate` (a failure puts the backup back) and
-#      `systemctl reload caddy`. No other site block is touched; a block of
-#      another address on the same port, or the block twice, is refused;
+#      `caddy validate` and `systemctl reload caddy`; either failing puts the
+#      backup back (and reloads Caddy on it). No other site block is
+#      touched; a block of another address on the same port, or the block
+#      twice, is refused;
 #   3. probes HTTP: $SKHID_PATCHES_URL/ answers from Caddy, and every patch
 #      in the folder answers 200.
 # Each write asks y/N first, showing the command.
 #
+#   --test    the test environment's patches site: $SKHID_TEST_PATCHES_SSH,
+#             $SKHID_TEST_PATCHES_DIR, $SKHID_TEST_PATCHES_URL (never the
+#             production ones; the Caddyfile: $SKHID_TEST_PATCHES_CADDYFILE,
+#             default /etc/caddy/Caddyfile)
 #   --check   reads only: says what is there and what would be done
 #             ("nothing to do" when it is all set up); exit status 1 when
 #             something would be done.
@@ -20,27 +25,33 @@
 # The ssh user must be able to write the Caddyfile and the folder (root).
 . "$(dirname "$0")/lib.sh"
 
-check=0
+check=0 which=live
 while (($#)); do
     case $1 in
     -h | --help) usage ;;
     --check) check=1; DRY_RUN=1; shift ;;
+    --test) which='test'; shift ;;
     *) die "unknown argument $1 (--help)" ;;
     esac
 done
 need_cmds ssh curl
-load_env SKHID_PATCHES_SSH SKHID_PATCHES_DIR SKHID_PATCHES_URL
-caddyfile=${SKHID_PATCHES_CADDYFILE:-/etc/caddy/Caddyfile}
-site=${SKHID_PATCHES_URL%/}
+load_env
+use_patches "$which"
+if [[ $which == test ]]; then
+    caddyfile=${SKHID_TEST_PATCHES_CADDYFILE:-/etc/caddy/Caddyfile}
+else
+    caddyfile=${SKHID_PATCHES_CADDYFILE:-/etc/caddy/Caddyfile}
+fi
+site=$PATCHES_URL
 [[ $site =~ ^http://[A-Za-z0-9.-]+:([0-9]+)$ ]] ||
-    die "SKHID_PATCHES_URL must be http://<host>:<port> with no path (the site block's address)"
+    die "the patches URL ($site) must be http://<host>:<port> with no path (the site block's address)"
 port=${BASH_REMATCH[1]}
-[[ $SKHID_PATCHES_DIR =~ ^/[A-Za-z0-9._/-]+$ ]] || die "SKHID_PATCHES_DIR must be an absolute path of plain characters"
+[[ $PATCHES_DIR =~ ^/[A-Za-z0-9._/-]+$ ]] || die "the patches folder ($PATCHES_DIR) must be an absolute path of plain characters"
 block="
 # Skhid 0.26g resources.db patches: plain HTTP on a port of its own, so the
 # site above is untouched. The updater checks every file by its sha256.
 $site {
-	root * $SKHID_PATCHES_DIR
+	root * $PATCHES_DIR
 	file_server
 }"
 
@@ -48,7 +59,7 @@ C=$(q "$caddyfile")
 # What is there: the folder, the block's address line, its root line, and
 # other site addresses on the same port.
 state=$(on_patches "
-if test -d $(q "$SKHID_PATCHES_DIR"); then echo 'dir yes'; else echo 'dir no'; fi
+if test -d $(q "$PATCHES_DIR"); then echo 'dir yes'; else echo 'dir no'; fi
 test -f $C || { echo 'caddyfile missing'; exit 0; }
 echo \"sites \$(grep -cxF $(q "$site {") $C)\"
 awk -v s=$(q "$site {") '\$0 == s { p = 1 } p && /^[[:space:]]*root[[:space:]]/ { print \"root \" \$0 } p && /^}/ { p = 0 }' $C
@@ -57,11 +68,11 @@ awk -v s=$(q "$site {") '\$0 != s && /^([^#[:space:]][^{]*)?:$port([^0-9]|\$)/ {
 grep -qx 'caddyfile missing' <<<"$state" && die "$caddyfile is not there on the patches server: is Caddy installed?"
 todo=0
 if grep -qx 'dir yes' <<<"$state"; then
-    say "$SKHID_PATCHES_DIR: there"
+    say "$PATCHES_DIR: there"
 else
-    say "$SKHID_PATCHES_DIR: missing"
+    say "$PATCHES_DIR: missing"
     todo=1
-    write_on patches "mkdir -p $(q "$SKHID_PATCHES_DIR") && chmod 755 $(q "$SKHID_PATCHES_DIR")"
+    write_on patches "mkdir -p $(q "$PATCHES_DIR") && chmod 755 $(q "$PATCHES_DIR")"
 fi
 
 others=$(sed -n 's/^other //p' <<<"$state")
@@ -70,9 +81,9 @@ sites=$(sed -n 's/^sites //p' <<<"$state")
 case $sites in
 1)
     roots=$(sed -n 's/^root //p' <<<"$state")
-    [[ $(tr -s ' \t' ' ' <<<"$roots" | sed 's/^ //') == "root * $SKHID_PATCHES_DIR" ]] ||
-        die "the site block $site is there but does not serve $SKHID_PATCHES_DIR (${roots:-no root line}); not touched"
-    say "Caddy site $site: there once, root $SKHID_PATCHES_DIR"
+    [[ $(tr -s ' \t' ' ' <<<"$roots" | sed 's/^ //') == "root * $PATCHES_DIR" ]] ||
+        die "the site block $site is there but does not serve $PATCHES_DIR (${roots:-no root line}); not touched"
+    say "Caddy site $site: there once, root $PATCHES_DIR"
     ;;
 0)
     say "Caddy site $site: missing"
@@ -84,8 +95,7 @@ case $sites in
     printf '%s\n' "$block" >"$file"
     say "the block to append:"
     sed 's/^/    /' "$file"
-    write_on patches "cp -p $C $(q "$backup") && cat >> $C && caddy validate --config $C --adapter caddyfile || { cp -p $(q "$backup") $C; echo 'caddy validate failed: the backup is back' >&2; exit 1; }" "$file"
-    write_on patches "systemctl reload caddy"
+    write_on patches "cp -p $C $(q "$backup") && if cat >> $C && caddy validate --config $C --adapter caddyfile && systemctl reload caddy; then echo 'Caddy reloaded with the block'; else cp -p $(q "$backup") $C; systemctl reload caddy; echo 'caddy validate or reload failed: the backup is back' >&2; exit 1; fi" "$file"
     ;;
 *) die "the site block $site is in the Caddyfile $sites times; not touched, sort it out by hand" ;;
 esac
@@ -100,7 +110,7 @@ if ((todo)) && ((check == 0)); then sleep 2; fi
 headers=$(curl -sS --max-time 20 -o /dev/null -D - "$site/" || true)
 grep -qi '^server: caddy' <<<"$headers" || die "$site/ did not answer from Caddy"
 say "$site/: answers from Caddy ($(head -n1 <<<"$headers" | tr -d '\r'))"
-names=$(on_patches "cd $(q "$SKHID_PATCHES_DIR") && for f in resources.db.patch_*; do if test -f \"\$f\"; then echo \"\$f\"; fi; done")
+names=$(on_patches "cd $(q "$PATCHES_DIR") && for f in resources.db.patch_*; do if test -f \"\$f\"; then echo \"\$f\"; fi; done")
 count=0
 while read -r name; do
     [[ -n $name ]] || continue
