@@ -275,6 +275,9 @@ struct PlaceState {
     stats: (u32, u32, u32),
     last_use: Option<(u32, Vec3)>,
     last_shot: Option<u32>,
+    /// The body's life (`BodyTrack::last_alive`) whose death the kill feed
+    /// has a spot for: one spot a life.
+    death_spotted: Option<u32>,
 }
 
 /// The view's keeper.
@@ -476,22 +479,33 @@ impl Tracker {
     }
 
     /// The rest of a trusted world: statistics (deaths become events),
-    /// batteries and containers (carriers worked out).
-    pub fn facts(&mut self, facts: WorldFacts) {
+    /// batteries and containers (carriers worked out). Returns the deaths
+    /// it put in the kill feed.
+    pub fn facts(&mut self, facts: WorldFacts) -> Vec<Death> {
+        let mut new_deaths = Vec::new();
         self.world_time = self.world_time.max(facts.time);
         for (place, stats) in facts.stats.iter().enumerate() {
             let Some(state) = self.places.get_mut(place) else {
                 continue;
             };
             if stats.1 > state.stats.1 {
-                // A death where the body was never placed says nothing of
-                // a spot (it was the map's origin, and trades ran there).
-                if let Some(estimate) = state.body.estimate() {
-                    self.deaths.push_back(Death {
+                // Where the body was last reckoned alive: the world that
+                // shows the death has the body dead, without feet, and its
+                // fixes come first. A death where the body was never placed
+                // says nothing of a spot (it was the map's origin, and
+                // trades ran there), nor does a second one in a life no
+                // world showed (the spot is the life before's).
+                if let Some((life, at)) = state.body.last_alive()
+                    && state.death_spotted != Some(life)
+                {
+                    state.death_spotted = Some(life);
+                    let death = Death {
                         place,
-                        at: estimate.feet,
+                        at,
                         time: facts.time,
-                    });
+                    };
+                    self.deaths.push_back(death);
+                    new_deaths.push(death);
                 }
                 state.alive = false;
             }
@@ -510,7 +524,7 @@ impl Tracker {
             self.container_counts = facts.container_counts;
         }
         if facts.batteries.is_empty() {
-            return;
+            return new_deaths;
         }
         self.carriers.resize(facts.batteries.len(), None);
         for (battery, state) in facts.batteries.iter().enumerate() {
@@ -535,6 +549,7 @@ impl Tracker {
             }
         }
         self.batteries = facts.batteries;
+        new_deaths
     }
 
     /// The player who pressed use near `at` lately, else the nearest one.
@@ -750,5 +765,97 @@ mod tests {
         assert_eq!(view.deaths.len(), 1);
         assert_eq!(view.deaths[0].place, 1);
         assert_eq!(view.place(0).unwrap().kills, 1);
+    }
+
+    /// The client's world shows a dead body without feet, and its fixes
+    /// come before its statistics (`game::driven`): the death is still in
+    /// the kill feed, at the spot the body was last reckoned alive. One
+    /// spot a life; a body never placed gives none.
+    #[test]
+    fn a_death_the_world_shows_without_feet_is_in_the_feed_where_the_body_fell() {
+        let kin = Kinematics::default();
+        let mut tracker = Tracker::new(2, &[0, 0, 1], &[true, true, false], vec![]);
+        for place in 0..3 {
+            tracker.entered(place, true);
+        }
+        let dead = |time: u32| Fix {
+            alive: false,
+            feet: None,
+            ..fix(time, Vec3::ZERO)
+        };
+        let fell = Vec3::new(12.0, 0.0, 7.0);
+        tracker.fixed(0, fix(1_000, fell), None, &kin, None);
+        tracker.fixed(1, fix(1_000, Vec3::new(20.0, 0.0, 7.0)), None, &kin, None);
+        let stats = |deaths: [u32; 3]| deaths.map(|d| (0, d, 0)).to_vec();
+        tracker.facts(WorldFacts {
+            time: 1_000,
+            stats: stats([0, 0, 0]),
+            ..WorldFacts::default()
+        });
+        // Place 0 dies; place 2 (never placed) too.
+        tracker.fixed(0, dead(2_000), None, &kin, None);
+        tracker.fixed(2, dead(2_000), None, &kin, None);
+        let new = tracker.facts(WorldFacts {
+            time: 2_000,
+            stats: stats([1, 0, 1]),
+            ..WorldFacts::default()
+        });
+        let death = Death {
+            place: 0,
+            at: fell,
+            time: 2_000,
+        };
+        assert_eq!(new, vec![death]);
+        let clock = Clock {
+            clock: 2_000,
+            time_left_s: 100.0,
+            total_s: 900.0,
+            playing: true,
+        };
+        let view = tracker.view(&clock, &kin, None);
+        assert_eq!(view.deaths, vec![death]);
+        assert!(!view.place(0).unwrap().alive);
+        // A second death in a life no world showed: no spot (the last one
+        // is the life before's).
+        tracker.fixed(0, dead(3_000), None, &kin, None);
+        let new = tracker.facts(WorldFacts {
+            time: 3_000,
+            stats: stats([2, 0, 1]),
+            ..WorldFacts::default()
+        });
+        assert!(new.is_empty());
+        // A life a world showed, then its death: its own spot.
+        let there = Vec3::new(30.0, 0.0, 2.0);
+        let respawned = Fix {
+            inserted: 3_500,
+            ..fix(4_000, there)
+        };
+        tracker.fixed(0, respawned, None, &kin, None);
+        tracker.fixed(0, dead(5_000), None, &kin, None);
+        let new = tracker.facts(WorldFacts {
+            time: 5_000,
+            stats: stats([3, 0, 1]),
+            ..WorldFacts::default()
+        });
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].at, there);
+        // Statistics ahead of the body (the world still has it alive):
+        // the death is where it stands, and the dead world after it adds
+        // none.
+        tracker.fixed(1, fix(6_000, Vec3::new(21.0, 0.0, 7.0)), None, &kin, None);
+        let new = tracker.facts(WorldFacts {
+            time: 6_000,
+            stats: stats([3, 1, 1]),
+            ..WorldFacts::default()
+        });
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0].at, Vec3::new(21.0, 0.0, 7.0));
+        tracker.fixed(1, dead(7_000), None, &kin, None);
+        let new = tracker.facts(WorldFacts {
+            time: 7_000,
+            stats: stats([3, 1, 1]),
+            ..WorldFacts::default()
+        });
+        assert!(new.is_empty());
     }
 }

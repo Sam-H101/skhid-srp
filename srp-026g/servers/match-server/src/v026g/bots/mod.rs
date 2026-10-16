@@ -172,6 +172,9 @@ pub struct Bot {
     entered: Option<u32>,
     last_trace: u32,
     partner: Option<Place>,
+    /// Whether its partner has it for partner too (a pair); a team's odd
+    /// bot has a partner one way, for its trades only.
+    paired: bool,
     /// Medkits used this life.
     medkits_used: u8,
     /// The answer of its route search that went on over several polls
@@ -259,6 +262,7 @@ impl Bot {
             entered: None,
             last_trace: 0,
             partner: None,
+            paired: false,
             medkits_used: 0,
             found: None,
             kits,
@@ -848,7 +852,7 @@ impl Bots {
             playing: true,
         };
         let before = self.tracker.view(&at(time), &self.tuning.kin, None);
-        self.tracker.facts(facts);
+        let new_deaths = self.tracker.facts(facts);
         let after = self.tracker.view(&at(time), &self.tuning.kin, None);
         let kills_by = |bot: bool| {
             after
@@ -863,10 +867,13 @@ impl Bots {
                 continue;
             }
             let team = usize::from(a.team & 1);
-            // A body never placed (feet at the origin) gives no spot.
-            if b.feet != Vec3::ZERO {
+            // The kill feed's spot: where the body was last reckoned alive
+            // (the world showing the death has it without feet, and was
+            // fixed first: `before` has none). A body never placed gives
+            // no spot.
+            if let Some(death) = new_deaths.iter().find(|d| d.place == a.place) {
                 self.teams[team].knowledge.danger.push(DangerSpot {
-                    at: b.feet,
+                    at: death.at,
                     time,
                     victim: a.place,
                 });
@@ -1057,7 +1064,9 @@ impl Bots {
                 ),
             });
         }
-        // Partners for play 21: the team's bots two by two.
+        // Partners for play 21: the team's bots two by two (pairs, play
+        // 25); an odd one out partners its nearest living teammate bot one
+        // way, so a third bot too trades its partner's death.
         let mates: Vec<Place> = self
             .bots
             .iter()
@@ -1066,12 +1075,43 @@ impl Bots {
             .map(|b| b.place)
             .collect();
         for pair in mates.chunks(2) {
-            if let [a, b] = pair {
-                for (me, other) in [(*a, *b), (*b, *a)] {
-                    if let Some(Some(bot)) = self.bots.get_mut(me) {
-                        bot.partner = Some(other);
+            match pair {
+                [a, b] => {
+                    for (me, other) in [(*a, *b), (*b, *a)] {
+                        if let Some(Some(bot)) = self.bots.get_mut(me) {
+                            bot.partner = Some(other);
+                            bot.paired = true;
+                        }
                     }
                 }
+                [odd] => {
+                    let alive = |place: Place| view.place(place).filter(|p| p.alive);
+                    let nearest = alive(*odd).and_then(|me| {
+                        mates
+                            .iter()
+                            .filter(|&&other| other != *odd)
+                            .filter_map(|&other| alive(other))
+                            .min_by(|a, b| {
+                                a.feet
+                                    .distance_xz(me.feet)
+                                    .total_cmp(&b.feet.distance_xz(me.feet))
+                            })
+                            .map(|p| p.place)
+                    });
+                    if let Some(Some(bot)) = self.bots.get_mut(*odd) {
+                        // A partner down is kept (its death is the one to
+                        // trade); dead itself, or none alive: the one it
+                        // had, else the previous bot.
+                        let kept = bot.partner.filter(|p| mates.contains(p) && p != odd);
+                        let down = kept.filter(|&p| alive(p).is_none());
+                        bot.partner = down
+                            .or(nearest)
+                            .or(kept)
+                            .or_else(|| mates.len().checked_sub(2).map(|i| mates[i]));
+                        bot.paired = false;
+                    }
+                }
+                _ => {}
             }
         }
         // The bots checking spawners' spots now, and where (no more of
@@ -1111,6 +1151,7 @@ impl Bots {
                     current: bot.assignment.as_ref().map(|a| (a.kind, a.target, a.since)),
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
+                    paired: bot.paired,
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
                     set_aside: &bot.set_aside,
@@ -1161,6 +1202,7 @@ impl Bots {
                     current: Some((assignment.kind, assignment.target, now)),
                     last_ran: &bot.last_ran,
                     partner: bot.partner,
+                    paired: bot.paired,
                     medkits_used: bot.medkits_used,
                     no_way_to: &bot.no_way_to,
                     set_aside: &bot.set_aside,
@@ -1364,6 +1406,7 @@ impl Bots {
                 current: bot.assignment.as_ref().map(|a| (a.kind, a.target, a.since)),
                 last_ran: &bot.last_ran,
                 partner: bot.partner,
+                paired: bot.paired,
                 medkits_used: bot.medkits_used,
                 no_way_to: &bot.no_way_to,
                 set_aside: &bot.set_aside,
