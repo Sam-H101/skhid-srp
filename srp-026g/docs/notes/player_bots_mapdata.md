@@ -679,6 +679,40 @@ answers are the same:
 - The 12 real-map runs, three rounds each in turns: pulling 568-650 ms,
   was 984-1,166 (44 % less), the same 1,784,848 checks.
 
+### Distance fields to the objectives: measured, not built (2026-10-16)
+
+The plan: flood a distance field once to each fixed objective (containers,
+stations, battery spawners), shared by every bot heading there, so those
+bots need no search. Flow fields and Dijkstra maps pay when many agents
+share one goal and the floors they may use stay the same; a change of
+those floors means a new flood or a repair (D* Lite).
+
+A bot's search is exact for one set of let-through floors: the zones shut
+at that moment (they switch on and off), the side's spawn areas, and the
+spots it got stuck at. So a field could only stand for searches with the
+same goal floor, side, objective flag, set of shut zones and no stuck
+spots. One bench run of the 12 real-map runs, every search keyed so (the
+measuring patch is `private/mapdata-digests/measure-fields.patch`):
+
+| run | searches | goals | most searches to one of the 10 costliest keys |
+|---|---|---|---|
+| level_06 10 v 10 | 1,212 | 327 | 47 |
+| level_01 10 v 10 | 2,147 | 1,561 | 20 |
+| level_03 10 v 10 | 1,824 | 1,020 | 25 |
+| level_02 10 v 10 | 971 | 450 | 44 |
+| level_04 10 v 10 | 1,373 | 682 | 57 |
+| level_05 10 v 10 | 1,844 | 749 | 41 |
+
+The bots' goals are many and spread (cover spots, crossfire places, cut
+points, lying batteries), not the few objectives. Counting a field as one
+flood of the grid and built only where its searches expanded more than
+that (the best case, no flood again when zones switch): fields would save
+nothing on 9 of the 12 runs and 3.7-5.2 % of the floors expanded on the
+other three (level_06, 04 and 05 10 v 10). Against that, 2-4 bytes a
+floor a field (0.4-2.8 MB each), a flood each time the zones' set changes,
+and other routes (a flood breaks ties between ways of equal cost
+otherwise than the A*). Not built.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map
