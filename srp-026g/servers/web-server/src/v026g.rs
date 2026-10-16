@@ -89,6 +89,9 @@ pub struct Game {
     pub accounts: Arc<GameAccounts>,
     pub lobby: Arc<dyn LobbyLink>,
     pub matches: Arc<dyn MatchCounter>,
+    /// The patches of `resources.db` the players' updater is told to fetch
+    /// (`GET /patches`): those the server's game data was made of.
+    pub patches: Vec<crate::OfferedPatch>,
 }
 
 /// The longest password the 0.26g client sends (its buffer is 48 bytes).

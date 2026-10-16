@@ -48,6 +48,21 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 /// moved over field for field.
 pub struct RegistryHost(pub Arc<MatchRegistry>);
 
+/// The patches of `resources.db` the web page offers the players' updater
+/// (`GET /patches`): those the server's game data of this process was made
+/// of (`survarium::v026g::game_data`), in the game's order.
+pub fn offered_patches() -> Vec<web_server::OfferedPatch> {
+    survarium::v026g::game_data::shared()
+        .provenance
+        .offered()
+        .map(|(name, sha256, url)| web_server::OfferedPatch {
+            name,
+            sha256: sha256.to_owned(),
+            url: url.to_owned(),
+        })
+        .collect()
+}
+
 /// How far a match is, as the page and the lobby's list of the matches
 /// have it: both go by `session::v026g::matches_now`.
 fn phase(phase: matches::LivePhase) -> session::v026g::matches_now::Phase {
@@ -571,6 +586,7 @@ impl Stack {
                 accounts: self.accounts.clone(),
                 inbox: self.inbox.clone(),
             }),
+            patches: offered_patches(),
         }
     }
 
