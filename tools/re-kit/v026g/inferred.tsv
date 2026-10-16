@@ -1041,6 +1041,8 @@ va	status	ref_021d	name
 0x001f6bf0	inferred-medium	0x0015a339	survarium::game_world::`scalar deleting destructor'
 0x001f7100	inferred-high	0x0015a86d	survarium::game_world::~game_world
 0x001f77e0	inferred-high	0x0015a9ee	survarium::game_world::tick
+0x001f8070	inferred-medium		survarium::game_world::select_profile
+0x001f8120	inferred-medium		survarium::game_world::local_player_profiles
 0x001f96e0	inferred-medium	0x0015bd37	survarium::game_world::get_current_time_in_ms
 0x001fa2d0	inferred-medium	0x0015c5a9	vostok::buffer_vector<vostok::variant<32> >::push_back
 0x001fa420	inferred-medium	0x002282ea	survarium::hud_game_effect_emitter_cook::`scalar deleting destructor'
@@ -1238,6 +1240,7 @@ va	status	ref_021d	name
 0x00237720	inferred-high	0x0018211b	survarium::game_world_ui::on_victory_item_put_take
 0x00237c70	inferred-high	0x0018233c	survarium::game_world_ui::on_player_killed
 0x00238230	inferred-high	0x0018257b	survarium::game_world_ui::draw_damage_collector
+0x002383b0	inferred-medium		survarium::game_world_ui::show_profiles_selector
 0x00238530	inferred-high	0x00182654	survarium::game_world_ui::update_minimap_objects
 0x002392b0	inferred-high	0x001829c4	survarium::game_world_ui::initialize_minimap
 0x00239420	inferred-high	0x00182a9c	survarium::game_world_ui::update_minimap_players
@@ -1251,7 +1254,9 @@ va	status	ref_021d	name
 0x0023a560	inferred-high	0x0018329c	survarium::game_world_ui::set_using_info_message
 0x0023a720	inferred-high	0x00183336	survarium::game_world_ui::set_broken_connection_message
 0x0023a7f0	inferred-high	0x001833ce	survarium::game_world_ui::set_player_online_status
+0x0023a930	inferred-medium		survarium::game_world_ui::show_cursor
 0x0023b550	inferred-medium	0x00183771	survarium::game_world_ui::clear_player
+0x0023b740	inferred-medium		survarium::game_world_ui::update_local_player_state
 0x0023b820	inferred-medium	0x001839aa	survarium::game_world_ui::update_current_object
 0x0023bd60	inferred-high	0x00183c01	survarium::game_world_ui::create_hud_icon
 0x0023bea0	inferred-high	0x00183c7c	survarium::game_world_ui::set_hud_icon_type
@@ -2025,8 +2030,14 @@ va	status	ref_021d	name
 0x00313ea0	inferred-medium	0x001fbc14	survarium::gather_victory_items_rule::resolve_links
 0x003149b0	inferred-medium		survarium::match_time_vi_spawn_rule_core::serialize
 0x00316340	inferred-medium		survarium::tdm_rule_core::serialize
+0x00316820	inferred-medium		survarium::player_respawn_rule_base::tick
+0x00316aa0	inferred-medium		survarium::player_respawn_rule_base::on_event
+0x00316bc0	inferred-medium		survarium::player_respawn_rule_base::on_player_entered_match
+0x00316be0	inferred-medium		survarium::player_respawn_rule_base::on_player_left_match
 0x00316c90	inferred-medium		survarium::player_respawn_rule_base::serialize
+0x00316da0	inferred-medium		survarium::player_respawn_rule_base::spawn_player
 0x00316f10	inferred-medium		survarium::player_respawn_rule_core::serialize
+0x003171d0	inferred-medium		survarium::player_respawn_rule_base::select_respawn_points
 0x00317540	inferred-medium	0x001fd304	vostok::buffer_vector<survarium::respawn_point_core *>::push_back
 0x00317f10	inferred-medium	0x001f554f	survarium::timelimit_rule_core::tick
 0x003187e0	inferred-medium	0x001f5f48	survarium::server_game_project::`scalar deleting destructor'
@@ -2059,6 +2070,7 @@ va	status	ref_021d	name
 0x0031eb70	inferred-medium	0x001aa14d	survarium::weapon_core_base_state::initialize
 0x0031ee40	inferred-medium		survarium::single_game_effect::activate_effect
 0x0031f020	inferred-medium		survarium::single_game_effect::deactivate_effect
+0x00321790	inferred-medium		survarium::game_world_core_client::player_slot::apply_profile_input
 0x003218e0	inferred-medium		survarium::game_world_core_client::serialize
 0x00321950	inferred-medium	0x001fe250	survarium::bullet_manager::bullet_functor_mt_allocator::bullet_functor_mt_allocator
 0x003219a0	inferred-medium	0x001fe299	survarium::bullet_manager::bullet_manager
