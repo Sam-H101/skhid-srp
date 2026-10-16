@@ -79,17 +79,65 @@ pub fn archives_in(game: &Path) -> Result<(PathBuf, Vec<PathBuf>), Error> {
     Ok((db, patches))
 }
 
-/// Whether `url` can be handed to the players' updater as it is: http or
-/// https, printable ASCII without spaces, quotes or backslashes (so it is
-/// one word of [`PROVENANCE`] and needs no escaping in JSON).
+/// The longest URL of a patch the players' updater takes.
+pub const MAX_URL: usize = 1024;
+
+/// Whether the players' updater takes `url` as a patch's address: exactly
+/// the URLs its `url::patch` takes (client/updater/logic/src/url.rs), rule
+/// for rule, so that a URL it would refuse, and with it PLAY, is refused
+/// here when the server's data is built. Both are tested with
+/// client/updater/logic/tests/data/patch_urls.txt: change the two and that
+/// file together.
+///
+/// At most [`MAX_URL`] bytes of printable ASCII (no space, no control
+/// byte), without `"`, `\` or `#` (no fragment; and it is one word of
+/// [`PROVENANCE`] and a JSON string without escapes); `http://` or
+/// `https://`, lowercase; a host: a name or a bare IPv4 address, of
+/// letters, digits, `.` and `-`, neither first nor last, up to 253 (so no
+/// credentials and no `[IPv6]`); an optional port, 1 to 65535 in up to 5
+/// digits; and a path of `/` and at least one more byte.
 pub fn is_url(url: &str) -> bool {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"));
-    rest.is_some_and(|rest| !rest.is_empty())
-        && url
+    if url.len() > MAX_URL
+        || !url
             .bytes()
-            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'"' | b'\\' | b'#'))
+    {
+        return false;
+    }
+    let Some(rest) = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let Some((authority, path)) = rest.find('/').map(|at| rest.split_at(at)) else {
+        return false;
+    };
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if is_port(port) => host,
+        Some(_) => return false,
+        None => authority,
+    };
+    path.len() >= 2 && is_host(host)
+}
+
+/// A port of a URL [`is_url`] takes: 1 to 65535, up to 5 digits.
+fn is_port(port: &str) -> bool {
+    (1..=5).contains(&port.len())
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port
+            .parse::<u32>()
+            .is_ok_and(|port| (1..=65535).contains(&port))
+}
+
+/// A host of a URL [`is_url`] takes: a name or a bare IPv4 address.
+fn is_host(host: &str) -> bool {
+    (1..=253).contains(&host.len())
+        && !host.starts_with(['.', '-'])
+        && !host.ends_with(['.', '-'])
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
 }
 
 /// The URL of the file `name` in the folder `base` of the patches server:
@@ -300,8 +348,10 @@ fn in_order(patches: &[PatchFile]) -> Result<Vec<(u32, &PatchFile)>, Error> {
         })?;
         if !is_url(&patch.url) {
             return Err(content(format!(
-                "{}: {:?} is not a URL to hand to the players (http:// or https://, no \
-                 spaces, quotes or backslashes)",
+                "{}: {:?} is not a URL the players' updater takes for a patch \
+                 (http:// or https://, a host name or a bare IPv4 address, an optional \
+                 port, a path; no credentials, no #, no spaces, quotes or backslashes; \
+                 printable ASCII, at most {MAX_URL} bytes)",
                 patch.path.display(),
                 patch.url
             )));

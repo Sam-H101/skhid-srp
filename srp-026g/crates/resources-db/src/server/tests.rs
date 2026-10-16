@@ -380,6 +380,88 @@ fn a_base_url_gets_the_file_name() {
     assert!(is_url("http://203.0.113.5/p/resources.db.patch_14"));
 }
 
+/// The cases of the players' updater (client/updater/logic/src/url.rs,
+/// `patch`): each URL, with whether it takes it.
+fn updater_patch_urls() -> Vec<(String, bool)> {
+    let cases: Vec<(String, bool)> =
+        include_str!("../../../../../client/updater/logic/tests/data/patch_urls.txt")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (verdict, url) = line.split_once(' ').unwrap_or((line, ""));
+                let taken = match verdict {
+                    "ok" => true,
+                    "bad" => false,
+                    _ => panic!("patch_urls.txt: {line:?}"),
+                };
+                (expand(url), taken)
+            })
+            .collect();
+    assert!(cases.iter().filter(|case| case.1).count() >= 10);
+    assert!(cases.iter().filter(|case| !case.1).count() >= 40);
+    cases
+}
+
+/// A URL of `patch_urls.txt` with its `{SP}`, ..., `{a*N}` written out.
+fn expand(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('{') {
+        out.push_str(&rest[..at]);
+        let end = at + rest[at..].find('}').expect(text);
+        match &rest[at + 1..end] {
+            "SP" => out.push(' '),
+            "TAB" => out.push('\t'),
+            "CR" => out.push('\r'),
+            "LF" => out.push('\n'),
+            "NUL" => out.push('\0'),
+            "DEL" => out.push('\x7f'),
+            token => {
+                let n: usize = token
+                    .strip_prefix("a*")
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or_else(|| panic!("patch_urls.txt: {text:?}"));
+                out.extend(std::iter::repeat_n('a', n));
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn a_url_is_taken_when_the_players_updater_takes_it() {
+    for (url, taken) in updater_patch_urls() {
+        assert_eq!(is_url(&url), taken, "{url:?}");
+    }
+}
+
+/// A patch whose URL the updater would refuse fails the build, before any
+/// archive is read.
+#[test]
+fn a_build_refuses_a_url_the_updater_refuses() {
+    let folder = Folder::new("bad-url");
+    let db = folder.file(RESOURCES_DB, &archive_of(&[("gameplay/x", "x")]));
+    let patch = folder.file("resources.db.patch_14", &archive_of(&[("gameplay/x", "y")]));
+    for (url, taken) in updater_patch_urls() {
+        let patches = [PatchFile {
+            path: patch.clone(),
+            url: url.clone(),
+        }];
+        match build(&db, &patches) {
+            Ok(built) => {
+                assert!(taken, "{url:?}");
+                assert_eq!(built.provenance.patches[0].url, url);
+            }
+            Err(error) => {
+                assert!(!taken, "{url:?}: {error}");
+                assert!(error.to_string().contains("not a URL"), "{error}");
+            }
+        }
+    }
+}
+
 /// The server data of 0.26g's archive with patches over it:
 /// `SRP_TEST_RESOURCES_DB=<…/game/resources.db>`, `SRP_TEST_PATCHES` the
 /// patches' files, by spaces (`resources.db.patch_14 _15 _16`: the menus,

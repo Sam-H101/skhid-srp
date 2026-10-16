@@ -629,6 +629,16 @@ mod tests {
         }
     }
 
+    /// The URLs srp-game-data takes, and no other, are taken in a list
+    /// (`tests/data/patch_urls.txt`).
+    #[test]
+    fn a_list_takes_the_patch_urls_srp_game_data_takes() {
+        for (url, taken) in crate::url::tests::shared_patch_urls() {
+            let list = one("patch_14", &hex(b"x"), &url);
+            assert_eq!(parse_list(list.as_bytes()).is_ok(), taken, "{url:?}");
+        }
+    }
+
     #[test]
     fn an_entry_is_sha256_and_url_alone() {
         let h = hex(b"x");

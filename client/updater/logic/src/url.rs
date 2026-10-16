@@ -105,12 +105,18 @@ pub fn download(text: &str) -> Option<Url> {
 /// `https://`, any host, a bare IP address too, and a path. Plain HTTP is
 /// taken here: the file is checked against the SHA-256 of the list, which
 /// comes from the update server over its own address. No credentials, no
-/// fragment, no space or control character.
+/// fragment, no space, control character, `"` or `\` (the list's strings
+/// have no escapes, so it cannot carry those two anyway).
+///
+/// srp-game-data (srp-026g/crates/resources-db, `server::is_url`) takes
+/// these URLs and no other, so that a URL this would refuse is refused when
+/// the server's game data is built, not on the players' computers. Both are
+/// tested with `tests/data/patch_urls.txt`: change the two and it together.
 pub fn patch(text: &str) -> Option<Url> {
     if text.len() > 1024
         || text
             .bytes()
-            .any(|c| !c.is_ascii_graphic() || matches!(c, b'\\' | b'#'))
+            .any(|c| !c.is_ascii_graphic() || matches!(c, b'\\' | b'#' | b'"'))
     {
         return None;
     }
@@ -126,7 +132,7 @@ pub fn patch(text: &str) -> Option<Url> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -141,32 +147,62 @@ mod tests {
             (u.secure, u.host.as_str(), u.port, u.prefix.as_str()),
             (true, "files.example.org", 8443, "/db/patch_14?v=2")
         );
-        assert!(patch("http://127.0.0.1:1234/p/patch_1").is_some());
-        for bad in [
-            "",
-            "/patch_14",
-            "patch_14",
-            "203.0.113.5/patch_14",
-            "ftp://203.0.113.5/patch_14",
-            "file:///C:/patch_14",
-            "file://host/patch_14",
-            "javascript://x/patch_14",
-            "HTTP://host/patch_14",
-            "http://203.0.113.5",
-            "http://203.0.113.5/",
-            "http://user@host/patch_14",
-            "http://user:pw@host/patch_14",
-            "http://host/patch_14#x",
-            "http://host/a b",
-            "http://host/a\\b",
-            "http://host/a\r\nX: y",
-            "http://host:0/patch_14",
-            "http://host:99999/patch_14",
-            "http://[::1]/patch_14",
-            "http:///patch_14",
-            " http://host/patch_14",
-        ] {
-            assert!(patch(bad).is_none(), "{bad:?}");
+        // What else is taken and what is not: `shared_patch_urls`.
+    }
+
+    /// The URLs of `tests/data/patch_urls.txt`, which srp-game-data's tests
+    /// read too: each with whether it is taken.
+    pub(crate) fn shared_patch_urls() -> Vec<(String, bool)> {
+        let cases: Vec<(String, bool)> = include_str!("../tests/data/patch_urls.txt")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (verdict, url) = line.split_once(' ').unwrap_or((line, ""));
+                let taken = match verdict {
+                    "ok" => true,
+                    "bad" => false,
+                    _ => panic!("patch_urls.txt: {line:?}"),
+                };
+                (expand(url), taken)
+            })
+            .collect();
+        assert!(cases.iter().filter(|case| case.1).count() >= 10);
+        assert!(cases.iter().filter(|case| !case.1).count() >= 40);
+        cases
+    }
+
+    /// A URL of `patch_urls.txt` with its `{SP}`, ..., `{a*N}` written out.
+    fn expand(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('{') {
+            out.push_str(&rest[..at]);
+            let end = at + rest[at..].find('}').expect(text);
+            match &rest[at + 1..end] {
+                "SP" => out.push(' '),
+                "TAB" => out.push('\t'),
+                "CR" => out.push('\r'),
+                "LF" => out.push('\n'),
+                "NUL" => out.push('\0'),
+                "DEL" => out.push('\x7f'),
+                token => {
+                    let n: usize = token
+                        .strip_prefix("a*")
+                        .and_then(|n| n.parse().ok())
+                        .unwrap_or_else(|| panic!("patch_urls.txt: {text:?}"));
+                    out.extend(core::iter::repeat_n('a', n));
+                }
+            }
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn the_patch_urls_srp_game_data_takes_too() {
+        for (url, taken) in shared_patch_urls() {
+            assert_eq!(patch(&url).is_some(), taken, "{url:?}");
         }
     }
 

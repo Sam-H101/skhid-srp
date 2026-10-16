@@ -359,10 +359,13 @@ A JSON object and nothing else: every key `patch_<n>` with n from 1 to 255
 and no leading zero (the game's own rule), no key twice; every value an
 object of exactly `sha256` (64 hex characters, either case) and `url`
 (`http://` or `https://`, a host name or a bare IPv4 address, an optional
-port, and a path; no credentials, no fragment, no space, no other scheme;
-at most 1024 bytes). No escape in any string. At most 512 KB. `{}` is a
-list: no patch (every patch file is deleted). Anything else is refused
-whole, with nothing changed. 404 is "no list", not "no patch".
+port, and a path; no credentials, no fragment, no space, no `"` or `\`, no
+other scheme; at most 1024 bytes: `url::patch`, which srp-game-data's
+`server::is_url` mirrors, both tested with
+`logic/tests/data/patch_urls.txt`). No escape in any string. At most
+512 KB. `{}` is a list: no patch (every patch file is deleted). Anything
+else is refused whole, with nothing changed. 404 is "no list", not "no
+patch".
 
 **The files.** `GET <url>` of each entry, on whatever host the list names:
 a plain file server is enough. Plain HTTP is taken there, to any host, as

@@ -53,8 +53,13 @@ srp-game-data check server-game-data.db <the same archives as build>
   `--patch <file>=<URL>` (split at the first `=`), or `--patch-url <base>`,
   which gives each patch without one `<base>/<its file name>` (one `/`
   added unless the base ends with one). Plain `http://` and a bare IP are
-  fine. A URL is `http://` or `https://`, printable ASCII without spaces,
-  quotes or backslashes.
+  fine. A URL must be one the players' updater takes for a patch, or the
+  build fails (`server::is_url`, the same rules as the updater's
+  `url::patch`, both tested with
+  `client/updater/logic/tests/data/patch_urls.txt`): `http://` or
+  `https://`, a host name or a bare IPv4 address, an optional port, a path;
+  no credentials, no `#`, no spaces, quotes or backslashes; printable ASCII,
+  at most 1024 bytes.
 - `build` writes `<out>.part` and renames it. It prints what each archive
   gave, the output's size and sha256, and the provenance.
 - `info` checks every file of the data against its table and prints the

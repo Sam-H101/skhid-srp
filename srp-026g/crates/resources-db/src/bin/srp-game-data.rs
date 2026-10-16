@@ -38,9 +38,11 @@ names are not mounted). --db and --patch name the files; a patch must be
 called resources.db.patch_<n>, and the patches are laid over resources.db in
 ascending n, as the game mounts them, whatever their order here.
 
-Every patch needs the URL the players' updater downloads it from (http:// or
-https://): <file>=<URL>, or --patch-url <base URL>, which gives a patch
-without one the URL <base URL>/<its file name>.";
+Every patch needs the URL the players' updater downloads it from, one the
+updater takes (http:// or https://, a host name or a bare IPv4 address, an
+optional port, a path; no credentials, no #, no spaces, quotes or
+backslashes; at most 1024 bytes): <file>=<URL>, or --patch-url <base URL>,
+which gives a patch without one the URL <base URL>/<its file name>.";
 
 /// The archives the options name: `resources.db`, its patches with their
 /// URLs; and `--out`.
