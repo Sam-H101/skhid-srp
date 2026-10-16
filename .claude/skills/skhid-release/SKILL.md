@@ -149,6 +149,13 @@ only for the matches that run, never for the build.
    `docker compose build srp26` run on it (the running container is not
    touched). The local builds run at nice 10.
 
+   **Then it waits for the go.** Once all of it is staged it stops and asks:
+   y at its prompt, or `touch` the go file it prints
+   (`~/.cache/skhid-release/go-<release folder>`); `--yes` does not give
+   the go. Ask the owner, and give it only when they say so: they choose the
+   moment players feel (`SKHID_RELEASE_GO=1` gives it beforehand, for the
+   tests). A Ctrl-C there stops cleanly, nothing planned.
+
    **Then, once all of it is staged** (the folder `staging` with both files
    and their sha256 in `new.sha`, checked on the host; never before), the
    **maintenance**: a POST to the admin page (`tab=maint`, `minutes`) from

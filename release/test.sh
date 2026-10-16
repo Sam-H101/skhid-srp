@@ -46,6 +46,9 @@ trap cleanup EXIT
 mkdir -p "$T/bin" "$T/patches" "$T/patches-test" "$T/site/api" "$T/live/download" "$T/work" "$T/volume" "$T/docker/tags"
 # The scripts' cache (the URLs checked, the stock db's sha256) is the test's.
 export XDG_CACHE_HOME=$T/cache
+# The releaser's go (after staging, before the maintenance) is given
+# beforehand; one test below waits for it.
+export SKHID_RELEASE_GO=1
 
 # The stand-ins.
 cat >"$T/bin/ssh" <<'EOF'
@@ -1272,6 +1275,35 @@ check "release: ... cancels the maintenance" test "$(admin_log)" = "plan 3 cance
 check "release: ... removes the staged files" nothing_staged
 check "release: ... its folder says stopped" grep -qx stopped "$(folder 16 int)/state"
 check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
+check "release: ... frees the lock" test ! -e "$T/lock"
+
+# Without the go given beforehand: staged, it waits for the go and asks the
+# admin page nothing; the go file lets it plan. Then Ctrl-C (the plan is
+# cancelled, as any stop).
+: >"$T/state/admin.log"
+: >"$T/state/admin-seen.log"
+echo 300 >"$T/state/ends-in"
+set -m
+SKHID_RELEASE_GO='' SKHID_TEST_SECONDS_PER_MINUTE=20 "$here/release.sh" --yes --i-know --label go >"$T/go.out" 2>&1 </dev/null &
+go_pid=$!
+set +m
+for _ in $(seq 600); do grep -q "waiting for the go" "$T/go.out" && break; sleep 0.1; done
+sleep 3
+check "release: without the go given, it waits once staged" grep -q "waiting for the go" "$T/go.out"
+check "release: ... and asks the admin page nothing but the preflight's GET meanwhile" test "$(cat "$T/state/admin-seen.log")" = GET
+go_file=$(sed -n "s/^Go: answer y here, or run: touch //p" "$T/go.out" | head -n 1)
+check "release: ... names its go file, in the cache" bash -c "[[ \$1 == $T/cache/skhid-release/go-* ]]" _ "$go_file"
+touch "$go_file"
+for _ in $(seq 300); do grep -q "3. planning the maintenance in 7 min" "$T/go.out" && break; sleep 0.1; done
+check "release: ... the go file lets it plan" grep -q "3. planning the maintenance in 7 min" "$T/go.out"
+check "release: ... and it takes the file away" test ! -e "$go_file"
+for _ in $(seq 300); do grep -q "4. waiting for the planned time" "$T/go.out" && break; sleep 0.1; done
+kill -INT "$go_pid"
+for _ in $(seq 150); do kill -0 "$go_pid" 2>/dev/null || break; sleep 0.1; done
+if kill -0 "$go_pid" 2>/dev/null; then kill -9 "$go_pid"; fi
+wait "$go_pid" 2>/dev/null || true
+printf "%s\n" "$(cat "$T/go.out")" >>"$T/outputs"
+check "release: ... stopped after the go, the plan cancelled" test "$(admin_log)" = "plan 7 cancel" -a ! -e "$T/state/maint"
 check "release: ... frees the lock" test ! -e "$T/lock"
 
 # The whole default run: a match ending in 5 min, the maintenance in 7,

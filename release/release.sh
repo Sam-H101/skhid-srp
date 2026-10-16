@@ -43,7 +43,10 @@
 #      server code to build: tags the running image (by its ID)
 #      srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
 #      folder's src/ and runs docker compose build srp26 there. Once all of
-#      it is staged, never before, it plans the maintenance on the admin
+#      it is staged it waits for the releaser's go (y at its prompt, or
+#      touch the go file it names under ~/.cache/skhid-release/; --yes does
+#      not give it; SKHID_RELEASE_GO=1 gives it beforehand), and only then,
+#      never before, plans the maintenance on the admin
 #      page, POSTed from the jump host (its address is in the SRP_ADMIN_IPS
 #      of the target; the token and the page's path go to curl on stdin),
 #      and sees the countdown on $SKHID_SITE/launcher/places/en. Its
@@ -372,6 +375,30 @@ maintenance_minutes() {
         MAINT_MINUTES=$((WHOLE_MATCH_MINUTES + 2))
         MAINT_WHY="$older, and the launcher page's \"Time left\" does not say ($why): a whole match, $WHOLE_MATCH_MINUTES min, then 2 min"
     fi
+}
+
+# Once everything is staged: nothing players see happens without the
+# releaser's go, given then (not at the start): y at this prompt, or the go
+# file (touch it from anywhere: another shell, the release skill). Without a
+# terminal (--yes) only the file. SKHID_RELEASE_GO=1 gives it beforehand
+# (release/test.sh). Ctrl-C stops as at any step: staged files removed.
+GO_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/skhid-release
+wait_for_go() {
+    local go="$GO_DIR/go-$REL" answer tty=0
+    if [[ ${SKHID_RELEASE_GO:-} == 1 ]]; then say "go: given beforehand (SKHID_RELEASE_GO=1)"; return; fi
+    mkdir -p "$GO_DIR" && rm -f "$go"
+    progress "3. staged; waiting for the go (players see nothing until it is given)"
+    say "Go: answer y here, or run: touch $go"
+    if ((!yes)) && { exec 3</dev/tty; } 2>/dev/null; then tty=1; printf "Go? [y] " >&2; fi
+    while :; do
+        if [[ -e $go ]]; then rm -f "$go"; say "go: $go"; break; fi
+        if ((tty)); then
+            if read -r -t 2 answer <&3 && [[ $answer == y || $answer == yes ]]; then say "go: y"; break; fi
+        else
+            sleep 2 & wait $!
+        fi
+    done
+    if ((tty)); then exec 3<&-; fi
 }
 
 # Once everything is staged: the maintenance planned on the admin page, seen
@@ -845,6 +872,7 @@ if ((DRY_RUN && !no_maint)); then
     say "[dry run] then: $TARGET_SITE/launcher/places/en must say \"Maintenance in $MAINT_MINUTES min\""
 elif ((!DRY_RUN)); then
     progress "3. staged"
+    wait_for_go
     if ((!no_maint)); then plan_maintenance; fi
 fi
 
