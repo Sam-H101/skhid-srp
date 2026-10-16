@@ -76,6 +76,22 @@ pub struct Container {
     pub use_shapes: Vec<Shape>,
 }
 
+impl Container {
+    /// Where a battery is put in or taken out, as a body's feet: a metre
+    /// under the centre of its first use box (else its position), so the
+    /// floor found there is the one beside the box, not its lid, and a look
+    /// a metre over it is at the box. The use is a 2 m ray from the eye that
+    /// must hit the use box (`base_player::detect_usable_object`, PROVEN);
+    /// on level_02, 04, 05 and 06 the position lies 13 to 152 m from the
+    /// box (on level_06 in the fire, both teams' within 4 m of each other),
+    /// and players' put-ins are at the box (783 of them, 2026-10-14 worlds).
+    pub fn use_point(&self) -> Vec3 {
+        self.use_shapes.first().map_or(self.position, |shape| {
+            shape.center - Vec3::new(0.0, 1.0, 0.0)
+        })
+    }
+}
+
 /// Where a battery lies at the start (modes 2 and 3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BatterySpawner {
@@ -853,6 +869,25 @@ mod tests {
                 { "game_object_type": "ambient_light", "full_name": "light", "position": [0.0, 0.0, 0.0] },
             ],
         })
+    }
+
+    /// A battery goes in at the use box (as on level_06, where the
+    /// position lies 46-56 m off it in the fire): a metre under its centre,
+    /// as a body's feet; the position only for a container with no box.
+    #[test]
+    fn a_container_is_used_at_its_use_box_not_its_position() {
+        let config = binary_config_parser::BinaryConfig::parse_json(&project_json());
+        let root = ConfigValue::parse(config.as_bytes()).unwrap();
+        let mut container = MapData::from_config("test/day_4", &root)
+            .unwrap()
+            .containers[0]
+            .clone();
+        let centre = container.use_shapes[0].center;
+        assert_eq!(centre, Vec3::new(4.0, 1.0, 5.0));
+        assert_ne!(container.position.distance_xz(centre), 0.0);
+        assert_eq!(container.use_point(), Vec3::new(4.0, 0.0, 5.0));
+        container.use_shapes.clear();
+        assert_eq!(container.use_point(), container.position);
     }
 
     #[test]
