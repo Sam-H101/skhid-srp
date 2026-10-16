@@ -146,6 +146,31 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     GetTempPathA and shell_32.dll and nothing else. Check 11 works out its
     field: byte 8 the check's. The build without the late join keeps the
     original instructions.
+27. the same build: the mount of resources.db's patches (test_mount_patches).
+28. the same build: the transparent effects scroll as in 0.29 (patch 28,
+    forward_scroll_026g.asm at FORWARD_SCROLL_OFFSET of `.srp`). The three
+    sites (0x1D90DC and 0x1D94CB in effect_fstage_default_materials::
+    compile, 0x14990F in renderer_context's constructor) are a jump to their
+    entry and nops where the original and the build without the late join
+    have the two instructions each replaces; in the original, both ends of
+    the angle attenuation's read meet at the first and compile_begin is
+    given the configuration at [esp+50h], both ends of the uv distortion's
+    block meet at the second, and the third follows scene_time's binding,
+    the last of the constructor's 19 register_constant_binding calls (20 in
+    the exe); compile writes the configuration's byte 0Ch only where it
+    zeroes it (the stack followed instruction by instruction), use_sequence
+    is byte 4 bit 4; g_stage's compile sets bit 6 of byte 0Ch from
+    use_uv_scrolling and sends uv_scrolling_parameters0/1 with 0x1A8900;
+    fill_shader_configuration_macros makes CONFIG_USE_UV_SCROLLING of that
+    bit; no relocation under a site and nothing aims inside one. The code is
+    forward_scroll_026g.section.bin (what nasm makes, check 1) and sits
+    between the seek code and the shell_32.dll check (check 15); its only
+    ways out are the config's two helpers, set_constant<float4>, the shared
+    string and its destroy, register_constant_binding and the three jumps
+    back, each after the two instructions its hook replaced; it reads the
+    exe's six texts and the resource manager's pointer and its own data
+    (1.0 and three names) plus the delta in ebp; three pushad, three popad.
+    check_forward_scroll_026g.py runs it.
 """
 
 import ctypes
@@ -295,6 +320,13 @@ def test_bins():
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.STALE_DLL_ENTRY:#x}",
                         os.path.join(HERE, "stale_dll_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    path = P.forward_scroll_bin()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.FORWARD_SCROLL_VA:#x}",
+                        os.path.join(HERE, "forward_scroll_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
     check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
     path = P.mount_patches_bin()
@@ -1826,6 +1858,227 @@ def test_mount_patches(original, image, before):
           + ("" if outside == calls else f": {[hex(t) for t in outside]}"))
 
 
+# effect_fstage_default_materials::compile and renderer_context's
+# constructor, [start, end) of their code, for the branches of their own
+# that could aim inside the sites of patch 28.
+FORWARD_COMPILE = (0x1D8F40, 0x1D9740)
+RENDERER_CONTEXT = (0x148570, 0x149A41)
+# What the functions compile calls take off the stack (`ret N`), for the
+# depth of its stack at each instruction.
+FORWARD_CALLEES = {0xF6C00: 0, 0xF6B10: 0, 0x1CD0B0: 0x18, 0x3D98B0: 0x20, 0x1C0960: 8, 0x1A8900: 8,
+                   0x1BFCB0: 0, 0x1D9740: 8, 0x3D9D80: 4, 0x3DA450: 4, 0x3DA6B0: 4}
+FORWARD_EXE_TEXTS = {0x9F8E04: b"use_uv_scrolling", 0x9E1C48: b"value",
+                     0x9F971C: b"emissive_map_scroll_u_direction", 0x9F973C: b"emissive_map_scroll_v_direction",
+                     0x9F975C: b"uv_scrolling_parameters0", 0x9F9778: b"uv_scrolling_parameters1"}
+FORWARD_RESOURCE_MANAGER = 0x226047C
+
+
+def forward_configuration_accesses(stock):
+    """[(address, text, offset in the shader configuration, written)] of
+    every [esp+X] operand of compile from its prologue to its epilogue that
+    falls inside the configuration ([esp+50h] with no push pending), the
+    depth of the stack followed instruction by instruction (each call takes
+    off what FORWARD_CALLEES says; compile pushes only for its calls).
+    None when an instruction moves esp otherwise."""
+    start, end = FORWARD_COMPILE
+    rows = ndisasm(stock.read(start, end - start), start)
+    depth, out = 0, []
+    for address, _, text in rows:
+        if address < 0x1D8F51 or address >= 0x1D9737:       # the prologue's and the epilogue's own pushes
+            continue
+        operand = re.search(r"\[esp\+0x([0-9a-f]+)\]", text)
+        if operand:
+            offset = int(operand.group(1), 16) - depth - 0x50
+            if 0 <= offset < 16:
+                written = re.match(r"^(mov[a-z]*|or|and|xor|add|sub|inc|dec|not|neg|shl|shr|set[a-z]+)\s+"
+                                   r"(byte |word |dword |qword |oword )?\[esp", text) is not None
+                out.append((address, text, offset, written))
+        if text.startswith("push"):
+            depth += 4
+        elif text.startswith("pop"):
+            depth -= 4
+        elif text.startswith("call"):
+            target = branch_target(text)
+            if target not in FORWARD_CALLEES:
+                return None
+            depth -= FORWARD_CALLEES[target]
+        elif re.match(r"^[a-z]+ esp,", text):
+            return None                                     # esp moved otherwise
+    return out if depth == 0 else None
+
+
+def test_forward_scroll(original, image, before):
+    """Check 28: the transparent effects scroll as in 0.29
+    (forward_scroll_026g.asm; check_forward_scroll_026g.py runs it)."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    texts = {0x1D90DC: ["mov dl,[esp+0x56]", "mov esi,[ebp+0x10]"],
+             0x1D94CB: ["mov cl,[esp+0x57]", "and cl,0x3"],
+             0x14990F: ["mov [esp+0x2c],edi", "lea esi,[ebx+0x123c]"]}
+    returns = {}
+    for va, old, offset, opcode in P.FORWARD_SCROLL_HOOKS:
+        entry = P.FORWARD_SCROLL_VA + offset
+        new = P.hook_bytes(P.FORWARD_SCROLL_VA, va, old, offset, opcode)
+        returns[entry] = va + len(old)
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new
+              and rows(stock, va, len(old)) == texts[va]
+              and rows(image, va, len(old)) == [f"jmp {entry:#x}"] + ["nop"] * (len(old) - 5),
+              f"{va:#x}: `{' / '.join(texts[va])}` are `jmp {entry:#x}` and {len(old) - 5} nop; the build without "
+              "the late join keeps them")
+    # compile around the two hooks.
+    check(rows(stock, 0x1D90C8, 0x14) == ["mov edi,0x9e1c48", "call 0xf6b10", "cmp dword [eax],byte +0x0",
+                                          "setnz al", "jmp short 0x1d90dc", "xor al,al"]
+          and rows(stock, 0x1D90E3, 0xE) == ["mov ecx,[esi+0x8]", "mov edi,[ebp+0x8]", "shl al,byte 0x6",
+                                             "and dl,0x3f", "or al,dl"]
+          and rows(stock, 0x1D90FC, 0x2F) == ["push esi", "and eax,ecx", "push ebx", "lea edx,[esp+0x58]", "push edx",
+                                              "mov [esp+0x3c],eax", "mov al,[esp+0x63]", "setnz cl", "push edi",
+                                              "shl cl,byte 0x6", "and al,0x3f", "push dword 0x9f8128", "or cl,al",
+                                              "push dword 0x9f8138", "mov [esp+0x6f],cl", "call 0x1cd0b0"],
+          "0x1D90DC: both ends of use_angle_depended_attenuation's read meet there (al the switch, the flags not "
+          "read again before `and eax,ecx`), esi and edi are written again before they are read, and compile_begin "
+          "(0x1CD0B0) is given the configuration at [esp+50h] (`lea edx,[esp+58h]` after two pushes)")
+    check(rows(stock, 0x1D94C1, 0x16) == ["call 0x1c0960", "mov esi,0x2", "mov cl,[esp+0x57]", "and cl,0x3",
+                                          "cmp cl,0x2", "jnz 0x1d9512"]
+          and rows(stock, 0x1D9319, 0xB) == ["test byte [esp+0x52],0x80", "jz near 0x1d94cb"]
+          and rows(stock, 0x1D92DD, 3) == ["mov eax,[ebp+0x8]"] and rows(stock, 0x1D9309, 1) == ["push eax"]
+          and rows(stock, 0x1D9314, 5) == ["call 0x1a8900"],
+          "0x1D94CB: the uv distortion's block ends there from both sides (esi 2 on both), the flags are written "
+          "again (`cmp cl,2`) before they are read; compile's own set_constant<float4> (0x1A8900) is given [ebp+8], "
+          "its first argument, as the compiler")
+    accesses = forward_configuration_accesses(stock)
+    writes = sorted({offset for _, _, offset, written in accesses or [] if written})
+    scroll = [(address, text) for address, text, offset, written in accesses or [] if offset == 0x0C]
+    check(accesses is not None and scroll == [(0x1D8FA3, "mov [esp+0x5c],esi")]
+          and any(offset == 4 and text == "mov [esp+0x54],cl" and address == 0x1D9075
+                  for address, text, offset, _ in accesses)
+          and any(address == 0x1D9228 and text == "test byte [esp+0x54],0x10" for address, text, _, _ in accesses),
+          "the configuration's byte 0Ch is written in compile only where it is zeroed (0x1D8FA3), before any "
+          "switch is read; use_sequence is bit 4 of byte 4 (written at 0x1D9075, read at 0x1D9228); bytes written: "
+          + ", ".join(f"{offset:#x}" for offset in writes))
+    # The g_stage effect: the same bit from the same switch, the same two constants.
+    check(rows(stock, 0x1DE4F1, 0x46) == ["mov esi,0x9f8e04", "mov eax,ebx", "call 0xf6c00", "test al,al",
+                                          "jz 0x1de51d", "mov edi,esi", "mov eax,ebx", "call 0xf6b10",
+                                          "mov edi,0x9e1c48", "call 0xf6b10", "cmp dword [eax],byte +0x0",
+                                          "jz 0x1de51d", "mov al,0x1", "jmp short 0x1de51f", "xor al,al",
+                                          "mov cl,[esp+0x24]", "shl al,byte 0x6", "xor al,cl", "and al,0x40",
+                                          "xor cl,al", "mov esi,0x9f8e18", "mov eax,ebx", "mov [esp+0x24],cl"]
+          and rows(stock, 0x1DE6D1, 0xA) == ["push eax", "push ebx", "mov [esp+0x28],cl", "lea ecx,[esp+0x20]"]
+          and rows(stock, 0x1E0812, 0x24) == ["mov esi,[ebp+0x8]", "push dword 0x9f975c", "push esi",
+                                              "lea ecx,[esp+0x48]", "call 0x1a8900", "push dword 0x9f9778",
+                                              "push esi", "lea ecx,[esp+0xa8]", "call 0x1a8900"],
+          "g_stage's compile reads use_uv_scrolling into bit 6 of the configuration's byte 0Ch ([esp+24h], the "
+          "configuration being [esp+18h]: `lea ecx,[esp+20h]` after two pushes) and sends uv_scrolling_parameters0/1 "
+          "with 0x1A8900 and [ebp+8] as the compiler")
+    fill = forward_fill_offset(stock)
+    check(fill == 0x0C, f"fill_shader_configuration_macros (0x3C9B80) makes CONFIG_USE_UV_SCROLLING of bit 6 of "
+          f"the configuration's byte {fill if fill is None else hex(fill)} (0x3C9F51..0x3C9F5F)")
+    # The constructor around its hook: scene_time's binding, the last of them.
+    check(rows(stock, 0x1498A6, 0x21) == ["lea eax,[ebx+0x4140]", "mov esi,0x4", "push dword 0x9efd64",
+                                          "mov [esp+0x14],eax", "mov [esp+0x18],esi", "call 0xe0b50",
+                                          "mov [esp+0x18],edi"]
+          and rows(stock, 0x1498D8, 0x18) == ["mov edx,[dword 0x226047c]", "push edx", "lea eax,[esp+0x14]",
+                                              "mov [esp+0x20],edi", "mov [esp+0x24],esi", "call 0x3bccc0"]
+          and rows(stock, 0x1498F6, 0x19) == ["mov eax,[esp+0x18]", "cmp eax,edi", "jz 0x14990f", "mov ecx,eax",
+                                              "or edx,byte -0x1", "lock xadd [ecx],edx", "jnz 0x14990f", "push eax",
+                                              "call 0xe0ae0"]
+          and rows(stock, 0x149919, 0x10) == ["lea esp,[esp+0x0]", "mov eax,[esp+0x2c]", "call 0x162550"]
+          and image.read(0x149919, 0x40) == stock.read(0x149919, 0x40)
+          and stock.read(0x9EFD64, 11) == b"scene_time\0",
+          "0x14990F: after scene_time's binding (its float at [ebx+4140h], 4 bytes, the name, 0, 4; then "
+          "register_constant_binding 0x3BCCC0 with the resource manager [226047Ch], then the name let go), esi "
+          "written again by the second instruction, the loop after it the original's")
+    text = original[P.TEXT_FILE:P.TEXT_FILE + P.TEXT_VSIZE]
+    sites = sorted(P.TEXT_VA + at for at in range(len(text) - 5) if text[at] == 0xE8
+                   and P.TEXT_VA + at + 5 + struct.unpack_from("<i", text, at + 1)[0] == 0x3BCCC0)
+    inside = [s for s in sites if RENDERER_CONTEXT[0] <= s < RENDERER_CONTEXT[1]]
+    check(len(sites) == 20 and len(inside) == 19 and inside[-1] == 0x1498EB,
+          f"register_constant_binding has {len(sites)} callers, {len(inside)} in renderer_context's constructor; "
+          f"the last of those ({inside[-1] if inside else 0:#x}) is scene_time's, right before the hook")
+    for va, old, _, _ in P.FORWARD_SCROLL_HOOKS:
+        start, end = RENDERER_CONTEXT if va == 0x14990F else FORWARD_COMPILE
+        under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+        found = aimed_inside(original, va, len(old), 0)
+        found += [address for address, _, t in ndisasm(stock.read(start, end - start), start)
+                  if (target := branch_target(t)) is not None and va < target < va + len(old)]
+        check(not under and not found, f"{va:#x}: no base relocation under it, no branch or address aims inside it"
+              + "".join(f"\n          {a:#x}" for a in found))
+    # The code itself.
+    code = open(P.forward_scroll_bin(), "rb").read()
+    base = P.FORWARD_SCROLL_VA
+    check(image.read(base, len(code)) == code,
+          f"the forward effect's scrolling at {base:#x} is forward_scroll_026g.section.bin ({len(code)} bytes)")
+    one = code.index(struct.pack("<f", 1.0) + b"transparency_map_scroll_u_direction\0")
+    tail = code[one:]
+    check(tail == struct.pack("<f", 1.0) + b"transparency_map_scroll_u_direction\0transparency_map_scroll_v_direction\0"
+          b"scene_slomo\0" + struct.pack("<I", base) and one % 4 == 0,
+          "its data: the float 1.0 (scene_slomo's value), the names transparency_map_scroll_u_direction, "
+          "transparency_map_scroll_v_direction and scene_slomo, and the address it was assembled for")
+    listing = ndisasm(code[:one], base)
+    at = {address: t for address, _, t in listing}
+    end = base + len(code)
+    calls = sorted({branch_target(t) for _, _, t in listing if t.startswith("call")} - set(range(base, end)))
+    jumps = sorted({branch_target(t) for _, _, t in listing if t.startswith("j")} - set(range(base, end)))
+    data = sorted({value for _, _, t in listing if (m := re.search(r"\[ebp\+0x([0-9a-f]+)\]", t))
+                   and (value := int(m.group(1), 16)) >= P.IMAGE_BASE})
+    exe_data = [d for d in data if not base <= d < end]
+    own = [d for d in data if base <= d < end]
+    texts_ok = all(original[stock.offset(va):stock.offset(va) + len(t) + 1] == t + b"\0"
+                   for va, t in FORWARD_EXE_TEXTS.items())
+    check(calls == sorted([0xF6C00, 0xF6B10, 0x1A8900, 0xE0B50, 0xE0AE0, 0x3BCCC0])
+          and jumps == sorted(returns.values())
+          and exe_data == sorted(list(FORWARD_EXE_TEXTS) + [FORWARD_RESOURCE_MANAGER]) and texts_ok
+          and own == sorted([base + one, base + one + 4, base + one + 40, base + one + 76]),
+          "its only ways out are the config's key check (0xF6C00) and lookup (0xF6B10), set_constant<float4> "
+          "(0x1A8900), the shared string (0xE0B50) and its destroy (0xE0AE0), register_constant_binding "
+          "(0x3BCCC0), and a jump back after each hook; it reads the exe's texts "
+          + ", ".join(t.decode() for t in FORWARD_EXE_TEXTS.values())
+          + " and the resource manager's pointer (0x226047C), and its own data, each plus the delta in ebp"
+          + ("" if calls == sorted([0xF6C00, 0xF6B10, 0x1A8900, 0xE0B50, 0xE0AE0, 0x3BCCC0]) else f": {[hex(c) for c in calls]}")
+          + ("" if exe_data == sorted(list(FORWARD_EXE_TEXTS) + [FORWARD_RESOURCE_MANAGER]) else f": {[hex(d) for d in exe_data]}"))
+    entries_ok = True
+    for va, old, offset, _ in P.FORWARD_SCROLL_HOOKS:
+        entry = base + offset
+        body = [t for address, _, t in listing if entry <= address]
+        stop = next(i for i, t in enumerate(body) if t.startswith("jmp") and branch_target(t) in returns.values())
+        entries_ok &= body[stop] == f"jmp {returns[entry]:#x}" and body[stop - 2:stop] == texts[va]
+        entries_ok &= offset == 0 or code[offset - 1] == 0xCC
+    check(entries_ok and at.get(base + P.SCENE_SLOMO_OFFSET) == "pusha"
+          and at.get(base + P.FORWARD_SWITCH_OFFSET) == "test byte [esp+0x54],0x10"
+          and at.get(base + P.FORWARD_CONSTANTS_OFFSET) == "test byte [esp+0x5c],0x40",
+          "each entry ends with the two instructions its jump replaced and a jump back to the instruction after "
+          "them; the switch's entry tests use_sequence (byte 4 bit 4), the constants' entry the bit it sets (byte "
+          "0Ch bit 6), and the binding's entry starts with pushad")
+    check(sum(1 for t in at.values() if t == "pusha") == sum(1 for t in at.values() if t == "popa") == 3,
+          "three pushad and three popad: every register is restored before each jump back")
+
+
+def forward_fill_offset(stock):
+    """Which byte of the shader configuration fill_shader_configuration_macros
+    reads at 0x3C9F51 for CONFIG_USE_UV_SCROLLING (bit 6): the stack followed
+    from its start (add_bool_macro 0x3C9670 and the helpers 0x3C9730 and
+    0x3C97D0 are cdecl), or None."""
+    rows = ndisasm(stock.read(0x3C9B80, 0x400), 0x3C9B80)
+    depth = 0
+    for address, _, text in rows:
+        if address == 0x3C9F51:
+            following = [t for a, _, t in rows if 0x3C9F51 < a <= 0x3C9F5F]
+            operand = re.search(r"\[esp\+0x([0-9a-f]+)\]", text)
+            if not operand or following != ["shr cl,byte 0x6", "and cl,0x1", "movzx edx,cl", "push edx",
+                                            "push dword 0xa27ddc"]:
+                return None
+            name = stock.read(0xA27DDC, 24)
+            return int(operand.group(1), 16) - depth - 4 if name == b"CONFIG_USE_UV_SCROLLING\0" else None
+        if text.startswith("push"):
+            depth += 4
+        elif text.startswith("pop"):
+            depth -= 4
+        elif m := re.match(r"(add|sub) esp,(?:byte \+)?0x([0-9a-f]+)$", text):
+            depth += -int(m.group(2), 16) if m.group(1) == "add" else int(m.group(2), 16)
+        elif text.startswith("call") and branch_target(text) not in (0x3C9670, 0x3C9730, 0x3C97D0):
+            return None                                     # the three macro helpers end with a plain `ret`
+    return None
+
+
 def test_replay_reattach(original, image, before):
     """A replay's camera follows its player into another kit (patch
     revision 11, REPLAY_REATTACH): replay_network_client's slot +0x54 is
@@ -2016,11 +2269,13 @@ def test_late_join(original, without, server, source):
     seek = open(P.seek_clear_bin(), "rb").read()
     stale_dll = open(P.stale_dll_bin(), "rb").read()
     mount_patches = open(P.mount_patches_bin(), "rb").read()
+    forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     pieces = [(0, len(first_page), "the build without the late join's first page"),
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
+              (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
@@ -2034,14 +2289,17 @@ def test_late_join(original, without, server, source):
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
-          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
+          and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
+          and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
-          f"code at +{P.SEEK_CLEAR_OFFSET:#x} and the shell_32.dll check at "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
+          f"and the shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
@@ -2073,6 +2331,7 @@ def test_late_join(original, without, server, source):
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
                (P.file_offset(P.DB_SIGNATURE_VA), len(P.DB_SIGNATURE[1])), (P.file_offset(P.STALE_DLL_VA), len(P.STALE_DLL[1])),
                (P.file_offset(P.MOUNT_QUERY_VA), len(P.MOUNT_QUERY[1])), (P.file_offset(P.MOUNTED_VA), len(P.MOUNTED[1])),
+               *((P.file_offset(va), len(old)) for va, old, _, _ in P.FORWARD_SCROLL_HOOKS),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
@@ -2180,6 +2439,7 @@ def test_late_join(original, without, server, source):
     test_db_signature(original, image, before)
     test_stale_dll(original, image, before)
     test_mount_patches(original, image, before)
+    test_forward_scroll(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

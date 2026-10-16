@@ -14,6 +14,7 @@ use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::{self, mode};
 use survarium::v026g::match_msgs::client_model::{ClientModel, Skip, Taken};
 use survarium::v026g::match_msgs::late_join::{CONNECT_CAPABILITY, Prepare, Prepared, Status};
+use survarium::v026g::match_msgs::motion;
 use survarium::v026g::match_msgs::players::{self, PlayerState};
 use survarium::v026g::match_msgs::rules::{self, TimelimitParams, TimelimitRule, state};
 use survarium::v026g::match_msgs::snapshot::{
@@ -49,6 +50,9 @@ pub struct Sim {
     pub points_from: Option<(u32, [u16; 2])>,
     /// From a tick on: Team Deathmatch's rule.
     pub tdm_from: Option<(u32, Tdm)>,
+    /// From a tick on: whether each team may still respawn (the rules'
+    /// `team_respawn`; both may otherwise).
+    pub team_respawn_from: Option<(u32, [bool; 2])>,
     /// From a tick on: kills of player 0 and deaths of player 1.
     pub kills_from: Option<(u32, u16)>,
     /// From a tick on the world differs from the others' by this byte.
@@ -64,6 +68,10 @@ pub struct Sim {
     /// block is in every world (alive, and what it has in store of each
     /// item of its profile).
     pub player_states: Vec<Option<PlayerState>>,
+    /// By place: the end of its player's state (a body where the world
+    /// has it, `motion::Tail`), at the world's time; with none the state
+    /// ends at the head and an opaque inventory.
+    pub player_tails: Vec<Option<motion::Tail>>,
     /// No world was loaded yet: the next is this game's first.
     first_world: bool,
     /// From a tick on the statistics have the tickets of the match's
@@ -87,11 +95,13 @@ impl Sim {
             events: Vec::new(),
             points_from: None,
             tdm_from: None,
+            team_respawn_from: None,
             kills_from: None,
             salt_from: None,
             ballast: 0,
             late_objects_from: None,
             player_states: vec![None; players],
+            player_tails: vec![None; players],
             first_world: true,
             stale_tickets_from: None,
         }
@@ -258,7 +268,10 @@ impl Sim {
             gather,
             tdm,
             kills_deaths,
-            team_respawn: [true, true],
+            team_respawn: self
+                .team_respawn_from
+                .filter(|(from, _)| since(*from))
+                .map_or([true, true], |(_, teams)| teams),
         }
         .to_bytes();
         let mut bullets = vec![0xB0; self.ballast];
@@ -278,10 +291,18 @@ impl Sim {
             if let Some(head) = head {
                 mask |= 1 << place;
                 let animation = players::animation_bytes(&[true; 9], &[time, time + 7], &[0.5]);
-                blocks.extend(players::block_bytes(
-                    &players::state_bytes(head, &[0xA5; 16]),
-                    Some(&animation),
-                ));
+                let state = match self.player_tails.get(place).and_then(Option::as_ref) {
+                    Some(tail) => motion::state_bytes(
+                        head,
+                        &[0xA5; 16],
+                        &motion::Tail {
+                            time_ms: time,
+                            ..tail.clone()
+                        },
+                    ),
+                    None => players::state_bytes(head, &[0xA5; 16]),
+                };
+                blocks.extend(players::block_bytes(&state, Some(&animation)));
             }
         }
         Sections {
@@ -498,6 +519,16 @@ impl Client {
         }
     }
 
+    /// The test bot of a game that speaks the late join (patch revision 5
+    /// on): `idle`, with the capability in its 0xD8 and worlds of twenty
+    /// places, so a match of the growing queue takes it.
+    pub fn idle_growing(session: u32) -> Self {
+        let mut client = Self::idle(session);
+        client.model.growing_roster = true;
+        client.sim.snapshot_players = 20;
+        client
+    }
+
     pub fn growing(session: u32, players: usize, map_id: u8) -> Self {
         let mut client = Self::new(session, true, players, map_id);
         client.model.growing_roster = true;
@@ -514,6 +545,7 @@ impl Client {
                 options.players.push(prepare.profile.clone());
                 self.sim.players = options.players.len();
                 self.sim.player_states.resize(self.sim.players, None);
+                self.sim.player_tails.resize(self.sim.players, None);
             } else {
                 assert_eq!(options.players.get(place), Some(&prepare.profile));
             }

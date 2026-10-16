@@ -22,6 +22,9 @@ impl Game {
         for (index, (place, peer)) in self.formed.places.iter().zip(&self.peers).enumerate() {
             let here = match peer {
                 Some(peer) => peer.stage != Stage::Gone,
+                // The server's bot: to come until it is in, then in until
+                // it gives its place up to a late joiner (`driven.rs`).
+                None if place.driven => !self.result_made && !self.has_left(index),
                 // Not connected yet: still to come until the countdown,
                 // and one taken into the match being played until it is in.
                 None => phase == LivePhase::Gathering || self.coming(index),
@@ -45,6 +48,7 @@ impl Game {
             phase,
             players,
             present,
+            giving_way: self.giving_way(),
             kills,
             played: self
                 .rule

@@ -211,6 +211,12 @@ pub(super) struct Core<'a> {
     /// The listing keys of the matches, which JOIN names a match by
     /// (`join`).
     pub listing: super::join::Listing,
+    /// The choices of a match against bots held for the players' Play, by
+    /// account, kept a while after they ran out (`pvb`).
+    pub pvb_holds: HashMap<u32, super::pvb::Hold>,
+    /// The match against bots being made, by the queue's match id: what
+    /// it was chosen with (`pvb`, `play::launch`).
+    pub pvb_launching: HashMap<u32, super::pvb::Choice>,
 }
 
 impl<'a> Core<'a> {
@@ -255,6 +261,8 @@ impl<'a> Core<'a> {
             // which a window still open may name: the keys start at the
             // time.
             listing: super::join::Listing::new(quests::now() as u32),
+            pvb_holds: HashMap::new(),
+            pvb_launching: HashMap::new(),
         }
     }
 

@@ -248,6 +248,50 @@ fn a_player_who_left_is_not_counted_and_the_next_one_takes_its_side() {
 }
 
 #[test]
+fn a_full_side_takes_a_late_player_in_the_place_of_a_server_bot_that_gives_way() {
+    let mut world = World::new(Duration::ZERO);
+    let ticket = running(&mut world);
+    world.core.settings.team_size = 2;
+    let (id, teams) = seats(&world);
+    // A bot of the match server on each side: two against two, both
+    // sides full; the first player's side the stronger (the bots count as
+    // players of no strength).
+    let bot_teams = [teams[0], teams[1]];
+    assert!(world.store.matchmaking().add_bots(id, &bot_teams));
+    {
+        let running = world.core.matches.get_mut(&id).unwrap();
+        running
+            .seats
+            .extend(bot_teams.iter().map(|&team| (0, team)));
+        running.strengths = vec![20 * STRENGTH_SCALE, 0, 0, 0];
+        running
+            .names
+            .extend(["Bot-1".to_owned(), "Bot-2".to_owned()]);
+    }
+    let live = |giving_way| LiveView {
+        present: 0b1111,
+        giving_way,
+        ..LiveView::default()
+    };
+    // The bots stay (`SRP_BOTS_GIVE_WAY=off`): nobody fits.
+    world.host.live.locked().insert(ticket, live(0));
+    let waiting = growing(&mut world, "Waiting");
+    world.ask(waiting, request::play(1));
+    world.advance(Duration::from_secs(2));
+    assert!(sent_to_match(&world.take(waiting)).is_none());
+    // The second side's bot gives way: the player goes in there, the bot
+    // making room for it. Its place is a new one, the fifth.
+    world.host.live.locked().insert(ticket, live(0b1000));
+    world.advance(Duration::from_secs(2));
+    assert_eq!(sent_to_match(&world.take(waiting)).unwrap().0, ticket);
+    let made = world.host.made.locked();
+    assert_eq!(made[0].1.players.last().unwrap().profile.team, teams[1]);
+    drop(made);
+    assert_eq!(world.core.matches[&id].seats.len(), 5);
+    world.assert_clean();
+}
+
+#[test]
 fn a_player_alone_goes_to_the_side_that_trails() {
     for leader in 0..2_usize {
         let mut world = World::new(Duration::ZERO);
@@ -270,6 +314,7 @@ fn a_player_alone_goes_to_the_side_that_trails() {
                 kills: [0, 0],
                 played: Some(Duration::from_secs(200)),
                 time_left: None,
+                giving_way: 0,
             },
         );
         let team = joins(&mut world, "Helper", ticket).expect("three batteries are a lead");
@@ -344,6 +389,7 @@ fn the_side_that_trails_by_a_dramatic_lead_gets_two_players() {
                 kills: [0, 0],
                 played: Some(Duration::from_secs(400)),
                 time_left: None,
+                giving_way: 0,
             },
         );
         // Both at once: held back from the match until both wait, and
@@ -419,6 +465,7 @@ fn the_log_gets_the_sides_of_a_match_being_played_each_minute() {
             kills: [7, 5],
             played: Some(Duration::from_secs(61)),
             time_left: None,
+            giving_way: 0,
         },
     );
     world.advance(Duration::from_secs(2));

@@ -506,11 +506,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
 
 [[package]]
+name = "mapdata"
+version = "0.1.0"
+dependencies = [
+ "binary-config-parser",
+ "clap",
+ "resources-db 0.1.0 (git+https://github.com/srp-survarium/vostok-resources-db?rev=9498aca14014ef74460429f51eb41a6af333522c)",
+ "serde_json",
+ "survarium",
+]
+
+[[package]]
 name = "match-server"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
  "log",
+ "mapdata",
+ "serde",
  "serde_json",
  "session",
  "survarium",
@@ -719,6 +732,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "resources-db"
+version = "0.1.0"
+source = "git+https://github.com/srp-survarium/vostok-resources-db?rev=9498aca14014ef74460429f51eb41a6af333522c#9498aca14014ef74460429f51eb41a6af333522c"
+dependencies = [
+ "bitflags",
+ "bytemuck",
+ "clap",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -852,7 +875,7 @@ dependencies = [
  "binary-config-parser",
  "log",
  "lzma-rust2",
- "resources-db",
+ "resources-db 0.1.0",
  "serde",
 ]
 

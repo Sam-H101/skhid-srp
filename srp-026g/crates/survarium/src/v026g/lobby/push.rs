@@ -986,6 +986,194 @@ pub fn join_answer(code: JoinCode, key: u32) -> Result<ServerMessage, WireError>
     elo_rows(&[(JOIN_START, &row)])
 }
 
+/// The `start` of a `3B` that asks whether the asker may play against the
+/// server's bots now, and on what ("Player vs Bots"; srp's changed lobby
+/// movie asks when its match settings panel opens). Answered with
+/// [`pvb_status`]. **srp's own**, as [`MATCHES_START`].
+pub const PVB_STATUS_START: u32 = 2_050_000_000;
+/// The `start` of a `3B` that chooses a match against the server's bots:
+/// `PVB_CHOOSE_BASE + size × 1000 + map_id` ([`pvb_choice`]), answered at
+/// the same place with [`pvb_choose_ok`] or [`pvb_choose_no`].
+pub const PVB_CHOOSE_BASE: u32 = 2_051_000_000;
+/// The last start of a choice: `PVB_CHOOSE_BASE + 999 999`, below
+/// [`JOIN_START`].
+pub const PVB_CHOOSE_LAST: u32 = PVB_CHOOSE_BASE + 999_999;
+/// The first field of [`pvb_status`]'s header row.
+pub const PVB_STATUS_VERSION: &str = "B1";
+/// The first field of the row of a choice's answer.
+pub const PVB_CHOOSE_VERSION: &str = "B2";
+/// The most maps one [`pvb_status`] lists.
+pub const PVB_MAP_ROWS: usize = 31;
+
+/// Whether the asker may start a match against the server's bots now, and
+/// if not why: the `code` of [`pvb_status`]'s header and of
+/// [`pvb_choose_no`]. The numbers are the contract's
+/// (`private/pvb-mode/CONTRACT-PVB.md`); the movie holds a text for each
+/// in every language and takes a number it does not know as "not now".
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PvbCode {
+    Allowed = 0,
+    /// The asker's equipment level is over the most allowed: the row's
+    /// `gear` and `max` say both.
+    GearTooHigh = 1,
+    /// In a squad with others.
+    InSquad = 2,
+    /// Waiting in the queue (it pressed Play).
+    Searching = 3,
+    /// In a match, sent to one, with a place in one, or holding a JOIN.
+    InMatch = 4,
+    /// The asker's game is too old for this.
+    Outdated = 5,
+    /// The server does not offer the mode now.
+    Off = 6,
+    /// As many matches against bots run as the server allows at once: the
+    /// row's `running` and `cap` say both.
+    AtLimit = 7,
+    /// A planned maintenance is 30 minutes away or less.
+    Maintenance = 8,
+    /// The asker is in its clan's team (clan-team Play).
+    ClanTeam = 9,
+    /// A choice of a size or a map the server does not offer (only in
+    /// [`pvb_choose_no`]).
+    UnknownChoice = 10,
+}
+
+/// The numbers a refusal is shown with: the asker's equipment level and
+/// the most allowed (code 1), the matches against bots running and the
+/// most at once (code 7). Sent with every answer, whatever its code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PvbNumbers {
+    pub gear: u8,
+    pub max_gear: u8,
+    /// Running, and held for the players who chose one and have not
+    /// pressed Play yet.
+    pub running: u32,
+    pub max_matches: u32,
+}
+
+/// The header of [`pvb_status`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PvbStatus {
+    pub code: PvbCode,
+    pub numbers: PvbNumbers,
+    /// The team sizes offered, each side's players.
+    pub sizes: Vec<u8>,
+    pub default_size: u8,
+    pub default_map: u8,
+}
+
+/// A map of [`pvb_status`]: one row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PvbMap {
+    pub map_id: u8,
+    /// `maps::MapMode`'s level and mode.
+    pub level: u8,
+    pub mode: u8,
+    /// How many more matches against bots may start on it now; 0: none.
+    pub free: u32,
+}
+
+/// `91` as the answer to `3B 00 <PVB_STATUS_START> <count>`. **srp's own**,
+/// as [`matches_now`]: ranking rows with rating and change 0.
+///
+/// - row 0, the header, always there: `place = PVB_STATUS_START`, `name =
+///   "B1;<code>;<gear>;<max gear>;<sizes>;<default size>;<default
+///   map>;<running>;<max matches>"`, `sizes` joined by `.` (`6.8.10`);
+/// - row `i` from 1, a map: `place = PVB_STATUS_START + i`, `name =
+///   "<map_id>;<level>;<mode>;<free>"`.
+///
+/// At most `count` rows (the header always), and [`PVB_MAP_ROWS`] maps.
+/// The widest header is 47 bytes, a map 18: within [`limits::NAME`].
+pub fn pvb_status(
+    status: &PvbStatus,
+    maps: &[PvbMap],
+    count: u8,
+) -> Result<ServerMessage, WireError> {
+    at_most("bot maps", maps.len(), PVB_MAP_ROWS)?;
+    let row = |name: String| Ranked {
+        name,
+        rating: 0,
+        rating_before: 0,
+    };
+    let sizes: Vec<String> = status.sizes.iter().map(u8::to_string).collect();
+    let numbers = status.numbers;
+    let mut rows = vec![row(format!(
+        "{PVB_STATUS_VERSION};{};{};{};{};{};{};{};{}",
+        status.code as u8,
+        numbers.gear,
+        numbers.max_gear,
+        sizes.join("."),
+        status.default_size,
+        status.default_map,
+        numbers.running,
+        numbers.max_matches
+    ))];
+    let most = usize::from(count).saturating_sub(1);
+    rows.extend(maps.iter().take(most).map(|map| {
+        row(format!(
+            "{};{};{};{}",
+            map.map_id, map.level, map.mode, map.free
+        ))
+    }));
+    let placed: Vec<(u32, &Ranked)> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (PVB_STATUS_START + index as u32, row))
+        .collect();
+    elo_rows(&placed)
+}
+
+/// What a choice's start asks for: `(size, map_id)`; `None` for a start
+/// that is no choice (outside `PVB_CHOOSE_BASE..=PVB_CHOOSE_LAST`, a size
+/// over 255 or a map id over 255). Whether the server offers it is the
+/// lobby's to say.
+pub fn pvb_choice(start: u32) -> Option<(u8, u8)> {
+    if !(PVB_CHOOSE_BASE..=PVB_CHOOSE_LAST).contains(&start) {
+        return None;
+    }
+    let offset = start - PVB_CHOOSE_BASE;
+    let size = u8::try_from(offset / 1000).ok()?;
+    let map_id = u8::try_from(offset % 1000).ok()?;
+    Some((size, map_id))
+}
+
+/// The start a choice of `size` and `map_id` is asked with.
+pub fn pvb_choice_start(size: u8, map_id: u8) -> u32 {
+    PVB_CHOOSE_BASE + u32::from(size) * 1000 + u32::from(map_id)
+}
+
+/// `91` as the answer to a choice that was granted: one row at its start,
+/// `"B2;ok;<size>;<map_id>"`. A place is held for the asker for a few
+/// seconds; the movie then presses Play for it.
+pub fn pvb_choose_ok(size: u8, map_id: u8) -> Result<ServerMessage, WireError> {
+    let row = Ranked {
+        name: format!("{PVB_CHOOSE_VERSION};ok;{size};{map_id}"),
+        rating: 0,
+        rating_before: 0,
+    };
+    elo_rows(&[(pvb_choice_start(size, map_id), &row)])
+}
+
+/// `91` as the answer to a choice that was refused: one row at the start
+/// it was asked with, `"B2;no;<code>;<gear>;<max gear>;<running>;<max
+/// matches>"` (the numbers as [`pvb_status`] has them). At most 41 bytes.
+pub fn pvb_choose_no(
+    start: u32,
+    code: PvbCode,
+    numbers: PvbNumbers,
+) -> Result<ServerMessage, WireError> {
+    let row = Ranked {
+        name: format!(
+            "{PVB_CHOOSE_VERSION};no;{};{};{};{};{}",
+            code as u8, numbers.gear, numbers.max_gear, numbers.running, numbers.max_matches
+        ),
+        rating: 0,
+        rating_before: 0,
+    };
+    elo_rows(&[(start, &row)])
+}
+
 /// One 20-byte `quest_instance` of 0x92.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuestRecord {

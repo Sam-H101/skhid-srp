@@ -23,6 +23,7 @@ fn reserve(bench: &mut Bench) -> usize {
                 account_id: 100 + place as u32,
                 profile: profile(&format!("edge-player-{place}"), (place % 2) as u8),
                 bot: false,
+                driven: false,
             },
         )
         .unwrap();
@@ -236,6 +237,7 @@ fn a_growing_roster_prepares_and_catches_up_over_real_udp() {
                 account_id: 102,
                 profile: profile("udp-newcomer", 0),
                 bot: false,
+                driven: false,
             },
         )
         .unwrap();

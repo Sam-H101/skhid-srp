@@ -727,6 +727,11 @@ mod tests {
                 &datagram,
                 now + Duration::from_millis(u64::from(i)),
             );
+            // Paced as a match is: all at once, a busy machine's writer
+            // falls behind and records are dropped by design.
+            if i % 200 == 199 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         drop(recording);
         let names = settle(&dir, |names| names.len() == 1);

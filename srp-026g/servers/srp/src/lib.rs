@@ -3,3 +3,7 @@
 
 pub mod bot;
 pub mod v026g;
+
+/// The input script of a bot: `match_server::v026g::drive`, here since stage
+/// 0 (`srp-bot --drive`).
+pub use match_server::v026g::drive;

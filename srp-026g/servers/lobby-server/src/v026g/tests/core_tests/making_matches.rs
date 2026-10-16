@@ -400,3 +400,61 @@ fn the_side_size_and_the_search_step_are_settings() {
     assert_eq!(parse_search_step("3601"), None);
     assert_eq!(parse_search_step(""), None);
 }
+
+#[test]
+fn the_servers_bots_take_the_places_after_the_players() {
+    // `SRP_SERVER_BOTS=3`: three of the match server's own bots go into
+    // each match made, after its players.
+    let settings = Settings {
+        server_bots: 3,
+        ..Settings::local("127.0.0.1:0")
+    };
+    let mut world = World::with_settings(Duration::ZERO, settings);
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    world.ask(alice, request::play(1));
+    world.ask(bob, request::play(1));
+    world.advance(Duration::from_secs(4));
+    let made = world.host.made.lock().unwrap().clone();
+    assert_eq!(made.len(), 1);
+    let (_, setup) = &made[0];
+    assert_eq!(setup.players.len(), 5);
+    // The players keep the first places.
+    for player in &setup.players[..2] {
+        assert!(!player.driven && player.session_id != 0 && player.account_id != 0);
+    }
+    // The bots: no session, no account, a kit with a weapon, on the sides
+    // so that neither has more than one place over the other.
+    let mut sizes = [0_usize; 2];
+    for (n, player) in setup.players.iter().enumerate() {
+        sizes[usize::from(player.profile.team)] += 1;
+        if n < 2 {
+            continue;
+        }
+        assert!(player.driven && !player.bot);
+        assert_eq!((player.session_id, player.account_id), (0, 0));
+        assert_eq!(player.profile.name, format!("Bot-{}", n - 1));
+        let kit = &player.profile.kits[0];
+        assert_ne!(
+            kit.state,
+            survarium::v026g::match_msgs::static_info::KIT_NOT_LOADED
+        );
+        assert!(kit.slots[7].is_some(), "a weapon in slot 7");
+    }
+    assert!(sizes[0].abs_diff(sizes[1]) <= 1, "{sizes:?}");
+    // The queue's roster has the bots' places too: a place taken later
+    // counts from past them.
+    let queued = world.store.matchmaking().matches();
+    assert_eq!(queued.len(), 1);
+    let formed = world
+        .store
+        .matchmaking()
+        .formed_match(queued[0].0)
+        .expect("the match");
+    assert_eq!(formed.seats.len(), 5);
+    assert!(
+        formed.seats[2..]
+            .iter()
+            .all(|seat| seat.player.session_id == 0)
+    );
+}

@@ -764,6 +764,48 @@ impl Matchmaking {
         Some(id)
     }
 
+    /// Seat one player alone in a new match at once, on `team`, its teams
+    /// fixed: a match against the server's own bots ("Player vs Bots"),
+    /// whose places the lobby adds after it ([`Matchmaking::add_bots`]).
+    /// No rule of two parties, of levels or of a gather window; and as a
+    /// match of fixed teams it never takes a late joiner (`late_seats`).
+    /// `None`, and nothing changed, when the player has a seat in a match
+    /// being played or `team` is over 1. The player leaves the queue.
+    pub fn seat_solo(
+        &self,
+        player: Player,
+        team: u8,
+        now: Instant,
+        pool: QueuePool,
+    ) -> Option<u32> {
+        let mut inner = self.inner.locked();
+        if team > 1 || inner.seat_of_account_mut(player.account_id).is_some() {
+            return None;
+        }
+        inner.queue.retain(|group| {
+            !group
+                .players
+                .iter()
+                .any(|queued| queued.account_id == player.account_id)
+        });
+        inner.track(now);
+        let id = inner.next_match_id;
+        inner.next_match_id += 1;
+        log::info!("Match {id:#x} formed for one player against the server's bots");
+        inner.matches.insert(
+            id,
+            vec![Seat {
+                player,
+                team,
+                squad: 0,
+            }],
+        );
+        inner.match_pools.insert(id, pool);
+        inner.fixed_teams.insert(id);
+        inner.formed_at.insert(id, now);
+        Some(id)
+    }
+
     /// The account's player left its match by its own will: the seat is
     /// given up, and Play queues the player for another match instead of
     /// sending it back. Its place stays in the roster (nobody else can
@@ -818,6 +860,28 @@ impl Matchmaking {
             fixed_teams: inner.fixed_teams.contains(&match_id),
             seats,
         })
+    }
+
+    /// The match server's own bots (`SRP_SERVER_BOTS`) take the places after
+    /// the players', one on each team of `teams`: seats of session, account
+    /// and profile 0, which no player has (sessions and accounts are never
+    /// 0), so that a place taken later counts from past them. `false` when
+    /// the match is not being played.
+    pub fn add_bots(&self, match_id: u32, teams: &[u8]) -> bool {
+        let mut inner = self.inner.locked();
+        let Some(seats) = inner.matches.get_mut(&match_id) else {
+            return false;
+        };
+        seats.extend(teams.iter().map(|&team| Seat {
+            player: Player {
+                session_id: 0,
+                account_id: 0,
+                profile_id: 0,
+            },
+            team,
+            squad: 0,
+        }));
+        true
     }
 
     /// The match is over: its seats are free. A session that gave its seat
@@ -3008,6 +3072,57 @@ mod tests {
                 .collect();
             assert_eq!(teams.len(), 1, "squad {squad} was split");
         }
+    }
+
+    /// A player alone against the server's bots: seated at once, out of the
+    /// queue, the teams fixed, the bots after it; nobody joins it late.
+    #[test]
+    fn a_solo_match_is_seated_at_once_and_takes_no_late_joiner() {
+        let mm = Matchmaking::new(Duration::from_secs(60));
+        let start = Instant::now();
+        mm.queue_in_pool(
+            &[player(1)],
+            &[Level::default()],
+            false,
+            start,
+            QueuePool::GrowingRoster,
+        );
+        let id = mm
+            .seat_solo(player(1), 0, start, QueuePool::GrowingRoster)
+            .expect("seated");
+        assert_eq!(mm.queued_players(), 0);
+        assert_eq!(
+            mm.poll(1, start),
+            Some(QueueState::Placed {
+                match_id: id,
+                team: 0,
+                index: 0
+            })
+        );
+        assert!(mm.add_bots(id, &[1, 0, 1]));
+        let formed = mm.formed_match(id).unwrap();
+        assert!(formed.fixed_teams);
+        assert_eq!(formed.pool, QueuePool::GrowingRoster);
+        assert_eq!(
+            formed
+                .seats
+                .iter()
+                .map(|seat| seat.team)
+                .collect::<Vec<_>>(),
+            [0, 1, 0, 1]
+        );
+        // Seated already: not twice; a team over 1 is none.
+        assert_eq!(
+            mm.seat_solo(player(1), 0, start, QueuePool::GrowingRoster),
+            None
+        );
+        assert_eq!(
+            mm.seat_solo(player(2), 2, start, QueuePool::GrowingRoster),
+            None
+        );
+        // No late joiner.
+        assert!(!mm.append_player(id, player(2), 1, |_, _| true));
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 4);
     }
 
     #[test]

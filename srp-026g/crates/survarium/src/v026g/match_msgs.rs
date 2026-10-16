@@ -26,6 +26,7 @@
 pub mod client_model;
 pub mod clock;
 pub mod late_join;
+pub mod motion;
 pub mod players;
 pub mod rules;
 pub mod snapshot;

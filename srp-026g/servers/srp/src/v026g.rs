@@ -129,11 +129,13 @@ impl MatchHost for RegistryHost {
                     account_id: player.account_id,
                     profile: player.profile,
                     bot: player.bot,
+                    driven: player.driven,
                 })
                 .collect(),
             // The game's own weights: the ones the rewards are counted
             // with (`rewards::Terms::at`).
             score_weights: None,
+            vs_bots: setup.vs_bots,
         };
         let ticket = match pool {
             session::QueuePool::Standard => self.0.create(setup),
@@ -155,6 +157,7 @@ impl MatchHost for RegistryHost {
                 account_id: player.account_id,
                 profile: player.profile,
                 bot: player.bot,
+                driven: player.driven,
             })
             .collect();
         self.0.join_running_group(match_id, players).is_ok()
@@ -168,6 +171,7 @@ impl MatchHost for RegistryHost {
         let live = self.0.live_match(match_id, now)?;
         Some(lobby::LiveView {
             present: live.present,
+            giving_way: live.giving_way,
             points: live.standing.map(|standing| standing.points),
             kills: live.kills,
             played: live
@@ -228,6 +232,7 @@ pub fn match_result(result: matches::MatchResult) -> rewards::MatchResult {
         played_ms: result.played_ms,
         trusted_snapshot_ms: result.trusted_snapshot_ms,
         trusted_by: result.trusted_by,
+        vs_bots: result.vs_bots,
         players: result
             .players
             .into_iter()
@@ -237,6 +242,7 @@ pub fn match_result(result: matches::MatchResult) -> rewards::MatchResult {
                 account_id: player.account_id,
                 name: player.name,
                 team: player.team,
+                driven: player.driven,
                 entered: player.entered,
                 present_at_end: player.present_at_end,
                 left: player.left,

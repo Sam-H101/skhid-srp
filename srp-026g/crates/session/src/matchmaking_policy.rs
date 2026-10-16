@@ -233,6 +233,28 @@ pub struct LateRule {
     /// The lead is one from which the side that trails may have two
     /// players more than the other.
     pub dramatic: bool,
+    /// Each side's bots of the match server that give their place up to a
+    /// joiner who needs it ([`bot_gives_way`]); each counts as a player of
+    /// no strength, as the lobby seats them.
+    pub bots: [usize; 2],
+}
+
+/// Whether a player who joins a match being played on `side`, whose sides
+/// have `sizes` players now and `bots` of the match server's bots that give
+/// way, takes the place of one of those bots: its side has one, and with
+/// the joiner it would have more players than the other side. The bot then
+/// leaves the match (0xEA) and the side keeps its size; else the side grows
+/// by the joiner. Several joiners at once are taken one after another, in
+/// the order of their places, each with the sizes the ones before left.
+///
+/// The match server decides it so when the joiner enters
+/// (`match-server` `game/driven.rs`, `give_way`), and the lobby places
+/// late joiners by the same rule ([`place_late`]). A roster place is never
+/// used twice: the joiner comes on a new place whether a bot leaves or not,
+/// and every place ever used counts toward the 20 of a match.
+pub fn bot_gives_way(sizes: [usize; 2], bots: [usize; 2], side: usize) -> bool {
+    let side = side.min(1);
+    bots[side] > 0 && sizes[side] >= sizes[1 - side]
 }
 
 /// Who goes into a match being played, and on which side.
@@ -270,7 +292,9 @@ pub const LATE_GROUPS: usize = 8;
 /// A side counts `player_value` for each player, their strengths and its
 /// lead. Of the ways to place whole groups that the rule allows, the one
 /// that takes the most players, and of those the one after which the sides
-/// count most alike. Allowed:
+/// count most alike. A joiner whose side needs the room takes the place of
+/// one of the match server's bots there ([`bot_gives_way`]): that side keeps
+/// its size, and the joiner's strength replaces the bot's none. Allowed:
 /// - no side over `capacity`, no more players than `room`;
 /// - the sides at most one player apart; two when the lead is `dramatic`
 ///   and it is the side that trails that has more; and sides that are
@@ -292,6 +316,7 @@ pub fn place_late(sides: [Worth; 2], groups: &[Joiner], rule: &LateRule) -> Opti
     // Base three, the first group the lowest digit: 0 out, 1 side 0, 2 side 1.
     for code in 1..3_usize.pow(count as u32) {
         let mut after = sides;
+        let mut bots = rule.bots;
         let mut taken = [0_usize; 2];
         let mut assignments = Vec::new();
         let mut patient = false;
@@ -303,7 +328,14 @@ pub fn place_late(sides: [Worth; 2], groups: &[Joiner], rule: &LateRule) -> Opti
                 continue;
             }
             let side = digit - 1;
-            after[side].players += group.worth.players;
+            for _ in 0..group.worth.players {
+                let sizes = [after[0].players, after[1].players];
+                if bot_gives_way(sizes, bots, side) {
+                    bots[side] -= 1;
+                } else {
+                    after[side].players += 1;
+                }
+            }
             after[side].strength += group.worth.strength;
             taken[side] += group.worth.players;
             patient |= !group.waited_out;
@@ -353,8 +385,10 @@ pub fn place_late(sides: [Worth; 2], groups: &[Joiner], rule: &LateRule) -> Opti
 /// when a maintenance is near (the lobby's JOIN, `docs/notes/lobby.md`
 /// §2.16.1): on the side that counts for less (players, strengths and the
 /// lead, as [`place_late`] counts them); of two that count alike the one
-/// with fewer players, and of two alike in that too side 0. Only the side
-/// being full (`capacity`) and the match's `room` stop it: none of
+/// with fewer players, and of two alike in that too side 0. A joiner whose
+/// side needs the room takes a bot's place there ([`bot_gives_way`]), as in
+/// [`place_late`]. Only the side being full (`capacity`) with that, and the
+/// match's `room`, stop it: none of
 /// [`place_late`]'s rules of sizes, of patience or of the sides counting
 /// more alike, and nothing of `dramatic`. The match ends before the
 /// maintenance does, so a player more on the weaker side is worth more
@@ -365,15 +399,22 @@ pub fn place_weaker(sides: [Worth; 2], joiner: Worth, rule: &LateRule) -> Option
     };
     let side =
         usize::from((worth(&sides, 1), sides[1].players) < (worth(&sides, 0), sides[0].players));
-    if joiner.players == 0
-        || joiner.players > rule.room
-        || sides[side].players + joiner.players > rule.capacity
-    {
+    // A joiner whose side needs the room takes a bot's place there, as in
+    // [`place_late`] and on the match server.
+    let mut after = sides;
+    let mut bots = rule.bots;
+    for _ in 0..joiner.players {
+        let sizes = [after[0].players, after[1].players];
+        if bot_gives_way(sizes, bots, side) {
+            bots[side] -= 1;
+        } else {
+            after[side].players += 1;
+        }
+    }
+    after[side].strength += joiner.strength;
+    if joiner.players == 0 || joiner.players > rule.room || after[side].players > rule.capacity {
         return None;
     }
-    let mut after = sides;
-    after[side].players += joiner.players;
-    after[side].strength += joiner.strength;
     Some(LatePlacement {
         assignments: vec![(0, side as u8)],
         sides: after,
@@ -404,6 +445,7 @@ mod tests {
             player_value: 1200,
             lead: [0, 0],
             dramatic: false,
+            bots: [0, 0],
         }
     }
 
@@ -530,6 +572,68 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_gives_way_only_where_its_side_needs_the_room() {
+        // Even sides: the joiner's side would be the larger one.
+        assert!(bot_gives_way([2, 2], [1, 1], 0));
+        // The smaller side grows instead, and a side with no bot does too.
+        assert!(!bot_gives_way([1, 2], [1, 1], 0));
+        assert!(!bot_gives_way([2, 2], [0, 1], 0));
+        // Already the larger side: its bot makes room.
+        assert!(bot_gives_way([3, 2], [1, 0], 0));
+        assert!(!bot_gives_way([3, 2], [1, 1], 1));
+    }
+
+    #[test]
+    fn a_joiner_takes_a_bots_place_on_a_full_side_and_the_sides_keep_their_size() {
+        // Three a side, the most a side has, each with bots of no strength
+        // in it (a player and two bots against three bots).
+        let full = LateRule {
+            capacity: 3,
+            bots: [2, 3],
+            ..rule()
+        };
+        let sides = [side(3, 1000), side(3, 0)];
+        let placed = place_late(sides, &[joiner(1, 600)], &full).unwrap();
+        // To the weaker side, in a bot's place: still three a side.
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides, [side(3, 1000), side(3, 600)]);
+        assert_eq!(placed.apart_after, 400);
+        // Without the bots giving way nobody fits.
+        let no_bots = LateRule {
+            bots: [0, 0],
+            ..full
+        };
+        assert_eq!(place_late(sides, &[joiner(1, 600)], &no_bots), None);
+        // Two at once are taken one after the other: both to the weaker
+        // side, each in a bot's place there.
+        let placed = place_late(sides, &[joiner(1, 600), joiner(1, 300)], &full).unwrap();
+        assert_eq!(placed.assignments, [(0, 1), (1, 1)]);
+        assert_eq!(placed.sides, [side(3, 1000), side(3, 900)]);
+        // A squad of two on the weaker side: both take bots' places.
+        let placed = place_late(sides, &[joiner(2, 700)], &full).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides, [side(3, 1000), side(3, 700)]);
+    }
+
+    #[test]
+    fn a_side_short_of_players_is_filled_and_its_bots_stay() {
+        // Players left the side with the bots: the joiner fills the hole
+        // and no bot leaves.
+        let bots = LateRule {
+            bots: [2, 0],
+            ..rule()
+        };
+        let placed = place_late([side(2, 0), side(4, 0)], &[joiner(1, 0)], &bots).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        assert_eq!(placed.sides[0].players, 3);
+        // The side with the bots is the larger one: the joiner goes to the
+        // short side, and the bots stay.
+        let placed = place_late([side(4, 0), side(3, 0)], &[joiner(1, 0)], &bots).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides.map(|side| side.players), [4, 4]);
+    }
+
+    #[test]
     fn near_a_maintenance_a_joiner_goes_to_the_weaker_side_even_if_uneven() {
         let one = side(1, 300);
         // Three against three, side 1 weaker by value: there, though the
@@ -606,6 +710,49 @@ mod tests {
         // against three, and the three are stronger, so the five get six.
         let placed = place_weaker([side(5, 0), side(3, 3000)], one, &rule()).unwrap();
         assert_eq!(placed.sides.map(|side| side.players), [6, 3]);
+    }
+
+    #[test]
+    fn near_a_maintenance_a_joiner_takes_a_bots_place_where_its_side_needs_the_room() {
+        // Three a side, the most a side has, a player and two bots against
+        // three bots: the weaker side is full of bots, and one gives way.
+        let full = LateRule {
+            capacity: 3,
+            bots: [2, 3],
+            ..rule()
+        };
+        let sides = [side(3, 1000), side(3, 0)];
+        let placed = place_weaker(sides, side(1, 600), &full).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        assert_eq!(placed.sides, [side(3, 1000), side(3, 600)]);
+        assert_eq!(placed.apart_after, 400);
+        // As the balance rule places them.
+        assert_eq!(
+            place_late(sides, &[joiner(1, 600)], &full).map(|placed| placed.sides),
+            Some(placed.sides)
+        );
+        // Without the bots giving way the full side takes nobody.
+        let no_bots = LateRule {
+            bots: [0, 0],
+            ..full
+        };
+        assert_eq!(place_weaker(sides, side(1, 600), &no_bots), None);
+        // A squad of two: each takes a bot's place.
+        let placed = place_weaker(sides, side(2, 700), &full).unwrap();
+        assert_eq!(placed.sides, [side(3, 1000), side(3, 700)]);
+        // The weaker side is the smaller one: it grows, and its bot stays.
+        let bots = LateRule {
+            bots: [1, 1],
+            ..rule()
+        };
+        let placed = place_weaker([side(2, 0), side(3, 3000)], side(1, 0), &bots).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        assert_eq!(placed.sides.map(|side| side.players), [3, 3]);
+        // Even sides, the weaker with a bot: the bot gives way and the sides
+        // keep their size.
+        let placed = place_weaker([side(3, 0), side(3, 500)], side(1, 300), &bots).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        assert_eq!(placed.sides, [side(3, 300), side(3, 500)]);
     }
 
     fn team(players: usize, average: u32) -> Team {

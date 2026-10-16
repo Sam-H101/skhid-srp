@@ -501,6 +501,7 @@ MATCH-SYNC-026G.md.
 | Upload code, section build (default) | new section `.srp`, RVA 0xA415000, VA 0xA425000, file 0xC4AA00, 0x200 bytes | 8th section; the Authenticode blob moves to 0xC4AC00 | `--cave=section` | PROVEN by the self-test; whether the client minds an 8th section: LIKELY harmless |
 | Upload code, fallback | over `on_hash_mismatch` 0x325A60 (0x47B bytes) | loses `-debug_hash_mismatch` | `--cave=hash-mismatch` | PROVEN (dead code once the hook is in) |
 | Base relocation under the request hook | 0x27A507 | type → 0 | full | PROVEN |
+| Transparent effects scroll as in 0.29 (README patch 28): `use_uv_scrolling` sets the configuration's CONFIG_USE_UV_SCROLLING bit, the bit sends `uv_scrolling_parameters0/1`; `scene_slomo` bound to 1.0 | 0x1D90DC and 0x1D94CB in `effect_fstage_default_materials::compile` 0x1D8F40, 0x14990F in `renderer_context`'s constructor | each a `jmp` into `.srp`+B00h and nops | full, revision 13 | PROVEN in the code, compile run with Unicorn (`client_patch.md` §3.26); with the retail `resources.db` no shader changes; not run in a game |
 
 Builds: `--cert-only` (only the first row; what step 0 installed), the full
 section build (**installed 2026-10-12**; the players' download had the one

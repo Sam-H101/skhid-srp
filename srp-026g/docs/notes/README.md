@@ -228,6 +228,13 @@ real client: its world is trusted on its own word, as for a client alone in
 a match); no rating moves in a match with a bot; a bot gets no daily bonus
 and is not in the ranking; a match left to its bots for 45 s is over.
 
+With `--drive` (added 2026-10-14) the bot sends inputs: a fixed script
+(walk, turn a quarter, walk, sprint, crouch, fire, reload, weapon 2, turn
+back), again and again, and prints each input ("input for T ms (tick, its
+clock): keys, turn, yaw sum: what it starts"). A server that dropped or
+moved one of its inputs is a `WARNING` line. What to check:
+`player_bots.md` §6.
+
 In the log (`logs/match.log`): "… N of them test bots", "player P (a test
 bot) waits for a real client to be in", then the usual lines; "only test
 bots for 45 s; it is over". In `logs/srp.log` a warning at start that the

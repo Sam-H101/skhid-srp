@@ -87,7 +87,8 @@
 //! A match with bots in which no real client is connected for
 //! [`BOTS_ALONE`] is over (`MatchEnd::Deserted`): bots never leave by
 //! themselves, and would hold the match, and a real player's seat in it,
-//! until the time limit.
+//! until the time limit. (The server's own bots leave only to make room
+//! for a late joiner, `game/driven.rs`; that never ends a match.)
 //!
 //! Not carried over from 0.21d: the diagnostic uploads and the per-input
 //! trail (log aids), the estimate of when a relay reached a client (a relay
@@ -117,6 +118,7 @@ use super::record::{Recorder, Recording};
 use super::registry::{Formed, MatchEnd, MatchResult, PlayerResult};
 use super::{LateInputs, Settings};
 
+mod driven;
 mod late_join;
 mod live;
 use late_join::{Admission, LoadingProfile};
@@ -624,6 +626,10 @@ struct Peer {
     asked: Option<Instant>,
     /// The match clock when that request went.
     asked_clock: Option<u32>,
+    /// When it was first asked for an upload after the last one it gave
+    /// (or ever): how long a match against bots has waited for its world
+    /// (`check_pvb_stall`).
+    unanswered_since: Option<Instant>,
     /// A request waiting for its moment (match clock): aimed at a tick.
     ask_at: Option<u32>,
     /// Bounds `[low, high)` on its upload offset: asked at match clock
@@ -877,6 +883,14 @@ pub(crate) struct Game {
     pings_logged_at: u32,
     /// Since when a match with test bots has had no real client connected.
     bots_alone_since: Option<Instant>,
+    /// By place: the script of the server's own bot ([`driven`]).
+    drives: Vec<Option<super::drive::Drive>>,
+    /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
+    /// ([`driven`], stage 2).
+    walkers: Option<driven::Walkers>,
+    /// Bots that owe their place to a late joiner and could not leave yet
+    /// ([`driven`], "Giving way").
+    owed: Vec<driven::Owed>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -891,6 +905,7 @@ impl Game {
     pub fn new(formed: Arc<Formed>, port: u16, settings: Settings, now: Instant) -> Self {
         let players = formed.places.len();
         let rule = TimelimitRule::new(TimelimitParams::of(formed.map, players as u8));
+        let walkers = driven::Walkers::new(&formed, &settings);
         Self {
             id: formed.match_id,
             port,
@@ -932,6 +947,9 @@ impl Game {
             result_made: false,
             quits: Vec::new(),
             recording: None,
+            drives: Self::new_drives(&formed),
+            walkers,
+            owed: Vec::new(),
             formed,
         }
     }
@@ -1034,10 +1052,14 @@ impl Game {
         self.formed.map.mode
     }
 
-    /// Whether the place is a test bot's (`SRP_BOT_ACCOUNTS`): a player
-    /// for the others, no witness of the world (the top of this file).
+    /// Whether the place is a test bot's (`SRP_BOT_ACCOUNTS`) or the
+    /// server's own ([`driven`]): a player for the others, no witness of
+    /// the world (the top of this file).
     fn is_bot(&self, index: usize) -> bool {
-        self.formed.places.get(index).is_some_and(|place| place.bot)
+        self.formed
+            .places
+            .get(index)
+            .is_some_and(|place| place.bot || place.driven)
     }
 
     /// The batteries of modes 2 and 3; none in Team Deathmatch.
@@ -1165,6 +1187,7 @@ impl Game {
             preparing: None,
             asked: None,
             asked_clock: None,
+            unanswered_since: None,
             ask_at: None,
             upload_offset: None,
             reassembler: Reassembler::new(),
@@ -2118,6 +2141,7 @@ impl Game {
             send(peer, &ServerMessage::UploadRequest);
             peer.asked = Some(now);
             peer.asked_clock = Some(clock);
+            peer.unanswered_since.get_or_insert(now);
         }
     }
 
@@ -3282,6 +3306,7 @@ impl Game {
             }
         }
         peer.placed.push_back((time, relayed_time));
+        self.observe_input(index, relayed_time, &relayed);
         let what = Relayed::Input(relayed);
         self.relay_to_others(index, &what, relayed_time, now);
         self.inputs.push((relayed_time, index, what));
@@ -3476,6 +3501,7 @@ impl Game {
             }
         }
         peer.asked = None;
+        peer.unanswered_since = None;
         if !initial && let Some(asked_at) = peer.wrong_world_asked.take() {
             // Asked for as it was found out of step: a world to look at,
             // no vote (`ask_wrong_world`).
@@ -3635,6 +3661,7 @@ impl Game {
         {
             return;
         }
+        self.observe_driven(snapshot, &decoded);
         let teams: Vec<u8> = self.formed.places.iter().map(|place| place.team).collect();
         let standing = decoded.standing(self.game_mode(), &teams);
         if let Err(why) = self.plausible(&decoded, standing, snapshot.time) {
@@ -4578,6 +4605,7 @@ impl Game {
                     account_id: place.account_id,
                     name: place.name.clone(),
                     team: place.team,
+                    driven: place.driven,
                     entered: self
                         .events
                         .iter()
@@ -4612,6 +4640,7 @@ impl Game {
             trusted_snapshot_ms: state.map(|state| state.time),
             trusted_by: state.map_or(0, |state| state.vouchers),
             players,
+            vs_bots: self.formed.vs_bots,
         }
     }
 
@@ -4685,6 +4714,7 @@ impl Game {
             let step = self.rule.tick(clock);
             self.log_transition(step, clock);
         }
+        self.poll_driven(now);
 
         for index in 0..self.peers.len() {
             self.check_in_flight(index, now);
@@ -4968,6 +4998,7 @@ impl Game {
         self.check_end(clock, now);
         self.check_world_lost(now);
         self.check_bots_alone(now);
+        self.check_pvb_stall(now);
 
         if self.clock_start.is_some()
             && self.finished_at.is_none()
@@ -4980,6 +5011,7 @@ impl Game {
             } else {
                 timing.refresh
             };
+            let every = self.driven_refresh(every);
             self.next_refresh = Some(now + every);
             self.request_upload(usize::MAX, now, SNAPSHOT_WAIT.min(every));
         }
@@ -5139,10 +5171,12 @@ impl Game {
         self.finish(MatchEnd::Deserted, now);
     }
 
-    /// A match with test bots and no real client connected for
-    /// [`BOTS_ALONE`] is over: the bots never leave by themselves.
+    /// A match with bots (test bots, or the server's own) and no real
+    /// client connected for [`BOTS_ALONE`] is over: the bots never leave by
+    /// themselves. A server's bot that gave its place up to a late joiner
+    /// is no reason to end it: only the real clients are counted here.
     fn check_bots_alone(&mut self, now: Instant) {
-        if self.finished_at.is_some() || !self.formed.places.iter().any(|place| place.bot) {
+        if self.finished_at.is_some() || !(0..self.players()).any(|index| self.is_bot(index)) {
             return;
         }
         let real = self.peers.iter().enumerate().any(|(index, peer)| {
@@ -5155,9 +5189,52 @@ impl Game {
         let since = *self.bots_alone_since.get_or_insert(now);
         if now.saturating_duration_since(since) >= BOTS_ALONE {
             log::info!(
-                "Match {:#x}: only test bots for {} s; it is over",
+                "Match {:#x}: only bots for {} s; it is over",
                 self.id,
                 BOTS_ALONE.as_secs()
+            );
+            self.finish(MatchEnd::Deserted, now);
+        }
+    }
+
+    /// A match of one player against the server's bots
+    /// ([`Formed::vs_bots`]) whose player plays (in the match, its world
+    /// given) and has been asked for its world for `Timing::pvb_stall`
+    /// with none uploaded is over, as one everyone left
+    /// (`MatchEnd::Deserted`): the bots see the world only through that
+    /// player's uploads, and a game that stands still (a window out of
+    /// focus, a stalled link) would hold the match, and one of the few
+    /// bots' places, to its time limit. A player in no stage to upload
+    /// (loading, resynced, waiting for a world) has the other rules:
+    /// `check_world_lost`, the client timeout, `check_bots_alone`.
+    fn check_pvb_stall(&mut self, now: Instant) {
+        if !self.formed.vs_bots || self.finished_at.is_some() || self.ending.is_some() {
+            return;
+        }
+        let stall = self.settings.timing.pvb_stall;
+        // The wait is counted in play only: a request a game did not
+        // answer before it was resynced or left is no stall of the game it
+        // is now.
+        for peer in self.peers.iter_mut().flatten() {
+            if peer.stage != Stage::Live {
+                peer.unanswered_since = None;
+            }
+        }
+        let stalled = (0..self.peers.len()).find(|&index| {
+            !self.is_bot(index)
+                && self.peers[index].as_ref().is_some_and(|peer| {
+                    peer.stage == Stage::Live
+                        && peer
+                            .unanswered_since
+                            .is_some_and(|since| now.saturating_duration_since(since) >= stall)
+                })
+        });
+        if let Some(index) = stalled {
+            log::warn!(
+                "Match {:#x} (vs bots): player {index} was asked for its world for {} s and \
+                 uploaded none; the match is over",
+                self.id,
+                stall.as_secs()
             );
             self.finish(MatchEnd::Deserted, now);
         }
@@ -5924,6 +6001,17 @@ impl Game {
 
     pub fn set_clock_correction(&mut self, on: bool) {
         self.settings.clock_correction = on;
+    }
+
+    /// Every roster change so far: its tick, the place, entered (else
+    /// left).
+    pub fn roster_events(&self) -> &[(u32, usize, bool)] {
+        &self.events
+    }
+
+    /// How many bots owe their place to a late joiner and have not left.
+    pub fn bots_owing(&self) -> usize {
+        self.owed.len()
     }
 
     /// Whether the client is in a resync (`Peer::resync_from`), and

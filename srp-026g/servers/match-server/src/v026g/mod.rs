@@ -71,8 +71,34 @@
 //!   ([`record`]);
 //! - `SRP_RELAY_PACK_MS` (default 15, at most 50; 0 = off): how long a
 //!   relay or a drop order may wait for others to share its datagram
-//!   (`udp_transport::Config::gather`, transport.md section 11.1).
+//!   (`udp_transport::Config::gather`, transport.md section 11.1);
+//! - `SRP_MAPDATA_DIR=<dir>` (default off): the `<project>.mapdata` files
+//!   (`mapdata-dump`) the server's own bots path on ([`bots::maps`]); a
+//!   map is built on a thread of its own the first time a match asks for
+//!   it, and `SRP_MAPDATA_KEEP` (default 1) built maps are kept besides
+//!   those running matches hold; `SRP_MAPDATA_AT_ONCE` (default 1) maps
+//!   at most are in memory, and a match on another map waits for room
+//!   with its bots on their script. Without it, or without the map's
+//!   file, bots keep their script. `SRP_MAPDATA_BUILT=<dir>` (default
+//!   `<SRP_MAPDATA_DIR>/built`; `off`: build at each load): where the
+//!   built grids, sight trees and tactics are kept and read back
+//!   (`mapdata::built`). With `SRP_PVB=on` ("Player vs Bots", the lobby's
+//!   `pvb`) at least `SRP_PVB_MAX_MATCHES` (default 5) maps may be in
+//!   memory at once, one for each match against bots that may run;
+//! - `SRP_PVB_STALL_S` (default 60, 10 to 3600): a match against the
+//!   server's bots whose only player has been asked for its world this
+//!   long and uploaded none is over (as deserted): its bots see the world
+//!   only through that player's uploads;
+//! - `SRP_BOTS_GIVE_WAY=on|off` (default `on`): whether one of the
+//!   server's own bots of a side leaves the match when a late joiner comes
+//!   onto that side and it needs the room (`game/driven.rs`, `give_way`).
+//!   Off, bots stay to the end and a full side takes nobody.
 
+/// The server's own bots (`MatchPlayer::driven`): their maps.
+pub mod bots;
+/// The input script of a bot: the test bot's (`srp-bot --drive`) and the
+/// server's own bot places' (`MatchPlayer::driven`).
+pub mod drive;
 mod game;
 /// Match recordings (`SRP_RECORD_DIR`) and their reader.
 pub mod record;
@@ -92,6 +118,7 @@ pub mod scripted;
 pub use scripted as test_client;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use udp_transport::{Config, Table};
@@ -168,6 +195,11 @@ pub(crate) struct Timing {
     /// way before the sync starts over (`SRP_ENTRY_STATE_SECONDS`). A game
     /// that plays is resynced within the 1.75 s of the client's own table.
     pub entry_state: Duration,
+    /// A match against the server's bots ([`MatchSetup::vs_bots`]) whose
+    /// only player has been asked for its world this long and sent none
+    /// is over (`SRP_PVB_STALL_S`): its bots see the world through that
+    /// player's uploads alone.
+    pub pvb_stall: Duration,
 }
 
 impl Default for Timing {
@@ -186,9 +218,13 @@ impl Default for Timing {
             linger: Duration::from_secs(5),
             final_wait: Duration::from_secs(7),
             entry_state: Duration::from_secs(4),
+            pvb_stall: Duration::from_secs(DEFAULT_PVB_STALL_S),
         }
     }
 }
+
+/// `SRP_PVB_STALL_S` when unset.
+pub(crate) const DEFAULT_PVB_STALL_S: u64 = 60;
 
 /// How the match server behaves.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +245,11 @@ pub(crate) struct Settings {
     pub record: Option<record::RecordSettings>,
     /// `SRP_RELAY_PACK_MS`: the match link's `Config::gather`.
     pub pack: Duration,
+    /// `SRP_MAPDATA_DIR`: the bots' maps, shared by every match.
+    pub maps: Option<Arc<bots::maps::Maps>>,
+    /// `SRP_BOTS_GIVE_WAY`: the server's bots give their place up to late
+    /// joiners who need it.
+    pub bots_give_way: bool,
     pub timing: Timing,
 }
 
@@ -224,6 +265,8 @@ impl Default for Settings {
             snapshot_dir: None,
             record: None,
             pack: Config::for_table(Table::Match).gather,
+            maps: None,
+            bots_give_way: true,
             timing: Timing::default(),
         }
     }
@@ -271,6 +314,31 @@ impl Settings {
                 )),
                 None => Config::for_table(Table::Match).gather,
             },
+            maps: parse_mapdata_dir(
+                var("SRP_MAPDATA_DIR").as_deref(),
+                parse_number(
+                    "SRP_MAPDATA_KEEP",
+                    var("SRP_MAPDATA_KEEP").as_deref(),
+                    bots::maps::KEEP as u32,
+                ),
+                // With "Player vs Bots" on, one map for each match against
+                // bots that may run at once (`SRP_PVB_MAX_MATCHES`).
+                session::v026g::pvb::maps_at_once(
+                    parse_number(
+                        "SRP_MAPDATA_AT_ONCE",
+                        var("SRP_MAPDATA_AT_ONCE").as_deref(),
+                        bots::maps::AT_ONCE as u32,
+                    ) as usize,
+                    session::v026g::pvb::enabled(),
+                    session::v026g::pvb::max_matches(),
+                ) as u32,
+                var("SRP_MAPDATA_BUILT").as_deref(),
+            ),
+            bots_give_way: parse_switch(
+                "SRP_BOTS_GIVE_WAY",
+                var("SRP_BOTS_GIVE_WAY").as_deref(),
+                true,
+            ),
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(
                     parse_number(
@@ -306,6 +374,16 @@ impl Settings {
                             5,
                         )
                         .clamp(3, 15),
+                    )),
+                    // Never under 10 s: an upload asked for is taken for
+                    // 6 s (`game.rs`, `ASKED_FOR`).
+                    pvb_stall: Duration::from_secs(u64::from(
+                        parse_number(
+                            "SRP_PVB_STALL_S",
+                            var("SRP_PVB_STALL_S").as_deref(),
+                            DEFAULT_PVB_STALL_S as u32,
+                        )
+                        .clamp(10, 3600),
                     )),
                     ..Timing::default()
                 }
@@ -363,4 +441,43 @@ fn parse_snapshot_dir(value: Option<&str>) -> Option<PathBuf> {
         Some(value) => Some(value.into()),
         None => Some(SNAPSHOT_DIR.into()),
     }
+}
+
+/// `SRP_MAPDATA_DIR`: unset, empty or `off` for none; `keep` built worlds
+/// kept (`SRP_MAPDATA_KEEP`), `at_once` in memory at most
+/// (`SRP_MAPDATA_AT_ONCE`); the built files in `built`
+/// (`SRP_MAPDATA_BUILT`: unset or empty for `<dir>/built`, `off` for none).
+fn parse_mapdata_dir(
+    value: Option<&str>,
+    keep: u32,
+    at_once: u32,
+    built: Option<&str>,
+) -> Option<Arc<bots::maps::Maps>> {
+    let dir = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("off"))?;
+    let built = match built.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) if value.eq_ignore_ascii_case("off") => None,
+        Some(value) => Some(std::path::PathBuf::from(value)),
+        None => Some(std::path::Path::new(dir).join(bots::maps::BUILT_DIR)),
+    };
+    if std::path::Path::new(dir).is_dir() {
+        let files = match &built {
+            Some(built) => built.display().to_string(),
+            None => "none (built at each load)".into(),
+        };
+        log::info!(
+            "Bot maps from {dir}, {} kept built, {} in memory at most; built files in {files}",
+            keep.max(1),
+            at_once.max(1)
+        );
+    } else {
+        log::warn!("SRP_MAPDATA_DIR is `{dir}`, which is no directory; bots will have no maps");
+    }
+    Some(bots::maps::Maps::configured(
+        Some(dir.into()),
+        keep as usize,
+        at_once as usize,
+        built,
+    ))
 }
