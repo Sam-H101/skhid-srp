@@ -7,3 +7,4 @@
 # one removed stops offering it, safe only while no player owns its items.
 # One patch a line, in revision order, tabs between:
 # name	sha256	size	url
+resources.db.patch_12	2b771e4b2040707434bb17aa27b1965aacba2ca355eb38634f504b61d6c8fab3	86199749	http://2.28.121.133:8090/resources.db.patch_12
