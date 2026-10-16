@@ -439,6 +439,51 @@ fn one_camouflage_goes_on_many_items() {
     world.assert_clean();
 }
 
+/// The upgrade window of a vest wearing a copy: another camouflage
+/// dropped on it, then cancel, which sends what the stock client's
+/// `cancelChanges` does: `46 02` for the camouflage in the slot, `46 01`
+/// for the copy the slot held when the window opened (gone since). The
+/// vest wears the first camouflage again, and the spare vest keeps its.
+#[test]
+fn cancelling_the_upgrade_window_puts_the_camouflage_back() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let vest = give(&mut world, alice, "edge_torso_2", &[]);
+    let spare = give(&mut world, alice, "bm_torso_1", &[]);
+    let camo = give(&mut world, alice, "camo_city", &[]);
+    let other = give(&mut world, alice, "camo_city", &[]);
+    world.ask(alice, ask::attach(vest, camo, 3));
+    world.ask(alice, ask::attach(spare, camo, 3));
+    world.take(alice);
+    let opened = world.account(alice).item(vest).unwrap().upgrades[0].id;
+    let spare_copy = world.account(alice).item(spare).unwrap().upgrades[0].id;
+
+    world.ask(alice, ask::attach(vest, other, 3));
+    world.take(alice);
+    assert!(world.account(alice).item(opened).is_none());
+    world.ask(alice, ask::detach(other));
+    world.take(alice);
+    world.ask(alice, ask::attach(vest, opened, 3));
+    let decoded = world.take(alice);
+    let worn = world.account(alice).item(vest).unwrap().upgrades[0].id;
+    assert_eq!(
+        decoded.last(),
+        Some(&Decoded::Permitted(Permitted::UpgradeAttached {
+            host_item_id: vest,
+            upgrade_item_id: worn,
+            slot: 3,
+            value: 0,
+            detach_first: false
+        }))
+    );
+    assert_same_items(&mut world, alice);
+    let account = world.account(alice);
+    assert_eq!(account.item(worn).unwrap().copy_of, camo);
+    assert_eq!(account.item(spare).unwrap().upgrades[0].id, spare_copy);
+    assert!(account.inventory.iter().all(|item| item.copy_of != other));
+    world.assert_clean();
+}
+
 #[test]
 fn moving_camouflage_refreshes_the_owner_without_a_squad() {
     moving_camouflage_to_a_spare_vest(false);

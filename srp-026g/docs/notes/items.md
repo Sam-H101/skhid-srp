@@ -190,6 +190,8 @@ What the stock client does (read 2026-10-16 in the exe and the retail
 | `is_attached_to` is not kept by the client: `update_inventory_item` is given it (0x287CC0's argument, written at 0x288189), and `setup_inventory_data` (0x89) makes it from a map of every item's upgrades, one host per cosmetic | 0x288520..0x28867A |
 | the stash shows an attached cosmetic as worn (`ItemRendererInv.equippedSprite`, from `equipped = is_attached_to`); nothing is hidden for it | `InventoryList.setupInventoryData`, `updateInventoryItem` |
 | the upgrade window fills a slot from the host's `upgrades` with **the inventory item of that id** (`create_item` → `getInventoryItem`; none: an empty slot); a slot keeps the id that was dropped on it until the window is opened again (`setData(..., false)` does not refill) | `UpgradeWindow.updateData`, `create_item`, `onItemDropped` |
+| the window's cancel (`cancelChanges`), for each slot whose item changed: `drop_upgrade_item` for what it holds now, then `relocate_upgrade_item` (`46 01`) for what it held when the window opened; the exe sends that `46 01` without looking the item up | `UpgradeWindow.cancelChanges`; 0x29A8B0 → 0x2707C0 |
+| `on_item_sold` (`drop_upgrade_item` when the sold item is a cosmetic shown worn) is called by the client's own handlers of `83 47 01` and of the craft's used donor, for an item of category 25 (camouflage) only | 0x2765C4..0x2765DB, 0x275B9A..0x275BB3 → 0x228FF0 |
 | a match takes the camouflage from the record's dict id (`item_config_cook` looks up `[record+4]`), not from the cosmetic item; only the kits' items go to a match | 0x2F18D0..0x2F18FA |
 
 So one id on many items (the obvious way) shows well but cannot be taken
@@ -205,8 +207,15 @@ off whichever comes first in its inventory. srp gives each item its own
 - `46 01` with a copy (dragged from the stash, where it shows as worn): it
   moves, `detach_first` as any cosmetic did.
 - `46 02` with a copy: it comes off and is gone. With the camouflage itself,
-  worn by nothing: the window it was just dropped on still names it, so its
-  newest copy is the one taken off (`83 46 02` names the copy).
+  worn by nothing: the window it was just dropped on still names it, so the
+  copy taken off is the one on the item it was last put on by its own id
+  (`83 46 02` names the copy); with nothing remembered, its newest copy.
+- The window's cancel names, in its `46 01`, what the slot held when the
+  window opened: after another camouflage was dropped there, a copy that
+  is gone. A gone copy stands for its camouflage (if still owned), which
+  goes on again as a new copy. The lobby remembers both (the item each
+  camouflage was last put on, the copies gone) only while it runs
+  (`items_rules::CopyMemory`; never saved).
 - A copy is gone when it comes off, when another cosmetic takes its slot,
   when its item goes (sold, used up as a donor) or when the camouflage does.
   A copy is not sold (`st_cannot_upgrade_item`); the camouflage sold takes

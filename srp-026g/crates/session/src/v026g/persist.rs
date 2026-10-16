@@ -461,6 +461,7 @@ impl GameRepository for SqliteGameRepository {
                         tutorial_done: row.get(15)?,
                         extras: Default::default(),
                         map_plays: Vec::new(),
+                        copy_memory: Default::default(),
                     },
                 ))
             })?;

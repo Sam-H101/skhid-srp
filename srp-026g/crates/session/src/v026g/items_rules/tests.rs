@@ -542,6 +542,101 @@ fn a_loaded_account_keeps_only_worn_copies_of_owned_camouflages() {
     assert!(lost.item(vest).unwrap().upgrades.is_empty());
 }
 
+/// The upgrade window's cancel (`UpgradeWindow.cancelChanges`) sends
+/// `46 02` for what its slot holds now, then `46 01` for what it held when
+/// it opened. The slot may hold the camouflage itself (dropped from the
+/// stash) and what it held may be a copy that is gone since (replaced in
+/// the window): the item gets back what it wore, and no other item that
+/// wears the camouflage loses it.
+#[test]
+fn cancelling_the_upgrade_window_puts_back_what_the_item_wore() {
+    let mut account = rich();
+    let vest = give(&mut account, "edge_torso_2", &[]);
+    let spare = give(&mut account, "bm_torso_1", &[]);
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let other = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let worn = attach_upgrade(&mut account, vest, camo, 3)
+        .unwrap()
+        .upgrade_item_id;
+    // The spare vest's copy is the newer one.
+    let spare_copy = attach_upgrade(&mut account, spare, camo, 3)
+        .unwrap()
+        .upgrade_item_id;
+    let mut client = client_of(&account);
+    let attached = |attached: Attached| {
+        lobby::permitted_upgrade_attached(
+            attached.host_item_id,
+            attached.upgrade_item_id,
+            attached.slot,
+            attached.value,
+            attached.detach_first,
+        )
+    };
+
+    // The vest's window: the camouflage it wears dropped on it again
+    // (nothing changes), then cancel. The vest's copy comes off, not the
+    // spare vest's newer one, and goes back on.
+    let same = attach_upgrade(&mut account, vest, camo, 3).unwrap();
+    assert_eq!((same.upgrade_item_id, same.new_copy), (worn, false));
+    takes(&mut client, &attached(same), &account);
+    let off = detach_upgrade(&mut account, camo).unwrap();
+    assert_eq!(
+        off,
+        Detached {
+            host_item_id: vest,
+            upgrade_item_id: worn,
+            copy_dropped: true
+        }
+    );
+    takes_then_push(
+        &mut client,
+        &lobby::permitted_upgrade_detached(worn),
+        &account,
+    );
+    let back = attach_upgrade(&mut account, vest, worn, 3).unwrap();
+    assert!(back.new_copy && back.upgrade_item_id != worn);
+    takes_after_push(&mut client, &attached(back), &account);
+    assert_eq!(
+        copies_of(&account, camo),
+        [(vest, back.upgrade_item_id), (spare, spare_copy)]
+    );
+
+    // Another camouflage dropped on it, then cancel: the vest's copy of
+    // the first was replaced and is gone, and the cancel names it.
+    let swapped = attach_upgrade(&mut account, vest, other, 3).unwrap();
+    assert!(swapped.new_copy);
+    takes_after_push(&mut client, &attached(swapped), &account);
+    assert!(account.item(back.upgrade_item_id).is_none());
+    let off = detach_upgrade(&mut account, other).unwrap();
+    assert_eq!(off.upgrade_item_id, swapped.upgrade_item_id);
+    takes_then_push(
+        &mut client,
+        &lobby::permitted_upgrade_detached(off.upgrade_item_id),
+        &account,
+    );
+    let again = attach_upgrade(&mut account, vest, back.upgrade_item_id, 3).unwrap();
+    assert!(again.new_copy);
+    takes_after_push(&mut client, &attached(again), &account);
+    assert_eq!(
+        copies_of(&account, camo),
+        [(vest, again.upgrade_item_id), (spare, spare_copy)]
+    );
+    assert_eq!(copies_of(&account, other), []);
+
+    // What the window may name is no part of the account, and is not
+    // saved.
+    let mut fresh = account.clone();
+    fresh.copy_memory = Default::default();
+    assert_eq!(fresh, account);
+    assert!(attach_upgrade(&mut fresh, vest, back.upgrade_item_id, 3).is_err());
+
+    // A gone copy of a camouflage that is sold stands for nothing.
+    detach_upgrade(&mut account, again.upgrade_item_id).unwrap();
+    crate::v026g::rules::sell(&mut account, camo, 1).unwrap();
+    assert!(attach_upgrade(&mut account, vest, again.upgrade_item_id, 3).is_err());
+    assert!(account.inventory.iter().all(|item| item.copy_of == 0));
+}
+
 #[test]
 fn a_modification_is_changed_for_one_of_three() {
     let mut account = rich();

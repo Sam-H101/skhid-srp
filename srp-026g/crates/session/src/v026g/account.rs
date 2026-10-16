@@ -193,6 +193,10 @@ pub struct Account {
     /// map (`maps::MapMode::level`), by map; the matchmaker draws the maps
     /// its players played less more often ([`super::matchmaking`]).
     pub map_plays: Vec<(u8, u32)>,
+    /// What the upgrade window may still name of the camouflages' bound
+    /// copies, while the lobby runs: never saved, and no part of what the
+    /// account is ([`super::items_rules::CopyMemory`]).
+    pub copy_memory: super::items_rules::CopyMemory,
 }
 
 /// The level reached with `total` experience, where it starts and where
@@ -263,6 +267,7 @@ impl Account {
                 ..Default::default()
             },
             map_plays: Vec::new(),
+            copy_memory: Default::default(),
         };
         for worn in &loadout.items {
             let Some(entry) = dictionary.item(worn.dict_id) else {

@@ -40,6 +40,12 @@
 //!   but its item's; the camouflage sold takes every copy with it and is
 //!   paid once. A camouflage worn itself under the rule before copies stays
 //!   on its item; put on another, it leaves a copy in its place first.
+//!   The upgrade window keeps the ids it showed until it is opened again,
+//!   and its cancel sends `46 02` for what a slot holds and `46 01` for
+//!   what it held: the lobby remembers, while it runs, the item each
+//!   camouflage was last put on by its own id (a `46 02` naming the
+//!   camouflage means that item's copy) and the copies gone (a `46 01`
+//!   naming one puts its camouflage on again), [`CopyMemory`].
 //! - **Reroll.** One modification of an item may be changed, any number of
 //!   times (`st_modifier_reroll_description`); the first change picks which
 //!   (the window locks the others, `was_rerolled_before`). A change offers
@@ -323,6 +329,16 @@ pub struct Attached {
     pub new_copy: bool,
 }
 
+/// What the host's `slot` holds, if anything.
+fn held_in(account: &Account, host_item_id: u32, slot: u8) -> Option<Upgrade> {
+    account
+        .item(host_item_id)?
+        .upgrades
+        .iter()
+        .find(|held| held.param == slot)
+        .copied()
+}
+
 /// The item whose upgrades hold `upgrade_item_id`, if any.
 fn host_of(account: &Account, upgrade_item_id: u32) -> Option<u32> {
     account
@@ -347,6 +363,80 @@ fn make_copy(account: &mut Account, original: u32) -> u32 {
     copy
 }
 
+/// How many camouflages and gone copies [`CopyMemory`] keeps.
+const REMEMBERED: usize = 32;
+
+/// What the upgrade window may still name, kept while the lobby runs. The
+/// window keeps the ids it was opened with and the ones dropped on it until
+/// it is opened again (`UpgradeWindow.updateData` refills only then), and
+/// its cancel sends `46 02` for what a slot holds now and `46 01` for what
+/// it held when the window opened (`cancelChanges`). So it may name the
+/// camouflage itself after it went on as a copy, and a copy that is gone
+/// (replaced in this window). It is no part of what the account is: it is
+/// not saved, and accounts are equal whatever each remembers.
+#[derive(Clone, Debug, Default)]
+pub struct CopyMemory {
+    /// `(camouflage, host)`: the item each camouflage was last put on by
+    /// its own id, the oldest first.
+    put_on: Vec<(u32, u32)>,
+    /// `(copy, camouflage)`: bound copies gone, the oldest first.
+    gone: Vec<(u32, u32)>,
+}
+
+impl PartialEq for CopyMemory {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for CopyMemory {}
+
+impl CopyMemory {
+    fn remember(list: &mut Vec<(u32, u32)>, key: u32, value: u32) {
+        list.retain(|&(held, _)| held != key);
+        list.push((key, value));
+        if list.len() > REMEMBERED {
+            list.remove(0);
+        }
+    }
+
+    fn put_on(&mut self, camouflage: u32, host: u32) {
+        Self::remember(&mut self.put_on, camouflage, host);
+    }
+
+    /// The item `camouflage` was last put on by its own id.
+    fn last_put_on(&self, camouflage: u32) -> Option<u32> {
+        self.put_on
+            .iter()
+            .find(|&&(held, _)| held == camouflage)
+            .map(|&(_, host)| host)
+    }
+
+    fn gone(&mut self, copy: u32, camouflage: u32) {
+        Self::remember(&mut self.gone, copy, camouflage);
+    }
+
+    /// The camouflage of a bound copy that is gone.
+    fn camouflage_of_gone(&self, copy: u32) -> Option<u32> {
+        self.gone
+            .iter()
+            .find(|&&(held, _)| held == copy)
+            .map(|&(_, camouflage)| camouflage)
+    }
+}
+
+/// Notes `item_id`, about to go, if it is a bound copy
+/// ([`CopyMemory::gone`]).
+fn note_gone(account: &mut Account, item_id: u32) {
+    if let Some(camouflage) = account
+        .item(item_id)
+        .map(|item| item.copy_of)
+        .filter(|&camouflage| camouflage != 0)
+    {
+        account.copy_memory.gone(item_id, camouflage);
+    }
+}
+
 /// The kits wearing any of `item_ids` show another item: new revisions,
 /// one a kit.
 fn bump_kits_wearing_any(account: &mut Account, item_ids: &[u32]) {
@@ -362,13 +452,28 @@ fn bump_kits_wearing_any(account: &mut Account, item_ids: &[u32]) {
 ///
 /// A camouflage of its own goes on as a new bound copy of it and stays
 /// where it is ([`attach_camouflage`]). A decal, or a bound copy, moves:
-/// off the item it was on, onto this one.
+/// off the item it was on, onto this one. A bound copy that is gone
+/// (the upgrade window's cancel names what its slot held when it opened,
+/// [`CopyMemory`]) stands for its camouflage, if that is still owned.
 pub fn attach_upgrade(
     account: &mut Account,
     host_item_id: u32,
     upgrade_item_id: u32,
     slot: u8,
 ) -> Result<Attached, ItemError> {
+    let upgrade_item_id = if account.item(upgrade_item_id).is_some() {
+        upgrade_item_id
+    } else {
+        account
+            .copy_memory
+            .camouflage_of_gone(upgrade_item_id)
+            .filter(|&camouflage| {
+                account
+                    .item(camouflage)
+                    .is_some_and(|item| item.copy_of == 0)
+            })
+            .ok_or(ItemError::Upgrade("no such cosmetic"))?
+    };
     if host_item_id == upgrade_item_id {
         return Err(ItemError::Upgrade("an item on itself"));
     }
@@ -399,6 +504,11 @@ pub fn attach_upgrade(
             upgrade_item_id,
             slot,
         ));
+    }
+    if let Some(replaced) = held_in(account, host_item_id, slot)
+        && replaced.id != upgrade_item_id
+    {
+        note_gone(account, replaced.id);
     }
     let mut detach_first = false;
     let mut changed_hosts = vec![host_item_id];
@@ -452,14 +562,10 @@ fn attach_camouflage(
         .item(original)
         .expect("the camouflage was found above")
         .dict_id;
-    let held = account
-        .item(host_item_id)
-        .expect("the host was found above")
-        .upgrades
-        .iter()
-        .find(|held| held.param == slot)
-        .copied();
-    if let Some(held) = held {
+    // The window this was dropped on still names the camouflage: a `46 02`
+    // naming it means this host's copy ([`detach_upgrade`]).
+    account.copy_memory.put_on(original, host_item_id);
+    if let Some(held) = held_in(account, host_item_id, slot) {
         let same = held.id == original
             || account
                 .item(held.id)
@@ -474,6 +580,7 @@ fn attach_camouflage(
                 new_copy: false,
             };
         }
+        note_gone(account, held.id);
     }
     let mut changed_hosts = vec![host_item_id];
     if let Some(wearer) = host_of(account, original) {
@@ -527,21 +634,26 @@ pub struct Detached {
 /// copy with an id of its own; a bound copy that comes off is gone. The
 /// camouflage itself, worn by nothing, is named only by the upgrade window
 /// it was just put on with (the slot still holds the id that was dragged
-/// there): the copy that made is the newest of its copies, and that one
-/// comes off.
+/// there, [`CopyMemory`]): the copy on the item it was last put on by its
+/// own id comes off, else (nothing remembered) its newest copy.
 pub fn detach_upgrade(account: &mut Account, upgrade_item_id: u32) -> Result<Detached, ItemError> {
     let target = if host_of(account, upgrade_item_id).is_some() {
         upgrade_item_id
     } else {
-        account
+        let worn: Vec<(u32, u32)> = account
             .inventory
             .iter()
             .filter(|item| upgrade_item_id != 0 && item.copy_of == upgrade_item_id)
-            .map(|item| item.item_id)
-            .filter(|&copy| host_of(account, copy).is_some())
-            .max()
+            .filter_map(|item| Some((item.item_id, host_of(account, item.item_id)?)))
+            .collect();
+        let window = account.copy_memory.last_put_on(upgrade_item_id);
+        worn.iter()
+            .find(|&&(_, host)| Some(host) == window)
+            .or_else(|| worn.iter().max())
+            .map(|&(copy, _)| copy)
             .ok_or(ItemError::Upgrade("the cosmetic is on no item"))?
     };
+    note_gone(account, target);
     let host = account
         .inventory
         .iter_mut()
