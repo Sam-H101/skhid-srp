@@ -129,21 +129,16 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     scan and calls only a battery's get_transform (vtable+44h; only
     batteries' vtables have victory_item_core::can_use at +30h); nothing
     aims inside the four sites.
-25. the same build: verify_sign's call of verify_sign_impl (0x135D3) goes
-    to verify_skhid at 0xC00 of `.srp` (`mov eax,esi` before it and
+25. the same build: verify_sign's call of verify_sign_impl (0x135D3) is
+    `xor eax,eax` and three nops (`mov eax,esi` before it and
     `add esp,10h` after it are the original's; no relocation under it, no
-    branch aims inside it); db_signature_026g.section.bin is what nasm makes
-    and sits there, between int3 padding, after the pickup
-    and seek code and before the late join, none overlapping; it calls verify_sign_impl once
-    and nothing else, writes no register a cdecl callee keeps, gives its
-    stack back and returns with `ret`, and holds szOID_RSA_RSA and
-    resources_db_key_026g.der (a 2048-bit key); the build without the late
-    join keeps the original call.
+    branch aims inside it): no resources.db signature is checked; the build
+    without the late join keeps the original call.
 26. the same build: sign_in_on_connected's `mov [edi+8],eax` /
     `mov [edi+0Ch],dl` (0x380889) are `call` stale_dll at 0xE00 of `.srp`
     and a nop (no relocation under them, no branch aims inside them);
     stale_dll_026g.section.bin is what nasm makes and sits there, after the
-    resources.db signature code and before the late join; it saves every
+    seek code and before the late join; it saves every
     register (pushad / popad), calls itself once for its address, then
     GetModuleHandleA, GetProcAddress, CreateFileA, CloseHandle through the
     import table and GetTempPathA, branches only inside itself, does the two
@@ -295,18 +290,19 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.seek_clear_bin(), "rb").read(),
           f"{os.path.basename(P.seek_clear_bin())} is current ({len(fresh)} bytes)")
-    path = P.db_signature_bin()
-    with tempfile.TemporaryDirectory() as tmp:
-        out = os.path.join(tmp, "out.bin")
-        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.DB_SIGNATURE_ENTRY:#x}", "-i", HERE + os.sep,
-                        os.path.join(HERE, "db_signature_026g.asm"), "-o", out], check=True, timeout=60)
-        fresh = open(out, "rb").read()
-    check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
     path = P.stale_dll_bin()
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.STALE_DLL_ENTRY:#x}",
                         os.path.join(HERE, "stale_dll_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    path = P.mount_patches_bin()
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.MOUNT_STATE_OFFSET
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.MOUNT_PATCHES_VA:#x}", f"-DSTATE={state:#x}",
+                        os.path.join(HERE, "mount_patches_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
     check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
 
@@ -875,7 +871,7 @@ def test_revision(original, image, mode, revision):
     check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{revision:#x}"
           and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
           f"{va:#x}: `mov byte [esp+0x27],{revision:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
-    stale_dll = revision >= 13
+    stale_dll = revision == P.REVISION          # the build with the late join (revision 12) has it
     expected = list(b"0.26g0" + bytes([0, revision])) + (["stale_dll"] if stale_dll else [0]) + [0, 0, 0, "eula"]
     check(field == expected,
           f'the version field is "0.26g0", a zero, the revision {revision} in byte 7, '
@@ -1679,16 +1675,15 @@ def test_first_load(original, image, before):
 
 
 def test_db_signature(original, image, before):
-    """Check 25: the resources.db file table signed by Skhid's key alone."""
+    """Check 25: no resources.db signature is checked."""
     va, old, new = P.DB_SIGNATURE
-    entry = P.DB_SIGNATURE_ENTRY
     # ndisasm 2.x spells the last one `add esp,byte +0x10`, 3.x `add esp,0x10`.
     texts_at = lambda blob: [text.replace("byte +", "") for _, _, text in ndisasm(blob.read(va - 2, 10), va - 2)]
     check(texts_at(Image(original)) == ["mov eax,esi", f"call {P.DB_SIGNATURE_IMPL:#x}", "add esp,0x10"]
-          and texts_at(image) == ["mov eax,esi", f"call {entry:#x}", "add esp,0x10"]
+          and texts_at(image) == ["mov eax,esi", "xor eax,eax", "nop", "nop", "nop", "add esp,0x10"]
           and image.read(va, len(new)) == new and before.read(va, len(old)) == old,
-          f"{va:#x}: verify_sign's `call {P.DB_SIGNATURE_IMPL:#x}` is `call {entry:#x}` between the original's "
-          "instructions; the build without the late join keeps the original call")
+          f"{va:#x}: verify_sign's `call {P.DB_SIGNATURE_IMPL:#x}` is `xor eax,eax` and three nops between the "
+          "original's instructions; the build without the late join keeps the original call")
     under = [v for kind, v in Image(original).relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
     # rel32 branches of .text and 4-byte values of the file; the short
     # branches of verify_sign itself (0x13310..0x13608), instruction by
@@ -1700,27 +1695,6 @@ def test_db_signature(original, image, before):
               if (target := branch_target(text)) is not None and va < target < va + len(old)]
     check(not under and not found and any(address == va for address, _, _ in verify_sign),
           "no base relocation under the call, no branch or address aims inside it" + "".join(f"\n          {a:#x}" for a in found))
-    code = open(P.db_signature_bin(), "rb").read()
-    key = open(os.path.join(HERE, "resources_db_key_026g.der"), "rb").read()
-    check(image.read(entry, len(code)) == code, f"verify_skhid at {entry:#x} is db_signature_026g.section.bin")
-    listing = ndisasm(code[:code.index(b"1.2.840")], entry)
-    texts = [text for _, _, text in listing]
-    calls = [branch_target(text) for text in texts if text.startswith("call")]
-    jumps = [branch_target(text) for text in texts if text.startswith("j")]
-    here = next(address for address, _, text in listing if text == "pop ecx")
-    kept = re.compile(r"^(mov|lea|pop|xor|add|sub|or|and|inc|dec) (ebx|esi|edi|ebp)\b")
-    texts = [text.replace("byte +", "") for text in texts]
-    check(calls == [here, P.DB_SIGNATURE_IMPL] and not jumps
-          and texts[0] == "sub esp,0x64" and texts[-2:] == ["add esp,0x74", "ret"]
-          and not any(kept.match(text) for text in texts),
-          "it calls verify_sign_impl once (and the next instruction, for its own address), branches nowhere "
-          "else, writes no register a cdecl callee keeps, gives back its 0x64 bytes and the four arguments' "
-          "copies and ends with `ret`")
-    # DER RSAPublicKey of a 2048-bit modulus (its top bit set) and e = 65537.
-    rsa_2048 = (len(key) == 270 and key[:9] == bytes.fromhex("3082010a0282010100") and key[9] >= 0x80
-                and key[265:] == bytes.fromhex("0203010001"))
-    check(code.count(b"1.2.840.113549.1.1.1\0\x05\x00" + key) == 1 and rsa_2048,
-          "it holds szOID_RSA_RSA, NULL parameters and resources_db_key_026g.der (2048 bits, e = 65537)")
 
 
 def test_stale_dll(original, image, before):
@@ -1762,6 +1736,94 @@ def test_stale_dll(original, image, before):
           "branches only inside itself, then does the two writes it replaced and returns")
     check(strings == b"kernel32.dll\0GetTempPathA\0shell_32.dll\0",
           "the names it holds are kernel32.dll, GetTempPathA and shell_32.dll, and nothing else")
+
+
+# query_db and on_mounted_resources, for the branches of their own that
+# could aim inside the two sites of patch 27.
+QUERY_DB = (0xE7D90, 0xE7E75)
+ON_MOUNTED_RESOURCES = (0x147E0, 0x148A5)
+
+
+def test_mount_patches(original, image, before):
+    """Check 27: the game mounts resources.db.patch_1, _2, ... over
+    resources.db (mount_patches_026g.asm; check_mount_patches_026g.py runs
+    it)."""
+    code = open(P.mount_patches_bin(), "rb").read()
+    entry, mounted = P.MOUNT_PATCHES_VA + P.MOUNT_ALL_OFFSET, P.MOUNT_PATCHES_VA + P.MOUNTED_OFFSET
+    texts = lambda blob, va, size: [text for _, _, text in ndisasm(blob.read(va, size), va)]
+    va, old, new = P.MOUNT_QUERY
+    check(image.read(va, len(new)) == new and before.read(va, len(old)) == old
+          and texts(Image(original), va, 5) == [f"call {P.MOUNT_QUERY_MOUNT_ARCHIVE:#x}"]
+          and texts(image, va, 5) == [f"call {entry:#x}"],
+          f"{va:#x}: query_db's `call {P.MOUNT_QUERY_MOUNT_ARCHIVE:#x}` (query_mount_archive) is `call {entry:#x}`; "
+          "the build without the late join keeps it")
+    va, old, new = P.MOUNTED
+    rows = ndisasm(Image(original).read(va, len(old)), va)
+    check(image.read(va, len(new)) == new and before.read(va, len(old)) == old
+          and [text for _, _, text in rows[:2]] == ["push ebp", "mov ebp,esp"] and len(rows) == 3
+          and rows[2][1].lower() == "83e4f8" and texts(image, va, 6) == [f"jmp {mounted:#x}", "nop"],
+          f"{va:#x}: on_mounted_resources' `push ebp` / `mov ebp,esp` / `and esp,-8` are `jmp {mounted:#x}` / `nop`; "
+          "the build without the late join keeps them")
+    relocated = {v for kind, v in Image(original).relocations().values() if kind == 3}
+    sections = Image(original).sections
+
+    def an_address(value):
+        """Whether `value` is in the file as an address of the image: a
+        4-byte value with a base relocation (`call 3DB6F0h` at 0x3C6F0A is
+        `E8 E1 47 01 00`, the bytes of 0x147E1)."""
+        at = original.find(struct.pack("<I", value))
+        while at != -1:
+            if any(raw <= at < raw + rsize and P.IMAGE_BASE + rva + at - raw in relocated
+                   for _, rva, _, raw, rsize, _ in sections):
+                return True
+            at = original.find(struct.pack("<I", value), at + 1)
+        return False
+
+    for (va, old, _), (start, end) in ((P.MOUNT_QUERY, QUERY_DB), (P.MOUNTED, ON_MOUNTED_RESOURCES)):
+        under = [v for v in relocated if va - 3 < v < va + len(old)]
+        found = [a for a in aimed_inside(original, va, len(old), 0) if not va < a < va + len(old) or an_address(a)]
+        found += [address for address, _, text in ndisasm(Image(original).read(start, end - start), start)
+                  if (target := branch_target(text)) is not None and va < target < va + len(old)]
+        check(not under and not found, f"{va:#x}: no base relocation under it, no branch or address aims inside it"
+              + "".join(f"\n          {a:#x}" for a in found))
+    check(image.read(P.MOUNT_PATCHES_VA, len(code)) == code,
+          f"the patches' mount at {P.MOUNT_PATCHES_VA:#x} is mount_patches_026g.section.bin ({len(code)} bytes)")
+    state = struct.unpack_from("<I", code, len(code) - 4)[0]
+    late_join = open(P.late_join_bin(), "rb").read()
+    page = P.late_join_state_va(late_join)
+    size = P.MOUNT_STATE_SIZE
+    check(state == page + P.MOUNT_STATE_OFFSET and P.MOUNT_STATE_OFFSET + size <= P.LATE_JOIN_STATE_SIZE,
+          f"its state is {size} bytes at {state:#x}, +{P.MOUNT_STATE_OFFSET:#x} of the late join's state page "
+          f"{page:#x}, inside it")
+    strings = code[code.index(b"../../%s.db.patch_%u\0"):len(code) - 4]
+    check(strings == b"../../%s.db.patch_%u\0"
+          b"Cannot mount resources.db.patch_%u. Please run the Skhid launcher again.\0"
+          b"Cannot open resources.db.patch_%u (error %u). Please run the Skhid launcher again.\0",
+          "the texts it holds are the path's format, ../../%s.db.patch_%u, and the two fatal errors' "
+          "(a patch that fails to mount; one that is there and cannot be opened)")
+    listing = ndisasm(code[:len(code) - 4 - len(strings)], P.MOUNT_PATCHES_VA)
+    end = P.MOUNT_PATCHES_VA + len(code)
+    inside = lambda target: P.MOUNT_PATCHES_VA <= target < end
+    outside = sorted({target for _, _, text in listing if (target := branch_target(text)) is not None
+                      and not inside(target)})
+    indirect = sorted({int(m.group(1), 16) for _, _, text in listing
+                       if (m := re.match(r"^call (?:dword (?:near )?)?\[edx\+0x([0-9a-f]+)\]$", text))})
+    at = {address: text for address, _, text in listing}
+    # The six bytes the hook replaced, then on into the game. ndisasm 2.x
+    # spells the `and` `and esp,byte -0x8`, 3.x `and esp,0xfffffffffffffff8`.
+    games = [i for i, (_, _, text) in enumerate(listing) if text == "push ebp"]
+    tail = [text.replace("byte -0x8", "0xfffffff8").replace("0xfffffffffffffff8", "0xfffffff8")
+            for _, _, text in listing[games[0]:games[0] + 4]] if len(games) == 1 else []
+    calls = sorted([0x18190, P.MOUNTED_VA + 6, P.MOUNT_QUERY_MOUNT_ARCHIVE, 0x113580, 0xDFE30])
+    check(outside == calls and indirect == [0x870040, 0x870048, 0x87005C]
+          and at.get(mounted, "").startswith("call") and at.get(entry) == "pusha"
+          and tail == ["push ebp", "mov ebp,esp", "and esp,0xfffffff8", f"jmp {P.MOUNTED_VA + 6:#x}"],
+          "its only ways out are the path's format (0x18190), query_mount_archive, the fatal error (0x113580), "
+          "the unmount of a mount nobody holds (0xDFE30, as the game lets a mount go), "
+          "CreateFileA, GetLastError and CloseHandle (through the import table, plus the delta), and the six bytes it "
+          f"replaced followed by a jump to {P.MOUNTED_VA + 6:#x}; on_mounted at +{P.MOUNTED_OFFSET:#x} starts "
+          f"with a call for its address, mount_all at +{P.MOUNT_ALL_OFFSET:#x} with pushad"
+          + ("" if outside == calls else f": {[hex(t) for t in outside]}"))
 
 
 def test_replay_reattach(original, image, before):
@@ -1952,13 +2014,13 @@ def test_late_join(original, without, server, source):
     body = bytes(data[raw:raw + rsize])
     pickup = open(P.pickup_bin(), "rb").read()
     seek = open(P.seek_clear_bin(), "rb").read()
-    signature_code = open(P.db_signature_bin(), "rb").read()
     stale_dll = open(P.stale_dll_bin(), "rb").read()
+    mount_patches = open(P.mount_patches_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     pieces = [(0, len(first_page), "the build without the late join's first page"),
+              (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
-              (P.DB_SIGNATURE_OFFSET, len(signature_code), "the resources.db signature code"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
@@ -1966,20 +2028,20 @@ def test_late_join(original, without, server, source):
     check(not overlaps, "the first page's code does not overlap: " + ", ".join(
         f"{name} [{start:#x}, {start + size:#x})" for start, size, name in pieces) + "".join("; " + o for o in overlaps))
     check(body[:len(first_page)] == first_page
-          and set(body[len(first_page):P.PICKUP_OFFSET]) <= {0xCC}
+          and set(body[len(first_page):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
+          and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
+          and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
-          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.DB_SIGNATURE_OFFSET]) <= {0xCC}
-          and body[P.DB_SIGNATURE_OFFSET:P.DB_SIGNATURE_OFFSET + len(signature_code)] == signature_code
-          and set(body[P.DB_SIGNATURE_OFFSET + len(signature_code):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"pickup code at +{P.PICKUP_OFFSET:#x}, the seek code at +{P.SEEK_CLEAR_OFFSET:#x} and the "
-          f"resources.db signature code at +{P.DB_SIGNATURE_OFFSET:#x} and the shell_32.dll check at "
+          f"patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x} and the shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
@@ -2009,7 +2071,8 @@ def test_late_join(original, without, server, source):
     ranges.append((P.data_file_offset(P.CLOCK_FACTOR_VA), 4))
     ranges.append((image.offset(P.REPLAY_REATTACH_SLOT[0]), 4))
     ranges += [(P.file_offset(P.REVISION_VA) + 4, 1), (P.file_offset(P.LATE_JOIN_READY_VA) + 1, 4),
-               (P.file_offset(P.DB_SIGNATURE_VA) + 1, 4), (P.file_offset(P.STALE_DLL_VA), len(P.STALE_DLL[1])),
+               (P.file_offset(P.DB_SIGNATURE_VA), len(P.DB_SIGNATURE[1])), (P.file_offset(P.STALE_DLL_VA), len(P.STALE_DLL[1])),
+               (P.file_offset(P.MOUNT_QUERY_VA), len(P.MOUNT_QUERY[1])), (P.file_offset(P.MOUNTED_VA), len(P.MOUNTED[1])),
                (headers.count_at, 2), (headers.size_of_code_at, 4), (headers.optional + 12, 4),
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
@@ -2116,6 +2179,7 @@ def test_late_join(original, without, server, source):
     test_seek_clear(original, image, before)
     test_db_signature(original, image, before)
     test_stale_dll(original, image, before)
+    test_mount_patches(original, image, before)
     test_revision(original, image, "section", P.REVISION)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")

@@ -13,8 +13,8 @@
 
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
-const UNIQUE_AWARDS: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/unique_awards_026g.options");
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/awards/unique_awards.options";
 
 /// `type` of an award.
 pub mod kind {
@@ -55,10 +55,10 @@ pub struct Awards {
 }
 
 impl Awards {
-    /// The awards the 0.26g client ships, parsed once.
+    /// The players' awards ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Awards> = std::sync::OnceLock::new();
-        SHARED.get_or_init(|| Self::parse(UNIQUE_AWARDS).expect("the embedded 0.26g awards parse"))
+        SHARED.get_or_init(|| Self::parse(super::game_data::file(PATH)).expect("the awards parse"))
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, ConfigError> {

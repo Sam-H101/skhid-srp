@@ -8,7 +8,7 @@
 //! and two ammo for it. Every name is a 0.26g item and fits its slot.
 //!
 //! **The carry limit.** 0.26g's player carries 30 kg
-//! (`item_params::MAX_CARRIED_WEIGHT`), and the lobby does not let a kit go
+//! (`item_params::player().max_carried_weight`), and the lobby does not let a kit go
 //! over it. With one clip of each ammo the ten profiles weigh 32.35, 32.3,
 //! 38.4, 26.9, 19.3, 26.3, 22.3, 26.3, 26.3 and 26.3 kg: **the first three
 //! are over**. (The gear alone is 30.5, 30.0 and 36.1 kg: profiles 0 and 2
@@ -39,11 +39,10 @@
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
 use super::dictionary::{Dictionary, PROFILE_SLOTS};
-use super::item_params::{self, MAX_CARRIED_WEIGHT};
+use super::item_params;
 
-const TEST_PLAYER_PROFILES: &[u8] = include_bytes!(
-    "../../../../resources/binary-config-examples/test_player_profiles_026g.options"
-);
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/test_player_profiles.options";
 
 /// What a new account's first kit wears, `(slot, item)`: the TT-33 in
 /// weapon slot 1 and a clip of its free ammo in that weapon's first ammo
@@ -112,7 +111,7 @@ impl Loadout {
 
     /// Whether a player can carry it.
     pub fn fits_carry_limit(&self) -> bool {
-        self.weight() <= MAX_CARRIED_WEIGHT
+        self.weight() <= item_params::player().max_carried_weight
     }
 
     pub fn slot(&self, slot: u8) -> Option<&SlotItem> {
@@ -127,12 +126,12 @@ pub struct Loadouts {
 }
 
 impl Loadouts {
-    /// The loadouts the 0.26g client ships, parsed once.
+    /// The players' test profiles ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Loadouts> = std::sync::OnceLock::new();
         SHARED.get_or_init(|| {
-            Self::parse(TEST_PLAYER_PROFILES, Dictionary::shared())
-                .expect("the embedded 0.26g test profiles parse")
+            Self::parse(super::game_data::file(PATH), Dictionary::shared())
+                .expect("the test profiles parse")
         })
     }
 

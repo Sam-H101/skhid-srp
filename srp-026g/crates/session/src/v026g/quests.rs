@@ -77,6 +77,9 @@ pub fn choose_faction(account: &mut Account, faction: u8) -> Result<(), ActionEr
     Ok(())
 }
 
+/// The damaging grenade's item name ([`grenades_available_in_store`]).
+pub const GRENADE: &str = "rgd-5";
+
 /// RGD-5 is the damaging grenade in 0.26g; unlocking RDG-M smoke does
 /// not make grenade-kill quests available. Use the same seller rules as
 /// purchases, independent of the chosen quest faction, balance or loadout.
@@ -84,7 +87,7 @@ fn grenades_available_in_store(account: &Account) -> bool {
     Dictionary::shared()
         .items
         .iter()
-        .find(|item| item.name == "rgd-5")
+        .find(|item| item.name == GRENADE)
         .is_some_and(|item| {
             matches!(
                 prices::record_for(item.dict_id, 0, |seller| account.reputation_level(seller)),
@@ -98,7 +101,7 @@ fn grenades_available_in_store(account: &Account) -> bool {
 /// qualify, and any seller may unlock the quest regardless of its faction.
 fn artifact_containers_available_in_store(account: &Account) -> bool {
     let modifications = Modifications::shared();
-    item_params::ITEM_PARAMS.iter().any(|item| {
+    item_params::all().iter().any(|item| {
         let has_container = item
             .default_modifications
             .iter()

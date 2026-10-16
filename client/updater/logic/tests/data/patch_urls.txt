@@ -1,0 +1,97 @@
+# The addresses of resources.db's patches: what the updater takes (`ok`)
+# and refuses (`bad`) as a patch's `url` in the server's list
+# (client/updater/logic/src/url.rs `patch`, through patches.rs
+# `parse_list`), and so what srp-game-data takes as a patch's URL
+# (srp-026g/crates/resources-db/src/server.rs `is_url`). The tests of both
+# read this file: a URL srp-game-data takes would be refused on the players'
+# computers otherwise, and their PLAY would stay off.
+#
+# A line is `ok <url>` or `bad <url>`: the URL is the rest of the line after
+# the first space (`bad` alone: the empty URL). In it {SP} {TAB} {CR} {LF}
+# {NUL} {DEL} stand for those bytes and {a*N} for N letters a.
+
+ok http://203.0.113.5/patch_14
+ok http://203.0.113.5/p/resources.db.patch_14
+ok https://Files.Example.org:8443/db/patch_14?v=2
+ok http://127.0.0.1:1234/p/patch_1
+ok http://skhid.link/patches/resources.db.patch_27
+ok https://h/p?x=14
+ok http://h/p3
+ok http://localhost/x
+ok http://a-b.c-d/x
+ok http://host:1/x
+ok https://host:65535/x
+ok http://host:08080/x
+ok http://host//x
+ok http://host/x/
+ok http://host/a'b
+ok http://host/%20
+ok http://host/a?b=c&d=e;f=(g)
+ok http://host/~user/a_b-c.d
+ok https://drive.usercontent.google.com/download?id=abc&export=download&confirm=t
+ok http://{a*253}/p
+ok http://h/{a*1015}
+
+# Not http:// or https://, lowercase.
+bad
+bad /patch_14
+bad patch_14
+bad 203.0.113.5/patch_14
+bad ftp://203.0.113.5/patch_14
+bad file:///C:/patch_14
+bad file://host/patch_14
+bad javascript://x/patch_14
+bad smb://server/patch_14
+bad data:text/plain,x
+bad //203.0.113.5/patch_14
+bad HTTP://host/patch_14
+bad Https://host/patch_14
+bad http:/host/x
+bad http//host/x
+bad xhttp://host/x
+# No path: a file is needed.
+bad http://203.0.113.5
+bad http://203.0.113.5/
+bad https://host
+bad http://host?x=1
+bad http://host?x=/y
+# Credentials, a fragment.
+bad http://user@host/patch_14
+bad http://user:pw@host/patch_14
+bad http://host/patch_14#x
+bad http://host/#x
+# A space, a control byte, a quote, a backslash, not ASCII.
+bad http://host/a{SP}b
+bad {SP}http://host/patch_14
+bad http://host/patch_14{SP}
+bad http://host/a{TAB}b
+bad http://host/a{CR}{LF}X:{SP}y
+bad http://host/a{LF}
+bad http://host/a{NUL}
+bad http://host/a{DEL}
+bad http://host/a"b
+bad http://host/a\b
+bad http://host/café
+# The port.
+bad http://host:0/patch_14
+bad http://host:65536/x
+bad http://host:99999/patch_14
+bad http://host:000080/x
+bad http://host:/x
+bad http://host:80a/x
+bad http://host:-1/x
+# The host: a name or a bare IPv4 address.
+bad http:///patch_14
+bad http://:80/x
+bad http://[::1]/patch_14
+bad http://[2001:db8::1]/patch_14
+bad http://a:b:80/x
+bad http://-host/x
+bad http://host-/x
+bad http://.host/x
+bad http://host./x
+bad http://ho_st/x
+bad http://ho%73t/x
+bad http://{a*254}/p
+# Longer than 1024 bytes.
+bad http://h/{a*1016}

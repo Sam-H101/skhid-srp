@@ -32,6 +32,7 @@ pub mod bots;
 pub mod clans;
 pub mod extras;
 pub mod items_rules;
+pub mod known;
 pub mod matches_now;
 pub mod matchmaking;
 pub mod names;
@@ -129,10 +130,26 @@ impl GameAccounts {
     /// A store that keeps its accounts in `repository`, with what the
     /// repository holds loaded and made consistent ([`Account::repair`]; an
     /// account that needed it is written again).
+    ///
+    /// First every account and kept results screen is checked against the
+    /// game's data ([`known::Lacking`]): an item, a modification or a quest
+    /// the data lacks is an error ([`PersistError::GameData`], naming each)
+    /// and nothing is changed, so that data made without a patch never
+    /// costs a player an item.
     pub fn with_repository(mut repository: Box<dyn GameRepository>) -> Result<Self, PersistError> {
         let loaded = repository.load_all()?;
         let clans = repository.load_clans()?;
         let results = repository.load_results()?;
+        let mut lacking = known::Lacking::default();
+        for (account_id, account) in &loaded {
+            lacking.account(*account_id, account);
+        }
+        for report in rewards::kept_reports(&results) {
+            lacking.report(&report);
+        }
+        if !lacking.is_empty() {
+            return Err(PersistError::GameData(lacking.to_string()));
+        }
         log::info!("Loaded {} clans", clans.len());
         log::info!(
             "Loaded {} 0.26g accounts from {}",
@@ -144,7 +161,15 @@ impl GameAccounts {
         let mut dirty = HashSet::new();
         for (account_id, mut account) in loaded {
             let kept = account.clone();
-            if account.repair() {
+            // Kits saved before the covered-slots rule: said once, apart.
+            let uncovered = account.uncover_kits();
+            if uncovered > 0 {
+                log::warn!(
+                    "0.26g account {account_id}: {uncovered} items were worn in slots another \
+                     worn item covers; taken off to the inventory"
+                );
+            }
+            if account.repair() || uncovered > 0 {
                 log::warn!("0.26g account {account_id} was not consistent; repaired");
                 dirty.insert(account_id);
             }
@@ -580,6 +605,140 @@ mod tests {
         assert!(store.is_dirty(5));
         assert_eq!(store.flush(), 1);
         assert_eq!(repository.get(5).unwrap().active_kit, 1);
+    }
+
+    /// An item of `cfg_name`'s config, owned by `account`, worn in `slot`
+    /// of its first kit as a kit saved before the covered-slots rule.
+    fn worn(account: &mut Account, cfg_name: &str, slot: usize) -> u32 {
+        let dictionary = survarium::v026g::dictionary::Dictionary::shared();
+        let item = dictionary
+            .items
+            .iter()
+            .find(|item| item.cfg_name == cfg_name)
+            .unwrap_or_else(|| panic!("{cfg_name}"));
+        assert!(
+            dictionary.fits(item.dict_id, slot as u8),
+            "{cfg_name} in {slot}"
+        );
+        let item_id = account.add_item(item.dict_id, 100);
+        account.kits[0].slots[slot] = Some(KitSlot { item_id, count: 1 });
+        item_id
+    }
+
+    #[test]
+    fn kits_saved_against_the_covered_slots_rule_are_mended_at_load() {
+        let mut repository = MemoryGameRepository::default();
+        // The Pilgrim helmet, which has its mask built in, over a mask, and
+        // a torso beside them.
+        let mut pilgrim = Account::new("Alice");
+        let helmet = worn(
+            &mut pilgrim,
+            "gameplay/items/armour/helmet/edge_helmet_6.options",
+            0,
+        );
+        let mask = worn(
+            &mut pilgrim,
+            "gameplay/items/armour/mask/bandit_026.options",
+            1,
+        );
+        let torso = worn(
+            &mut pilgrim,
+            "gameplay/items/armour/torso/scavenger_torso_1.options",
+            2,
+        );
+        let pistol = pilgrim.kits[0].slots[7];
+        repository.save(5, &pilgrim).unwrap();
+        // The Zubr UM-4 helmet, which has its mask built in, over a mask.
+        let mut zubr = Account::new("Bob");
+        let zubr_helmet = worn(
+            &mut zubr,
+            "gameplay/items/armour/helmet/renesanse_helmet_6.options",
+            0,
+        );
+        let zubr_mask = worn(
+            &mut zubr,
+            "gameplay/items/armour/mask/bandit_026.options",
+            1,
+        );
+        repository.save(6, &zubr).unwrap();
+
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        {
+            let account = store.get(5).unwrap();
+            let account = account.locked();
+            let slots = account.kits[0].slots;
+            assert_eq!(slots[0].map(|held| held.item_id), Some(helmet));
+            assert!(slots[1].is_none());
+            assert_eq!(slots[2].map(|held| held.item_id), Some(torso));
+            assert_eq!(slots[7], pistol);
+            assert!(account.item(mask).is_some(), "taken off, still owned");
+            assert!(account.kits[0].revision > pilgrim.kits[0].revision);
+        }
+        {
+            let account = store.get(6).unwrap();
+            let account = account.locked();
+            let slots = account.kits[0].slots;
+            assert_eq!(slots[0].map(|held| held.item_id), Some(zubr_helmet));
+            assert!(slots[1].is_none());
+            assert!(account.item(zubr_mask).is_some());
+        }
+        assert!(store.is_dirty(5) && store.is_dirty(6));
+        assert_eq!(store.flush(), 2);
+        assert!(repository.get(5).unwrap().kits[0].slots[1].is_none());
+        // Mended once: loaded again, there is nothing to do.
+        let store = GameAccounts::with_repository(Box::new(repository.clone())).unwrap();
+        assert!(!store.is_dirty(5) && !store.is_dirty(6));
+    }
+
+    /// Data made without a patch: the accounts' items, modifications and
+    /// quests it lacks stop the load, each named with its accounts, and
+    /// nothing of any account is changed or written (the old `repair`
+    /// threw such items away and saved that).
+    #[test]
+    fn accounts_naming_what_the_game_data_lacks_stop_the_load_unchanged() {
+        let mut repository = MemoryGameRepository::default();
+        let mut alice = Account::new("Alice");
+        let lost = alice.add_item(9999, 100);
+        alice.inventory[0].modifications.push((987_654, false));
+        alice.extras.bonus.reward_dict = 9998;
+        repository.save(5, &alice).unwrap();
+        let mut bob = Account::new("Bob");
+        bob.add_item(9999, 100);
+        bob.quest_cooldowns.push((987_655, 1_900_000_000));
+        repository.save(6, &bob).unwrap();
+        // One whose items are all known is no part of the message.
+        repository.save(7, &Account::new("Carol")).unwrap();
+        let saves = repository.saves();
+
+        let error = GameAccounts::with_repository(Box::new(repository.clone()))
+            .err()
+            .expect("refused");
+        assert!(matches!(error, PersistError::GameData(_)), "{error}");
+        let error = error.to_string();
+        for named in [
+            "item dict ids 9998 (account 5), 9999 (account 5, account 6)",
+            "modification ids 987654 (account 5)",
+            "quest ids 987655 (account 6)",
+            "srp-game-data build",
+        ] {
+            assert!(error.contains(named), "{named}: {error}");
+        }
+        assert!(!error.contains("account 7"), "{error}");
+        assert_eq!(repository.saves(), saves);
+        assert_eq!(repository.get(5).unwrap(), alice);
+        assert!(repository.get(5).unwrap().item(lost).is_some());
+
+        // The data has them again (here: they are taken out): it loads.
+        let mut alice = alice;
+        alice.inventory.retain(|item| item.item_id != lost);
+        alice.inventory[0].modifications.pop();
+        alice.extras.bonus.reward_dict = 0;
+        repository.save(5, &alice).unwrap();
+        let mut bob = bob;
+        bob.inventory.retain(|item| item.dict_id != 9999);
+        bob.quest_cooldowns.clear();
+        repository.save(6, &bob).unwrap();
+        assert!(GameAccounts::with_repository(Box::new(repository)).is_ok());
     }
 
     #[test]

@@ -1,8 +1,9 @@
 # Never published
 /private/
 
-# Local agent folders
-.claude/
+# Local agent folders; the project's skills are published
+.claude/*
+!.claude/skills/
 
 # Build output, wherever a build was started
 target/

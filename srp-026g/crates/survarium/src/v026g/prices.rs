@@ -634,6 +634,28 @@ mod tests {
     }
 
     #[test]
+    fn the_bandit_balaclava_goes_by_the_rule() {
+        // No exception (owner, 2026-10-16): Black Market at its item level,
+        // within the faction's ranks 0 to 5. The test patch 15 makes it item
+        // level 8, which the rule puts at Black Market's last rank.
+        let dictionary = Dictionary::shared();
+        assert_eq!(top_level(dictionary, faction::BLACK_MARKET), 5);
+        assert_eq!(seller_level(dictionary, faction::BLACK_MARKET, 8), 5);
+        let item = dictionary.item_named("bandit_026_mask").unwrap();
+        let params = item_params(item.dict_id).unwrap();
+        assert_eq!(params.faction, faction::BLACK_MARKET);
+        assert_eq!(params.item_level, 8);
+        assert_eq!(sold_by("bandit_026_mask"), [(faction::BLACK_MARKET, 5)]);
+        assert_eq!(
+            sold_by("bandit_026_mask"),
+            [(
+                faction::BLACK_MARKET,
+                seller_level(dictionary, faction::BLACK_MARKET, params.item_level)
+            )]
+        );
+    }
+
+    #[test]
     fn gear_exceptions_move_the_seller_or_the_rank() {
         // Edge sells the 9A-91 and VSK-94, whose configs say Renaissance.
         assert_eq!(sold_by("a9_91"), [(4, 8)]);
@@ -650,6 +672,12 @@ mod tests {
         }
         assert_eq!(sold_by("fort_17"), [(3, 2)]);
         assert_eq!(sold_by("aps"), [(4, 2)]);
+        // No exception for the Duty exoskeleton either: the rule puts an
+        // item of Renaissance's at its level 15 at rank 10.
+        assert_eq!(
+            seller_level(Dictionary::shared(), faction::RENAISSANCE, 15),
+            10
+        );
         assert_eq!(sold_by("bm_back_1"), [(2, 4)]);
         // Their neighbours go by the rule.
         assert_eq!(sold_by("scav_torso_1"), [(1, 1)]);

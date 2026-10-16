@@ -1,4 +1,4 @@
-//! The embedded files against the dump of 0.26g's `resources.db`
+//! The players' files against the dump of 0.26g's `resources.db`
 //! (`tools/re-kit/v026g/data/items/gameplay_items_modifications_*.txt`,
 //! `..._craft_craft.options.txt`, `..._reroll_reroll.options.txt` and the
 //! item configs beside them).
@@ -165,7 +165,7 @@ fn the_client_is_asked_only_for_rows_it_has() {
     assert!(!data.is_known(0, false));
     assert!(!data.is_known(0x0A0B_0C0D, true));
     // Every default modification of every item is a row.
-    for item in crate::v026g::item_params::ITEM_PARAMS {
+    for item in crate::v026g::item_params::all() {
         for &id in item.default_modifications {
             assert!(data.is_known(id, false), "{} has {id}", item.dict_id);
         }
@@ -193,15 +193,15 @@ fn the_item_masks_are_the_configs() {
     assert_eq!(item_mods(dict("ammo_7.62x25")), None);
     assert_eq!(item_mods(dict("camo_city")), None);
     // 47 items take cosmetics: the vests and the trousers.
-    assert_eq!(ITEM_MODS.iter().filter(|item| item.camo).count(), 47);
-    assert!(ITEM_MODS.iter().all(|item| item.camo == item.decal));
+    assert_eq!(all_item_mods().iter().filter(|item| item.camo).count(), 47);
+    assert!(all_item_mods().iter().all(|item| item.camo == item.decal));
     assert!(
-        ITEM_MODS
+        all_item_mods()
             .windows(2)
             .all(|pair| pair[0].dict_id < pair[1].dict_id)
     );
     // No item names a type that has no modification or defect.
-    for item in ITEM_MODS {
+    for item in all_item_mods() {
         assert_eq!(item.modifications >> 41, 0);
         assert_eq!(item.defects >> 21, 0);
         assert_eq!(item.modifications & 1, 0);

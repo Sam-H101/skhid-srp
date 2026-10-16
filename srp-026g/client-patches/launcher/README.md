@@ -566,16 +566,10 @@ installation and service.
    it they are the steps as before. Nothing is
    set by hand and no restart is needed.
 3. From then on a release is: build the ZIP, replace the file.
-4. A ZIP with resource regions (`make_client_026g.py
-   --resource-region=<name>=<entry file> --resources-out=<folder>`) needs,
-   in this order: a server build with `/resources/`; the blobs the tool
-   wrote into `<folder>` (each target and each original, named by its
-   sha256) copied into `download/resources/` beside the ZIP, and fetched
-   back through the site to see that they answer; only then the ZIP. An
-   updater from before the step installs the ZIP (it brings the new
-   updater), replaces itself, the launcher starts again and the new
-   updater does the step. A ZIP offered before its blobs costs nothing but
-   the log lines: the step is tried again at each start. Keep the
-   originals' blobs on the server while any player may still have a
-   region changed: a later ZIP without the region puts the original back
-   from the player's own copy, or from the server when that copy is gone.
+4. Game content is not in the ZIP: it ships as `resources.db.patch_<n>`
+   files on a patches server, listed by the game server at `/patches`
+   (`../../../client/updater/README.md`, "Patches"). Keep
+   `download/resources/` with the originals' blobs of the regions earlier
+   releases changed in place: the updater puts the stock bytes back from
+   the player's own copy, or from `/resources/<sha256>` when that copy is
+   gone.

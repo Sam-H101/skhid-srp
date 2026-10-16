@@ -1,6 +1,8 @@
 # Settings for the 0.26g server's docker-compose.yml. Copy to `.env` beside
 # the compose file and fill in. Secrets live only in that `.env`, never in a
-# repository.
+# repository. A change takes effect when the container is made anew:
+# `docker compose up -d --no-deps --force-recreate srp26`. `docker compose
+# restart` keeps the settings the container was made with.
 
 # The address players reach the host at (IPv4, or a name with an A record).
 SRP_PUBLIC_HOST=203.0.113.9
@@ -39,6 +41,14 @@ SRP_WEB_TRUST_PROXY=off
 
 # The download the home page offers: a zip in ./download, or a https link.
 # SRP_DOWNLOAD_FILE=/srv/srp/download/Survarium-0.26g-srp-files.zip
+# The server's game data (server-game-data.db: srp-game-data build of
+# resources.db and the patches the players mount, with the URLs the players
+# download them from). srp takes its game tables from it, lists its patches
+# at /patches, and does not start without it. The compose file's default:
+# ./download/server-game-data.db on the host. A release replaces it, sets
+# SRP_MIN_PATCH_REVISION (below) and recreates srp26: `docker compose up -d
+# --no-deps --force-recreate srp26` (docs/DEPLOY.md, "The game's files").
+# SRP_GAME_DATA=/srv/srp/download/server-game-data.db
 # Where the original game is had (the compose file's default is the web
 # archive's copy of build 2777).
 # SRP_GAME_URL=
@@ -53,7 +63,8 @@ RUST_LOG=info
 
 # FOR TESTING ONLY, never on a public server: the accounts that are test
 # bots (srp-bot). A match of one real client and bots trusts that client's
-# world on its word alone. Leave it out.
+# world on its word alone. Leave it out. (The compose file does not pass it:
+# it is for srp run by hand.)
 # SRP_BOT_ACCOUNTS=bot-1,bot-2
 
 # Optional game settings (srp's defaults when left out; see SRP-026G.md):
@@ -99,7 +110,10 @@ RUST_LOG=info
 # is refused at its sign-in with the game's own "outdated version", and its
 # sessions from before a restart in the lobby. Left out (or 0): every game
 # is let in; a value that is not a number from 0 to 255 stops srp at start.
-# SRP_MIN_PATCH_REVISION=12
+# It must be at least the newest patch of the game data (resources.db.patch_<n>
+# is n): srp does not start with less, as an older game would crash on that
+# patch's items. Its log then says what to set.
+# SRP_MIN_PATCH_REVISION=14
 # A silent client: its lobby link goes after the first (the second for a
 # player in a match), and its session waits the third for the client to
 # connect again by itself.

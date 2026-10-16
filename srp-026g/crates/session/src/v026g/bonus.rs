@@ -56,10 +56,10 @@ pub const DAYS: u8 = 7;
 /// The victories of a day that are paid double.
 pub const WINS_A_DAY: u8 = 3;
 /// Silver and gold as dropped items.
-const GENERIC_MONEY: u16 = 214;
-const PREMIUM_MONEY: u16 = 215;
+pub(crate) const GENERIC_MONEY: u16 = 214;
+pub(crate) const PREMIUM_MONEY: u16 = 215;
 /// What the table gives, should a roll ever give nothing: its 50 gold.
-const FALLBACK: (u16, u32) = (PREMIUM_MONEY, 50);
+pub(crate) const FALLBACK: (u16, u32) = (PREMIUM_MONEY, 50);
 
 /// The operator's settings of the daily bonus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

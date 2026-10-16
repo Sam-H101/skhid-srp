@@ -6,8 +6,8 @@
 //! names a file under `gameplay/game_modes/`. That file holds the mode, its
 //! rules and every timing, and the project the client loads. The server
 //! sends only the id, so its own clock and scores must use the same values:
-//! the table here is generated from those files by
-//! `scripts/gen-data-026g/gen_data.py`.
+//! the table here is derived from the players' files when first used
+//! ([`all`], [`super::game_data`]).
 //!
 //! Of the 89 ids, 72 can be played ([`playable`]): modes 2, 3 and 4 on
 //! eight maps in three weathers. The rest must never be sent:
@@ -17,9 +17,13 @@
 //!   project that `resources.db` does not have;
 //! - 141 (`loopback_client`) and 142 (`gather_server_resources`) are mode 0.
 
-mod table;
+use binary_config_parser::tree::{ConfigError, ConfigValue};
 
-pub use table::MAP_MODES;
+use super::dictionary::Dictionary;
+use super::game_data::{GameData, GameDataError};
+
+/// Where `maps_dict`'s `cfg_mode_name` is.
+pub const GAME_MODES_DIR: &str = "gameplay/game_modes/";
 
 /// `mode.mode` of the configs.
 pub mod mode {
@@ -96,17 +100,148 @@ impl MapMode {
     }
 }
 
+/// A number of a game mode config; a missing one is 0.
+fn int<T: TryFrom<i32>>(table: Option<&ConfigValue>, key: &str) -> Result<T, ConfigError> {
+    let number = match table.and_then(|table| table.get(key)) {
+        None => 0,
+        Some(value) => value
+            .as_i32()
+            .ok_or_else(|| ConfigError(format!("`{key}` is not a number")))?,
+    };
+    T::try_from(number).map_err(|_| ConfigError(format!("`{key}` = {number} is out of range")))
+}
+
+fn leak_str(text: &str) -> &'static str {
+    Box::leak(text.to_owned().into_boxed_str())
+}
+
+impl MapMode {
+    /// The row of a `maps_dict` id's config (`gameplay/game_modes/`
+    /// `cfg_mode_name`); whether the archive has its project is the
+    /// caller's to know. The strings are leaked: the rows live as long as
+    /// the process.
+    pub fn from_config(
+        id: u8,
+        cfg_mode_name: &str,
+        config: &ConfigValue,
+        has_project: bool,
+    ) -> Result<Self, ConfigError> {
+        let mode = config.req("mode")?;
+        let p = mode.get("parameters");
+        let making = mode.get("match_making_params");
+        let ui = mode.get("ui");
+        let text = |table: Option<&ConfigValue>, key: &str| -> Result<&'static str, ConfigError> {
+            match table.and_then(|table| table.get(key)) {
+                None => Ok(""),
+                Some(value) => value
+                    .as_str()
+                    .map(leak_str)
+                    .ok_or_else(|| ConfigError(format!("`{key}` is not a string"))),
+            }
+        };
+        let rules: Vec<u8> = match mode.get("rules") {
+            None => Vec::new(),
+            Some(list) => list
+                .children()
+                .into_iter()
+                .map(|rule| {
+                    rule.as_i32()
+                        .and_then(|rule| u8::try_from(rule).ok())
+                        .ok_or_else(|| ConfigError("a `rules` entry is not a class id".into()))
+                })
+                .collect::<Result<_, _>>()?,
+        };
+        let wait_player_percent = match p.and_then(|p| p.get("wait_player_percent")) {
+            None => 0.0,
+            Some(value) => value
+                .as_f32()
+                .ok_or_else(|| ConfigError("`wait_player_percent` is not a number".into()))?,
+        };
+        Ok(Self {
+            id,
+            config: leak_str(cfg_mode_name),
+            name: text(Some(mode), "name")?,
+            mode: int(Some(mode), "mode")?,
+            level: int(making, "map_id")?,
+            weather: int(making, "map_weather_id")?,
+            project: text(making, "map_name")?,
+            has_project,
+            loading_screen_id: int(ui, "loading_screen_id")?,
+            icon: int(ui, "icon")?,
+            rules: if rules.is_empty() {
+                &[]
+            } else {
+                Box::leak(rules.into_boxed_slice())
+            },
+            match_time: int(p, "match_time")?,
+            wait_time: int(p, "wait_time")?,
+            countdown_time: int(p, "countdown_time")?,
+            wait_player_percent,
+            respawn_time: int(p, "respawn_time")?,
+            victory_items_count: int(p, "victory_items_count")?,
+            vi_spawn_time: int(p, "vi_spawn_time")?,
+            vi_spawn_variation: int(p, "vi_spawn_variation")?,
+            spawn_points_count: int(p, "spawn_points_count")?,
+            tickets_count: int(p, "tickets_count")?,
+        })
+    }
+}
+
+/// Every `maps_dict` id whose config the players have, by id ([`derive`]).
+pub fn all() -> &'static [MapMode] {
+    static SHARED: std::sync::OnceLock<Vec<MapMode>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| {
+        derive(super::game_data::shared(), Dictionary::shared()).expect("the game modes read")
+    })
+}
+
+/// A row for each `maps_dict` id of `dictionary` whose config `data` has,
+/// by id. An id whose config the game lacks is left out, and so never sent
+/// (114 and 143..=151 of 0.26g); `has_project` is whether `data` has the
+/// config's project.
+pub fn derive(data: &GameData, dictionary: &Dictionary) -> Result<Vec<MapMode>, GameDataError> {
+    let mut rows = Vec::new();
+    for entry in &dictionary.maps {
+        let path = format!("{GAME_MODES_DIR}{}", entry.cfg_mode_name);
+        let Some(config) = super::game_data::config(data, &path)? else {
+            continue;
+        };
+        let project = config
+            .get("mode")
+            .and_then(|mode| mode.get("match_making_params"))
+            .and_then(|making| making.get("map_name"))
+            .and_then(ConfigValue::as_str)
+            .unwrap_or("");
+        let row = MapMode::from_config(
+            entry.id,
+            &entry.cfg_mode_name,
+            &config,
+            data.has_project(project),
+        )
+        .map_err(|cause| GameDataError(format!("{path}: {}", cause.0)))?;
+        rows.push(row);
+    }
+    rows.sort_by_key(|row| row.id);
+    if let Some(pair) = rows.windows(2).find(|w| w[0].id == w[1].id) {
+        return Err(GameDataError(format!(
+            "map id {} is in maps_dict twice",
+            pair[0].id
+        )));
+    }
+    Ok(rows)
+}
+
 /// The config of a `maps_dict` id, if the client has one.
 pub fn map_mode(id: u8) -> Option<&'static MapMode> {
-    MAP_MODES
-        .binary_search_by_key(&id, |map| map.id)
+    let all = all();
+    all.binary_search_by_key(&id, |map| map.id)
         .ok()
-        .map(|index| &MAP_MODES[index])
+        .map(|index| &all[index])
 }
 
 /// Every id a match may use, by id.
 pub fn playable() -> impl Iterator<Item = &'static MapMode> {
-    MAP_MODES.iter().filter(|map| map.is_playable())
+    all().iter().filter(|map| map.is_playable())
 }
 
 /// The ids a match of `mode` may use.
@@ -154,9 +289,9 @@ mod tests {
     #[test]
     fn the_table_is_the_dictionarys_maps_dict() {
         let dictionary = Dictionary::shared();
-        assert!(MAP_MODES.windows(2).all(|w| w[0].id < w[1].id));
+        assert!(all().windows(2).all(|w| w[0].id < w[1].id));
         // Every row is a maps_dict id with that config name.
-        for map in MAP_MODES {
+        for map in all() {
             let entry = dictionary.maps.iter().find(|entry| entry.id == map.id);
             assert_eq!(entry.unwrap().cfg_mode_name, map.config, "{}", map.id);
         }

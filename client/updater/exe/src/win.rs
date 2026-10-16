@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FindClose,
     FindFirstFileW, FindNextFileW, FlushFileBuffers, GetDiskFreeSpaceExW, GetFileAttributesW,
     GetFileSizeEx, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING, MoveFileExW, OPEN_ALWAYS,
-    OPEN_EXISTING, ReadFile, SetEndOfFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
+    OPEN_EXISTING, ReadFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
@@ -184,6 +184,15 @@ pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, Code> {
 
 /// A file's size and SHA-256, read in pieces.
 pub fn hash_file(path: &str) -> Result<(u64, [u8; 32]), Code> {
+    hash_file_with(path, &mut |_| true)
+}
+
+/// The same, `progress(bytes read)` after each piece: `false` from it stops
+/// the hash with `ERROR_CANCELLED`.
+pub fn hash_file_with(
+    path: &str,
+    progress: &mut dyn FnMut(u64) -> bool,
+) -> Result<(u64, [u8; 32]), Code> {
     let file = open_read(path)?;
     let mut hash = Sha256::new();
     let mut buffer = alloc::vec![0_u8; 64 * 1024];
@@ -194,6 +203,9 @@ pub fn hash_file(path: &str) -> Result<(u64, [u8; 32]), Code> {
             read => {
                 hash.update(&buffer[..read]);
                 size += read as u64;
+                if !progress(size) {
+                    return Err(windows_sys::Win32::Foundation::ERROR_CANCELLED);
+                }
             }
         }
     }
@@ -443,7 +455,8 @@ impl DownloadFile {
     }
 }
 
-/// An open file of the resource step, read and written at 64-bit offsets.
+/// An open file of the restore of resources.db and of the patch step, read
+/// and written at 64-bit offsets.
 pub struct File(Handle);
 
 impl File {
@@ -453,6 +466,12 @@ impl File {
     /// open it.
     pub fn exclusive(path: &str) -> Result<Self, Code> {
         open(path, GENERIC_READ | GENERIC_WRITE, 0, OPEN_EXISTING).map(Self)
+    }
+
+    /// For reading by this program alone: as [`File::exclusive`], without
+    /// asking to write (a read-only file opens too).
+    pub fn alone(path: &str) -> Result<Self, Code> {
+        open(path, GENERIC_READ, 0, OPEN_EXISTING).map(Self)
     }
 
     /// For reading, whoever else has it open (the game too).
@@ -500,15 +519,6 @@ impl File {
     /// Has Windows put what was written on the disk.
     pub fn flush(&self) -> Result<(), Code> {
         if unsafe { FlushFileBuffers(self.0.0) } == 0 {
-            return Err(last_error());
-        }
-        Ok(())
-    }
-
-    /// Makes the file `size` bytes long: what is past it goes.
-    pub fn set_len(&self, size: u64) -> Result<(), Code> {
-        self.seek(size)?;
-        if unsafe { SetEndOfFile(self.0.0) } == 0 {
             return Err(last_error());
         }
         Ok(())

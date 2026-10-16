@@ -48,6 +48,35 @@ const RESTART_DELAY: Duration = Duration::from_secs(1);
 /// moved over field for field.
 pub struct RegistryHost(pub Arc<MatchRegistry>);
 
+/// The patches of `resources.db` the web page offers the players' updater
+/// (`GET /patches`): those the server's game data of this process was made
+/// of (`survarium::v026g::game_data`), in the game's order.
+pub fn offered_patches() -> Vec<web_server::OfferedPatch> {
+    survarium::v026g::game_data::shared()
+        .provenance
+        .offered()
+        .map(|(name, sha256, url)| web_server::OfferedPatch {
+            name,
+            sha256: sha256.to_owned(),
+            url: url.to_owned(),
+        })
+        .collect()
+}
+
+/// What srp checks of the server's game data `data` once it is read
+/// (`game_data::init`), before it loads an account: every item, id and
+/// award the lobby's code names is in it (`session::v026g::known::
+/// check_code`), and `min_patch_revision` (`SRP_MIN_PATCH_REVISION`) keeps
+/// out every game without its newest patch
+/// (`lobby_server::v026g::check_min_patch_revision`). An error stops srp.
+pub fn check_game_data(
+    min_patch_revision: u8,
+    data: &survarium::v026g::game_data::GameData,
+) -> Result<(), String> {
+    session::v026g::known::check_code().map_err(|error| error.to_string())?;
+    lobby::check_min_patch_revision(min_patch_revision, data)
+}
+
 /// How far a match is, as the page and the lobby's list of the matches
 /// have it: both go by `session::v026g::matches_now`.
 fn phase(phase: matches::LivePhase) -> session::v026g::matches_now::Phase {
@@ -571,6 +600,7 @@ impl Stack {
                 accounts: self.accounts.clone(),
                 inbox: self.inbox.clone(),
             }),
+            patches: offered_patches(),
         }
     }
 

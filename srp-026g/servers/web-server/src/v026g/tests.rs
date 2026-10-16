@@ -71,6 +71,7 @@ fn world() -> World {
             accounts: accounts.clone(),
             lobby: told.clone(),
             matches: told.clone(),
+            patches: Vec::new(),
         }),
     };
     World {
@@ -768,4 +769,95 @@ fn the_launchers_page_and_its_fresh_numbers_come_with_the_launchers_policy() {
         crate::POLICY
     )));
     assert!(!home.0.contains("script-src"));
+}
+
+fn offered(n: u32, sha: char, url: &str) -> crate::OfferedPatch {
+    crate::OfferedPatch {
+        name: format!("patch_{n}"),
+        sha256: sha.to_string().repeat(64),
+        url: url.into(),
+    }
+}
+
+/// `GET /patches` over a socket, as the players' updater asks it: the
+/// head and the body.
+fn patches_over_http(web: Web, request: &'static [u8]) -> (String, String) {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        web.serve(stream);
+    });
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client.write_all(request).unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    server.join().unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    (head.to_owned(), body.to_owned())
+}
+
+#[test]
+fn the_patches_are_listed_for_the_updater_as_json() {
+    // None: an empty list, which the updater takes (a 404 would keep PLAY
+    // off for everyone).
+    let empty = world();
+    assert_eq!(empty.web.route(&get("/patches"), "t").body, "{}");
+    let (head, body) = patches_over_http(empty.web, b"GET /patches HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(head.starts_with("HTTP/1.0 200 OK\r\n"), "{head}");
+    assert!(
+        head.contains("\r\nContent-Type: application/json\r\n"),
+        "{head}"
+    );
+    assert!(head.contains("\r\nCache-Control: no-store\r\n"), "{head}");
+    assert_eq!(body, "{}");
+
+    // Those of the game data, in its order, each with its sha256 and URL.
+    // Public: no token, no admin page, any language.
+    let mut world = world();
+    world.web.token = None;
+    world.web.admin_path = None;
+    world.web.game.as_mut().unwrap().patches = vec![
+        offered(14, 'a', "http://203.0.113.5/patches/resources.db.patch_14"),
+        offered(16, '0', "https://files.example/db/resources.db.patch_16"),
+    ];
+    let expected = format!(
+        "{{\"patch_14\":{{\"sha256\":\"{}\",\"url\":\"http://203.0.113.5/patches/resources.db.patch_14\"}},\
+         \"patch_16\":{{\"sha256\":\"{}\",\"url\":\"https://files.example/db/resources.db.patch_16\"}}}}",
+        "a".repeat(64),
+        "0".repeat(64)
+    );
+    assert_eq!(world.web.route(&get("/patches"), "t").body, expected);
+    assert_eq!(
+        world.web.route(&post("/patches", &[]), "t").status,
+        "404 Not Found"
+    );
+    let (head, body) = patches_over_http(world.web, b"GET /patches?lang=uk HTTP/1.0\r\n\r\n");
+    assert!(
+        head.contains("\r\nContent-Type: application/json\r\n"),
+        "{head}"
+    );
+    assert!(head.contains(&format!("\r\nContent-Length: {}\r\n", body.len())));
+    assert_eq!(body, expected);
+}
+
+#[test]
+fn a_patch_list_string_is_always_escaped() {
+    // srp-game-data writes nothing that needs it; were it ever there, the
+    // list would still be JSON.
+    let odd = crate::OfferedPatch {
+        name: "patch_1".into(),
+        sha256: "a\"b\\c\n".into(),
+        url: "http://x/y".into(),
+    };
+    assert_eq!(
+        crate::patches::json(&[odd]),
+        r#"{"patch_1":{"sha256":"a\"b\\c\u000a","url":"http://x/y"}}"#
+    );
 }

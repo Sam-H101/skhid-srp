@@ -49,7 +49,7 @@ servers one port.
 | Crate / module | Does |
 |---|---|
 | `crates/udp-transport` | The 0.26g reliable UDP transport, shared by the lobby and the match server: the per-message delivery table, split messages, ordered and unique channels, the packet log (`SRP_PACKET_LOG`) |
-| `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs (`resources/binary-config-examples/*_026g*`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
+| `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs, read at start from the server's game data of the release the players run (`SRP_GAME_DATA`; `game_data`, `tables`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
 | `crates/session` | Shared with 0.21d: accounts by user name, argon2id passwords, sessions, the queue (`matchmaking.rs`), squads, bans, limits, `srp.db` |
 | `crates/session/src/v026g/` | The 0.26g account (`account`: money, gold, premium time, experience and level, skills, reputations, three kits, inventory, quests), the lobby's actions (`rules`), `quests`, the account as messages (`wire`), match rewards (`rewards`), and its tables in the same `srp.db` (`persist`: `g26_*`, versioned on their own in `g26_meta`). `GameAccounts` is the store. `clans`, `extras`, `premium`, `bonus`, `items_rules`, `pay` (the match pay rule), `matchmaking` (a player's level, the map choice) |
 | `servers/login-server/src/v026g.rs` | The TLS sign-in. First sign-in of a name registers it. Bans, limits, closed registration, the game's own status codes |
@@ -58,7 +58,8 @@ servers one port.
 | `servers/srp/src/v026g.rs` | Joins them: `Stack` (the three servers and the session collector, each on a supervised thread), `RegistryHost` (lobby → match server), `Settler` (match result → rewards → database → lobby), `WebLink` (web page → lobby) |
 | `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
 | `scripts/client-patch-026g/` | `patch_026g.py` (the client patch), `selftest_026g.py`, `make_client_026g.py` (the players' overlay) |
-| `scripts/gen-data-026g/` | How the embedded data was taken from the 0.26g `resources.db` |
+| `crates/resources-db` | Reads `resources.db` and its patches (`resources.db.patch_<n>`), lays them over one another as the game mounts them, and `srp-game-data` builds the server's game data from them: the `gameplay/` files and the project markers, with what it was made of (`resources.db`, each patch with its URL). `srp` reads it at start (`SRP_GAME_DATA`). `crates/resources-db/README.md` |
+| `resources/game-026g/` | The server's game data of tests and tools: 0.26g's `resources.db` with the test patches 14 to 16 |
 
 ## How a player gets into a match
 
@@ -114,6 +115,53 @@ on 2026-10-12 (grep `SRP_` in `crates` and `servers`).
 
 A port that is not a number stops srp at start.
 
+### Game data
+
+srp takes every table of game data from the archives the players' game
+mounts, once, before anything else (`crates/survarium/src/v026g/game_data.rs`):
+the stock `resources.db` and every `resources.db.patch_<n>` over it, n
+ascending, a later file over an earlier one (client patch revision 12). It
+reads them from the server's game data (`server-game-data.db`), which
+`srp-game-data build` makes of exactly those archives (`crates/resources-db`,
+`server`): the files srp reads (every `gameplay/` file and the project
+markers), each checked against its archive's file table, and
+`srp/provenance`, what it was made of: `resources.db`, and each patch with
+its sha256 and the URL the players download it from. From its `gameplay/`
+files srp derives the dictionary, every item's parameters and the slots it
+covers, what it may be modified with, the game modes, the player's carry
+limits, and the modification, craft, reroll, drop, quest, skill, award and
+test-profile files (`tables.rs` checks them against each other). So it
+cannot know an item, or a value of one, the players' game does not. What the
+game's files do not say stays in code: the shop's exceptions (`prices.rs`),
+a project's respawn points, the bundles.
+
+| Variable | Default | What |
+|---|---|---|
+| `SRP_GAME_DATA` | unset (the compose file: `/srv/srp/download/server-game-data.db`) | The server's game data. **Required**: without it, or with a file that is missing, damaged or not made by `srp-game-data build`, srp does not start and says why; nor when it lacks an item, modification or quest an account of `srp.db` (or a kept results screen) names, or an item the code names (`session::v026g::known`, `survarium::v026g::tables::named_items`): srp never throws an item away for that, the data was made without a patch |
+
+The web page lists the data's patches for the players' updater at `GET
+/patches` (`servers/web-server/src/patches.rs`), in the game's order:
+
+```json
+{"patch_14":{"sha256":"<64 hex>","url":"http://203.0.113.5/patches/resources.db.patch_14"}, ...}
+```
+
+`{}` when the data was made of `resources.db` alone. The updater keeps
+exactly those files in the game folder (`client/updater/README.md`,
+"Patches"), so the players run the archives the server runs on. The page does
+not serve the patch files: they are at their URLs. The data is read once: a
+release replaces `server-game-data.db` and restarts srp (`DEPLOY.md`, "The
+game's files"). Tests and tools read `resources/game-026g/server-game-data.db`
+(0.26g's archive with the test patches 14 to 16; its README says how it is
+made).
+
+An item whose `data.additional_model_slots` names other armour slots is
+worn alone in them (`crates/session/src/v026g/rules.rs`): putting it on
+takes their items off, putting anything into one of them takes it off. The
+Duty exoskeleton, worn in the back slot, covers the six others; 0.26g's
+helmets with a built-in mask cover the mask's slot. A kit saved against
+that rule is mended when the accounts load, and never plays.
+
 ### Data and logs
 
 | Variable | Default | What |
@@ -163,7 +211,7 @@ A port that is not a number stops srp at start.
 | `SRP_GROWING_POPULATION_EXPONENT` | 1 | Which of several matches being played a player joins: the one with the highest (players with it)^this x minutes left |
 | `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
 | `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
-| `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start. (`SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT` and `SRP_OUTDATED_TEXT` are gone) |
+| `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start, and so does a number under the newest patch of the server's game data (`resources.db.patch_<n>` is released with revision n: an older game lacks its items), with a line that says what to set |
 | `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and when a match starts (`Match found: Alice, Bob vs Carol`) |
 | `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
 | `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
@@ -293,6 +341,10 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   resource step (`../../client/updater/README.md`, "Resources"). Any other
   name under `/resources/` is the page's "not found"; the 0.21d page has no
   such route.
+- `/patches` (`GET`, public): the patches of `resources.db` the players'
+  updater keeps in the game folder, as JSON (`{"patch_<n>":{"sha256":…,"url":…},…}`,
+  `{}` for none): those the server's game data was made of ("Game data"
+  above). The 0.21d page has no such route.
 - `/api/client-files` and `/launcher/…` (since 2026-10-13, for the patched game
   launcher and its updater: `../client-patches/launcher/README.md`). The first answers with the
   SHA-256 and size of the file `/download` hands out (`SRP_DOWNLOAD_FILE`), as
@@ -429,9 +481,17 @@ not prove the notes agree with the client. Format only the files you touched
 
 ```
 cd srp-026g        (the certificates are read from .\certs)
+cargo run --release -p resources-db --bin srp-game-data -- build --dir <the game folder>\game --patch-url http://127.0.0.1/patches --out game-data.db
+set SRP_GAME_DATA=game-data.db
+set SRP_MIN_PATCH_REVISION=<the newest patch's n; leave it out without patches>
 cargo run -p srp
 survarium_srp.exe -localization=ukrainian -splash_screen=0 -server=127.0.0.1:1234 -mt_allocator=768 -minimum_resources_memory_size=768
 ```
+
+`--dir` takes `resources.db` and every `resources.db.patch_<n>` of that
+folder, as the game mounts them; a stock game folder gives the data of
+`resources.db` alone (and `/patches` answers `{}`). `SRP_GAME_DATA` may also
+name the release's `server-game-data.db`.
 
 The two memory keys are different arenas (read in the exe 2026-10-12):
 `-mt_allocator=<MiB>` is the global multithreaded allocator (option object
@@ -514,13 +574,8 @@ has none), the launcher's ten local pages, and `Skhid.bat` and `Skhid.sh`
 beside `game`, the one file a player starts. Build the Rust programs first with
 `../client/bugtrap/build.sh` and `../client/updater/build.sh`; the overlay
 builder includes them by default.
-The default exe (patch revision 12) starts only with the Skhid-signed
-`resources.db`, so it is built with `--resource-grow=<grow.json>
---resources-out=<folder>` (resource-porter's `pack release`), which the
-updater installs before PLAY. `--pack-zip` creates the player
-archive directly instead of a folder, with exactly those files (24 with the
-plan; seven with `--no-launcher --no-late-join`) and no source, symbols or
-tests.
+`--pack-zip` creates the player archive directly instead of a folder, with exactly
+those files (23; seven with `--no-launcher`) and no source, symbols or tests.
 `--check` writes nothing. The same input gives the same archive byte for byte:
 the updater installs whenever the archive the site offers has another checksum.
 The sites hand out this overlay (`Survarium-0.26g-srp-files.zip`), never the

@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# usage: release/build-server-db [--test] [--out <file>]
+#
+# Builds the game server's server-game-data.db from the stock resources.db
+# ($SKHID_STOCK_DB) and the patches of the offered-patch list
+# release/patches.tsv, exactly those, in its order:
+#   1. reads the list (every row checked: name, sha256, size, the URL on
+#      $SKHID_PATCHES_URL);
+#   2. downloads each row's URL: it must answer 200 with the row's size and
+#      sha256 (what players' updaters will get);
+#   3. srp-game-data build --db $SKHID_STOCK_DB --patch <file>=<url> ...
+#      --out <file>, then srp-game-data info <file>, which must name the
+#      list's patches and no other;
+#   4. prints what the server's /patches will offer the players' updater.
+#
+#   --test         the test environment's: release/patches-test.tsv on
+#                  $SKHID_TEST_PATCHES_URL
+#   --out <file>   default ./server-game-data.db; never overwritten
+#
+# Run it for every release, content or not. Reads only; runs at nice 10.
+# Next: release/deploy.
+. "$(dirname "$0")/lib.sh"
+
+out=server-game-data.db which=live
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --test) which='test'; shift ;;
+    --out) (($# >= 2)) || usage 1; out=$2; shift 2 ;;
+    *) die "unknown argument $1 (--help)" ;;
+    esac
+done
+[[ ! -e $out ]] || die "$out: already there; never overwritten"
+need_cmds curl sha256sum
+lower_priority
+load_env SKHID_STOCK_DB
+use_patches "$which"
+[[ -f $SKHID_STOCK_DB ]] || die "SKHID_STOCK_DB: $SKHID_STOCK_DB: no such file"
+read_patch_list
+bin=$(game_data_bin)
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+args=()
+while read -r name sha size url; do
+    [[ -n $name ]] || continue
+    status=$(http_get "$url" "$work/$name")
+    [[ $status == 200 ]] || die "GET $url answered $status, not 200 (in $PATCH_LIST)"
+    got=$(sha256_of "$work/$name")
+    [[ $got == "$sha" ]] || die "GET $url gave sha256 $got; $PATCH_LIST says $sha"
+    got=$(size_of "$work/$name")
+    [[ $got == "$size" ]] || die "GET $url gave $got bytes; $PATCH_LIST says $size"
+    say "$name: 200, $size bytes, sha256 $sha, as the list says"
+    args+=(--patch "$work/$name=$url")
+done <<<"$LIST"
+((${#args[@]})) || say "no patch in $PATCH_LIST"
+
+"$bin" build --db "$SKHID_STOCK_DB" "${args[@]}" --out "$work/$DATA_NAME"
+say
+info=$("$bin" info "$work/$DATA_NAME")
+say "$info"
+offered=$(sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) url \(.*\)$/\1 \2 \3/p' <<<"$info")
+[[ $offered == "$(offered_of_list "")" ]] || die "the built data does not offer exactly the patches of $PATCH_LIST; $out not written"
+[[ ! -e $out ]] || die "$out: there now; never overwritten"
+mv "$work/$DATA_NAME" "$out"
+say
+say "/patches will offer:"
+if [[ -n $offered ]]; then
+    # shellcheck disable=SC2001 # three fields
+    sed 's/^\([^ ]*\) \([^ ]*\) \(.*\)$/  \1 sha256 \2 url \3/' <<<"$offered"
+else
+    say "  nothing ({}): the updater deletes every patch file of a game"
+fi
+say "$out: sha256 $(sha256_of "$out")"
+say "next: release/deploy --server-data $out ..."

@@ -237,56 +237,87 @@ pub fn install(error: &InstallError) -> String {
     }
 }
 
-/// The resource step of a plan that must be in place before the game is
-/// played (it grows the game's resources.db) could not finish. Each says
-/// what the player is to do; PLAY stays off.
-const RESOURCES_PLAY_OFF: &str = " PLAY stays off until this is done.";
+/// Said after each reason that PLAY stays off for.
+const PLAY_OFF: &str = " PLAY stays off until this is done.";
 
-pub fn resources_game_running() -> String {
-    format!(
-        "The game is running, so Skhid could not finish updating the game's files \
-         (game\\resources.db). Close the game, then start the launcher again.{RESOURCES_PLAY_OFF}"
-    )
-}
-
-pub fn resources_disk_full(folder: &str, needed: u64, free: u64) -> String {
+pub fn disk_full(folder: &str, needed: u64, free: u64) -> String {
     format!(
         "Not enough free disk space to update the game's files in {}: {} MB needed, {} MB free. \
-         Free some space, then start the launcher again.{RESOURCES_PLAY_OFF}",
+         Free some space, then start the launcher again.{PLAY_OFF}",
         folder,
         megabytes(needed),
         megabytes(free)
     )
 }
 
-pub fn resources_other_build(path: &str, size: u64, expected: u64) -> String {
+/// The patch step (game\resources.db.patch_<n>, the server's list) could
+/// not finish. PLAY stays off.
+pub fn patches_game_running() -> String {
     format!(
-        "{path} is not the game file this Skhid release is for ({size} bytes, expected {expected}). \
-         Delete {path} and start the launcher again: the original game is downloaded again \
-         (about 3 GB).{RESOURCES_PLAY_OFF}"
+        "The game is running, so Skhid could not update the game's patches \
+         (game\\resources.db.patch_*). Close the game, then start the launcher \
+         again.{PLAY_OFF}"
     )
 }
 
-pub fn resources_offline() -> String {
+/// A patch file another program than the game holds (the game is told by
+/// resources.db): an antivirus that scans it, most often.
+pub fn patches_held(name: &str) -> String {
     format!(
-        "The update of the game's files could not be downloaded: the server could not be reached. \
-         Check the connection, then start the launcher again.{RESOURCES_PLAY_OFF}"
+        "Another program holds game\\{name}, so Skhid could not update the game's patches. \
+         An antivirus may be scanning it: wait a minute, then start the launcher again.{PLAY_OFF}"
     )
 }
 
-pub fn resources_failed() -> String {
+pub fn patches_failed() -> String {
     format!(
-        "Skhid could not finish updating the game's files (game\\resources.db); the reason is in \
-         game\\binaries\\x86\\updater_skhid.log. Start the launcher again; if this keeps \
-         happening, send that file to the server's operator.{RESOURCES_PLAY_OFF}"
+        "Skhid could not finish updating the game's patches (game\\resources.db.patch_*); \
+         the reason is in game\\binaries\\x86\\updater_skhid.log. Start the launcher again, \
+         or send that file to the server's operator.{PLAY_OFF}"
     )
 }
 
-/// `updater_skhid.exe ready` found the game's files not updated: the game
-/// is not started by play_skhid.bat or play_skhid.sh.
-pub fn resources_not_ready() -> String {
-    "Skhid has not finished updating the game's files (game\\resources.db), so the game is \
-     not started: it would crash in a match. Start Skhid.bat (the launcher): it finishes the \
-     update, or says what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
+pub fn patches_unreachable(reason: &str) -> String {
+    format!("The list of the game's patches could not be fetched. {reason}{PLAY_OFF}")
+}
+
+pub fn patches_not_offered(server: &Url) -> String {
+    format!(
+        "{} offers no list of the game's patches. Tell the server's operator.{PLAY_OFF}",
+        server.host
+    )
+}
+
+pub fn patches_bad_list(server: &Url, detail: &str) -> String {
+    format!(
+        "The list of the game's patches from {} cannot be used ({detail}). Tell the server's \
+         operator.{PLAY_OFF}",
+        server.host
+    )
+}
+
+pub fn patches_download(name: &str, reason: &str) -> String {
+    format!("game\\{name} could not be downloaded. {reason}{PLAY_OFF}")
+}
+
+pub fn patches_wrong(server: &Url, name: &str) -> String {
+    format!(
+        "{} sent game\\{name} with another checksum than its list says. Tell the server's \
+         operator.{PLAY_OFF}",
+        server.host
+    )
+}
+
+/// The server could not be asked (`reason`, the overlay's words) and the
+/// patches were never checked in place, or are not any more.
+pub fn patches_offline(reason: &str) -> String {
+    format!("The game's patches could not be checked: {reason}{PLAY_OFF}")
+}
+
+/// `updater_skhid.exe ready` found the patches not checked in place.
+pub fn patches_not_ready() -> String {
+    "Skhid has not finished updating the game's files (game\\resources.db.patch_*), so the \
+     game is not started. Start Skhid.bat (the launcher): it finishes the update, or says \
+     what is in the way. Details: game\\binaries\\x86\\updater_skhid.log."
         .into()
 }

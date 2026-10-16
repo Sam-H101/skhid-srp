@@ -9,8 +9,7 @@ the rate under them. Silver for gold goes to the server as `47 04` with
 SrpExchange.BUY_GOLD added to the gold amount; the server must know it.
 
 The input is the live lobby region (the lobby with the matches list), as a
-whole resources.db or as the entry file a release names with
---resource-region=lobby_menu=<file>; the output is of the same kind and
+whole resources.db or as the extracted lobby_menu.swf file; the output is of the same kind and
 never replaces the input. Requires a JDK and JPEXS FFDec (tested with 26.0.0).
 No game assets are stored in this repository.
 """

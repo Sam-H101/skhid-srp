@@ -6,9 +6,13 @@
 //! - `/launcher/…` and `/api/client-files` (the 0.26g page only) are for the
 //!   patched game launcher and its updater ([`launcher`]): the page it shows
 //!   in its window, and which archive `/download` hands out now.
-//! - `/resources/<sha256>` (the 0.26g page only) is a blob of the updater's
-//!   resource step, from the folder `resources` beside the download file
-//!   ([`resource_file`]).
+//! - `/patches` (the 0.26g page only) is the list of `resources.db`'s patches
+//!   the updater keeps in the game folder: those the server's game data was
+//!   made of ([`patches`]).
+//! - `/resources/<sha256>` (the 0.26g page only) is a blob from the folder
+//!   `resources` beside the download file ([`resource_file`]): the originals
+//!   of the `resources.db` regions earlier updaters wrote, which the
+//!   updater fetches to put the stock db back once when it kept no copy.
 //! - The admin page changes the silver and gold of any account, for testing.
 //!   It exists only when `SRP_ADMIN_TOKEN` and `SRP_ADMIN_PATH` (a hard to
 //!   guess name, served at `/<name>`) are set, and only for the addresses in
@@ -27,9 +31,11 @@
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
 mod launcher;
+mod patches;
 mod stats;
 mod v026g;
 
+pub use patches::OfferedPatch;
 pub use v026g::{Game, LiveMatch, LivePhase, LiveStanding, LobbyLink, MatchCounter};
 
 use std::fs::File;
@@ -681,6 +687,7 @@ impl Web {
             if request.method == "GET" {
                 match request.path.as_str() {
                     "/api/stats" => return stats::response(&self.store, game),
+                    "/patches" => return patches::response(&game.patches),
                     "/api/client-files" => return launcher::client_files(),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(

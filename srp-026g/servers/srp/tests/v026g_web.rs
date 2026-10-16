@@ -439,3 +439,39 @@ fn the_operators_text_and_a_ban_reach_the_026g_lobby() {
     again.assert_clean();
     stack.stop();
 }
+
+/// What the players' updater asks after the Skhid files: `GET
+/// /patches`, with no token, from the same page. It lists the patches the
+/// server's game data was made of (the test data: 0.26g's archive with
+/// patches 14, 15 and 16), in the game's order.
+#[test]
+fn the_updater_is_told_the_patches_the_server_runs_on() {
+    let (stack, web) = start("patches");
+    let mut stream = TcpStream::connect(web).expect("the web server");
+    stream.set_read_timeout(Some(SOON)).unwrap();
+    stream
+        .write_all(b"GET /patches HTTP/1.1\r\nHost: skhid\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    let (head, body) = answer.split_once("\r\n\r\n").expect("an HTTP answer");
+    assert!(head.starts_with("HTTP/1.0 200 OK\r\n"), "{head}");
+    assert!(
+        head.contains("\r\nContent-Type: application/json\r\n"),
+        "{head}"
+    );
+    let provenance = &survarium::v026g::game_data::shared().provenance;
+    let expected: Vec<String> = provenance
+        .offered()
+        .map(|(name, sha256, url)| {
+            format!("\"{name}\":{{\"sha256\":\"{sha256}\",\"url\":\"{url}\"}}")
+        })
+        .collect();
+    assert_eq!(expected.len(), 3);
+    assert_eq!(body, format!("{{{}}}", expected.join(",")));
+    assert!(body.starts_with(
+        "{\"patch_14\":{\"sha256\":\"7535d0d0c287cf1c3c338936fdef54edb7f36e1334d7e872801a27d505d4c6c3\",\
+         \"url\":\"http://203.0.113.5/patches/resources.db.patch_14\"},\"patch_15\":"
+    ));
+    stack.stop();
+}
