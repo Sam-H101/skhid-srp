@@ -174,15 +174,19 @@ players are of one level, which is what the original's narrow range gave.
 "The history of players' matches is taken into account now. The system selects the less played
 map" (patch notes 0.25a). No mode choice in 0.26 (added in 0.27a).
 
-- A map is a level (`match_making_params.map_id`, 1..=8), whatever the mode and weather.
+- A map is a level (`match_making_params.map_id`, 1..=9: level_09 is London, from `resources.db.patch_14`), whatever the mode and weather.
 - Each account counts the matches it was **put in** on each map (`Account::map_plays`, table
   `g26_map_plays`), counted when the match is made at the match server. [choice: not when it
   ends; a player who leaves early has still seen the map.]
-- The match's map is the one with the smallest sum over its players, among the maps of the
-  operator's pool (`SRP_MATCH_MODES`, `SRP_MATCH_MAPS`); of several, one at random. Then a mode
-  at random among the pool's modes for that map, then one of that mode's ids (the weather).
-
-So two players who play on see all eight maps before one comes up again.
+- The match's map is drawn by weight among the maps of the operator's pool (`SRP_MATCH_MODES`,
+  `SRP_MATCH_MAPS`). A map's weight comes from its players' average plays on it, `a`, against the
+  most-played map of the pool, `max`: `1 + SKEW * min(max - a, 5) / 5` (`matchmaking::map_weight`),
+  `SKEW` being `SRP_MATCH_MAP_SKEW` (0 to 4, default 1). So a map its players played 5 or more
+  times less than their most-played one is at most twice as likely (by default), and none is ever
+  impossible. Then a mode at random among the pool's modes for that map, then one of that mode's
+  ids (the weather). [choice: the owner's, 2026-10-16: a small lean to new maps, not a turn of
+  them; until then the least-played map was always taken, and a new map came up match after
+  match.]
 
 ## 6. Database
 

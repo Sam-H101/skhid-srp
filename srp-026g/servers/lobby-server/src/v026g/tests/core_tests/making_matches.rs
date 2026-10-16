@@ -363,16 +363,32 @@ fn a_match_takes_two_sides_of_the_size_set_and_the_rest_wait() {
 }
 
 #[test]
-fn the_maps_come_up_by_their_players_plays() {
-    // Two players who play match after match: the maps they played less are
-    // drawn more often, so in 32 matches every map comes up, and none much
-    // more than the others.
+fn the_maps_lean_to_what_their_players_played_less() {
+    // A pool of two maps; both players have played the first 100 times and
+    // the second never. With the skew at its most (4) the second weighs 5,
+    // the first 1: of 60 matches the second comes up far more often, and
+    // the first still does (the plays reach the draw; no map is certain).
     let mut world = World::new(Duration::ZERO);
     world.core.rng = survarium::v026g::drops::Rng::new(26);
+    let id_of = |level| {
+        maps::playable()
+            .find(|map| map.level == level)
+            .map(|map| map.id)
+            .unwrap()
+    };
+    world.core.settings.maps = vec![id_of(1), id_of(2)];
+    world.core.settings.map_skew = 4.0;
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
+    for player in [alice, bob] {
+        world.change(player, |account| {
+            for _ in 0..100 {
+                count_map_play(account, 1);
+            }
+        });
+    }
     let mut seen = Vec::new();
-    for round in 0..32 {
+    for round in 0..60 {
         world.ask(alice, request::play(1));
         world.ask(bob, request::play(1));
         world.advance(Duration::from_secs(2));
@@ -388,17 +404,11 @@ fn the_maps_come_up_by_their_players_plays() {
         world.take(alice);
         world.take(bob);
     }
-    let mut levels: Vec<u8> = maps::playable().map(|map| map.level).collect();
-    levels.sort_unstable();
-    levels.dedup();
-    let counts: Vec<usize> = levels
-        .iter()
-        .map(|&level| seen.iter().filter(|&&each| each == level).count())
-        .collect();
-    assert!(
-        counts.iter().all(|&count| (1..=8).contains(&count)),
-        "{levels:?}: {counts:?}"
-    );
+    let first = seen.iter().filter(|&&level| level == 1).count();
+    let second = seen.iter().filter(|&&level| level == 2).count();
+    assert_eq!(first + second, 60);
+    assert!(second >= 2 * first, "{first} on the first, {second} on the second");
+    assert!(first >= 1, "the first map never came up");
     world.assert_clean();
 }
 

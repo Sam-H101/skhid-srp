@@ -124,7 +124,7 @@ pub fn match_level(levels: &[u8]) -> u16 {
 }
 
 /// How many matches the account was put in on the map `level`
-/// (`maps::MapMode::level`, 1..=8).
+/// (`maps::MapMode::level`, 1..=9).
 pub fn map_plays(account: &Account, level: u8) -> u32 {
     account
         .map_plays
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn a_level_far_behind_is_twice_as_likely() {
-        // The newest level 10 plays behind for each of 2 players.
+        // The newest level: 10 plays behind for each of 2 players.
         let pool = all_maps();
         let levels = levels_of(&pool);
         let new = *levels.last().unwrap();

@@ -135,6 +135,10 @@ RUST_LOG=info
 # SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS=120
 # SRP_LOBBY_SESSION_GRACE_SECONDS=60
 # SRP_MATCH_MAPS=
+# How much the map draw leans to the maps a match's players played less:
+# a map 5 or more plays behind their most-played one weighs 1 + this (0:
+# every map alike; 0 to 4).
+# SRP_MATCH_MAP_SKEW=1
 # What a match pays: its experience times this (1 is the original's pace;
 # the owner's choice: 2).
 # SRP_EXPERIENCE_RATE=2
