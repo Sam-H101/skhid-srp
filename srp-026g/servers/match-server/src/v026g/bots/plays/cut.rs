@@ -59,6 +59,7 @@ pub fn tuning() -> PlayTuning {
         rank: Rank::Fight,
         considerations: vec![
             considerations::personality(),
+            considerations::holding(),
             considerations::near(250.0),
             Consideration::new(Input::FriendsNearTarget, 0.0, 3.0, Curve::Linear).inverted(),
             considerations::health_above(0.3),

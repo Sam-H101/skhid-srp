@@ -54,6 +54,7 @@ pub fn tuning() -> PlayTuning {
         rank: Rank::Fight,
         considerations: vec![
             considerations::personality(),
+            considerations::holding(),
             considerations::near(200.0),
             considerations::health_above(0.35),
             // Best with one friend there already (the other half); two or

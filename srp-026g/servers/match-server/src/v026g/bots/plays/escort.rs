@@ -8,13 +8,24 @@
 //!   the carrier's place for the one ahead, the battery he carries for the
 //!   one behind (both stand for where he is; a teammate's place is known,
 //!   the HUD shows it).
+//! - The one behind comes first (the owner's word after the first match
+//!   against the real game, 2026-10-16: the bot that should have guarded
+//!   his carry walked ahead to the base): any carrier of ours, human or
+//!   bot, gets it at [`Rank::Alarm`], above every battery to collect, so
+//!   one bot always takes it. It looks back at where the enemies are: the
+//!   nearest the team knows within [`ENEMY_LOOK_M`] of him, else back
+//!   along his way. The one ahead stays an extra of the objective band.
 //! - The posts are drawn per run within their bands, so two escorts do not
 //!   look alike; a post that is no goal (an enemy spawn area, off the
 //!   floors) is pulled in toward him.
-//! - It ends when he is home or no longer carries, or after a time drawn
-//!   per run.
+//! - None for a carrier near home (`near_home_m`): it ends there, when he
+//!   no longer carries, or after a time drawn per run.
 
 use super::*;
+
+/// An enemy the team knows this near the carrier is where the escort
+/// behind him looks.
+pub const ENEMY_LOOK_M: f32 = 40.0;
 
 pub const NUMBERS: &[(&str, f32)] = &[
     // The post ahead of him on his way home, metres, drawn per run.
@@ -27,7 +38,11 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // behind him.
     ("look_ahead_m", 25.0),
     ("look_back_m", 25.0),
-    // A carrier this near home needs no escort.
+    // A carrier this near home needs no escort (the owner's word,
+    // 2026-10-16: none for a battery picked up close to the base), and an
+    // escort ends there.
+    ("near_home_m", 25.0),
+    // The post ahead stays this far short of home at least (half of it).
     ("home_m", 8.0),
     ("within_m", 3.0),
     // Farther than this from its post it hurries (`Ctx::pace_toward`);
@@ -91,7 +106,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     let Some(home) = cx.view.container_of(cx.me.team).map(|c| c.at) else {
         return;
     };
-    let home_m = cx.num(PlayKind::Escort, "home_m");
+    let home_m = cx.num(PlayKind::Escort, "near_home_m");
     for carrier in cx.view.team(cx.me.team) {
         let Some(battery) = carrier.carrying else {
             continue;
@@ -101,7 +116,13 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         }
         let key = carrier.place as u32 * 2;
         out.extend(cx.candidate(PlayKind::Escort, TargetRef::Place(carrier.place), Some(key)));
-        out.extend(cx.candidate(PlayKind::Escort, TargetRef::Battery(battery), Some(key + 1)));
+        // Behind him: above the batteries to collect.
+        if let Some(mut behind) =
+            cx.candidate(PlayKind::Escort, TargetRef::Battery(battery), Some(key + 1))
+        {
+            behind.rank = Rank::Alarm;
+            out.push(behind);
+        }
     }
 }
 
@@ -138,7 +159,7 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
     };
     let him = carrier.feet;
     let left = him.distance_xz(home);
-    if left < num("home_m") {
+    if left < num("near_home_m") {
         return Step::Done("he is home");
     }
     let (State::Ahead { until, .. } | State::Behind { until, .. }) = *state;
@@ -158,9 +179,22 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
         State::Behind { m, .. } => {
             let back = (-dir.0, -dir.1);
             let behind = num("look_back_m");
+            // At the nearest enemy the team knows near him, else back
+            // along his way.
+            let enemy = cx
+                .memory
+                .tracks()
+                .iter()
+                .filter(|t| t.at.distance_xz(him) < ENEMY_LOOK_M)
+                .min_by(|a, b| a.at.distance_xz(him).total_cmp(&b.at.distance_xz(him)))
+                .map(|t| t.at);
             (
                 cx.escort_post(him, back, m),
-                Vec3::new(him.x + back.0 * behind, him.y, him.z + back.1 * behind),
+                enemy.unwrap_or(Vec3::new(
+                    him.x + back.0 * behind,
+                    him.y,
+                    him.z + back.1 * behind,
+                )),
             )
         }
     };
@@ -208,7 +242,9 @@ mod tests {
         let found = escorts(&s, 0);
         let targets: Vec<TargetRef> = found.iter().map(|c| c.target).collect();
         assert_eq!(targets, [TargetRef::Place(1), TargetRef::Battery(0)]);
-        assert!(found.iter().all(|c| c.rank == Rank::Objective));
+        // Behind him first: above the batteries; ahead an extra.
+        let ranks: Vec<Rank> = found.iter().map(|c| c.rank).collect();
+        assert_eq!(ranks, [Rank::Objective, Rank::Alarm]);
         // Nobody carries: none.
         let mut s = scene();
         s.view.places[1].carrying = None;
@@ -247,6 +283,37 @@ mod tests {
             .collect();
         targets.sort();
         assert_eq!(targets, ["Battery(0)", "Place(1)"]);
+    }
+
+    /// The one behind him comes before a battery lying near the bot: the
+    /// best of all its plays.
+    #[test]
+    fn behind_a_carrier_comes_before_a_battery_to_collect() {
+        let mut s = scene();
+        s.battery(BatteryState::Free(Vec3::new(48.0, 0.0, 36.0)));
+        let best = &s.candidates(0)[0];
+        assert_eq!(
+            (best.kind, best.target, best.rank),
+            (PlayKind::Escort, TargetRef::Battery(0), Rank::Alarm)
+        );
+    }
+
+    /// Behind him it looks at the nearest enemy the team knows near him,
+    /// not along his way.
+    #[test]
+    fn behind_looks_at_a_known_enemy_near_him() {
+        let enemy = Vec3::new(52.0, 0.0, 20.0);
+        let mut s = scene();
+        s.enemy(5, 1, enemy, Some(crate::v026g::bots::know::Source::Seen));
+        let steps = s.run(2, PlayKind::Escort, TargetRef::Battery(0), 1, 300, 3.5);
+        let Step::Continue(Intent {
+            look: Look::At(look),
+            ..
+        }) = steps[0]
+        else {
+            panic!("{:?}", steps[0]);
+        };
+        assert!(look.distance_xz(enemy) < 0.5, "{look:?}");
     }
 
     #[test]

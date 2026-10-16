@@ -695,6 +695,8 @@ impl Game {
             clock,
             time_left_s: left_ms as f32 / 1000.0,
             total_s: total_ms as f32 / 1000.0,
+            playing: self.rule.state == rules::state::IN_PROCESS
+                && self.rule.start.is_some_and(|start| clock >= start),
         }
     }
 
@@ -748,7 +750,7 @@ impl Game {
                             sent.time
                         );
                     }
-                    due.push((index, sent.time, sent.input));
+                    due.push((index, sent.time, Relayed::Input(sent.input)));
                 }
             }
         }
@@ -766,12 +768,25 @@ impl Game {
                 log_notes(id, notes);
                 due.extend(
                     made.into_iter()
-                        .map(|made| (made.place, made.time, made.input)),
+                        .map(|made| (made.place, made.time, Relayed::Input(made.input))),
                 );
+                // A kit choice, as a player's 0xDE is relayed (0xF3): at
+                // a tick ahead of the clock as its inputs are; it takes
+                // effect at the place's next spawn.
+                for (index, kit) in walkers.bots.take_kit_choices() {
+                    let time = (clock / TICK_MS + 2) * TICK_MS;
+                    due.push((
+                        index,
+                        time,
+                        Relayed::Profile {
+                            tick: tick_byte(time),
+                            value: kit,
+                        },
+                    ));
+                }
             }
         }
-        for (index, time, input) in due {
-            let what = Relayed::Input(input);
+        for (index, time, what) in due {
             self.relay_to_others(index, &what, time, now);
             self.inputs.push((time, index, what));
         }

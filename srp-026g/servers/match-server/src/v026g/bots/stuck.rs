@@ -210,6 +210,7 @@ mod tests {
                         at: Vec3::new(x, 0.0, z),
                         node: 0,
                         jump: false,
+                        low: false,
                     })
                     .collect(),
             )

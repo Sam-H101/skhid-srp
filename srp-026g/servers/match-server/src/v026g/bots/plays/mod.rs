@@ -218,8 +218,13 @@ pub enum Pace {
 pub enum Look {
     /// The way it goes.
     Path,
-    /// At a point (a pickup point held, a door watched), moving or not.
+    /// At a point (a pickup point held, a door watched), moving or not:
+    /// the view goes a metre above it, at a body's height.
     At(Vec3),
+    /// At the point itself: an object to use, which the use's ray from the
+    /// eye must hit (`base_player::detect_usable_object`, 2 m, PROVEN), as
+    /// a battery lying on the floor.
+    Use(Vec3),
     /// About, as a body standing guard.
     Around,
 }
@@ -344,7 +349,17 @@ pub struct BotFacts<'a> {
     pub medkits_used: u8,
     /// Goals its searches proved no way to lately, and until when.
     pub no_way_to: &'a [(Vec3, u32)],
+    /// Plays that failed at once at a target, and until when they are
+    /// not taken there again ([`SET_ASIDE_MS`]).
+    pub set_aside: &'a [(PlayKind, TargetRef, u32)],
 }
+
+/// A play that fails this soon after it starts ...
+pub const QUICK_FAIL_MS: u32 = 2_000;
+/// ... is not taken at that target again for this long: no play taken and
+/// dropped every poll ("ends GuardLead: no spot with a sight line" four
+/// times a second in the owner's match of 2026-10-16).
+pub const SET_ASIDE_MS: u32 = 8_000;
 
 /// What a play sees: the match, the bot, its knowledge, the team's, the
 /// signals and modifiers, the map's tactics and the tuning.
@@ -590,6 +605,14 @@ impl Ctx<'_> {
         target: TargetRef,
         slot: Option<u32>,
     ) -> Option<Candidate> {
+        if self
+            .bot
+            .set_aside
+            .iter()
+            .any(|&(k, t, until)| k == kind && t == target && self.now < until)
+        {
+            return None;
+        }
         let play = self.play(kind);
         let (score, why) = curve::score(&play.considerations, |input| {
             self.input(input, kind, target)
@@ -892,6 +915,36 @@ pub mod considerations {
             s,
             Curve::Piecewise {
                 points: vec![(0.0, 1.0), (0.8, 1.0), (1.0, 0.05)],
+            },
+        )
+    }
+
+    /// A play that pushes into the enemy (a raid, a sneak, a flank): more
+    /// as the team's aggression rises ([`Input::Aggression`]: behind on
+    /// points, and the more so the less time is left), 0.7 at an even
+    /// match. The owner's word after the first matches against the real
+    /// game (2026-10-16): the team that loses should be more aggressive.
+    pub fn pushing() -> Consideration {
+        Consideration::new(
+            Input::Aggression,
+            0.0,
+            1.0,
+            Curve::Piecewise {
+                points: vec![(0.0, 0.4), (0.5, 0.7), (1.0, 1.0)],
+            },
+        )
+    }
+
+    /// A play that holds a spot and waits (a crossfire, an exit, a cut, an
+    /// ambush): less as the team's aggression rises, 0.85 at an even
+    /// match.
+    pub fn holding() -> Consideration {
+        Consideration::new(
+            Input::Aggression,
+            0.0,
+            1.0,
+            Curve::Piecewise {
+                points: vec![(0.0, 1.0), (0.5, 0.85), (1.0, 0.45)],
             },
         )
     }

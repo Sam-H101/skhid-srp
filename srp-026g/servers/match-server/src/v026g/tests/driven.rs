@@ -500,9 +500,10 @@ fn with_the_map_the_servers_bot_sees_its_body_in_the_worlds_and_walks_smoothly()
         bench.step(5);
     }
 
-    // Once a world shows its body it heads for a station: forward, and
-    // turns that ease in, none more than the top turning speed allows.
-    assert!(bench.until(10_000, |bench| {
+    // Once a world shows its body and play has begun (after the 20 s
+    // countdown) it heads for a station: forward, and turns that ease in,
+    // none more than the top turning speed allows.
+    assert!(bench.until(30_000, |bench| {
         bench.clients[0]
             .relays_of(1)
             .iter()

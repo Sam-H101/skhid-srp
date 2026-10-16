@@ -227,6 +227,10 @@ pub struct Clock {
     pub clock: u32,
     pub time_left_s: f32,
     pub total_s: f32,
+    /// Play has begun: the start countdown is over. Before it the game
+    /// holds the players where they stand, and the bots rest (the owner's
+    /// word, 2026-10-16: the bots ran off while he waited the countdown).
+    pub playing: bool,
 }
 
 /// What a trusted world says beyond the bodies (from the decoded
@@ -683,6 +687,7 @@ mod tests {
             clock: 3_000,
             time_left_s: 600.0,
             total_s: 900.0,
+            playing: true,
         };
         let view = tracker.view(&clock, &kin, None);
         let human = view.place(1).unwrap();
@@ -732,6 +737,7 @@ mod tests {
                 clock: 2_000,
                 time_left_s: 100.0,
                 total_s: 900.0,
+                playing: true,
             },
             &kin,
             None,

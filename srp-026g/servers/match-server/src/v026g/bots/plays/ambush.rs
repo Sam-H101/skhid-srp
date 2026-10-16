@@ -58,6 +58,7 @@ pub fn tuning() -> PlayTuning {
         considerations: vec![
             considerations::near(150.0),
             considerations::personality(),
+            considerations::holding(),
             considerations::health_above(0.3),
             considerations::modifier(Input::ObjectiveUrgency, 0.6),
             // One or two enemies by the battery are the point; a squad is

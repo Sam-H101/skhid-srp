@@ -18,7 +18,18 @@
 
 use super::*;
 use crate::v026g::bots::curve::{Consideration, Curve, Input};
+use crate::v026g::bots::view;
 use crate::v026g::drive::key;
+
+/// How far over a lying battery's position a bot aims to take it: inside
+/// its box whether the position is the box's foot or its middle (the box
+/// is about 0.25 m high).
+pub const BATTERY_AIM_M: f32 = 0.1;
+/// How near the eye comes to what it uses: the client's use is a ray of
+/// 2 m from the eye (`base_player::detect_usable_object`, PROVEN), so a
+/// bot that stopped farther (the walk's arrival is loose, the spot to stand
+/// can be off the battery) steps in closer while it presses.
+pub const USE_NEAR_M: f32 = 1.6;
 
 pub const NUMBERS: &[(&str, f32)] = &[
     ("reach_m", 1.5),
@@ -250,9 +261,19 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             {
                 return Step::Failed("the battery is gone");
             }
+            // The use's ray from the eye must hit the battery: at it, not a
+            // metre over it as at a place (`Look::At`), which from a
+            // crouch passes over a battery on the floor.
             let mut intent = Intent::stay().crouched();
             if let Some(at) = at {
-                intent = intent.looking(Look::At(at));
+                let aim = at + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
+                let eye = cx.me.feet + Vec3::new(0.0, view::EYE_CROUCHED, 0.0);
+                if (aim - eye).length() > USE_NEAR_M
+                    && let Some(stand) = cx.tactics.stand_to_take(at)
+                {
+                    intent = Intent::to(stand, Pace::Walk).within(0.25).crouched();
+                }
+                intent = intent.looking(Look::Use(aim));
             }
             if cx.now >= *last_use + every {
                 *n += 1;
@@ -290,6 +311,12 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             }
             let mut intent = Intent::stay().hold_fire();
             if let Some(home) = home {
+                // Its use box's middle is a metre over `home`
+                // (`Container::use_point`).
+                let eye = cx.me.feet + Vec3::new(0.0, view::EYE_STANDING, 0.0);
+                if (home + Vec3::new(0.0, 1.0, 0.0) - eye).length() > USE_NEAR_M {
+                    intent = Intent::to(home, Pace::Walk).within(0.5).hold_fire();
+                }
                 intent = intent.looking(Look::At(home));
             }
             if cx.now >= *last_use + every {

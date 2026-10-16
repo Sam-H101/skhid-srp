@@ -13,8 +13,11 @@
 //!   each shot's kick drawn in the config's range (the bots predict the
 //!   middle);
 //! - the dead respawn at their side's spawns after 6.4 s (the radio);
-//! - a use takes a battery within reach, puts it in at one's own
-//!   container, or steals from the other's; a drop drops it;
+//! - a use takes a battery, puts it in at one's own container, or steals
+//!   from the other's, as the client's use does: only what the view's ray
+//!   from the eye meets within 2 m (`base_player::detect_usable_object`):
+//!   within 0.2 m of a battery's middle, 0.6 m of a use box's; a drop
+//!   drops it;
 //! - Team Deathmatch: each death costs the team a ticket; a team out of
 //!   tickets no longer respawns, and loses when its last body dies;
 //! - a world of every body, the statistics and the batteries comes every
@@ -43,6 +46,17 @@ use super::tuning::Tuning;
 use super::view::{BatteryState, Clock, WorldFacts};
 use super::*;
 use crate::v026g::drive::{half_value, key};
+
+/// The client's use: a ray from the eye this long (`usable_objects_detection_distance`).
+const USE_REACH_M: f32 = 2.0;
+/// A lying battery's middle over its position, and how near the ray must
+/// pass it (its box is about 0.5 by 0.25 m).
+const BATTERY_MIDDLE: Vec3 = Vec3::new(0.0, 0.12, 0.0);
+const BATTERY_M: f32 = 0.2;
+/// A container's use box: its middle over the use point
+/// (`Container::use_point`), and how near the ray must pass it.
+const USE_BOX_UP: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+const USE_BOX_M: f32 = 0.6;
 
 /// A body of the stand-in game.
 #[derive(Clone, Debug)]
@@ -434,6 +448,21 @@ impl Game {
         }
     }
 
+    /// Whether the view's ray from `body`'s eye (its base pitch) comes
+    /// within `radius` of `point` no farther than the use's 2 m.
+    fn uses(body: &Body, point: Vec3, radius: f32) -> bool {
+        let eye = Self::eye(body);
+        let [fx, fz] = forward(body.yaw);
+        let (c, s) = (body.pitch.cos(), body.pitch.sin());
+        let dir = Vec3::new(fx * c, s, fz * c);
+        let to = point - eye;
+        let along = to.x * dir.x + to.y * dir.y + to.z * dir.z;
+        if !(0.0..=USE_REACH_M).contains(&along) {
+            return false;
+        }
+        (to - dir * along).length() <= radius
+    }
+
     fn use_and_drop(&mut self, pressed: &[u32]) {
         for place in 0..self.bodies.len() {
             let body = self.bodies[place].clone();
@@ -454,7 +483,7 @@ impl Game {
                 Some(battery) => {
                     let home = self.containers.iter().position(|(t, _)| *t == team);
                     if let Some(id) = home
-                        && self.containers[id].1.distance_xz(body.feet) < 2.5
+                        && Self::uses(&body, self.containers[id].1 + USE_BOX_UP, USE_BOX_M)
                     {
                         self.batteries[battery] = Lying::Home(id as u8);
                         self.bodies[place].carrying = None;
@@ -463,13 +492,12 @@ impl Game {
                     }
                 }
                 None => {
-                    let free = self.batteries.iter().position(
-                        |b| matches!(b, Lying::Free(at) if at.distance_xz(body.feet) < 1.8),
-                    );
-                    let theirs = self
-                        .containers
-                        .iter()
-                        .position(|(t, at)| *t != team && at.distance_xz(body.feet) < 2.5);
+                    let free = self.batteries.iter().position(|b| {
+                        matches!(b, Lying::Free(at) if Self::uses(&body, *at + BATTERY_MIDDLE, BATTERY_M))
+                    });
+                    let theirs = self.containers.iter().position(|(t, at)| {
+                        *t != team && Self::uses(&body, *at + USE_BOX_UP, USE_BOX_M)
+                    });
                     if let Some(battery) = free {
                         self.batteries[battery] = Lying::Carried(place);
                         self.bodies[place].carrying = Some(battery);
@@ -708,6 +736,7 @@ fn soak_tuned(
             clock,
             time_left_s: (limit_ms - clock) as f32 / 1000.0,
             total_s: limit_s as f32,
+            playing: true,
         });
         notes.iter().for_each(|note| out.decisions.note(note));
         out.notes.extend(notes);
@@ -861,6 +890,87 @@ fn a_short_soak_with_its_searches_in_slices_still_plays() {
     assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
     // Its bots are gone, and with them this thread's search arrays.
     assert_eq!(mapdata::search_memory_bytes(), 0);
+}
+
+/// Through the start countdown the game holds the players where they
+/// stand: the bots rest (their inputs keep the clock going, with no key
+/// and no turn) and go only when play begins.
+#[test]
+fn the_bots_rest_through_the_start_countdown() {
+    let world = soak_world();
+    let teams: Vec<u8> = (0..4).map(|p| u8::from(p >= 2)).collect();
+    let mut bots = Bots::new(
+        0x50AC,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true; 4],
+        &[None; 4],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world, &teams, 1, None, None);
+    (0..teams.len()).for_each(|place| bots.entered(place, true, 0));
+    let start: Vec<Vec3> = game.bodies.iter().map(|body| body.feet).collect();
+    let play_from = 15_000;
+    let (mut clock, mut next_world) = (0, 1_000);
+    let mut going = 0;
+    while clock < play_from + 10_000 {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        let playing = clock >= play_from;
+        if clock == play_from {
+            for (body, start) in game.bodies.iter().zip(&start) {
+                assert!(
+                    body.feet.distance_xz(*start) < 0.1,
+                    "{:?} from {start:?}",
+                    body.feet
+                );
+            }
+        }
+        let (made, _) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 600.0,
+            playing,
+        });
+        for made in made {
+            let moves =
+                made.input.actions & (key::FORWARD | key::BACK | key::LEFT | key::RIGHT) != 0;
+            if playing {
+                going += usize::from(moves);
+            } else {
+                assert_eq!(made.input.actions, 0, "{made:?}");
+                assert!(made.input.rotation.iter().all(|&b| b == 0), "{made:?}");
+            }
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            game.inputs[made.place].push_back((
+                made.time,
+                made.input.actions,
+                turn,
+                None,
+                Arms::fallback().primary.0,
+            ));
+        }
+    }
+    assert!(going > 100, "{going} inputs that move after the start");
 }
 
 /// The whole match (minutes of play: `cargo test --release -- --ignored`).
@@ -1284,6 +1394,7 @@ fn real_bot_cost() {
                     clock,
                     time_left_s: (limit_ms - clock) as f32 / 1000.0,
                     total_s: limit_s as f32,
+                    playing: true,
                 };
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
@@ -1538,7 +1649,8 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
                 &Clock {
                     clock: 6_000,
                     time_left_s: 0.0,
-                    total_s: 0.0
+                    total_s: 0.0,
+                    playing: true,
                 },
                 &bots.tuning.kin,
                 None
@@ -1550,6 +1662,54 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
         clock: 9_000,
         time_left_s: 600.0,
         total_s: 900.0,
+        playing: true,
     });
     assert!(made.iter().all(|made| made.place != 3));
+}
+
+/// A place's ammo lasts the match: a bot's kit keeps what it has left from
+/// life to life, and when it runs low the bot picks its second kit (its
+/// backup's weapon and another ammo) for its next life, once.
+#[test]
+fn a_bot_spent_of_its_first_kit_picks_its_second_for_the_next_life() {
+    let mut bots = Bots::new(
+        0x417,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &[0, 1],
+        &[true, true],
+        &[Some("flanker"), Some("rusher")],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    let bot = bots.bots[0].as_mut().unwrap();
+    let (uzi, ak) = (bot.kits[0].0, bot.kits[1].0);
+    assert_eq!(uzi.primary.0.item, "uzi");
+    assert_eq!(ak.primary.0.item, "ak_74u");
+    assert_eq!((bot.kits[0].1, bot.kits[1].1), (600, 600));
+    // Full: no choice. A life that spends all but 40 rounds: still a
+    // magazine left, and it keeps the kit.
+    assert_eq!(bot.pick_kit(), None);
+    let hands = bot.reflex.hands();
+    (hands.primary.rounds, hands.primary.spare) = (32, 8);
+    assert_eq!(bot.pick_kit(), None);
+    // The next life in the same kit has those 40, not a full kit.
+    bot.new_life(0.5, None, Vec3::ZERO);
+    assert_eq!((bot.kit, bot.reflex.left()), (0, 40));
+    assert_eq!(bot.reflex.hands().primary.rounds, 32);
+    // Down to 10: kit 2 for its next life, chosen once.
+    let hands = bot.reflex.hands();
+    (hands.primary.rounds, hands.primary.spare) = (10, 0);
+    assert_eq!(bot.pick_kit(), Some((1, 10, 600)));
+    assert_eq!(bot.pick_kit(), None);
+    // Its next life is in kit 2, with the AK-74U and its 600 rounds; kit
+    // 1 keeps its 10.
+    bot.new_life(0.5, None, Vec3::ZERO);
+    assert_eq!(bot.kit, 1);
+    assert_eq!(bot.reflex.held_gun().item, "ak_74u");
+    assert_eq!(bot.reflex.left(), 600);
+    assert_eq!(bot.kits[0].1, 10);
+    // The rusher's second kit is the Uzi.
+    let rusher = bots.bots[1].as_ref().unwrap();
+    assert_eq!(rusher.kits[1].0.primary.0.item, "uzi");
 }
