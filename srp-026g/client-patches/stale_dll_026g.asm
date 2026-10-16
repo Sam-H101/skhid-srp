@@ -1,11 +1,12 @@
 ; The sign-in reports a stale shell_32.dll in the temporary folder (build
-; 2777, patch revision 13, client_patch.md section 3.25). One entry, at the
-; start; patch_026g.py checks the hook's target.
+; 2777, patch revision 12; written as revision 13, never released,
+; client_patch.md section 3.25). One entry, at the start; patch_026g.py
+; checks the hook's target.
 ;   nasm -f bin -DCAVE=0xA425E00 stale_dll_026g.asm -o stale_dll_026g.section.bin
 ;
 ; Whether the file %TEMP%\shell_32.dll exists goes to the login server in
 ; byte 8 of the sign-in's version field:
-;   80  the check ran: a game that says 0 is older than revision 13
+;   80  the check ran: a game that says 0 is older than revision 12
 ;   01  the file exists
 ; Nothing else of the file, or of the machine, is read or sent.
 ;

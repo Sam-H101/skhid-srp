@@ -871,7 +871,7 @@ def test_revision(original, image, mode, revision):
     check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{revision:#x}"
           and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
           f"{va:#x}: `mov byte [esp+0x27],{revision:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
-    stale_dll = revision >= 13
+    stale_dll = revision == P.REVISION          # the build with the late join (revision 12) has it
     expected = list(b"0.26g0" + bytes([0, revision])) + (["stale_dll"] if stale_dll else [0]) + [0, 0, 0, "eula"]
     check(field == expected,
           f'the version field is "0.26g0", a zero, the revision {revision} in byte 7, '
@@ -1797,8 +1797,10 @@ def test_mount_patches(original, image, before):
           f"{page:#x}, inside it")
     strings = code[code.index(b"../../%s.db.patch_%u\0"):len(code) - 4]
     check(strings == b"../../%s.db.patch_%u\0"
-          b"Cannot mount resources.db.patch_%u. Please run the Skhid launcher again.\0",
-          "the texts it holds are the path's format, ../../%s.db.patch_%u, and the fatal error's")
+          b"Cannot mount resources.db.patch_%u. Please run the Skhid launcher again.\0"
+          b"Cannot open resources.db.patch_%u (error %u). Please run the Skhid launcher again.\0",
+          "the texts it holds are the path's format, ../../%s.db.patch_%u, and the two fatal errors' "
+          "(a patch that fails to mount; one that is there and cannot be opened)")
     listing = ndisasm(code[:len(code) - 4 - len(strings)], P.MOUNT_PATCHES_VA)
     end = P.MOUNT_PATCHES_VA + len(code)
     inside = lambda target: P.MOUNT_PATCHES_VA <= target < end
@@ -1812,12 +1814,13 @@ def test_mount_patches(original, image, before):
     games = [i for i, (_, _, text) in enumerate(listing) if text == "push ebp"]
     tail = [text.replace("byte -0x8", "0xfffffff8").replace("0xfffffffffffffff8", "0xfffffff8")
             for _, _, text in listing[games[0]:games[0] + 4]] if len(games) == 1 else []
-    calls = sorted([0x18190, P.MOUNTED_VA + 6, P.MOUNT_QUERY_MOUNT_ARCHIVE, 0x113580])
-    check(outside == calls and indirect == [0x870040, 0x870048]
+    calls = sorted([0x18190, P.MOUNTED_VA + 6, P.MOUNT_QUERY_MOUNT_ARCHIVE, 0x113580, 0xDFE30])
+    check(outside == calls and indirect == [0x870040, 0x870048, 0x87005C]
           and at.get(mounted, "").startswith("call") and at.get(entry) == "pusha"
           and tail == ["push ebp", "mov ebp,esp", "and esp,0xfffffff8", f"jmp {P.MOUNTED_VA + 6:#x}"],
           "its only ways out are the path's format (0x18190), query_mount_archive, the fatal error (0x113580), "
-          "CreateFileA and CloseHandle (through the import table, plus the delta), and the six bytes it "
+          "the unmount of a mount nobody holds (0xDFE30, as the game lets a mount go), "
+          "CreateFileA, GetLastError and CloseHandle (through the import table, plus the delta), and the six bytes it "
           f"replaced followed by a jump to {P.MOUNTED_VA + 6:#x}; on_mounted at +{P.MOUNTED_OFFSET:#x} starts "
           f"with a call for its address, mount_all at +{P.MOUNT_ALL_OFFSET:#x} with pushad"
           + ("" if outside == calls else f": {[hex(t) for t in outside]}"))

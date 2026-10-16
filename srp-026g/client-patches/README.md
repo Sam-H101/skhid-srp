@@ -8,12 +8,12 @@ published.
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
-| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `770f7c04c13c2ec1fe98aa255ca8b1d6f751be11fc6e0e18668d863d7a995b09` (patch revision 14); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `9bbca801239f773fcb368023238caac63e08f8ec569cb90449ad206d1ef69e1d`. Revision 14 without patch 27 was `9a09425f…ce16` and, with that server, `14cd031e…79f9`. Revision 13 was `c86d13fe…f4ab` and, with that server, `54a0658d…7971`; revision 12 was `19586e8b…222f` and, with that server, `5deb3f4c…1441`. Revision 11, as the tool of `main` d0ea090 builds it (the replay fixes included), was `3f7e0488…2ffa` and, with that server, `5a5e18e2…0cc1` (before the replay fixes `bf289387…42c6` and `6b752ed0…c46a`); revision 10 was `c43bfd8a…ef85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
+| Result (full patch, no embedded server) | 12 907 128 bytes, sha256 `9431848299fee844a404b09f7da41ed9d0211530cb51f903754d0db835c96aad` (patch revision 12); embedding a server changes the hash. With `--server=skhid.link:1234`: sha256 `9d43b19925ecdfadf54e66005bb966130b837ef11de7d2e05768111267639cc0`. While it was written (never released) this build was numbered 14: with patch 27 as first written it was `770f7c04…5b09` and, with that server, `9bbca801…9e1d`; without patch 27 `9a09425f…ce16` and `14cd031e…79f9`. The never-released revision 13 was `c86d13fe…f4ab` and, with that server, `54a0658d…7971`; the never-released first revision 12 was `19586e8b…222f` and, with that server, `5deb3f4c…1441`. Revision 11, as the tool of `main` d0ea090 builds it (the replay fixes included), was `3f7e0488…2ffa` and, with that server, `5a5e18e2…0cc1` (before the replay fixes `bf289387…42c6` and `6b752ed0…c46a`); revision 10 was `c43bfd8a…ef85e` and, with that server, `c2188027…746b`; revision 9 was `03202d5e…20b7` and, with that server, `f30c3c66…11a1`; revision 8 was `9673dc5a…4756` and, with that server, `5701a96d…6aea`. With `--no-late-join` the tool gives the revision 4 exe byte for byte: 12 895 352 bytes, `3bd35a2078ab9288c1e30773cb4ade74f719fee15b2b5bc6ee39ca2f237d39fd`, and with that server `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, the exe of the players' download since 2026-10-13 15:36 UTC |
 | Revision 5 to 10 | Revision 5 is revision 4 with patch 11, the late join (a player enters a match that is being played), and patch 12, a game that goes on without the focus. Revision 6 adds patch 13, three faults the first late joins of real players showed (the scoreboard without the newcomer, and two crashes); 5 and 6 play together, and a server asks for 6 because a game of 5 can be killed by a newcomer. Revision 7 adds patch 14: a newcomer with a grenade or a trap in a kit was never let in; it does not play with 5 and 6 (the order of a world's game objects is another), so a server asks for 7. Revision 8 adds patch 15: the game's clock is brought to the match clock six times faster after a start, a late join and a resync; it plays with 7 (nothing a match computes changes), and a server need not ask for it. Revision 9 adds patch 16, a newcomer's score on the scoreboard of the others was counted again at every rollback and showed an earlier match's score until its first, and patch 17, the team points drawn while a match counts down (the original kept the last match's until play began); it plays with 7 and 8 (neither is in the world), and a server need not ask for it. Revision 10 adds patch 18: at every spawn the new kit's weapons get a random state (their shots' spread) every game works out alike, where a game that had loaded a world during a match kept the other kits' weapons at 1 and went out of step when a player respawned into one, and patch 19: a game's first world of a match puts its kit choices (the world's) and inputs into the lists in time order, where a newcomer had respawned a player in the kit in use instead of the one chosen, and patch 20: a spawn gives the new kit's weapons the time of their last tick, and at a change of kit the fire mode, ammunition, chamber, aim and recoil, a new weapon has, where those were what the kit's last life left in the games that played it; it does not play with 9 or before (they part at a match's first spawn), so **a server asks for 10 (`SRP_MIN_PATCH_REVISION=10`), put up with the ZIP**. **5 was the players' download from 2026-10-13 23:27 UTC, 6 from 2026-10-14 00:44 UTC, 7 from 2026-10-14 02:26 UTC, 8 from 2026-10-14 03:48 UTC; 9 and 10 are not in a download yet.** Revision 5 is the first revision that does not play with the ones before it: such a game keeps room for twenty players in every match and sends other packets, so the server puts games from revision 5 on in a queue of their own (`docs/notes/matchmaking.md` section 9). A server that offers it asks for it (`SRP_MIN_PATCH_REVISION=5`), or its players are two queues that never meet. Against the revision 4 exe made the same way it differs in the revision byte, the 15 sites of patch 11, the two bytes of patch 12, four bytes of the ready hook and the headers of the two sections, and in nothing else of the original's bytes (the self-test's check 15). What was run and what was not: patch 11 below |
 | Revision 11 | Revision 10 with patch 21: Team Deathmatch's death handler counts a death after the rule's own end (match.md section 28; below), and patch 22, a field-of-view setting (the video options' slider bound to `uro_fov`, which the camera follows, a scope's view staying the original's; a camera is not in what a match computes), and patch 23, a battery under the floor one stands on can be picked up (a use is in what a match computes). With patch 21 alone, made as the download is (`--server=skhid.link:1234`) it was `b728a80c62a8da6b0dca46de55236d1e7c4b010190f9c0fddf884e0c998d6ece`, without a server `985ca3410f024a9e391a8f6fd5750295d6c0add8185fc244245c15371400b75a`; both differ from revision 10 made the same way in six bytes (file 0x3054F1), the revision byte and the PE checksum, and in nothing else (compared byte by byte). It does not play with 10 or before (they part at the first death after a team is out), so **a server asks for 11 (`SRP_MIN_PATCH_REVISION=11`), put up with the ZIP**. **Not in a download yet.** The handler was run outside the game (`run_tdm_rule.ps1`); a game was not |
-| Revision 12 | Revision 11 with patch 24 as it was then: the game started only with a `resources.db` signed by Skhid's key; the retail one stopped it at start ("Resources archive is corrupted"). It differed from revision 11 in one call's target, the revision byte, the PE checksum and 413 bytes of `.srp`. 11 and 12 play together. **Never in a download; replaced by revision 14** |
-| Revision 13 | Revision 12 with patch 25: the sign-in reports in byte 8 of the version field whether `%TEMP%\shell_32.dll` exists, a file one known cheat drops and never removes; the login server logs it. It differs from revision 12 in two instructions at 0x380889 (a call and a nop), the revision byte, the PE checksum and 192 bytes of `.srp`. 12 and 13 play together. **Not in a download yet; not run in a game** |
-| Revision 14 | Revision 13 with patch 24 made a skip: the game checks no `resources.db` signature, so the retail archive and one with new files both start it. It differs from revision 13 in the five bytes of the call at 0x135D3 (file 0x29D3), the revision byte, the PE checksum and the 413 bytes of revision 12's signature code at 0xC00 of `.srp`, now int3 padding (compared byte by byte, with and without that server). And patch 27: the game mounts every `resources.db.patch_<n>` there (n = 1 to 255, in order) over `resources.db`; with no patch file it mounts `resources.db` alone, as before. Patch 27 adds, against revision 14 without it, the five bytes of the call at 0xE7E3E (four of them differ, file 0xD723F), the six bytes at 0x147E0 (file 0x3BE0), 549 bytes at 0x400 of `.srp` (file 0xC4AE00) and the PE checksum, and nothing else (compared byte by byte, with and without that server). 13 and 14 play together. **Not in a download yet; not run in a game** |
+| Revision 12, first writing (never released) | Revision 11 with patch 24 as it was then: the game started only with a `resources.db` signed by Skhid's key; the retail one stopped it at start ("Resources archive is corrupted"). It differed from revision 11 in one call's target, the revision byte, the PE checksum and 413 bytes of `.srp`. 11 and 12 play together. **Never released; replaced by the revision 12 below** |
+| Revision 13 (never released) | That first revision 12 with patch 25: the sign-in reports in byte 8 of the version field whether `%TEMP%\shell_32.dll` exists, a file one known cheat drops and never removes; the login server logs it. It differed from that revision 12 in two instructions at 0x380889 (a call and a nop), the revision byte, the PE checksum and 192 bytes of `.srp`. **Never released; patch 25 is in the revision 12 below** |
+| Revision 12 | Revision 11 with patch 24 (the game checks no `resources.db` signature, so the retail archive and one with new files both start it), patch 25 (the sign-in reports `%TEMP%\shell_32.dll` in byte 8 of the version field, as the never-released revision 13 did) and patch 27 (the game mounts every `resources.db.patch_<n>` there, n = 1 to 255 in order, over `resources.db`; with no patch file it mounts `resources.db` alone, as before). Owner, 2026-10-16: this build is revision 12; while it was written it was numbered 13 and then 14 (the rows above), none of them released. Against the build numbered 14 (`770f7c04…5b09`) it differs in the revision byte (file 0x36FC66), the PE checksum, the call at 0xE7E3E (file 0xD723F: mount_all moved to +88h) and patch 27's code at 0x400 of `.srp` (file 0xC4AE00, 549 bytes before, 707 now: resources.db's reference of the state is let go once engine_world holds it, and a patch file that is there but cannot be opened stops the game), and in nothing else (compared byte by byte). Against the never-released revision 13 that build differed in the five bytes of the call at 0x135D3 (file 0x29D3), the revision byte, the PE checksum and the 413 bytes of the first revision 12's signature code at 0xC00 of `.srp`, now int3 padding, plus patch 27: the five bytes at 0xE7E3E, the six at 0x147E0 (file 0x3BE0) and its code at 0x400 of `.srp`. 11 and 12 play together: nothing a match computes changed. Run in a game: the build numbered 14 (`770f7c04…5b09`) mounted patches 14, 15 and 16 made by our writer in Wine on 2026-10-16, and they worked; its quit was not watched, and this build, with patch 27's fixes, has not been run. **Not in a download yet** |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -412,7 +412,7 @@ original bytes first, so another build or an already patched file is refused.
   that key. The certificate ran out on 2015-06-06, so every unpatched 0.26g
   client stops with "Resources archive is corrupted".
 - **What stays:** only the chain check is skipped. The file table's
-  signature was still verified until revision 14, which skips that too
+  signature was still verified until revision 12, which skips that too
   (patch 24).
 
 ### 2. The single-instance check
@@ -1261,7 +1261,7 @@ places, kits and weapons. Run in a game (2026-10-15, the replay of a 10-player
 match, first person, with seeks back and forth): no crash past the old crash
 points, sounds on time after seeks.
 
-### 24. No resources.db signature check (patch revision 14)
+### 24. No resources.db signature check (patch revision 12)
 
 The game checks the `resources.db` file table's signature at every start
 with the survarium.com certificate's key, so an archive with a new file
@@ -1273,13 +1273,13 @@ game then checks no signature of the archive: what it loads is what the
 updater wrote, and the updater checks everything it writes by sha256. What
 is signed and the call site: `../docs/notes/client_patch.md` section 0.1.
 
-Revision 12 checked the table with Skhid's key instead (a 413-byte routine
-at 0xC00 of `.srp`, a signer and the public key in this folder). Revision 14
-drops it: anyone can patch a check out of their own exe, so it protected
+The first, never-released writing of revision 12 checked the table with
+Skhid's key instead (a 413-byte routine at 0xC00 of `.srp`, a signer and the
+public key in this folder). Revision 12 as built drops it: anyone can patch a check out of their own exe, so it protected
 nothing the updater's sha256 checks do not. Checked: `selftest_026g.py`
 check 25 (`test_db_signature`). **Not run: a game.**
 
-### 25. The sign-in reports a stale shell_32.dll in the temporary folder (patch revision 13)
+### 25. The sign-in reports a stale shell_32.dll in the temporary folder (patch revision 12)
 
 One known cheat, "Survarium 0.26e ESP NAT" (`cmtme.exe`, 2014), is an
 external wallhack. It touches the game once: it writes a DLL to
@@ -1302,14 +1302,14 @@ Checked: `selftest_026g.py` check 26 (`test_stale_dll`), and
 `check_stale_dll_026g.py` runs the check on made-up machines, loaded as is
 and rebased (needs Unicorn). **Not run: a game.**
 
-### 27. The game mounts resources.db's patches (patch revision 14)
+### 27. The game mounts resources.db's patches (patch revision 12)
 
 The players' `resources.db` stays the retail file. New content comes as
 small archives of the same format next to it, `resources.db.patch_<n>`,
 and the game mounts each of them after `resources.db` at the same place,
 `resources`, in the order of n. A patch is numbered by the patch revision
-that brought it (`resources.db.patch_14` came with revision 14), so most
-numbers are missing: not every revision has content. The file system gives a path
+that brought it (a `resources.db.patch_12` would come with revision 12), so
+most numbers are missing: not every revision has content. The file system gives a path
 to the archive mounted last that has it, so a patch replaces whole files of
 `resources.db` and of the patches before it, and adds new files; it cannot
 take a file away.
@@ -1320,37 +1320,63 @@ The game mounts its one archive in one place: `query_db` (0xE7D90) formats
 `.srp`. The code first looks for `..\..\resources.db.patch_<n>` for every n
 from 1 to 255, the revision being a byte (the game's own path format with
 `.patch_%u` after it; `CreateFileA` asking no access, as patch 25 does), and
-notes each one that is there; a missing number is skipped. Then it queues
-`resources.db` with the game's own arguments and each patch found, in order,
-with the same arguments but the path. The file
-system runs its tasks in that order.
+notes each one that is there; a missing number is skipped. A number is
+missing only when `CreateFileA` fails with file not found (2) or path not
+found (3). Any other failure, such as a folder by that name or access denied
+(both 5) or a sharing violation (32), stops the game before anything is
+mounted with "Cannot open resources.db.patch_<n> (error <e>). Please run the
+Skhid launcher again." Then it queues `resources.db` with the game's own
+arguments and each patch found, in order, with the same arguments but the
+path. The file system runs its tasks in that order.
 
 Every mount calls `on_mounted_resources` (0x147E0) when it is done. That
-function keeps the mount in the game's world and goes on with the start-up,
-so only the last call may get there. Its first six bytes become a jump into
-the same code: each start-up mount but the last takes a reference (a mount
-nobody holds is unmounted) and is kept at 0x800 of `.srpd`, the late join's
-writable page; then it returns. The last goes on into the game's code with
-`resources.db`'s mount, which the world keeps as without patches. A later
+function keeps the mount in the game's world (engine_world+2D4h) and goes on
+with the start-up, so only the last call may get there. Its first six bytes
+become a jump into the same code: each start-up mount takes a reference (a
+mount nobody holds is unmounted) and is kept at 0x800 of `.srpd`, the late
+join's writable page; all but the last then return. The last calls the
+game's code with `resources.db`'s mount, which the world keeps (its own
+reference) as without patches, and then lets the state's reference of
+`resources.db` go. So `resources.db` ends with the one reference it has in
+the retail game, the world's, and each patch with one, the state's. A later
 call is the game's own.
+
+At quit nothing lets these go, as in the retail game: the game never
+releases the world's `resources.db` mount. Its end (`engine_world`'s
+destructor, 0x13C10 → 0x13C20 → 0x15C80) lets the shaders' masks go
+(engine_world+2C0h), stops its threads and ends in 0x1135E0("", 0) →
+TerminateProcess; no code of the exe lets the three mounts at
+engine_world+2D4h..2DCh go, and +2D4h is read nowhere after its callback
+stores it. The patches stay mounted to the end the same way.
+`../docs/notes/client_patch.md` section 0.2 has the addresses.
 
 A file that is there and cannot be mounted stops the game: for
 `resources.db` with the game's own "Cannot mount resources", for a patch
 with "Cannot mount resources.db.patch_<n>. Please run the Skhid launcher
 again." A patch that is there is never skipped. Only the exact name counts:
 `.patch_014`, `.patch_0` or `.patch_256` is not a patch. A patch's name must
-not end in `.db`: the game's file system keeps one handle for every path
-that ends in `.db`. What the game does at a mount, and why later mounts win:
+not end in `.db`: the game's file system keeps one handle, for whichever
+path ending in `.db` it opened first, and gives that handle for every path
+that ends in `.db`, so such a patch would be read from `resources.db`. What
+the game does at a mount, and why later mounts win:
 `../docs/notes/client_patch.md` section 0.2.
 
 Checked: `selftest_026g.py` check 27 (`test_mount_patches`), check 15's
 layout of `.srp`'s first page, and `check_mount_patches_026g.py`, which runs
-both hooks and the code on made-up folders (no patch; 1 to 3; 1 to 4 and 6;
-14 and 17 alone; 255 alone; `.patch_1.db`, `_01`, `_0`, `_256`, none of them a
-patch; 0 to 300, of which 1 to 255 are mounted; patch 17 of 14, 17, 20 that fails, the
-retail archive that fails), loaded as is and rebased (Unicorn 2.1.4).
-**Not run: a game.** The tools outside the exe (the updater, the play
-scripts, `make_client_026g.py`) know nothing of the patch files yet.
+both hooks, the code and the game's own `on_mounted_resources` up to its
+next step on made-up folders (no patch; 1 to 3; 1 to 4 and 6; 14 and 17
+alone; 255 alone; `.patch_1.db`, `_01`, `_0`, `_256`, none of them a patch;
+0 to 300, of which 1 to 255 are mounted; 1 and 3 with 2 path not found; a
+folder named `resources.db.patch_3`, patch 1 access denied and patch 255 in
+use, each stopping before any mount; 14, 17, 20 with the first, the middle
+or the last failing to mount; the retail archive failing), loaded as is and
+rebased (Unicorn 2.1.4). Each ends with `resources.db` held once and each
+patch once, nothing unmounted. In a game: the first writing of patch 27 (the
+build numbered 14, `770f7c04…5b09`) mounted patches 14, 15 and 16 in Wine on
+2026-10-16 and they worked; its quit was not watched, and this build has not
+been run. The updater fetches the patch files the server lists and checks
+them (`../../client/updater`), and the play scripts start the game only when
+it says they are ready (`updater_skhid.exe ready`).
 
 ## Not ported, not done
 

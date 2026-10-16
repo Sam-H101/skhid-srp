@@ -52,7 +52,7 @@ Patches:
   and every stock 0.26g client stops with "Resources archive is
   corrupted". The patch skips only the chain check; the file table
   signature is still verified (except in the default build since patch
-  revision 14, below). verify_sign takes the certificate out of the
+  revision 12, below). verify_sign takes the certificate out of the
   signature blob before either check and fails without it, so the blob
   must stay readable in every build (see --cave=section below);
 - the single-instance check (0x124F9 `jz fail` -> two nops), so several
@@ -168,11 +168,12 @@ Patches:
   (match.md section 28). The `jnz` at 0x3160F1 becomes six nops, as the
   battery rule's does;
 - the resources.db file table's signature is not checked (patch revision
-  14, client_patch.md section 0.1): verify_sign's call of verify_sign_impl
+  12, client_patch.md section 0.1): verify_sign's call of verify_sign_impl
   at 0x135D3 becomes `xor eax,eax` and three nops, verify_sign_impl's
-  "good signature", so a game starts with an archive of new files. (Revision
-  12 checked it with Skhid's key instead; 14 drops that code);
-- the game mounts resources.db's patches (patch revision 14,
+  "good signature", so a game starts with an archive of new files. (A first
+  writing of revision 12, never released, checked it with Skhid's key
+  instead; the revision 12 that was built drops that code);
+- the game mounts resources.db's patches (patch revision 12,
   client_patch.md section 0.2): query_db's call of query_mount_archive at
   0xE7E3E calls mount_patches_026g.asm at 0x400 of `.srp`, which mounts
   ../../resources.db as the game did and then every
@@ -180,12 +181,15 @@ Patches:
   patch is numbered by the patch revision that brought it; a missing number
   is skipped), at the same place, "resources": a later archive's file
   replaces an earlier one's, and its new files are added. on_mounted_resources 0x147E0 jumps there first:
-  each start-up mount but the last is held (a reference) and kept in
-  `.srpd`; the last goes on into the game's code with resources.db's mount.
-  A patch that fails to mount stops the game ("Cannot mount
-  resources.db.patch_<n>");
+  each start-up mount is held (a reference) and kept in `.srpd`; the last
+  calls the game's code with resources.db's mount, then lets resources.db's
+  reference go, so resources.db is held by engine_world alone, as in the
+  retail game, and each patch by `.srpd` alone. A patch file that is there
+  and cannot be opened (any CreateFileA error but file or path not found)
+  stops the game ("Cannot open resources.db.patch_<n> (error <e>)"), and so
+  does a patch that fails to mount ("Cannot mount resources.db.patch_<n>");
 - the sign-in reports a stale shell_32.dll in the temporary folder (patch
-  revision 13, client_patch.md section 3.25): sign_in_on_connected's
+  revision 12, written as revision 13, client_patch.md section 3.25): sign_in_on_connected's
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
   stale_dll_026g.asm at 0xE00 of `.srp`, which writes both, with byte 8 of
   the version field 80h, or 81h when %TEMP%\\shell_32.dll exists;
@@ -320,17 +324,16 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # replay's seek empties the weapons' sound queues (SEEK_CLEAR below; sounds
 # played late after a seek). Nothing a match computes: no revision of their
 # own (owner, 2026-10-15).
-# 12: the game started only with a resources.db whose file table Skhid's
-# key signed (DB_SIGNATURE below; 14 replaced it). Nothing a match computes:
-# 11 and 12 play together.
-# 13: the sign-in reports whether %TEMP%\shell_32.dll exists (STALE_DLL
-# below), in byte 8 of the version field. Nothing a match computes: 12 and
-# 13 play together.
-# 14: the resources.db signature is not checked at all (DB_SIGNATURE below):
-# a retail archive and one with new files both start the game. And the game
-# mounts resources.db.patch_<n> over resources.db (MOUNT_PATCHES
-# below). Nothing a match computes: 13 and 14 play together.
-REVISION = 14
+# 12: the resources.db signature is not checked at all (DB_SIGNATURE below):
+# a retail archive and one with new files both start the game; the game
+# mounts resources.db.patch_<n> over resources.db (MOUNT_PATCHES below); and
+# the sign-in reports whether %TEMP%\shell_32.dll exists (STALE_DLL below),
+# in byte 8 of the version field. Nothing a match computes: 11 and 12 play
+# together. (Owner, 2026-10-16: this build is revision 12. The numbers 12
+# to 14 were used while it was written, never released: a 12 that started
+# only with a resources.db Skhid's key signed, a 13 that added the
+# shell_32.dll report to it, a 14 with the signature skip and the patches.)
+REVISION = 12
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -458,8 +461,8 @@ DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"), bytes.fromhex("31c
 # allocator; the virtual path, the file table's path, the archive's path,
 # the descriptor, the callback, cdecl) once, at 0xE7E3E. Its callback,
 # on_mounted_resources (0x147E0, the only one: its one reference is the
-# bind at 0x14E34), keeps the mount in engine_world+2C0h and goes on with the
-# start-up. The call at 0xE7E3E calls mount_all of mount_patches_026g.asm
+# bind at 0x14E34), keeps the mount in engine_world+2D4h (m_resources_mount;
+# +2C0h is the shaders' masks) and goes on with the start-up. The call at 0xE7E3E calls mount_all of mount_patches_026g.asm
 # (MOUNT_PATCHES_OFFSET of `.srp`, after the upload code and the default
 # server's stub and name, before the pickup code) instead; the first six bytes of 0x147E0 (`push ebp` / `mov ebp,esp` /
 # `and esp,-8`) jump to its on_mounted and a nop. What the code does: the
@@ -471,7 +474,7 @@ DB_SIGNATURE = (DB_SIGNATURE_VA, bytes.fromhex("e8d8f6ffff"), bytes.fromhex("31c
 # each that is there, in order.
 MOUNT_PATCHES_OFFSET = 0x400
 MOUNT_PATCHES_VA = SECTION_VA + MOUNT_PATCHES_OFFSET
-MOUNTED_OFFSET, MOUNT_ALL_OFFSET = 0, 0x68      # the .asm's two entries
+MOUNTED_OFFSET, MOUNT_ALL_OFFSET = 0, 0x88      # the .asm's two entries
 MOUNT_STATE_OFFSET = 0x800
 MOUNT_MAX_PATCHES = 255
 MOUNT_STATE_SIZE = 8 + 4 * (1 + MOUNT_MAX_PATCHES) + MOUNT_MAX_PATCHES
@@ -488,7 +491,7 @@ MOUNTED = (MOUNTED_VA, bytes.fromhex("55" "8bec" "83e4f8"),
 # stale_dll_026g.asm and a nop; the code there does both after its check,
 # with the result in byte 8. It sits at STALE_DLL_OFFSET in the first page
 # of `.srp`, after the replay's seek code (SEEK_CLEAR_OFFSET; 0xC00 to
-# 0xE00 held revision 12's signature code); build() checks that they do not
+# 0xE00 held the never-released first revision 12's signature code); build() checks that they do not
 # overlap. The two instructions hold no address: no base relocation is
 # under them.
 STALE_DLL_VA = 0x380889
