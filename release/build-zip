@@ -66,16 +66,13 @@ is_revision "$revision" || die "no REVISION in patch_026g.py of $ref"
 
 # 2. The live ZIP, and its exe's revision.
 live_url=${SKHID_SITE%/}/download
-status=$(curl -sSL --max-time 600 -o "$work/live.zip" -w '%{http_code}' "$live_url" || true)
-[[ $status == 200 ]] || die "GET $live_url answered $status, not 200"
-exe=game/binaries/x86/survarium_skhid.exe
-live_revision=unknown
-if zip_extract "$work/live.zip" "$exe" "$work/live.exe"; then live_revision=$(exe_revision "$work/live.exe"); fi
+fetch_site_zip "$SKHID_SITE" "$work/live.zip"
+live_revision=$(zip_revision "$work/live.zip" "$work/live.exe")
 say "patch revision: $revision on $ref, $live_revision live"
 if [[ $live_revision == unknown ]]; then
     say "WARNING: the live exe's revision cannot be read; compare by hand"
 elif ((revision <= live_revision)); then
-    die "the exe revision did not change ($revision on $ref, $live_revision live): bump REVISION in patch_026g.py first (skill step 2)"
+    die "the exe revision did not change ($revision on $ref, $live_revision live): bump REVISION in patch_026g.py first (the bump PR)"
 fi
 
 # 3. The build.
@@ -92,7 +89,7 @@ zip=$work/Survarium-0.26g-srp-files.zip
     tail -n 30 "$work/make_client.log" >&2
     die "make_client_026g.py failed (log: $work/make_client.log)"
 }
-zip_extract "$zip" "$exe" "$work/new.exe" || die "$zip has no $exe"
+zip_extract "$zip" "$ZIP_EXE" "$work/new.exe" || die "$zip has no $ZIP_EXE"
 built_revision=$(exe_revision "$work/new.exe")
 [[ $built_revision == "$revision" ]] || die "the built exe says revision $built_revision, not $revision"
 

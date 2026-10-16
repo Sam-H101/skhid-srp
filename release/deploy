@@ -2,7 +2,9 @@
 # usage: release/deploy --zip <zip> --server-data <db> --revision <n> [--label <word>] [--dry-run]
 #
 # Puts a release on the live host ($SKHID_LIVE through $SKHID_JUMP, in
-# $SKHID_LIVE_DIR), in the maintenance window (skill step 7):
+# $SKHID_LIVE_DIR), in a maintenance window planned by hand. release/release.sh
+# does the same and more (maintenance, staging, the build) in one run; this is
+# the step on its own:
 #   1. checks here: the ZIP's exe says patch revision <n>, the server data
 #      reads (srp-game-data info) and offers no patch above <n>;
 #   2. archives the current ZIP and server data in old-downloads/
@@ -11,7 +13,8 @@
 #      chmod 644, mv into place;
 #   4. sets SRP_MIN_PATCH_REVISION=<n> in .env (that one line; the file is
 #      never printed);
-#   5. docker compose up -d --no-deps srp26 (says how many matches run);
+#   5. docker compose up -d --no-deps --force-recreate srp26 (says how many
+#      matches run);
 #   6. checks $SKHID_SITE/patches (what the server data offers) and
 #      $SKHID_SITE/api/client-files (the ZIP's sha256 and size).
 # Every write on the live host asks y/N first, showing the command; a no
@@ -20,8 +23,7 @@
 #   --label <word>  names the archived files (default before-r<n>)
 #   --dry-run       prints every command, runs none on the live host
 #
-# Server code changed? Build the image first (skill step 7.5); this script
-# only restarts.
+# Server code changed? Build the image first; this script only restarts.
 . "$(dirname "$0")/lib.sh"
 
 zip='' data='' revision='' label=''
@@ -43,101 +45,55 @@ label=${label:-before-r$revision}
 [[ -f $zip ]] || die "$zip: no such file"
 [[ -f $data ]] || die "$data: no such file"
 need_cmds ssh curl sha256sum jq od
-load_env SKHID_JUMP SKHID_LIVE SKHID_LIVE_DIR SKHID_SITE
+use_target live
 
 # 1. Here.
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-zip_extract "$zip" game/binaries/x86/survarium_skhid.exe "$work/exe" ||
-    die "$zip has no game/binaries/x86/survarium_skhid.exe"
-zip_revision=$(exe_revision "$work/exe")
-[[ $zip_revision == "$revision" ]] || die "$zip: its exe says patch revision $zip_revision, not $revision"
-bin=$(game_data_bin)
-info=$("$bin" info "$data") || die "$data: srp-game-data info refused it"
-# `patch_<n> <sha256> <url>` of each patch the data offers.
-offered=$(sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) url \(.*\)$/\1 \2 \3/p' <<<"$info")
-while read -r key _; do
-    [[ -n $key ]] || continue
-    ((${key#patch_} <= revision)) || die "$data offers $key, above revision $revision"
-done <<<"$offered"
-zip_sha=$(sha256_of "$zip") zip_size=$(size_of "$zip") data_sha=$(sha256_of "$data")
-say "ZIP: $zip, $zip_size bytes, sha256 $zip_sha, patch revision $revision"
-say "server data: $data, sha256 $data_sha; /patches will offer:"
-while read -r line; do
-    if [[ -n $line ]]; then say "  $line"; fi
-done <<<"$offered"
-if [[ -z $offered ]]; then say "  nothing ({})"; fi
-expected=$(jq -cnS --arg list "$offered" '$list | split("\n") | map(select(length > 0) | split(" ")
-    | {key: .[0], value: {sha256: .[1], url: .[2]}}) | from_entries')
+check_release_files "$zip" "$data" "$revision" "$work"
+say "ZIP: $zip, $ZIP_SIZE bytes, sha256 $ZIP_SHA, patch revision $revision"
+say "server data: $data, sha256 $DATA_SHA; /patches will offer:"
+say_offered
 
-D=$(q "$SKHID_LIVE_DIR")
-ZIP_NAME=Survarium-0.26g-srp-files.zip
-DATA_NAME=server-game-data.db
+D=$(q "$TARGET_DIR")
 
 # What is there now: the two files, the setting's line(s), the matches.
 say
 say "on the live host now:"
 read_live "cd $D && ls -l download/$ZIP_NAME download/$DATA_NAME 2>&1; grep -E '^SRP_MIN_PATCH_REVISION=' .env || echo 'SRP_MIN_PATCH_REVISION: not in .env'"
-if ((!DRY_RUN)); then
-    lines=$(on_live "cd $D && grep -c '^SRP_MIN_PATCH_REVISION=' .env || true")
-    ((lines <= 1)) || die ".env has SRP_MIN_PATCH_REVISION $lines times; fix it by hand first"
-fi
+if ((!DRY_RUN)); then current_min_revision >/dev/null; fi
 
 # 2. The archive.
-stamp=$(date -u +%Y%m%d-%H%M)
-old_zip=old-downloads/${ZIP_NAME%.zip}-$stamp-$label.zip
-old_data=old-downloads/${DATA_NAME%.db}-$stamp-$label.db
-write_on live "cd $D && mkdir -p old-downloads && if test -e download/$ZIP_NAME; then cp -p download/$ZIP_NAME $old_zip; fi && if test -e download/$DATA_NAME; then cp -p download/$DATA_NAME $old_data; fi && ls -l old-downloads | tail -n 4"
+archive_names "$(date -u +%Y%m%d-%H%M)" "$label"
+write_on live "$(archive_command)"
 
 # 3. The files.
 put() {
-    local file=$1 name=$2 sha=$3 there
-    write_on live "cat > $D/download/$name.tmp" "$file"
-    if ((!DRY_RUN)); then
-        there=$(on_live "sha256sum < $D/download/$name.tmp")
-        [[ ${there%% *} == "$sha" ]] || die "download/$name.tmp has sha256 ${there%% *} on the host, not $sha; left as .tmp"
-        say "download/$name.tmp: sha256 $sha, as here"
-    else
-        say "[dry run] then: sha256sum < $D/download/$name.tmp must be $sha"
-    fi
-    write_on live "cd $D/download && chmod 644 $name.tmp && mv $name.tmp $name"
+    stage_upload "$1" "$2" "$3"
+    write_on live "cd $D/download && mv $2.tmp $2"
 }
-put "$data" "$DATA_NAME" "$data_sha"
-put "$zip" "$ZIP_NAME" "$zip_sha"
+put "$data" "$DATA_NAME" "$DATA_SHA"
+put "$zip" "$ZIP_NAME" "$ZIP_SHA"
 
 # 4. The setting.
-write_on live "cd $D && if grep -q '^SRP_MIN_PATCH_REVISION=' .env; then sed -i 's/^SRP_MIN_PATCH_REVISION=.*/SRP_MIN_PATCH_REVISION=$revision/' .env; else { test -z \"\$(tail -c 1 .env)\" || echo; echo SRP_MIN_PATCH_REVISION=$revision; } >> .env; fi && grep -E '^SRP_MIN_PATCH_REVISION=' .env"
+write_on live "$(min_revision_command "$revision")"
 
 # 5. The restart.
-stats=$(curl -sS --max-time 20 "${SKHID_SITE%/}/api/stats" || true)
+stats=$(curl -sS --max-time 20 "$TARGET_SITE/api/stats" || true)
 matches=$(jq -r '.matches // "unknown"' <<<"$stats" 2>/dev/null || echo unknown)
 say
 say "matches running now: $matches (the restart ends every one)"
-write_on live "cd $D && docker compose up -d --no-deps srp26"
+write_on live "$(restart_command)"
 
 # 6. The checks.
 if ((DRY_RUN)); then
-    say "[dry run] then: GET ${SKHID_SITE%/}/patches must be $expected"
-    say "[dry run] and GET ${SKHID_SITE%/}/api/client-files must say sha256 $zip_sha, size $zip_size"
-    say "[dry run] rollback: $old_zip and $old_data back into download/, SRP_MIN_PATCH_REVISION back, up -d"
+    say "[dry run] then: GET $TARGET_SITE/patches must be $EXPECTED"
+    say "[dry run] and GET $TARGET_SITE/api/client-files must say sha256 $ZIP_SHA, size $ZIP_SIZE"
+    say "[dry run] rollback: $OLD_ZIP and $OLD_DATA back into download/, SRP_MIN_PATCH_REVISION back, up -d"
     exit 0
 fi
-read_live "cd $D && docker compose ps srp26 && docker compose logs --tail=20 srp26"
-patches=
-for _ in $(seq 30); do
-    status=$(http_get "${SKHID_SITE%/}/patches" "$work/patches")
-    [[ $status == 200 ]] && { patches=$(jq -cS . "$work/patches" 2>/dev/null || true); break; }
-    sleep 2
-done
-[[ -n $patches ]] || die "GET ${SKHID_SITE%/}/patches gave no list (status $status)"
-[[ $patches == "$expected" ]] || die "/patches is $patches, not $expected"
-say "/patches: $patches, as the server data says"
-status=$(http_get "${SKHID_SITE%/}/api/client-files" "$work/client-files")
-[[ $status == 200 ]] || die "GET /api/client-files answered $status"
-if ! grep -qx "sha256 $zip_sha" "$work/client-files" || ! grep -qx "size $zip_size" "$work/client-files"; then
-    die "/api/client-files is not the new ZIP: $(tr '\n' ' ' <"$work/client-files")"
-fi
-say "/api/client-files: the new ZIP (sha256 $zip_sha, $zip_size bytes)"
+read_live "cd $D && $TARGET_COMPOSE ps srp26 && $TARGET_COMPOSE logs --tail=20 srp26"
+check_served "$work"
 say
-say "deployed revision $revision. Archived: $SKHID_LIVE_DIR/$old_zip, $SKHID_LIVE_DIR/$old_data"
-say "Now: a game updates, downloads the patches, signs in; an old game is refused (skill step 8)."
+say "deployed revision $revision. Archived: $TARGET_DIR/$OLD_ZIP, $TARGET_DIR/$OLD_DATA"
+say "Now: a game updates, downloads the patches, signs in; an old game is refused."
