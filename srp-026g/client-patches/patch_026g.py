@@ -364,7 +364,7 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # original opened any text the server sent with ShellExecute. Nothing a match
 # computes: 11 to 14 play together. A server sends a replay link only to a
 # game that says 14 or more (an older one would open the text as a file).
-REVISION = 14
+REVISION = 15
 # The first revision whose default build takes the lobby's replay link
 # (REPLAY_LINK): the server's replay rule asks for it
 # (session::v026g::replays::MIN_REVISION).

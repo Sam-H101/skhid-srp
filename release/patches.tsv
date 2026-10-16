@@ -11,4 +11,5 @@
 # release's preflight.
 # One patch a line, in revision order, tabs between:
 # name	sha256	size	urls
-resources.db.patch_12	2b771e4b2040707434bb17aa27b1965aacba2ca355eb38634f504b61d6c8fab3	86199749	http://2.28.121.133:8090/resources.db.patch_12
+resources.db.patch_12	2b771e4b2040707434bb17aa27b1965aacba2ca355eb38634f504b61d6c8fab3	86199749	http://2.28.121.133:8090/resources.db.patch_12 https://drive.usercontent.google.com/download?id=1QOQ_EAjRR9vLYgE24LUvat49RxL3c4Ku&export=download&confirm=t
+resources.db.patch_14	60a69dcc6b661d09c3143fb74d6806f6f1ba6d465af3c29bfa669a58ce9a404c	848021018	http://2.28.121.133:8090/resources.db.patch_14 https://drive.usercontent.google.com/download?id=1oT7Z7CSvDWWLYFSoe0WDXRaCRjsedpma&export=download&confirm=t
