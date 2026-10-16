@@ -736,6 +736,7 @@ fn soak_tuned(
             clock,
             time_left_s: (limit_ms - clock) as f32 / 1000.0,
             total_s: limit_s as f32,
+            playing: true,
         });
         notes.iter().for_each(|note| out.decisions.note(note));
         out.notes.extend(notes);
@@ -889,6 +890,87 @@ fn a_short_soak_with_its_searches_in_slices_still_plays() {
     assert!(out.least_moved_m > 20.0, "{}", out.least_moved_m);
     // Its bots are gone, and with them this thread's search arrays.
     assert_eq!(mapdata::search_memory_bytes(), 0);
+}
+
+/// Through the start countdown the game holds the players where they
+/// stand: the bots rest (their inputs keep the clock going, with no key
+/// and no turn) and go only when play begins.
+#[test]
+fn the_bots_rest_through_the_start_countdown() {
+    let world = soak_world();
+    let teams: Vec<u8> = (0..4).map(|p| u8::from(p >= 2)).collect();
+    let mut bots = Bots::new(
+        0x50AC,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true; 4],
+        &[None; 4],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world, &teams, 1, None, None);
+    (0..teams.len()).for_each(|place| bots.entered(place, true, 0));
+    let start: Vec<Vec3> = game.bodies.iter().map(|body| body.feet).collect();
+    let play_from = 15_000;
+    let (mut clock, mut next_world) = (0, 1_000);
+    let mut going = 0;
+    while clock < play_from + 10_000 {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        let playing = clock >= play_from;
+        if clock == play_from {
+            for (body, start) in game.bodies.iter().zip(&start) {
+                assert!(
+                    body.feet.distance_xz(*start) < 0.1,
+                    "{:?} from {start:?}",
+                    body.feet
+                );
+            }
+        }
+        let (made, _) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 600.0,
+            playing,
+        });
+        for made in made {
+            let moves =
+                made.input.actions & (key::FORWARD | key::BACK | key::LEFT | key::RIGHT) != 0;
+            if playing {
+                going += usize::from(moves);
+            } else {
+                assert_eq!(made.input.actions, 0, "{made:?}");
+                assert!(made.input.rotation.iter().all(|&b| b == 0), "{made:?}");
+            }
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            game.inputs[made.place].push_back((
+                made.time,
+                made.input.actions,
+                turn,
+                None,
+                Arms::fallback().primary.0,
+            ));
+        }
+    }
+    assert!(going > 100, "{going} inputs that move after the start");
 }
 
 /// The whole match (minutes of play: `cargo test --release -- --ignored`).
@@ -1219,6 +1301,7 @@ fn real_bot_cost() {
                     clock,
                     time_left_s: (limit_ms - clock) as f32 / 1000.0,
                     total_s: limit_s as f32,
+                    playing: true,
                 };
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
@@ -1471,7 +1554,8 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
                 &Clock {
                     clock: 6_000,
                     time_left_s: 0.0,
-                    total_s: 0.0
+                    total_s: 0.0,
+                    playing: true,
                 },
                 &bots.tuning.kin,
                 None
@@ -1483,6 +1567,7 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
         clock: 9_000,
         time_left_s: 600.0,
         total_s: 900.0,
+        playing: true,
     });
     assert!(made.iter().all(|made| made.place != 3));
 }

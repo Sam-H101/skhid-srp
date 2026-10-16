@@ -606,6 +606,7 @@ impl Bots {
             clock,
             time_left_s: 0.0,
             total_s: 0.0,
+            playing: true,
         };
         let view = self.tracker.view(&at, &self.tuning.kin, world.as_deref());
         candidates
@@ -770,6 +771,7 @@ impl Bots {
             clock,
             time_left_s: 0.0,
             total_s: 0.0,
+            playing: true,
         };
         let before = self.tracker.view(&at(time), &self.tuning.kin, None);
         self.tracker.facts(facts);
@@ -846,7 +848,7 @@ impl Bots {
         let view = self
             .tracker
             .view(&clock, &self.tuning.kin, world.as_deref());
-        if self.tactics.is_some() {
+        if self.tactics.is_some() && clock.playing {
             for team in 0..2u8 {
                 if now >= self.teams[usize::from(team)].next_commander {
                     self.commander(team, &view, &mut notes);
@@ -861,7 +863,10 @@ impl Bots {
             if self.bots[index].is_none() {
                 continue;
             }
-            self.think(index, &view, &mut rays, &mut notes);
+            // Before play begins: no plays, no routes, only rest.
+            if clock.playing {
+                self.think(index, &view, &mut rays, &mut notes);
+            }
             self.ticks(index, &clock, &view, &mut made);
         }
         (made, notes)
@@ -1273,7 +1278,7 @@ impl Bots {
                 .and_then(|body| body.estimate().copied());
             let me = view.place(bot.place).filter(|p| p.alive);
             let decision = match (estimate, me, self.tactics.as_ref()) {
-                (Some(at), Some(me), Some(tactics)) => {
+                (Some(at), Some(me), Some(tactics)) if clock.playing => {
                     // The base pitch: `drive_tick` adds the kick.
                     let me = PlaceView {
                         feet: at.feet,

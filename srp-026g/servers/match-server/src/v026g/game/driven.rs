@@ -695,6 +695,8 @@ impl Game {
             clock,
             time_left_s: left_ms as f32 / 1000.0,
             total_s: total_ms as f32 / 1000.0,
+            playing: self.rule.state == rules::state::IN_PROCESS
+                && self.rule.start.is_some_and(|start| clock >= start),
         }
     }
 
