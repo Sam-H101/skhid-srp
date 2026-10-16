@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # usage: release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
-#                           [--server-code auto|yes|no]
+#                           [--revision <n>] [--server-code auto|yes|no]
 #                           [--minutes <n> | --no-maintenance] [--now]
 #                           [--match-wait <minutes>] [--label <word>]
 #                           [--ref <branch>] [--dry-run] [--yes --i-know]
 #
-# A whole release of origin/main in one run. After the preflight it waits
+# A whole release of origin/main in one run, and its record. Its revision
+# is the live exe's + 1 (--test: the test exe's + 1; or --revision <n>),
+# built so without editing anything (build-zip --revision); after it went
+# out live, the release sets REVISION and tags itself (step 7). A feature PR
+# never changes REVISION or the revision table. After the preflight it waits
 # for the go; at the go players get a maintenance countdown at once, to end
 # 30 seconds after the last running match does (or one of --minutes <n>),
 # so Play locks and no match starts after it; during the countdown
@@ -18,8 +22,12 @@
 # running or not (they end without results):
 #   1. preflight, nothing players see: ssh to the jump host and through it to
 #      the live host, the patches server, nix, $SKHID_GAME, $SKHID_STOCK_DB
-#      (its sha256), free disk here and there, srp-game-data, main's patch
-#      REVISION above the live exe's, the admin page answering the jump
+#      (its sha256), free disk here and there, srp-game-data, the
+#      release's revision <n> (the target exe's + 1, or --revision <n> above
+#      it), not below main's REVISION; live: main's REVISION (the last
+#      release's) not below the live exe's and below <n>, the tag
+#      026g-rev<n> and the branch release/record-rev<n> not on origin, gh
+#      signed in; the admin page answering the jump
 #      host (not with --no-maintenance), no maintenance planned already, no
 #      other release running (the lock on the jump host), no release folder
 #      left unfinished, download/ on the same file system as the folder;
@@ -30,10 +38,10 @@
 #      and sha256, every URL of it giving that file as the players' updater
 #      fetches it (redirects followed, not a web page, the size and sha256:
 #      downloaded whole once, then checked by its first bytes; the cache is
-#      ~/.cache/skhid-release/patch-urls.checked), none above main's
-#      REVISION, and patch_12 (the menus) in it from revision 12 on (or the
+#      ~/.cache/skhid-release/patch-urls.checked), none above the release's
+#      revision, and patch_12 (the menus) in it from revision 12 on (or the
 #      --resources file); with
-#      --resources, the file is resources.db.patch_<main's REVISION>,
+#      --resources, the file is resources.db.patch_<the release's revision>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
 #      which server code differs between main and the target's tree;
 #   2. takes the release lock, then waits for the go: the owner's word that
@@ -58,7 +66,7 @@
 #   4. during the countdown: release/upload-patch (with --resources:
 #      publishes it and adds its row to the list), release/build-server-db
 #      (of the list), release/build-zip (--ref: the commit checked in step
-#      1); checks the two files as release/deploy does; makes the release
+#      1; --revision: the release's); checks the two files as release/deploy does; makes the release
 #      folder $TARGET_DIR/release-rev<rev>-<UTC YYYYMMDD-HHMM>[-<label>] and
 #      stages both in it (sha256 checked there, chmod 644), with
 #      changed.txt; with server code to build: tags the running image (by
@@ -84,7 +92,20 @@
 #      the list's patches), and only then puts the ZIP in place and checks
 #      /api/client-files. A failed check prints srp's log and runs the
 #      folder's rollback (srp.db, image, data, ZIP, setting, source: as
-#      before), with --now too. The run's output is the folder's release.log.
+#      before), with --now too. The run's output is the folder's release.log;
+#   7. live only, once it all went out (never after a stop or a rollback):
+#      the record. An annotated tag 026g-rev<n> on the commit that was built
+#      (the UTC time, the ZIP's and the server data's sha256, the exe's),
+#      pushed; then the commit "Release revision <n>" on that commit:
+#      REVISION = <n> in patch_026g.py, its row in the revision table of
+#      srp-026g/client-patches/README.md (the time, the exe's sha256 with
+#      and without the server, the ZIP's, what it shipped: the merged PRs
+#      since the tag before), an entry in CHANGELOG-SKHID-026G.md for the
+#      owner to word, and release/patches.tsv as offered; pushed as
+#      release/record-rev<n>, its PR opened and merged as a merge commit
+#      (gh). What gh could not do (the merge, when the token may not) is said
+#      at the end, loudly, and the run ends with 1: players have the
+#      release, main does not say so yet.
 # Stopped before the swap (a failure, a no, Ctrl-C) at any point after the
 # go: the maintenance cancelled when it was planned, the staged files
 # removed (the folder stays, state stopped), the image tag put back; the
@@ -92,6 +113,9 @@
 # none is ever deleted). A stop before the go only frees the lock.
 #
 #   --resources <file>  new content: resources.db.patch_<rev>, published first
+#   --revision <n>      the release's revision instead of the target exe's + 1;
+#                       live: above it (one released once is never used again);
+#                       --test: any from REVISION up
 #   --test              to the test environment ($SKHID_TEST in $SKHID_TEST_DIR,
 #                       compose project srptest, $SKHID_TEST_SITE), with the
 #                       test patches server ($SKHID_TEST_PATCHES_*, never the
@@ -134,12 +158,13 @@ BUILD_ZIP=${SKHID_TEST_BUILD_ZIP:-$here/build-zip}
 MINUTE=${SKHID_TEST_SECONDS_PER_MINUTE:-60}
 STOCK_SHA=${SKHID_TEST_STOCK_SHA256:-$STOCK_DB_SHA256}
 
-ref=main resources='' test_server=0 server_code=auto minutes='' label='' yes=0 i_know=0
+ref=main resources='' revision_arg='' test_server=0 server_code=auto minutes='' label='' yes=0 i_know=0
 no_maint=0 match_wait='' now=0
 while (($#)); do
     case $1 in
     -h | --help) usage ;;
     --resources) (($# >= 2)) || usage 1; resources=$2; shift 2 ;;
+    --revision) (($# >= 2)) || usage 1; revision_arg=$2; shift 2 ;;
     --test) test_server=1; shift ;;
     --server-code) (($# >= 2)) || usage 1; server_code=$2; shift 2 ;;
     --minutes) (($# >= 2)) || usage 1; minutes=$2; shift 2 ;;
@@ -156,6 +181,7 @@ while (($#)); do
 done
 ((yes == i_know)) || die "--yes goes with --i-know (both or neither): without a terminal to ask, this restarts the live server"
 [[ $server_code =~ ^(auto|yes|no)$ ]] || die "--server-code is auto, yes or no"
+[[ -z $revision_arg ]] || is_revision "$revision_arg" || die "--revision $revision_arg: a revision is a whole number from 1 to 255"
 [[ -z $minutes || $no_maint == 0 ]] || die "--minutes is the countdown, and --no-maintenance has none"
 [[ -z $minutes || $now == 0 ]] || die "--minutes is the countdown, and --now has none"
 # --now: no maintenance at all, the swap as soon as all is staged.
@@ -497,6 +523,183 @@ count_ended_matches() {
     fi
 }
 
+# 7. The record of a live release, once it went out: the tag on the commit
+# that was built, and the commit "Release revision <n>" (REVISION, the
+# revision table's row, a changelog entry to word, the offered-patch list)
+# on a branch, its PR merged as a merge commit. Nothing of it before the
+# release went out: a stop or a rollback leaves none. What could not be done
+# is said in RECORD_PROBLEMS (the run then ends with 1).
+release_tag() { printf '026g-rev%s' "$1"; }
+record_branch() { printf 'release/record-rev%s' "$1"; }
+RECORD_PROBLEMS=()
+record_problem() {
+    RECORD_PROBLEMS+=("$*")
+    say "  NOT DONE  $*"
+}
+
+# The merged PRs of main from the last release's tag (before the first tag:
+# from the last change of REVISION on main) to <commit>, oldest first: one
+# `#<n> <title>` a line, the record PRs left out. SHIPPED_SINCE: that start.
+SHIPPED_SINCE=''
+shipped_prs() {
+    local commit=$1 sha name n best=0
+    declare -A tags=()
+    while read -r sha name; do
+        [[ $name =~ ^refs/tags/026g-rev([0-9]+)(\^\{\})?$ ]] || continue
+        n=${BASH_REMATCH[1]}
+        # An annotated tag's commit is the peeled (^{}) line.
+        if [[ -n ${BASH_REMATCH[2]} || -z ${tags[$n]:-} ]]; then tags[$n]=$sha; fi
+    done < <(git -C "$REPO" ls-remote origin 'refs/tags/026g-rev*' 2>/dev/null || true)
+    SHIPPED_SINCE=''
+    for n in "${!tags[@]}"; do
+        if ((n < rev && n > best)); then best=$n SHIPPED_SINCE=${tags[$n]}; fi
+    done
+    if [[ -z $SHIPPED_SINCE ]] || ! git -C "$REPO" cat-file -e "$SHIPPED_SINCE^{commit}" 2>/dev/null; then
+        SHIPPED_SINCE=$(git -C "$REPO" log --first-parent --diff-merges=first-parent -1 --format=%H \
+            -G '^REVISION = ' "$commit" -- srp-026g/client-patches/patch_026g.py 2>/dev/null || true)
+    fi
+    git -C "$REPO" log --first-parent --merges --format='%s%x1f%b%x1e' "${SHIPPED_SINCE:+$SHIPPED_SINCE..}$commit" |
+        awk 'BEGIN { RS = "\036"; FS = "\037" }
+            {
+                subject = $1; sub(/^\n+/, "", subject)
+                if (subject !~ /^Merge pull request #[0-9]+ from [^ ]+/) next
+                n = subject; sub(/^Merge pull request #/, "", n); sub(/ .*/, "", n)
+                from = subject; sub(/^Merge pull request #[0-9]+ from /, "", from); sub(/ .*/, "", from)
+                if (from ~ /\/release\/record-rev[0-9]+$/) next
+                title = $2; sub(/^\n+/, "", title); sub(/\n.*/, "", title)
+                if (title == "") title = from
+                print "#" n " " title
+            }' | tac
+}
+
+# The row of the revision table (client-patches/README.md) of this release.
+readme_row() { # <shipped: lines>
+    local shipped='' line content
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        shipped+="${shipped:+; }${line//|/\\|}"
+    done <<<"$1"
+    if [[ -n ${published:-} ]]; then
+        content="Its content: \`${resources##*/}\` ($(size_of "$resources") bytes, sha256 \`$(sha256_of "$resources")\`)"
+    else
+        content="No content patch of its own"
+    fi
+    printf '| Revision %s | Released %s UTC (tag `%s`, `main` %s). Shipped: %s. Without a server sha256 `%s`, with `--server=%s` `%s`. The ZIP: %s bytes, sha256 `%s`; the server data: sha256 `%s`. %s |\n' \
+        "$rev" "$(date -u -d "@$released_at" '+%Y-%m-%d %H:%M')" "$(release_tag "$rev")" "${main_commit:0:7}" \
+        "${shipped:-nothing merged since the release before}" "$EXE_WITHOUT" "$SKHID_GAME_SERVER" "$EXE_WITH" \
+        "$ZIP_SIZE" "$ZIP_SHA" "$DATA_SHA" "$content"
+}
+
+# The record's files in the worktree <wt>: REVISION, the table's row, the
+# changelog's entry, the list. False when one cannot be written.
+record_files() { # <wt> <shipped>
+    local wt=$1 shipped=$2 file line stub
+    file=$wt/srp-026g/client-patches/patch_026g.py
+    sed -i "s/^REVISION = [0-9][0-9]*\$/REVISION = $rev/" "$file" &&
+        [[ $(sed -n 's/^REVISION = \([0-9][0-9]*\)$/\1/p' "$file") == "$rev" ]] || {
+        record_problem "REVISION = $rev could not be written in patch_026g.py"
+        return 1
+    }
+    file=$wt/srp-026g/client-patches/README.md
+    if [[ -f $file ]]; then
+        ROW=$(readme_row "$shipped") awk '{ line[NR] = $0 }
+            /^\| Revision [0-9]+ \|/ { if ($3 + 0 >= best) { best = $3 + 0; at = NR } }
+            END {
+                for (i = 1; i <= NR; i++) { print line[i]; if (i == at) print ENVIRON["ROW"] }
+                if (!at) print ENVIRON["ROW"]
+            }' "$file" >"$file.new" && mv "$file.new" "$file"
+    else
+        record_problem "no srp-026g/client-patches/README.md: the revision table's row is not written"
+    fi
+    file=$wt/CHANGELOG-SKHID-026G.md
+    stub="## $(LC_ALL=C date -u -d "@$released_at" '+%-d %b, %H:%M') — TODO: the owner's words (update required)"$'\n\n'
+    stub+="<!-- Revision $rev ($(release_tag "$rev")), released $(date -u -d "@$released_at" '+%Y-%m-%d %H:%M') UTC. To be worded for players; what it shipped: -->"$'\n\n'
+    while IFS= read -r line; do
+        [[ -z $line ]] || stub+="- TODO: $line"$'\n'
+    done <<<"$shipped"
+    [[ -n $shipped ]] || stub+="- TODO: nothing was merged since the release before (the server and the ZIP as they were, a new revision)"$'\n'
+    [[ -f $file ]] || printf '# Skhid 0.26g — what changed\n\n---\n' >"$file"
+    STUB=$stub awk '{ print } $0 == "---" && !done { print ""; printf "%s", ENVIRON["STUB"]; done = 1 }
+        END { if (!done) { print ""; printf "%s", ENVIRON["STUB"] } }' "$file" >"$file.new" && mv "$file.new" "$file"
+    mkdir -p "$wt/release"
+    LIST_RECORDED=0
+    if ! cmp -s "$PATCH_LIST" "$wt/release/patches.tsv"; then
+        cp "$PATCH_LIST" "$wt/release/patches.tsv"
+        LIST_RECORDED=1
+    fi
+}
+
+record_release() {
+    local tag branch wt shipped url answer
+    tag=$(release_tag "$rev") branch=$(record_branch "$rev") wt=$work/record
+    progress "7. the record: tag $tag on $(git -C "$REPO" log -1 --format=%h "$main_commit"), the commit \"Release revision $rev\" on main"
+    EXE_WITH=$(awk '$2 == "with-server" { print $1 }' "$work/zip/exe.sha256" 2>/dev/null || true)
+    EXE_WITHOUT=$(awk '$2 == "without-server" { print $1 }' "$work/zip/exe.sha256" 2>/dev/null || true)
+    EXE_WITH=${EXE_WITH:-unknown} EXE_WITHOUT=${EXE_WITHOUT:-unknown}
+    shipped=$(shipped_prs "$main_commit")
+    say "  shipped (merged PRs since ${SHIPPED_SINCE:0:7}): $(if [[ -n $shipped ]]; then tr '\n' ';' <<<"$shipped" | sed 's/;$//; s/;/; /g'; else printf 'none'; fi)"
+    # The tag, on the commit that was built.
+    {
+        say "Revision $rev, released $(date -u -d "@$released_at" '+%Y-%m-%d %H:%M:%S') UTC"
+        say
+        say "The players' ZIP, $ZIP_NAME: $ZIP_SIZE bytes, sha256 $ZIP_SHA"
+        say "The server data, $DATA_NAME: sha256 $DATA_SHA"
+        say "The exe: sha256 $EXE_WITH (--server=$SKHID_GAME_SERVER), $EXE_WITHOUT without a server"
+        if [[ -n ${published:-} ]]; then say "Its content: ${resources##*/}, sha256 $(sha256_of "$resources")"; fi
+        say
+        say "Built from this commit with patch revision $rev (release/build-zip --revision $rev);"
+        say "patch_026g.py here says REVISION $main_rev, the release before."
+    } >"$work/tag.msg"
+    if git -C "$REPO" tag -a "$tag" "$main_commit" -F "$work/tag.msg" 2>"$work/tag.log" &&
+        git -C "$REPO" push --quiet origin "refs/tags/$tag" 2>>"$work/tag.log"; then
+        say "  done     tag $tag on ${main_commit:0:7}, pushed"
+    else
+        record_problem "the tag $tag: $(tr '\n' ' ' <"$work/tag.log")— by hand: git tag -a $tag $main_commit -F $work/tag.msg && git push origin refs/tags/$tag"
+    fi
+    # The commit, on a branch from the commit that was built, and its PR.
+    if ! git -C "$REPO" worktree add --quiet --detach "$wt" "$main_commit" 2>"$work/record.log"; then
+        record_problem "the record's worktree: $(tr '\n' ' ' <"$work/record.log")"
+        return 0
+    fi
+    record_files "$wt" "$shipped" || { git -C "$REPO" worktree remove --force "$wt"; return 0; }
+    {
+        say "Release revision $rev"
+        say
+        say "Released $(date -u -d "@$released_at" '+%Y-%m-%d %H:%M') UTC by release/release.sh from main ${main_commit:0:7} (tag $tag):"
+        say "REVISION $rev in patch_026g.py, its row in the revision table of"
+        if ((LIST_RECORDED)); then
+            say "srp-026g/client-patches/README.md, a changelog entry for the owner to word,"
+            say "the offered-patch list (release/patches.tsv) as the server offers it now."
+        else
+            say "srp-026g/client-patches/README.md, a changelog entry for the owner to word."
+        fi
+        say
+        say "Shipped:"
+        if [[ -n $shipped ]]; then sed 's/^/- /' <<<"$shipped"; else say "- nothing merged since the release before"; fi
+        say
+        say "The ZIP: sha256 $ZIP_SHA; the server data: sha256 $DATA_SHA."
+    } >"$work/record.msg"
+    if ! { git -C "$wt" add -A && git -C "$wt" commit --quiet -F "$work/record.msg"; } >>"$work/record.log" 2>&1; then
+        record_problem "the record's commit: $(tail -n 3 "$work/record.log" | tr '\n' ' ')"
+    elif ! git -C "$wt" push --quiet origin "HEAD:refs/heads/$branch" >>"$work/record.log" 2>&1; then
+        record_problem "the push of $branch: $(tail -n 3 "$work/record.log" | tr '\n' ' ')— the commit is $(git -C "$wt" rev-parse HEAD) (in $REPO)"
+    else
+        say "  done     the commit \"Release revision $rev\" ($(git -C "$wt" log -1 --format=%h)) on $branch, pushed"
+        if ! answer=$(cd "$wt" && gh pr create --base main --head "$branch" --title "Release revision $rev" --body-file "$work/record.msg" 2>&1); then
+            record_problem "the record's PR: gh pr create: $(tail -n 2 <<<"$answer" | tr '\n' ' ')— open it by hand: $branch to main"
+        else
+            url=$(grep -Eo 'https?://[^ ]+' <<<"$answer" | tail -n 1)
+            say "  done     the PR: ${url:-$answer}"
+            if answer=$(cd "$wt" && gh pr merge "${url:-$branch}" --merge 2>&1); then
+                say "  done     the PR merged (a merge commit): main has REVISION $rev"
+            else
+                record_problem "the record's PR ${url:-$branch} is OPEN, NOT MERGED: gh could not merge it ($(tail -n 2 <<<"$answer" | tr '\n' ' ')): merge it (a merge commit) before the next release"
+            fi
+        fi
+    fi
+    git -C "$REPO" worktree remove --force "$wt" 2>/dev/null || true
+}
+
 # What a stop does, by phase.
 on_exit() {
     local status=$?
@@ -528,6 +731,7 @@ on_exit() {
     esac
     lock_drop
     if [[ -d $work/zip/src ]]; then git -C "$REPO" worktree remove --force "$work/zip/src" 2>/dev/null; fi
+    if [[ -d $work/record ]]; then git -C "$REPO" worktree remove --force "$work/record" 2>/dev/null; fi
     exit "$status"
 }
 trap on_exit EXIT
@@ -582,12 +786,14 @@ have=$(free_mb "$work")
 if ((have >= need)); then okay "free here: $have MB in ${work%/*}"; else problem "free here: $have MB in ${work%/*}, $need wanted (SKHID_MIN_FREE_MB)"; fi
 if bin=$(game_data_bin 2>"$work/game-data-build.log"); then okay "srp-game-data: $bin"; else bin=''; problem "srp-game-data does not build (log: $work/game-data-build.log)"; fi
 
-# The revision: main's, the live exe's.
-main_rev='' main_commit='' live_rev=unknown
+# The revision of this release: the target exe's + 1 (or --revision), built
+# so (build-zip --revision); main's REVISION is the last release's, which
+# the record of this one sets (live only).
+main_rev='' main_commit='' live_rev=unknown rev=''
 if git -C "$REPO" fetch --quiet origin "$ref:refs/remotes/origin/$ref" 2>"$work/fetch.log"; then
     main_commit=$(git -C "$REPO" rev-parse "origin/$ref")
     main_rev=$(revision_at "$REPO" "$main_commit")
-    if is_revision "${main_rev:-x}"; then okay "origin/$ref: $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), REVISION $main_rev"; else problem "no REVISION in patch_026g.py of origin/$ref"; main_rev=''; fi
+    if is_revision "${main_rev:-x}"; then okay "origin/$ref: $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), REVISION $main_rev (the last release's)"; else problem "no REVISION in patch_026g.py of origin/$ref"; main_rev=''; fi
 else
     problem "git fetch origin $ref failed ($(tr '\n' ' ' <"$work/fetch.log"))"
 fi
@@ -595,15 +801,48 @@ if (fetch_site_zip "$TARGET_SITE" "$work/live.zip") 2>"$work/live-zip.log"; then
     live_rev=$(zip_revision "$work/live.zip" "$work/live.exe")
     if [[ $live_rev == unknown ]]; then
         problem "the exe in $TARGET_SITE/download says no revision this script can read"
-    elif [[ -n $main_rev ]] && ((main_rev <= live_rev && test_server)); then
-        okay "the test exe is revision $live_rev, $ref has $main_rev (not above it: fine for the test environment)"
-    elif [[ -n $main_rev ]] && ((main_rev <= live_rev)); then
-        problem "main's REVISION $main_rev is not above the $TARGET exe's $live_rev: merge the bump PR first"
+    elif [[ -n $revision_arg ]] && ((revision_arg <= live_rev && !test_server)); then
+        problem "--revision $revision_arg is not above the live exe's $live_rev: a release's revision is above it (without --revision: $((live_rev + 1)))"
+    elif ((live_rev >= 255)) && [[ -z $revision_arg ]]; then
+        problem "the $TARGET exe is revision 255, the last one a byte holds"
     else
-        okay "the $TARGET exe is revision $live_rev, main has $main_rev"
+        rev=${revision_arg:-$((live_rev + 1))}
+        if [[ -n $revision_arg ]] && ((rev <= live_rev)); then
+            okay "the test exe is revision $live_rev; this release --revision $rev (not above it: fine for the test environment)"
+        else
+            okay "the $TARGET exe is revision $live_rev: this release is revision $rev$([[ -n $revision_arg ]] && printf ' (--revision)')"
+        fi
     fi
 else
     problem "$(cat "$work/live-zip.log")"
+fi
+if [[ -n $rev && -n $main_rev ]]; then
+    if ((rev < main_rev)); then
+        problem "revision $rev is below REVISION $main_rev of $ref, the last release's (patch_026g.py builds none below it): --revision $((main_rev + 1))"
+    elif ((!test_server && main_rev >= rev)); then
+        problem "main's REVISION $main_rev says revision $main_rev went out already, and the live exe says $live_rev (rolled back since?): a revision once released is never used again: --revision $((main_rev + 1))"
+    elif ((!test_server && main_rev < live_rev)); then
+        problem "main's REVISION $main_rev is below the live exe's $live_rev: the record of revision $live_rev is not on main (its PR still open?): merge it first"
+    fi
+fi
+# The record of a live release: its tag and branch free, gh signed in.
+if ((!test_server)) && [[ -n $rev && -n $main_commit ]]; then
+    taken=$(git -C "$REPO" ls-remote origin "refs/tags/$(release_tag "$rev")" "refs/heads/$(record_branch "$rev")" 2>"$work/ls-remote.log") ||
+        taken="(git ls-remote origin failed: $(tr '\n' ' ' <"$work/ls-remote.log"))"
+    if [[ -n $taken ]]; then
+        problem "the record of revision $rev is on origin already: $(awk '{ print $NF }' <<<"$taken" | tr '\n' ' ')— released before? --revision $((rev + 1))"
+    elif git -C "$REPO" rev-parse -q --verify "refs/tags/$(release_tag "$rev")" >/dev/null; then
+        problem "a tag $(release_tag "$rev") is in $REPO, not on origin (left by a run?): git -C $REPO tag -d $(release_tag "$rev")"
+    else
+        okay "the record: tag $(release_tag "$rev") and branch $(record_branch "$rev") are free on origin"
+    fi
+    if ! command -v gh >/dev/null; then
+        problem "gh is not installed here: the record of a release is a PR it opens and merges"
+    elif ! (cd "$REPO" && gh auth status) >"$work/gh-auth.log" 2>&1; then
+        problem "gh is not signed in (gh auth status): the record of a release is a PR it opens and merges"
+    else
+        okay "gh is signed in (the record's PR)"
+    fi
 fi
 
 # The offered patches: the list, each on the patches server and at every
@@ -637,19 +876,18 @@ if ((patches_ok && listed)); then
 elif ((patches_ok)); then
     okay "the offered-patch list ($PATCH_LIST) is empty"
 fi
-if [[ -n $main_rev ]] && ((LIST_TOP > main_rev)); then
-    problem "$PATCH_LIST offers resources.db.patch_$LIST_TOP, above main's REVISION $main_rev"
+if [[ -n $rev ]] && ((LIST_TOP > rev)); then
+    problem "$PATCH_LIST offers resources.db.patch_$LIST_TOP, above this release's revision $rev"
 fi
-rel=$(realpath -m --relative-to="$REPO" "$PATCH_LIST")
-if [[ -n $main_commit && $rel != ../* ]] && ! git -C "$REPO" show "$main_commit:$rel" 2>/dev/null | cmp -s - "$PATCH_LIST"; then
-    say "  note     $rel here is not main's: commit its new rows with this release's record"
+if ((!test_server)) && [[ -n $main_commit ]] && ! git -C "$REPO" show "$main_commit:release/patches.tsv" 2>/dev/null | cmp -s - "$PATCH_LIST"; then
+    say "  note     $PATCH_LIST is not main's release/patches.tsv: this release's record commits it"
 fi
 
 # The new patch.
 if [[ -n $resources ]]; then
     name=${resources##*/}
-    if [[ -n $main_rev && $name != "resources.db.patch_$main_rev" ]]; then
-        problem "--resources: $name must be called resources.db.patch_$main_rev (main's REVISION; the game mounts patch_<n> of revision n)"
+    if [[ -n $rev && $name != "resources.db.patch_$rev" ]]; then
+        problem "--resources: $name must be called resources.db.patch_$rev (this release's revision; the game mounts patch_<n> of revision n)"
     elif [[ ! -f $resources ]]; then
         problem "--resources: $resources: no such file"
     elif [[ $(head -c 13 "$resources") != little-endian ]]; then
@@ -677,9 +915,9 @@ if [[ -n $resources ]]; then
     fi
 fi
 # The menus: from revision 12 on, patch_12 must be offered.
-if [[ -n $main_rev ]] && ((main_rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.patch_$MENUS_PATCH") &&
+if [[ -n $rev ]] && ((rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.patch_$MENUS_PATCH") &&
     ${resources##*/} != "resources.db.patch_$MENUS_PATCH" ]]; then
-    problem "revision $main_rev needs resources.db.patch_$MENUS_PATCH (the menus) offered, and $PATCH_LIST has no row of it: release it (--resources) first"
+    problem "revision $rev needs resources.db.patch_$MENUS_PATCH (the menus) offered, and $PATCH_LIST has no row of it: release it (--resources) first"
 fi
 
 # The target: disk, leftovers, settings, the container, the admin page.
@@ -794,10 +1032,9 @@ if ((${#problems[@]})); then
     say "preflight: ${#problems[@]} problem(s), nothing was done:"
     printf '  - %s\n' "${problems[@]}"
     # A dry run goes on, to show the rest, when it knows what to release.
-    ((DRY_RUN)) && [[ -n $main_rev && -n $main_commit ]] || exit 1
+    ((DRY_RUN)) && [[ -n $rev && -n $main_commit ]] || exit 1
     say "dry run: a real run stops here; what it would do after:"
 fi
-rev=$main_rev
 release_folder "$rev" "$(date -u +%Y%m%d-%H%M)" "$label"
 SWAP_SRC=$build_code SWAP_SRC_INPUTS=${inputs:-}
 new_row=''
@@ -882,7 +1119,7 @@ if [[ -n $resources ]]; then
 fi
 data=$work/$DATA_NAME
 zip=$work/zip/$ZIP_NAME
-build_zip=("$BUILD_ZIP" --ref "$main_commit" --work "$work/zip" "${step_flags[@]}")
+build_zip=("$BUILD_ZIP" --ref "$main_commit" --revision "$rev" --work "$work/zip" "${step_flags[@]}")
 if ((DRY_RUN)); then
     say "[dry run] 4. $( ((no_maint)) && printf 'after the go' || printf 'during the countdown'), build here: release/build-server-db${step_flags[*]:+ ${step_flags[*]}} --out $data"
     say "[dry run]    and: ${build_zip[*]}"
@@ -1019,6 +1256,13 @@ swap_zip
 if ((DRY_RUN)); then
     say "[dry run] 6. after the restart: srp26 running, its log's \"game data:\" line, GET $TARGET_SITE/patches is exactly the list's; srp's new backup of srp.db kept in the folder$( [[ $TARGET == live ]] && printf ' and copied to the jump host'); then the ZIP, GET $TARGET_SITE/api/client-files names it"
     say "[dry run] a failed check: srp's log, then sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL on the $TARGET host (srp.db, image, files, setting back)"
+    if ((test_server)); then
+        say "[dry run] 7. no record (--test: no commit, no tag)"
+    else
+        say "[dry run] 7. once it went out, the record: git tag -a $(release_tag "$rev") ${main_commit:0:7} (the UTC time, the ZIP's and the server data's sha256) and git push origin refs/tags/$(release_tag "$rev");"
+        say "[dry run]    the commit \"Release revision $rev\" on ${main_commit:0:7} (REVISION = $rev, the README revision table's row, a changelog entry to word, release/patches.tsv as offered), pushed as $(record_branch "$rev"), gh pr create, gh pr merge --merge"
+        say "[dry run]    it would ship (merged PRs): $(shipped_prs "$main_commit" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+    fi
     say
     say "dry run: nothing was planned, uploaded or changed"
     if ((${#problems[@]})); then
@@ -1028,12 +1272,26 @@ if ((DRY_RUN)); then
     exit 0
 fi
 phase=finished
+released_at=$(date -u +%s)
 say
 if ((now)); then say "--now: the stop ended ${ENDED:-an unknown number of} match(es) without results"; fi
 say "released revision $rev to the $TARGET server. Its folder: $TARGET_DIR/$REL (the files before it, srp.db before it, the image IDs, changed.txt, release.log); the old image is $BEFORE_TAG ($RUN_IMAGE)"
+if ((test_server)); then
+    say "No record (--test): no commit, no tag."
+else
+    say
+    if ! record_release; then record_problem "the record stopped part way (above)"; fi
+fi
+say
 say "Rollback: release/rollback${step_flags[*]:+ ${step_flags[*]}} $REL (on the $TARGET host: sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL)"
 say "  (srp.db back as it was before the release; --keep-db keeps today's)"
-say "Kept here: $zip, $data (their hashes go in the changelog PR)."
-if [[ -n ${published:-} ]]; then say "Commit $PATCH_LIST (its new row: ${resources##*/}) with the record."; fi
+say "Kept here: $zip, $data."
+if ((test_server)) && [[ -n ${published:-} ]]; then say "$PATCH_LIST has the new row of ${resources##*/}: commit it (a test release makes no record)."; fi
 if ((DB_COPY_FAILED)); then say "WARNING: srp.db's copy is NOT on the jump host (above): copy it by hand."; fi
 say "Now: a game updates, downloads the patches, signs in; an old game is refused."
+if ((${#RECORD_PROBLEMS[@]})); then
+    say
+    say "RELEASED, BUT THE RECORD IS NOT COMPLETE (players have revision $rev; main and the tags do not say so yet):"
+    printf '  - %s\n' "${RECORD_PROBLEMS[@]}"
+    exit 1
+fi

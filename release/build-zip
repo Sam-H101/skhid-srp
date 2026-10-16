@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# usage: release/build-zip [--test] [--ref <commit>] [--work <dir>]
+# usage: release/build-zip [--test] [--ref <commit>] [--revision <n>] [--work <dir>]
 #
 # Builds the players' ZIP from a fresh worktree of origin/main and compares it
 # with the one the site hands out now, entry by entry:
 #   1. git fetch origin main; a new worktree of it in <work>/src (never this
 #      checkout, never git stash);
-#   2. the current ZIP from $SKHID_SITE/download; refuses when main's patch
-#      REVISION (patch_026g.py) is not above that exe's: bump it first;
+#   2. the current ZIP from $SKHID_SITE/download and its exe's revision; the
+#      build's revision is that + 1 (or --revision <n>, which must be above
+#      it; --test: any, from patch_026g.py's REVISION). Nothing is edited:
+#      the revision is passed to the build;
 #   3. bugtrap.dll and updater_skhid.exe (nix develop ./srp-026g), then
-#      make_client_026g.py $SKHID_GAME ... --pack-zip
+#      make_client_026g.py $SKHID_GAME ... --pack-zip --revision=<n>
 #      --server=$SKHID_GAME_SERVER --site=$SKHID_SITE
 #      --localization=$SKHID_LOCALIZATION (no resources.db regions: patches
-#      come from the server's /patches);
+#      come from the server's /patches), and patch_026g.py --revision=<n>
+#      without a server, for the record's second hash;
 #   4. prints every entry as same / CHANGED / ADDED / REMOVED against the
 #      current ZIP, and says whether updater_skhid.exe changed.
+# <work>/exe.sha256: `<sha256> with-server` (the ZIP's exe) and
+# `<sha256> without-server`, for the record (release.sh reads it).
 #
 #   --test          for the test environment: --server=$SKHID_TEST_GAME_SERVER
 #                   --site=$SKHID_TEST_SITE, compared with the ZIP of
 #                   $SKHID_TEST_SITE
 #   --ref <commit>  build that instead of origin/main (a release is built
 #                   from main; this is for trying a branch)
+#   --revision <n>  the exe's patch revision instead of the current exe's + 1
 #   --work <dir>    an empty or new folder for it all (default: a new one
 #                   under $TMPDIR); the ZIP is <work>/Survarium-0.26g-srp-files.zip
 #
@@ -27,17 +33,19 @@
 #   git worktree remove <work>/src
 . "$(dirname "$0")/lib.sh"
 
-test_server=0 ref=origin/main work=''
+test_server=0 ref=origin/main work='' revision=''
 while (($#)); do
     case $1 in
     -h | --help) usage ;;
     --test) test_server=1; shift ;;
     --ref) (($# >= 2)) || usage 1; ref=$2; shift 2 ;;
+    --revision) (($# >= 2)) || usage 1; revision=$2; shift 2 ;;
     --work) (($# >= 2)) || usage 1; work=$2; shift 2 ;;
     *) die "unknown argument $1 (--help)" ;;
     esac
 done
 need_cmds git nix curl sha256sum od
+[[ -z $revision ]] || is_revision "$revision" || die "--revision $revision: a revision is 1 to 255"
 lower_priority
 load_env SKHID_GAME SKHID_SITE SKHID_LOCALIZATION
 if ((test_server)); then
@@ -65,20 +73,26 @@ git -C "$ROOT" worktree add --quiet --detach "$work/src" "$ref"
 trap 'say "remove the worktree after: git -C $(q "$ROOT") worktree remove --force $(q "$work/src")"' EXIT
 commit=$(git -C "$work/src" log -1 --format='%h %s')
 say "building $ref: $commit"
-revision=$(sed -n 's/^REVISION = \([0-9][0-9]*\)$/\1/p' "$work/src/srp-026g/client-patches/patch_026g.py")
-is_revision "$revision" || die "no REVISION in patch_026g.py of $ref"
+recorded=$(sed -n 's/^REVISION = \([0-9][0-9]*\)$/\1/p' "$work/src/srp-026g/client-patches/patch_026g.py")
+is_revision "$recorded" || die "no REVISION in patch_026g.py of $ref"
 
-# 2. The current ZIP (the "live" one: of the target), and its exe's revision.
+# 2. The current ZIP (the "live" one: of the target), its exe's revision, and
+# the build's: that + 1, or --revision.
 live_url=$site/download
 fetch_site_zip "$site" "$work/live.zip"
 live_revision=$(zip_revision "$work/live.zip" "$work/live.exe")
-say "patch revision: $revision on $ref, $live_revision live"
+if [[ -z $revision ]]; then
+    [[ $live_revision != unknown ]] || die "the exe of $live_url says no revision this script can read: name the build's with --revision <n>"
+    revision=$((live_revision + 1))
+fi
+say "patch revision: $revision for this build ($live_revision live, REVISION $recorded on $ref, the last release's)"
+((revision >= recorded)) || die "revision $revision is below REVISION $recorded of $ref (patch_026g.py builds none below the last release's)"
 if [[ $live_revision == unknown ]]; then
     say "WARNING: the live exe's revision cannot be read; compare by hand"
 elif ((revision <= live_revision && test_server)); then
     say "revision $revision is not above the test server's $live_revision: fine for the test environment"
 elif ((revision <= live_revision)); then
-    die "the exe revision did not change ($revision on $ref, $live_revision live): bump REVISION in patch_026g.py first (the bump PR)"
+    die "revision $revision is not above the live exe's $live_revision: a release's revision is above it (the default: + 1)"
 fi
 
 # 3. The build.
@@ -90,14 +104,19 @@ if ! (cd "$work/src" && nix develop ./srp-026g -c bash -c \
 fi
 zip=$work/Survarium-0.26g-srp-files.zip
 (cd "$work/src/srp-026g/client-patches" &&
-    python make_client_026g.py "$SKHID_GAME" "$zip" --pack-zip \
-        --server="$server" --site="$site" --localization="$SKHID_LOCALIZATION") >"$work/make_client.log" 2>&1 || {
+    python make_client_026g.py "$SKHID_GAME" "$zip" --pack-zip --revision="$revision" \
+        --server="$server" --site="$site" --localization="$SKHID_LOCALIZATION" &&
+    original=$SKHID_GAME/binaries/x86/survarium.exe &&
+    if [[ ! -f $original ]]; then original=$SKHID_GAME/game/binaries/x86/survarium.exe; fi &&
+    python patch_026g.py "$original" "$work/without-server.exe" --revision="$revision") >"$work/make_client.log" 2>&1 || {
     tail -n 30 "$work/make_client.log" >&2
-    die "make_client_026g.py failed (log: $work/make_client.log)"
+    die "make_client_026g.py or patch_026g.py failed (log: $work/make_client.log)"
 }
 zip_extract "$zip" "$ZIP_EXE" "$work/new.exe" || die "$zip has no $ZIP_EXE"
 built_revision=$(exe_revision "$work/new.exe")
 [[ $built_revision == "$revision" ]] || die "the built exe says revision $built_revision, not $revision"
+[[ $(exe_revision "$work/without-server.exe") == "$revision" ]] || die "the exe without a server does not say revision $revision"
+printf '%s with-server\n%s without-server\n' "$(sha256_of "$work/new.exe")" "$(sha256_of "$work/without-server.exe")" >"$work/exe.sha256"
 
 # 4. Entry by entry.
 declare -A old new
@@ -130,4 +149,5 @@ else
 fi
 say "Every other change must be explained by a merged change; anything else is unreleased work riding along: stop."
 say
+say "the exe: sha256 $(sha256_of "$work/new.exe") (--server=$server), $(sha256_of "$work/without-server.exe") without a server"
 say "$zip: $(size_of "$zip") bytes, sha256 $(sha256_of "$zip"), revision $revision, server $server"
