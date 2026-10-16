@@ -199,6 +199,9 @@ pub struct Bot {
     /// Plays that failed at once at a target, and until when they are not
     /// taken there again (`plays::SET_ASIDE_MS`).
     set_aside: Vec<(PlayKind, plays::TargetRef, u32)>,
+    /// Stands its takes of batteries gave up at lately
+    /// (`plays::collect::FailedStand`): its next take stands elsewhere.
+    failed_stands: Vec<plays::collect::FailedStand>,
     /// The kit of this life, and the one it picked for its next (a kit
     /// choice, 0xF3, takes effect at the spawn).
     kit: usize,
@@ -277,6 +280,7 @@ impl Bot {
             found: None,
             kits,
             set_aside: Vec::new(),
+            failed_stands: Vec::new(),
             kit: 0,
             kit_chosen: 0,
         }
@@ -1179,6 +1183,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &no_way,
                     set_aside: &bot.set_aside,
+                    failed_stands: &bot.failed_stands,
                     dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
@@ -1232,6 +1237,7 @@ impl Bots {
                     medkits_used: bot.medkits_used,
                     no_way_to: &no_way,
                     set_aside: &bot.set_aside,
+                    failed_stands: &bot.failed_stands,
                     dry: bot.reflex.dry(),
                 },
                 memory: &bot.memory,
@@ -1437,6 +1443,7 @@ impl Bots {
                 medkits_used: bot.medkits_used,
                 no_way_to: &bot.no_way_to,
                 set_aside: &bot.set_aside,
+                failed_stands: &bot.failed_stands,
                 dry: bot.reflex.dry(),
             },
             memory: &bot.memory,
@@ -1452,8 +1459,22 @@ impl Bots {
         let step_name = running.step_name();
         bot.running = Some(running);
         match step {
-            Step::Continue(intent) => {
+            Step::Continue(mut intent) => {
                 bot.press |= intent.press;
+                if let Some(failed) = intent.failed_stand.take() {
+                    bot.failed_stands.retain(|f| f.until > now);
+                    bot.failed_stands.push(failed);
+                    bot.note(
+                        notes,
+                        now,
+                        format!(
+                            "took no battery {} from a stand {:.1} m off it ({})",
+                            failed.battery,
+                            failed.feet.distance_xz(failed.at),
+                            if failed.crouch { "crouched" } else { "standing" }
+                        ),
+                    );
+                }
                 bot.intent = intent;
             }
             Step::Done(why) => {
@@ -1670,6 +1691,7 @@ fn drive_tick(
         intent.crouch = legs.crouch;
         intent.pace = if legs.run { Pace::Run } else { Pace::Walk };
         intent.objective = false;
+        intent.straight = false;
     }
     let goal = match intent.go {
         Go::To { at, within_m } if me.feet.distance_xz(at) > within_m => Some(at),
@@ -1678,6 +1700,11 @@ fn drive_tick(
     // Standing to aim (no way to walk): the reflex's side step may move it.
     let mut aiming_still = false;
     let mut decision = match goal {
+        // A step or two in a line the play vouches for: by keys, no route.
+        Some(at) if intent.straight => {
+            bot.route = None;
+            bot.motor.step_to(&pose, at, aim)
+        }
         Some(at) => {
             let replan = bot
                 .route

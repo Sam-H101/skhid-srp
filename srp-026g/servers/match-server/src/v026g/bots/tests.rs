@@ -126,13 +126,26 @@ struct Game {
     metric_rays: u64,
     delivered: [u32; 2],
     stolen: u32,
+    /// Lying batteries taken.
+    taken: u32,
+    /// Whether a use's ray stops at the bullet mesh short of a lying
+    /// battery (`SRP_BENCH_USE_LINE=1` in the real-map runs). LIKELY as
+    /// the client: in the owner's match of 2026-10-16 a bot aimed right
+    /// at a battery 9 times from where the mesh blocks the line, and took
+    /// it at once from a side with a clear one.
+    use_line: bool,
 }
 
 /// The soak map: the 80 x 40 m field (a wall across its middle up to
 /// z = 25), side 0 spawning at x = 5, side 1 at x = 75, their containers
 /// near their spawns and three batteries between.
 fn soak_world() -> Arc<World> {
-    super::tactics::tests::field_with(|map| {
+    soak_world_with(&[])
+}
+
+/// [`soak_world`] with `solids` (more triangles) in its geometry.
+fn soak_world_with(solids: &[mapdata::Triangle]) -> Arc<World> {
+    super::tactics::tests::field_with_solids(solids, |map| {
         let container = |team: i32, id: i32, x: f32, z: f32| Container {
             position: Vec3::new(x, 0.0, z),
             team,
@@ -217,6 +230,8 @@ impl Game {
             metric_rays: 0,
             delivered: [0, 0],
             stolen: 0,
+            taken: 0,
+            use_line: false,
             world,
         };
         for place in 0..teams.len() {
@@ -463,6 +478,25 @@ impl Game {
         (to - dir * along).length() <= radius
     }
 
+    /// [`Self::uses`] a lying battery, the ray clear of the bullet mesh up
+    /// to it when [`Game::use_line`].
+    fn uses_battery(&self, body: &Body, at: Vec3) -> bool {
+        let point = at + BATTERY_MIDDLE;
+        if !Self::uses(body, point, BATTERY_M) {
+            return false;
+        }
+        if !self.use_line {
+            return true;
+        }
+        let eye = Self::eye(body);
+        let [fx, fz] = forward(body.yaw);
+        let (c, s) = (body.pitch.cos(), body.pitch.sin());
+        let dir = Vec3::new(fx * c, s, fz * c);
+        let to = point - eye;
+        let along = to.x * dir.x + to.y * dir.y + to.z * dir.z;
+        along <= 0.15 || self.world.sight.ray_cast(eye, dir, along - 0.15).is_none()
+    }
+
     fn use_and_drop(&mut self, pressed: &[u32]) {
         for place in 0..self.bodies.len() {
             let body = self.bodies[place].clone();
@@ -492,15 +526,16 @@ impl Game {
                     }
                 }
                 None => {
-                    let free = self.batteries.iter().position(|b| {
-                        matches!(b, Lying::Free(at) if Self::uses(&body, *at + BATTERY_MIDDLE, BATTERY_M))
-                    });
+                    let free = self.batteries.iter().position(
+                        |b| matches!(b, Lying::Free(at) if self.uses_battery(&body, *at)),
+                    );
                     let theirs = self.containers.iter().position(|(t, at)| {
                         *t != team && Self::uses(&body, *at + USE_BOX_UP, USE_BOX_M)
                     });
                     if let Some(battery) = free {
                         self.batteries[battery] = Lying::Carried(place);
                         self.bodies[place].carrying = Some(battery);
+                        self.taken += 1;
                     } else if let Some(id) = theirs
                         && let Some(battery) = self
                             .batteries
@@ -1226,6 +1261,98 @@ fn a_bot_standing_on_a_battery_steps_off_and_takes_it() {
     assert!(took <= 7_000, "taken at {took} ms");
 }
 
+/// A wall 3 m high between the bot and battery 1 (25, 0.3, 12), where it
+/// stands 1.3 m east of it, and the stand-in's use stopped by the bullet
+/// mesh (as the client's, LIKELY: b9 of 0x7db2c16a, 9 uses aimed right at
+/// it from where the mesh blocks the line, taken at once from a side with
+/// a clear one). The bot takes it from round the wall (before: four uses
+/// there, failed, the play taken again, and so on).
+#[test]
+fn a_bot_takes_a_battery_from_round_a_wall_its_use_cannot_pass() {
+    let world = soak_world_with(&super::body::tests::wall_x(25.6, 11.5, 12.5));
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = true;
+    let teams = [0u8, 1];
+    let mut bots = Bots::new(
+        0x7A6F,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, false],
+        &[None, None],
+        Arc::new(tuning),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world.clone(), &teams, 7, None, None);
+    game.use_line = true;
+    let east = Vec3::new(26.3, 0.0, 12.0);
+    game.bodies[0].node = world.grid.locate(east, 1.0);
+    game.bodies[0].feet = east;
+    // From there the use's ray is stopped, however it looks.
+    let mut body = game.bodies[0].clone();
+    body.keys = key::CROUCH;
+    let battery = Vec3::new(25.0, 0.3, 12.0);
+    let blocked = (0..64).all(|y| {
+        (-100..=100).all(|p| {
+            body.yaw = y as f32 * std::f32::consts::TAU / 64.0;
+            body.pitch = p as f32 / 100.0;
+            !game.uses_battery(&body, battery)
+        })
+    });
+    assert!(blocked);
+    bots.entered(0, true, 0);
+    let (mut clock, mut next_world, mut took) = (0, 1_000, None);
+    let mut notes_seen = Vec::new();
+    while clock < 20_000 && took.is_none() {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        let (made, notes) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 900.0,
+            playing: true,
+        });
+        notes_seen.extend(notes.into_iter().map(|n| n.text));
+        for made in made {
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            let gun = Arms::fallback().primary.0;
+            game.inputs[made.place].push_back((made.time, made.input.actions, turn, None, gun));
+        }
+        if game.bodies[0].carrying == Some(1) {
+            took = Some(clock);
+        }
+    }
+    let took = took.unwrap_or_else(|| {
+        panic!(
+            "not taken: at {:?}, batteries {:?}, notes {notes_seen:?}",
+            game.bodies[0].feet, game.batteries
+        )
+    });
+    // Its first move is at 2 s; round the wall, a use or two.
+    assert!(took <= 10_000, "taken at {took} ms: {notes_seen:?}");
+    assert!(
+        !notes_seen.iter().any(|n| n.contains("could not take it")),
+        "{notes_seen:?}"
+    );
+}
+
 /// Where the time of the bots' polls goes, seconds.
 #[derive(Default)]
 struct Times {
@@ -1451,6 +1578,7 @@ fn real_bot_cost() {
                 tickets,
                 timed,
             );
+            game.use_line = std::env::var_os("SRP_BENCH_USE_LINE").is_some();
             // As the game does (`gather_victory_items_rule::select_spawners`):
             // this many batteries at spawners drawn at random (the mode's
             // count is 10), not one at every spawner.
@@ -1476,6 +1604,8 @@ fn real_bot_cost() {
             let mut times = Times::default();
             let mut decisions = Decisions::default();
             let mut plays: std::collections::BTreeMap<String, u32> = Default::default();
+            // Takes: plays ended "could not take it", and stands given up.
+            let (mut take_ends, mut stands_given_up) = (0u32, 0u32);
             super::path::reset_worst();
             let searches_before = super::path::searches();
             let rays_before = super::aimpoint::rays_cast();
@@ -1496,7 +1626,8 @@ fn real_bot_cost() {
                             && body.feet.distance_xz(at) > within_m
                         {
                             goal_ticks += 1;
-                            if bot.route.is_none() {
+                            // A step walked straight has no route.
+                            if bot.route.is_none() && !bot.intent.straight {
                                 stood_ticks += 1;
                                 let play = bot
                                     .assignment
@@ -1531,6 +1662,11 @@ fn real_bot_cost() {
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
                     decisions.note(&note);
+                    if note.text.starts_with("ends Collect: could not take it") {
+                        take_ends += 1;
+                    } else if note.text.starts_with("took no battery") {
+                        stands_given_up += 1;
+                    }
                     let key: String = note
                         .text
                         .split(|c: char| c == '(' || c == ':' || c.is_ascii_digit())
@@ -1639,6 +1775,10 @@ fn real_bot_cost() {
                 game.delivered,
                 game.points,
                 game.stolen
+            );
+            eprintln!(
+                "  takes: {} taken, {take_ends} could-not-take ends, {stands_given_up} stands given up",
+                game.taken
             );
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));

@@ -43,6 +43,8 @@ pub struct Scenario {
     pub medkits_used: u8,
     pub no_way_to: Vec<(Vec3, u32)>,
     pub dry: bool,
+    /// `BotFacts::failed_stands`.
+    pub failed_stands: Vec<super::collect::FailedStand>,
 }
 
 impl Scenario {
@@ -101,6 +103,7 @@ impl Scenario {
             medkits_used: 0,
             no_way_to: Vec::new(),
             dry: false,
+            failed_stands: Vec::new(),
         };
         s.signals();
         s
@@ -242,6 +245,7 @@ impl Scenario {
                 medkits_used: self.medkits_used,
                 no_way_to: &self.no_way_to,
                 set_aside: &[],
+                failed_stands: &self.failed_stands,
                 dry: self.dry,
             },
             memory: &self.memory,

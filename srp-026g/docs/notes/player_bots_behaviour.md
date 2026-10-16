@@ -89,6 +89,39 @@ What the plays do with it (`plays/collect.rs`, `Ctx::battery_lying`, `Ctx::batte
 - Tried and left out: a looking bot looking at its spot from up to 15 or 25 m (249 and 252 delivered against 258 without, 4 seeds); spots within 45 m counted as one yard instead of 30 m (263 against 258) and a battery seen from 50 m instead of 35 m (262 against 258), both within the noise; a first search without the cluster weight brought 469 in the 96 runs (−17 %).
 - The owner's rule (2026-10-14) is that bots never get dumber; the fair bots bring fewer batteries, the cheat is the "a bit, not too much" of §2. The owner chose the fair bots as the default (2026-10-16), knowing these numbers.
 
+### 2.2 Taking a battery (built 2026-10-16)
+
+In two real matches (0x7db2c16a, 0x15aa5b99) bots ended a take "could not take it" 35 times at or on a battery; one lay 98 s at its team's feet. The take (`plays/collect.rs`, `take`) now:
+- uses where it stopped only if a use reaches from there: the crouched eye within 1.6 m, a look down of at most 0.98 rad (the view stops at 1 rad), and a clear line on the bullet mesh from the eye to the battery;
+- else, or after two uses there, goes to another stand on a ring round the battery (eight ways at 0.6, 0.9 and 1.2 m, on floors a walk may get to, crouched or standing, the eye within 1.7 m, a look down of at most 0.95 rad, the line clear), the nearest, the other stance than the last, on a side not tried; up to four stands a play, two uses each, the second aimed 0.1 m lower;
+- presses once the view is on the battery (its own estimate), or after 1.5 s there;
+- right over the battery, walks off to a stand in a line; wedged (no stand off it in a line), steps back the way it came (else behind its back), straight, with no line looked at;
+- keeps the stands it gave up at (per bot and battery, 90 s), so the next take of that battery stands elsewhere;
+- walks the last metres to a stand straight by keys (`Intent::straight`, `Motor::step_to`): the route's arrival (0.6 m) is too loose for a stand.
+
+**What the matches showed** (worlds, the bots' traces, the bots' bullet mesh of level_01):
+- PROVEN: the worlds' player position is the body's capsule centre, not the feet (`Body::feet`: 0.9 m standing, 0.55 m crouched below it). A bot's own trace has its feet 0.55 m under the world's position crouched and 0.90 m standing. Taken as feet, the bot's look down seemed 0.27 rad short; from its feet, the pitch it asked matches its geometry to 0.004 rad at all three stands of the case, and the world's pitch is what it asked. So no pitch-unit error shows here.
+- PROVEN on the bots' mesh: from the two stands where a bot failed 9 times (1.3 m east of the battery), the line from the crouched eye to the battery is blocked 0.77-0.80 m along a 1.45 m ray; from the stand where it took it (0.6 m, another side) the line is clear. A floor 1.3-1.4 m over the battery at 0.25-0.97 m off it (an overhang): the other bot stood under it, right over the battery, 25 s.
+- LIKELY: the client's use ray stops at the level's geometry as the bots' mesh does (the case above; not read in the client's code).
+- GUESS still: the crouched eye 0.95 m over the feet (`view::EYE_CROUCHED`) and the crouched capsule centre 0.55 m; the one take that worked bounds the eye at 0.75-1.0 m over the feet.
+
+**Measured** (`real_bot_cost`, 180 s, the 6 maps, 4 v 4 and 10 v 10, budget 10,000; `private/mapdata-digests/take-bench.sh`, `take_summary.py`; ± is the seed-to-seed standard error of the difference a seed):
+
+| Run | Before (19b4931) | After | Difference a seed |
+|---|---|---|---|
+| 20 seeds (240 runs): delivered | 2,434 | 2,479 | +2.3 ± 3.3 |
+| kills | 3,262 | 3,253 | −0.5 ± 3.1 |
+| stood with a goal and no route | 5.97 % | 5.89 % | −0.08 ± 0.12 |
+| failed searches | 33,821 | 34,732 | +46 ± 77 |
+| 10 seeds: "could not take it" ends | 634 | 96 | −54 ± 7 |
+| 10 seeds, the use stopped by the bullet mesh (`SRP_BENCH_USE_LINE=1`): delivered | 1,182 | 1,244 | +6.2 ± 3.8 |
+| kills | 1,596 | 1,582 | −1.4 ± 4.1 |
+| "could not take it" ends | 1,175 | 94 | −108 ± 7 |
+
+- The stand-in counts a step walked straight as no standing (it has no route).
+- A first version pressed at stands it had passed by up to 0.5 m (standing uses 2.1 m long) and over looks down past 1 rad: kills −7.2 ± 2.9 a seed; fixed before the numbers above.
+- Left: a battery the team believes lying where it is not (it lies on a crate and the look at it from below is blocked) is still tried at each stand (seen in the soaks); the team's look at it is `sense::sense_batteries`.
+
 ## 3. Plays
 
 Each play has a score from the situation, a precondition and steps. A commander per team hands them out every ~0.5 s: never two bots on one ambush, and no bot parked at its own container. In the saved worlds lives that stay in their own third are the worst in every mode (K/D 0.3–0.6, ~0.03 batteries a life), so a steal is answered by the 1–2 nearest bots (the thief cheat and the alarms in §4); the only guard is play 18.
