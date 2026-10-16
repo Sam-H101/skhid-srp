@@ -141,7 +141,7 @@ use survarium::v026g::lobby::ServerMessage;
 use survarium::v026g::maps;
 use udp_transport::PacketLog;
 
-pub use patch_check::min_patch_revision_from_env;
+pub use patch_check::{check_min_patch_revision, min_patch_revision_from_env};
 pub use play::{
     LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, OpenMatch, match_profile,
 };

@@ -49,13 +49,24 @@ fn main() {
         std::process::exit(1);
     }
     // A minimum revision it can't read stops it, rather than let older games in.
-    if let Err(error) = lobby_server::v026g::min_patch_revision_from_env() {
-        log::error!("srp: {error}");
-        std::process::exit(1);
-    }
+    let min_patch_revision = match lobby_server::v026g::min_patch_revision_from_env() {
+        Ok(min) => min,
+        Err(error) => {
+            log::error!("srp: {error}");
+            std::process::exit(1);
+        }
+    };
     // The players' game files, before anything reads an item or a map:
-    // the accounts are checked against their dictionary.
-    if let Err(error) = survarium::v026g::game_data::init() {
+    // the accounts are checked against their dictionary when they load,
+    // the code's items and the minimum revision here.
+    let data = match survarium::v026g::game_data::init() {
+        Ok(data) => data,
+        Err(error) => {
+            log::error!("srp: {error}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = srp::v026g::check_game_data(min_patch_revision, data) {
         log::error!("srp: {error}");
         std::process::exit(1);
     }
