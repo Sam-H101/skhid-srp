@@ -7,7 +7,9 @@
 //! looking at the killer's known place (the memory's nearest enemy to the
 //! spot), else at the spot; the reflex shoots if a sense gives him. It is
 //! an alarm: it beats every other play for its few seconds, except a
-//! carrier's (a carrier cannot shoot).
+//! carrier's (a carrier cannot shoot). Not when the partner called out a
+//! hit from a direction alone (a shooter nobody sensed, likely far) and no
+//! enemy is known near the spot: going there walks into his lane.
 
 use super::*;
 use crate::v026g::bots::curve::{Consideration, Curve, Input};
@@ -28,6 +30,9 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // It runs at the spot until this near, then walks, metres.
     ("walk_m", 15.0),
     ("reach_m", 3.0),
+    // The partner's "shot from there" callout at most this long before
+    // his death (or after it): no trade, seconds.
+    ("shot_from_s", 10.0),
 ];
 
 pub fn tuning() -> PlayTuning {
@@ -88,13 +93,36 @@ fn partner_death(cx: &Ctx) -> Option<(Vec3, u32)> {
         .max_by_key(|(_, time)| *time)
 }
 
+/// The partner was hit from a direction alone around his death at `at`,
+/// `time` (his callout), and no enemy is known within `killer_m` of the
+/// spot: the shooter is out in his lane, not at the body.
+fn shot_from_afar(cx: &Ctx, at: Vec3, time: u32) -> bool {
+    let Some(partner) = cx.bot.partner else {
+        return false;
+    };
+    let window = (cx.num(PlayKind::Trade, "shot_from_s") * 1000.0) as u32;
+    let called = cx
+        .team
+        .shots_from
+        .iter()
+        .any(|shot| shot.by == partner && shot.time <= cx.now && shot.time + window >= time);
+    let killer_m = cx.num(PlayKind::Trade, "killer_m");
+    called
+        && !cx
+            .memory
+            .tracks()
+            .iter()
+            .any(|t| t.at.distance_xz(at) <= killer_m)
+}
+
 pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     if cx.me.carrying.is_some() {
         return;
     }
     let reach = reach(cx.tuning, cx.bot.current.map(|(kind, _, _)| kind));
-    if let Some((at, _)) = partner_death(cx)
+    if let Some((at, time)) = partner_death(cx)
         && at.distance_xz(cx.me.feet) <= reach
+        && !shot_from_afar(cx, at, time)
     {
         out.extend(cx.candidate(PlayKind::Trade, TargetRef::Point(at), None));
         return;
@@ -158,7 +186,7 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
 mod tests {
     use super::super::tests::Scenario;
     use super::*;
-    use crate::v026g::bots::know::{DangerSpot, Source};
+    use crate::v026g::bots::know::{DangerSpot, Memory, ShotFrom, Source};
     use crate::v026g::bots::view::{Death, Mode};
 
     const SPOT: Vec3 = Vec3::new(38.0, 0.0, 33.0);
@@ -211,6 +239,40 @@ mod tests {
             victim: 2,
         });
         assert_eq!(trades(&s).len(), 1);
+    }
+
+    /// The partner called out a hit from a direction alone (a shooter
+    /// nobody sensed, match report section 10): his death is not traded
+    /// into that lane, unless an enemy is known near the spot.
+    #[test]
+    fn a_partner_shot_from_afar_is_not_traded_into_his_lane() {
+        let called = |s: &mut Scenario, by: Place, ago: u32| {
+            let time = s.view.clock - ago;
+            s.team.shots_from.push(ShotFrom {
+                by,
+                at: SPOT,
+                bearing: 1.5,
+                time,
+            });
+        };
+        // The killer heard 10 m from the spot: traded as before.
+        let mut s = widowed(1_000);
+        called(&mut s, 2, 1_500);
+        assert_eq!(trades(&s).len(), 1, "an enemy known near the spot");
+        // Nobody known near it: no trade.
+        let mut s = widowed(1_000);
+        s.memory = Memory::default();
+        called(&mut s, 2, 1_500);
+        assert!(trades(&s).is_empty());
+        // Another teammate's callout, or one long before the death: traded.
+        let mut s = widowed(1_000);
+        s.memory = Memory::default();
+        called(&mut s, 3, 1_500);
+        assert_eq!(trades(&s).len(), 1, "not the partner's");
+        let mut s = widowed(1_000);
+        s.memory = Memory::default();
+        called(&mut s, 2, 12_000);
+        assert_eq!(trades(&s).len(), 1, "too old");
     }
 
     /// At a battery's work a bot trades only a death near it (20 m); at

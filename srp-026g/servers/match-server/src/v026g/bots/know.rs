@@ -237,6 +237,19 @@ pub struct DangerSpot {
     pub victim: Place,
 }
 
+/// A teammate's callout "shot from there": hit with no shooter it sensed,
+/// it gives the direction its HUD's hit marker showed (no distance, no
+/// shooter), from where it stood.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShotFrom {
+    pub by: Place,
+    pub at: Vec3,
+    /// The marker's direction (a yaw, radians, with the marker's error).
+    pub bearing: f32,
+    /// When the team knows it (the callout's delay after the hit).
+    pub time: u32,
+}
+
 /// A battery of ours taken.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theft {
@@ -312,6 +325,8 @@ pub struct TeamKnowledge {
     /// took it already as a bit mask).
     callouts: Vec<(u32, Percept, u64)>,
     pub danger: Vec<DangerSpot>,
+    /// "Shot from there" callouts of the last 20 s.
+    pub shots_from: Vec<ShotFrom>,
     pub thefts: Vec<Theft>,
     /// By battery number.
     pub batteries: Vec<Option<KnownBattery>>,
@@ -473,6 +488,7 @@ impl TeamKnowledge {
 
     pub fn forget_old(&mut self, now: u32) {
         self.danger.retain(|spot| spot.time + 30_000 >= now);
+        self.shots_from.retain(|shot| shot.time + 20_000 >= now);
         self.thefts.retain(|theft| theft.time + 60_000 >= now);
         self.losses.retain(|loss| loss.time + LOSS_KEEP_MS >= now);
         self.carriers_seen

@@ -1531,6 +1531,15 @@ impl Bots {
         };
         bot.reflex
             .think_with(me, &sit, &bot.memory, now, &tuning.aim, skill, &mut bot.rng);
+        // Hit from a direction alone (the HUD's marker): its callout.
+        if let Some((at, bearing)) = bot.reflex.take_hit_note() {
+            self.teams[team].knowledge.shots_from.push(know::ShotFrom {
+                by: bot.place,
+                at,
+                bearing,
+                time: now + tuning.sense.callout_ms,
+            });
+        }
         if now < bot.pause_until {
             bot.intent = Intent::stay();
             return;
@@ -1781,9 +1790,13 @@ fn drive_tick(
         (kin::yaw_of([dx, dz]), (p.y - eye.y).atan2(dx.hypot(dz)))
     };
     // A glance at a heard shot gives way to a play that uses something or
-    // carries (`Override::glance`).
-    let glance_yields =
-        over.glance && (matches!(intent.look, Look::Use(_)) || me.carrying.is_some());
+    // carries (`Override::glance`), and with `glance_run_yields` to one
+    // that runs somewhere (a turned view slows the legs).
+    let running = tuning.aim.combat.glance_run_yields
+        && intent.pace == Pace::Run
+        && matches!(intent.go, Go::To { at, within_m } if me.feet.distance_xz(at) > within_m);
+    let glance_yields = over.glance
+        && (matches!(intent.look, Look::Use(_)) || me.carrying.is_some() || running);
     let aim = over
         .look_at
         .filter(|_| !glance_yields)
