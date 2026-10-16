@@ -38,16 +38,17 @@ pub fn tuning() -> PlayTuning {
     PlayTuning {
         rank: Rank::Objective,
         considerations: vec![
-            // Their team thinned out: some dead and waiting (none dead:
-            // no raid).
+            // Their team thinned out: some dead and waiting (none dead: a
+            // fifth, for a team behind enough to push, `pushing`).
             Consideration::new(
                 Input::EnemiesDead,
                 0.0,
                 1.0,
                 Curve::Piecewise {
-                    points: vec![(0.0, 0.0), (0.2, 0.5), (0.5, 1.0), (1.0, 1.0)],
+                    points: vec![(0.0, 0.2), (0.2, 0.5), (0.5, 1.0), (1.0, 1.0)],
                 },
             ),
+            considerations::pushing(),
             Consideration::new(Input::EnemiesNearTarget, 0.0, 2.0, Curve::Linear).inverted(),
             considerations::near(180.0),
             considerations::health_above(0.5),
@@ -183,7 +184,22 @@ mod tests {
         let one_dead = raids(&raid(1));
         assert_eq!(one_dead.len(), 1);
         assert_eq!(one_dead[0].target, TargetRef::Container(1));
-        assert!(raids(&raid(0)).is_empty(), "none of them dead");
+        // None of them dead: a raid is a fifth as good (a team behind
+        // pushes anyway, `considerations::pushing`).
+        let none_dead = raids(&raid(0));
+        assert!(
+            none_dead[0].score.get() < one_dead[0].score.get() * 0.5,
+            "none of them dead"
+        );
+        // A team behind on points raids more, and holds less.
+        let mut even = raid(1);
+        even.mods.aggression = 0.5;
+        let mut behind = raid(1);
+        behind.mods.aggression = 1.0;
+        assert!(raids(&behind)[0].score.get() > raids(&even)[0].score.get() * 1.1);
+        let holding = crate::v026g::bots::plays::considerations::holding();
+        let at = |aggression: f32| holding.eval(aggression).get();
+        assert!(at(1.0) < at(0.5) * 0.6 && at(0.5) < at(0.0));
         assert!(raids(&raid(2))[0].score.get() >= one_dead[0].score.get());
         // An enemy known by their container: much less.
         let mut s = raid(1);

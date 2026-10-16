@@ -56,6 +56,7 @@ pub fn tuning() -> PlayTuning {
         rank: Rank::Objective,
         considerations: vec![
             considerations::personality(),
+            considerations::pushing(),
             // Enemies dead make it; none dead leaves it a third (the
             // window was opened by their being far).
             Consideration::new(

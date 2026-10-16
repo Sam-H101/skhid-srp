@@ -62,6 +62,7 @@ pub fn tuning() -> PlayTuning {
         rank: Rank::Fight,
         considerations: vec![
             considerations::personality(),
+            considerations::pushing(),
             considerations::near(100.0),
             considerations::health_above(0.4),
             // Fewer friends already by him: a flank pays where no one else is.

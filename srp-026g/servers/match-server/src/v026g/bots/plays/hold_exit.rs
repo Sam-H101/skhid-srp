@@ -61,6 +61,7 @@ pub fn tuning() -> PlayTuning {
         rank: Rank::Fight,
         considerations: vec![
             considerations::personality(),
+            considerations::holding(),
             considerations::near(250.0),
             // One bot per exit is the slot; fewer friends there is better.
             Consideration::new(Input::FriendsNearTarget, 0.0, 3.0, Curve::Linear).inverted(),

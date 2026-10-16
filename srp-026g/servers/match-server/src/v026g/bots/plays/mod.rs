@@ -804,6 +804,36 @@ pub mod considerations {
         )
     }
 
+    /// A play that pushes into the enemy (a raid, a sneak, a flank): more
+    /// as the team's aggression rises ([`Input::Aggression`]: behind on
+    /// points, and the more so the less time is left), 0.7 at an even
+    /// match. The owner's word after the first matches against the real
+    /// game (2026-10-16): the team that loses should be more aggressive.
+    pub fn pushing() -> Consideration {
+        Consideration::new(
+            Input::Aggression,
+            0.0,
+            1.0,
+            Curve::Piecewise {
+                points: vec![(0.0, 0.4), (0.5, 0.7), (1.0, 1.0)],
+            },
+        )
+    }
+
+    /// A play that holds a spot and waits (a crossfire, an exit, a cut, an
+    /// ambush): less as the team's aggression rises, 0.85 at an even
+    /// match.
+    pub fn holding() -> Consideration {
+        Consideration::new(
+            Input::Aggression,
+            0.0,
+            1.0,
+            Curve::Piecewise {
+                points: vec![(0.0, 1.0), (0.5, 0.85), (1.0, 0.45)],
+            },
+        )
+    }
+
     /// A team modifier, from `lo` (at 0) to 1.
     pub fn modifier(input: Input, lo: f32) -> Consideration {
         Consideration::new(
