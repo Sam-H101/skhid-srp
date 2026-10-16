@@ -17,7 +17,7 @@
 use mapdata::{RayTree, Vec3};
 
 use super::kin::{forward, wrap};
-use super::know::{Percept, Source};
+use super::know::{KnownBattery, Percept, Source, TeamKnowledge};
 use super::rng::Rng;
 use super::tuning::{CheatTuning, SenseTuning};
 use super::view::{MatchView, Place, PlaceView, SoundKind};
@@ -129,6 +129,112 @@ pub fn sense(
     out
 }
 
+/// What a bot may look at for its team's battery knowledge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BatteryLook {
+    /// A battery lying where the team does not know it.
+    Battery(usize, Vec3),
+    /// A spot where the team believes a battery lies and it does not.
+    Gone(usize, Vec3),
+    /// A battery spawner's spot worth a look.
+    Spawner(usize, Vec3),
+}
+
+/// With the battery cheat off: what the bot `me` sees of the batteries for
+/// its team (`player_bots_behaviour.md` §2: "a battery a bot sees becomes
+/// known to its team"). A battery lying in the view, within
+/// `battery_sight_m`, in a clear line on the bullet mesh (or within
+/// `battery_near_m`) becomes known where it lies; a spot believed to hold
+/// one, so seen empty, is forgotten; a spawner's spot so seen is checked.
+/// Nearest first, at most `battery_rays` rays from the poll's budget.
+/// `worth(spawner)` says which spawners are worth a look.
+#[allow(clippy::too_many_arguments)]
+pub fn sense_batteries(
+    me: &PlaceView,
+    view: &MatchView,
+    sight: &RayTree,
+    spawners: &[mapdata::BatterySpawner],
+    tuning: &SenseTuning,
+    team: &mut TeamKnowledge,
+    worth: impl Fn(usize) -> bool,
+    rays: &mut RayBudget,
+) {
+    use super::view::BatteryState;
+    if !me.alive {
+        return;
+    }
+    let eye = me.eye();
+    let near = |at: Vec3| {
+        at.distance_xz(me.feet) <= tuning.battery_near_m && (at.y - me.feet.y).abs() < 2.0
+    };
+    let lying_at = |battery: usize, at: Vec3| matches!(view.batteries.get(battery), Some(BatteryState::Free(real)) if real.distance_xz(at) <= 1.5);
+    let mut looks: Vec<(f32, BatteryLook)> = Vec::new();
+    let mut consider = |look: BatteryLook, at: Vec3| {
+        let distance = (at - eye).length();
+        if near(at)
+            || (distance <= tuning.battery_sight_m && in_view(me.feet, me.yaw, at, tuning.view_deg))
+        {
+            looks.push((distance, look));
+        }
+    };
+    for (battery, state) in view.batteries.iter().enumerate() {
+        if let BatteryState::Free(at) = *state
+            && team
+                .battery(battery)
+                .is_none_or(|k| k.at.distance_xz(at) > 1.5)
+        {
+            consider(BatteryLook::Battery(battery, at), at);
+        }
+    }
+    for (battery, known) in team.batteries.iter().enumerate() {
+        if let Some(known) = known
+            && !known.hud
+            && !lying_at(battery, known.at)
+        {
+            consider(BatteryLook::Gone(battery, known.at), known.at);
+        }
+    }
+    for (index, spawner) in spawners.iter().enumerate() {
+        if worth(index) {
+            consider(BatteryLook::Spawner(index, spawner.item), spawner.item);
+        }
+    }
+    if looks.is_empty() {
+        return;
+    }
+    looks.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut cast = 0;
+    for (_, look) in looks {
+        let at = match look {
+            BatteryLook::Battery(_, at)
+            | BatteryLook::Gone(_, at)
+            | BatteryLook::Spawner(_, at) => at,
+        };
+        let seen = near(at) || {
+            if cast >= tuning.battery_rays || !rays.take() {
+                break;
+            }
+            cast += 1;
+            super::aimpoint::sight_line(sight, eye, at + Vec3::new(0.0, 0.25, 0.0))
+        };
+        if !seen {
+            continue;
+        }
+        match look {
+            BatteryLook::Battery(battery, at) => team.set_battery(
+                battery,
+                Some(KnownBattery {
+                    at,
+                    time: view.clock,
+                    hud: false,
+                }),
+            ),
+            BatteryLook::Gone(battery, _) => team.set_battery(battery, None),
+            BatteryLook::Spawner(index, _) => team.saw_spawner(index, view.clock),
+        }
+    }
+}
+
 /// The noticing delay for a sight at `distance`: near to far, shorter for
 /// a busy enemy, times the skill's factor.
 pub fn notice_ms(tuning: &SenseTuning, distance: f32, busy: bool, skill_factor: f32) -> u32 {
@@ -232,6 +338,104 @@ mod tests {
             &mut Rng::new(1),
         );
         assert!(percepts.iter().all(|p| p.source != Source::Seen));
+    }
+
+    fn spawner(x: f32, z: f32) -> mapdata::BatterySpawner {
+        mapdata::BatterySpawner {
+            position: Vec3::new(x, 0.0, z),
+            item: Vec3::new(x, 0.3, z),
+            layer: String::new(),
+        }
+    }
+
+    /// A wall 4 m high across x = -5..5 at z = 15 (both faces).
+    fn wall() -> RayTree {
+        let (a, b, c, d) = (
+            Vec3::new(-5.0, 0.0, 15.0),
+            Vec3::new(5.0, 0.0, 15.0),
+            Vec3::new(5.0, 4.0, 15.0),
+            Vec3::new(-5.0, 4.0, 15.0),
+        );
+        RayTree::from_corners([[a, b, c], [a, c, d], [c, b, a], [d, c, a]].into_iter())
+    }
+
+    /// With the battery cheat off: a battery in view in a clear line
+    /// becomes the team's, one behind the wall or behind the bot does not
+    /// (within the near distance it does at once); a spawner's spot seen
+    /// is checked; a spot believed to hold a battery, seen empty, is
+    /// forgotten; and no more rays are cast than allowed.
+    #[test]
+    fn a_bot_sees_batteries_and_spawners_for_its_team_in_a_clear_line() {
+        use crate::v026g::bots::view::BatteryState;
+        let me = place(0, 0, Vec3::ZERO, 0.0);
+        let mut view = view(vec![me.clone()], vec![]);
+        view.mode = Mode::Batteries;
+        view.batteries = vec![
+            BatteryState::Free(Vec3::new(3.0, 0.3, 10.0)),
+            BatteryState::Free(Vec3::new(0.0, 0.3, 25.0)),
+            BatteryState::Free(Vec3::new(0.0, 0.3, -10.0)),
+            BatteryState::Free(Vec3::new(1.0, 0.3, -2.0)),
+            BatteryState::Carried(None),
+        ];
+        let spawners = [spawner(-4.0, 12.0), spawner(0.0, 30.0)];
+        let mut team = TeamKnowledge::default();
+        // Battery 4 was seen lying at (6, 0.3, 8); it is gone from there.
+        team.set_battery(
+            4,
+            Some(KnownBattery {
+                at: Vec3::new(6.0, 0.3, 8.0),
+                time: 0,
+                hud: false,
+            }),
+        );
+        let tuning = SenseTuning::default();
+        let mut rays = RayBudget(100);
+        let sight = wall();
+        sense_batteries(
+            &me,
+            &view,
+            &sight,
+            &spawners,
+            &tuning,
+            &mut team,
+            |_| true,
+            &mut rays,
+        );
+        // Three rays at most: battery 3 is near (no ray), then battery 4's
+        // spot, battery 0 and spawner 0 by distance.
+        assert_eq!(rays.0, 97);
+        assert!(team.battery(3).is_some(), "near, behind it");
+        assert!(team.battery(4).is_none(), "seen gone");
+        assert_eq!(team.battery(0).map(|k| k.hud), Some(false));
+        assert_eq!(team.spawner_seen(0), Some(view.clock));
+        // The next think: battery 1 and spawner 1 lie behind the wall,
+        // battery 2 behind the bot.
+        sense_batteries(
+            &me,
+            &view,
+            &sight,
+            &spawners,
+            &tuning,
+            &mut team,
+            |i| i == 1,
+            &mut rays,
+        );
+        assert_eq!(rays.0, 95);
+        assert!(team.battery(1).is_none() && team.battery(2).is_none());
+        assert_eq!(team.spawner_seen(1), None);
+        // Without the wall both are seen.
+        sense_batteries(
+            &me,
+            &view,
+            &RayTree::build(&[]),
+            &spawners,
+            &tuning,
+            &mut team,
+            |i| i == 1,
+            &mut rays,
+        );
+        assert!(team.battery(1).is_some() && team.battery(2).is_none());
+        assert_eq!(team.spawner_seen(1), Some(view.clock));
     }
 
     #[test]

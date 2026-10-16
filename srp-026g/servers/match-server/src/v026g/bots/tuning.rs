@@ -89,6 +89,17 @@ pub struct SenseTuning {
     pub forget_ms: u32,
     /// A last known position is dropped after this, ms.
     pub drop_ms: u32,
+    /// With the battery cheat off (`CheatTuning::batteries`): a battery,
+    /// or a battery spawner's spot, is seen within this, metres, in the
+    /// view and in a clear line; within `battery_near_m` (on the ground)
+    /// at once. GUESS: a lying battery is small but lit.
+    pub battery_sight_m: f32,
+    pub battery_near_m: f32,
+    /// Rays a think may cast at batteries and spawners (nearest first).
+    pub battery_rays: u32,
+    /// Timed batteries: a station's spawner seen this long ago is worth a
+    /// look again, ms.
+    pub spawner_recheck_ms: u32,
 }
 
 impl Default for SenseTuning {
@@ -108,6 +119,10 @@ impl Default for SenseTuning {
             callout_ms: 1_000,
             forget_ms: 3_000,
             drop_ms: 20_000,
+            battery_sight_m: 35.0,
+            battery_near_m: 3.0,
+            battery_rays: 3,
+            spawner_recheck_ms: 45_000,
         }
     }
 }

@@ -83,8 +83,7 @@ impl Ctx<'_> {
     fn ambush_enemy(&self, at: Vec3) -> Option<Track> {
         let far = self.num(PlayKind::Ambush, "enemy_max_m");
         let free: Vec<Vec3> = (0..self.view.batteries.len())
-            .filter(|&b| matches!(self.view.batteries[b], BatteryState::Free(_)))
-            .filter_map(|b| self.battery_at(b))
+            .filter_map(|b| self.battery_lying(b))
             .collect();
         self.memory
             .tracks()
@@ -126,7 +125,9 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
             BatteryState::Carried(carrier) if running => carrier
                 .and_then(|p| cx.view.place(p))
                 .is_none_or(|p| p.team != cx.me.team),
-            BatteryState::Free(_) => cx.battery_at(battery).is_some_and(|at| cx.ambush_worth(at)),
+            _ if !running => cx
+                .battery_lying(battery)
+                .is_some_and(|at| cx.ambush_worth(at)),
             _ => false,
         };
         if worth {
