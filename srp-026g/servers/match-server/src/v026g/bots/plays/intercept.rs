@@ -125,6 +125,27 @@ impl Ctx<'_> {
             .map(|c| c.at)
     }
 
+    /// Whether a run at `target` would fail at its first step, as
+    /// [`step`] plans it: no meet ahead of him (the earliest lead drawn)
+    /// or he is close, and the chase's goal (he) is in his base or a zone.
+    fn intercept_fails_at_once(&self, target: TargetRef) -> bool {
+        let num = |name| self.num(PlayKind::Intercept, name);
+        let Some(carry) = self.intercept_carry(target) else {
+            return false;
+        };
+        let (Some(him), Some(home)) = (
+            self.intercept_him(target, &carry),
+            self.intercept_home(&carry),
+        ) else {
+            return false;
+        };
+        if self.tactics.fine_goal(him, self.now, self.bot.side) {
+            return false;
+        }
+        self.me.feet.distance_xz(him) < num("close_m")
+            || self.intercept_meet(him, home, num("lead_min_s")).is_none()
+    }
+
     /// Whether this bot is among the `n` bots of its team nearest `at`.
     fn intercept_among_nearest(&self, at: Vec3, n: usize) -> bool {
         let mine = self.me.feet.distance_xz(at);
@@ -196,6 +217,13 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         let Some(at) = cx.point_of(target) else {
             continue;
         };
+        // A chase that fails at its first step (he is in his base, with
+        // no meet left on his way) is no candidate: else it is taken and
+        // dropped again at once (27 times in the owner's match of
+        // 2026-10-16).
+        if cx.intercept_fails_at_once(target) {
+            continue;
+        }
         let key = battery as u32 * 2;
         if theft.is_some() && cx.intercept_among_nearest(at, alarm_bots) {
             for slot in [key, key + 1] {
@@ -400,6 +428,31 @@ mod tests {
                 .all(|c| c.target == TargetRef::Point(Vec3::new(12.0, 0.0, 30.0))),
             "{found:#?}"
         );
+    }
+
+    /// A carrier in his base (his spawn area, x 75 here) with no meet
+    /// left ahead of him: the chase would fail at its first step, so it is
+    /// no candidate (it was taken and dropped at once, in bursts); once he
+    /// is out, it is one again, and the step chases.
+    #[test]
+    fn a_carrier_in_his_base_is_no_candidate() {
+        let mut s = scene(false);
+        s.bot(0, 0, Vec3::new(50.0, 0.0, 31.0));
+        s.enemy(1, 1, Vec3::new(72.0, 0.0, 30.0), Some(Source::Seen));
+        let cx = s.cx(0);
+        assert!(
+            !cx.tactics
+                .fine_goal(Vec3::new(72.0, 0.0, 30.0), s.view.clock, Some(0))
+        );
+        let mut rng = Rng::new(1);
+        let mut state = start(TargetRef::Place(1), &cx, &mut rng);
+        assert_eq!(
+            step(&mut state, TargetRef::Place(1), &cx, &mut rng),
+            Step::Failed("he is in his base")
+        );
+        assert!(intercepts(&s, 0).is_empty());
+        s.enemy(1, 1, Vec3::new(45.0, 0.0, 31.0), Some(Source::Seen));
+        assert_eq!(intercepts(&s, 0).len(), 1);
     }
 
     #[test]

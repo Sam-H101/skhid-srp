@@ -60,6 +60,7 @@ pub fn tuning() -> PlayTuning {
         considerations: vec![
             considerations::personality(),
             considerations::holding(),
+            considerations::not_behind_late(),
             considerations::near(250.0),
             Consideration::new(Input::FriendsNearTarget, 0.0, 3.0, Curve::Linear).inverted(),
             considerations::health_above(0.3),

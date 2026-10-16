@@ -55,6 +55,7 @@ pub fn tuning() -> PlayTuning {
         considerations: vec![
             considerations::personality(),
             considerations::holding(),
+            considerations::not_behind_late(),
             considerations::near(200.0),
             considerations::health_above(0.35),
             // Best with one friend there already (the other half); two or

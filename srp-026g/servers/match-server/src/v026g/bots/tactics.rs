@@ -74,6 +74,10 @@ pub struct Tactics {
     /// The routes humans took on this map and mode (play 17), on its
     /// floors; empty without `SRP_BOT_ROUTES`.
     pub routes: Vec<super::routes::HumanRoute>,
+    /// [`Self::past_fixed_zones`]'s regions, and the zones it was made for
+    /// ([`Hazards::fixed_zones`]): made again only when they change (at
+    /// the anomalies' attach).
+    past_fixed: std::sync::Mutex<Option<(Vec<bool>, Arc<Vec<u64>>)>>,
 }
 
 /// The label's bits for the sides' spawn areas.
@@ -437,6 +441,7 @@ impl Tactics {
             world: base.world.clone(),
             hazards: base.hazards.clone(),
             routes: Vec::new(),
+            past_fixed: Default::default(),
             base,
         }
     }
@@ -465,6 +470,68 @@ impl Tactics {
     /// way.
     pub fn walkable(&self, node: NodeId) -> bool {
         self.base.walkable(node)
+    }
+
+    /// Whether a walk from a spawn gets to `node` over floors no zone that
+    /// is on all match marks ([`Hazards::fixed_at`]; the zones that switch
+    /// count as off): no route to any other floor is ever found this
+    /// match, whatever the clock (a battery in a pocket ringed by toxic
+    /// ground: level_01's, level_03's). Walked on the regions (their
+    /// labels hold the zones, so a region is shut whole or not at all, and
+    /// a way between floors is one between their regions,
+    /// `mapdata::regions`): a few thousand, well under a millisecond, made
+    /// for the zones' controls and again only if they change.
+    pub fn past_fixed_zones(&self, node: NodeId) -> bool {
+        let region = self.base.regions.of(node) as usize;
+        self.past_fixed_regions()
+            .get(region / 64)
+            .is_some_and(|bits| bits >> (region % 64) & 1 == 1)
+    }
+
+    fn past_fixed_regions(&self) -> Arc<Vec<u64>> {
+        let mut cache = self
+            .past_fixed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((made_for, bits)) = cache.as_ref()
+            && made_for.len() == self.hazards.zones.len()
+            && made_for
+                .iter()
+                .zip(&self.hazards.zones)
+                .all(|(&fixed, zone)| fixed != zone.switches())
+        {
+            return bits.clone();
+        }
+        let fixed = self.hazards.fixed_zones();
+        let regions = &self.base.regions;
+        let grid = &self.world.grid;
+        let mut bits = vec![0u64; regions.len().div_ceil(64)];
+        let mut queue: Vec<u32> = Vec::new();
+        let mark = |bits: &mut Vec<u64>, queue: &mut Vec<u32>, r: u32| {
+            let (word, bit) = (r as usize / 64, r % 64);
+            if bits[word] >> bit & 1 == 0 {
+                bits[word] |= 1 << bit;
+                queue.push(r);
+            }
+        };
+        for spawn in &self.world.map.spawns {
+            if let Some(node) = grid.locate(spawn.position, 1.5) {
+                mark(&mut bits, &mut queue, regions.of(node));
+            }
+        }
+        if bits.iter().all(|&w| w == 0) {
+            bits.iter_mut().for_each(|w| *w = u64::MAX);
+        }
+        while let Some(a) = queue.pop() {
+            for &(b, _) in regions.out(a) {
+                if !self.hazards.fixed_at(regions.middle(b)) {
+                    mark(&mut bits, &mut queue, b);
+                }
+            }
+        }
+        let bits = Arc::new(bits);
+        *cache = Some((fixed, bits.clone()));
+        bits
     }
 
     /// Whether `point` is in a spawn area of `side` (any side if `None`).
