@@ -20,7 +20,7 @@
 #      the live host, the patches server, nix, $SKHID_GAME, $SKHID_STOCK_DB
 #      (its sha256), free disk here and there, srp-game-data, main's patch
 #      REVISION above the live exe's, the admin page answering the jump
-#      host (not with --no-maintenance), no maintenance planned already, no
+#      host (not with --no-maintenance or --now), no maintenance planned already, no
 #      other release running (the lock on the jump host), no release folder
 #      left unfinished, download/ on the same file system as the folder;
 #      srp26's container, its image ID the one srp-026g:latest names; which
@@ -501,7 +501,13 @@ count_ended_matches() {
 on_exit() {
     local status=$?
     set +e
-    trap - INT TERM
+    # The cleanup must finish: a second Ctrl-C, a closed terminal (HUP to
+    # the whole group) or the death of the release.log copy must not cut it
+    # short (a maintenance left planned would put the server down with
+    # nothing swapped).
+    trap 'printf "release.sh: cleaning up, wait\n" >&2' INT TERM HUP
+    trap '' PIPE
+    if [[ -n $LOG_PID ]] && ! kill -0 "$LOG_PID" 2>/dev/null; then exec 1>&8 2>&9; fi
     if [[ -n $NAP_PID ]]; then kill "$NAP_PID" 2>/dev/null; fi
     case $phase in
     planned)
@@ -531,7 +537,7 @@ on_exit() {
     exit "$status"
 }
 trap on_exit EXIT
-trap 'die "interrupted"' INT TERM
+trap 'die "interrupted"' INT TERM HUP
 
 # 1. Preflight.
 problems=()
@@ -970,7 +976,7 @@ else
 fi
 if ((!DRY_RUN)); then
     if ((now)); then
-        progress "5. --now: no wait for matches; $(matches_now || true) match(es) running now (counted again right before the stop)"
+        progress "5. --now: no wait for matches; $(m=$(matches_now || true); printf %s "${m:-?}") match(es) running now (counted again right before the stop)"
     else
         progress "5. no match is running"
     fi
