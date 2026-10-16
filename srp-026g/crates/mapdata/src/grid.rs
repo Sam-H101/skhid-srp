@@ -859,6 +859,35 @@ impl WalkGrid {
         (0..8).filter_map(move |d| self.link_of(a, d, i, k))
     }
 
+    /// [`Self::links`], each with the way back from the floor it reaches
+    /// to `node` in 2 bytes, for [`Self::back`]: `node`'s index among its
+    /// cell's floors (bits 0-10), the direction (11-13) and the reach less
+    /// one (14-15).
+    #[inline]
+    fn links_back(&self, node: NodeId) -> impl Iterator<Item = (NodeId, LinkKind, u16)> + '_ {
+        let a = node as usize;
+        let cell = self.cell_of[a] as usize;
+        let (i, k) = self.cell_xz(cell);
+        let index = node - self.start[cell];
+        debug_assert!(index < 1 << 11, "a cell of more than 2048 floors");
+        (0..8).filter_map(move |d| {
+            let (v, kind) = self.link_of(a, d, i, k)?;
+            let reach = (self.how[a] >> (4 * d + 2)) & 3;
+            Some((v, kind, (index | (d as u32) << 11 | reach << 14) as u16))
+        })
+    }
+
+    /// The floor that `way` ([`Self::links_back`]) leads back to from
+    /// `node`.
+    #[inline]
+    fn back(&self, node: NodeId, way: u16) -> NodeId {
+        let (i, k) = self.cell_xz(self.cell_of[node as usize] as usize);
+        let (di, dk) = DIRS[usize::from(way >> 11 & 7)];
+        let reach = i32::from(way >> 14) + 1;
+        let cell = (k - dk * reach) as usize * self.nx + (i - di * reach) as usize;
+        self.start[cell] + u32::from(way & 0x7FF)
+    }
+
     /// The links into a floor.
     pub fn incoming(&self, node: NodeId) -> impl Iterator<Item = (NodeId, LinkKind)> + '_ {
         let cell = self.cell_of[node as usize] as usize;
@@ -1000,9 +1029,10 @@ impl WalkGrid {
     /// ([`Search::TooFar`]): a search that cannot end (a goal the allowed
     /// floors shut off) otherwise floods the whole piece, a million floors
     /// on the big maps. Floors in different pieces ([`Self::may_reach`])
-    /// are [`Search::NoWay`] at once. The search's arrays are kept by the
-    /// thread between searches and marked by a search number, so a search
-    /// costs what it expands, not the grid's size.
+    /// are [`Search::NoWay`] at once. The search's arrays (8 bytes a floor)
+    /// are kept by the thread between searches and marked by a search
+    /// number, so a search costs what it expands, not the grid's size;
+    /// [`crate::free_search_memory`] gives them back.
     pub fn search(
         &self,
         from: NodeId,
@@ -1040,19 +1070,23 @@ impl WalkGrid {
         let Scratch {
             mark,
             cost,
-            parent,
+            back,
             search,
             open,
         } = &mut scratch;
         if mark.len() < n {
-            mark.resize(n, 0);
-            cost.resize(n, f32::INFINITY);
-            parent.resize(n, NONE);
+            // Zeroed: pages the system hands over as they are first
+            // touched. A floor's cost and way back are read only once its
+            // mark says this search reached it.
+            *mark = vec![0; n];
+            *cost = vec![0.0; n];
+            *back = vec![0; n];
+            *search = 0;
         }
         // A mark of `2 * search` is a floor reached in this search,
         // `2 * search + 1` one expanded (closed).
         *search += 1;
-        if *search >= u32::MAX / 2 - 1 {
+        if *search >= u16::MAX / 2 - 1 {
             mark.fill(0);
             *search = 1;
         }
@@ -1061,7 +1095,6 @@ impl WalkGrid {
         let goal = self.position(to);
         mark[from as usize] = seen;
         cost[from as usize] = 0.0;
-        parent[from as usize] = NONE;
         open.push(Entry(self.position(from).distance_xz(goal), from));
         Ok(SlicedSearch {
             scratch,
@@ -1268,8 +1301,8 @@ pub struct SlicedSearch {
     from: NodeId,
     to: NodeId,
     goal: Vec3,
-    seen: u32,
-    closed: u32,
+    seen: u16,
+    closed: u16,
     expanded: usize,
     budget: usize,
     /// The floor expanded so far that is nearest the goal (by the
@@ -1293,7 +1326,7 @@ impl SlicedSearch {
                 Scratch {
                     mark,
                     cost,
-                    parent,
+                    back,
                     open,
                     ..
                 },
@@ -1322,15 +1355,8 @@ impl SlicedSearch {
             }
             mark[u as usize] = closed;
             if u == to {
-                let mut nodes = vec![to];
-                let mut at = to;
-                while at != from {
-                    at = parent[at as usize];
-                    nodes.push(at);
-                }
-                nodes.reverse();
                 return Some(Search::Found(Path {
-                    nodes,
+                    nodes: way(grid, back, from, to),
                     cost: cost[to as usize],
                 }));
             }
@@ -1345,7 +1371,7 @@ impl SlicedSearch {
             if f - cu < *best_h {
                 (*best, *best_h) = (u, f - cu);
             }
-            for (v, kind) in grid.links(u) {
+            for (v, kind, way_back) in grid.links_back(u) {
                 let m = mark[v as usize];
                 if m == closed || (v != to && !allowed(v)) {
                     continue;
@@ -1354,7 +1380,7 @@ impl SlicedSearch {
                 if m != seen || c < cost[v as usize] {
                     mark[v as usize] = seen;
                     cost[v as usize] = c;
-                    parent[v as usize] = u;
+                    back[v as usize] = way_back;
                     open.push(Entry(c + grid.position(v).distance_xz(goal), v));
                 }
             }
@@ -1369,20 +1395,27 @@ impl SlicedSearch {
     /// The way so far to the floor expanded that lies nearest the goal, as
     /// Detour's `finalizeSlicedFindPathPartial`: a body heads that way while
     /// the search goes on. Only the start while nothing was expanded.
-    pub fn partial(&self) -> Path {
-        let Scratch { cost, parent, .. } = &self.scratch;
-        let mut nodes = vec![self.best];
-        let mut at = self.best;
-        while at != self.from {
-            at = parent[at as usize];
-            nodes.push(at);
-        }
-        nodes.reverse();
+    /// `grid` is the one searched.
+    pub fn partial(&self, grid: &WalkGrid) -> Path {
+        let Scratch { cost, back, .. } = &self.scratch;
         Path {
-            nodes,
+            nodes: way(grid, back, self.from, self.best),
             cost: cost[self.best as usize],
         }
     }
+}
+
+/// The floors from `from` to `to` (both included), by the ways back a
+/// search wrote.
+fn way(grid: &WalkGrid, back: &[u16], from: NodeId, to: NodeId) -> Vec<NodeId> {
+    let mut nodes = vec![to];
+    let mut at = to;
+    while at != from {
+        at = grid.back(at, back[at as usize]);
+        nodes.push(at);
+    }
+    nodes.reverse();
+    nodes
 }
 
 impl Drop for SlicedSearch {
@@ -1391,15 +1424,18 @@ impl Drop for SlicedSearch {
     }
 }
 
-/// A search's arrays, kept by each thread between searches (a few MB on the
-/// big maps, once). A search left under way ([`SlicedSearch`]) holds its own
-/// meanwhile, so the thread keeps up to [`SPARE_SCRATCHES`] of them.
+/// A search's arrays, kept by each thread between searches: 8 bytes a
+/// floor, 5.6 MB on the largest grid (level_06's). A search left under way
+/// ([`SlicedSearch`]) holds its own meanwhile, so the thread keeps up to
+/// [`SPARE_SCRATCHES`] of them.
 #[derive(Default)]
 struct Scratch {
-    mark: Vec<u32>,
+    mark: Vec<u16>,
     cost: Vec<f32>,
-    parent: Vec<u32>,
-    search: u32,
+    /// Per floor reached, the way back to the floor it was reached from
+    /// ([`WalkGrid::links_back`]).
+    back: Vec<u16>,
+    search: u16,
     open: BinaryHeap<Entry>,
 }
 
@@ -1435,6 +1471,29 @@ impl Scratch {
 
 thread_local! {
     static SCRATCH: RefCell<Vec<Scratch>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drops the thread's spare arrays ([`crate::free_search_memory`]).
+pub(crate) fn free_scratches() {
+    let _ = SCRATCH.try_with(|spare| spare.borrow_mut().clear());
+}
+
+/// The bytes of the thread's spare arrays.
+pub(crate) fn scratch_bytes() -> usize {
+    SCRATCH
+        .try_with(|spare| {
+            spare
+                .borrow()
+                .iter()
+                .map(|s| {
+                    s.mark.capacity() * 2
+                        + s.cost.capacity() * 4
+                        + s.back.capacity() * 2
+                        + s.open.capacity() * std::mem::size_of::<Entry>()
+                })
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 /// A path of floors and its cost (metres plus link penalties).
@@ -1880,6 +1939,75 @@ pub(crate) mod tests {
         let low = grid.locate(Vec3::new(2.0, 0.0, 5.0), 1.0).unwrap();
         let ledge = grid.locate(Vec3::new(7.5, 1.0, 5.0), 1.0).unwrap();
         assert!(!grid.distances_from(&[low]).reaches(ledge));
+    }
+
+    /// A search keeps each floor's way back in 2 bytes (its index in its
+    /// cell, the direction, the reach): the paths it gives step along
+    /// links only, over a drop that lands cells further on and over floors
+    /// stacked in a cell.
+    #[test]
+    fn paths_step_along_links_over_long_drops_and_stacked_floors() {
+        let along_links = |grid: &WalkGrid, path: &Path| {
+            path.nodes
+                .windows(2)
+                .all(|w| grid.links(w[0]).any(|(b, _)| b == w[1]))
+        };
+        // The ledges' grid: the drop off the deck lands past the floors
+        // eroded at the wall's foot.
+        let mut tris = floor(0.0, 0.0, 5.0, 10.0, 0.0).to_vec();
+        tris.extend(floor(5.0, 0.0, 10.0, 10.0, 1.0));
+        tris.extend(wall_x(5.0, 0.0, 10.0, 1.0));
+        tris.extend(floor(10.0, 0.0, 15.0, 10.0, 3.0));
+        tris.extend(wall_x(10.0, 0.0, 10.0, 3.0));
+        let grid = WalkGrid::build(&tris, [0.0, 0.0, 15.0, 10.0], 0.5, Body::default());
+        let deck = grid.locate(Vec3::new(12.5, 3.0, 5.0), 1.0).unwrap();
+        let low = grid.locate(Vec3::new(2.0, 0.0, 5.0), 1.0).unwrap();
+        let path = grid.path(deck, low).unwrap();
+        assert!(along_links(&grid, &path));
+        let long = path
+            .nodes
+            .windows(2)
+            .any(|w| grid.position(w[0]).distance_xz(grid.position(w[1])) > 1.5 * grid.cell_size());
+        assert!(long, "no step lands cells further on");
+        // A deck 3 m over the floor: its floors are the second of their
+        // cells.
+        let mut tris = floor(0.0, 0.0, 15.0, 10.0, 0.0).to_vec();
+        tris.extend(floor(5.0, 0.0, 10.0, 10.0, 3.0));
+        let grid = WalkGrid::build(&tris, [0.0, 0.0, 15.0, 10.0], 0.5, Body::default());
+        let a = grid.locate(Vec3::new(5.75, 3.0, 1.0), 0.5).unwrap();
+        let b = grid.locate(Vec3::new(9.25, 3.0, 9.0), 0.5).unwrap();
+        let path = grid.path(a, b).unwrap();
+        assert!(along_links(&grid, &path));
+        let index = |v: NodeId| v - grid.start[grid.cell_of[v as usize] as usize];
+        assert!(path.nodes.iter().all(|&v| index(v) == 1));
+        let (c, d) = (
+            grid.locate(Vec3::new(1.0, 0.0, 5.0), 0.5).unwrap(),
+            grid.locate(Vec3::new(14.0, 0.0, 5.0), 0.5).unwrap(),
+        );
+        let path = grid.path(c, d).unwrap();
+        assert!(along_links(&grid, &path));
+        // The partial way of a search in slices too.
+        let mut sliced = grid.start_search(c, d, usize::MAX).unwrap();
+        let mut iters = 10;
+        assert_eq!(sliced.step(&grid, |_| true, &mut iters), None);
+        let partial = sliced.partial(&grid);
+        assert!(partial.nodes.len() > 1 && along_links(&grid, &partial));
+        assert_eq!(partial.nodes[0], c);
+    }
+
+    /// The thread's search arrays are given back, and a search after that
+    /// makes them again and finds the same way.
+    #[test]
+    fn search_memory_is_given_back_and_made_again() {
+        let grid = two_rooms();
+        let n = grid.len() as NodeId;
+        crate::free_search_memory();
+        assert_eq!(crate::search_memory_bytes(), 0);
+        let before = grid.search(0, n - 1, |_| true, usize::MAX);
+        assert!(crate::search_memory_bytes() >= 8 * grid.len());
+        crate::free_search_memory();
+        assert_eq!(crate::search_memory_bytes(), 0);
+        assert_eq!(grid.search(0, n - 1, |_| true, usize::MAX), before);
     }
 
     #[test]

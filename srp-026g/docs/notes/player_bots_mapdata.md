@@ -538,7 +538,8 @@ iterations (`dtPathQueue::update`, `MAX_ITERS_PER_UPDATE`):
 - `WalkGrid::start_search` and `SlicedSearch::step`: the A* set up once and
   run a few floors at a time, the same floors in the same order, so it ends
   with the same answer. A search under way holds its own arrays; the thread
-  keeps two sets (12 bytes a floor each), one for a search left under way.
+  keeps two sets (12 bytes a floor each then, 8 since "Search memory"), one
+  for a search left under way.
 - `Regions::start_route_search` and `RouteSearch::step`: the regions'
   search the same way, each stage (the corridor, widened, the whole grid)
   in slices. Its corridor is a bit a region of its own, not the thread's
@@ -587,6 +588,61 @@ is about 2.6 times slower):
 Every 4 v 4 run's worst poll is 2.7-3.7 ms (was 5-22 ms). What is left of
 the worst is the commander's tick and the bots' thinks (level_03 10 v 10:
 the commander 4.8 ms), not the searches.
+
+### Search memory (2026-10-16)
+
+The A* arrays the match thread keeps were 12 bytes a floor of the largest
+grid searched (a mark, a cost, a parent), two sets while a search is left
+under way, kept for the life of the process: 16.8 MB after a match on
+level_06 (701,698 floors).
+
+**What was measured first.** The plan was a table sized to the corridor
+for the corridor stages, as Detour's node pool is sized to the search
+(`dtNodePool`: a fixed number of nodes and a hash, not one per polygon).
+One bench run of each of the 12 real-map runs, every corridor counted:
+
+| | p50 | p99 | max |
+|---|---|---|---|
+| floors in the corridor's regions | 8-18 k | 50-154 k | 60-205 k |
+| the same, share of the grid | | | 17-47 % |
+
+Of the searches that got past the regions' search, 0-42 % a run went on
+to the whole grid (level_01 4 v 4 none, level_06 4 v 4 133 of 314).
+
+The widest corridors hold up to half the grid, and searches that go to the
+whole grid (the stuck spots shut the corridor) come in every match, so the
+whole-grid arrays are needed all match long anyway: a corridor table would
+not lower the peak. Not built.
+
+**What was built.**
+- **8 bytes a floor, not 12.** The mark is 2 bytes (a search number; the
+  marks are cleared every 32,766 searches, 1.4 MB written). The parent is
+  2 bytes: the way back from the floor to the one it was reached from (that
+  floor's index in its cell, the direction, the reach; `links_back`,
+  `back`). The cost stays 4. The search's order and answers are the same.
+  New arrays are zeroed by the allocator, so pages no search touches are
+  not taken from the system. Level_06: 11.2 MB for the two sets, was 16.8.
+- **Given back when no match has bots.** Each `Bots` holds its thread's
+  arrays (`SearchMemory`); when the thread's last match with bots ends,
+  `mapdata::free_search_memory` drops them and the region marks, and with
+  glibc calls `malloc_trim(0)`. The log says how much went back.
+
+**Why `malloc_trim`.** glibc raises its mmap threshold to the size of a
+large block once it is freed (up to 32 MB), so the next such arrays come
+from the heap and stay with the process when freed. Checked on WSL Ubuntu
+(glibc 2.39) with the arrays of level_06 run as three matches on a thread
+(`private/mapdata-digests/trim_check.py`): after the first match the freed
+arrays stayed resident (23.0 MB held, 23.0 MB after the free) until
+`malloc_trim`, which brought it to 12-14 MB. The trim also hands back what
+a map's build freed on its own thread.
+
+**Proof.** Every decisions digest is the one before, at the default
+budget: the three whole matches and level_01-06 4 v 4 and 10 v 10.
+The searches' time, the 12 real-map runs one process at a time, the
+merged branch and this change in turns, four rounds each (64.9 M floors
+expanded a round by both): 242-284 ns a floor expanded before, 236-287
+after (means 269 and 265), the bots' time 144-170 and 137-171 ms a
+second summed. The same within the rounds' spread: no more work.
 
 ## 7. Anomalies on the match server
 

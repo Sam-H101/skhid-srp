@@ -401,6 +401,24 @@ thread_local! {
     static MARKS: RefCell<Marks> = RefCell::new(Marks::default());
 }
 
+/// Drops the thread's region marks ([`crate::free_search_memory`]).
+pub(crate) fn free_marks() {
+    let _ = MARKS.try_with(|marks| *marks.borrow_mut() = Marks::default());
+}
+
+/// The bytes of the thread's region marks.
+pub(crate) fn marks_bytes() -> usize {
+    MARKS
+        .try_with(|marks| {
+            let m = marks.borrow();
+            m.mark.capacity() * 4
+                + m.cost.capacity() * 4
+                + m.parent.capacity() * 4
+                + m.open.capacity() * std::mem::size_of::<Entry>()
+        })
+        .unwrap_or(0)
+}
+
 /// How a [`WalkGrid::route_search`] went, for the logs and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Stage {
@@ -566,9 +584,9 @@ impl RouteSearch {
     }
 
     /// The stage's way so far ([`SlicedSearch::partial`]): over floors its
-    /// filter lets through.
-    pub fn partial(&self) -> Option<crate::grid::Path> {
-        self.search.as_ref().map(SlicedSearch::partial)
+    /// filter lets through. `grid` is the one searched.
+    pub fn partial(&self, grid: &WalkGrid) -> Option<crate::grid::Path> {
+        self.search.as_ref().map(|search| search.partial(grid))
     }
 
     /// The corridor so far and `rings` of regions round it (those

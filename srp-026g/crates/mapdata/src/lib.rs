@@ -52,6 +52,32 @@ pub use grid::{
     Body, BuildStats, DistanceMap, LinkKind, NodeId, Path, Search, SlicedSearch, WalkGrid,
 };
 pub use library::{Library, Materials, WalkerBehaviour};
+
+/// Gives back the arrays this thread keeps between its searches (8 bytes a
+/// floor of the largest grid searched, twice while a search is left under
+/// way), for a thread whose searches are over for now; the next search
+/// makes them again. With glibc, freed memory is also handed back to the
+/// system (`malloc_trim`): it otherwise keeps blocks of a few MB for reuse.
+pub fn free_search_memory() {
+    grid::free_scratches();
+    regions::free_marks();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: glibc's own call, safe at any time from any thread.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+
+/// The bytes of the arrays this thread keeps between its searches
+/// ([`free_search_memory`]).
+pub fn search_memory_bytes() -> usize {
+    grid::scratch_bytes() + regions::marks_bytes()
+}
 pub use math::{PhysicsPoint, Rotation, Transform, Vec3};
 pub use project::{
     Anomaly, AnomalyArtefacts, AnomalyEnergy, AnomalyState, BatterySpawner, CollisionFilter,

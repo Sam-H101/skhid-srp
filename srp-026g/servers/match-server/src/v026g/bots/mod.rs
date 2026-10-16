@@ -299,6 +299,44 @@ struct Searching {
     pending: Option<Pending>,
 }
 
+/// A match's hold on its thread's search arrays (8 bytes a floor of the
+/// largest grid searched, twice while a search is left under way): when
+/// the thread's last match with bots ends, they are given back
+/// ([`mapdata::free_search_memory`]), so the match loop keeps none between
+/// matches with bots.
+struct SearchMemory;
+
+impl SearchMemory {
+    fn hold() -> Self {
+        let _ = MATCHES_WITH_BOTS.try_with(|n| n.set(n.get() + 1));
+        Self
+    }
+}
+
+impl Drop for SearchMemory {
+    fn drop(&mut self) {
+        let left = MATCHES_WITH_BOTS.try_with(|n| {
+            n.set(n.get().saturating_sub(1));
+            n.get()
+        });
+        if left == Ok(0) {
+            let bytes = mapdata::search_memory_bytes();
+            mapdata::free_search_memory();
+            if bytes > 0 {
+                log::info!(
+                    "No match with bots left: their search arrays given back ({:.1} MB)",
+                    bytes as f64 / 1e6
+                );
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// This thread's matches with bots ([`SearchMemory`]).
+    static MATCHES_WITH_BOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A route search left under way, and what it is for: it lets through the
 /// floors it started with ([`Tactics::resume_route`]).
 struct Pending {
@@ -349,6 +387,8 @@ pub struct Bots {
     routes: Vec<routes::HumanRoute>,
     /// This poll's route searches ([`Searching`]).
     searching: Searching,
+    /// Last, so a search left under way is dropped before it.
+    _search_memory: SearchMemory,
 }
 
 impl Bots {
@@ -400,6 +440,7 @@ impl Bots {
                 floors: 0,
                 pending: None,
             },
+            _search_memory: SearchMemory::hold(),
         }
     }
 
