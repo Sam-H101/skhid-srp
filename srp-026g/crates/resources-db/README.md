@@ -28,7 +28,7 @@ the patches it runs on.
 |---|---|
 | `lib.rs` (`Archive`) | Reads an archive: its table when opened (10 MB of 0.26g's 6.3 GB), a file's bytes when asked for. Every offset is checked; node kinds 0.26g has none of are refused by name. From resource-porter's `deps/vostok-resources-db` (`src/fat.rs` at 5d3b53e) |
 | `overlay` (`Overlay`) | Archives over one another in order: for each path the file of the last archive that has one. Only the tables are read to lay them; a file is read from its own archive. A path that is a file in one archive and a folder in another is refused |
-| `write` | Writes an archive the game mounts, deterministically: the mount root, folders and files in name order, each node's `m_parent` the start of its folder's class (936 for the root's children, as in 0.26g's archive; the engine follows it), each file's CRC-32, a zeroed 256-byte signature after the table, the files' bytes from the next 2048-byte boundary after it |
+| `write` | Writes an archive the game mounts, deterministically: the mount root, folders and files in name order, each node's `m_parent` the start of its folder's class (936 for the root's children, as in 0.26g's archive; the engine follows it), each file's CRC-32, a zeroed 256-byte signature after the table, the files' bytes from the next 2048-byte boundary after it. `write` takes the files' bytes in memory (a patch); `write_to` asks for each file's bytes when it writes them, keeps empty folders, and writes files that share a key (a hard link's target and its links, read from another archive) once, so resource-porter can write a whole game archive again with some files changed |
 | `server` | The server's game data: `build`, `Provenance`, `read` |
 | `pack` | A patch from a folder: every file under it at its path there, written by `write`, read back and compared with the folder |
 | `bin/srp-game-data.rs` | The command line |
@@ -129,7 +129,7 @@ over a folder refused, patches given out of order, gaps in the numbers, the
 names the game does not mount, the same bytes twice, other bytes for another
 URL or patch, the provenance read back and wrong ones refused, a file unlike
 its table refused), resource-porter's `tests/fixture.db` for the reader,
-the writer's `m_parent` and signature room, and `pack` (a folder's files at
+the writer's `m_parent` and signature room, `write_to` (the bytes `write` gives, empty folders, one copy of shared bytes, bytes unlike their size or checksum refused), and `pack` (a folder's files at
 their paths, read back, the same bytes twice, what an archive cannot say
 refused).
 
