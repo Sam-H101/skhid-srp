@@ -1635,12 +1635,27 @@ fn real_bot_cost() {
             // with no route: a bot standing where it means to walk.
             let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
             let mut stood_by: std::collections::BTreeMap<String, u64> = Default::default();
+            // Living bots' ticks looking at a spawner's spot (Collect at a
+            // `TargetRef::Spawner`), and their deaths while at it.
+            let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
+            let mut was_alive: Vec<bool> = game.bodies.iter().map(|b| b.alive).collect();
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
                     game.step();
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
+                        let searching = bot.assignment.as_ref().is_some_and(|a| {
+                            a.kind == super::plays::PlayKind::Collect
+                                && matches!(a.target, super::plays::TargetRef::Spawner(_))
+                        });
+                        if searching && body.alive {
+                            search_ticks += 1;
+                        }
+                        if searching && was_alive[bot.place] && !body.alive {
+                            search_deaths += 1;
+                        }
+                        was_alive[bot.place] = body.alive;
                         if let Go::To { at, within_m } = bot.intent.go
                             && body.alive
                             && body.feet.distance_xz(at) > within_m
@@ -1793,6 +1808,10 @@ fn real_bot_cost() {
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
+            eprintln!(
+                "  search: {:.0} bot-s at spawners' spots, {search_deaths} deaths in it",
+                search_ticks as f64 * f64::from(TICK_MS) / 1000.0
+            );
             let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
             eprintln!("  {line}");
             if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {
