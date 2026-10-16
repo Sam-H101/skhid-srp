@@ -29,6 +29,14 @@
 //! map by its `Arc`; one dropped from the store while a match still has
 //! it is taken back without a new build. A file that is missing or fails
 //! to load is reported once and stays absent until the server restarts.
+//!
+//! At most [`AT_ONCE`] maps are in memory (`SRP_MAPDATA_AT_ONCE`; the host
+//! has room for one: `player_bots_mapdata.md`, "On host-like limits"). A
+//! match on a map in memory has it at once. One that needs another map
+//! while the maps in memory are all held by matches (or loading) waits
+//! ([`MapState::Waiting`]): its bots run the stage 0 script, as while a
+//! map loads, and take the map when it is loaded. A map no match holds is
+//! dropped to make room, and the memory it freed handed back.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -47,6 +55,10 @@ use super::tuning::Tuning;
 /// map, and a rebuild costs 0.3-0.8 s off the match thread.
 pub const KEEP: usize = 1;
 
+/// How many maps may be in memory at once by default, held by matches,
+/// loading or kept.
+pub const AT_ONCE: usize = 1;
+
 /// The folder under `SRP_MAPDATA_DIR` of the built grids and trees.
 pub const BUILT_DIR: &str = "built";
 
@@ -58,6 +70,9 @@ pub enum MapState {
     Absent(String),
     /// Being built; look again later.
     Loading,
+    /// Not loaded while the maps in memory are held by other matches
+    /// ([`AT_ONCE`]); look again later. The reason is for the log.
+    Waiting(String),
     /// Its world and its tactics for the default hazard margin.
     Ready(Arc<TacticsBase>),
 }
@@ -67,6 +82,7 @@ impl fmt::Debug for MapState {
         match self {
             Self::Absent(reason) => f.debug_tuple("Absent").field(reason).finish(),
             Self::Loading => f.write_str("Loading"),
+            Self::Waiting(reason) => f.debug_tuple("Waiting").field(reason).finish(),
             Self::Ready(base) => write!(f, "Ready({})", base.world.map.project),
         }
     }
@@ -79,6 +95,8 @@ pub struct Maps {
     /// each load.
     built: Option<PathBuf>,
     keep: usize,
+    /// At most this many maps in memory ([`AT_ONCE`]).
+    at_once: usize,
     cache: Arc<Mutex<Cache>>,
     /// Held by the build under way: one at a time, for memory and the one
     /// core of the host.
@@ -102,30 +120,39 @@ enum Entry {
         base: Arc<TacticsBase>,
         used: u64,
     },
-    /// Dropped from the store; a match may still hold it.
-    Dropped(Weak<TacticsBase>),
+    /// Dropped from the store; a match may still hold it (its tactics, or
+    /// only its world when it built tactics of its own).
+    Dropped(Weak<TacticsBase>, Weak<World>),
     Failed(String),
 }
 
 impl Maps {
     /// A store loading from `dir`; `None`: every project is absent.
     pub fn new(dir: Option<PathBuf>) -> Arc<Self> {
-        Self::with_keep(dir, KEEP)
+        let built = dir.as_ref().map(|dir| dir.join(BUILT_DIR));
+        Self::configured(dir, KEEP, AT_ONCE, built)
     }
 
-    /// As [`Maps::new`], keeping `keep` maps (at least one).
+    /// As [`Maps::new`], keeping `keep` maps (at least one), with no bound
+    /// on the maps in memory at once.
     pub fn with_keep(dir: Option<PathBuf>, keep: usize) -> Arc<Self> {
         let built = dir.as_ref().map(|dir| dir.join(BUILT_DIR));
-        Self::configured(dir, keep, built)
+        Self::configured(dir, keep, usize::MAX, built)
     }
 
-    /// As [`Maps::with_keep`], the built files in `built` (none: built at
-    /// each load).
-    pub fn configured(dir: Option<PathBuf>, keep: usize, built: Option<PathBuf>) -> Arc<Self> {
+    /// As [`Maps::with_keep`], at most `at_once` maps in memory (at least
+    /// one), the built files in `built` (none: built at each load).
+    pub fn configured(
+        dir: Option<PathBuf>,
+        keep: usize,
+        at_once: usize,
+        built: Option<PathBuf>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             dir,
             built,
             keep: keep.max(1),
+            at_once: at_once.max(1),
             cache: Arc::default(),
             builds: Arc::default(),
         })
@@ -163,12 +190,27 @@ impl Maps {
                 *used = clock;
                 return MapState::Ready(base.clone());
             }
-            Some(Entry::Dropped(base)) => base.upgrade(),
+            Some(Entry::Dropped(base, _)) => base.upgrade(),
             None => None,
         };
         if let Some(base) = revived {
             cache.insert_ready(project, base.clone(), self.keep);
             return MapState::Ready(base);
+        }
+        // A new map in memory: only with room for it.
+        let held = cache.held_except(project);
+        if held.len() >= self.at_once {
+            return MapState::Waiting(format!(
+                "{} in use; at most {} bots' map{} at once",
+                held.join(", "),
+                self.at_once,
+                if self.at_once == 1 { "" } else { "s" }
+            ));
+        }
+        if cache.drop_idle(project, self.at_once - held.len() - 1) {
+            // What the dropped maps freed back to the system before the
+            // next is read.
+            mapdata::trim_freed_memory();
         }
         let path = dir.join(mapdata::format::file_name(project));
         if !path.is_file() {
@@ -245,13 +287,71 @@ impl Cache {
             let oldest = oldest.clone();
             if let Some(Entry::Ready { base, .. }) = self.entries.remove(&oldest) {
                 log::info!("Bot map {oldest} dropped from the store (kept {keep})");
+                let world = Arc::downgrade(&base.world);
                 self.entries
-                    .insert(oldest, Entry::Dropped(Arc::downgrade(&base)));
+                    .insert(oldest, Entry::Dropped(Arc::downgrade(&base), world));
             }
         }
-        // Keys of grids and trees nothing holds any more.
+        self.forget_freed();
+    }
+
+    /// Keys of grids and trees nothing holds any more.
+    fn forget_freed(&mut self) {
         self.grids.retain(|_, grid| grid.strong_count() > 0);
         self.sights.retain(|_, sight| sight.strong_count() > 0);
+    }
+
+    /// The maps other than `project` in memory that the store cannot drop:
+    /// loading, or held by a match.
+    fn held_except(&self, project: &str) -> Vec<String> {
+        let mut held: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(name, _)| name.as_str() != project)
+            .filter(|(_, entry)| match entry {
+                Entry::Loading => true,
+                Entry::Ready { base, .. } => {
+                    Arc::strong_count(base) > 1 || Arc::strong_count(&base.world) > 1
+                }
+                Entry::Dropped(base, world) => base.strong_count() > 0 || world.strong_count() > 0,
+                Entry::Failed(_) => false,
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        held.sort_unstable();
+        held
+    }
+
+    /// Drops the ready maps other than `project` that no match holds, the
+    /// least recently used first, till `room` of them are left; whether
+    /// any was dropped.
+    fn drop_idle(&mut self, project: &str, room: usize) -> bool {
+        let mut idle: Vec<(u64, String)> = self
+            .entries
+            .iter()
+            .filter_map(|(name, entry)| match entry {
+                Entry::Ready { base, used }
+                    if name.as_str() != project
+                        && Arc::strong_count(base) == 1
+                        && Arc::strong_count(&base.world) == 1 =>
+                {
+                    Some((*used, name.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        idle.sort_unstable();
+        let over = idle.len().saturating_sub(room);
+        for (_, name) in idle.into_iter().take(over) {
+            if let Some(Entry::Ready { base, .. }) = self.entries.remove(&name) {
+                log::info!("Bot map {name} dropped from the store to make room for {project}");
+                let world = Arc::downgrade(&base.world);
+                self.entries
+                    .insert(name, Entry::Dropped(Arc::downgrade(&base), world));
+            }
+        }
+        self.forget_freed();
+        over > 0
     }
 }
 
@@ -444,6 +544,7 @@ impl fmt::Debug for Maps {
             .field("dir", &self.dir)
             .field("built", &self.built)
             .field("keep", &self.keep)
+            .field("at_once", &self.at_once)
             .field("ready", &ready)
             .finish()
     }
@@ -699,7 +800,7 @@ mod tests {
         let cache = lock(&maps.cache);
         assert!(matches!(cache.entries["a/day_4"], Entry::Ready { .. }));
         assert!(matches!(cache.entries["c/day_4"], Entry::Ready { .. }));
-        let Entry::Dropped(b) = &cache.entries["b/day_4"] else {
+        let Entry::Dropped(b, _) = &cache.entries["b/day_4"] else {
             panic!("b must be dropped");
         };
         assert!(b.upgrade().is_none(), "nothing holds b");
@@ -707,7 +808,7 @@ mod tests {
         // a dropped while held comes back without a build.
         wait_ready(&maps, "b/day_4", wait);
         let cache = lock(&maps.cache);
-        let Entry::Dropped(dropped) = &cache.entries["a/day_4"] else {
+        let Entry::Dropped(dropped, _) = &cache.entries["a/day_4"] else {
             panic!("a must be dropped now");
         };
         assert!(Arc::ptr_eq(&dropped.upgrade().unwrap(), &a));
@@ -716,6 +817,59 @@ mod tests {
             panic!("a is held, so it is ready at once");
         };
         assert!(Arc::ptr_eq(&back, &a));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// One map in memory at a time: a match on another map waits while
+    /// one holds the first (its tactics or only its world), and the map
+    /// no match holds any more is dropped to make room; a match on the map
+    /// in memory has it at once.
+    #[test]
+    fn one_map_at_a_time_waits_for_room_and_drops_the_idle_one() {
+        let dir = temp_dir("at-once");
+        for project in ["a/day_4", "b/day_4", "c/day_4"] {
+            tiny_map(project)
+                .write(&dir.join(mapdata::format::file_name(project)))
+                .unwrap();
+        }
+        let maps = Maps::configured(Some(dir.clone()), 1, 1, None);
+        let wait = Duration::from_secs(10);
+        let a = wait_ready(&maps, "a/day_4", wait);
+        // A match holds a: b waits, and so does it again.
+        for _ in 0..2 {
+            let MapState::Waiting(why) = maps.get("b/day_4") else {
+                panic!("b must wait while a is held");
+            };
+            assert!(why.contains("a/day_4"), "{why}");
+        }
+        // Another match on a has it at once.
+        let MapState::Ready(again) = maps.get("a/day_4") else {
+            panic!("a is in memory");
+        };
+        assert!(Arc::ptr_eq(&again, &a));
+        drop(again);
+        // Held by its world only (tactics of a match's own margin): still
+        // held.
+        let world = a.world.clone();
+        drop(a);
+        assert!(matches!(maps.get("b/day_4"), MapState::Waiting(_)));
+        drop(world);
+        // a is free: dropped for b, and nothing holds it.
+        let b = wait_ready(&maps, "b/day_4", wait);
+        {
+            let cache = lock(&maps.cache);
+            let Entry::Dropped(a, world) = &cache.entries["a/day_4"] else {
+                panic!("a must be dropped for b");
+            };
+            assert!(a.upgrade().is_none() && world.upgrade().is_none());
+        }
+        // b is kept after its match: c drops it, it is not waited for.
+        drop(b);
+        wait_ready(&maps, "c/day_4", wait);
+        let cache = lock(&maps.cache);
+        assert!(matches!(cache.entries["b/day_4"], Entry::Dropped(..)));
+        assert!(matches!(cache.entries["c/day_4"], Entry::Ready { .. }));
+        drop(cache);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -774,11 +928,11 @@ mod tests {
                 base.digest(),
             )
         };
-        let first = Maps::configured(Some(dir.clone()), 1, Some(built.clone()));
+        let first = Maps::configured(Some(dir.clone()), 1, AT_ONCE, Some(built.clone()));
         let started = Instant::now();
         let written: Vec<_> = projects.iter().map(|p| digests(&first, p)).collect();
         let build_s = started.elapsed().as_secs_f32();
-        let second = Maps::configured(Some(dir.clone()), 1, Some(built.clone()));
+        let second = Maps::configured(Some(dir.clone()), 1, AT_ONCE, Some(built.clone()));
         let started = Instant::now();
         for (project, written) in projects.iter().zip(&written) {
             assert_eq!(&digests(&second, project), written, "{project}");
