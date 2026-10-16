@@ -58,8 +58,8 @@ pub struct MapMode {
     pub name: &'static str,
     /// `mode.mode` ([`mode`]).
     pub mode: u8,
-    /// `match_making_params.map_id`: 1..=8 are level_01..=level_08, 88 the
-    /// test maps.
+    /// `match_making_params.map_id`: 1..=8 are level_01..=level_08, 9 is
+    /// London (level_09, resources.db.patch_13), 88 the test maps.
     pub level: u8,
     /// `match_making_params.map_weather_id` ([`weather`]).
     pub weather: u8,
@@ -94,9 +94,11 @@ pub struct MapMode {
 
 impl MapMode {
     /// Whether a match can be played on it: a real mode, on a map whose
-    /// project the client has.
+    /// project the client has. Level 9 is London: its modes and projects
+    /// come with resources.db.patch_13 (day only), so the stock data has no
+    /// level 9 to play.
     pub fn is_playable(&self) -> bool {
-        self.has_project && mode::ALL.contains(&self.mode) && (1..=8).contains(&self.level)
+        self.has_project && mode::ALL.contains(&self.mode) && (1..=9).contains(&self.level)
     }
 }
 
