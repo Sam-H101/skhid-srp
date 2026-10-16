@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # usage: release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
 #                           [--server-code auto|yes|no]
-#                           [--minutes <n> | --no-maintenance]
+#                           [--minutes <n> | --no-maintenance] [--now]
 #                           [--match-wait <minutes>] [--label <word>]
 #                           [--ref <branch>] [--dry-run] [--yes --i-know]
 #
-# A whole release of origin/main in one run. Everything is prepared and
-# staged first, with Play open; then players get a maintenance countdown
-# that ends 2 minutes after the last running match does (or one of
-# --minutes <n>), and at its end it is all swapped in at once and srp is
-# made anew. With --no-maintenance there is no countdown: the swap comes as
-# soon as no match runs (the downtime is the recreate; lobby players
-# reconnect):
+# A whole release of origin/main in one run. After the preflight it waits
+# for the go; at the go players get a maintenance countdown at once, to end
+# 30 seconds after the last running match does (or one of --minutes <n>),
+# so Play locks and no match starts after it; during the countdown
+# everything is prepared and staged, and at the later of its end and the
+# staging's, once no match runs, it is all swapped in at once and srp is
+# made anew (the countdown hides the build). With --no-maintenance there is
+# no countdown: staged, then swapped as soon as no match runs (the downtime
+# is the recreate; lobby players reconnect). With --now there is no
+# countdown either, and no wait: staged, then swapped at once, matches
+# running or not (they end without results):
 #   1. preflight, nothing players see: ssh to the jump host and through it to
 #      the live host, the patches server, nix, $SKHID_GAME, $SKHID_STOCK_DB
 #      (its sha256), free disk here and there, srp-game-data, main's patch
 #      REVISION above the live exe's, the admin page answering the jump
-#      host (not with --no-maintenance), no maintenance planned already, no
+#      host (not with --no-maintenance or --now), no maintenance planned already, no
 #      other release running (the lock on the jump host), no release folder
 #      left unfinished, download/ on the same file system as the folder;
 #      srp26's container, its image ID the one srp-026g:latest names; which
@@ -32,54 +36,60 @@
 #      --resources, the file is resources.db.patch_<main's REVISION>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
 #      which server code differs between main and the target's tree;
-#   2. takes the release lock, y/N; nothing is planned yet;
-#   3. at once, players seeing nothing: release/upload-patch (with
-#      --resources: publishes it and adds its row to the list),
-#      release/build-server-db (of the list), release/build-zip (--ref: the
-#      commit checked in step 1); checks the two files as release/deploy
-#      does; makes the release folder
-#      $TARGET_DIR/release-rev<rev>-<UTC YYYYMMDD-HHMM>[-<label>] and stages
-#      both in it (sha256 checked there, chmod 644), with changed.txt; with
-#      server code to build: tags the running image (by its ID)
-#      srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
-#      folder's src/ and runs docker compose build srp26 there. Once all of
-#      it is staged it waits for the releaser's go (y at its prompt, or
-#      touch the go file it names under ~/.cache/skhid-release/; --yes does
-#      not give it; SKHID_RELEASE_GO=1 gives it beforehand), and only then,
-#      never before, plans the maintenance on the admin
-#      page, POSTed from the jump host (its address is in the SRP_ADMIN_IPS
-#      of the target; the token and the page's path go to curl on stdin),
-#      and sees the countdown on $SKHID_SITE/launcher/places/en. Its
-#      minutes: ceil((last_match_ends_in + 120) / 60), at least 2, where
-#      last_match_ends_in is what $SKHID_SITE/api/stats says (the seconds
-#      until the last running match ends at the latest; 0: none runs). From
-#      an srp that does not send it yet: 2 with "matches":0; else the most
-#      "Time left" (<= <m> min) on the launcher page's matches + 2, when the
-#      page gives one for every running match; else a whole match, 15 + 2 =
-#      17. With --minutes <n>: <n>. Play locks from the plan on (in the
-#      countdown's last 30 min), so no match starts after it. With
-#      --no-maintenance: nothing is planned;
-#   4. at the planned time, once $SKHID_SITE/api/stats says "matches":0
-#      (waiting up to --match-wait more): shows what changes, y/N (no answer
-#      in $SKHID_SWAP_ANSWER_MINUTES, default 10: no), then the swap of
-#      release/deploy. With --no-maintenance: no planned time, once
-#      "matches":0 (waiting up to --match-wait from the end of step 3), y/N,
-#      and "matches":0 once more right before the stop (else it waits again,
-#      within the same limit). The swap: srp26 stopped; srp.db, the old ZIP
-#      and server data (hard links), their sha256, the image ID, the setting
-#      (and the source) kept in the folder with its rollback, srp.db copied
-#      to the jump host too (live only); the server data (and source) in
-#      place, SRP_MIN_PATCH_REVISION=<rev>, srp26 made anew;
-#   5. checks the container, the log's game data line and /patches (exactly
+#   2. takes the release lock, then waits for the go: the owner's word that
+#      players may feel the release from now on (y at its prompt, n stops;
+#      or touch the go file it names under ~/.cache/skhid-release/; --yes
+#      does not give it; SKHID_RELEASE_GO=1 gives it beforehand). Nothing is
+#      planned, built or staged before it;
+#   3. at once after the go, plans the maintenance on the admin page, POSTed
+#      from the jump host (its address is in the SRP_ADMIN_IPS of the
+#      target; the token and the page's path go to curl on stdin), and sees
+#      the countdown on $SKHID_SITE/launcher/places/en. Its minutes:
+#      ceil((last_match_ends_in + 30) / 60), at least 1 (the admin page
+#      takes whole minutes, 1-10080), where last_match_ends_in is what
+#      $SKHID_SITE/api/stats says (the seconds until the last running match
+#      ends at the latest; 0: none runs). From an srp that does not send it
+#      yet: 1 with "matches":0; else the most "Time left" (<= <m> min) on the
+#      launcher page's matches + 1 (30 s, rounded up), when the page gives
+#      one for every running match; else a whole match and 30 s, 16. With
+#      --minutes <n>: <n>. Play locks from the plan on (in the countdown's
+#      last 30 min), so no match starts after it. With --no-maintenance or
+#      --now: nothing is planned;
+#   4. during the countdown: release/upload-patch (with --resources:
+#      publishes it and adds its row to the list), release/build-server-db
+#      (of the list), release/build-zip (--ref: the commit checked in step
+#      1); checks the two files as release/deploy does; makes the release
+#      folder $TARGET_DIR/release-rev<rev>-<UTC YYYYMMDD-HHMM>[-<label>] and
+#      stages both in it (sha256 checked there, chmod 644), with
+#      changed.txt; with server code to build: tags the running image (by
+#      its ID) srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
+#      folder's src/ and runs docker compose build srp26 there;
+#   5. at the later of the planned time and the end of step 4 (staged after
+#      the planned time: at once), once the launcher page says the server is
+#      down and $SKHID_SITE/api/stats says "matches":0 (waiting up to
+#      --match-wait more): shows what changes, y/N (no answer in
+#      $SKHID_SWAP_ANSWER_MINUTES, default 10: no), then the swap of
+#      release/deploy. With --no-maintenance: once "matches":0 (waiting up
+#      to --match-wait from the end of step 4), y/N, and "matches":0 once
+#      more right before the stop (else it waits again, within the same
+#      limit). With --now: right after step 4, no notice, no wait for
+#      "matches":0, y/N; right before the stop it says how many matches run,
+#      which the stop ends without results (the log keeps the number).
+#      The swap: srp26 stopped; srp.db, the old ZIP and server data (hard
+#      links), their sha256, the image ID, the setting (and the source) kept
+#      in the folder with its rollback, srp.db copied to the jump host too
+#      (live only); the server data (and source) in place,
+#      SRP_MIN_PATCH_REVISION=<rev>, srp26 made anew;
+#   6. checks the container, the log's game data line and /patches (exactly
 #      the list's patches), and only then puts the ZIP in place and checks
 #      /api/client-files. A failed check prints srp's log and runs the
 #      folder's rollback (srp.db, image, data, ZIP, setting, source: as
-#      before). The run's output is the folder's release.log.
-# Stopped before the swap (a failure, a no, Ctrl-C): the staged files are
-# removed (the folder stays, state stopped), the image tag put back, the
-# maintenance cancelled when it was planned (a stop before the plan asks the
-# admin page nothing); the server is as it was (a published patch stays,
-# with its row in the list: none is ever deleted).
+#      before), with --now too. The run's output is the folder's release.log.
+# Stopped before the swap (a failure, a no, Ctrl-C) at any point after the
+# go: the maintenance cancelled when it was planned, the staged files
+# removed (the folder stays, state stopped), the image tag put back; the
+# server is as it was (a published patch stays, with its row in the list:
+# none is ever deleted). A stop before the go only frees the lock.
 #
 #   --resources <file>  new content: resources.db.patch_<rev>, published first
 #   --test              to the test environment ($SKHID_TEST in $SKHID_TEST_DIR,
@@ -90,20 +100,28 @@
 #   --server-code auto  (default) build when main's srp-026g differs from the
 #                       target's tree; yes: build anyway; no: never
 #   --minutes <n>       a countdown of <n> minutes, 1-10080, instead of the
-#                       one from the matches; planned once staged too
-#   --no-maintenance    no countdown, the admin page never asked: prepare at
-#                       once, swap as soon as $SKHID_SITE/api/stats says
-#                       "matches":0
+#                       one from the matches; planned right after the go too
+#   --no-maintenance    no countdown, the admin page never asked: staged
+#                       after the go, swapped as soon as $SKHID_SITE/api/stats
+#                       says "matches":0
+#   --now               no maintenance, no notice, no wait: after the go,
+#                       staged, then swapped at once, even with matches
+#                       running (they end without results; the log says how
+#                       many); still the go, the y/N and the rollback.
+#                       --no-maintenance with it is the same; not with
+#                       --minutes
 #   --match-wait <min>  how long to wait for "matches":0, then stop (nothing
 #                       swapped): after the planned time (default
 #                       $SKHID_MATCH_WAIT_MINUTES, else 15); with
-#                       --no-maintenance, after step 3 (default 120)
+#                       --no-maintenance, after step 4 (default 120);
+#                       ignored with --now
 #   --label <word>      ends the release folder's name
 #   --ref <branch>      with --test only: release that pushed branch instead
 #                       of main (a branch under review); live is always main
 #   --dry-run           runs the read-only checks of step 1, prints every
 #                       other command; plans no maintenance, writes nothing
-#   --yes --i-know      answer both y/N questions yes (both flags or neither)
+#   --yes --i-know      answer the y/N before the swap yes (both flags or
+#                       neither); never the go
 #
 # Settings: release.env (.claude/skills/skhid-release/release.env.example).
 . "$(dirname "$0")/lib.sh"
@@ -117,7 +135,7 @@ MINUTE=${SKHID_TEST_SECONDS_PER_MINUTE:-60}
 STOCK_SHA=${SKHID_TEST_STOCK_SHA256:-$STOCK_DB_SHA256}
 
 ref=main resources='' test_server=0 server_code=auto minutes='' label='' yes=0 i_know=0
-no_maint=0 match_wait=''
+no_maint=0 match_wait='' now=0
 while (($#)); do
     case $1 in
     -h | --help) usage ;;
@@ -126,6 +144,7 @@ while (($#)); do
     --server-code) (($# >= 2)) || usage 1; server_code=$2; shift 2 ;;
     --minutes) (($# >= 2)) || usage 1; minutes=$2; shift 2 ;;
     --no-maintenance) no_maint=1; shift ;;
+    --now) now=1; shift ;;
     --match-wait) (($# >= 2)) || usage 1; match_wait=$2; shift 2 ;;
     --label) (($# >= 2)) || usage 1; label=$2; shift 2 ;;
     --ref) (($# >= 2)) || usage 1; ref=$2; shift 2 ;;
@@ -138,6 +157,10 @@ done
 ((yes == i_know)) || die "--yes goes with --i-know (both or neither): without a terminal to ask, this restarts the live server"
 [[ $server_code =~ ^(auto|yes|no)$ ]] || die "--server-code is auto, yes or no"
 [[ -z $minutes || $no_maint == 0 ]] || die "--minutes is the countdown, and --no-maintenance has none"
+[[ -z $minutes || $now == 0 ]] || die "--minutes is the countdown, and --now has none"
+# --now: no maintenance at all, the swap as soon as all is staged.
+if ((now && no_maint)); then say "note: --now plans no maintenance anyway: --no-maintenance with it says nothing more"; fi
+((!now)) || no_maint=1
 [[ $ref == main || $test_server == 1 ]] || die "--ref goes with --test only: a live release is of main"
 [[ $ref =~ ^[A-Za-z0-9._/-]+$ && $ref != -* ]] || die "$ref: not a branch name"
 [[ -z $label || $label =~ ^[A-Za-z0-9._-]+$ ]] || die "$label: a label is letters, digits, . _ -"
@@ -159,12 +182,13 @@ if [[ -n $minutes ]]; then
     if [[ ! $minutes =~ ^[1-9][0-9]{0,4}$ ]] || ((minutes > 10080)); then die "--minutes: a whole number from 1 to 10080"; fi
 fi
 if [[ -n ${SKHID_MAINT_MINUTES:-} ]]; then
-    say "note: SKHID_MAINT_MINUTES is not read any more: the countdown ends 2 min after the last match (or --minutes <n>)"
+    say "note: SKHID_MAINT_MINUTES is not read any more: the countdown ends 30 s after the last match (or --minutes <n>)"
 fi
 # SKHID_MATCH_WAIT_MINUTES is the wait after a countdown, when most matches
 # have ended; without one a match may have just begun (they last up to 15).
 if [[ -n $match_wait ]]; then
     [[ $match_wait =~ ^[0-9]{1,5}$ ]] || die "--match-wait: a whole number of minutes"
+    ((!now)) || say "note: --match-wait is ignored with --now (it waits for no match to end)"
 elif ((no_maint)); then
     match_wait=120
 else
@@ -196,20 +220,20 @@ SWAP_WORK=$work
 log_to "$work/release.log"
 say "working in $work"
 
-# Where the run is: preflight, planned (going ahead, nothing moved: a stop
-# puts things back), swapping (a stop rolls back), finished. staged: step 3
-# is done (the maintenance is planned only then). maint_planned: the
-# maintenance was asked for (a stop cancels it).
-phase=preflight start=0 end=0 image_tagged=0 maint_planned=0 staged=0
+# Where the run is: preflight (up to the go), planned (the go given, going
+# ahead, nothing moved: a stop puts things back), swapping (a stop rolls
+# back), finished. maint_planned: the maintenance was asked for (a stop
+# cancels it). ENDED: with --now, the matches the stop ended.
+phase=preflight start=0 end=0 image_tagged=0 maint_planned=0 ENDED=''
 
 clock() { date -u -d "@$1" +%H:%M:%S; }
 span() { local s=$1; printf '%d:%02d' $((s / 60)) $((s % 60)); }
 # The clock: to (or past) the planned time; with --no-maintenance the time
-# since the y/N.
+# since the go.
 progress() {
     local s
     if ((end == 0 && start != 0)); then
-        say "== [$(clock "$(date +%s)") UTC, $(span $(($(date +%s) - start))) since the go-ahead] $*"
+        say "== [$(clock "$(date +%s)") UTC, $(span $(($(date +%s) - start))) since the go] $*"
         return
     fi
     if ((end == 0)); then
@@ -322,12 +346,14 @@ matches_now() {
 }
 
 # The maintenance's minutes into MAINT_MINUTES, and where they come from
-# into MAINT_WHY: --minutes <n>; else 2 min after the last running match
-# ends at the latest, as /api/stats says (last_match_ends_in, seconds), at
-# least 2. From an srp that does not send it: 2 with "matches":0; else the
-# launcher page's most "Time left" + 2, when the page gives a time left for
-# every running match (it rounds up to whole minutes); else a whole match.
-LAST_MATCH_MARGIN=120 WHOLE_MATCH_MINUTES=15
+# into MAINT_WHY: --minutes <n>; else 30 s after the last running
+# match ends at the latest, as /api/stats says (last_match_ends_in,
+# seconds), rounded up to whole minutes (the admin page takes those), at
+# least 1. From an srp that does not send it: 1 with "matches":0; else the
+# launcher page's most "Time left" + 1 (its minutes are rounded up, so
+# + 30 s is a minute more), when the page gives a time left for every
+# running match; else a whole match and 30 s, 16.
+LAST_MATCH_MARGIN=30 WHOLE_MATCH_MINUTES=15
 maintenance_minutes() {
     local stats ends matches page cell count=0 most=0 older why
     local re='^<td class=e>&le; ([0-9]+) min</td>$'
@@ -339,18 +365,18 @@ maintenance_minutes() {
     ends=$(jq -r '.last_match_ends_in | numbers | ceil' <<<"$stats" 2>/dev/null || true)
     if [[ $ends =~ ^[0-9]{1,9}$ ]]; then
         MAINT_MINUTES=$(((ends + LAST_MATCH_MARGIN + 59) / 60))
-        ((MAINT_MINUTES >= 2)) || MAINT_MINUTES=2
+        ((MAINT_MINUTES >= 1)) || MAINT_MINUTES=1
         if ((ends)); then
-            MAINT_WHY="/api/stats: the last match ends in $(span "$ends") at the latest (last_match_ends_in $ends), then 2 min"
+            MAINT_WHY="/api/stats: the last match ends in $(span "$ends") at the latest (last_match_ends_in $ends), then 30 s, rounded up to whole minutes"
         else
-            MAINT_WHY="/api/stats: no match runs (last_match_ends_in 0), then 2 min"
+            MAINT_WHY="/api/stats: no match runs (last_match_ends_in 0), then 30 s, rounded up to a minute"
         fi
         return 0
     fi
     matches=$(jq -r '.matches | numbers' <<<"$stats" 2>/dev/null || true)
     older="/api/stats has no last_match_ends_in (an srp from before it)"
     if [[ $matches == 0 ]]; then
-        MAINT_MINUTES=2 MAINT_WHY="$older; \"matches\":0: no match runs, then 2 min"
+        MAINT_MINUTES=1 MAINT_WHY="$older; \"matches\":0: no match runs, then 30 s, rounded up to a minute"
         return 0
     fi
     page=$(curl -sS --max-time 20 "$TARGET_SITE/launcher/places/en" 2>/dev/null || true)
@@ -369,31 +395,39 @@ maintenance_minutes() {
         why="$count time(s) left for $matches match(es)"
     fi
     if [[ -z $why ]]; then
-        MAINT_MINUTES=$((most + 2))
-        MAINT_WHY="$older; the launcher page's \"Time left\": $count match(es), the last ending in <= $most min, then 2 min"
+        MAINT_MINUTES=$((most + 1))
+        MAINT_WHY="$older; the launcher page's \"Time left\": $count match(es), the last ending in <= $most min, then 30 s, rounded up to a minute"
     else
-        MAINT_MINUTES=$((WHOLE_MATCH_MINUTES + 2))
-        MAINT_WHY="$older, and the launcher page's \"Time left\" does not say ($why): a whole match, $WHOLE_MATCH_MINUTES min, then 2 min"
+        MAINT_MINUTES=$((WHOLE_MATCH_MINUTES + 1))
+        MAINT_WHY="$older, and the launcher page's \"Time left\" does not say ($why): a whole match, $WHOLE_MATCH_MINUTES min, then 30 s, rounded up to a minute"
     fi
 }
 
-# Once everything is staged: nothing players see happens without the
-# releaser's go, given then (not at the start): y at this prompt, or the go
-# file (touch it from anywhere: another shell, the release skill). Without a
-# terminal (--yes) only the file. SKHID_RELEASE_GO=1 gives it beforehand
-# (release/test.sh). Ctrl-C stops as at any step: staged files removed.
+# Right after the preflight and the lock: nothing players see happens
+# without the go, the owner's word that players may feel the release from
+# now on; the maintenance is planned at once after it. y at this prompt (n
+# stops), or the go file (touch it from anywhere: another shell, the
+# release skill). Without a terminal (--yes) only the file.
+# SKHID_RELEASE_GO=1 gives it beforehand (release/test.sh). Ctrl-C stops:
+# nothing was done, the lock is freed.
 GO_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/skhid-release
 wait_for_go() {
     local go="$GO_DIR/go-$REL" answer tty=0
     if [[ ${SKHID_RELEASE_GO:-} == 1 ]]; then say "go: given beforehand (SKHID_RELEASE_GO=1)"; return; fi
     mkdir -p "$GO_DIR" && rm -f "$go"
-    progress "3. staged; waiting for the go (players see nothing until it is given)"
+    progress "2. waiting for the go (players see nothing until it is given; then at once: $1)"
     say "Go: answer y here, or run: touch $go"
-    if ((!yes)) && { exec 3</dev/tty; } 2>/dev/null; then tty=1; printf "Go? [y] " >&2; fi
+    if ((!yes)) && { exec 3</dev/tty; } 2>/dev/null; then tty=1; printf "Go? [y/n] " >&2; fi
     while :; do
         if [[ -e $go ]]; then rm -f "$go"; say "go: $go"; break; fi
         if ((tty)); then
-            if read -r -t 2 answer <&3 && [[ $answer == y || $answer == yes ]]; then say "go: y"; break; fi
+            if read -r -t 2 answer <&3; then
+                case $answer in
+                y | yes) say "go: y"; break ;;
+                n | no) die "stopped: no go (nothing was done)" ;;
+                *) printf "Go? [y/n] " >&2 ;;
+                esac
+            fi
         else
             sleep 2 & wait $!
         fi
@@ -401,19 +435,11 @@ wait_for_go() {
     if ((tty)); then exec 3<&-; fi
 }
 
-# Once everything is staged: the maintenance planned on the admin page, seen
-# on the launcher page; the planned time into end.
+# At once after the go, before anything is built or staged (that happens
+# during the countdown): the maintenance planned on the admin page, seen on
+# the launcher page; the planned time into end.
 plan_maintenance() {
-    local answer said state seen='' there _
-    # Everything staged, and so on the host: the folder staging, both files
-    # in it with their sha256 (new.sha); an image to build was built before
-    # (its build is the last of step 3, and a failed one stops the run).
-    ((staged)) || die "the maintenance is planned only once everything is staged, and it is not (release.sh is wrong)"
-    there=$(on_target "cd $REL_DIR && cat state new.sha" || true)
-    if [[ $(head -n 1 <<<"$there") != staging ]] || ! grep -qx "$DATA_SHA  $DATA_NAME" <<<"$there" ||
-        ! grep -qx "$ZIP_SHA  $ZIP_NAME" <<<"$there"; then
-        die "$TARGET_DIR/$REL is not staged as it must be before the maintenance is planned: $(tr '\n' ' ' <<<"$there")"
-    fi
+    local answer said state seen='' _
     state=$(maintenance_state)
     case $state in planned* | down) die "the launcher page says \"$state\" before this run planned anything: a maintenance planned meanwhile (the admin page)? Nothing was swapped" ;; esac
     maintenance_minutes
@@ -429,7 +455,7 @@ plan_maintenance() {
         nap 2
     done
     [[ -n $seen ]] || die "$TARGET_SITE/launcher/places/en does not show the maintenance ($state)"
-    progress "3. maintenance planned: the launcher says \"Maintenance in $seen min\"$( ((MAINT_MINUTES > 30)) || printf '; Play is locked'); the swap at $(clock "$end") UTC"
+    progress "3. maintenance planned: the launcher says \"Maintenance in $seen min\"$( ((MAINT_MINUTES > 30)) || printf '; Play is locked'); building and staging now; the swap at $(clock "$end") UTC at the earliest"
 }
 
 # Back once $TARGET_SITE/api/stats says "matches":0; at $limit (a time) a
@@ -440,7 +466,7 @@ wait_no_match() {
         matches=$(matches_now)
         [[ $matches == 0 ]] && return 0
         (($(date +%s) < limit)) || die "${matches:-an unknown number of} match(es) still running $1: nothing was swapped"
-        progress "4. ${matches:-? (no answer from /api/stats)} match(es) still running; waiting (until $(clock "$limit") UTC at most)"
+        progress "5. ${matches:-? (no answer from /api/stats)} match(es) still running; waiting (until $(clock "$limit") UTC at most)"
         pause 0.25
     done
 }
@@ -456,11 +482,32 @@ match_check_before_stop() {
     say "\"matches\":0 once more: stopping srp26 now"
 }
 
+# --now: right before the stop, the matches it ends (without results), said
+# and kept in ENDED.
+count_ended_matches() {
+    if ((DRY_RUN)); then
+        say "[dry run] GET $TARGET_SITE/api/stats: the matches running now, which the stop ends without results (--now)"
+        return 0
+    fi
+    ENDED=$(matches_now)
+    if [[ $ENDED == 0 ]]; then
+        say "--now: no match is running: the stop ends none"
+    else
+        say "--now: ${ENDED:-an unknown number of (no answer from /api/stats)} match(es) running: the stop ends them now, WITHOUT RESULTS"
+    fi
+}
+
 # What a stop does, by phase.
 on_exit() {
     local status=$?
     set +e
-    trap - INT TERM
+    # The cleanup must finish: a second Ctrl-C, a closed terminal (HUP to
+    # the whole group) or the death of the release.log copy must not cut it
+    # short (a maintenance left planned would put the server down with
+    # nothing swapped).
+    trap 'printf "release.sh: cleaning up, wait\n" >&2' INT TERM HUP
+    trap '' PIPE
+    if [[ -n $LOG_PID ]] && ! kill -0 "$LOG_PID" 2>/dev/null; then exec 1>&8 2>&9; fi
     if [[ -n $NAP_PID ]]; then kill "$NAP_PID" 2>/dev/null; fi
     case $phase in
     planned)
@@ -490,7 +537,7 @@ on_exit() {
     exit "$status"
 }
 trap on_exit EXIT
-trap 'die "interrupted"' INT TERM
+trap 'die "interrupted"' INT TERM HUP
 
 # 1. Preflight.
 problems=()
@@ -675,7 +722,7 @@ if ((target_ok)); then
     if [[ -n $set_now ]]; then say "  note     main's compose file now passes on $set_now, which the $TARGET .env sets (names only): those values take effect at the recreate"; fi
     # The admin page plans the maintenance: --no-maintenance never asks it.
     if ((no_maint)); then
-        okay "the admin page: not needed (--no-maintenance)"
+        okay "the admin page: not needed ($( ((now)) && printf -- '--now' || printf -- '--no-maintenance'))"
     else
         proxy=$(on_target "cd $D && grep -E '^SRP_WEB_TRUST_PROXY=' .env | tail -n 1" || true)
         if [[ ${proxy#*=} != on ]]; then
@@ -772,46 +819,70 @@ say_offered
 say "  server code: $(if ((build_code)); then say "built before the swap (docker compose build srp26)"; else say "not built"; fi)"
 scale=""
 ((MINUTE == 60)) || scale=" (a minute here is $MINUTE s)"
-if ((no_maint)); then
-    say "  maintenance: none (--no-maintenance)$scale; the swap as soon as $TARGET_SITE/api/stats says \"matches\":0 (up to $match_wait min, --match-wait); lobby players get a ~30 s \"server sync\" and reconnect"
+if ((now)); then
+    say "  maintenance: NONE, NO NOTICE (--now)$scale: after the go, prepared and staged, then the swap at once, matches running or not (they end without results; it says how many); lobby players get a ~30 s \"server sync\" and reconnect"
+elif ((no_maint)); then
+    say "  maintenance: none (--no-maintenance)$scale; after the go, prepared and staged, then the swap as soon as $TARGET_SITE/api/stats says \"matches\":0 (up to $match_wait min, --match-wait); lobby players get a ~30 s \"server sync\" and reconnect"
 elif [[ -n $minutes ]]; then
-    say "  maintenance: in $minutes min (--minutes)$scale, planned once all is staged; players see the countdown, Play is locked in its last 30 min"
+    say "  maintenance: in $minutes min (--minutes)$scale, planned right after the go; players see the countdown, Play is locked in its last 30 min; prepared and staged during it; the swap at the later of its end and the staging's, once \"matches\":0"
 else
-    say "  maintenance: planned once all is staged, to start 2 min after the last running match ends$scale; players see the countdown, Play is locked from then on"
+    say "  maintenance: planned right after the go, to start 30 s after the last running match ends$scale; players see the countdown, Play is locked from then on; prepared and staged during it; the swap at the later of its end and the staging's, once \"matches\":0"
+fi
+# What comes right after the go.
+if ((now)); then
+    after_go="the build and the staging, then the swap, NO notice (--now)"
+elif ((no_maint)); then
+    after_go="the build and the staging (--no-maintenance: no notice)"
+else
+    after_go="the maintenance planned, then the build and the staging during the countdown"
 fi
 
-# 2. The lock and the y/N: nothing is planned yet.
+# 2. The lock, then the go: nothing before it.
 if ((DRY_RUN)); then
     say
-    say "[dry run] 2. take the release lock on the jump host ($(lock_path)); nothing planned yet$( ((!no_maint)) || printf ' (--no-maintenance: the admin page is never asked)')"
+    say "[dry run] 2. take the release lock on the jump host ($(lock_path)), then wait for the go (y at the prompt, or touch $GO_DIR/go-$REL; --yes does not give it); nothing before it. Then at once: $after_go"
+    if ((!no_maint)); then
+        maintenance_minutes
+        say "[dry run] 3. right after the go: plan the maintenance in $MAINT_MINUTES min (now: $MAINT_WHY), from the jump host:"
+        say "  $(plan_command "minutes=$MAINT_MINUTES")"
+        say "[dry run] then: $TARGET_SITE/launcher/places/en must say \"Maintenance in $MAINT_MINUTES min\""
+    elif ((now)); then
+        say "[dry run] 3. no maintenance planned (--now: the admin page is never asked)"
+    else
+        say "[dry run] 3. no maintenance planned (--no-maintenance: the admin page is never asked)"
+    fi
 else
     lock_take
     say
-    if ((no_maint)); then
-        say "Next, with no maintenance: the patch, the server data, the ZIP and the image prepared now (players see nothing),"
+    if ((now)); then
+        say "Next, at the go, with NO maintenance and NO notice (--now): the patch, the server data, the ZIP and the image prepared and staged,"
+        say "then the swap at once, after one more y/N: running matches end WITHOUT RESULTS."
+    elif ((no_maint)); then
+        say "Next, at the go, with no maintenance: the patch, the server data, the ZIP and the image prepared and staged,"
         say "then the swap as soon as $TARGET_SITE/api/stats says \"matches\":0 (up to $match_wait min), after one more y/N."
     else
-        say "Next: the patch, the server data, the ZIP and the image prepared and staged now (players see nothing, Play stays open);"
-        say "then the maintenance planned on $TARGET_SITE, $(if [[ -n $minutes ]]; then printf 'in %s min (--minutes)' "$minutes"; else printf 'to start 2 min after the last running match ends'; fi),"
-        say "and at its time the swap, after one more y/N. From the plan on, a stop cancels it."
+        say "Next, at the go: the maintenance planned on $TARGET_SITE at once, $(if [[ -n $minutes ]]; then printf 'in %s min (--minutes)' "$minutes"; else printf 'to start 30 s after the last running match ends'; fi): Play locks;"
+        say "during the countdown the patch, the server data, the ZIP and the image prepared and staged; the swap at the later of"
+        say "the planned time and the staging's end, once no match runs, after one more y/N. From the plan on, a stop cancels it."
     fi
-    if ((yes)); then
-        say "(--yes --i-know: going ahead)"
-    else
-        ask_yes || die "stopped: not confirmed (nothing was done)"
-    fi
+    wait_for_go "$after_go"
     phase=planned
     start=$(date +%s)
-    progress "2. going ahead: preparing now$( ((!no_maint)) || printf ' (--no-maintenance)'), nothing planned yet"
-    # The scripts run from here are covered by the y/N above.
+    # The scripts run from here are covered by the go.
     export SKHID_RELEASE_GO_AHEAD=1
+    if ((no_maint)); then
+        progress "2. the go: preparing now$( ((now)) && printf ' (--now: NO maintenance, NO notice)' || printf ' (--no-maintenance)')"
+    else
+        progress "2. the go: planning the maintenance now"
+        plan_maintenance
+    fi
 fi
 
-# 3. Prepared and staged at once; then the maintenance planned.
+# 4. Prepared and staged, during the countdown.
 dry=()
 ((DRY_RUN)) && dry=(--dry-run)
 if [[ -n $resources ]]; then
-    progress "3. publishing ${resources##*/} on $PATCHES_LABEL"
+    progress "4. publishing ${resources##*/} on $PATCHES_LABEL"
     "$here/upload-patch" "${step_flags[@]}" "${dry[@]}" "$resources" </dev/null || die "upload-patch failed"
     ((DRY_RUN)) || published=1
 fi
@@ -819,7 +890,7 @@ data=$work/$DATA_NAME
 zip=$work/zip/$ZIP_NAME
 build_zip=("$BUILD_ZIP" --ref "$main_commit" --work "$work/zip" "${step_flags[@]}")
 if ((DRY_RUN)); then
-    say "[dry run] 3. build here: release/build-server-db${step_flags[*]:+ ${step_flags[*]}} --out $data"
+    say "[dry run] 4. $( ((no_maint)) && printf 'after the go' || printf 'during the countdown'), build here: release/build-server-db${step_flags[*]:+ ${step_flags[*]}} --out $data"
     say "[dry run]    and: ${build_zip[*]}"
     say "[dry run]    then the checks of release/deploy on both, and the release folder:"
     stage_begin
@@ -827,9 +898,9 @@ if ((DRY_RUN)); then
     stage_upload "$data" "$DATA_NAME" "<its sha256>"
     stage_upload "$zip" "$ZIP_NAME" "<its sha256>"
 else
-    progress "3. building the server data (release/build-server-db)"
+    progress "4. building the server data (release/build-server-db)"
     "$here/build-server-db" "${step_flags[@]}" --out "$data" </dev/null || die "build-server-db failed"
-    progress "3. building the ZIP of $(git -C "$REPO" log -1 --format=%h "$main_commit") (release/build-zip)"
+    progress "4. building the ZIP of $(git -C "$REPO" log -1 --format=%h "$main_commit") (release/build-zip)"
     "${build_zip[@]}" </dev/null 2>&1 | tee "$work/build-zip.log" || die "build-zip failed"
     if [[ -d $work/zip/src ]]; then git -C "$REPO" worktree remove --force "$work/zip/src"; fi
     planned_offer=$OFFERED
@@ -838,7 +909,7 @@ else
         die "$data does not offer what the preflight said (the list and the new patch): $(tr '\n' ' ' <<<"$OFFERED")"
     say "ZIP: $ZIP_SIZE bytes, sha256 $ZIP_SHA, revision $rev; server data: sha256 $DATA_SHA; /patches will offer:"
     say_offered
-    progress "3. staging in the release folder $TARGET_DIR/$REL (not in place yet)"
+    progress "4. staging in the release folder $TARGET_DIR/$REL (not in place yet)"
     {
         say "release $REL: origin/$ref $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), revision $live_rev -> $rev"
         say
@@ -854,7 +925,7 @@ else
     stage_upload "$zip" "$ZIP_NAME" "$ZIP_SHA"
 fi
 if ((build_code)); then
-    progress "3. the server code: building the image from main's source"
+    progress "4. the server code: building the image from main's source"
     write_on live "cat > $REL_DIR/src.tar" "$src_tar"
     if ((!DRY_RUN)); then
         there=$(on_target "sha256sum < $REL_DIR/src.tar")
@@ -864,31 +935,31 @@ if ((build_code)); then
     ((DRY_RUN)) || image_tagged=1
     write_on live "cd $D && docker compose --env-file $D/.env -f $REL/src/docker-compose.yml build srp26"
 fi
-staged=1
-if ((DRY_RUN && !no_maint)); then
-    maintenance_minutes
-    say "[dry run] 3. once all of it is staged: plan the maintenance in $MAINT_MINUTES min (now: $MAINT_WHY), from the jump host:"
-    say "  $(plan_command "minutes=$MAINT_MINUTES")"
-    say "[dry run] then: $TARGET_SITE/launcher/places/en must say \"Maintenance in $MAINT_MINUTES min\""
-elif ((!DRY_RUN)); then
-    progress "3. staged"
-    wait_for_go
-    if ((!no_maint)); then plan_maintenance; fi
-fi
 
-# 4. At the planned time (--no-maintenance: at once), with no match running:
-# the swap.
-if ((DRY_RUN && no_maint)); then
-    say "[dry run] 4. wait for \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min), then y/N (no answer in $answer_wait min: no) and:"
+# 5. The swap, at the later of the planned time and the end of the staging,
+# once no match runs (--no-maintenance: no planned time; --now: at once).
+if ((DRY_RUN && now)); then
+    say "[dry run] 5. once staged: the swap at once, NO wait for matches (--now: the running ones end without results), y/N (no answer in $answer_wait min: no) and:"
+    SWAP_BEFORE_STOP=count_ended_matches
+elif ((DRY_RUN && no_maint)); then
+    say "[dry run] 5. once staged: wait for \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min), then y/N (no answer in $answer_wait min: no) and:"
     SWAP_BEFORE_STOP=match_check_before_stop
 elif ((DRY_RUN)); then
-    say "[dry run] 4. wait for the planned time, the launcher page saying the server is down, and \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min more), then y/N (no answer in $answer_wait min: no) and:"
+    say "[dry run] 5. at the later of the planned time and the end of the staging (staged after it: at once): the launcher page saying the server is down, and \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min more), then y/N (no answer in $answer_wait min: no) and:"
+elif ((now)); then
+    progress "5. staged; --now: the swap at once, NO wait for matches, NO notice was given"
 elif ((no_maint)); then
+    progress "5. staged; waiting for \"matches\":0"
     limit=$(($(date +%s) + match_wait * MINUTE))
     wait_no_match "after $match_wait min of waiting (--match-wait)"
 else
+    if (($(date +%s) < end)); then
+        progress "5. staged before the planned time"
+    else
+        progress "5. staged after the planned time: the swap at once, once no match runs"
+    fi
     while (($(date +%s) < end)); do
-        progress "4. waiting for the planned time ($(clock "$end") UTC)"
+        progress "5. waiting for the planned time ($(clock "$end") UTC)"
         left=$((end - $(date +%s)))
         if ((left > MINUTE)); then pause 1; elif ((left > 0)); then nap "$left"; fi
     done
@@ -904,7 +975,11 @@ else
     wait_no_match "$match_wait min after the planned time (--match-wait)"
 fi
 if ((!DRY_RUN)); then
-    progress "4. no match is running"
+    if ((now)); then
+        progress "5. --now: no wait for matches; $(m=$(matches_now || true); printf %s "${m:-?}") match(es) running now (counted again right before the stop)"
+    else
+        progress "5. no match is running"
+    fi
 
     # What changes.
     say
@@ -921,26 +996,34 @@ if ((!DRY_RUN)); then
     say "Next: srp26 stopped, the old files kept in the release folder, the server data in place, the revision set,"
     say "srp26 made anew (every lobby link drops; its start copies srp.db to backups/), checked; srp.db's copy kept;"
     say "then the ZIP. A failed check rolls it all back."
-    if ((no_maint)); then say "(--no-maintenance: \"matches\":0 once more right before the stop; a match begun meanwhile is waited for, within the limit)"; fi
+    if ((now)); then
+        say "(--now: every match running at the stop ends WITHOUT RESULTS; how many is said right before it)"
+    elif ((no_maint)); then
+        say "(--no-maintenance: \"matches\":0 once more right before the stop; a match begun meanwhile is waited for, within the limit)"
+    fi
     if ((yes)); then
         say "(--yes --i-know: going ahead)"
     else
         say "(no answer in $answer_wait min is a no)"
         ask_yes "$((answer_wait * MINUTE))" || die "stopped: not confirmed (nothing was swapped)"
     fi
-    if ((no_maint)); then SWAP_BEFORE_STOP=match_check_before_stop; fi
+    if ((now)); then
+        SWAP_BEFORE_STOP=count_ended_matches
+    elif ((no_maint)); then
+        SWAP_BEFORE_STOP=match_check_before_stop
+    fi
 fi
 
-progress "4. the swap"
+progress "5. the swap"
 swap_prepare "$rev"
 ((DRY_RUN)) || phase=swapping
 swap_server "$rev"
-progress "5. the server is up on the new data; the ZIP"
+progress "6. the server is up on the new data; the ZIP"
 swap_zip
 
-# 5. After.
+# 6. After.
 if ((DRY_RUN)); then
-    say "[dry run] 5. after the restart: srp26 running, its log's \"game data:\" line, GET $TARGET_SITE/patches is exactly the list's; srp's new backup of srp.db kept in the folder$( [[ $TARGET == live ]] && printf ' and copied to the jump host'); then the ZIP, GET $TARGET_SITE/api/client-files names it"
+    say "[dry run] 6. after the restart: srp26 running, its log's \"game data:\" line, GET $TARGET_SITE/patches is exactly the list's; srp's new backup of srp.db kept in the folder$( [[ $TARGET == live ]] && printf ' and copied to the jump host'); then the ZIP, GET $TARGET_SITE/api/client-files names it"
     say "[dry run] a failed check: srp's log, then sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL on the $TARGET host (srp.db, image, files, setting back)"
     say
     say "dry run: nothing was planned, uploaded or changed"
@@ -952,6 +1035,7 @@ if ((DRY_RUN)); then
 fi
 phase=finished
 say
+if ((now)); then say "--now: the stop ended ${ENDED:-an unknown number of} match(es) without results"; fi
 say "released revision $rev to the $TARGET server. Its folder: $TARGET_DIR/$REL (the files before it, srp.db before it, the image IDs, changed.txt, release.log); the old image is $BEFORE_TAG ($RUN_IMAGE)"
 say "Rollback: release/rollback${step_flags[*]:+ ${step_flags[*]}} $REL (on the $TARGET host: sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL)"
 say "  (srp.db back as it was before the release; --keep-db keeps today's)"
