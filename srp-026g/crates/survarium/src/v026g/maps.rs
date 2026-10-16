@@ -161,12 +161,16 @@ impl ProjectObjects {
     /// `project`, a parsed `client_project`. Containers there must be two,
     /// ids 0 and 1, of teams 0 and 1, one each: the gather rules and the
     /// scores know no other.
-    pub fn from_project(project: &ConfigValue) -> Result<Self, ConfigError> {
+    /// `with_batteries`: the containers are read (and must be one of each
+    /// team) only for a mode that has batteries; a Team Deathmatch project
+    /// copied from a batteries one may keep containers it never uses.
+    pub fn from_project(project: &ConfigValue, with_batteries: bool) -> Result<Self, ConfigError> {
         let objects = project.get("server_objects");
         let respawn_points = objects
             .and_then(|objects| objects.get("respawn_points"))
             .map_or(0, |points| points.children().len());
         let containers = objects
+            .filter(|_| with_batteries)
             .and_then(|objects| objects.get("victory_items_containers"))
             .map(ConfigValue::children)
             .unwrap_or_default();
@@ -250,14 +254,16 @@ impl MapMode {
                 .as_f32()
                 .ok_or_else(|| ConfigError("`wait_player_percent` is not a number".into()))?,
         };
+        let game_mode: u8 = int(Some(mode), "mode")?;
         let objects = project
-            .map(ProjectObjects::from_project)
+            .map(|project| {
+                ProjectObjects::from_project(project, mode::WITH_BATTERIES.contains(&game_mode))
+            })
             .transpose()?
             .unwrap_or(ProjectObjects {
                 respawn_points: 0,
                 container_teams: None,
             });
-        let game_mode: u8 = int(Some(mode), "mode")?;
         let row = Self {
             id,
             config: leak_str(cfg_mode_name),
@@ -642,6 +648,16 @@ mod tests {
             (map.respawn_points, map.container_teams),
             (12, Some([1, 0]))
         );
+        // Team Deathmatch reads no containers: a project copied from a
+        // batteries one with a stray container (one, of an odd id) is played.
+        let tdm = fixtures::AddedMap {
+            containers: vec![(3, 1)],
+            ..fixtures::AddedMap::level_12_tdm()
+        };
+        let table = fixtures::table_of(&fixtures::with_map(&tdm)).unwrap();
+        let map = table.iter().find(|map| map.id == 200).unwrap();
+        assert!(map.is_playable());
+        assert_eq!(map.container_teams, None);
         // A mode srp does not play is in the table, not played, whatever
         // its project.
         let other = fixtures::AddedMap {
