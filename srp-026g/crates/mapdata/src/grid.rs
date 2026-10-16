@@ -859,6 +859,72 @@ impl WalkGrid {
         (0..8).filter_map(move |d| self.link_of(a, d, i, k))
     }
 
+    /// Whether a body walks from `a` to `b` in a straight line no longer
+    /// than `max_length` (metres): every half cell of the line is on a
+    /// floor walked to from the one before (no jump, no drop) that
+    /// `allowed` lets through (or is `b`). The floors are followed by
+    /// their cells' coordinates, as whole numbers, so a check costs the
+    /// links it looks at, not their floors' places.
+    pub fn walks_straight(
+        &self,
+        a: NodeId,
+        b: NodeId,
+        max_length: f32,
+        allowed: impl Fn(NodeId) -> bool,
+    ) -> bool {
+        let (from, to) = (self.position(a), self.position(b));
+        let length = from.distance_xz(to);
+        if length > max_length {
+            return false;
+        }
+        let half = self.cell * 0.5;
+        let steps = ((length / half).ceil() as usize).max(1);
+        // A cell's centre as `position` gives it.
+        let centre = |i: i32, k: i32| {
+            (
+                self.x0 + (i as f32 + 0.5) * self.cell,
+                self.z0 + (k as f32 + 0.5) * self.cell,
+            )
+        };
+        let mut node = a as usize;
+        let (mut i, mut k) = self.cell_xz(self.cell_of[node] as usize);
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let (x, z) = (from.x + (to.x - from.x) * t, from.z + (to.z - from.z) * t);
+            let within = |(cx, cz): (f32, f32)| {
+                (cx - x).abs() <= half + 1e-4 && (cz - z).abs() <= half + 1e-4
+            };
+            if within(centre(i, k)) {
+                continue;
+            }
+            // The first walk link, in the directions' order, to a cell
+            // under the point.
+            let mut next = None;
+            for d in 0..8 {
+                let index = self.to[node][d];
+                let bits = self.how[node] >> (4 * d);
+                if index == NO_LINK || LinkKind::from_bits(bits) != LinkKind::Walk {
+                    continue;
+                }
+                let reach = ((bits >> 2) & 3) as i32 + 1;
+                let (di, dk) = DIRS[d];
+                let (ni, nk) = (i + di * reach, k + dk * reach);
+                if within(centre(ni, nk)) {
+                    let cell = nk as usize * self.nx + ni as usize;
+                    next = Some((self.start[cell] + u32::from(index), ni, nk));
+                    break;
+                }
+            }
+            match next {
+                Some((v, ni, nk)) if allowed(v) || v == b => {
+                    (node, i, k) = (v as usize, ni, nk);
+                }
+                _ => return false,
+            }
+        }
+        node == b as usize
+    }
+
     /// [`Self::links`], each with the way back from the floor it reaches
     /// to `node` in 2 bytes, for [`Self::back`]: `node`'s index among its
     /// cell's floors (bits 0-10), the direction (11-13) and the reach less

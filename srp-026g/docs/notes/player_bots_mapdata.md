@@ -644,6 +644,41 @@ expanded a round by both): 242-284 ns a floor expanded before, 236-287
 after (means 269 and 265), the bots' time 144-170 and 137-171 ms a
 second summed. The same within the rounds' spread: no more work.
 
+### Straight lines (2026-10-16)
+
+A route is the grid path pulled straight (`path::pull`): from each corner
+the line is tried to the next floor, then the one after, until a line
+fails; each try walks the whole line again, half a cell at a time.
+
+**What it cost.** The bench now counts it (`pulled straight`). Over the 12
+real-map runs it took 1.0-1.2 s of the bots' 21-25 s: about 5 % (the
+searches 44-77 %). A route made about one check a floor (1.78 M checks for
+1.83 M floors).
+
+**Halving was not taken.** The plan was to look for the corner by halving
+the stretch. But a line from a corner may fail to floor j and pass to
+floor j + 1 (a wall's end, a hole the line just misses), so halving finds
+another corner than the one-by-one tries: other routes, other decisions.
+Grid string-pulling papers say the same of greedy smoothing (Han, Uras and
+Koenig 2020, SoCS: greedy smoothing leaves turns in open space and is not
+optimal), and fixing that means a different algorithm (Theta*, string
+pulling on the grid), not a faster check. For about 2 % of the bots' time
+it was not worth a change of play.
+
+**What was built.** `WalkGrid::walks_straight` (mapdata), the same check
+made inside the grid: it follows the line by the cells' whole-number
+coordinates and the packed links, where the bots' check looked up every
+candidate floor's place (its cell, a division, its height). The same
+floors are tried in the same order with the same float sums, so the
+answers are the same:
+- 400,000 random lines on level_06, 01, 03 and 02, with and without holes
+  shut: the same answers; 0.71-1.26 µs a check, was 1.09-1.84 (each check
+  over every line in turns, the best of three).
+- Every decisions digest is the one before (the three whole matches,
+  level_01-06 4 v 4 and 10 v 10).
+- The 12 real-map runs, three rounds each in turns: pulling 568-650 ms,
+  was 984-1,166 (44 % less), the same 1,784,848 checks.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map

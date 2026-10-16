@@ -58,6 +58,12 @@ pub struct Searches {
     /// Searches that ran over more than one slice, and the slices.
     pub sliced: u64,
     pub slices: u64,
+    /// Paths pulled straight ([`pull`]), their µs, the floors in them and
+    /// the straight-line checks made.
+    pub pulls: u64,
+    pub pull_us: f64,
+    pub pull_floors: u64,
+    pub straight_checks: u64,
 }
 
 #[cfg(test)]
@@ -75,6 +81,10 @@ thread_local! {
             by_expanded: [0; 8],
             sliced: 0,
             slices: 0,
+            pulls: 0,
+            pull_us: 0.0,
+            pull_floors: 0,
+            straight_checks: 0,
         })
     };
 }
@@ -263,6 +273,32 @@ pub const EXPANDED_BUCKETS: [u64; 7] = [1_000, 5_000, 10_000, 20_000, 50_000, 10
 /// A grid path pulled straight: only the real corners left (module
 /// documentation).
 fn pull(grid: &WalkGrid, nodes: Vec<NodeId>, allowed: impl Fn(NodeId) -> bool) -> Route {
+    #[cfg(test)]
+    let (started, floors) = (std::time::Instant::now(), nodes.len() as u64);
+    #[cfg(test)]
+    let checks = std::cell::Cell::new(0u64);
+    let route = pull_straight(grid, nodes, &allowed, &|| {
+        #[cfg(test)]
+        checks.set(checks.get() + 1);
+    });
+    #[cfg(test)]
+    SEARCHES.with(|s| {
+        let mut c = s.get();
+        c.pulls += 1;
+        c.pull_us += started.elapsed().as_secs_f64() * 1e6;
+        c.pull_floors += floors;
+        c.straight_checks += checks.get();
+        s.set(c);
+    });
+    route
+}
+
+fn pull_straight(
+    grid: &WalkGrid,
+    nodes: Vec<NodeId>,
+    allowed: impl Fn(NodeId) -> bool,
+    checked: &dyn Fn(),
+) -> Route {
     // The kind of the link into each node.
     let mut into = vec![LinkKind::Walk; nodes.len()];
     for k in 1..nodes.len() {
@@ -289,10 +325,10 @@ fn pull(grid: &WalkGrid, nodes: Vec<NodeId>, allowed: impl Fn(NodeId) -> bool) -
             continue;
         }
         let mut j = i + 1;
-        while j + 1 < nodes.len()
-            && into[j + 1] == LinkKind::Walk
-            && straight_where(grid, nodes[i], nodes[j + 1], &allowed)
-        {
+        while j + 1 < nodes.len() && into[j + 1] == LinkKind::Walk && {
+            checked();
+            straight_where(grid, nodes[i], nodes[j + 1], &allowed)
+        } {
             j += 1;
         }
         i = j;
@@ -314,6 +350,19 @@ pub fn straight(grid: &WalkGrid, a: NodeId, b: NodeId) -> bool {
 
 /// [`straight`] over allowed floors only.
 pub fn straight_where(
+    grid: &WalkGrid,
+    a: NodeId,
+    b: NodeId,
+    allowed: impl Fn(NodeId) -> bool,
+) -> bool {
+    grid.walks_straight(a, b, MAX_STRAIGHT_M, allowed)
+}
+
+/// [`straight_where`] as it was before [`WalkGrid::walks_straight`]: the
+/// floors' places looked up at every step. Kept to prove the new one gives
+/// the same answers.
+#[cfg(test)]
+fn straight_by_places(
     grid: &WalkGrid,
     a: NodeId,
     b: NodeId,
@@ -504,6 +553,101 @@ mod tests {
         // On open floor the route is one line.
         let near = grid.locate(Vec3::new(12.0, 0.0, 25.0), 1.0).unwrap();
         assert_eq!(plan(&grid, from, near).unwrap().points().len(), 2);
+    }
+
+    /// Lines between random floors, over all floors and with round holes
+    /// shut: [`WalkGrid::walks_straight`] answers as the check by the
+    /// floors' places did, on `grid`; how many were straight, and the
+    /// microseconds of each check (the new, the old).
+    fn straight_as_before(
+        grid: &WalkGrid,
+        seed: u64,
+        pairs: usize,
+        near_m: f32,
+    ) -> (usize, f64, f64) {
+        let mut rng = crate::v026g::bots::rng::Rng::new(seed);
+        let mut lines = Vec::with_capacity(pairs);
+        while lines.len() < pairs {
+            let a = rng.below(grid.len()) as NodeId;
+            let b = rng.below(grid.len()) as NodeId;
+            let (pa, pb) = (grid.position(a), grid.position(b));
+            if pa.distance_xz(pb) > near_m {
+                continue;
+            }
+            let holes: Vec<Vec3> = (0..lines.len() % 3)
+                .map(|_| pa + (pb - pa) * rng.range(0.2, 0.8))
+                .collect();
+            lines.push((a, b, holes));
+        }
+        let allowed = |holes: &[Vec3], n: NodeId| {
+            let p = grid.position(n);
+            holes.iter().all(|h| h.distance_xz(p) > 1.0)
+        };
+        // Each check over every line, in turns, the best of three: the
+        // same lines in the same order, the caches as warm for both.
+        let (mut new, mut old) = (Vec::new(), Vec::new());
+        let (mut new_us, mut old_us) = (f64::MAX, f64::MAX);
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            new = lines
+                .iter()
+                .map(|(a, b, holes)| straight_where(grid, *a, *b, |n| allowed(holes, n)))
+                .collect();
+            new_us = new_us.min(started.elapsed().as_secs_f64() * 1e6);
+            let started = std::time::Instant::now();
+            old = lines
+                .iter()
+                .map(|(a, b, holes)| straight_by_places(grid, *a, *b, |n| allowed(holes, n)))
+                .collect();
+            old_us = old_us.min(started.elapsed().as_secs_f64() * 1e6);
+        }
+        for (k, (a, b, holes)) in lines.iter().enumerate() {
+            assert_eq!(new[k], old[k], "floors {a} to {b}, holes {holes:?}");
+        }
+        let straight_lines = new.iter().filter(|&&straight| straight).count();
+        (straight_lines, new_us / pairs as f64, old_us / pairs as f64)
+    }
+
+    #[test]
+    fn straight_lines_are_checked_as_before() {
+        let grid = walled();
+        let (straight_lines, _, _) = straight_as_before(&grid, 7, 20_000, 45.0);
+        // Both answers are met often.
+        assert!(
+            (2_000..18_000).contains(&straight_lines),
+            "{straight_lines} of 20000 straight"
+        );
+    }
+
+    /// [`straight_lines_are_checked_as_before`] on the real maps, only
+    /// with `SRP_MAPDATA_DIR`, and the time of a check:
+    ///
+    /// ```text
+    /// SRP_MAPDATA_DIR=<dir> cargo test -p match-server --release real_straight_lines -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement; needs SRP_MAPDATA_DIR"]
+    fn real_straight_lines() {
+        let Some(dir) = std::env::var_os("SRP_MAPDATA_DIR").map(std::path::PathBuf::from) else {
+            eprintln!("skipping: SRP_MAPDATA_DIR is not set");
+            return;
+        };
+        for project in [
+            "level_06/day_2",
+            "level_01/day_4",
+            "level_03/day_3",
+            "level_02/day_2",
+        ] {
+            let map =
+                mapdata::MapData::read(&dir.join(mapdata::format::file_name(project))).unwrap();
+            let world = mapdata::World::build(map, mapdata::CELL, mapdata::Body::default());
+            let (straight_lines, new_us, old_us) =
+                straight_as_before(&world.grid, 11, 100_000, 45.0);
+            eprintln!(
+                "{project}: {straight_lines} of 100000 straight, the same answers; \
+                 {new_us:.2} µs a check, was {old_us:.2}"
+            );
+        }
     }
 
     #[test]
