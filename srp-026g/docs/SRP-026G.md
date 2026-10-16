@@ -83,9 +83,9 @@ servers one port.
    rating); a match is formed from players whose level is in the range of
    the one who waited longest, and the range grows by a level every 4 s, so
    after 56 s any two players meet. The match's level (the reward
-   multipliers) is the mean of its players'. The map is the one its players
-   have played least, within `SRP_MATCH_MODES` / `SRP_MATCH_MAPS`; the mode
-   and weather are drawn.
+   multipliers) is the mean of its players'. The map is drawn within
+   `SRP_MATCH_MODES` / `SRP_MATCH_MAPS`, more likely the less its players
+   have played it (`SRP_MATCH_MAP_SKEW`); then the mode and weather.
 4. The lobby makes the match at the match server and sends its address
    (`0x82`) once "match found" (`0x85`) is acked.
 5. The match: MATCH-SYNC-026G.md. **Only a client with the snapshot-upload
@@ -225,7 +225,8 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
 | `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
 | `SRP_MATCH_MODES` | `2,3,4` | The modes played |
-| `SRP_MATCH_MAPS` | every playable map of those modes | `maps_dict` ids, e.g. `117` (Team Deathmatch on level_01) for a first test. Of these a match gets the map its players played least |
+| `SRP_MATCH_MAPS` | every playable map of those modes | `maps_dict` ids, e.g. `117` (Team Deathmatch on level_01) for a first test. Of these a match gets a map drawn by `SRP_MATCH_MAP_SKEW` |
+| `SRP_MATCH_MAP_SKEW` | 1 | How much a match leans to the maps its players played less, a decimal from 0 to 4. A map's weight is `1 + skew × min(behind, 5) / 5`, `behind` being how many matches per player fewer they played it than their most played map of the pool: at 1 a map 5 or more behind is twice as likely as that one (with 9 maps and the others alike, 20% of the matches instead of 11%; 1 behind, 13%). 0: every map alike |
 | `SRP_LOBBY_LINK_TIMEOUT_SECONDS` | 30 | A client silent this long loses its lobby link: out of the queue, not ready in its squad, offline for its friends |
 | `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` | 120 | The same for a player in a match that runs (its level may be loading); never less than the one above |
 | `SRP_LOBBY_SESSION_GRACE_SECONDS` | 60 | How long the session of a link that went silent waits for its client to connect again (the client tries by itself, every 5 s); for a player in a match, counted from the match's end. 0: the session ends with the link |

@@ -96,6 +96,11 @@
 //!   `2,3,4`), as for 0.21d with 0.26g's modes;
 //! - `SRP_MATCH_MAPS`: the `maps_dict` ids to play, comma-separated
 //!   (default: every playable one of the modes);
+//! - `SRP_MATCH_MAP_SKEW` (default 1, a decimal from 0 to 4): how much more
+//!   likely a match gets a map its players played less: a map is drawn
+//!   with weight `1 + skew * min(behind, 5) / 5`, `behind` being how many
+//!   matches per player fewer they played it than the map of the pool they
+//!   played most (0: every map alike; `session::v026g::matchmaking`);
 //! - `SRP_CLAN_COST` (silver, default 50000), `SRP_CLAN_PLAYERS_REQUIRED`
 //!   (default 1), `SRP_CLAN_TEAM_MIN` / `SRP_CLAN_TEAM_MAX` (default 1 and
 //!   10), `SRP_CLAN_MAX_MEMBERS` (default 30): the clan rules' numbers
@@ -155,6 +160,7 @@ use std::time::{Duration, Instant};
 use session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE;
 use session::v026g::GameAccounts;
 use session::v026g::balance::Weights;
+use session::v026g::matchmaking::{DEFAULT_MAP_SKEW, MAX_MAP_SKEW};
 use session::v026g::replays::Replays;
 use session::v026g::rewards::Results;
 use session::{LockExt, SessionStore};
@@ -218,6 +224,9 @@ pub struct Settings {
     pub tick: Duration,
     /// The `maps_dict` ids a match is drawn from: playable ones only.
     pub maps: Vec<u8>,
+    /// How much more likely a map its players played less is
+    /// (`SRP_MATCH_MAP_SKEW`, 0 to 4; `session::v026g::matchmaking::map_weight`).
+    pub map_skew: f64,
     /// 0x85's search step, in seconds: the client shows its level widened
     /// by `wait / step` at each end as its search range, and divides by it
     /// (never 0). The queue widens a waiting player's range the same way.
@@ -278,6 +287,16 @@ impl Settings {
                 ),
             }
         }
+        let map_skew = match var("SRP_MATCH_MAP_SKEW") {
+            Some(value) => parse_map_skew(&value).unwrap_or_else(|| {
+                log::error!(
+                    "SRP_MATCH_MAP_SKEW is `{value}`; it must be a number from 0 to \
+                     {MAX_MAP_SKEW}. Using {DEFAULT_MAP_SKEW}"
+                );
+                DEFAULT_MAP_SKEW
+            }),
+            None => DEFAULT_MAP_SKEW,
+        };
         let link_timeout = match var("SRP_LOBBY_LINK_TIMEOUT_SECONDS") {
             Some(value) => match value.trim().parse::<u16>() {
                 Ok(seconds) if seconds > 0 => Duration::from_secs(seconds.into()),
@@ -454,6 +473,7 @@ impl Settings {
             match_link_timeout,
             session_grace,
             maps,
+            map_skew,
             team_size,
             search_step,
             ..Self::local(&config.bind_addr())
@@ -472,6 +492,7 @@ impl Settings {
             session_grace: DEFAULT_SESSION_GRACE,
             tick: Duration::from_secs(1),
             maps: map_pool(&DEFAULT_MODES, &[]),
+            map_skew: DEFAULT_MAP_SKEW,
             search_step: NonZeroU16::new(DEFAULT_SEARCH_STEP).expect("the default is not 0"),
             team_size: DEFAULT_TEAM_SIZE,
             queue_chat: true,
@@ -531,6 +552,15 @@ fn parse_search_step(value: &str) -> Option<NonZeroU16> {
         .parse()
         .ok()
         .filter(|step: &NonZeroU16| step.get() <= 3600)
+}
+
+/// `SRP_MATCH_MAP_SKEW`: 0 to [`MAX_MAP_SKEW`].
+fn parse_map_skew(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|skew| skew.is_finite() && (0.0..=MAX_MAP_SKEW).contains(skew))
 }
 
 /// `SRP_MATCH_MAPS`: `maps_dict` ids, at least one.
