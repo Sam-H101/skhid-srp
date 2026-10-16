@@ -9,6 +9,24 @@ release that made it what it is now.
 
 ---
 
+## 16 Oct, 15:09 — Game update 14: London, Player vs Bots, Watch replay (update required)
+
+Start `Skhid.bat`: the launcher updates the game and then downloads the new
+game content, one file of 848 MB (a download that is cut starts again at
+the next start). PLAY turns on once it is in place and checked. An older
+game can no longer sign in.
+
+- **New map: London.** Brought over from a later version of the game, day
+  only, in all three modes: Protective device, Protective device with
+  charging stations, and Team Deathmatch. Its own loading picture and map
+  picture; the sand blows and the anomalies' dust moves.
+- **Player vs Bots:** play a match alone against the server's bots, chosen
+  in the match settings (equipment level 5 or lower, up to five such matches
+  at once on the server). It pays half the silver and experience, counts for
+  no quest and no daily bonus, and moves no rating.
+- **Watch replay:** a match in your History can be watched again from the
+  lobby; the launcher fetches the replay and starts it.
+
 ## 16 Oct, 08:27 — Game update 12: Duty exoskeleton, bandit balaclava (update required)
 
 Start `Skhid.bat`: the launcher updates the game and then downloads the new
