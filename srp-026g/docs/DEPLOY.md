@@ -252,7 +252,7 @@ login or an admin token, with `Content-Type: application/json` and
   (the launcher page's "Time left"); a match still loading, before its
   countdown, counts its map's whole wait, countdown and match time (925 s);
   0 when none runs. A match can end sooner. `release/release.sh` plans the
-  maintenance 2 minutes after it.
+  maintenance 30 seconds after it (rounded up to whole minutes).
 
 All five fields are nonnegative integers. Counts are read from live state;
 separate locks mean they are not a single atomic snapshot. Reading the endpoint

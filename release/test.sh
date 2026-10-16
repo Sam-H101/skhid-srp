@@ -1470,6 +1470,36 @@ check "release: ... staged nothing (no folder yet)" test -z "$(folder 16 stg)"
 check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
 check "release: ... frees the lock" test ! -e "$T/lock"
 
+# A closed terminal (HUP to the whole group, the release.log copy too) and
+# a second Ctrl-C during the cleanup: the cleanup still finishes (the plan
+# cancelled, the lock freed); a maintenance left planned would put the
+# server down with nothing swapped.
+for how in hup twice; do
+    : >"$T/state/admin.log"
+    echo 30 >"$T/build-zip-sleep"
+    set -m
+    "$here/release.sh" --yes --i-know --minutes 60 --label "$how" >"$T/$how.out" 2>&1 </dev/null &
+    sig_pid=$!
+    set +m
+    for _ in $(seq 300); do grep -q '4. building the ZIP' "$T/$how.out" && break; sleep 0.1; done
+    sleep 1
+    if [[ $how == hup ]]; then
+        kill -HUP -- "-$sig_pid"
+    else
+        kill -INT -- "-$sig_pid"
+        sleep 0.2
+        kill -INT -- "-$sig_pid" 2>/dev/null || true
+    fi
+    for _ in $(seq 150); do kill -0 "$sig_pid" 2>/dev/null || break; sleep 0.1; done
+    if kill -0 "$sig_pid" 2>/dev/null; then kill -9 -- "-$sig_pid"; fi
+    wait "$sig_pid" 2>/dev/null || true
+    rm -f "$T/build-zip-sleep"
+    printf '%s\n' "$(cat "$T/$how.out")" >>"$T/outputs"
+    check "release: $how during the staging: the plan is still cancelled" test "$(admin_log)" = "plan 60 cancel" -a ! -e "$T/state/maint"
+    check "release: ... and the lock freed" test ! -e "$T/lock"
+    check "release: ... the live files as they were" test "$(tree)" = "$before"
+done
+
 # Without the go given beforehand: it waits for it right after the
 # preflight, having built, staged and asked the admin page nothing; the go
 # file lets it plan at once. Then Ctrl-C (the plan is cancelled, as any
