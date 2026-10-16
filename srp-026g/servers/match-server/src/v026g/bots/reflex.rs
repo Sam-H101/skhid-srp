@@ -409,7 +409,7 @@ impl Default for CombatTuning {
             hit_told_m: 40.0,
             still_wait_ms: (2_000, 4_000),
             outranged_hide: true,
-            outranged_cover: true,
+            outranged_cover: false,
             outranged_aimed_deg: 180.0,
             outranged_again_ms: 6_000,
             band_hold_on_carrier: true,
@@ -4465,13 +4465,26 @@ mod tests {
     }
 
     /// Report section 10 (c): an Uzi, a TOZ-34 or an AK-74U that sees a
-    /// sniper beyond its own weapon's band breaks sight and waits (no step
-    /// in, no re-peek); against another weapon it steps in as before; a
-    /// carrier keeps its way.
+    /// sniper beyond its own weapon's band does not step in at him; with
+    /// `outranged_cover` (off by default: the bench lost kills) it breaks
+    /// sight and waits (no re-peek); against another weapon it steps in as
+    /// before; a carrier keeps its way.
     #[test]
     fn outranged_by_a_seen_sniper_a_short_weapon_hides_instead_of_stepping_in() {
         let tactics = Tactics::new(crate::v026g::bots::tactics::tests::field(), 1.0);
-        let aim = AimTuning::default();
+        for cover in [true, false] {
+            outranged_case(&tactics, cover);
+        }
+    }
+
+    fn outranged_case(tactics: &Tactics, cover: bool) {
+        let aim = AimTuning {
+            combat: CombatTuning {
+                outranged_cover: cover,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
         let c = &aim.combat;
         let start = Vec3::new(34.0, 0.0, 30.0);
         let enemy_at = Vec3::new(70.0, 0.0, 30.0);
@@ -4503,7 +4516,7 @@ mod tests {
             let view = view_of(vec![me.clone(), body(1, 1, enemy_at, 0.0)]);
             let weapons = [Some(own), Some(enemy)];
             let sit = Situation {
-                tactics: Some(&tactics),
+                tactics: Some(tactics),
                 side: Some(0),
                 weapon: Some(own),
                 weapons: &weapons,
@@ -4518,7 +4531,11 @@ mod tests {
             }
             let o = reflex.tick(&me, &view, &memory, 1_350, true, &aim, 0.5, &mut rng);
             let why = o.legs.map(|l| l.why);
-            assert_eq!(why, want, "{own:?} at {enemy:?}, carrying {carrying}");
+            let want = want.filter(|w| cover || *w != LegsWhy::BreakSight);
+            assert_eq!(
+                why, want,
+                "{own:?} at {enemy:?}, carrying {carrying}, cover {cover}"
+            );
             if want == Some(LegsWhy::BreakSight) {
                 let eye = |p: Vec3| p + Vec3::new(0.0, 1.6, 0.0);
                 let hide = o.legs.unwrap().at;
