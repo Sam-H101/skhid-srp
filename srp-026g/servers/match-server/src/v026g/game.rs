@@ -1165,6 +1165,12 @@ impl Game {
             "Match {:#x}: player {index} (session {session_id:#x}) connected from {addr}",
             self.id
         );
+        // For the replay's sidecar: which games played the match
+        // (`replay.rs`; the session and the address stay out of it).
+        self.record_note(
+            serde_json::json!({ "note": "revision", "place": index, "revision": revision }),
+            now,
+        );
         // Known from here on: the client learns it from the static info.
         transport.set_roster_size(self.snapshot_players() as u8);
         let mut peer = Peer {

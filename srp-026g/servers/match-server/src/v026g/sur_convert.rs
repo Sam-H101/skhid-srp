@@ -1,5 +1,7 @@
 //! A match recording ([`super::record`]) made into a `.sur` replay
-//! ([`super::sur`]). Offline: nothing here runs in the server.
+//! ([`super::sur`]): by `srp-recording-to-sur`, and by the server itself for
+//! the lobby's "Watch replay" ([`super::replay`], on a thread of its own,
+//! from the file as it is read: [`convert_file`]).
 //!
 //! What goes where:
 //! - the options (chunk 1): the stream of a 0xE4 the server sent, without
@@ -20,6 +22,7 @@
 //! Every choice is listed in [`Report`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::item_params::item_params;
@@ -32,7 +35,7 @@ use survarium::v026g::match_msgs::{mask_bytes, tick_time};
 use udp_transport::table::{Direction, Table};
 use udp_transport::wire;
 
-use super::record::{IN, NOTE, OUT, Record};
+use super::record::{self, IN, NOTE, OUT, Record, RecordRef};
 use super::sur::{
     self, Coding, Event, InputValue, KeyFrame, MAX_KEY_FRAMES, MAX_PLAYERS, Parts, TICK_MS, Writer,
 };
@@ -171,6 +174,8 @@ pub struct Report {
 /// Why a recording cannot be converted.
 #[derive(Debug)]
 pub enum ConvertError {
+    /// The recording file could not be read ([`convert_file`]).
+    Read(std::io::Error),
     NoHeader,
     NoOptions,
     NoWorlds,
@@ -182,6 +187,7 @@ pub enum ConvertError {
 impl std::fmt::Display for ConvertError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Read(error) => write!(f, "the recording: {error}"),
             Self::NoHeader => write!(f, "no header note"),
             Self::NoOptions => write!(f, "no 0xE4 (static info) in the recording"),
             Self::NoWorlds => write!(f, "no complete uploaded world in the recording"),
@@ -260,48 +266,126 @@ pub fn convert(
     config: &[u8],
     settings: Settings,
 ) -> Result<(Vec<u8>, Report), ConvertError> {
-    let head = header(records).ok_or(ConvertError::NoHeader)?;
-    let mut report = Report {
-        match_id: head["match_id"].as_str().unwrap_or("?").to_string(),
-        map: head["map"].as_str().unwrap_or("?").to_string(),
-        mode: head["mode"].as_u64().unwrap_or(0),
-        places: head["places"].as_array().map_or(0, Vec::len),
-        growing_roster: head["growing_roster"].as_bool().unwrap_or(false),
-        ..Report::default()
-    };
-    let offset = clock_offset(records).unwrap_or(0);
-    report.clock_offset_ms = offset;
-    let dictionary = Dictionary::shared();
-
-    let mut places: HashMap<u8, PlaceState> = HashMap::new();
-    // The relays, by message: (id, mask bytes, payload) -> id in `sent`;
-    // when and to which place each copy went, to read them once it is
-    // known which places' links were backed up.
-    let mut messages: HashMap<(u8, usize, Vec<u8>), usize> = HashMap::new();
-    let mut sent: Vec<Vec<(u32, u8)>> = Vec::new();
-    let mut copies: Vec<(u32, u8, usize)> = Vec::new();
-    // Events by (time, player), the first copy kept.
-    let mut inputs: BTreeMap<(u32, u8), InputValue> = BTreeMap::new();
-    let mut profiles: BTreeMap<(u32, u8), u8> = BTreeMap::new();
-    let mut entered: BTreeMap<(u32, u8), ()> = BTreeMap::new();
-    let mut left: BTreeMap<(u32, u8), ()> = BTreeMap::new();
-    let mut worlds: BTreeMap<u32, Vec<Vec<u8>>> = BTreeMap::new();
-    // The 0xE4 streams (without the index byte), by roster.
-    let mut options: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
-    // The options of each roster, and when a 0xE4 of it first went out.
-    let mut rosters: BTreeMap<u8, (u32, static_info::MatchOptions)> = BTreeMap::new();
-
+    let mut gather = Gather::new(records)?;
     for record in records {
-        if record.kind != IN && record.kind != OUT {
-            continue;
+        gather.push(record.borrowed());
+    }
+    gather.finish(config, settings)
+}
+
+/// [`convert`] of a recording file read as it goes ([`record::read_each`]):
+/// the datagrams are never all in memory, only what is kept of them (the
+/// relays once each, the uploaded worlds, the options). `notes` are the
+/// file's notes ([`record::read_notes`]: the header, the clock).
+///
+/// Measured on the largest recording of 2026-10-14 (13.5 MB, 1.36 million
+/// datagrams, 20 places): [`convert`] of the file read whole peaks at
+/// 431 MiB, this at less than half of that (`docs/notes/replay_watch.md`).
+pub fn convert_file(
+    path: &Path,
+    notes: &[Record],
+    config: &[u8],
+    settings: Settings,
+) -> Result<(Vec<u8>, Report), ConvertError> {
+    let mut gather = Gather::new(notes)?;
+    record::read_each(path, |record| gather.push(record)).map_err(ConvertError::Read)?;
+    gather.finish(config, settings)
+}
+
+/// A list that grows a piece at a time: it is never copied whole, as a
+/// `Vec` is when it outgrows its room (a 20-place match relays 4.4 million
+/// copies; the copy would hold the old and the new list at once).
+struct Pieces<T> {
+    pieces: Vec<Vec<T>>,
+}
+
+impl<T> Default for Pieces<T> {
+    fn default() -> Self {
+        Self { pieces: Vec::new() }
+    }
+}
+
+impl<T> Pieces<T> {
+    const PIECE: usize = 1 << 16;
+
+    fn push(&mut self, item: T) {
+        match self.pieces.last_mut() {
+            Some(piece) if piece.len() < Self::PIECE => piece.push(item),
+            _ => {
+                let mut piece = Vec::with_capacity(Self::PIECE);
+                piece.push(item);
+                self.pieces.push(piece);
+            }
         }
-        let place = places.entry(record.place).or_default();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.pieces.iter().flatten()
+    }
+}
+
+/// What [`convert`] keeps of the datagrams as it reads them, in order.
+struct Gather {
+    report: Report,
+    /// Recording ms less match ms.
+    offset: i64,
+    places: HashMap<u8, PlaceState>,
+    /// The relays, by message: (id, mask bytes, payload) -> id in `sent`;
+    /// when and to which place each copy went, to read them once it is
+    /// known which places' links were backed up.
+    messages: HashMap<(u8, usize, Vec<u8>), usize>,
+    /// The copies of each message.
+    counts: Vec<u32>,
+    /// Every copy in the recording's order: `(ms, place, message)`.
+    copies: Pieces<(u32, u8, u32)>,
+    worlds: BTreeMap<u32, Vec<Vec<u8>>>,
+    /// The 0xE4 streams (without the index byte), by roster.
+    options: BTreeMap<u8, Vec<u8>>,
+    /// The options of each roster, and when a 0xE4 of it first went out.
+    rosters: BTreeMap<u8, (u32, static_info::MatchOptions)>,
+}
+
+impl Gather {
+    /// `notes`: the recording's notes, or all of its records.
+    fn new(notes: &[Record]) -> Result<Self, ConvertError> {
+        let head = header(notes).ok_or(ConvertError::NoHeader)?;
+        let mut report = Report {
+            match_id: head["match_id"].as_str().unwrap_or("?").to_string(),
+            map: head["map"].as_str().unwrap_or("?").to_string(),
+            mode: head["mode"].as_u64().unwrap_or(0),
+            places: head["places"].as_array().map_or(0, Vec::len),
+            growing_roster: head["growing_roster"].as_bool().unwrap_or(false),
+            ..Report::default()
+        };
+        let offset = clock_offset(notes).unwrap_or(0);
+        report.clock_offset_ms = offset;
+        Ok(Self {
+            report,
+            offset,
+            places: HashMap::new(),
+            messages: HashMap::new(),
+            counts: Vec::new(),
+            copies: Pieces::default(),
+            worlds: BTreeMap::new(),
+            options: BTreeMap::new(),
+            rosters: BTreeMap::new(),
+        })
+    }
+
+    /// One record of the recording, in order.
+    fn push(&mut self, record: RecordRef<'_>) {
+        if record.kind != IN && record.kind != OUT {
+            return;
+        }
+        let dictionary = Dictionary::shared();
+        let report = &mut self.report;
+        let place = self.places.entry(record.place).or_default();
         if record.kind == IN {
             report.datagrams_in += 1;
-            let Ok(datagram) = wire::parse(Table::Match, Direction::ToServer, &record.bytes, 0)
+            let Ok(datagram) = wire::parse(Table::Match, Direction::ToServer, record.bytes, 0)
             else {
                 report.unparsed += 1;
-                continue;
+                return;
             };
             for message in &datagram.messages {
                 if message.id != wire::UPLOAD_CARRIER
@@ -315,13 +399,13 @@ pub fn convert(
                 };
                 if let Pushed::Complete(upload) = place.uploads.push(&chunk) {
                     report.worlds_complete += 1;
-                    worlds
+                    self.worlds
                         .entry(upload.item_time)
                         .or_default()
                         .push(upload.body);
                 }
             }
-            continue;
+            return;
         }
         report.datagrams_out += 1;
         // A match that lets players in late sends its masks for 20 from
@@ -333,13 +417,13 @@ pub fn convert(
         } else {
             mask_bytes(place.roster)
         };
-        let parsed = wire::parse(Table::Match, Direction::ToClient, &record.bytes, mask_len);
+        let parsed = wire::parse(Table::Match, Direction::ToClient, record.bytes, mask_len);
         let datagram = match parsed {
             Ok(datagram) => datagram,
             Err(error) => {
                 report.unparsed += 1;
                 *report.unparsed_why.entry(format!("{error:?}")).or_default() += 1;
-                continue;
+                return;
             }
         };
         for message in &datagram.messages {
@@ -367,9 +451,11 @@ pub fn convert(
                     if let Ok((_, parsed)) = static_info::parse_payload(&whole, dictionary) {
                         let roster = parsed.players.len() as u8;
                         place.roster = roster;
-                        options.entry(roster).or_insert_with(|| whole[1..].to_vec());
-                        let clock = (i64::from(record.at_ms) - offset).max(0) as u32;
-                        let first = rosters.entry(roster).or_insert((clock, parsed));
+                        self.options
+                            .entry(roster)
+                            .or_insert_with(|| whole[1..].to_vec());
+                        let clock = (i64::from(record.at_ms) - self.offset).max(0) as u32;
+                        let first = self.rosters.entry(roster).or_insert((clock, parsed));
                         first.0 = first.0.min(clock);
                     }
                     continue;
@@ -386,28 +472,83 @@ pub fn convert(
                 0xF3 if payload.len() == 3 => {}
                 _ => continue,
             }
-            let next = sent.len();
-            let id = *messages
+            let next = self.counts.len();
+            let id = *self
+                .messages
                 .entry((message.id, mask_len, payload.to_vec()))
                 .or_insert(next);
             if id == next {
-                sent.push(Vec::new());
+                self.counts.push(0);
             }
-            sent[id].push((record.at_ms, record.place));
-            copies.push((record.at_ms, record.place, id));
+            self.counts[id] += 1;
+            self.copies.push((record.at_ms, record.place, id as u32));
         }
     }
 
+    /// The file, from what was gathered.
+    fn finish(self, config: &[u8], settings: Settings) -> Result<(Vec<u8>, Report), ConvertError> {
+        finish(self, config, settings)
+    }
+}
+
+/// The second half of [`convert`]: the relays read, the events, the key
+/// frames, the file.
+fn finish(
+    gathered: Gather,
+    config: &[u8],
+    settings: Settings,
+) -> Result<(Vec<u8>, Report), ConvertError> {
+    let Gather {
+        mut report,
+        offset,
+        places,
+        messages,
+        counts,
+        copies,
+        worlds,
+        options,
+        rosters,
+    } = gathered;
+    // The places' half-read uploads and options are of no use now.
+    drop(places);
+    // When and to which place each copy of each message went: message
+    // `id`'s are `sent[starts[id]..starts[id + 1]]`, in time order.
+    let mut starts = Vec::with_capacity(counts.len() + 1);
+    let mut total = 0usize;
+    for &count in &counts {
+        starts.push(total);
+        total += count as usize;
+    }
+    starts.push(total);
+    let mut sent = vec![(0u32, 0u8); total];
+    {
+        let mut fill = starts.clone();
+        for &(at_ms, place, id) in copies.iter() {
+            let at = &mut fill[id as usize];
+            sent[*at] = (at_ms, place);
+            *at += 1;
+        }
+    }
+    for id in 0..counts.len() {
+        sent[starts[id]..starts[id + 1]].sort_unstable();
+    }
+    let times_of = |id: usize| &sent[starts[id]..starts[id + 1]];
+    // Events by (time, player), the first copy kept.
+    let mut inputs: BTreeMap<(u32, u8), InputValue> = BTreeMap::new();
+    let mut profiles: BTreeMap<(u32, u8), u8> = BTreeMap::new();
+    let mut entered: BTreeMap<(u32, u8), ()> = BTreeMap::new();
+    let mut left: BTreeMap<(u32, u8), ()> = BTreeMap::new();
+
     // The signs of a backed-up link: a copy well behind the same message
     // to another place.
-    let mut by_id: Vec<(u8, usize, &[u8])> = vec![(0, 0, &[]); sent.len()];
+    let mut by_id: Vec<(u8, usize, &[u8])> = vec![(0, 0, &[]); counts.len()];
     for ((message_id, mask_len, payload), &id) in &messages {
         by_id[id] = (*message_id, *mask_len, payload);
     }
     let mut behind: BTreeMap<u8, Vec<u32>> = BTreeMap::new();
-    for times in &mut sent {
-        times.sort_unstable();
-        for &(at_ms, place) in times.iter() {
+    for id in 0..counts.len() {
+        let times = times_of(id);
+        for &(at_ms, place) in times {
             let from = times.partition_point(|&(t, _)| t + LOOKBACK_MS < at_ms);
             let to = times.partition_point(|&(t, _)| t <= at_ms + NEAR_AFTER_MS);
             let others = || times[from..to].iter().filter(|&&(_, other)| other != place);
@@ -421,14 +562,18 @@ pub fn convert(
     for signs in behind.values_mut() {
         signs.sort_unstable();
     }
+    // The copies by message are read; what follows takes them in order.
+    drop(sent);
+    drop(starts);
     let lagging = |place: u8, at_ms: u32| {
         behind.get(&place).is_some_and(|signs| {
             let next = signs.partition_point(|&t| t + LAG_HOLD_MS < at_ms);
             signs.get(next).is_some_and(|&t| t <= at_ms + LAG_HOLD_MS)
         })
     };
-    let mut kept = vec![false; sent.len()];
-    for &(at_ms, place, id) in &copies {
+    let mut kept = vec![false; counts.len()];
+    for &(at_ms, place, id) in copies.iter() {
+        let id = id as usize;
         if lagging(place, at_ms) {
             *report.lagging_copies.entry(place).or_default() += 1;
             continue;
@@ -498,6 +643,7 @@ pub fn convert(
             _ => unreachable!("only relays are kept"),
         }
     }
+    drop(copies);
     report.messages_lost = kept.iter().filter(|kept| !**kept).count();
 
     report.inputs = inputs.len();

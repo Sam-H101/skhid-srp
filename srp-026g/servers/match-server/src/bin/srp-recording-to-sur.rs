@@ -51,14 +51,16 @@ fn main() -> ExitCode {
             .filter_map(|t| t.trim().parse().ok())
             .collect();
     }
-    let records = match record::read(Path::new(input)) {
-        Ok(records) => records,
+    // The notes first, then the datagrams as they are read: a long match
+    // is never all in memory (`sur_convert::convert_file`).
+    let notes = match record::read_notes(Path::new(input)) {
+        Ok(notes) => notes,
         Err(error) => {
             eprintln!("{input}: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let Some(config_name) = sur_convert::config_name(&records) else {
+    let Some(config_name) = sur_convert::config_name(&notes) else {
         eprintln!("{input}: no header note");
         return ExitCode::FAILURE;
     };
@@ -70,7 +72,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (file, report) = match sur_convert::convert(&records, &config, settings) {
+    let converted = sur_convert::convert_file(Path::new(input), &notes, &config, settings);
+    let (file, report) = match converted {
         Ok(done) => done,
         Err(error) => {
             eprintln!("{input}: {error}");

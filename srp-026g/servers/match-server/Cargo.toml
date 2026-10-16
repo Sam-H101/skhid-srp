@@ -12,9 +12,15 @@ log = { workspace = true }
 serde = { workspace = true }
 # The maps the server's bots path on (`v026g::bots::maps`).
 mapdata = { path = "../../crates/mapdata" }
+# SHA-256 of a replay file (`v026g::replay`): its sidecar, the updater's check.
+openssl = { workspace = true }
 serde_json = { workspace = true }
 
 session = { workspace = true }
 survarium = { workspace = true }
 udp-transport = { workspace = true }
 vostok = { workspace = true }
+
+# The replay conversion thread runs at nice 19 (`v026g::replay`).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }

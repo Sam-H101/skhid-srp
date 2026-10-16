@@ -67,11 +67,14 @@ fn world() -> World {
         connections: AtomicU32::new(0),
         downloads: AtomicU32::new(0),
         resource_downloads: AtomicU32::new(0),
+        replay_downloads: AtomicU32::new(0),
+        replay_failures: Mutex::new(std::collections::HashMap::new()),
         game: Some(Game {
             accounts: accounts.clone(),
             lobby: told.clone(),
             matches: told.clone(),
             patches: Vec::new(),
+            replays: None,
         }),
     };
     World {
@@ -117,6 +120,7 @@ fn post(path: &str, form: &[(&str, &str)]) -> Request {
     Request {
         method: "POST".into(),
         path: path.into(),
+        target: path.into(),
         lang: Lang::En,
         forwarded: String::new(),
         range: String::new(),

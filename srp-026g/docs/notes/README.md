@@ -35,6 +35,7 @@ given), LIKELY or GUESS.
 | [data.md](data.md) | `resources.db`: items, skills, drops, quests, item configs |
 | [client_patch.md](client_patch.md) | Porting the srp client patch, the function map |
 | [replay_sur.md](replay_sur.md) | The client's own replay file (`.sur`, `-match_replay`): its layout, and `srp-recording-to-sur`, which makes one from a match recording |
+| [replay_watch.md](replay_watch.md) | "Watch replay" from the lobby's History, the server side: conversion at match end, the lobby's `R1` answers and `9E` link, the download tokens, `/replays/<token>`, what is and is not reachable over HTTP |
 | [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
 | [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
@@ -145,6 +146,11 @@ Every setting has a default; none is needed on a dev PC.
   in and out, kept for matches that 6 or more players entered (late
   joiners counted). Format: `match-server/src/v026g/record.rs`; reader:
   `cargo run -p srp --bin srp-recording -- <file> [--dump]`.
+- `SRP_REPLAY_DIR=<dir>`, `SRP_GAME_MODES_DIR=<dir>` (both off by default),
+  `SRP_REPLAY_MAX_RECORDING_MB` (24), `SRP_REPLAY_MAX_MB` (1000): the
+  lobby History's "Watch replay": kept recordings made into `.sur` files
+  when first asked for, a token from the lobby, the file at
+  `/replays/<token>` (`replay_watch.md`).
 - `SRP_PACKET_LOG=<dir>`: every datagram of the lobby and the match
   server, one file a connection (the lobby sign-in's session id left out).
   **Set it for every live test**: it is the packet capture.

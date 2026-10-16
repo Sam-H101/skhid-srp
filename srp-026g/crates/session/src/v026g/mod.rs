@@ -20,6 +20,9 @@
 //! - [`matches_now`]: which of the matches being played is listed for the
 //!   players, and which score is told: one rule for the launcher's page
 //!   and the lobby's list.
+//! - [`replays`]: "Watch replay": the conversions waiting, each player's
+//!   latest ask, and the download tokens the lobby gives and the web page
+//!   takes.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
@@ -42,6 +45,7 @@ pub mod persist;
 pub mod premium;
 pub mod pvb;
 pub mod quests;
+pub mod replays;
 pub mod rewards;
 pub mod rules;
 pub mod tutorial;

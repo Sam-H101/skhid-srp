@@ -38,6 +38,8 @@ USAGE (this script never touches the source exe):
     (checked in; STATE is 0x800 of the late join's state page, checked).
     The forward effect's UV scrolling comes from forward_scroll_026g.asm:
         nasm -f bin -DCAVE=0xA425B00 forward_scroll_026g.asm -o forward_scroll_026g.section.bin
+    (checked in). "Watch replay"'s link code comes from replay_link_026g.asm:
+        nasm -f bin -DCAVE=0xA425220 replay_link_026g.asm -o replay_link_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -205,6 +207,14 @@ Patches:
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
   stale_dll_026g.asm at 0xE00 of `.srp`, which writes both, with byte 8 of
   the version field 80h, or 81h when %TEMP%\\shell_32.dll exists;
+- "Watch replay" (patch revision 14, with the late join, client_patch.md
+  section 3.27). The lobby's video_tutorial_link_clicked (0x28CDA0) opened
+  whatever text the server's 9E put into the lobby client's link buffer with
+  ShellExecuteA. A jump at 0x28CDB6 goes to replay_link
+  (replay_link_026g.asm, .srp+220h, after the upload code and the default
+  server, before the patches' mount): only `replay <8 hex> <32 hex> <64 hex>
+  <1..10 digits>` starts updater_skhid.exe of this exe's folder with the
+  command line `updater_skhid.exe <link>`; anything else does nothing;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -348,7 +358,17 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # 13: the transparent effects (forward_default) scroll their textures as in
 # 0.29 when a material asks for it (FORWARD_SCROLL_HOOKS below). Rendering
 # only, nothing a match computes: 12 and 13 play together.
-REVISION = 13
+# 14: "Watch replay" from the lobby's History (REPLAY_LINK below): the lobby's
+# link callback starts updater_skhid.exe with a link of the one form
+# `replay <id> <token> <sha256> <size>` and opens nothing else, where the
+# original opened any text the server sent with ShellExecute. Nothing a match
+# computes: 11 to 14 play together. A server sends a replay link only to a
+# game that says 14 or more (an older one would open the text as a file).
+REVISION = 14
+# The first revision whose default build takes the lobby's replay link
+# (REPLAY_LINK): the server's replay rule asks for it
+# (session::v026g::replays::MIN_REVISION).
+REPLAY_LINK_REVISION = 14
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -541,6 +561,32 @@ STALE_DLL_OFFSET = 0xE00
 STALE_DLL_ENTRY = SECTION_VA + STALE_DLL_OFFSET
 STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
              b"\xE8" + struct.pack("<i", STALE_DLL_ENTRY - STALE_DLL_VA - 5) + b"\x90")
+
+# "Watch replay" (patch revision 14, client_patch.md section 3.27). The
+# lobby movie's ExternalInterface call video_tutorial_link_clicked is the
+# delegate {lobby ui, 0x28CDA0} (registered at 0x283053; the name is entry
+# 106 of the callback names at 0x9C56C8): thiscall, one argument, `ret 4`,
+# al = 1. It takes the lobby client from its owner (vtable+3Ch, in eax at
+# 0x28CDB6) and called ShellExecuteA(NULL, "open", client+1E6144h, NULL,
+# NULL, SW_SHOWNORMAL) (the delay-loaded import at 0xAEFE74), then
+# enable_element("root.statusPanel.videoTutorial", 1) (0x22A660). The buffer
+# is what the server's 9E sent, UTF-8 with its zero (0x271426..0x271444):
+# any text the server sent was opened as a file, a program or a URL. `push 1`
+# / `push 0` / `push 0` at 0x28CDB6 becomes a jump to replay_link
+# (replay_link_026g.asm at REPLAY_LINK_VA: in the first page of `.srp`,
+# after the upload code, the default server's stub and its address, 0x21D
+# at the most, and before the patches' mount at MOUNT_PATCHES_OFFSET; the
+# page has no other room for it; build() checks that they do not overlap):
+# only a link `replay <8 hex> <32 hex> <64 hex> <1..10 digits>` (lower-case
+# hex) starts <this exe's folder>\updater_skhid.exe with the command line
+# `updater_skhid.exe <link>` (CreateProcessW); anything else does nothing,
+# and the element is not enabled. The rest of the original's body stays,
+# never reached. No base relocation is under the hook.
+REPLAY_LINK_OFFSET = 0x220
+REPLAY_LINK_VA = SECTION_VA + REPLAY_LINK_OFFSET
+REPLAY_LINK_HANDLER = 0x28CDA0
+REPLAY_LINK_HOOK = (0x28CDB6, bytes.fromhex("6a016a006a00"), 0, 0xE9)
+REPLAY_LINK_BUFFER = 0x1E6144                 # in the lobby client
 
 # The late join (client_patch.md section 3.11). Its code is the second page
 # of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
@@ -1120,7 +1166,8 @@ def build(original, mode, code=None, server=None, late_join=None):
     signature, mounts resources.db's patches (mount_patches_026g.section.bin),
     its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin), and its transparent effects scroll as in
-    0.29 (forward_scroll_026g.section.bin)."""
+    0.29 (forward_scroll_026g.section.bin), and the lobby's link starts the
+    updater for a replay link alone (replay_link_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -1301,9 +1348,18 @@ def build(original, mode, code=None, server=None, late_join=None):
             sys.exit("the upload code (and the default server) and the patches' mount do not fit before the pickup code")
         if MOUNT_STATE_OFFSET + MOUNT_STATE_SIZE > LATE_JOIN_STATE_SIZE:
             sys.exit("the patches' mount keeps more state than the late join's page has")
+        replay_link = open(replay_link_bin(), "rb").read()
+        if len(cave) > REPLAY_LINK_OFFSET or REPLAY_LINK_OFFSET + len(replay_link) > MOUNT_PATCHES_OFFSET:
+            sys.exit("the upload code (and the default server), the replay link code and the patches' mount "
+                     "do not fit before the pickup code")
+        va, expected, offset, opcode = REPLAY_LINK_HOOK
+        patch(data, va, expected, hook_bytes(REPLAY_LINK_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the replay link's hook")
 
     if mode == "section":
         if late_join is not None:
+            cave = cave + b"\xCC" * (REPLAY_LINK_OFFSET - len(cave)) + replay_link
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
@@ -1336,7 +1392,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "no resources.db signature check, "
                      f"each resources.db.patch_1 to _{MOUNT_MAX_PATCHES} there mounted over resources.db, "
                      "the sign-in says whether %TEMP%\\shell_32.dll exists, "
-                     "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0)"
+                     "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0), "
+                     "the lobby's link starts the updater for a replay link and opens nothing else"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1347,6 +1404,10 @@ def default_bin(mode):
 
 def default_server_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"default_server_026g.{mode}.bin")
+
+
+def replay_link_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_link_026g.section.bin")
 
 
 def stale_dll_bin():

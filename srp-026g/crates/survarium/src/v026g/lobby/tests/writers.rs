@@ -721,6 +721,37 @@ fn the_matches_now_are_ranking_rows_with_reserved_places() {
     assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS + 1]).is_err());
 }
 
+/// The answer to a replay poll: one ranking row at the replay start
+/// (2 200 000 000 is 0x83215600, past every JOIN start) whose name is the
+/// asker's status, the match in 8 lower-case hex digits and the size.
+#[test]
+fn a_replay_poll_is_answered_with_one_row_at_the_replay_start() {
+    assert_eq!(REPLAY_START, 2_200_000_000);
+    // The first start after the last JOIN start.
+    assert_eq!(REPLAY_START - (JOIN_START + JOIN_KEY_MAX), 1);
+    assert_eq!(REPLAY_ASK, 0xFFFF_FF01);
+    assert_bytes(
+        &replay_answer("ready", 0x1F07_C8FB, 1_166_938).unwrap(),
+        "91 01 'R1;ready;1f07c8fb;1166938' 00562183 0000 0000",
+    );
+    let mut client = Client::signed_in();
+    let message = replay_answer("none", 0, 0).unwrap();
+    assert_eq!(
+        client.receive(&message).unwrap(),
+        Decoded::EloList(vec![("R1;none;00000000;0".into(), 2_200_000_000, 0, 0)])
+    );
+    // The longest word with the largest size: within the 63 bytes.
+    let longest = format!("R1;not_recorded;ffffffff;{}", u64::MAX);
+    assert_eq!(longest.len(), 45);
+    let Decoded::EloList(rows) = client
+        .receive(&replay_answer("not_recorded", u32::MAX, u64::MAX).unwrap())
+        .unwrap()
+    else {
+        panic!("not a ranking list");
+    };
+    assert_eq!(rows[0].0, longest);
+}
+
 /// The answer to a JOIN button's request: one ranking row at the JOIN
 /// start (2 100 000 000 is 0x7D2B7500) whose name says what came of it:
 /// the word the first M2 movie reads, then the code of why.
