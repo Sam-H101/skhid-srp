@@ -114,8 +114,9 @@ Every setting has a default; none is needed on a dev PC.
   the general chat when somebody joins or leaves the search and when a match
   starts, with whom (social.md §9.7).
 - `SRP_MATCH_MODES` (default `2,3,4`), `SRP_MATCH_MAPS` (default: every
-  playable map, 72 of them): a match gets the map its players played least
-  and a mode and weather at random, so for a first test name one, e.g.
+  playable map, 72 of them): a match gets a map drawn, more likely the
+  less its players played it (`SRP_MATCH_MAP_SKEW`, default 1, 0 to 4), and
+  a mode and weather at random, so for a first test name one, e.g.
   `SRP_MATCH_MAPS=117` (Team Deathmatch on level_01).
 - `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
   `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a player

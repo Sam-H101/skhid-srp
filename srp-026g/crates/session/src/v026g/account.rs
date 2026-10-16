@@ -185,8 +185,8 @@ pub struct Account {
     /// ([`super::extras`]).
     pub extras: super::extras::Extras,
     /// `(map, matches)`: how many matches the account was put in on each
-    /// map (`maps::MapMode::level`), by map; the matchmaker picks the map
-    /// its players played least ([`super::matchmaking`]).
+    /// map (`maps::MapMode::level`), by map; the matchmaker draws the maps
+    /// its players played less more often ([`super::matchmaking`]).
     pub map_plays: Vec<(u8, u32)>,
 }
 
