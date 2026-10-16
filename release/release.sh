@@ -5,51 +5,64 @@
 #
 # A whole release of origin/main in one run. Players get a maintenance
 # countdown; everything is prepared while it runs, and at its end it is all
-# swapped in at once and srp restarts:
+# swapped in at once and srp is made anew:
 #   1. preflight, nothing players see: ssh to the jump host and through it to
 #      the live host, the patches server, nix, $SKHID_GAME, $SKHID_STOCK_DB
 #      (its sha256), free disk here and there, srp-game-data, main's patch
 #      REVISION above the live exe's, the admin page answering the jump
-#      host, no maintenance planned already, no leftover staged files;
-#      with --resources, the file is resources.db.patch_<main's REVISION>,
-#      srp-game-data reads it, and the patches server does not have it yet;
-#      which server code differs between main and the live tree;
-#   2. y/N, then plans maintenance in <n> minutes on the admin page,
-#      POSTed from $SKHID_ADMIN_FROM (default the jump host; `here`: this
-#      machine), an address in the live SRP_ADMIN_IPS (the token and the
-#      page's path go to curl on stdin), and sees the countdown on
-#      $SKHID_SITE/launcher/places/en;
-#   3. while it runs: release/upload-patch (with --resources),
-#      release/build-server-db, release/build-zip (--ref: the commit checked
-#      in step 1); checks the two files as release/deploy does; stages them
-#      on the live host as download/<name>.tmp (sha256 checked there,
-#      chmod 644), not in place yet; with server code to build: tags the
-#      running image srp-026g:before-<stamp>-<label>, unpacks main's source
-#      in .release-src.tmp and runs docker compose build srp26 there;
+#      host, no maintenance planned already, no other release running (the
+#      lock on the jump host), no release folder left unfinished, download/
+#      on the same file system as the folder; srp26's container, its image
+#      ID the one srp-026g:latest names; which of the settings srp takes
+#      since #105 the .env sets (names only); the offered-patch list
+#      (release/patches.tsv): every row on the patches server with its size
+#      and sha256, at its URL, none above main's REVISION, and patch_12 (the
+#      menus) in it from revision 12 on (or the --resources file); with
+#      --resources, the file is resources.db.patch_<main's REVISION>,
+#      srp-game-data reads it, and it is neither published nor listed yet;
+#      which server code differs between main and the target's tree;
+#   2. takes the release lock, y/N, then plans maintenance in <n> minutes on
+#      the admin page, POSTed from the jump host (its address is in the
+#      SRP_ADMIN_IPS of the target; the token and the page's path go to curl
+#      on stdin), and sees the countdown on $SKHID_SITE/launcher/places/en;
+#   3. while it runs: release/upload-patch (with --resources: publishes it
+#      and adds its row to the list), release/build-server-db (of the list),
+#      release/build-zip (--ref: the commit checked in step 1); checks the two
+#      files as release/deploy does; makes the release folder
+#      $TARGET_DIR/release-rev<rev>-<UTC YYYYMMDD-HHMM>[-<label>] and stages
+#      both in it (sha256 checked there, chmod 644), with changed.txt; with
+#      server code to build: tags the running image (by its ID)
+#      srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
+#      folder's src/ and runs docker compose build srp26 there;
 #   4. at the planned time, once $SKHID_SITE/api/stats says "matches":0
 #      (waiting up to $SKHID_MATCH_WAIT_MINUTES more): shows what changes,
-#      y/N, then archives the current ZIP and server data (and source) in
-#      old-downloads/, moves the staged files into place, sets
-#      SRP_MIN_PATCH_REVISION=<rev> (that line only), docker compose up -d
-#      --no-deps --force-recreate srp26;
-#   5. checks the container, the log's game data line, /patches (exactly the
-#      server data's patches) and /api/client-files (the new ZIP), and prints
-#      the rollback.
+#      y/N (no answer in $SKHID_SWAP_ANSWER_MINUTES, default 10: no), then
+#      the swap of release/deploy: srp26 stopped; srp.db, the old ZIP and
+#      server data (hard links), their sha256, the image ID, the setting (and
+#      the source) kept in the folder with its rollback, srp.db copied to the
+#      jump host too (live only); the server data (and source) in place,
+#      SRP_MIN_PATCH_REVISION=<rev>, srp26 made anew;
+#   5. checks the container, the log's game data line and /patches (exactly
+#      the list's patches), and only then puts the ZIP in place and checks
+#      /api/client-files. A failed check prints srp's log and runs the
+#      folder's rollback (srp.db, image, data, ZIP, setting, source: as
+#      before). The run's output is the folder's release.log.
 # Stopped before step 4 (a failure, a no, Ctrl-C): the staged files are
-# removed, the image tag put back, the maintenance cancelled; the live
-# server is as it was (a published patch stays: none is ever deleted).
-# Stopped in steps 4-5: it says what was done and prints the rollback.
+# removed (the folder stays, state stopped), the image tag put back, the
+# maintenance cancelled; the server is as it was (a published patch stays,
+# with its row in the list: none is ever deleted).
 #
 #   --resources <file>  new content: resources.db.patch_<rev>, published first
-#   --test              to the test server ($SKHID_TEST, $SKHID_TEST_SITE):
-#                       its ZIP (build-zip --test); its code comes from the
-#                       workflow "Deploy the test server", not from here
+#   --test              to the test environment ($SKHID_TEST in $SKHID_TEST_DIR,
+#                       compose project srptest, $SKHID_TEST_SITE), with the
+#                       test patches server ($SKHID_TEST_PATCHES_*, never the
+#                       production one) and its list release/patches-test.tsv;
+#                       its ZIP (build-zip --test); the same steps as live
 #   --server-code auto  (default) build when main's srp-026g differs from the
-#                       live tree; yes: build anyway; no: never
+#                       target's tree; yes: build anyway; no: never
 #   --minutes <n>       the countdown, 1-10080 (default $SKHID_MAINT_MINUTES,
 #                       else 20)
-#   --label <word>      names the archived files and the image tag
-#                       (default before-r<rev>)
+#   --label <word>      ends the release folder's name
 #   --dry-run           runs the read-only checks of step 1, prints every
 #                       other command; plans no maintenance, writes nothing
 #   --yes --i-know      answer both y/N questions yes (both flags or neither)
@@ -84,24 +97,25 @@ done
 [[ $server_code =~ ^(auto|yes|no)$ ]] || die "--server-code is auto, yes or no"
 [[ -z $label || $label =~ ^[A-Za-z0-9._-]+$ ]] || die "$label: a label is letters, digits, . _ -"
 need_cmds ssh curl jq sha256sum od git tar awk df
-load_env SKHID_JUMP SKHID_SITE SKHID_PATCHES_SSH SKHID_PATCHES_DIR SKHID_PATCHES_URL SKHID_STOCK_DB SKHID_GAME SKHID_LOCALIZATION
+load_env SKHID_JUMP SKHID_SITE SKHID_STOCK_DB SKHID_GAME SKHID_LOCALIZATION
+step_flags=()
 if ((test_server)); then
     use_target test
+    use_patches test
     load_env SKHID_TEST_GAME_SERVER
-    admin_from=${SKHID_TEST_ADMIN_FROM:-$SKHID_JUMP}
-    [[ $server_code != yes ]] || die "--test --server-code yes: the test server's code comes from the workflow \"Deploy the test server\""
-    server_code=no
+    step_flags=(--test)
 else
     use_target live
+    use_patches live
     load_env SKHID_GAME_SERVER
-    admin_from=${SKHID_ADMIN_FROM:-$SKHID_JUMP}
 fi
+read_patch_list
 minutes=${minutes:-${SKHID_MAINT_MINUTES:-20}}
 if [[ ! $minutes =~ ^[1-9][0-9]{0,4}$ ]] || ((minutes > 10080)); then die "--minutes: a whole number from 1 to 10080"; fi
 match_wait=${SKHID_MATCH_WAIT_MINUTES:-15}
 [[ $match_wait =~ ^[0-9]+$ ]] || die "SKHID_MATCH_WAIT_MINUTES: a whole number"
-D=$(q "$TARGET_DIR")
-SRC_TMP=.release-src.tmp
+answer_wait=${SKHID_SWAP_ANSWER_MINUTES:-10}
+[[ $answer_wait =~ ^[1-9][0-9]*$ ]] || die "SKHID_SWAP_ANSWER_MINUTES: a whole number from 1"
 # What the image is built of at <commit> (the sources of its Dockerfile's
 # COPY lines, but --from=), the Dockerfile and the compose file: one path of
 # srp-026g a line, those it has.
@@ -121,12 +135,13 @@ build_inputs() {
 }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/skhid-release.XXXXXX")
+SWAP_WORK=$work
+log_to "$work/release.log"
 say "working in $work"
 
-# Where the run is: preflight, planned (maintenance planned, nothing swapped:
-# a stop puts things back), swapping (a stop says what was done), finished.
-phase=preflight end=0 staged=0 image_tagged=0 old_image=''
-done_steps=() rb=''
+# Where the run is: preflight, planned (maintenance planned, nothing moved:
+# a stop puts things back), swapping (a stop rolls back), finished.
+phase=preflight end=0 image_tagged=0
 
 clock() { date -u -d "@$1" +%H:%M:%S; }
 span() { local s=$1; printf '%d:%02d' $((s / 60)) $((s % 60)); }
@@ -169,11 +184,11 @@ read_admin() {
     [[ $ADMIN_TOKEN != *[\"\\]* ]] || die "SRP_ADMIN_TOKEN in the .env has a quote or a backslash (not shown)"
 }
 
-# The admin page, from $admin_from: curl reads its URL (the secret path) and
-# the form (the token, then <name=value>...) from a config on stdin, so
-# neither is in a command line. No fields: a GET. Prints the answer's body,
-# then its HTTP status on a line of its own. The body holds the token:
-# never print it.
+# The admin page, asked from the jump host (the address in SRP_ADMIN_IPS):
+# curl there reads its URL (the secret path) and the form (the token, then
+# <name=value>...) from a config on stdin, so neither is in a command line.
+# No fields: a GET. Prints the answer's body, then its HTTP status on a line
+# of its own. The body holds the token: never print it.
 admin_request() {
     local field
     {
@@ -182,11 +197,7 @@ admin_request() {
             printf 'data-urlencode = "token=%s"\n' "$ADMIN_TOKEN"
             for field; do printf 'data = "%s"\n' "$field"; done
         fi
-    } | if [[ $admin_from == here ]]; then
-        curl -sS --max-time 30 -w '\n%{http_code}' -K -
-    else
-        ssh "$admin_from" "curl -sS --max-time 30 -w '\n%{http_code}' -K -"
-    fi
+    } | ssh "$SKHID_JUMP" "curl -sS --max-time 30 -w '\n%{http_code}' -K -"
 }
 # The admin page's answer to a form, without the body: what it said.
 admin_said() {
@@ -202,9 +213,7 @@ admin_said() {
     esac
 }
 plan_command() {
-    local how="ssh $admin_from curl -K - < the form"
-    [[ $admin_from != here ]] || how="curl -K - < the form, here"
-    say "POST $TARGET_SITE/<SRP_ADMIN_PATH> token=<SRP_ADMIN_TOKEN> tab=maint $1 ($how)"
+    say "POST $TARGET_SITE/<SRP_ADMIN_PATH> token=<SRP_ADMIN_TOKEN> tab=maint $1 (ssh $SKHID_JUMP curl -K - < the form)"
 }
 
 cancel_maintenance() {
@@ -245,36 +254,27 @@ on_exit() {
     case $phase in
     planned)
         say
-        say "STOPPED before the swap; putting the live server back as it was:"
-        if ((staged)); then
-            if on_target "cd $D && rm -f download/$ZIP_NAME.tmp download/$DATA_NAME.tmp && rm -rf $SRC_TMP $SRC_TMP.tar"; then
-                say "staged files: removed"
-            else
-                say "staged files: NOT removed: remove download/*.tmp and $SRC_TMP* in $TARGET_DIR by hand"
-            fi
-        fi
+        say "STOPPED before the swap; putting the $TARGET server back as it was:"
+        swap_failed
+        if [[ -z $SWAP_STATE ]]; then stage_abandon; fi
         if ((image_tagged)); then
-            if on_target "docker tag $(q "$old_image") srp-026g:latest && docker rmi $(q "$old_image") >/dev/null"; then
-                say "image: srp-026g:latest is the running one again"
+            if on_target "docker tag $(q "$RUN_IMAGE") $IMAGE && docker rmi $BEFORE_TAG >/dev/null"; then
+                say "image: $IMAGE is the running one again ($RUN_IMAGE)"
             else
-                say "image: NOT put back: docker tag $old_image srp-026g:latest"
+                say "image: NOT put back: docker tag $RUN_IMAGE $IMAGE"
             fi
         fi
         cancel_maintenance
         if [[ -n $resources && -n ${published:-} ]]; then
-            say "${resources##*/} stays published on the patches server (patches are never deleted); the server does not offer it. Next time: no --resources."
+            say "${resources##*/} stays published on $PATCHES_LABEL, with its row in $PATCH_LIST (patches are never deleted); the server does not offer it yet. Next time: no --resources."
         fi
         ;;
-    swapping)
-        say
-        say "STOPPED IN THE SWAP. Done:"
-        if ((${#done_steps[@]})); then printf '  %s\n' "${done_steps[@]}"; else say "  nothing"; fi
-        say_rollback
-        if [[ ${done_steps[*]} != *"srp26 restarted"* ]]; then
-            say "Until srp restarts, the maintenance stays planned (at its time the games close)."
-        fi
-        ;;
+    swapping) swap_failed ;;
     esac
+    case $phase in
+    planned | swapping | finished) save_release_log "$work/release.log" ;;
+    esac
+    lock_drop
     if [[ -d $work/zip/src ]]; then git -C "$REPO" worktree remove --force "$work/zip/src" 2>/dev/null; fi
     exit "$status"
 }
@@ -292,26 +292,22 @@ ssh_check() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$@" </dev/null >/dev/nu
 free_mb() { df -Pk "$1" | awk 'NR == 2 { print int($4 / 1024) }'; }
 
 progress "1. preflight (nothing players see)"
-via_ok=1 target_ok=0 patches_ok=0
+jump_ok=0 target_ok=0 patches_ok=0
+if ssh_check "$SKHID_JUMP" true; then jump_ok=1; okay "ssh to the jump host ($SKHID_JUMP)"; else problem "ssh to the jump host ($SKHID_JUMP) fails (ssh -o BatchMode=yes $SKHID_JUMP true)"; fi
+if [[ -n $TARGET_VIA && $TARGET_VIA != "$SKHID_JUMP" ]]; then
+    if ssh_check "$TARGET_VIA" true; then okay "ssh to $TARGET_VIA"; else problem "ssh to $TARGET_VIA (the way to the $TARGET host) fails"; fi
+fi
 if [[ -n $TARGET_VIA ]]; then
-    if ssh_check "$TARGET_VIA" true; then okay "ssh to the jump host ($TARGET_VIA)"; else via_ok=0; problem "ssh to the jump host ($TARGET_VIA) fails (ssh -o BatchMode=yes $TARGET_VIA true)"; fi
+    ssh_check "$TARGET_VIA" "ssh -o BatchMode=yes -o ConnectTimeout=20 $(q "$TARGET_SSH") true" && target_ok=1
+else
+    ssh_check "$TARGET_SSH" true && target_ok=1
 fi
-if ((via_ok)); then
-    if [[ -n $TARGET_VIA ]]; then
-        ssh_check "$TARGET_VIA" "ssh -o BatchMode=yes -o ConnectTimeout=20 $(q "$TARGET_SSH") true" && target_ok=1
-    else
-        ssh_check "$TARGET_SSH" true && target_ok=1
-    fi
-    if ((target_ok)); then okay "ssh to the $TARGET host ($TARGET_SSH${TARGET_VIA:+ through $TARGET_VIA})"; else problem "ssh to the $TARGET host ($TARGET_SSH${TARGET_VIA:+ through $TARGET_VIA}) fails"; fi
+if ((target_ok)); then okay "ssh to the $TARGET host ($TARGET_SSH${TARGET_VIA:+ through $TARGET_VIA})"; else problem "ssh to the $TARGET host ($TARGET_SSH${TARGET_VIA:+ through $TARGET_VIA}) fails"; fi
+if ssh_check "$PATCHES_SSH" true; then patches_ok=1; okay "ssh to $PATCHES_LABEL"; else problem "ssh to $PATCHES_LABEL fails"; fi
+if ((jump_ok)); then
+    owner=$(lock_owner || echo "unknown (the lock could not be read)")
+    if [[ -z $owner ]]; then okay "no other release to the $TARGET server is running (the lock on the jump host is free)"; else problem "a release to the $TARGET server holds the lock on the jump host: $owner. Gone? ssh $SKHID_JUMP rm -r $(lock_path)"; fi
 fi
-if [[ $admin_from != "$TARGET_VIA" && $admin_from != here ]]; then
-    if ssh_check "$admin_from" true; then
-        okay "ssh to $admin_from (the admin page is asked from there)"
-    else
-        problem "ssh to $admin_from (where the admin page is asked from) fails"
-    fi
-fi
-if ssh_check "$SKHID_PATCHES_SSH" true; then patches_ok=1; okay "ssh to the patches server ($SKHID_PATCHES_SSH)"; else problem "ssh to the patches server ($SKHID_PATCHES_SSH) fails"; fi
 if command -v nix >/dev/null; then okay "nix"; else problem "nix is not installed here (the ZIP and srp-game-data are built with it)"; fi
 command -v python3 >/dev/null || command -v nix >/dev/null || problem "python3 (or nix to get it)"
 if [[ -d $SKHID_GAME ]]; then okay "SKHID_GAME: $SKHID_GAME"; else problem "SKHID_GAME: $SKHID_GAME is not a folder (the original 0.26g install)"; fi
@@ -355,10 +351,41 @@ if (fetch_site_zip "$TARGET_SITE" "$work/live.zip") 2>"$work/live-zip.log"; then
 else
     problem "$(cat "$work/live-zip.log")"
 fi
-label=${label:-before-r${main_rev:-x}}
+
+# The offered patches: the list, each on the patches server and at its URL.
+published=''
+listed=$(grep -c . <<<"$LIST" || true)
+if ((patches_ok && listed)); then
+    names=$(cut -d' ' -f1 <<<"$LIST" | tr '\n' ' ')
+    there=$(on_patches "cd $(q "$PATCHES_DIR") && for f in $names; do if test -f \"\$f\"; then echo \"\$f \$(stat -c %s \"\$f\") \$(sha256sum < \"\$f\" | cut -d' ' -f1)\"; else echo \"\$f missing\"; fi; done" || echo "unreadable")
+    bad=0
+    while read -r name sha size url; do
+        [[ -n $name ]] || continue
+        if ! grep -qx "$name $size $sha" <<<"$there"; then
+            bad=1
+            problem "$PATCH_LIST: $name ($size bytes, sha256 ${sha:0:12}…) is not so on $PATCHES_LABEL: $(grep "^$name " <<<"$there" || echo "$there")"
+            continue
+        fi
+        head=$(curl -sS --max-time 20 -o /dev/null -I -D - "$url" 2>/dev/null | tr -d '\r' |
+            awk 'NR == 1 { status = $2 } tolower($1) == "content-length:" { size = $2 } END { print status " " size }' || true)
+        if [[ $head != "200 $size" ]]; then
+            bad=1
+            problem "$url answers \"$head\", not 200 with $size bytes"
+        fi
+    done <<<"$LIST"
+    ((bad)) || okay "the offered-patch list: $listed patch(es), each on $PATCHES_LABEL with its sha256 and at its URL"
+elif ((patches_ok)); then
+    okay "the offered-patch list ($PATCH_LIST) is empty"
+fi
+if [[ -n $main_rev ]] && ((LIST_TOP > main_rev)); then
+    problem "$PATCH_LIST offers resources.db.patch_$LIST_TOP, above main's REVISION $main_rev"
+fi
+rel=$(realpath -m --relative-to="$REPO" "$PATCH_LIST")
+if [[ -n $main_commit && $rel != ../* ]] && ! git -C "$REPO" show "$main_commit:$rel" 2>/dev/null | cmp -s - "$PATCH_LIST"; then
+    say "  note     $rel here is not main's: commit its new rows with this release's record"
+fi
 
 # The new patch.
-published=''
 if [[ -n $resources ]]; then
     name=${resources##*/}
     if [[ -n $main_rev && $name != "resources.db.patch_$main_rev" ]]; then
@@ -367,8 +394,10 @@ if [[ -n $resources ]]; then
         problem "--resources: $resources: no such file"
     elif [[ $(head -c 13 "$resources") != little-endian ]]; then
         problem "--resources: $resources is not an archive of the game (no \"little-endian\" header)"
+    elif [[ -n $(list_row "$name") ]]; then
+        problem "--resources: $name is in $PATCH_LIST already: run without --resources (the list is what is offered)"
     elif [[ -n $bin && -f $SKHID_STOCK_DB ]]; then
-        if "$bin" build --db "$SKHID_STOCK_DB" --patch "$resources" --patch-url "$SKHID_PATCHES_URL" \
+        if "$bin" build --db "$SKHID_STOCK_DB" --patch "$resources=$PATCHES_URL/$name" \
             --out "$work/patch-check.db" >"$work/patch-check.log" 2>&1; then
             okay "--resources: $name, $(size_of "$resources") bytes, sha256 $(sha256_of "$resources"); srp-game-data reads it"
         else
@@ -377,43 +406,64 @@ if [[ -n $resources ]]; then
         rm -f "$work/patch-check.db"
     fi
     if ((patches_ok)) && [[ -f $resources ]]; then
-        there=$(on_patches "cd $(q "$SKHID_PATCHES_DIR") && if test -e $(q "$name"); then sha256sum < $(q "$name"); else echo none; fi" || echo "unknown")
+        there=$(on_patches "cd $(q "$PATCHES_DIR") && if test -e $(q "$name"); then sha256sum < $(q "$name"); else echo none; fi" || echo "unknown")
         if [[ $there == none ]]; then
-            okay "--resources: not on the patches server yet"
+            okay "--resources: not on $PATCHES_LABEL yet"
         elif [[ ${there%% *} == "$(sha256_of "$resources")" ]]; then
-            problem "--resources: $name is already published, these same bytes: run without --resources (build-server-db takes every published patch)"
+            problem "--resources: $name is already published, these same bytes, but not in $PATCH_LIST: add its row with release/upload-patch${step_flags[*]:+ ${step_flags[*]}} $resources, then run without --resources"
         else
             problem "--resources: $name is already published with OTHER bytes (${there%% *}); a published patch is never replaced: make the next revision"
         fi
     fi
 fi
+# The menus: from revision 12 on, patch_12 must be offered.
+if [[ -n $main_rev ]] && ((main_rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.patch_$MENUS_PATCH") &&
+    ${resources##*/} != "resources.db.patch_$MENUS_PATCH" ]]; then
+    problem "revision $main_rev needs resources.db.patch_$MENUS_PATCH (the menus) offered, and $PATCH_LIST has no row of it: release it (--resources) first"
+fi
 
-# The target: disk, leftovers, settings, the admin page.
-old_min=none have_zip=0 have_data=0
+# The target: disk, leftovers, settings, the container, the admin page.
 if ((target_ok)); then
     have=$(on_target "df -Pk $D | awk 'NR == 2 { print int(\$4 / 1024) }'" || echo 0)
     need=${SKHID_LIVE_MIN_FREE_MB:-2048}
     if ((have >= need)); then okay "free on the $TARGET host: $have MB"; else problem "free on the $TARGET host: $have MB in $TARGET_DIR, $need wanted (SKHID_LIVE_MIN_FREE_MB)"; fi
-    left=$(on_target "cd $D && ls -d download/*.tmp $SRC_TMP $SRC_TMP.tar 2>/dev/null || true")
-    if [[ -z $left ]]; then okay "no staged files left from before"; else problem "left from an earlier run in $TARGET_DIR: $(tr '\n' ' ' <<<"$left")— remove them by hand (or finish that release)"; fi
+    left=$(on_target "cd $D && for f in release-rev*/state; do if test -f \"\$f\"; then case \$(cat \"\$f\") in staging | swapping) echo \"\${f%/state} (\$(cat \"\$f\"))\" ;; esac; fi; done; ls -d download/.*.new 2>/dev/null; true")
+    if [[ -z $left ]]; then okay "no release folder left unfinished"; else problem "left unfinished in $TARGET_DIR: $(tr '\n' ' ' <<<"$left")— look at it (its release.log), finish or roll it back (release/rollback${step_flags[*]:+ ${step_flags[*]}} <folder>), then set its state to stopped"; fi
+    fs=$(on_target "cd $D && stat -L -c %d . download" || true)
+    if [[ $(sort -u <<<"$fs" | grep -c .) == 1 ]]; then okay "download/ is on the file system of $TARGET_DIR (a release folder's files go in by rename)"; else problem "download/ is not on the file system of $TARGET_DIR (or not there): the swap hard-links the release folder's files into it"; fi
+    blobs=$(missing_original_blobs)
+    if [[ -z $blobs ]]; then okay "download/resources/ keeps the original menus' blobs (the updater's restore to stock)"; else problem "download/resources/ on the $TARGET host lacks the original blobs the updater's restore fetches: $(tr '\n' ' ' <<<"$blobs")"; fi
     present=$(on_target "cd $D && for f in download/$ZIP_NAME download/$DATA_NAME; do if test -f \$f; then echo \$f; fi; done")
-    [[ $present == *"$ZIP_NAME"* ]] && have_zip=1
-    [[ $present == *"$DATA_NAME"* ]] && have_data=1
-    if old_min=$(current_min_revision 2>"$work/min.log"); then
-        okay "SRP_MIN_PATCH_REVISION now: $old_min"
+    [[ $present == *"$ZIP_NAME"* ]] && HAVE_ZIP=1
+    [[ $present == *"$DATA_NAME"* ]] && HAVE_DATA=1
+    if OLD_MIN=$(current_min_revision 2>"$work/min.log"); then
+        okay "SRP_MIN_PATCH_REVISION now: $OLD_MIN"
     else
+        OLD_MIN=none
         problem "$(cat "$work/min.log")"
     fi
+    if inspect_target; then
+        if [[ $LATEST_IMAGE == "$RUN_IMAGE" ]]; then
+            okay "srp26: image $RUN_IMAGE (what $IMAGE names), data volume $RUN_VOLUME"
+        else
+            problem "$IMAGE is $LATEST_IMAGE, but srp26 runs $RUN_IMAGE: a restart would run an image no release made (built by hand?); tag the running one back (docker tag $RUN_IMAGE $IMAGE) or release that one first"
+        fi
+    else
+        problem "srp26's container on the $TARGET host cannot be read (docker compose ps / docker inspect)"
+    fi
+    compose_text=$(if [[ -n $main_commit ]]; then git -C "$REPO" show "$main_commit:srp-026g/docker-compose.yml" 2>/dev/null; fi || true)
+    set_now=$(env_settings_set "$compose_text" || echo "(not readable)")
+    if [[ -n $set_now ]]; then say "  note     main's compose file now passes on $set_now, which the $TARGET .env sets (names only): those values take effect at the recreate"; fi
     proxy=$(on_target "cd $D && grep -E '^SRP_WEB_TRUST_PROXY=' .env | tail -n 1" || true)
     if [[ ${proxy#*=} != on ]]; then
-        problem "SRP_WEB_TRUST_PROXY is not on in the $TARGET .env: the admin page would see Caddy's address, not $admin_from's"
+        problem "SRP_WEB_TRUST_PROXY is not on in the $TARGET .env: the admin page would see Caddy's address, not the jump host's"
     fi
     if read_admin; then
         answer=$(admin_request) || answer=000
         if [[ ${answer##*$'\n'} == 200 ]]; then
-            okay "the admin page answers $admin_from"
+            okay "the admin page answers the jump host"
         else
-            problem "the admin page does not answer $admin_from (HTTP ${answer##*$'\n'}): its address must be in SRP_ADMIN_IPS"
+            problem "the admin page does not answer the jump host (HTTP ${answer##*$'\n'}): its address must be in SRP_ADMIN_IPS"
         fi
     else
         problem "SRP_ADMIN_PATH and SRP_ADMIN_TOKEN are not both set in the $TARGET .env (the admin page is off)"
@@ -429,11 +479,13 @@ planned*) problem "a maintenance is planned already on $TARGET_SITE (${state#pla
 esac
 matches=$(matches_now)
 if [[ -n $matches ]]; then okay "$TARGET_SITE/api/stats: $matches match(es) now"; else problem "$TARGET_SITE/api/stats gives no match count"; fi
+OLD_PATCHES=$(served_patches)
+say "  now      /patches: ${OLD_PATCHES:-(no list: a server from before patches)}"
 
 # The server code: main's srp-026g build inputs against the live tree.
 build_code=0 code_report=''
 src_tar=$work/srp-026g-src.tar
-if [[ $TARGET == live && -n $main_commit ]]; then
+if [[ -n $main_commit ]]; then
     mapfile -t build_paths < <(build_inputs "$main_commit")
     if [[ " ${build_paths[*]} " == *" !unsupported "* ]]; then
         problem "main's Dockerfile copies the whole folder or a pattern: say --server-code yes or no"
@@ -470,8 +522,6 @@ if [[ $TARGET == live && -n $main_commit ]]; then
     else
         problem "git archive of main's srp-026g failed: $(cat "$work/archive.log")"
     fi
-elif [[ $TARGET == test ]]; then
-    say "  note     the test server's code is main as of the last \"Deploy the test server\" run; run that first if it changed"
 fi
 
 if ((${#problems[@]})); then
@@ -483,9 +533,18 @@ if ((${#problems[@]})); then
     say "dry run: a real run stops here; what it would do after:"
 fi
 rev=$main_rev
+release_folder "$rev" "$(date -u +%Y%m%d-%H%M)" "$label"
+SWAP_SRC=$build_code SWAP_SRC_INPUTS=${inputs:-}
+new_row=''
+if [[ -n $resources && -f $resources ]]; then
+    new_row="${resources##*/} $(sha256_of "$resources") $(size_of "$resources") $PATCHES_URL/${resources##*/}"
+fi
+OFFERED=$(offered_of_list "$new_row")
 say
-say "the release: revision $live_rev -> $rev to the $TARGET server ($TARGET_SITE), label $label"
+say "the release: revision $live_rev -> $rev to the $TARGET server ($TARGET_SITE), its folder $TARGET_DIR/$REL"
 say "  new content: ${resources:-none}"
+say "  /patches will offer:"
+say_offered
 say "  server code: $(if ((build_code)); then say "built during the countdown (docker compose build srp26)"; else say "not built"; fi)"
 scale=""
 ((MINUTE == 60)) || scale=" (a minute here is $MINUTE s)"
@@ -494,10 +553,11 @@ say "  maintenance: in $minutes min$scale; players see the countdown, Play is lo
 # 2. Maintenance.
 if ((DRY_RUN)); then
     say
-    say "[dry run] 2. plan the maintenance, from $admin_from:"
+    say "[dry run] 2. take the release lock on the jump host ($(lock_path)), then plan the maintenance, from the jump host:"
     say "  $(plan_command "minutes=$minutes")"
     say "[dry run] then: $TARGET_SITE/launcher/places/en must say \"Maintenance in $minutes min\""
 else
+    lock_take
     say
     say "Next: maintenance in $minutes min on $TARGET_SITE. Players see the countdown at once; from here a stop cancels it."
     if ((yes)); then
@@ -524,61 +584,67 @@ else
 fi
 
 # 3. During the countdown.
-stamp=$(date -u +%Y%m%d-%H%M)
 dry=()
 ((DRY_RUN)) && dry=(--dry-run)
 if [[ -n $resources ]]; then
-    progress "3. publishing ${resources##*/}"
-    "$here/upload-patch" "${dry[@]}" "$resources" </dev/null || die "upload-patch failed"
+    progress "3. publishing ${resources##*/} on $PATCHES_LABEL"
+    "$here/upload-patch" "${step_flags[@]}" "${dry[@]}" "$resources" </dev/null || die "upload-patch failed"
     ((DRY_RUN)) || published=1
 fi
 data=$work/$DATA_NAME
 zip=$work/zip/$ZIP_NAME
-build_zip=("$BUILD_ZIP" --ref "$main_commit" --work "$work/zip")
-((test_server)) && build_zip+=(--test)
+build_zip=("$BUILD_ZIP" --ref "$main_commit" --work "$work/zip" "${step_flags[@]}")
 if ((DRY_RUN)); then
-    say "[dry run] 3. build here: release/build-server-db --out $data"
+    say "[dry run] 3. build here: release/build-server-db${step_flags[*]:+ ${step_flags[*]}} --out $data"
     say "[dry run]    and: ${build_zip[*]}"
-    say "[dry run]    then the checks of release/deploy on both, and:"
-    archive_names "$stamp" "$label"
+    say "[dry run]    then the checks of release/deploy on both, and the release folder:"
+    stage_begin
+    write_on live "cat > $REL_DIR/changed.txt" "$work/changed.txt"
     stage_upload "$data" "$DATA_NAME" "<its sha256>"
     stage_upload "$zip" "$ZIP_NAME" "<its sha256>"
 else
     progress "3. building the server data (release/build-server-db)"
-    "$here/build-server-db" --out "$data" </dev/null || die "build-server-db failed"
+    "$here/build-server-db" "${step_flags[@]}" --out "$data" </dev/null || die "build-server-db failed"
     progress "3. building the ZIP of $(git -C "$REPO" log -1 --format=%h "$main_commit") (release/build-zip)"
     "${build_zip[@]}" </dev/null 2>&1 | tee "$work/build-zip.log" || die "build-zip failed"
     if [[ -d $work/zip/src ]]; then git -C "$REPO" worktree remove --force "$work/zip/src"; fi
+    planned_offer=$OFFERED
     check_release_files "$zip" "$data" "$rev" "$work"
-    if [[ -n $resources ]]; then
-        grep -qx "patch_$rev $(sha256_of "$resources") .*" <<<"$OFFERED" ||
-            die "$data does not offer patch_$rev with the sha256 of $resources"
-    fi
+    [[ $OFFERED == "$planned_offer" ]] ||
+        die "$data does not offer what the preflight said (the list and the new patch): $(tr '\n' ' ' <<<"$OFFERED")"
     say "ZIP: $ZIP_SIZE bytes, sha256 $ZIP_SHA, revision $rev; server data: sha256 $DATA_SHA; /patches will offer:"
     say_offered
-    progress "3. staging on the $TARGET host (as .tmp, not in place)"
-    staged=1
+    progress "3. staging in the release folder $TARGET_DIR/$REL (not in place yet)"
+    {
+        say "release $REL: origin/main $(git -C "$REPO" log -1 --format='%h %s' "$main_commit"), revision $live_rev -> $rev"
+        say
+        say "server source, main's srp-026g against the $TARGET tree$( ((build_code)) || printf ' (not built)'):"
+        if [[ -n $code_report ]]; then say "$code_report"; else say "  (the same)"; fi
+        say
+        say "the players' ZIP, against the one the site hands out now:"
+        grep -E '^  (CHANGED|ADDED|REMOVED) |^updater_skhid.exe' "$work/build-zip.log" || say "  (no entry changed)"
+    } >"$work/changed.txt"
+    stage_begin
+    write_on live "cat > $REL_DIR/changed.txt" "$work/changed.txt"
     stage_upload "$data" "$DATA_NAME" "$DATA_SHA"
     stage_upload "$zip" "$ZIP_NAME" "$ZIP_SHA"
 fi
 if ((build_code)); then
-    old_image=srp-026g:before-$stamp-$label
     progress "3. the server code: building the image from main's source"
-    staged=1
-    write_on live "cat > $D/$SRC_TMP.tar" "$src_tar"
+    write_on live "cat > $REL_DIR/src.tar" "$src_tar"
     if ((!DRY_RUN)); then
-        there=$(on_target "sha256sum < $D/$SRC_TMP.tar")
-        [[ ${there%% *} == "$(sha256_of "$src_tar")" ]] || die "$SRC_TMP.tar has sha256 ${there%% *} on the host, not the one here"
+        there=$(on_target "sha256sum < $REL_DIR/src.tar")
+        [[ ${there%% *} == "$(sha256_of "$src_tar")" ]] || die "$REL/src.tar has sha256 ${there%% *} on the host, not the one here"
     fi
-    write_on live "cd $D && mkdir $SRC_TMP && tar -xf $SRC_TMP.tar -C $SRC_TMP && docker tag srp-026g:latest $old_image"
+    write_on live "cd $REL_DIR && mkdir src && tar -xf src.tar -C src && docker tag $(q "$RUN_IMAGE") $BEFORE_TAG"
     ((DRY_RUN)) || image_tagged=1
-    write_on live "cd $D && docker compose --env-file $D/.env -f $SRC_TMP/docker-compose.yml build srp26"
+    write_on live "cd $D && docker compose --env-file $D/.env -f $REL/src/docker-compose.yml build srp26"
 fi
 if ((!DRY_RUN)); then progress "3. staged"; fi
 
 # 4. At the planned time, with no match running: the swap.
 if ((DRY_RUN)); then
-    say "[dry run] 4. wait for the planned time, the launcher page saying the server is down, and \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min more), then y/N and:"
+    say "[dry run] 4. wait for the planned time, the launcher page saying the server is down, and \"matches\":0 on $TARGET_SITE/api/stats (up to $match_wait min more), then y/N (no answer in $answer_wait min: no) and:"
 else
     while (($(date +%s) < end)); do
         progress "4. waiting for the planned time ($(clock "$end") UTC)"
@@ -610,64 +676,33 @@ else
     say "It becomes:"
     say "  download/$ZIP_NAME: $ZIP_SIZE bytes, sha256 $ZIP_SHA (revision $live_rev -> $rev)"
     say "  download/$DATA_NAME: sha256 $DATA_SHA"
-    say "  .env: SRP_MIN_PATCH_REVISION $old_min -> $rev"
-    say "  /patches: $(curl -sS --max-time 20 "$TARGET_SITE/patches" 2>/dev/null | jq -cS . 2>/dev/null || say '(no list)') -> $EXPECTED"
-    if ((build_code)); then say "  the image: main's source, built (the running one is tagged $old_image)"; fi
+    say "  .env: SRP_MIN_PATCH_REVISION $OLD_MIN -> $rev"
+    say "  /patches: ${OLD_PATCHES:-(no list)} -> $EXPECTED"
+    if ((build_code)); then say "  the image: main's source, built (the running one, $RUN_IMAGE, is tagged $BEFORE_TAG)"; fi
     say "  the ZIP's entries, against the live ZIP:"
     grep -E '^  (CHANGED|ADDED|REMOVED) |^updater_skhid.exe' "$work/build-zip.log" | sed 's/^ */    /' || say "    (no entry changed)"
-    say "Next: archive, move into place, set the revision, restart srp26 (every lobby link drops)."
+    say "Next: srp26 stopped, the old files kept in the release folder, the server data in place, the revision set,"
+    say "srp26 made anew (every lobby link drops; its start copies srp.db to backups/), checked; srp.db's copy kept;"
+    say "then the ZIP. A failed check rolls it all back."
     if ((yes)); then
         say "(--yes --i-know: going ahead)"
     else
-        ask_yes || die "stopped: not confirmed (nothing was swapped)"
+        say "(no answer in $answer_wait min is a no)"
+        ask_yes "$((answer_wait * MINUTE))" || die "stopped: not confirmed (nothing was swapped)"
     fi
 fi
 
-archive_names "$stamp" "$label"
-old_src=old-downloads/srp-026g-src-$stamp-$label.tar.gz
-rb="cd $D"
-((have_zip)) && rb+=" && cp -p $OLD_ZIP download/$ZIP_NAME"
-((have_data)) && rb+=" && cp -p $OLD_DATA download/$DATA_NAME"
-if [[ $old_min == none ]]; then
-    rb+=" && sed -i '/^SRP_MIN_PATCH_REVISION=/d' .env"
-else
-    rb+=" && sed -i 's/^SRP_MIN_PATCH_REVISION=.*/SRP_MIN_PATCH_REVISION=$old_min/' .env"
-fi
-((build_code)) && rb+=" && tar -xzf $old_src && docker tag $old_image srp-026g:latest"
-rb+=" && $TARGET_COMPOSE up -d --no-deps --force-recreate srp26"
-say_rollback() {
-    say "Rollback (puts back what was archived and the setting, and restarts), on the $TARGET host ($TARGET_SSH${TARGET_VIA:+, through $TARGET_VIA}):"
-    say "  $rb"
-}
-
-((DRY_RUN)) || phase=swapping
 progress "4. the swap"
-archive=$(archive_command)
-if ((build_code)); then
-    archive+=" && tar -czf $old_src \$(for p in $inputs; do if test -e \$p; then echo \$p; fi; done)"
-fi
-write_on live "$archive"
-archived=()
-((have_zip)) && archived+=("$OLD_ZIP")
-((have_data)) && archived+=("$OLD_DATA")
-((build_code)) && archived+=("$old_src")
-done_steps+=("archived in $TARGET_DIR: ${archived[*]:-nothing (no ZIP or server data before)}")
-write_on live "cd $D/download && mv $DATA_NAME.tmp $DATA_NAME && mv $ZIP_NAME.tmp $ZIP_NAME"
-done_steps+=("moved into place: download/$DATA_NAME, download/$ZIP_NAME")
-if ((build_code)); then
-    write_on live "cd $D && tar -xf $SRC_TMP.tar && rm -rf $SRC_TMP $SRC_TMP.tar"
-    done_steps+=("main's source unpacked into $TARGET_DIR")
-fi
-write_on live "$(min_revision_command "$rev")"
-done_steps+=("SRP_MIN_PATCH_REVISION=$rev in .env (was $old_min)")
-write_on live "$(restart_command)"
-done_steps+=("srp26 restarted")
+swap_prepare "$rev"
+((DRY_RUN)) || phase=swapping
+swap_server "$rev"
+progress "5. the server is up on the new data; the ZIP"
+swap_zip
 
-# 5. The checks.
+# 5. After.
 if ((DRY_RUN)); then
-    say "[dry run] 5. then: srp26 running, its log's \"game data:\" line, GET $TARGET_SITE/patches is exactly the server data's list, GET $TARGET_SITE/api/client-files names the new ZIP"
-    say "[dry run] after it:"
-    say_rollback
+    say "[dry run] 5. after the restart: srp26 running, its log's \"game data:\" line, GET $TARGET_SITE/patches is exactly the list's; srp's new backup of srp.db kept in the folder$( [[ $TARGET == live ]] && printf ' and copied to the jump host'); then the ZIP, GET $TARGET_SITE/api/client-files names it"
+    say "[dry run] a failed check: srp's log, then sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL on the $TARGET host (srp.db, image, files, setting back)"
     say
     say "dry run: nothing was planned, uploaded or changed"
     if ((${#problems[@]})); then
@@ -676,25 +711,12 @@ if ((DRY_RUN)); then
     fi
     exit 0
 fi
-progress "5. checks"
-container=''
-for _ in $(seq 45); do
-    container=$(on_target "cd $D && id=\$($TARGET_COMPOSE ps -q srp26) && test -n \"\$id\" && docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.State.StartedAt}}' \$id" || true)
-    [[ $container == "running healthy "* || $container == "running none "* ]] && break
-    sleep 2
-done
-[[ $container == "running healthy "* || $container == "running none "* ]] || die "srp26 is not up: ${container:-no container}"
-say "srp26: $container"
-line=$(on_target "cd $D && $TARGET_COMPOSE logs --no-log-prefix --tail=500 srp26 2>&1 | grep 'game data:' | tail -n 1" || true)
-[[ -n $line ]] || die "no \"game data:\" line in srp26's log"
-say "log: $line"
-count=$(grep -c . <<<"$OFFERED" || true)
-[[ $line == *"; $count patch(es) offered at /patches"* ]] || die "the log's game data line is not of the new server data ($count patch(es) expected)"
-check_served "$work"
 phase=finished
 say
-((build_code)) && archived+=("image $old_image")
-say "released revision $rev to the $TARGET server. Archived in $TARGET_DIR: ${archived[*]:-nothing}"
-say_rollback
+say "released revision $rev to the $TARGET server. Its folder: $TARGET_DIR/$REL (the files before it, srp.db before it, the image IDs, changed.txt, release.log); the old image is $BEFORE_TAG ($RUN_IMAGE)"
+say "Rollback: release/rollback${step_flags[*]:+ ${step_flags[*]}} $REL (on the $TARGET host: sh $TARGET_DIR/$REL/rollback.sh $TARGET_DIR/$REL)"
+say "  (srp.db back as it was before the release; --keep-db keeps today's)"
 say "Kept here: $zip, $data (their hashes go in the changelog PR)."
+if [[ -n ${published:-} ]]; then say "Commit $PATCH_LIST (its new row: ${resources##*/}) with the record."; fi
+if ((DB_COPY_FAILED)); then say "WARNING: srp.db's copy is NOT on the jump host (above): copy it by hand."; fi
 say "Now: a game updates, downloads the patches, signs in; an old game is refused."

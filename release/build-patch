@@ -35,6 +35,7 @@ out=${out:-$name}
 [[ ${out##*/} == "$name" ]] || die "$out: the file must be called $name (the game mounts no other name)"
 [[ ! -e $out ]] || die "$out: already there; never overwritten"
 
+lower_priority
 bin=$(game_data_bin)
 "$bin" pack --dir "$folder" --out "$out"
 say "$name: $(size_of "$out") bytes, sha256 $(sha256_of "$out")"

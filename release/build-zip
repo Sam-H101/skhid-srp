@@ -2,26 +2,29 @@
 # usage: release/build-zip [--test] [--ref <commit>] [--work <dir>]
 #
 # Builds the players' ZIP from a fresh worktree of origin/main and compares it
-# with the live one, entry by entry:
+# with the one the site hands out now, entry by entry:
 #   1. git fetch origin main; a new worktree of it in <work>/src (never this
 #      checkout, never git stash);
-#   2. the live ZIP from $SKHID_SITE/download; refuses when main's patch
-#      REVISION (patch_026g.py) is not above the live exe's: bump it first;
+#   2. the current ZIP from $SKHID_SITE/download; refuses when main's patch
+#      REVISION (patch_026g.py) is not above that exe's: bump it first;
 #   3. bugtrap.dll and updater_skhid.exe (nix develop ./srp-026g), then
 #      make_client_026g.py $SKHID_GAME ... --pack-zip
-#      --server=$SKHID_GAME_SERVER --localization=$SKHID_LOCALIZATION;
+#      --server=$SKHID_GAME_SERVER --site=$SKHID_SITE
+#      --localization=$SKHID_LOCALIZATION (no resources.db regions: patches
+#      come from the server's /patches);
 #   4. prints every entry as same / CHANGED / ADDED / REMOVED against the
-#      live ZIP, and says whether updater_skhid.exe changed.
+#      current ZIP, and says whether updater_skhid.exe changed.
 #
-#   --test          for the test server: --server=$SKHID_TEST_GAME_SERVER
-#                   (still compared with the live ZIP, so the entries that
-#                   name the server differ too)
+#   --test          for the test environment: --server=$SKHID_TEST_GAME_SERVER
+#                   --site=$SKHID_TEST_SITE, compared with the ZIP of
+#                   $SKHID_TEST_SITE
 #   --ref <commit>  build that instead of origin/main (a release is built
 #                   from main; this is for trying a branch)
 #   --work <dir>    an empty or new folder for it all (default: a new one
 #                   under $TMPDIR); the ZIP is <work>/Survarium-0.26g-srp-files.zip
 #
-# Reads only. Remove the worktree after with: git worktree remove <work>/src
+# Reads only; builds at nice 10. Remove the worktree after with:
+#   git worktree remove <work>/src
 . "$(dirname "$0")/lib.sh"
 
 test_server=0 ref=origin/main work=''
@@ -35,13 +38,14 @@ while (($#)); do
     esac
 done
 need_cmds git nix curl sha256sum od
+lower_priority
 load_env SKHID_GAME SKHID_SITE SKHID_LOCALIZATION
 if ((test_server)); then
-    load_env SKHID_TEST_GAME_SERVER
-    server=$SKHID_TEST_GAME_SERVER
+    load_env SKHID_TEST_GAME_SERVER SKHID_TEST_SITE
+    server=$SKHID_TEST_GAME_SERVER site=${SKHID_TEST_SITE%/}
 else
     load_env SKHID_GAME_SERVER
-    server=$SKHID_GAME_SERVER
+    server=$SKHID_GAME_SERVER site=${SKHID_SITE%/}
 fi
 [[ -d $SKHID_GAME ]] || die "SKHID_GAME: $SKHID_GAME is not a folder"
 if [[ -z $work ]]; then
@@ -64,9 +68,9 @@ say "building $ref: $commit"
 revision=$(sed -n 's/^REVISION = \([0-9][0-9]*\)$/\1/p' "$work/src/srp-026g/client-patches/patch_026g.py")
 is_revision "$revision" || die "no REVISION in patch_026g.py of $ref"
 
-# 2. The live ZIP, and its exe's revision.
-live_url=${SKHID_SITE%/}/download
-fetch_site_zip "$SKHID_SITE" "$work/live.zip"
+# 2. The current ZIP (the "live" one: of the target), and its exe's revision.
+live_url=$site/download
+fetch_site_zip "$site" "$work/live.zip"
 live_revision=$(zip_revision "$work/live.zip" "$work/live.exe")
 say "patch revision: $revision on $ref, $live_revision live"
 if [[ $live_revision == unknown ]]; then
@@ -85,7 +89,7 @@ fi
 zip=$work/Survarium-0.26g-srp-files.zip
 (cd "$work/src/srp-026g/client-patches" &&
     python make_client_026g.py "$SKHID_GAME" "$zip" --pack-zip \
-        --server="$server" --localization="$SKHID_LOCALIZATION") >"$work/make_client.log" 2>&1 || {
+        --server="$server" --site="$site" --localization="$SKHID_LOCALIZATION") >"$work/make_client.log" 2>&1 || {
     tail -n 30 "$work/make_client.log" >&2
     die "make_client_026g.py failed (log: $work/make_client.log)"
 }
