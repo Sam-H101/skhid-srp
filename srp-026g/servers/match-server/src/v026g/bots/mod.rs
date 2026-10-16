@@ -1393,6 +1393,7 @@ fn drive_tick(
         })
         .or(match intent.look {
             Look::At(p) => Some(aim_at(p + Vec3::new(0.0, 1.0, 0.0))),
+            Look::Use(p) => Some(aim_at(p)),
             _ => None,
         });
     // The legs: the reflex's when it takes them (a push, breaking sight,

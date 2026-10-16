@@ -215,8 +215,13 @@ pub enum Pace {
 pub enum Look {
     /// The way it goes.
     Path,
-    /// At a point (a pickup point held, a door watched), moving or not.
+    /// At a point (a pickup point held, a door watched), moving or not:
+    /// the view goes a metre above it, at a body's height.
     At(Vec3),
+    /// At the point itself: an object to use, which the use's ray from the
+    /// eye must hit (`base_player::detect_usable_object`, 2 m, PROVEN), as
+    /// a battery lying on the floor.
+    Use(Vec3),
     /// About, as a body standing guard.
     Around,
 }

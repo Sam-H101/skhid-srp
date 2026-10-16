@@ -14,6 +14,11 @@ use crate::v026g::bots::curve::{Consideration, Curve, Input};
 use crate::v026g::bots::view::BatteryState;
 use crate::v026g::drive::key;
 
+/// How far over a lying battery's position a bot aims to take it: inside
+/// its box whether the position is the box's foot or its middle (the box
+/// is about 0.25 m high).
+pub const BATTERY_AIM_M: f32 = 0.1;
+
 pub const NUMBERS: &[(&str, f32)] = &[
     ("reach_m", 1.5),
     ("use_every_s", 1.2),
@@ -132,9 +137,12 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             if *n >= tries {
                 return Step::Failed("could not take it");
             }
+            // The use's ray from the eye must hit the battery: at it, not a
+            // metre over it as at a place (`Look::At`), which from a
+            // crouch passes over a battery on the floor.
             let mut intent = Intent::stay().crouched();
             if let Some(at) = at {
-                intent = intent.looking(Look::At(at));
+                intent = intent.looking(Look::Use(at + Vec3::new(0.0, BATTERY_AIM_M, 0.0)));
             }
             if cx.now >= *last_use + every {
                 *n += 1;

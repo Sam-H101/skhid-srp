@@ -13,8 +13,11 @@
 //!   each shot's kick drawn in the config's range (the bots predict the
 //!   middle);
 //! - the dead respawn at their side's spawns after 6.4 s (the radio);
-//! - a use takes a battery within reach, puts it in at one's own
-//!   container, or steals from the other's; a drop drops it;
+//! - a use takes a battery, puts it in at one's own container, or steals
+//!   from the other's, as the client's use does: only what the view's ray
+//!   from the eye meets within 2 m (`base_player::detect_usable_object`):
+//!   within 0.2 m of a battery's middle, 0.6 m of a use box's; a drop
+//!   drops it;
 //! - Team Deathmatch: each death costs the team a ticket; a team out of
 //!   tickets no longer respawns, and loses when its last body dies;
 //! - a world of every body, the statistics and the batteries comes every
@@ -43,6 +46,17 @@ use super::tuning::Tuning;
 use super::view::{BatteryState, Clock, WorldFacts};
 use super::*;
 use crate::v026g::drive::{half_value, key};
+
+/// The client's use: a ray from the eye this long (`usable_objects_detection_distance`).
+const USE_REACH_M: f32 = 2.0;
+/// A lying battery's middle over its position, and how near the ray must
+/// pass it (its box is about 0.5 by 0.25 m).
+const BATTERY_MIDDLE: Vec3 = Vec3::new(0.0, 0.12, 0.0);
+const BATTERY_M: f32 = 0.2;
+/// A container's use box: its middle over the use point
+/// (`Container::use_point`), and how near the ray must pass it.
+const USE_BOX_UP: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+const USE_BOX_M: f32 = 0.6;
 
 /// A body of the stand-in game.
 #[derive(Clone, Debug)]
@@ -434,6 +448,21 @@ impl Game {
         }
     }
 
+    /// Whether the view's ray from `body`'s eye (its base pitch) comes
+    /// within `radius` of `point` no farther than the use's 2 m.
+    fn uses(body: &Body, point: Vec3, radius: f32) -> bool {
+        let eye = Self::eye(body);
+        let [fx, fz] = forward(body.yaw);
+        let (c, s) = (body.pitch.cos(), body.pitch.sin());
+        let dir = Vec3::new(fx * c, s, fz * c);
+        let to = point - eye;
+        let along = to.x * dir.x + to.y * dir.y + to.z * dir.z;
+        if !(0.0..=USE_REACH_M).contains(&along) {
+            return false;
+        }
+        (to - dir * along).length() <= radius
+    }
+
     fn use_and_drop(&mut self, pressed: &[u32]) {
         for place in 0..self.bodies.len() {
             let body = self.bodies[place].clone();
@@ -454,7 +483,7 @@ impl Game {
                 Some(battery) => {
                     let home = self.containers.iter().position(|(t, _)| *t == team);
                     if let Some(id) = home
-                        && self.containers[id].1.distance_xz(body.feet) < 2.5
+                        && Self::uses(&body, self.containers[id].1 + USE_BOX_UP, USE_BOX_M)
                     {
                         self.batteries[battery] = Lying::Home(id as u8);
                         self.bodies[place].carrying = None;
@@ -463,13 +492,12 @@ impl Game {
                     }
                 }
                 None => {
-                    let free = self.batteries.iter().position(
-                        |b| matches!(b, Lying::Free(at) if at.distance_xz(body.feet) < 1.8),
-                    );
-                    let theirs = self
-                        .containers
-                        .iter()
-                        .position(|(t, at)| *t != team && at.distance_xz(body.feet) < 2.5);
+                    let free = self.batteries.iter().position(|b| {
+                        matches!(b, Lying::Free(at) if Self::uses(&body, *at + BATTERY_MIDDLE, BATTERY_M))
+                    });
+                    let theirs = self.containers.iter().position(|(t, at)| {
+                        *t != team && Self::uses(&body, *at + USE_BOX_UP, USE_BOX_M)
+                    });
                     if let Some(battery) = free {
                         self.batteries[battery] = Lying::Carried(place);
                         self.bodies[place].carrying = Some(battery);
