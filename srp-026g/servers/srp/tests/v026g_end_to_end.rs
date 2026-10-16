@@ -1329,6 +1329,7 @@ impl BotRun {
             once,
             kit: None,
             drive,
+            revision: 0,
         };
         let print: srp::bot::Print = {
             let lines = lines.clone();

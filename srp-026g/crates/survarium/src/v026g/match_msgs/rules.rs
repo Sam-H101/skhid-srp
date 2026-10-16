@@ -183,14 +183,16 @@ impl TimelimitRule {
     }
 }
 
-/// How many respawn points the project of a level (1..=8) has in a mode:
+/// How many respawn points the project of a level (1..=9) has in a mode:
 /// every entry of its `server_objects.respawn_points` is loaded
 /// (`player_respawn_rule_cook` 0x2C6910), so this is how many pairs of
 /// bytes the respawn rule writes into a snapshot (snapshot_rules.md §2.3).
-/// The same for every weather of a level. PROVEN (code and data).
+/// The same for every weather of a level. PROVEN (code and data); London
+/// (level 9, resources.db.patch_13) has 20 in its three modes (its day_2,
+/// day_3 and day_4 projects, and its matches' snapshots).
 pub fn respawn_points(level: u8, game_mode: u8) -> Option<usize> {
-    const GATHER: [usize; 8] = [39, 30, 28, 36, 29, 30, 31, 26];
-    const TEAM_DEATHMATCH: [usize; 8] = [43, 31, 22, 75, 29, 30, 31, 26];
+    const GATHER: [usize; 9] = [39, 30, 28, 36, 29, 30, 31, 26, 20];
+    const TEAM_DEATHMATCH: [usize; 9] = [43, 31, 22, 75, 29, 30, 31, 26, 20];
     let table = match game_mode {
         mode::BATTERIES | mode::TIMED_BATTERIES => &GATHER,
         mode::TEAM_DEATHMATCH => &TEAM_DEATHMATCH,
@@ -199,14 +201,14 @@ pub fn respawn_points(level: u8, game_mode: u8) -> Option<usize> {
     table.get(usize::from(level).checked_sub(1)?).copied()
 }
 
-/// Whose the two battery containers of a level (1..=8) are, by container
+/// Whose the two battery containers of a level (1..=9) are, by container
 /// id: `victory_items_containers[..].team` of its projects, the same in
 /// modes 2 and 3 and every weather. PROVEN (data). A battery's container
 /// id in a snapshot is this id, not the team.
 pub fn container_teams(level: u8) -> Option<[u8; 2]> {
     match level {
         2 | 7 => Some([0, 1]),
-        1 | 3..=6 | 8 => Some([1, 0]),
+        1 | 3..=6 | 8 | 9 => Some([1, 0]),
         _ => None,
     }
 }

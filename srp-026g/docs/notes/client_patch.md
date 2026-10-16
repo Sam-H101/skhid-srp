@@ -632,6 +632,114 @@ also catches a PC where the cheat ran in an earlier session.
 - **What it is not**: proof, and not a defence. A ported cheat that skips the
   `%TEMP%` DLL, or a player who deletes the file, leaves nothing to count.
 
+### 3.26 The transparent effects scroll their textures as in 0.29 (written 2026-10-16, patch revision 13, README patch 28) — PROVEN in the code, the game's compile run with Unicorn, not run in a game
+
+London's sand and fire (0.29a3 content) are forward_default materials with
+`use_uv_scrolling`; 0.26g's forward effect ignores it. The research behind
+it: `scratch-london/engine-work-research.md` sections 1 to 3 (not in this
+repository); everything below was read again in 0.26g's code for the patch.
+
+- **What 0.29 does** [V, 0.29a3 decoded with `unbcj.py`, compile 0x7F2600]:
+  unless `use_sequence` is on it reads `use_uv_scrolling` into bit 6 of the
+  shader configuration's byte 0Ch (0x7F286C..0x7F28B1); after the uv
+  distortion's constants, with that bit set, it sends
+  `uv_scrolling_parameters0 = (0, 0, transparency_map_scroll_u_direction,
+  transparency_map_scroll_v_direction)` and `uv_scrolling_parameters1 =
+  (emissive_map_scroll_u_direction, emissive_map_scroll_v_direction, 0, 0)`,
+  a value the material lacks being 0 (0x7F2CD0..0x7F2E34). The key names end
+  in `_direction`; 0.26g has the two emissive ones (its g_stage reads them)
+  and not the two transparency ones, which the patch carries.
+- **What 0.26g has** [V]: g_stage's compile sets the same bit from the same
+  switch (0x1DE4F1..0x1DE533; its configuration at [esp+18h]) and sends the
+  same two constants with 0x1A8900 (0x1E0815, `ret 8`, ecx = &float4, then
+  the compiler and the name). `fill_shader_configuration_macros` 0x3C9B80
+  makes `CONFIG_USE_UV_SCROLLING` of byte 0Ch bit 6 (0x3C9F51, the stack
+  followed from the function's start: its three macro helpers are cdecl).
+  forward_default's compile (0x1D8F40) keeps its configuration at [esp+50h]
+  (zeroed at 0x1D8F90..0x1D8FA3, passed with `lea edx,[esp+58h]` after two
+  pushes at 0x1D9100); byte 0Ch is written nowhere else in it; `use_sequence`
+  is byte 4 bit 4 (0x1D9075).
+- **The keys and the masks** [V in data]: the shader key has a slot per macro
+  that `shaders/masks` lists for the shader, `_` otherwise. The retail
+  masks list `CONFIG_USE_UV_SCROLLING` for `gbuffer_pass` and not for
+  `forward_base` or `vertex_base_z_shifted`, and all 495 retail
+  `forward_base.ps` keys have `_` in that slot (`scratch-london/engine-research`
+  `masks26.txt`, `sh26.txt`). So with the retail data the bit picks the same
+  files. A binding the shader's constant table has no entry for is skipped
+  (`shader_constant_table::apply_bindings` 0x3D7F40: no match, next).
+- **The sites** (`FORWARD_SCROLL_HOOKS`, full builds only,
+  `forward_scroll_026g.asm` at `.srp`+B00h, 540 bytes: after the seek code,
+  which ends at +A97h, and before the shell_32.dll check at +E00h):
+  - 0x1D90DC `8A 54 24 56 8B 75 10` (`mov dl,[esp+56h]` / `mov esi,[ebp+10h]`)
+    becomes `jmp 0A425B00h` and two nops. Both ends of the angle
+    attenuation's read meet there (0x1D90D8, 0x1D90DA; al the switch); esi
+    and edi are written again before they are read; the flags are not read
+    before `and eax,ecx` (0x1D90FD). The entry: `use_sequence` on, nothing;
+    else pushad, `use_uv_scrolling` through the game's key check 0xF6C00
+    (eax the node, esi the name) and lookup 0xF6B10 (eax the node, edi the
+    name; it assumes the key, so the check comes first), a non-zero value
+    sets the bit; popad, the two instructions, back to 0x1D90E3.
+  - 0x1D94CB `8A 4C 24 57 80 E1 03` (`mov cl,[esp+57h]` / `and cl,3`)
+    becomes `jmp 0A425B40h` and two nops. The uv distortion's block ends
+    there from both sides (0x1D931E's `jz` and 0x1D94C6, esi 2 on both);
+    the flags are written (`cmp cl,2`) before they are read. The entry: with
+    the bit, pushad, the four numbers (a float when the value's type word
+    +14h is 2, else an integer made a float, as 0x1D9249 reads them; 0 for
+    a missing key), two `set_constant<float4>` with [ebp+8], compile's
+    first argument, as the compiler; popad, the two instructions, back to
+    0x1D94D2. xmm0 is lost; no xmm register is read after 0x1D94CB before it
+    is written again.
+  - 0x14990F `89 7C 24 2C 8D B3 3C 12 00 00` (`mov [esp+2Ch],edi` / `lea
+    esi,[ebx+123Ch]`) in `renderer_context::renderer_context` (0x148570)
+    becomes `jmp 0A425C00h` and five nops: right after the last of its 19
+    `register_constant_binding` calls (20 in the exe), `scene_time`'s
+    (0x1498A6..0x14990A). The entry makes the binding as the game does:
+    {&value, 4, name, 0, 4} on the stack, the name the shared string of
+    "scene_slomo" (0xE0B50, `ret 4`) held while
+    `register_constant_binding` (0x3BCCC0, eax the binding, the resource
+    manager [226047Ch] pushed, `ret 4`) runs, then let go (0xE0AE0 at a
+    count of 0). The value is a 1.0 in `.srp` (read and execute): the
+    binding copies the address and the size into the backend's constant
+    host (0x3BCD02..0x3BCD09), which reads it; nothing in 0.26g names
+    `scene_slomo`, so nothing writes it [V for the exe's strings; the read
+    at every frame is I]. The handle the constructor keeps for its own
+    bindings (+5520h, +5524h) is not kept for this one. The stack keeps the
+    game's alignment at the call (20h of binding space after pushad).
+  - No site holds an address (no base relocation under them), nothing aims
+    inside one but its first byte, the build without the late join keeps
+    them. The .bin ends with the address it was assembled for.
+- **Nothing a match computes**: shaders and their constants only. Revisions
+  12 and 13 play together; a server need not ask for 13 (one that offers the scrolling shaders
+  in a patch does: its minimum revision is at least that patch's number).
+- **Run with Unicorn** (`check_forward_scroll_026g.py`, the image as is and
+  rebased by 1 MiB with its relocations): the original's and the build's
+  compile from 0x1D8F40 to its `ret 0Ch` on 11 made-up materials (the
+  config's two helpers, compile_begin, set_texture, set_constant<float>,
+  <float2>, <float4>, the colour conversion, color_write_enable, end_pass
+  and end_technique being stubs that record what they are given): the
+  build's calls from the exe are the original's with the original's values,
+  compile_begin's configuration differing only in bit 6 of byte 0Ch and only
+  when the switch is true and `use_sequence` is not; its own calls are the
+  two constants with the expected values, right after the uv distortion's;
+  every register after both hooks and at the return is the original's; no
+  lookup of a missing key. The third hook against the game's own
+  `scene_time` binding (0x1498A6..0x14990F) with the same stubs and three
+  made-up name counts: the same calls, the name `scene_slomo`, the value
+  1.0 in `.srp`, the same alignment at the call, every register and
+  [esp+2Ch] after the hook as the original's. With `--rev12=` the build is
+  compared byte by byte with revision 12 (README, Revision 13).
+- **Checked** (`selftest_026g.py` check 28, `test_forward_scroll`): the
+  sites, the original's instructions around them, the configuration's
+  accesses in compile, g_stage's code, the fill function's bit, the
+  constructor's bindings, no relocation under and no branch into a site,
+  the code's only calls (0xF6C00, 0xF6B10, 0x1A8900, 0xE0B50, 0xE0AE0,
+  0x3BCCC0) and jumps back, the exe's texts it reads and its own data.
+- **Not proven**: a game was not run; no scrolling shader exists in any
+  archive yet (London plan, phase 2). That an unbound constant host holds 0
+  (why `scene_slomo` is bound at all) is not proven; the binding makes it
+  1.0 either way. That the GPU draws 0.29's shaders in 0.26g correctly is
+  the London plan's phase 0, not this patch.
+
 ## 4. Mode 3 batteries: not needed in 0.26g
 
 - 0.26g splits the rule: `match_time_vi_spawn_rule` (vtable 0xA06C04) wraps `match_time_vi_spawn_rule_core` (vtable 0xA15CAC). The battery tick is no longer a vtable slot: the core's ctor 0x3147A0 stores a delegate `{this, 0x3148A0}` at +0x1C4 / +0x1C8 (0x3147F1). [V]

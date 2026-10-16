@@ -36,7 +36,9 @@ USAGE (this script never touches the source exe):
     mount_patches_026g.asm:
         nasm -f bin -DCAVE=0xA425400 -DSTATE=0xA428800 mount_patches_026g.asm -o mount_patches_026g.section.bin
     (checked in; STATE is 0x800 of the late join's state page, checked).
-    The late-join code is late_join_026g.section.bin, checked in too; it is
+    The forward effect's UV scrolling comes from forward_scroll_026g.asm:
+        nasm -f bin -DCAVE=0xA425B00 forward_scroll_026g.asm -o forward_scroll_026g.section.bin
+    (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
 
@@ -188,6 +190,16 @@ Patches:
   and cannot be opened (any CreateFileA error but file or path not found)
   stops the game ("Cannot open resources.db.patch_<n> (error <e>)"), and so
   does a patch that fails to mount ("Cannot mount resources.db.patch_<n>");
+- the transparent effects scroll their textures as in 0.29 (patch revision
+  13, client_patch.md section 3.26): effect_fstage_default_materials::
+  compile reads a material's use_uv_scrolling into the shader
+  configuration's CONFIG_USE_UV_SCROLLING bit (a jump at 0x1D90DC, unless
+  use_sequence is on) and with it sends uv_scrolling_parameters0/1 from the
+  four *_map_scroll_*_direction values (a jump at 0x1D94CB); the renderer
+  binds scene_slomo, which 0.29's shaders multiply the time by, to a 1.0 (a
+  jump at 0x14990F). The code is forward_scroll_026g.asm at 0xB00 of
+  `.srp`. With the retail resources.db no shader the game loads changes
+  (shaders/masks lists no such macro for forward_base);
 - the sign-in reports a stale shell_32.dll in the temporary folder (patch
   revision 12, written as revision 13, client_patch.md section 3.25): sign_in_on_connected's
   `mov [edi+8],eax` / `mov [edi+0Ch],dl` at 0x380889 become a call of
@@ -333,7 +345,10 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # to 14 were used while it was written, never released: a 12 that started
 # only with a resources.db Skhid's key signed, a 13 that added the
 # shell_32.dll report to it, a 14 with the signature skip and the patches.)
-REVISION = 12
+# 13: the transparent effects (forward_default) scroll their textures as in
+# 0.29 when a material asks for it (FORWARD_SCROLL_HOOKS below). Rendering
+# only, nothing a match computes: 12 and 13 play together.
+REVISION = 13
 # What a full build without the late join says (--no-late-join, and every
 # --cave=hash-mismatch build): the players' download before revision 5.
 REVISION_WITHOUT_LATE_JOIN = 4
@@ -484,6 +499,33 @@ MOUNT_QUERY = (MOUNT_QUERY_VA, b"\xE8" + struct.pack("<i", MOUNT_QUERY_MOUNT_ARC
                b"\xE8" + struct.pack("<i", MOUNT_PATCHES_VA + MOUNT_ALL_OFFSET - MOUNT_QUERY_VA - 5))
 MOUNTED = (MOUNTED_VA, bytes.fromhex("55" "8bec" "83e4f8"),
            b"\xE9" + struct.pack("<i", MOUNT_PATCHES_VA + MOUNTED_OFFSET - MOUNTED_VA - 5) + b"\x90")
+
+# UV scrolling for the transparent effects (patch 28, README; client_patch.md
+# section 3.26): forward_scroll_026g.asm at FORWARD_SCROLL_OFFSET of `.srp`,
+# after the replay's seek code and before the shell_32.dll check, three
+# entries the three jumps below go to. effect_fstage_default_materials::
+# compile (0x1D8F40): at 0x1D90DC (`mov dl,[esp+56h]` / `mov esi,[ebp+10h]`,
+# after use_angle_depended_attenuation is read, before compile_begin at
+# 0x1D9126) the switch use_uv_scrolling sets bit 6 of the shader
+# configuration's byte 0Ch, unless use_sequence is on; at 0x1D94CB (`mov
+# cl,[esp+57h]` / `and cl,3`, where both ends of the uv distortion's block
+# meet) that bit sends uv_scrolling_parameters0/1 with set_constant<float4>
+# (0x1A8900), as 0.29's compile does and as 0.26g's g_stage does (0x1E0815).
+# renderer_context's constructor (0x148570): at 0x14990F (`mov
+# [esp+2Ch],edi` / `lea esi,[ebx+123Ch]`, after its last
+# register_constant_binding, scene_time's) the constant scene_slomo is bound
+# to a 1.0 in the code. No site holds an address: no base relocation is
+# under them. The .bin ends with the address it was assembled for, which
+# build() checks. Rendering only: nothing a match computes reads any of it.
+FORWARD_SCROLL_OFFSET = 0xB00
+FORWARD_SCROLL_VA = SECTION_VA + FORWARD_SCROLL_OFFSET
+FORWARD_SWITCH_OFFSET, FORWARD_CONSTANTS_OFFSET, SCENE_SLOMO_OFFSET = 0, 0x40, 0x100   # the .asm's entries
+FORWARD_COMPILE_VA = 0x1D8F40
+RENDERER_CONTEXT_VA = 0x148570
+FORWARD_SWITCH_HOOK = (0x1D90DC, bytes.fromhex("8a542456" "8b7510"), FORWARD_SWITCH_OFFSET, 0xE9)
+FORWARD_CONSTANTS_HOOK = (0x1D94CB, bytes.fromhex("8a4c2457" "80e103"), FORWARD_CONSTANTS_OFFSET, 0xE9)
+SCENE_SLOMO_HOOK = (0x14990F, bytes.fromhex("897c242c" "8db33c120000"), SCENE_SLOMO_OFFSET, 0xE9)
+FORWARD_SCROLL_HOOKS = (FORWARD_SWITCH_HOOK, FORWARD_CONSTANTS_HOOK, SCENE_SLOMO_HOOK)
 
 # sign_in_on_connected 0x380800, where it finishes the 12-byte version field
 # (section 6 of client_patch.md): `mov [edi+8],eax` (bytes 8..11, eax 0) /
@@ -1076,8 +1118,9 @@ def build(original, mode, code=None, server=None, late_join=None):
     with it the build is patch revision REVISION, without it
     REVISION_WITHOUT_LATE_JOIN; with it the game also checks no resources.db
     signature, mounts resources.db's patches (mount_patches_026g.section.bin),
-    and its sign-in says whether %TEMP%\\shell_32.dll exists
-    (stale_dll_026g.section.bin)."""
+    its sign-in says whether %TEMP%\\shell_32.dll exists
+    (stale_dll_026g.section.bin), and its transparent effects scroll as in
+    0.29 (forward_scroll_026g.section.bin)."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -1099,6 +1142,15 @@ def build(original, mode, code=None, server=None, late_join=None):
         if mount_patches[MOUNTED_OFFSET:MOUNTED_OFFSET + 5] != bytes.fromhex("e800000000") \
                 or mount_patches[MOUNT_ALL_OFFSET] != 0x60:
             sys.exit("mount_patches_026g.section.bin: its entries are not where patch_026g.py calls them")
+        forward_scroll = open(forward_scroll_bin(), "rb").read()
+        if forward_scroll[-4:] != struct.pack("<I", FORWARD_SCROLL_VA):
+            sys.exit(f"forward_scroll_026g.section.bin was assembled for another address: -DCAVE={FORWARD_SCROLL_VA:#x}")
+        # The first instruction of each entry: `test byte [esp+54h],10h`,
+        # `test byte [esp+5Ch],40h`, `pushad`.
+        if forward_scroll[FORWARD_SWITCH_OFFSET:FORWARD_SWITCH_OFFSET + 5] != bytes.fromhex("f644245410") \
+                or forward_scroll[FORWARD_CONSTANTS_OFFSET:FORWARD_CONSTANTS_OFFSET + 5] != bytes.fromhex("f644245c40") \
+                or forward_scroll[SCENE_SLOMO_OFFSET] != 0x60:
+            sys.exit("forward_scroll_026g.section.bin: its entries are not where patch_026g.py jumps to them")
     data = bytearray(original)
     patch(data, *CERT)
     if mode == "cert-only":
@@ -1236,9 +1288,15 @@ def build(original, mode, code=None, server=None, late_join=None):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
                 sys.exit(f"{site[0]:#x}: a base relocation under a hook of the patches' mount")
-        if SEEK_CLEAR_OFFSET + len(seek_clear) > STALE_DLL_OFFSET \
+        for va, expected, offset, opcode in FORWARD_SCROLL_HOOKS:
+            patch(data, va, expected, hook_bytes(FORWARD_SCROLL_VA, va, expected, offset, opcode))
+            if neutralize_relocs(data, [(va, va + len(expected))]):
+                sys.exit(f"{va:#x}: a base relocation under a hook of the forward effect's scrolling")
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > FORWARD_SCROLL_OFFSET \
+                or FORWARD_SCROLL_OFFSET + len(forward_scroll) > STALE_DLL_OFFSET \
                 or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
-            sys.exit("the seek code and the shell_32.dll check do not fit before the late join")
+            sys.exit("the seek code, the forward effect's scrolling and the shell_32.dll check do not fit "
+                     "before the late join")
         if len(cave) > MOUNT_PATCHES_OFFSET or MOUNT_PATCHES_OFFSET + len(mount_patches) > PICKUP_OFFSET:
             sys.exit("the upload code (and the default server) and the patches' mount do not fit before the pickup code")
         if MOUNT_STATE_OFFSET + MOUNT_STATE_SIZE > LATE_JOIN_STATE_SIZE:
@@ -1249,6 +1307,7 @@ def build(original, mode, code=None, server=None, late_join=None):
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
         data = add_section(data, cave)
@@ -1276,7 +1335,8 @@ def build(original, mode, code=None, server=None, late_join=None):
                      "a replay's seek empties the weapons' sound queues, "
                      "no resources.db signature check, "
                      f"each resources.db.patch_1 to _{MOUNT_MAX_PATCHES} there mounted over resources.db, "
-                     "the sign-in says whether %TEMP%\\shell_32.dll exists"
+                     "the sign-in says whether %TEMP%\\shell_32.dll exists, "
+                     "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0)"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1299,6 +1359,10 @@ def mount_patches_bin():
 
 def pickup_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "pickup_below_026g.section.bin")
+
+
+def forward_scroll_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "forward_scroll_026g.section.bin")
 
 
 def seek_clear_bin():
