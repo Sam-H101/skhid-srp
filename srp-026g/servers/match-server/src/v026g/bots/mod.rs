@@ -1459,7 +1459,8 @@ impl Bots {
                 current: current.as_ref(),
             })
             .collect();
-        for (place, assignment, changed) in team::assign(asking, now) {
+        let gap = state.signals.score_gap;
+        for (place, assignment, changed) in team::assign_at(asking, now, gap) {
             let Some(me) = view.place(place) else {
                 continue;
             };
@@ -1518,8 +1519,8 @@ impl Bots {
                     .find(|(p, _, _)| *p == place)
                     .map(|(_, c, _)| c.clone())
                     .unwrap_or_default();
-                let bands = team::Bands::default();
-                top.sort_by(|a, b| bands.better(a, b));
+                let bands = team::Bands::used();
+                top.sort_by(|a, b| bands.better(a, b, gap < 0.0));
                 let top: Vec<serde_json::Value> = top
                     .into_iter()
                     .take(5)
