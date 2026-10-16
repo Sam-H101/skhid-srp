@@ -126,6 +126,9 @@ struct Game {
     metric_rays: u64,
     delivered: [u32; 2],
     stolen: u32,
+    /// The places that took a battery out of the enemy's container, in
+    /// order (the bench reads them by the thief's play).
+    thieves: Vec<Place>,
     /// Lying batteries taken.
     taken: u32,
     /// Whether a use's ray stops at the bullet mesh short of a lying
@@ -230,6 +233,7 @@ impl Game {
             metric_rays: 0,
             delivered: [0, 0],
             stolen: 0,
+            thieves: Vec::new(),
             taken: 0,
             use_line: false,
             world,
@@ -546,6 +550,7 @@ impl Game {
                         self.bodies[place].carrying = Some(battery);
                         self.points[usize::from(1 - team)] -= 1;
                         self.stolen += 1;
+                        self.thieves.push(place);
                     }
                 }
             }
@@ -1765,6 +1770,9 @@ fn real_bot_cost() {
             // with no route: a bot standing where it means to walk.
             let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
             let mut stood_by: std::collections::BTreeMap<String, u64> = Default::default();
+            // By the bot's play: takes (and those scoring under 0.05),
+            // kills, deaths, steals (the objective plays' yield, F2).
+            let mut by_play: std::collections::BTreeMap<String, [u32; 5]> = Default::default();
             // Living bots' ticks looking at a spawner's spot (Collect at a
             // `TargetRef::Spawner`), and their deaths while at it.
             let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
@@ -1772,7 +1780,25 @@ fn real_bot_cost() {
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
+                    let stats_before = game.stats.clone();
                     game.step();
+                    let play_of = |place: Place| {
+                        bots.bots[place]
+                            .as_ref()
+                            .and_then(|b| b.assignment.as_ref())
+                            .map_or("none".to_owned(), |a| format!("{:?}", a.kind))
+                    };
+                    for (place, (now, before)) in game.stats.iter().zip(&stats_before).enumerate() {
+                        if now.0 > before.0 {
+                            by_play.entry(play_of(place)).or_default()[2] += now.0 - before.0;
+                        }
+                        if now.1 > before.1 {
+                            by_play.entry(play_of(place)).or_default()[3] += now.1 - before.1;
+                        }
+                    }
+                    for place in std::mem::take(&mut game.thieves) {
+                        by_play.entry(play_of(place)).or_default()[4] += 1;
+                    }
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
                         let searching = bot.assignment.as_ref().is_some_and(|a| {
@@ -1827,6 +1853,18 @@ fn real_bot_cost() {
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
                     decisions.note(&note);
+                    if let Some(rest) = note.text.strip_prefix("takes ") {
+                        let kind = rest.split(' ').next().unwrap_or("").to_owned();
+                        let score: f32 = rest
+                            .split("(score ")
+                            .nth(1)
+                            .and_then(|s| s.split(':').next())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1.0);
+                        let row = by_play.entry(kind).or_default();
+                        row[0] += 1;
+                        row[1] += u32::from(score < 0.05);
+                    }
                     if note.text.starts_with("ends Collect: could not take it") {
                         take_ends += 1;
                     } else if note.text.starts_with("took no battery") {
@@ -1948,6 +1986,14 @@ fn real_bot_cost() {
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
+            let rows: Vec<String> = by_play
+                .iter()
+                .map(|(k, r)| format!("{k} {} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]))
+                .collect();
+            eprintln!(
+                "  by play (takes, under 0.05, kills, deaths, steals): {}",
+                rows.join("; ")
+            );
             eprintln!(
                 "  search: {:.0} bot-s at spawners' spots, {search_deaths} deaths in it",
                 search_ticks as f64 * f64::from(TICK_MS) / 1000.0

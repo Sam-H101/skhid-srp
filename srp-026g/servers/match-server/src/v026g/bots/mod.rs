@@ -1375,11 +1375,8 @@ impl Bots {
                     .find(|(p, _, _)| *p == place)
                     .map(|(_, c, _)| c.clone())
                     .unwrap_or_default();
-                top.sort_by(|a, b| {
-                    b.rank
-                        .cmp(&a.rank)
-                        .then(b.score.get().total_cmp(&a.score.get()))
-                });
+                let bands = team::Bands::default();
+                top.sort_by(|a, b| bands.better(a, b));
                 let top: Vec<serde_json::Value> = top
                     .into_iter()
                     .take(5)
