@@ -7,14 +7,17 @@
 //! folder's.
 //!
 //! Refused, rather than guessed at: a symbolic link or anything else that is
-//! not a plain file or folder, a name that is not UTF-8 or has a `\`, an
-//! empty folder (the writer makes none), and a folder with no file at all.
+//! not a plain file or folder, a name that is not UTF-8 or has a `\`, a
+//! hidden file or folder (a name that starts with `.`: an editor's or a
+//! tool's, `.git`, `.DS_Store`, never the game's), a path longer than the
+//! game takes ([`crate::MAX_PATH`]), an empty folder (the writer makes
+//! none), and a folder with no file at all.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::Path;
 
-use crate::{Archive, Error, write::write};
+use crate::{Archive, Error, MAX_PATH, write::write};
 
 /// Files by their archive path, with their bytes.
 pub type Files = BTreeMap<String, Vec<u8>>;
@@ -57,7 +60,21 @@ fn add(dir: &Path, prefix: &str, files: &mut Files) -> Result<(), Error> {
                     path.display()
                 ))
             })?;
+        if name.starts_with('.') {
+            return Err(content(format!(
+                "{}: a hidden file or folder (a name that starts with `.`); move it out",
+                path.display()
+            )));
+        }
         let archive_path = format!("{prefix}{name}");
+        if archive_path.len() > MAX_PATH {
+            return Err(content(format!(
+                "{}: its path in the archive, {archive_path}, is {} bytes, longer than the \
+                 game takes ({MAX_PATH})",
+                path.display(),
+                archive_path.len()
+            )));
+        }
         let kind = entry.file_type().map_err(|cause| at(&path, cause))?;
         if kind.is_dir() {
             add(&path, &format!("{archive_path}/"), files)?;

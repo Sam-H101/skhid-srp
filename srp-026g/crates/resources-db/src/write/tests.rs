@@ -206,3 +206,100 @@ fn write_to_refuses_bytes_unlike_their_table_and_shares_that_differ() {
     let file_and_folder = BTreeSet::from(["a/b".to_owned()]);
     assert!(write_to(&mut out, &table, &file_and_folder, |_| Ok(b"one".to_vec())).is_err());
 }
+
+/// The table of the archive `bytes` for [`write_to`], each file's share key
+/// where its bytes are, as resource-porter writes an archive read again.
+fn shared_by_offset(bytes: &[u8]) -> BTreeMap<String, Stored> {
+    let archive = Archive::new(Cursor::new(bytes.to_vec())).unwrap();
+    archive
+        .files_under("")
+        .map(|(path, entry)| {
+            let stored = Stored {
+                size: entry.size,
+                hash: entry.hash,
+                share: Some(entry.offset),
+            };
+            (path.to_owned(), stored)
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_file_shares_no_bytes_though_its_offset_is_the_next_files() {
+    let files = files(&[
+        ("a/empty", b""),
+        ("a/next", b"next file"),
+        ("b/empty", b""),
+        ("b/last", b"last"),
+        ("c/empty_at_the_end", b""),
+    ]);
+    let bytes = write(&files).unwrap();
+    let table = shared_by_offset(&bytes);
+    assert_eq!(
+        table["a/empty"].share, table["a/next"].share,
+        "an empty file is where the next one's bytes start"
+    );
+    // Written again with those keys: the same files, the same bytes.
+    let mut again = Vec::new();
+    write_to(&mut again, &table, &BTreeSet::new(), |path| {
+        Ok(files[path].clone())
+    })
+    .unwrap();
+    assert_eq!(read_all(&again), files);
+    assert_eq!(again, bytes);
+    // An empty file of any key, before or after a file of that key.
+    let key = |share| Stored {
+        share: Some(share),
+        ..stored(b"", None)
+    };
+    let table = BTreeMap::from([
+        ("a".to_owned(), key(7)),
+        ("b".to_owned(), stored(b"bytes", Some(7))),
+        ("c".to_owned(), key(7)),
+        ("d".to_owned(), stored(b"bytes", Some(7))),
+    ]);
+    let mut out = Vec::new();
+    write_to(&mut out, &table, &BTreeSet::new(), |path| {
+        Ok(if table[path].size == 0 {
+            Vec::new()
+        } else {
+            b"bytes".to_vec()
+        })
+    })
+    .unwrap();
+    let read = read_all(&out);
+    assert_eq!(read["a"], b"");
+    assert_eq!(read["d"], b"bytes");
+}
+
+#[test]
+fn a_path_longer_than_the_game_takes_is_not_written() {
+    let at_most = format!("gameplay/{}", "x".repeat(crate::MAX_PATH - 9));
+    assert!(write(&files(&[(&at_most, b"1")])).is_ok());
+    let longer = format!("{at_most}y");
+    let error = write(&files(&[(&longer, b"1")])).unwrap_err();
+    assert!(matches!(error, Error::Write(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("longer than the game takes"),
+        "{error}"
+    );
+    let folder = BTreeSet::from([longer]);
+    let mut out = Vec::new();
+    assert!(write_to(&mut out, &BTreeMap::new(), &folder, |_| Ok(Vec::new())).is_err());
+}
+
+#[test]
+fn what_cannot_be_written_is_a_write_error() {
+    for bad in ["", "a//b", "a\0b"] {
+        let error = write(&BTreeMap::from([(bad.to_owned(), Vec::new())])).unwrap_err();
+        assert!(matches!(error, Error::Write(_)), "{bad:?}: {error:?}");
+        assert!(
+            error.to_string().starts_with("cannot write the archive: "),
+            "{error}"
+        );
+    }
+    let table = BTreeMap::from([("a".to_owned(), stored(b"one", None))]);
+    let mut out = Vec::new();
+    let error = write_to(&mut out, &table, &BTreeSet::new(), |_| Ok(b"two".to_vec())).unwrap_err();
+    assert!(matches!(error, Error::Write(_)), "{error:?}");
+}

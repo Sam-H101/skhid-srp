@@ -112,6 +112,29 @@ fn what_an_archive_cannot_say_is_refused() {
     let message = pack(&link.0).unwrap_err().to_string();
     assert!(message.contains("not a plain file"), "{message}");
 
+    for hidden in [".git/config", "gameplay/.x.options.swp", ".DS_Store"] {
+        let folder = Folder::new("hidden");
+        folder.file("gameplay/x.options", b"1");
+        folder.file(hidden, b"1");
+        let message = pack(&folder.0).unwrap_err().to_string();
+        assert!(
+            message.contains("a hidden file or folder"),
+            "{hidden}: {message}"
+        );
+    }
+
+    // 6 + 1 + 242 bytes are taken, one more is not.
+    let long = Folder::new("long");
+    let name = "n".repeat(242);
+    long.file(&format!("folder/{name}"), b"1");
+    assert!(pack(&long.0).is_ok());
+    long.file(&format!("folder/{name}x"), b"1");
+    let message = pack(&long.0).unwrap_err().to_string();
+    assert!(
+        message.contains("250 bytes, longer than the game takes (249)"),
+        "{message}"
+    );
+
     let backslash = Folder::new("backslash");
     backslash.file("a\\b", b"1");
     assert!(

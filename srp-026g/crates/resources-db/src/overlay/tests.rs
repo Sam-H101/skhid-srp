@@ -99,3 +99,70 @@ fn a_file_over_a_folder_or_a_folder_over_a_file_is_refused() {
     .unwrap();
     assert_eq!(seen.len(), 3);
 }
+
+/// An archive of `files` and the empty folders `empty`.
+fn with_empty(files: &[(&str, &str)], empty: &[&str]) -> Vec<u8> {
+    let table = files
+        .iter()
+        .map(|(path, bytes)| {
+            let stored = crate::write::Stored {
+                size: bytes.len() as u32,
+                hash: crate::crc32(bytes.as_bytes()),
+                share: None,
+            };
+            ((*path).to_owned(), stored)
+        })
+        .collect();
+    let empty = empty.iter().map(|path| (*path).to_owned()).collect();
+    let mut out = Vec::new();
+    crate::write::write_to(&mut out, &table, &empty, |path| {
+        let (_, bytes) = files.iter().find(|(name, _)| *name == path).unwrap();
+        Ok(bytes.as_bytes().to_vec())
+    })
+    .unwrap();
+    out
+}
+
+#[test]
+fn a_file_over_an_empty_folder_or_an_empty_folder_over_a_file_is_refused() {
+    let empty = with_empty(&[("a/x", "0")], &["a/empty", "b/c/empty"]);
+    for (archives, path) in [
+        (
+            [empty.clone(), archive_of(&[("a/empty", "1")])],
+            "the file a/empty",
+        ),
+        ([empty.clone(), archive_of(&[("b/c", "1")])], "the file b/c"),
+        (
+            [archive_of(&[("a/empty", "1")]), empty.clone()],
+            "the empty folder a/empty",
+        ),
+        (
+            [archive_of(&[("b", "1")]), empty.clone()],
+            "the empty folder b/c/empty",
+        ),
+    ] {
+        let message = overlay(&archives).unwrap_err().to_string();
+        assert!(
+            message.contains(&format!("archive 1 has {path}")),
+            "{message}"
+        );
+        assert!(
+            message.contains("a file and a folder at one path"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn the_empty_folders_seen_are_those_no_archive_fills() {
+    let seen = overlay(&[
+        with_empty(&[("a/x", "0")], &["a/empty", "b/filled", "c/d", "e"]),
+        with_empty(&[("b/filled/f", "1")], &["c/d/deeper", "z"]),
+    ])
+    .unwrap();
+    let empty: Vec<&str> = seen.empty_folders().collect();
+    assert_eq!(empty, ["a/empty", "c/d/deeper", "e", "z"]);
+    // One archive's own.
+    let alone = overlay(&[with_empty(&[("a/x", "0")], &["q"])]).unwrap();
+    assert_eq!(alone.empty_folders().collect::<Vec<_>>(), ["q"]);
+}

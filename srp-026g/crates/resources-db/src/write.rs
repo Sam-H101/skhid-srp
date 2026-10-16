@@ -6,30 +6,41 @@
 //! (`deps/vostok-resources-db/src/pack.rs` at resource-porter 5d3b53e): the
 //! mount root, folders and files, each folder's children in name order,
 //! every node's own folder, the table's checksum of each file
-//! ([`crate::crc32`]), and the files' bytes after the table and an empty
-//! signature from the next 2048-byte boundary on. No hard links: files that
-//! [`write_to`] is told are the same bytes ([`Stored::share`]) are separate
-//! nodes that point at one copy of them.
+//! ([`crate::crc32`]), the zeroed signature after the table, and the files'
+//! bytes from the next 2048-byte boundary after it, in the table's order.
+//! That boundary is this writer's choice (resource-porter's packer has it),
+//! not something the engine asks for: it reads a file's bytes wherever its
+//! node says they are. No hard links: files that [`write_to`] is told are
+//! the same bytes ([`Stored::share`]) are separate nodes that point at one
+//! copy of them.
 //!
-//! [`write`] makes a small archive of bytes in memory (a patch);
+//! [`write()`] makes a small archive of bytes in memory (a patch);
 //! [`write_to`] writes one whose files are read one at a time while it is
 //! written, so a whole game archive (0.26g's 6.3 GB, a donor build's) can be
 //! written again with some files changed, and empty folders kept.
 //!
-//! Two things the game needs that a reader does not, both as 0.26g's own
-//! archive has them: a node's `m_parent` is the start of the class of the
-//! folder it is in (the mount root's folder, at 936, for the root's
-//! children), which the engine follows; and the 256 bytes after the table
-//! are the archive's signature, which the 0.26g mounter reads (revision 14
-//! of the client checks none, so they are left zero).
+//! The layout is otherwise not 0.26g's (its packer orders and places nodes
+//! and bytes its own way); it is like 0.26g's archive only in the two things
+//! the game needs and a reader does not: a node's `m_parent` is the start of the
+//! class of the folder it is in (the mount root's folder, at 936, for the
+//! root's children), which the engine follows; and the 256 bytes after the
+//! table are the archive's signature, which the 0.26g mounter reads
+//! (revision 14 of the client checks none, so they are left zero).
+//!
+//! A path is at most [`crate::MAX_PATH`] bytes, the longest the game looks
+//! up.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use crate::{
-    ARCHIVE, Error, FILE_BASE, FLAGS, FOLDER, FOLDER_BASE, HEADER_SIZE, MOUNT_ROOT, NAME, NEXT,
-    ROOT_BASE, ROOT_FIRST_CHILD, ROOT_NODE, crc32, format,
+    ARCHIVE, Error, FILE_BASE, FLAGS, FOLDER, FOLDER_BASE, HEADER_SIZE, MAX_PATH, MOUNT_ROOT, NAME,
+    NEXT, ROOT_BASE, ROOT_FIRST_CHILD, ROOT_NODE, crc32,
 };
+
+fn unwritable(what: impl Into<String>) -> Error {
+    Error::Write(what.into())
+}
 
 /// `base_node`'s size: a node's class is its prefix, this, then its name.
 const BASE_NODE: usize = 56;
@@ -54,8 +65,15 @@ enum Node<'a> {
 
 /// A file as the table has it, known before its bytes are written: its
 /// size, its checksum ([`crate::crc32`]), and, if it is the same bytes as
-/// other files, a key it shares with them (in an archive read, where the
-/// bytes are: [`crate::Entry::offset`]). Files of one key are written once.
+/// other files, a key it shares with them. Files of one key are written
+/// once, and must be of one size and checksum.
+///
+/// For files of an archive read, the key can be where their bytes are
+/// ([`crate::Entry::offset`], and which archive): files at one offset are
+/// one copy of their bytes, a hard link and its target. But an empty file
+/// takes no bytes, so its offset is any other file's, often the next one's
+/// (this writer gives it that); so a file of size 0 shares nothing, and its
+/// key is not looked at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stored {
     pub size: u32,
@@ -139,11 +157,13 @@ impl<'a> Writer<'a> {
                 Node::File(path, stored) => {
                     let base = self.node(FILE_BASE, name, name.len() + 1, ARCHIVE, parent);
                     let start = base - FILE_BASE;
-                    let at = match stored.share.and_then(|key| self.shared.get(&key)) {
+                    // An empty file takes no bytes: it shares none.
+                    let share = stored.share.filter(|_| stored.size != 0);
+                    let at = match share.and_then(|key| self.shared.get(&key)) {
                         Some(&(at, first, first_stored)) => {
                             if (first_stored.size, first_stored.hash) != (stored.size, stored.hash)
                             {
-                                return Err(format(format!(
+                                return Err(unwritable(format!(
                                     "{path} and {first} share their bytes but differ in size or checksum"
                                 )));
                             }
@@ -151,7 +171,7 @@ impl<'a> Writer<'a> {
                         }
                         None => {
                             let at = self.pos;
-                            if let Some(key) = stored.share {
+                            if let Some(key) = share {
                                 self.shared.insert(key, (at, path, *stored));
                             }
                             self.pos += u64::from(stored.size);
@@ -183,7 +203,7 @@ pub fn write(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Error> {
         .iter()
         .map(|(path, bytes)| {
             let size =
-                u32::try_from(bytes.len()).map_err(|_| format(format!("{path}: over 4 GB")))?;
+                u32::try_from(bytes.len()).map_err(|_| unwritable(format!("{path}: over 4 GB")))?;
             let hash = crc32(bytes);
             Ok((
                 path.clone(),
@@ -204,7 +224,7 @@ pub fn write(files: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>, Error> {
 
 /// Writes to `out` the archive of `files` (path, as the table has it) and of
 /// the folders `empty_folders` (a folder named there that holds a file of
-/// `files` is written once, with it). Paths are as for [`write`]. The table
+/// `files` is written once, with it). Paths are as for [`write()`]. The table
 /// goes first, so every file's size and checksum are given; its bytes are
 /// asked of `bytes` (by path) when their turn comes, once per share key, and
 /// must be that size and checksum. Gives how many bytes were written.
@@ -216,12 +236,18 @@ pub fn write_to<W: Write>(
 ) -> Result<u64, Error> {
     let mut root = BTreeMap::new();
     fn names_of(path: &str) -> Result<Vec<&[u8]>, Error> {
+        if path.len() > MAX_PATH {
+            return Err(unwritable(format!(
+                "{path}: a path of {} bytes, longer than the game takes ({MAX_PATH})",
+                path.len()
+            )));
+        }
         let names: Vec<&[u8]> = path.split('/').map(str::as_bytes).collect();
         if names
             .iter()
             .any(|name| name.is_empty() || name.contains(&0))
         {
-            return Err(format(format!("{path}: not a path of an archive")));
+            return Err(unwritable(format!("{path}: not a path of an archive")));
         }
         Ok(names)
     }
@@ -236,7 +262,7 @@ pub fn write_to<W: Write>(
                 .or_insert_with(|| Node::Folder(BTreeMap::new()));
             folder = match node {
                 Node::Folder(children) => children,
-                Node::File(..) => return Err(format(format!("{path}: a file is in its way"))),
+                Node::File(..) => return Err(unwritable(format!("{path}: a file is in its way"))),
             };
         }
         Ok(folder)
@@ -246,7 +272,9 @@ pub fn write_to<W: Write>(
         let (file, folders) = names.split_last().expect("split gives one name at least");
         let folder = folder_of(&mut root, folders, path)?;
         if folder.insert(*file, Node::File(path, *stored)).is_some() {
-            return Err(format(format!("{path}: a folder of that name is there")));
+            return Err(unwritable(format!(
+                "{path}: a folder of that name is there"
+            )));
         }
     }
     for path in empty_folders {
@@ -254,7 +282,7 @@ pub fn write_to<W: Write>(
     }
 
     let size = node_size(ROOT_BASE, ROOT_NAME) + table_size(&root);
-    let table_size = u32::try_from(size).map_err(|_| format("the table is over 4 GB"))?;
+    let table_size = u32::try_from(size).map_err(|_| unwritable("the table is over 4 GB"))?;
     let origin =
         (HEADER_SIZE + u64::from(table_size) + SIGNATURE_SIZE).div_ceil(DATA_ALIGN) * DATA_ALIGN;
     let mut writer = Writer {
@@ -283,7 +311,7 @@ pub fn write_to<W: Write>(
     for (path, stored) in writer.payloads {
         let payload = bytes(path)?;
         if payload.len() != stored.size as usize || crc32(&payload) != stored.hash {
-            return Err(format(format!(
+            return Err(unwritable(format!(
                 "{path}: its bytes are not the size and checksum given for it"
             )));
         }

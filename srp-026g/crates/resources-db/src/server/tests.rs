@@ -350,6 +350,12 @@ fn a_provenance_reads_back_and_a_wrong_one_is_refused() {
         format!("{FORMAT}\n"),
         format!("{FORMAT}\ndb resources.db 10 {}\n", "AB".repeat(32)),
         format!("{FORMAT}\ndb resources.db ten {sha}\n"),
+        // A size as no build writes it.
+        format!("{FORMAT}\ndb resources.db +10 {sha}\n"),
+        format!("{FORMAT}\ndb resources.db 010 {sha}\n"),
+        format!(
+            "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 +5 {sha} http://h/p\n"
+        ),
         format!("{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_3 5 {sha}\n"),
         format!(
             "{FORMAT}\ndb resources.db 10 {sha}\npatch resources.db.patch_03 5 {sha} http://h/p\n"

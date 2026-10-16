@@ -99,7 +99,49 @@ fn a_file_that_is_not_an_archive_is_refused() {
     let mut bytes = FIXTURE.to_vec();
     bytes[..13].copy_from_slice(b"big-endian\0\0\0");
     assert!(matches!(open(&bytes), Err(Error::Format(_))));
-    assert!(matches!(open(&FIXTURE[..10]), Err(Error::Io(_))));
+    for short in [&FIXTURE[..0], &FIXTURE[..10], &FIXTURE[..23]] {
+        let message = open(short).unwrap_err().to_string();
+        assert!(
+            message.contains("shorter than its 24-byte header"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn sizes_past_the_end_of_the_file_are_refused_before_anything_is_allocated() {
+    // A table of 4 GB in a file of a few kB.
+    let mut bytes = FIXTURE.to_vec();
+    bytes[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+    let message = open(&bytes).unwrap_err().to_string();
+    assert!(message.contains("ends inside its table"), "{message}");
+    // A file of 4 GB, and one whose end is past the end of u64.
+    for (size, offset) in [(u32::MAX, None), (1, Some(u64::MAX))] {
+        let mut bytes = FIXTURE.to_vec();
+        let start = node_of(&bytes, "big.bin") - FILE_BASE;
+        bytes[start..start + 4].copy_from_slice(&size.to_le_bytes());
+        if let Some(offset) = offset {
+            bytes[start + 8..start + 16].copy_from_slice(&offset.to_le_bytes());
+        }
+        let mut archive = open(&bytes).unwrap();
+        let message = archive
+            .read("gameplay/items/big.bin")
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("past the end"), "{message}");
+    }
+}
+
+#[test]
+fn a_name_that_is_not_utf8_is_refused() {
+    let mut bytes = FIXTURE.to_vec();
+    let at = node_of(&bytes, "first.txt") + NAME;
+    bytes[at] = 0xFF;
+    let message = open(&bytes).unwrap_err().to_string();
+    assert!(
+        message.contains("gameplay/\u{FFFD}irst.txt: a name that is not UTF-8"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -182,13 +224,7 @@ fn a_node_this_reader_does_not_read_is_refused_by_name() {
 /// or a folder's name): a link's class keeps the pointer 8 bytes before its
 /// `base_node`, where a file's keeps its hash.
 fn linked(name: &str, target: &str) -> Vec<u8> {
-    let mut bytes = FIXTURE.to_vec();
-    let node = node_of(&bytes, name);
-    let flags = u16::from_le_bytes(bytes[node + FLAGS..node + FLAGS + 2].try_into().unwrap());
-    bytes[node + FLAGS..node + FLAGS + 2].copy_from_slice(&(flags | HARD_LINK).to_le_bytes());
-    let pointer = (table_offset(&bytes, target) as u64).to_le_bytes();
-    bytes[node - LINK_BASE..node].copy_from_slice(&pointer);
-    bytes
+    link(FIXTURE.to_vec(), name, target)
 }
 
 #[test]
@@ -230,6 +266,100 @@ fn a_hard_link_to_a_folder_holds_that_folders_files() {
             .to_string()
             .contains("links to a node")
     );
+}
+
+/// `bytes` with the file node `name` turned into a hard link to the node
+/// `target` (each named by its own name, in the archive `bytes`).
+fn link(mut bytes: Vec<u8>, name: &str, target: &str) -> Vec<u8> {
+    let node = node_of(&bytes, name);
+    let flags = u16::from_le_bytes(bytes[node + FLAGS..node + FLAGS + 2].try_into().unwrap());
+    bytes[node + FLAGS..node + FLAGS + 2].copy_from_slice(&(flags | HARD_LINK).to_le_bytes());
+    let pointer = (table_offset(&bytes, target) as u64).to_le_bytes();
+    bytes[node - LINK_BASE..node].copy_from_slice(&pointer);
+    bytes
+}
+
+#[test]
+fn a_link_to_a_folder_it_is_in_is_refused_when_it_is_met() {
+    // Many nodes elsewhere, so the table's node budget is large: a folder
+    // that holds a link to itself must be refused at once, not walked
+    // until the budget is spent (its paths a byte longer each time).
+    let mut files: BTreeMap<String, Vec<u8>> = (0..5000)
+        .map(|i| (format!("other/file_{i:04}"), Vec::new()))
+        .collect();
+    files.insert("loop/self_link".into(), Vec::new());
+    files.insert("up/down/up_link".into(), Vec::new());
+    let bytes = write::write(&files).unwrap();
+    for (name, target) in [("self_link", "loop"), ("up_link", "up")] {
+        let started = std::time::Instant::now();
+        let message = open(&link(bytes.clone(), name, target))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("links to a folder it is in"), "{message}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+    // Two links that lead to one another: the second is in the first.
+    let mut fixture = link(FIXTURE.to_vec(), "first.txt", "items");
+    fixture = link(fixture, "item.options", "gameplay");
+    let message = open(&fixture).unwrap_err().to_string();
+    assert!(message.contains("links to a folder it is in"), "{message}");
+    // A link to a folder beside it is no loop.
+    let mut archive = open(&link(bytes, "self_link", "down")).unwrap();
+    assert!(archive.read("loop/self_link/up_link").unwrap().is_some());
+}
+
+#[test]
+fn a_path_through_links_longer_than_the_game_takes_is_refused() {
+    // Each path the table has is short enough; the path of `inner`'s file
+    // through the link is not.
+    let long = "l".repeat(200);
+    let files = BTreeMap::from([
+        (format!("outer/{long}"), Vec::new()),
+        (format!("inner/{}", "f".repeat(60)), Vec::new()),
+    ]);
+    let bytes = link(write::write(&files).unwrap(), &long, "inner");
+    let message = open(&bytes).unwrap_err().to_string();
+    assert!(
+        message.contains("267 bytes, longer than the game takes (249)"),
+        "{message}"
+    );
+    // At MAX_PATH it is taken.
+    let files = BTreeMap::from([
+        (format!("outer/{long}"), Vec::new()),
+        (format!("inner/{}", "f".repeat(MAX_PATH - 207)), Vec::new()),
+    ]);
+    let archive = open(&link(write::write(&files).unwrap(), &long, "inner")).unwrap();
+    let longest = archive
+        .files_under("outer/")
+        .map(|(path, _)| path.len())
+        .max();
+    assert_eq!(longest, Some(MAX_PATH));
+}
+
+/// The CRC bit by bit, as the table is made.
+fn crc32_bitwise(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    crc.reverse_bits()
+}
+
+#[test]
+fn the_crc_by_its_table_is_the_crc_bit_by_bit() {
+    let mut data = Vec::new();
+    let mut state: u32 = 1;
+    for length in 0..600 {
+        assert_eq!(crc32(&data), crc32_bitwise(&data), "{length} bytes");
+        state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        data.push((state >> 16) as u8);
+    }
+    assert_eq!(crc32(b""), 0);
+    assert_eq!(crc32(b"123456789"), crc32_bitwise(b"123456789"));
 }
 
 /// 0.26g's own archive: `SRP_TEST_RESOURCES_DB=<…/game/resources.db>`.

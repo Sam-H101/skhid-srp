@@ -231,6 +231,13 @@ pub struct Provenance {
     pub patches: Vec<Patch>,
 }
 
+/// A size as [`Provenance::text`] writes it: decimal digits, no sign, no
+/// leading zero.
+fn size_of(text: &str) -> Option<u64> {
+    let size: u64 = text.parse().ok()?;
+    (size.to_string() == text).then_some(size)
+}
+
 fn is_sha256(text: &str) -> bool {
     text.len() == 64
         && text
@@ -263,7 +270,7 @@ impl Provenance {
         let input = |name: &str, size: &str, sha256: &str| {
             Some(Input {
                 name: name.to_owned(),
-                size: size.parse().ok()?,
+                size: size_of(size)?,
                 sha256: is_sha256(sha256).then(|| sha256.to_owned())?,
             })
         };
