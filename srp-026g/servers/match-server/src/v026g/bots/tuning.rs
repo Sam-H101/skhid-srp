@@ -89,6 +89,17 @@ pub struct SenseTuning {
     pub forget_ms: u32,
     /// A last known position is dropped after this, ms.
     pub drop_ms: u32,
+    /// With the battery cheat off (`CheatTuning::batteries`): a battery,
+    /// or a battery spawner's spot, is seen within this, metres, in the
+    /// view and in a clear line; within `battery_near_m` (on the ground)
+    /// at once. GUESS: a lying battery is small but lit.
+    pub battery_sight_m: f32,
+    pub battery_near_m: f32,
+    /// Rays a think may cast at batteries and spawners (nearest first).
+    pub battery_rays: u32,
+    /// Timed batteries: a station's spawner seen this long ago is worth a
+    /// look again, ms.
+    pub spawner_recheck_ms: u32,
 }
 
 impl Default for SenseTuning {
@@ -108,6 +119,10 @@ impl Default for SenseTuning {
             callout_ms: 1_000,
             forget_ms: 3_000,
             drop_ms: 20_000,
+            battery_sight_m: 35.0,
+            battery_near_m: 3.0,
+            battery_rays: 3,
+            spawner_recheck_ms: 45_000,
         }
     }
 }
@@ -117,7 +132,10 @@ impl Default for SenseTuning {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CheatTuning {
-    /// Every battery's state and place, not only the HUD's.
+    /// Every battery's state and place, not only the HUD's. Off by
+    /// default (the owner's word, 2026-10-16: the all-knowing bots ran
+    /// straight to the batteries): the fair battery knowledge instead
+    /// (`player_bots_behaviour.md` §2.1).
     pub batteries: bool,
     /// A thief's place with this error, metres, this often, ms (0: off).
     pub thief_error_m: f32,
@@ -135,7 +153,7 @@ pub struct CheatTuning {
 impl Default for CheatTuning {
     fn default() -> Self {
         Self {
-            batteries: true,
+            batteries: false,
             thief_error_m: 10.0,
             thief_every_ms: 3_000,
             radar_error_m: 15.0,

@@ -13,7 +13,7 @@
 
 use mapdata::Vec3;
 
-use super::view::Place;
+use super::view::{BatteryState, MatchView, Place};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CheatKind {
@@ -195,14 +195,36 @@ pub struct Theft {
     pub thief: Option<Place>,
 }
 
+/// Where a team believes a battery lies (the fair battery knowledge,
+/// `player_bots_behaviour.md` §2), used with the battery cheat off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KnownBattery {
+    pub at: Vec3,
+    /// When it was last put right.
+    pub time: u32,
+    /// Shown on the team's HUD: it follows the battery while it lies about
+    /// and goes when the game takes it off the HUD. Else seen by a bot of
+    /// the team, and left where it was seen until a bot sees that spot
+    /// empty.
+    pub hud: bool,
+}
+
 /// What a team's bots share: callouts (one bot's sense, the others' a
-/// moment later), danger spots, thefts.
+/// moment later), danger spots, thefts, and with the battery cheat off
+/// what they know of the batteries and the spawners they have looked at.
 #[derive(Clone, Debug, Default)]
 pub struct TeamKnowledge {
     /// Callouts: (when the others know it, the percept).
     callouts: Vec<(u32, Percept)>,
     pub danger: Vec<DangerSpot>,
     pub thefts: Vec<Theft>,
+    /// By battery number.
+    pub batteries: Vec<Option<KnownBattery>>,
+    /// By battery spawner: when a bot of the team last saw its spot.
+    pub spawners_seen: Vec<Option<u32>>,
+    /// The team's bots checking spawners now and the spawner each looks
+    /// at (the commander's, from the plays it handed out).
+    pub searching: Vec<(Place, usize)>,
 }
 
 impl TeamKnowledge {
@@ -247,6 +269,85 @@ impl TeamKnowledge {
                 theft.thief = None;
             }
         }
+    }
+
+    /// Where the team believes battery `battery` lies.
+    pub fn battery(&self, battery: usize) -> Option<&KnownBattery> {
+        self.batteries.get(battery)?.as_ref()
+    }
+
+    /// Battery `battery` lies at `at` as far as the team knows (`None`:
+    /// it does not know).
+    pub fn set_battery(&mut self, battery: usize, known: Option<KnownBattery>) {
+        if self.batteries.len() <= battery {
+            if known.is_none() {
+                return;
+            }
+            self.batteries.resize(battery + 1, None);
+        }
+        self.batteries[battery] = known;
+    }
+
+    /// The batteries on the HUD of team `team`, from two worlds' states
+    /// (`player_bots_behaviour.md` §2). The client (PROVEN in 0.21d's
+    /// `gather_victory_items_rule::fill_match_hud_state` 0x1FBDF4 and
+    /// `victory_item_core::initialize`/`deactivate`, the same in 0.26g's
+    /// 0x3140C0, 0x300BEA, 0x30104E, 0x3010A4) shows a lying battery to a
+    /// team whose bit is set in the battery's mask; the mask is empty when
+    /// the battery appears, set to the picker's team alone on a pickup, to
+    /// the carrier's team alone on a drop (a death too), emptied when it is
+    /// put in, and a player's spot adds his team (not modelled here). So:
+    /// - a battery dropped by our carrier is on our HUD where it lies;
+    /// - one our HUD showed goes from it when anybody picks it up, when it
+    ///   moved between the worlds unseen, or when it is put in;
+    /// - one our teammate carries is known by him (the HUD shows him);
+    /// - one only seen by a bot stays where it was seen.
+    pub fn hud_update(&mut self, team: u8, before: &MatchView, after: &MatchView, time: u32) {
+        let team_of = |carrier: Option<Place>| carrier.and_then(|p| after.place(p)).map(|p| p.team);
+        for (battery, now) in after.batteries.iter().enumerate() {
+            let was = before.batteries.get(battery).copied();
+            let known = self.battery(battery).copied();
+            match *now {
+                BatteryState::Free(at) => {
+                    let hud = match was {
+                        // Lying still: as it was.
+                        Some(BatteryState::Free(then)) if then.distance_xz(at) <= 1.0 => {
+                            known.is_some_and(|k| k.hud)
+                        }
+                        Some(BatteryState::Carried(carrier)) => team_of(carrier) == Some(team),
+                        // New, moved unseen, or out of a container.
+                        _ => false,
+                    };
+                    if hud {
+                        self.set_battery(battery, Some(KnownBattery { at, time, hud }));
+                    } else if known.is_some_and(|k| k.hud) {
+                        self.set_battery(battery, None);
+                    }
+                }
+                BatteryState::Carried(carrier) => {
+                    if known.is_some_and(|k| k.hud) || team_of(carrier) == Some(team) {
+                        self.set_battery(battery, None);
+                    }
+                }
+                BatteryState::Home(_) => {
+                    if known.is_some_and(|k| k.hud) {
+                        self.set_battery(battery, None);
+                    }
+                }
+            }
+        }
+    }
+
+    /// When a bot of the team last saw spawner `spawner`'s spot.
+    pub fn spawner_seen(&self, spawner: usize) -> Option<u32> {
+        self.spawners_seen.get(spawner).copied().flatten()
+    }
+
+    pub fn saw_spawner(&mut self, spawner: usize, now: u32) {
+        if self.spawners_seen.len() <= spawner {
+            self.spawners_seen.resize(spawner + 1, None);
+        }
+        self.spawners_seen[spawner] = Some(now);
     }
 
     pub fn forget_old(&mut self, now: u32) {
@@ -294,6 +395,128 @@ mod tests {
         assert!(memory.seen(4, 9_000).is_none());
         memory.update(&[], 30_000, |_| 300, 3_000, 20_000);
         assert!(memory.tracks().is_empty());
+    }
+
+    fn battery_view(batteries: Vec<BatteryState>) -> MatchView {
+        use crate::v026g::bots::view::{Mode, PlaceView};
+        let place = |place: Place, team: u8| PlaceView {
+            place,
+            team,
+            bot: true,
+            present: true,
+            alive: true,
+            feet: Vec3::ZERO,
+            yaw: 0.0,
+            pitch: 0.0,
+            velocity: [0.0, 0.0],
+            keys: 0,
+            health: 1.0,
+            spawned: 0,
+            kills: 0,
+            deaths: 0,
+            streak: 0,
+            carrying: None,
+            seen_at: 0,
+        };
+        MatchView {
+            clock: 10_000,
+            mode: Mode::Batteries,
+            time_left_s: 600.0,
+            total_s: 900.0,
+            points: [0, 0],
+            places: vec![place(0, 0), place(1, 1)],
+            batteries,
+            containers: vec![],
+            sounds: vec![],
+            deaths: vec![],
+            world_time: 10_000,
+            can_respawn: [true, true],
+            next_battery: None,
+        }
+    }
+
+    /// The client's HUD mask (`hud_update`): a battery that appears is on
+    /// no HUD; one our carrier dropped is on ours where it lies, not on
+    /// theirs; picked up by them it leaves our HUD, and put in it is on
+    /// none. A battery only seen stays where it was seen.
+    #[test]
+    fn the_hud_shows_what_the_team_last_carried_and_drops_it_when_taken() {
+        let (a, b) = (Vec3::new(10.0, 0.0, 10.0), Vec3::new(20.0, 0.0, 5.0));
+        let mut ours = TeamKnowledge::default();
+        let mut theirs = TeamKnowledge::default();
+        let step = |ours: &mut TeamKnowledge, theirs: &mut TeamKnowledge, from, to| {
+            let (before, after) = (battery_view(from), battery_view(to));
+            ours.hud_update(0, &before, &after, 1);
+            theirs.hud_update(1, &before, &after, 1);
+        };
+        // It appears: nobody's HUD.
+        step(&mut ours, &mut theirs, vec![], vec![BatteryState::Free(a)]);
+        assert!(ours.battery(0).is_none() && theirs.battery(0).is_none());
+        // Our carrier (place 0) takes it and drops it at b (he died).
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Free(a)],
+            vec![BatteryState::Carried(Some(0))],
+        );
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Carried(Some(0))],
+            vec![BatteryState::Free(b)],
+        );
+        assert_eq!(ours.battery(0).map(|k| (k.at, k.hud)), Some((b, true)));
+        assert!(theirs.battery(0).is_none());
+        // Lying still: still on our HUD.
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Free(b)],
+            vec![BatteryState::Free(b)],
+        );
+        assert!(ours.battery(0).is_some_and(|k| k.hud));
+        // Their player takes it: off our HUD; dropped, on theirs.
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Free(b)],
+            vec![BatteryState::Carried(Some(1))],
+        );
+        assert!(ours.battery(0).is_none());
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Carried(Some(1))],
+            vec![BatteryState::Free(a)],
+        );
+        assert!(ours.battery(0).is_none());
+        assert!(theirs.battery(0).is_some_and(|k| k.hud && k.at == a));
+        // Put in: on no HUD.
+        step(
+            &mut ours,
+            &mut theirs,
+            vec![BatteryState::Free(a)],
+            vec![BatteryState::Home(1)],
+        );
+        assert!(theirs.battery(0).is_none());
+        // Seen by one of our bots, then taken by them: still believed
+        // where it was seen (no HUD said otherwise); taken by our own
+        // teammate, known to be his.
+        ours.set_battery(
+            1,
+            Some(KnownBattery {
+                at: a,
+                time: 1,
+                hud: false,
+            }),
+        );
+        let lying = vec![BatteryState::Home(1), BatteryState::Free(a)];
+        let taken = vec![BatteryState::Home(1), BatteryState::Carried(Some(1))];
+        step(&mut ours, &mut theirs, lying.clone(), taken);
+        assert_eq!(ours.battery(1).map(|k| k.at), Some(a));
+        let ours_taken = vec![BatteryState::Home(1), BatteryState::Carried(Some(0))];
+        step(&mut ours, &mut theirs, lying, ours_taken);
+        assert!(ours.battery(1).is_none());
     }
 
     #[test]

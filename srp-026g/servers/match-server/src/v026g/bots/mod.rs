@@ -814,6 +814,15 @@ impl Bots {
                 bot.memory.forget(a.place);
             }
         }
+        // With the battery cheat off, what each team's HUD shows of the
+        // batteries.
+        if !self.tuning.cheats.batteries {
+            for team in 0..2u8 {
+                self.teams[usize::from(team)]
+                    .knowledge
+                    .hud_update(team, &before, &after, time);
+            }
+        }
         // A battery of ours taken from home.
         for (battery, (now, then)) in after.batteries.iter().zip(&before.batteries).enumerate() {
             if let (BatteryState::Carried(thief), BatteryState::Home(id)) = (now, then)
@@ -975,6 +984,22 @@ impl Bots {
                 }
             }
         }
+        // The bots checking spawners' spots now, and where (no more of
+        // them than batteries missing, and apart, `plays::collect`).
+        let searching = self
+            .bots
+            .iter()
+            .flatten()
+            .filter(|b| b.team == team)
+            .filter_map(|b| match b.assignment.as_ref()? {
+                a if a.kind == plays::PlayKind::Collect => match a.target {
+                    plays::TargetRef::Spawner(index) => Some((b.place, index)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        self.teams[usize::from(team)].knowledge.searching = searching;
         let state = &self.teams[usize::from(team)];
         let mut asked: Vec<(Place, Vec<plays::Candidate>, Option<Assignment>)> = Vec::new();
         for bot in self
@@ -1172,6 +1197,34 @@ impl Bots {
             &mut bot.rng,
         ));
         percepts.extend(state.knowledge.heard_by(bot.place, now));
+        // With the battery cheat off, the batteries and spawners' spots it
+        // sees become its team's knowledge.
+        if !tuning.cheats.batteries && view.mode.has_batteries() {
+            // Spawners only while some battery is missing.
+            let missing = plays::batteries_unaccounted(view, bot.team, &state.knowledge) > 0;
+            let worth: Vec<bool> = (0..tactics.world.map.battery_spawners.len())
+                .map(|index| {
+                    missing
+                        && plays::spawner_worth_checking(
+                            view,
+                            &state.knowledge,
+                            tactics,
+                            &tuning,
+                            index,
+                        )
+                })
+                .collect();
+            sense::sense_batteries(
+                me,
+                view,
+                &tactics.world.sight,
+                &tactics.world.map.battery_spawners,
+                &tuning.sense,
+                &mut state.knowledge,
+                |index| worth[index],
+                rays,
+            );
+        }
         let skill = bot.skill;
         let notice_factor = signals::mix(tuning.aim.notice, skill);
         let feet = me.feet;

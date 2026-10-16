@@ -1042,6 +1042,58 @@ fn timed_batteries_are_waited_for_at_the_stations_and_brought_home() {
     assert!(out.winner.is_some());
 }
 
+/// With the battery cheat off: the bots look for the batteries at the
+/// spawners, find them and bring them home.
+#[test]
+fn a_short_soak_without_the_battery_cheat_finds_and_brings_batteries() {
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = false;
+    let out = soak_tuned(4, 3, 0, None, 150, 3, tuning);
+    assert!(
+        out.notes
+            .iter()
+            .any(|n| n.text.contains("takes Collect Spawner")),
+        "no spawner looked at"
+    );
+    assert!(
+        out.notes
+            .iter()
+            .any(|n| n.text.contains("takes Collect Battery")),
+        "no battery fetched"
+    );
+    assert!(
+        out.delivered[0] + out.delivered[1] >= 1,
+        "batteries brought: {:?}",
+        out.delivered
+    );
+}
+
+/// [`four_bots_a_side_fight_and_bring_batteries_to_a_win`] and
+/// [`timed_batteries_are_waited_for_at_the_stations_and_brought_home`]
+/// with the battery cheat on (off by default).
+#[test]
+#[ignore = "whole matches; run in release"]
+fn with_the_battery_cheat_whole_matches_are_won_by_batteries() {
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = true;
+    let out = soak_tuned(4, 3, 0, None, 900, 1, tuning.clone());
+    eprintln!("{}", out.decisions.line());
+    assert!(
+        out.delivered[0] + out.delivered[1] >= 1,
+        "batteries brought: {:?}",
+        out.delivered
+    );
+    assert!(out.winner.is_some(), "a winner in {} s: {out:?}", out.end_s);
+    let out = soak_tuned(4, 4, 0, Some(20), 900, 4, tuning);
+    eprintln!("{}", out.decisions.line());
+    assert!(
+        out.delivered[0] + out.delivered[1] >= 2,
+        "{:?}",
+        out.delivered
+    );
+    assert!(out.winner.is_some());
+}
+
 /// Where the time of the bots' polls goes, seconds.
 #[derive(Default)]
 struct Times {
@@ -1082,6 +1134,28 @@ fn reset_peak_memory() {
 
 fn bench_tuning() -> Tuning {
     let mut tuning = Tuning::default();
+    // The battery cheat instead of the fair battery knowledge.
+    if std::env::var_os("SRP_BENCH_CHEAT").is_some() {
+        tuning.cheats.batteries = true;
+    }
+    if let Some(m) = std::env::var("SRP_BENCH_BATTERY_SIGHT_M")
+        .ok()
+        .and_then(|m| m.parse().ok())
+    {
+        tuning.sense.battery_sight_m = m;
+    }
+    // Collect's numbers: `name=value,...`.
+    if let Ok(numbers) = std::env::var("SRP_BENCH_COLLECT") {
+        let play = tuning
+            .plays
+            .entry(super::plays::PlayKind::Collect)
+            .or_insert_with(|| super::plays::default_tuning(super::plays::PlayKind::Collect));
+        for pair in numbers.split(',').filter(|p| !p.is_empty()) {
+            let (name, value) = pair.split_once('=').expect("SRP_BENCH_COLLECT: name=value");
+            play.numbers
+                .insert(name.to_owned(), value.parse().expect("a number"));
+        }
+    }
     if let Ok(floors) = std::env::var("SRP_BENCH_SEARCH_FLOORS") {
         tuning.think.search_floors_per_poll = if floors == "max" {
             u32::MAX
@@ -1245,6 +1319,25 @@ fn real_bot_cost() {
                 tickets,
                 timed,
             );
+            // As the game does (`gather_victory_items_rule::select_spawners`):
+            // this many batteries at spawners drawn at random (the mode's
+            // count is 10), not one at every spawner.
+            if let Some(count) = std::env::var("SRP_BENCH_BATTERIES")
+                .ok()
+                .and_then(|n| n.parse::<usize>().ok())
+                && timed.is_none()
+                && mode != mode::TEAM_DEATHMATCH
+            {
+                let mut items: Vec<Vec3> =
+                    world.map.battery_spawners.iter().map(|s| s.item).collect();
+                let mut draw = Rng::new(0x5EED + per_team as u64 + u64::from(seed) * 1000);
+                for i in (1..items.len()).rev() {
+                    let j = draw.below(i + 1);
+                    items.swap(i, j);
+                }
+                items.truncate(count);
+                game.batteries = items.into_iter().map(Lying::Free).collect();
+            }
             for place in 0..teams.len() {
                 bots.entered(place, true, 0);
             }
@@ -1407,7 +1500,7 @@ fn real_bot_cost() {
             }
             let mut top: Vec<_> = plays.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
-            eprintln!("  notes: {:?}", &top[..top.len().min(12)]);
+            eprintln!("  notes: {:?}", &top[..top.len().min(24)]);
             eprintln!(
                 "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}",
                 100.0 * stood_ticks as f64 / goal_ticks.max(1) as f64,

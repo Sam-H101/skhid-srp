@@ -179,6 +179,9 @@ pub enum TargetRef {
     Container(u8),
     /// An exit of the enemy base, by index (`Tactics::exits`).
     Exit(usize),
+    /// A battery spawner's spot, by index (`MapData::battery_spawners`):
+    /// looked at for a battery, with the battery cheat off.
+    Spawner(usize),
 }
 
 /// A play's claim that only one bot of a team may hold (research B1
@@ -396,6 +399,13 @@ impl Ctx<'_> {
                 .side
                 .and_then(|side| self.enemy_side(side))
                 .and_then(|enemy| self.tactics.exits(enemy).get(index).copied()),
+            TargetRef::Spawner(index) => self
+                .tactics
+                .world
+                .map
+                .battery_spawners
+                .get(index)
+                .map(|s| s.item),
         }
     }
 
@@ -424,19 +434,50 @@ impl Ctx<'_> {
             .map(|t| t.at)
     }
 
-    /// Where a battery is as far as the bot may know (all of them with the
-    /// battery cheat on, `CheatTuning::batteries`).
+    /// Where a battery lies as far as the bot may know: with the battery
+    /// cheat on (`CheatTuning::batteries`) where every lying battery is;
+    /// with it off where its team believes it lies (its HUD, or seen by a
+    /// bot of the team: maybe taken since, until a bot sees the spot).
+    pub fn battery_lying(&self, battery: usize) -> Option<Vec3> {
+        use super::view::BatteryState;
+        if self.tuning.cheats.batteries {
+            match self.view.batteries.get(battery)? {
+                BatteryState::Free(at) => Some(*at),
+                _ => None,
+            }
+        } else {
+            self.team.battery(battery).map(|known| known.at)
+        }
+    }
+
+    /// Where a battery is as far as the bot may know: lying
+    /// ([`Self::battery_lying`]), carried (where the carrier is known: a
+    /// teammate, or an enemy sensed) or home (in its container; the HUD
+    /// shows the counts).
     pub fn battery_at(&self, battery: usize) -> Option<Vec3> {
         use super::view::BatteryState;
-        if !self.tuning.cheats.batteries {
-            return None;
+        let cheat = self.tuning.cheats.batteries;
+        if !cheat && let Some(at) = self.battery_lying(battery) {
+            return Some(at);
         }
         match self.view.batteries.get(battery)? {
-            BatteryState::Free(at) => Some(*at),
+            BatteryState::Free(at) => cheat.then_some(*at),
             BatteryState::Carried(Some(carrier)) => self.known_place(*carrier),
             BatteryState::Carried(None) => None,
             BatteryState::Home(id) => self.point_of(TargetRef::Container(*id)),
         }
+    }
+
+    /// With the battery cheat off: the batteries the team cannot place
+    /// ([`batteries_unaccounted`]).
+    pub fn batteries_unaccounted(&self) -> usize {
+        batteries_unaccounted(self.view, self.me.team, self.team)
+    }
+
+    /// With the battery cheat off: whether battery spawner `index`'s spot
+    /// is worth a look ([`spawner_worth_checking`]).
+    pub fn spawner_worth_checking(&self, index: usize) -> bool {
+        spawner_worth_checking(self.view, self.team, self.tactics, self.tuning, index)
     }
 
     /// Whether a way to `at` may be open now: the floor there (as the
@@ -567,6 +608,62 @@ impl Ctx<'_> {
             slot: slot.map(|key| SlotKey { kind, key }),
         })
     }
+}
+
+/// With the battery cheat off: the batteries team `team` cannot place, of
+/// the mode's count (on the HUD): neither in a container (the HUD's
+/// counts), nor carried by a teammate, nor believed lying somewhere.
+pub fn batteries_unaccounted(view: &MatchView, team: u8, known: &TeamKnowledge) -> usize {
+    use super::view::BatteryState;
+    let home: usize = view.containers.iter().map(|c| c.batteries).sum();
+    let mut placed = 0;
+    for (battery, state) in view.batteries.iter().enumerate() {
+        match *state {
+            // Counted by its container already.
+            BatteryState::Home(_) => {}
+            BatteryState::Carried(Some(carrier))
+                if view.place(carrier).is_some_and(|p| p.team == team) =>
+            {
+                placed += 1;
+            }
+            _ if known.battery(battery).is_some() => placed += 1,
+            _ => {}
+        }
+    }
+    view.batteries
+        .len()
+        .saturating_sub(home)
+        .saturating_sub(placed)
+}
+
+/// With the battery cheat off: whether battery spawner `index`'s spot is
+/// worth a look for a team that knows `known`. In the battery mode the
+/// batteries lie at spawners from the start and never come again, so a
+/// spot once seen is done; in timed batteries one comes now and then by a
+/// station, so a spot is looked at again after `spawner_recheck_ms`. A
+/// spot where the team believes a battery lies needs no look.
+pub fn spawner_worth_checking(
+    view: &MatchView,
+    known: &TeamKnowledge,
+    tactics: &Tactics,
+    tuning: &Tuning,
+    index: usize,
+) -> bool {
+    use super::view::Mode;
+    let Some(spawner) = tactics.world.map.battery_spawners.get(index) else {
+        return false;
+    };
+    let fresh = match (view.mode, known.spawner_seen(index)) {
+        (_, None) => true,
+        (Mode::TimedBatteries, Some(seen)) => view.clock >= seen + tuning.sense.spawner_recheck_ms,
+        _ => false,
+    };
+    fresh
+        && !known
+            .batteries
+            .iter()
+            .flatten()
+            .any(|k| k.at.distance_xz(spawner.item) <= 2.0)
 }
 
 /// The running play's state.
