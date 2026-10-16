@@ -167,14 +167,18 @@ fn a_camouflage_and_decals_go_on_a_vest() {
         .clone();
     let decal = give(&mut world, alice, &decal_name, &[]);
 
+    // The vest wears a new bound copy of the camouflage: the client is
+    // sent the inventory that holds it before the answer that names it.
     world.ask(alice, ask::attach(vest, camo, 3));
-    assert_eq!(world.client(alice).ids, [0x83, 0x89, 0x87, 0x8B]);
+    assert_eq!(world.client(alice).ids, [0x89, 0x87, 0x8B, 0x83]);
+    let copy = world.account(alice).item(vest).unwrap().upgrades[0].id;
+    assert_ne!(copy, camo);
     let decoded = world.take(alice);
     assert_eq!(
-        decoded[0],
+        decoded[3],
         Decoded::Permitted(Permitted::UpgradeAttached {
             host_item_id: vest,
-            upgrade_item_id: camo,
+            upgrade_item_id: copy,
             slot: 3,
             value: 0,
             detach_first: false
@@ -208,13 +212,17 @@ fn a_camouflage_and_decals_go_on_a_vest() {
         Some("st_cannot_upgrade_item")
     );
 
+    // Off by the camouflage's own id (what the upgrade window it was put
+    // on with still names): the copy comes off, and goes.
     world.ask(alice, ask::detach(camo));
     let decoded = world.take(alice);
     assert_eq!(
         decoded[0],
-        Decoded::Permitted(Permitted::UpgradeDetached { item_id: camo })
+        Decoded::Permitted(Permitted::UpgradeDetached { item_id: copy })
     );
     assert_same_items(&mut world, alice);
+    assert!(world.account(alice).item(copy).is_none());
+    assert!(world.account(alice).item(camo).is_some());
     world.ask(alice, ask::detach(camo));
     assert_eq!(
         denial(&world.take(alice), 0x46).as_deref(),
@@ -240,6 +248,8 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
         request::move_item(1, source, dict("edge_torso_2"), INVENTORY_SLOT, torso, 1),
     );
     world.ask(actor, ask::attach(source, cosmetic, 3));
+    // The vest wears a copy of the camouflage: the copy is what moves.
+    let worn = world.account(actor).item(source).unwrap().upgrades[0].id;
     let revision = world.account(actor).kits[0].revision;
     let actor_id = world.ids[actor].0;
     let squad_revision = |messages: &[Decoded]| {
@@ -272,7 +282,7 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
         squad_revision(&world.take(observer)).expect("initial squad revision")
     });
     world.take(actor);
-    world.ask(actor, ask::attach(destination, cosmetic, 3));
+    world.ask(actor, ask::attach(destination, worn, 3));
     let messages = world.take(actor);
     assert!(messages.iter().any(|message| matches!(
         message,
@@ -303,7 +313,7 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
     );
     assert_eq!(
         world.account(actor).item(destination).unwrap().upgrades[0].id,
-        cosmetic
+        worn
     );
     assert_same_items(&mut world, actor);
     if let Some(observer) = observer {
@@ -318,6 +328,114 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
             Decoded::SquadMemberAccount { revision, .. } if *revision == after.1
         )));
     }
+    world.assert_clean();
+}
+
+/// One camouflage on two vests and trousers at once, as the stock client
+/// asks for it: each `46 01` names the camouflage itself (dragged from the
+/// stash), each `46 02` names what the upgrade window's slot holds.
+#[test]
+fn one_camouflage_goes_on_many_items() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let vest = give(&mut world, alice, "edge_torso_2", &[]);
+    let spare = give(&mut world, alice, "bm_torso_1", &[]);
+    let trousers = give(&mut world, alice, "bm_legs_4", &[]);
+    let camo = give(&mut world, alice, "camo_city", &[]);
+
+    let mut copies = Vec::new();
+    for host in [vest, spare, trousers] {
+        world.ask(alice, ask::attach(host, camo, 3));
+        let copy = world.account(alice).item(host).unwrap().upgrades[0].id;
+        let decoded = world.take(alice);
+        assert_eq!(
+            decoded.last(),
+            Some(&Decoded::Permitted(Permitted::UpgradeAttached {
+                host_item_id: host,
+                upgrade_item_id: copy,
+                slot: 3,
+                value: 0,
+                detach_first: false
+            }))
+        );
+        assert_same_items(&mut world, alice);
+        copies.push(copy);
+    }
+    // Three copies, three items wearing one each, the camouflage on none.
+    {
+        let account = world.account(alice);
+        assert_eq!(
+            account
+                .inventory
+                .iter()
+                .filter(|item| item.copy_of == camo)
+                .count(),
+            3
+        );
+        assert!(
+            account
+                .inventory
+                .iter()
+                .all(|item| item.upgrades.iter().all(|held| held.id != camo))
+        );
+    }
+
+    // A copy is not sold.
+    world.ask(alice, request::sell(copies[0], 1));
+    assert_eq!(
+        denial(&world.take(alice), 0x47).as_deref(),
+        Some("st_cannot_upgrade_item")
+    );
+    assert!(world.account(alice).item(copies[0]).is_some());
+
+    // The spare vest's window: its slot holds its copy, which comes off
+    // alone.
+    world.ask(alice, ask::detach(copies[1]));
+    let decoded = world.take(alice);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeDetached { item_id: copies[1] })
+    );
+    assert_same_items(&mut world, alice);
+    assert!(
+        world
+            .account(alice)
+            .item(spare)
+            .unwrap()
+            .upgrades
+            .is_empty()
+    );
+    assert_eq!(
+        world.account(alice).item(vest).unwrap().upgrades[0].id,
+        copies[0]
+    );
+    assert_eq!(
+        world.account(alice).item(trousers).unwrap().upgrades[0].id,
+        copies[2]
+    );
+
+    // The camouflage sold: off every item, and paid for once.
+    let money = world.account(alice).generic_money;
+    world.ask(alice, request::sell(camo, 1));
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::Sold { item_id, amount: 1 }) if item_id == camo
+    ));
+    let paid = {
+        let mut alone = Account::new("Bob");
+        let one = alone.add_item(dict("camo_city"), FULL_CONDITION);
+        rules::sell(&mut alone, one, 1).unwrap().money
+    };
+    assert_eq!(world.account(alice).generic_money, money + paid);
+    assert!(
+        world
+            .account(alice)
+            .inventory
+            .iter()
+            .all(|item| item.copy_of == 0 && item.upgrades.is_empty())
+    );
+    assert_same_items(&mut world, alice);
     world.assert_clean();
 }
 

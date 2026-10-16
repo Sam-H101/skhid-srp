@@ -102,6 +102,9 @@ pub enum ActionError {
     NoAmmo,
     /// An item of the kit is worn in a slot another worn item covers.
     CoveredSlot,
+    /// A bound copy of a camouflage (`items_rules`): it is worth nothing
+    /// and goes only by coming off its item.
+    BoundCopy,
 }
 
 impl ActionError {
@@ -127,6 +130,7 @@ impl ActionError {
             Self::BadReset => "st_cannot_reroll_skills",
             Self::NotEnoughMoneyForReset => "st_not_enougth_money_for_reroll",
             Self::NothingToRepair | Self::NoDefects => "st_cannot_repair_item",
+            Self::BoundCopy => "st_cannot_upgrade_item",
             Self::NotEnoughMoneyForRepair => "st_not_enought_money_for_repair",
             Self::NoWeapon => "st_profile_check_failed_weapon",
             Self::NoAmmo => "st_profile_check_failed_weapon_ammo",
@@ -498,7 +502,9 @@ pub fn shown_condition(condition: u32) -> u32 {
 /// `47 01`: sell `steps` of an item (clips of ammo; an item that is no
 /// stack is sold whole). The pay is what the lobby shows
 /// ([`prices::sell_price`]): a quarter of the cost a step, for a worn item
-/// times its condition.
+/// times its condition. A bound copy of a camouflage is not sold (it
+/// comes off its item instead); a camouflage sold takes its copies off
+/// every item that wears them (`Account::sync_kits`).
 pub fn sell(account: &mut Account, item_id: u32, steps: u32) -> Result<Sold, ActionError> {
     let dictionary = Dictionary::shared();
     let index = account
@@ -507,6 +513,9 @@ pub fn sell(account: &mut Account, item_id: u32, steps: u32) -> Result<Sold, Act
         .position(|item| item.item_id == item_id)
         .ok_or(ActionError::NoSuchItem)?;
     let owned = &account.inventory[index];
+    if owned.copy_of != 0 {
+        return Err(ActionError::BoundCopy);
+    }
     let is_stack = dictionary
         .item(owned.dict_id)
         .ok_or(ActionError::NoSuchItem)?

@@ -14,9 +14,32 @@
 //! - **Cosmetics.** A camouflage goes into slot 3 and a decal into slot 0
 //!   or 1 of an item whose config has `camo_available` /
 //!   `decal_available` (vests and trousers). The cosmetic stays an item of
-//!   the inventory; one is on one item at a time, and putting it on
-//!   another takes it off the first (the answer's `detach_first`). [srp]
-//!   Any camouflage fits any such item: `items_compatibility` pairs none.
+//!   the inventory. [srp] Any camouflage fits any such item:
+//!   `items_compatibility` pairs none.
+//!
+//!   A decal is on one item at a time, and putting it on another takes it
+//!   off the first (the answer's `detach_first`). [srp, the owner's rule of
+//!   2026-10-16] **One camouflage goes on any number of items at once**:
+//!   each item wears a *bound copy* of it, an item of the inventory with an
+//!   id of its own and [`Item::copy_of`] naming the camouflage, while the
+//!   camouflage itself stays free in the stash. Why copies and not the one
+//!   id on many items: `46 02` names only the cosmetic, never the item
+//!   (`drop_upgrade_item` sends the second of its two, 0x29AAD5), and the
+//!   client's `83 46 02` takes it off the first item of its inventory that
+//!   holds it (0x277CF0); with an id of its own on each item, taking one
+//!   off is never ambiguous. The client needs each copy as an item of its
+//!   inventory: the answer's handler does nothing for an upgrade it lacks
+//!   (0x27565B), and the upgrade window finds what a slot holds there
+//!   (`UpgradeWindow.create_item`); so the stash lists each copy as worn
+//!   (`is_attached_to`, the host) beside the free camouflage. A match reads
+//!   only the record's dict id (`item_config_cook`, 0x2F18D8), so every
+//!   item shows the camouflage there too. Rules: a copy dragged onto
+//!   another item moves, as any cosmetic did; a copy that comes off, whose
+//!   item goes (sold, used up as a donor) or whose slot gets another
+//!   cosmetic is gone; a copy is never sold (`rules::sell`) or anything
+//!   but its item's; the camouflage sold takes every copy with it and is
+//!   paid once. A camouflage worn itself under the rule before copies stays
+//!   on its item; put on another, it leaves a copy in its place first.
 //! - **Reroll.** One modification of an item may be changed, any number of
 //!   times (`st_modifier_reroll_description`); the first change picks which
 //!   (the window locks the others, `was_rerolled_before`). A change offers
@@ -175,13 +198,40 @@ fn until(now: u64, seconds: u32) -> u32 {
         .min(u64::from(u32::MAX)) as u32
 }
 
-/// Takes off every upgrade whose cosmetic the inventory lacks
+/// Takes off every upgrade whose cosmetic the inventory lacks, after
+/// dropping every bound copy of a camouflage that is worn by no item or
+/// whose camouflage is gone (sold): a copy is never an item of its own
 /// (`Account::sync_kits` calls it after each change of the inventory).
 /// Returns the ids of the items that lost one.
-pub fn drop_gone_upgrades(inventory: &mut [Item]) -> Vec<u32> {
+pub fn drop_gone_upgrades(inventory: &mut Vec<Item>) -> Vec<u32> {
     let mut stripped = Vec::new();
-    if inventory.iter().all(|item| item.upgrades.is_empty()) {
+    if inventory
+        .iter()
+        .all(|item| item.upgrades.is_empty() && item.copy_of == 0)
+    {
         return stripped;
+    }
+    if inventory.iter().any(|item| item.copy_of != 0) {
+        let originals: Vec<(u32, u16)> = inventory
+            .iter()
+            .filter(|item| item.copy_of == 0)
+            .map(|item| (item.item_id, item.dict_id))
+            .collect();
+        let worn: Vec<u32> = inventory
+            .iter()
+            .flat_map(|host| {
+                host.upgrades
+                    .iter()
+                    .filter(move |held| held.id != host.item_id)
+                    .map(|held| held.id)
+            })
+            .collect();
+        inventory.retain(|item| {
+            item.copy_of == 0
+                || (modifications::is_camouflage(item.dict_id)
+                    && originals.contains(&(item.copy_of, item.dict_id))
+                    && worn.contains(&item.item_id))
+        });
     }
     let owned: Vec<u32> = inventory.iter().map(|item| item.item_id).collect();
     for item in inventory.iter_mut() {
@@ -261,15 +311,58 @@ fn item_level(dict_id: u16) -> u8 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attached {
     pub host_item_id: u32,
+    /// What went on: for a camouflage, the bound copy of it the host wears.
     pub upgrade_item_id: u32,
     pub slot: u8,
     pub value: u64,
     /// The cosmetic was on an item and came off it first.
     pub detach_first: bool,
+    /// The upgrade is a bound copy made for this: the client does not hold
+    /// it yet, so it must be sent the inventory before the answer (the
+    /// answer's handler does nothing for an item it lacks, 0x27565B).
+    pub new_copy: bool,
+}
+
+/// The item whose upgrades hold `upgrade_item_id`, if any.
+fn host_of(account: &Account, upgrade_item_id: u32) -> Option<u32> {
+    account
+        .inventory
+        .iter()
+        .find(|item| item.upgrades.iter().any(|held| held.id == upgrade_item_id))
+        .map(|item| item.item_id)
+}
+
+/// A bound copy of the camouflage `original` (an item of the inventory):
+/// a new item of the same kind. Returns its id.
+fn make_copy(account: &mut Account, original: u32) -> u32 {
+    let (dict_id, condition) = account
+        .item(original)
+        .map(|item| (item.dict_id, item.condition_or_stack))
+        .expect("the camouflage is an item of the inventory");
+    let copy = account.add_item(dict_id, condition);
+    account
+        .item_mut(copy)
+        .expect("the copy was just made")
+        .copy_of = original;
+    copy
+}
+
+/// The kits wearing any of `item_ids` show another item: new revisions,
+/// one a kit.
+fn bump_kits_wearing_any(account: &mut Account, item_ids: &[u32]) {
+    for kit in &mut account.kits {
+        if item_ids.iter().any(|&id| kit.slot_of(id).is_some()) {
+            kit.revision = kit.revision.wrapping_add(1);
+        }
+    }
 }
 
 /// `46 01 <kit> <host> <upgrade> <slot> <u64 0>`: put a camouflage or a
 /// decal on an item. What was in the slot comes off.
+///
+/// A camouflage of its own goes on as a new bound copy of it and stays
+/// where it is ([`attach_camouflage`]). A decal, or a bound copy, moves:
+/// off the item it was on, onto this one.
 pub fn attach_upgrade(
     account: &mut Account,
     host_item_id: u32,
@@ -299,6 +392,14 @@ pub fn attach_upgrade(
     if kept >= limits::UPGRADES {
         return Err(ItemError::Upgrade("the item holds no more"));
     }
+    if modifications::is_camouflage(upgrade_dict) && upgrade.copy_of == 0 {
+        return Ok(attach_camouflage(
+            account,
+            host_item_id,
+            upgrade_item_id,
+            slot,
+        ));
+    }
     let mut detach_first = false;
     let mut changed_hosts = vec![host_item_id];
     for item in &mut account.inventory {
@@ -319,51 +420,176 @@ pub fn attach_upgrade(
         value: 0,
         param: slot,
     });
+    // A bound copy that was in the slot is on nothing now: it goes.
+    drop_gone_upgrades(&mut account.inventory);
     // Removing the cosmetic changes the old host's appearance too. Refresh
     // every affected kit once, including alternate kits sharing either host.
-    for kit in &mut account.kits {
-        if changed_hosts.iter().any(|&id| kit.slot_of(id).is_some()) {
-            kit.revision = kit.revision.wrapping_add(1);
-        }
-    }
+    bump_kits_wearing_any(account, &changed_hosts);
     Ok(Attached {
         host_item_id,
         upgrade_item_id,
         slot,
         value: 0,
         detach_first,
+        new_copy: false,
     })
 }
 
-/// `46 02 <kit> <upgrade>`: take a cosmetic off the item it is on. Returns
-/// that item's id.
-pub fn detach_upgrade(account: &mut Account, upgrade_item_id: u32) -> Result<u32, ItemError> {
+/// A camouflage of its own (`original`) onto the host: a new bound copy
+/// of it goes into the slot, and the camouflage stays in the stash, free
+/// to go on any number of items more. One the host already wears (itself
+/// or a copy of it) is left as it is. A camouflage worn itself by another
+/// item, as the rule before copies had it, gives that item a copy in its
+/// place first: so the camouflage is again on nothing itself, and a later
+/// `46 02` naming it means the copy just made ([`detach_upgrade`]).
+fn attach_camouflage(
+    account: &mut Account,
+    host_item_id: u32,
+    original: u32,
+    slot: u8,
+) -> Attached {
+    let dict_id = account
+        .item(original)
+        .expect("the camouflage was found above")
+        .dict_id;
+    let held = account
+        .item(host_item_id)
+        .expect("the host was found above")
+        .upgrades
+        .iter()
+        .find(|held| held.param == slot)
+        .copied();
+    if let Some(held) = held {
+        let same = held.id == original
+            || account
+                .item(held.id)
+                .is_some_and(|item| item.copy_of == original);
+        if same {
+            return Attached {
+                host_item_id,
+                upgrade_item_id: held.id,
+                slot,
+                value: held.value,
+                detach_first: false,
+                new_copy: false,
+            };
+        }
+    }
+    let mut changed_hosts = vec![host_item_id];
+    if let Some(wearer) = host_of(account, original) {
+        let copy = make_copy(account, original);
+        let wearer_item = account.item_mut(wearer).expect("the wearer was found");
+        for held in &mut wearer_item.upgrades {
+            if held.id == original {
+                held.id = copy;
+            }
+        }
+        changed_hosts.push(wearer);
+    }
+    let copy = make_copy(account, original);
+    let host = account
+        .item_mut(host_item_id)
+        .expect("the host was found above");
+    host.upgrades.retain(|held| held.param != slot);
+    host.upgrades.push(Upgrade {
+        id: copy,
+        a: dict_id.into(),
+        value: 0,
+        param: slot,
+    });
+    // A bound copy that was in the slot is on nothing now: it goes.
+    drop_gone_upgrades(&mut account.inventory);
+    bump_kits_wearing_any(account, &changed_hosts);
+    Attached {
+        host_item_id,
+        upgrade_item_id: copy,
+        slot,
+        value: 0,
+        detach_first: false,
+        new_copy: true,
+    }
+}
+
+/// What `46 02` took off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Detached {
+    /// The item it was on.
+    pub host_item_id: u32,
+    /// The cosmetic that came off: what `83 46 02` names.
+    pub upgrade_item_id: u32,
+    /// It was a bound copy, and is gone from the inventory with it.
+    pub copy_dropped: bool,
+}
+
+/// `46 02 <kit> <upgrade>`: take a cosmetic off the item it is on. The
+/// request names no host (`drop_upgrade_item(item, upgrade)` sends only
+/// the second, 0x29AAD5), which is why each item wears a camouflage as a
+/// copy with an id of its own; a bound copy that comes off is gone. The
+/// camouflage itself, worn by nothing, is named only by the upgrade window
+/// it was just put on with (the slot still holds the id that was dragged
+/// there): the copy that made is the newest of its copies, and that one
+/// comes off.
+pub fn detach_upgrade(account: &mut Account, upgrade_item_id: u32) -> Result<Detached, ItemError> {
+    let target = if host_of(account, upgrade_item_id).is_some() {
+        upgrade_item_id
+    } else {
+        account
+            .inventory
+            .iter()
+            .filter(|item| upgrade_item_id != 0 && item.copy_of == upgrade_item_id)
+            .map(|item| item.item_id)
+            .filter(|&copy| host_of(account, copy).is_some())
+            .max()
+            .ok_or(ItemError::Upgrade("the cosmetic is on no item"))?
+    };
     let host = account
         .inventory
         .iter_mut()
-        .find(|item| item.upgrades.iter().any(|held| held.id == upgrade_item_id))
-        .ok_or(ItemError::Upgrade("the cosmetic is on no item"))?;
-    host.upgrades.retain(|held| held.id != upgrade_item_id);
+        .find(|item| item.upgrades.iter().any(|held| held.id == target))
+        .expect("the host was found above");
+    host.upgrades.retain(|held| held.id != target);
     let host_item_id = host.item_id;
+    let copy_dropped = account.item(target).is_some_and(|item| item.copy_of != 0);
+    if copy_dropped {
+        account.inventory.retain(|item| item.item_id != target);
+    }
     bump_kits_wearing(account, host_item_id);
-    Ok(host_item_id)
+    Ok(Detached {
+        host_item_id,
+        upgrade_item_id: target,
+        copy_dropped,
+    })
 }
 
 /// `46 05 <kit> <host> <upgrade> <u64>`: the decal editor's value for a
 /// cosmetic on an item (the client has written it into its own copy, and
-/// expects no answer).
+/// expects no answer). A camouflage named by its own id stands for the
+/// copy of it the host wears.
 pub fn place_upgrade(
     account: &mut Account,
     host_item_id: u32,
     upgrade_item_id: u32,
     value: u64,
 ) -> Result<(), ItemError> {
+    let copies: Vec<u32> = account
+        .inventory
+        .iter()
+        .filter(|item| upgrade_item_id != 0 && item.copy_of == upgrade_item_id)
+        .map(|item| item.item_id)
+        .collect();
     let held = account
         .item_mut(host_item_id)
         .and_then(|host| {
-            host.upgrades
-                .iter_mut()
-                .find(|held| held.id == upgrade_item_id)
+            let index = host
+                .upgrades
+                .iter()
+                .position(|held| held.id == upgrade_item_id)
+                .or_else(|| {
+                    host.upgrades
+                        .iter()
+                        .position(|held| copies.contains(&held.id))
+                })?;
+            host.upgrades.get_mut(index)
         })
         .ok_or(ItemError::Upgrade("the cosmetic is not on that item"))?;
     held.value = value;

@@ -83,6 +83,11 @@ pub struct Item {
     /// At most 3.
     pub upgrades: Vec<Upgrade>,
     pub reroll: Reroll,
+    /// 0: an item of its own. Else this is a bound copy of the camouflage
+    /// with that item id, made to wear it on one more item: it is on one
+    /// host, worth nothing, and goes when it comes off, when its host goes
+    /// or when the camouflage does (`super::items_rules`, "Cosmetics").
+    pub copy_of: u32,
 }
 
 /// What a slot of a kit holds.
@@ -291,6 +296,7 @@ impl Account {
             modifications: Vec::new(),
             upgrades: Vec::new(),
             reroll: Reroll::default(),
+            copy_of: 0,
         });
         item_id
     }
@@ -776,6 +782,7 @@ mod tests {
             modifications: Vec::new(),
             upgrades: Vec::new(),
             reroll: Reroll::default(),
+            copy_of: 0,
         });
         let copy = account.inventory[0].clone();
         account.inventory.push(copy);

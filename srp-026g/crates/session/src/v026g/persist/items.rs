@@ -1,5 +1,6 @@
 //! What an item keeps of its modification changes
-//! ([`Reroll`], `super::super::items_rules`), in a column of `g26_items`.
+//! ([`Reroll`], `super::super::items_rules`), in a column of `g26_items`,
+//! and the camouflage a bound copy is of ([`Item::copy_of`]), in another.
 //!
 //! The item's modifications, defects and upgrades were columns from the
 //! first step on (`modifications`, `upgrades`), and its two timers too
@@ -14,6 +15,15 @@ pub const MIGRATION: &str = "
     -- `modification:count`, then `:replaced:first:second:third` while a
     -- paid change waits for its choice; empty for an item never changed.
     ALTER TABLE g26_items ADD COLUMN reroll TEXT NOT NULL DEFAULT '';
+";
+
+/// The step that adds the bound copies of camouflages ([`Item::copy_of`]):
+/// every item of before is one of its own, and a camouflage it wore under
+/// the rule of before (the camouflage itself on its host) stays on it.
+pub const COPIES_MIGRATION: &str = "
+    -- 0: an item of its own; else the item id of the camouflage this is a
+    -- bound copy of.
+    ALTER TABLE g26_items ADD COLUMN copy_of INTEGER NOT NULL DEFAULT 0;
 ";
 
 /// The column's text for an item.
@@ -168,6 +178,95 @@ mod tests {
         let mut repository = SqliteGameRepository::open(&path).unwrap();
         let again = repository.load_all().unwrap();
         assert_eq!(again[0].1.inventory[0], account.inventory[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file of before the bound copies, with a camouflage worn under the
+    /// rule of before (the camouflage itself on its vest), is brought up
+    /// and loads it as it was; the copies made since come back after a
+    /// save.
+    #[test]
+    fn a_camouflage_worn_before_copies_loads_as_it_was() {
+        use crate::v026g::account::Upgrade;
+        use crate::v026g::items_rules;
+        use survarium::v026g::dictionary::Dictionary;
+
+        let dictionary = Dictionary::shared();
+        let vest = dictionary.item_named("edge_torso_2").unwrap().dict_id;
+        let spare = dictionary.item_named("bm_torso_1").unwrap().dict_id;
+        let camo = dictionary.item_named("camo_city").unwrap().dict_id;
+        let dir = temp_dir("copies");
+        let path = dir.join(DB_FILE);
+        let step = MIGRATIONS
+            .iter()
+            .position(|step| *step == COPIES_MIGRATION)
+            .expect("the copies' step is one of the migrations");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE g26_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
+                )
+                .unwrap();
+            for earlier in &MIGRATIONS[..step] {
+                connection.execute_batch(earlier).unwrap();
+            }
+            connection
+                .execute(
+                    "INSERT INTO g26_meta (key, value) VALUES ('schema', ?1)",
+                    [step as i64],
+                )
+                .unwrap();
+            connection
+                .execute_batch(&format!(
+                    "INSERT INTO g26_accounts (
+                        account_id, name, clan_tag, generic_money, premium_money, premium_until,
+                        exp_total, quest_faction, rating, rating_before, active_kit, autobuy,
+                        next_item_id, next_quest_instance, tutorial_step, tutorial_done
+                     ) VALUES (5, 'Alice', '', 777, 0, 0, 0, 0, 1000, 1000, 1, 0, 4, 1, 0, 0);
+                     INSERT INTO g26_items (
+                        account_id, item_id, seq, dict_id, condition_or_stack, repair_time,
+                        reroll_time, modifications, upgrades, reroll
+                     ) VALUES (5, 1, 0, {vest}, 1000000, 0, 0, '', '3:{camo}:42:3', ''),
+                              (5, 2, 1, {spare}, 1000000, 0, 0, '', '', ''),
+                              (5, 3, 2, {camo}, 1000000, 0, 0, '', '', '');"
+                ))
+                .unwrap();
+        }
+        let mut repository = SqliteGameRepository::open(&path).unwrap();
+        assert_eq!(repository.version().unwrap(), MIGRATIONS.len() as i64);
+        let mut loaded = repository.load_all().unwrap();
+        let (_, account) = &mut loaded[0];
+        assert_eq!(account.inventory.len(), 3);
+        assert!(account.inventory.iter().all(|item| item.copy_of == 0));
+        let worn = Upgrade {
+            id: 3,
+            a: camo.into(),
+            value: 42,
+            param: 3,
+        };
+        assert_eq!(account.inventory[0].upgrades, [worn]);
+        // What a load makes of it keeps it worn.
+        let mut repaired = account.clone();
+        repaired.repair();
+        assert_eq!(repaired.inventory, account.inventory);
+
+        // On the spare vest too: two copies, kept across a save.
+        let attached = items_rules::attach_upgrade(account, 2, 3, 3).unwrap();
+        assert!(attached.new_copy);
+        assert_eq!(
+            account
+                .inventory
+                .iter()
+                .filter(|item| item.copy_of == 3)
+                .count(),
+            2
+        );
+        repository.save(5, account).unwrap();
+        drop(repository);
+        let mut repository = SqliteGameRepository::open(&path).unwrap();
+        let again = repository.load_all().unwrap();
+        assert_eq!(again[0].1.inventory, account.inventory);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

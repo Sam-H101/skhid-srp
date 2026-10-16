@@ -126,6 +126,8 @@ const MIGRATIONS: &[&str] = &[
     results::MIGRATION,
     // 7: the balance rating the sides of a match are made with (`balance`).
     balance::MIGRATION,
+    // 8: the bound copies of camouflages (`items`).
+    items::COPIES_MIGRATION,
 ];
 
 /// The child tables of an account, children of children first.
@@ -491,7 +493,7 @@ impl GameRepository for SqliteGameRepository {
             {
                 let mut statement = transaction.prepare_cached(
                     "SELECT item_id, dict_id, condition_or_stack, repair_time, reroll_time,
-                            modifications, upgrades, reroll
+                            modifications, upgrades, reroll, copy_of
                      FROM g26_items WHERE account_id = ?1 ORDER BY seq",
                 )?;
                 let rows = statement.query_map([account_id], |row| {
@@ -505,6 +507,7 @@ impl GameRepository for SqliteGameRepository {
                             modifications: Vec::new(),
                             upgrades: Vec::new(),
                             reroll: Default::default(),
+                            copy_of: row.get(8)?,
                         },
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
@@ -650,8 +653,8 @@ impl GameRepository for SqliteGameRepository {
             transaction.execute(
                 "INSERT INTO g26_items (
                     account_id, item_id, seq, dict_id, condition_or_stack, repair_time,
-                    reroll_time, modifications, upgrades, reroll
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    reroll_time, modifications, upgrades, reroll, copy_of
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     account_id,
                     item.item_id,
@@ -663,6 +666,7 @@ impl GameRepository for SqliteGameRepository {
                     modifications_text(item),
                     upgrades_text(item),
                     items::reroll_text(item),
+                    item.copy_of,
                 ],
             )?;
         }

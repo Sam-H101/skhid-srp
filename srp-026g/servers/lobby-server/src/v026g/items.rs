@@ -6,8 +6,8 @@
 //!
 //! | request | done | refused |
 //! |---|---|---|
-//! | `46 01` attach | `83 46 01`, then the inventory and the account | `84 46` `st_cannot_upgrade_item`, then the inventory and the account (the window showed the cosmetic in its slot already) |
-//! | `46 02` detach | `83 46 02`, then the same | the same |
+//! | `46 01` attach | `83 46 01`, then the inventory and the account; for a camouflage worn as a new bound copy the inventory and the account first, since the answer names the copy | `84 46` `st_cannot_upgrade_item`, then the inventory and the account (the window showed the cosmetic in its slot already) |
+//! | `46 02` detach | `83 46 02` (naming the copy that came off, when the camouflage itself was named), then the same | the same |
 //! | `46 05` place a decal | nothing: the client wrote the value itself and has no handler for an answer | `84 46`, then the inventory and the account |
 //! | `46 06` window opened | `83 46 06`, and `83 46 07` again for a change not chosen yet | `84 46` `st_cannot_select_rerolled_modification` |
 //! | `46 07` reroll | `83 46 07` and the money | `84 46`, then `83 46 06`: the window is locked until it is filled again |
@@ -43,24 +43,30 @@ impl Core<'_> {
 
     /// `46 01 <kit> <host> <upgrade> <slot> <u64 0>`.
     pub(super) fn attach_upgrade(&mut self, who: &Who, host: u32, upgrade: u32, slot: u8) {
-        let attached =
-            items_rules::attach_upgrade(&mut who.account.locked(), host, upgrade, slot);
+        let attached = items_rules::attach_upgrade(&mut who.account.locked(), host, upgrade, slot);
         match attached {
-            Ok(attached) => self.send(
-                who.addr,
-                lobby::permitted_upgrade_attached(
-                    attached.host_item_id,
-                    attached.upgrade_item_id,
-                    attached.slot,
-                    attached.value,
-                    attached.detach_first,
-                ),
-            ),
-            Err(error) => {
-                self.refuse_item(who, id::INVENTORY, "an upgrade", error);
-                None
+            Ok(attached) => {
+                if attached.new_copy {
+                    // The answer names the camouflage's new bound copy:
+                    // the client must hold it first.
+                    self.item_changed(who);
+                }
+                self.send(
+                    who.addr,
+                    lobby::permitted_upgrade_attached(
+                        attached.host_item_id,
+                        attached.upgrade_item_id,
+                        attached.slot,
+                        attached.value,
+                        attached.detach_first,
+                    ),
+                );
+                if attached.new_copy {
+                    return;
+                }
             }
-        };
+            Err(error) => self.refuse_item(who, id::INVENTORY, "an upgrade", error),
+        }
         self.item_changed(who);
     }
 
@@ -68,8 +74,11 @@ impl Core<'_> {
     pub(super) fn detach_upgrade(&mut self, who: &Who, upgrade: u32) {
         let detached = items_rules::detach_upgrade(&mut who.account.locked(), upgrade);
         match detached {
-            Ok(_) => {
-                self.send(who.addr, lobby::permitted_upgrade_detached(upgrade));
+            Ok(detached) => {
+                self.send(
+                    who.addr,
+                    lobby::permitted_upgrade_detached(detached.upgrade_item_id),
+                );
             }
             Err(error) => self.refuse_item(who, id::INVENTORY, "taking an upgrade off", error),
         }

@@ -59,6 +59,12 @@ fn bytes(message: &ServerMessage) -> Vec<u8> {
 #[track_caller]
 fn takes(client: &mut Client, message: &ServerMessage, account: &Account) {
     client.receive(message).unwrap();
+    holds(client, account);
+}
+
+/// The client holds the account's items.
+#[track_caller]
+fn holds(client: &Client, account: &Account) {
     let held: Vec<ItemDescr> = account
         .inventory
         .iter()
@@ -75,6 +81,39 @@ fn takes(client: &mut Client, message: &ServerMessage, account: &Account) {
     by_slot(&mut held);
     by_slot(&mut seen);
     assert_eq!(seen, held);
+}
+
+/// [`takes`] after the inventory and the account: what the lobby sends
+/// before an answer that names a camouflage's new bound copy.
+#[track_caller]
+fn takes_after_push(client: &mut Client, message: &ServerMessage, account: &Account) {
+    client
+        .receive_all(&wire::after_change(account, NOW).unwrap())
+        .unwrap();
+    takes(client, message, account);
+}
+
+/// The client takes `message`, then the inventory and the account (what
+/// the lobby sends after it), and holds the account's items.
+#[track_caller]
+fn takes_then_push(client: &mut Client, message: &ServerMessage, account: &Account) {
+    client.receive(message).unwrap();
+    client
+        .receive_all(&wire::after_change(account, NOW).unwrap())
+        .unwrap();
+    holds(client, account);
+}
+
+/// The ids of the items wearing a bound copy of `camo`, and those copies.
+fn copies_of(account: &Account, camo: u32) -> Vec<(u32, u32)> {
+    let mut worn: Vec<(u32, u32)> = account
+        .inventory
+        .iter()
+        .filter(|item| item.copy_of == camo)
+        .map(|copy| (host_of(account, copy.item_id).unwrap_or(0), copy.item_id))
+        .collect();
+    worn.sort();
+    worn
 }
 
 #[test]
@@ -97,29 +136,33 @@ fn cosmetics_go_on_and_come_off() {
     let revision = account.kits[0].revision;
     let mut client = client_of(&account);
 
-    // The camouflage into slot 3, byte for byte.
+    // The camouflage into slot 3, byte for byte: the vest wears a new
+    // bound copy of it.
     let attached = attach_upgrade(&mut account, vest, camo, 3).unwrap();
+    let copy = attached.upgrade_item_id;
+    assert_ne!(copy, camo);
     assert_eq!(
         attached,
         Attached {
             host_item_id: vest,
-            upgrade_item_id: camo,
+            upgrade_item_id: copy,
             slot: 3,
             value: 0,
-            detach_first: false
+            detach_first: false,
+            new_copy: true,
         }
     );
-    let message = lobby::permitted_upgrade_attached(vest, camo, 3, 0, false);
+    let message = lobby::permitted_upgrade_attached(vest, copy, 3, 0, false);
     let mut expected = vec![0x83, 0x46, 0x01];
     expected.extend(vest.to_le_bytes());
-    expected.extend(camo.to_le_bytes());
+    expected.extend(copy.to_le_bytes());
     expected.extend([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(bytes(&message), expected);
-    takes(&mut client, &message, &account);
+    takes_after_push(&mut client, &message, &account);
     assert_eq!(
         account.item(vest).unwrap().upgrades,
         [Upgrade {
-            id: camo,
+            id: copy,
             a: dict("camo_city").into(),
             value: 0,
             param: 3
@@ -128,8 +171,12 @@ fn cosmetics_go_on_and_come_off() {
     // The kit that wears the vest shows another one.
     assert_eq!(account.kits[0].revision, revision + 1);
     assert_eq!(account.kits[1].revision, 1);
-    // It is still an item of the inventory.
-    assert!(account.item(camo).is_some());
+    // The camouflage is still an item of the inventory, on nothing itself;
+    // the copy is one too, bound to it.
+    assert!(account.item(camo).is_some_and(|item| item.copy_of == 0));
+    assert_eq!(host_of(&account, camo), None);
+    let bound = account.item(copy).unwrap();
+    assert_eq!((bound.dict_id, bound.copy_of), (dict("camo_city"), camo));
 
     // Two decals; a third has no slot, and a decal is no camouflage.
     for (decal, slot) in [(first, 0), (second, 1)] {
@@ -166,37 +213,73 @@ fn cosmetics_go_on_and_come_off() {
         .iter()
         .map(|upgrade| (upgrade.id, upgrade.param))
         .collect();
-    assert_eq!(slots, [(camo, 3), (first, 1)]);
+    assert_eq!(slots, [(copy, 3), (first, 1)]);
 
-    // The camouflage onto the other vest: off this one first.
-    let moved = attach_upgrade(&mut account, other, camo, 3).unwrap();
-    assert!(moved.detach_first);
-    let message = lobby::permitted_upgrade_attached(other, camo, 3, 0, true);
-    takes(&mut client, &message, &account);
-    assert_eq!(account.item(vest).unwrap().upgrades.len(), 1);
-    assert_eq!(account.item(other).unwrap().upgrades[0].id, camo);
+    // The camouflage onto the other vest too: a second copy, and this vest
+    // keeps its own.
+    let again = attach_upgrade(&mut account, other, camo, 3).unwrap();
+    assert!(!again.detach_first && again.new_copy);
+    let second = again.upgrade_item_id;
+    assert!(second != copy && second != camo);
+    let message = lobby::permitted_upgrade_attached(other, second, 3, 0, false);
+    takes_after_push(&mut client, &message, &account);
+    assert_eq!(account.item(vest).unwrap().upgrades.len(), 2);
+    assert_eq!(account.item(other).unwrap().upgrades[0].id, second);
 
     // The decal editor's value.
     place_upgrade(&mut account, vest, first, 0x0102_0304_0506_0708).unwrap();
-    assert_eq!(
-        account.item(vest).unwrap().upgrades[0].value,
-        0x0102_0304_0506_0708
-    );
-    assert!(place_upgrade(&mut account, vest, camo, 1).is_err());
+    let placed = |account: &Account, host: u32, id: u32| {
+        account
+            .item(host)
+            .unwrap()
+            .upgrades
+            .iter()
+            .find(|held| held.id == id)
+            .unwrap()
+            .value
+    };
+    assert_eq!(placed(&account, vest, first), 0x0102_0304_0506_0708);
+    // The camouflage named by its own id stands for the host's copy.
+    place_upgrade(&mut account, other, camo, 7).unwrap();
+    assert_eq!(placed(&account, other, second), 7);
+    assert_eq!(placed(&account, vest, copy), 0);
+    assert!(place_upgrade(&mut account, rifle, camo, 1).is_err());
+    assert!(place_upgrade(&mut account, vest, second, 1).is_err());
     assert!(place_upgrade(&mut account, 999, first, 1).is_err());
     // The client wrote it itself: the next inventory agrees with it.
     client
         .receive_all(&wire::after_change(&account, NOW).unwrap())
         .unwrap();
 
-    // Off again, byte for byte.
-    assert_eq!(detach_upgrade(&mut account, camo), Ok(other));
-    let message = lobby::permitted_upgrade_detached(camo);
+    // Off again, byte for byte: the camouflage named by its own id (the
+    // upgrade window it was just put on with) takes off its newest copy.
+    assert_eq!(
+        detach_upgrade(&mut account, camo),
+        Ok(Detached {
+            host_item_id: other,
+            upgrade_item_id: second,
+            copy_dropped: true
+        })
+    );
+    let message = lobby::permitted_upgrade_detached(second);
     let mut expected = vec![0x83, 0x46, 0x02];
-    expected.extend(camo.to_le_bytes());
+    expected.extend(second.to_le_bytes());
     assert_eq!(bytes(&message), expected);
-    takes(&mut client, &message, &account);
+    takes_then_push(&mut client, &message, &account);
+    assert!(account.item(second).is_none());
+    // The vest's copy by its own id.
+    assert_eq!(
+        detach_upgrade(&mut account, copy).map(|detached| detached.host_item_id),
+        Ok(vest)
+    );
+    takes_then_push(
+        &mut client,
+        &lobby::permitted_upgrade_detached(copy),
+        &account,
+    );
     assert!(detach_upgrade(&mut account, camo).is_err());
+    assert!(detach_upgrade(&mut account, copy).is_err());
+    assert!(account.item(camo).is_some());
 
     // A cosmetic that is sold is on no item any more.
     crate::v026g::rules::sell(&mut account, first, 1).unwrap();
@@ -228,12 +311,15 @@ fn moving_cosmetics_refreshes_every_kit_wearing_either_host() {
                     count: 1,
                 });
             }
-            attach_upgrade(&mut account, source, cosmetic, cosmetic_slot).unwrap();
+            // A camouflage is worn as a copy of it: the copy is what moves.
+            let worn = attach_upgrade(&mut account, source, cosmetic, cosmetic_slot)
+                .unwrap()
+                .upgrade_item_id;
             let before: Vec<_> = account.kits.iter().map(|kit| kit.revision).collect();
-            let moved = attach_upgrade(&mut account, destination, cosmetic, cosmetic_slot).unwrap();
-            assert!(moved.detach_first);
+            let moved = attach_upgrade(&mut account, destination, worn, cosmetic_slot).unwrap();
+            assert!(moved.detach_first && !moved.new_copy);
             assert!(account.item(source).unwrap().upgrades.is_empty());
-            assert_eq!(account.item(destination).unwrap().upgrades[0].id, cosmetic);
+            assert_eq!(account.item(destination).unwrap().upgrades[0].id, worn);
             assert_eq!(account.kits[0].revision, before[0] + 1);
             assert_eq!(account.kits[1].revision, before[1] + 1);
             assert_eq!(
@@ -242,6 +328,218 @@ fn moving_cosmetics_refreshes_every_kit_wearing_either_host() {
             );
         }
     }
+}
+
+/// The owner's rule (2026-10-16): one camouflage owned goes on any number
+/// of items at once. Each wears a bound copy; the camouflage stays free.
+#[test]
+fn one_camouflage_is_worn_by_many_items() {
+    let mut account = rich();
+    let vest = give(&mut account, "edge_torso_2", &[]);
+    let spare = give(&mut account, "bm_torso_1", &[]);
+    let trousers = give(&mut account, "bm_legs_4", &[]);
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let other_camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let mut client = client_of(&account);
+
+    let mut copies = Vec::new();
+    for host in [vest, spare, trousers] {
+        let attached = attach_upgrade(&mut account, host, camo, 3).unwrap();
+        assert!(attached.new_copy && !attached.detach_first);
+        let message =
+            lobby::permitted_upgrade_attached(host, attached.upgrade_item_id, 3, 0, false);
+        takes_after_push(&mut client, &message, &account);
+        copies.push((host, attached.upgrade_item_id));
+    }
+    assert_eq!(copies_of(&account, camo), copies);
+    assert_eq!(host_of(&account, camo), None);
+    // Every one shows it, in the lobby and in a match: the record names the
+    // camouflage's dict id, which is what the match reads (0x2F18D8).
+    for &(host, copy) in &copies {
+        let upgrades = &account.item(host).unwrap().upgrades;
+        assert_eq!(upgrades.len(), 1);
+        assert_eq!(
+            (upgrades[0].id, upgrades[0].a),
+            (copy, dict("camo_city").into())
+        );
+    }
+
+    // Put on again where it is: nothing changes, nothing is made.
+    let count = account.inventory.len();
+    let same = attach_upgrade(&mut account, spare, camo, 3).unwrap();
+    assert_eq!(
+        same,
+        Attached {
+            host_item_id: spare,
+            upgrade_item_id: copies[1].1,
+            slot: 3,
+            value: 0,
+            detach_first: false,
+            new_copy: false,
+        }
+    );
+    takes(
+        &mut client,
+        &lobby::permitted_upgrade_attached(spare, copies[1].1, 3, 0, false),
+        &account,
+    );
+    assert_eq!(account.inventory.len(), count);
+
+    // Another camouflage on the spare vest: its copy of the first goes.
+    let replaced = attach_upgrade(&mut account, spare, other_camo, 3).unwrap();
+    assert!(replaced.new_copy);
+    assert!(account.item(copies[1].1).is_none());
+    assert_eq!(copies_of(&account, camo), [copies[0], copies[2]]);
+    takes_after_push(
+        &mut client,
+        &lobby::permitted_upgrade_attached(spare, replaced.upgrade_item_id, 3, 0, false),
+        &account,
+    );
+
+    // A copy dragged onto another item moves, as a cosmetic always did:
+    // the vest's copy onto the spare vest, whose copy of the other goes.
+    let moved = attach_upgrade(&mut account, spare, copies[0].1, 3).unwrap();
+    assert!(moved.detach_first && !moved.new_copy);
+    assert_eq!(moved.upgrade_item_id, copies[0].1);
+    takes_then_push(
+        &mut client,
+        &lobby::permitted_upgrade_attached(spare, copies[0].1, 3, 0, true),
+        &account,
+    );
+    assert!(account.item(vest).unwrap().upgrades.is_empty());
+    assert!(account.item(replaced.upgrade_item_id).is_none());
+    assert_eq!(copies_of(&account, other_camo), []);
+    assert_eq!(copies_of(&account, camo), [(spare, copies[0].1), copies[2]]);
+
+    // A copy is worth nothing and is not sold.
+    assert_eq!(
+        crate::v026g::rules::sell(&mut account, copies[2].1, 1),
+        Err(crate::v026g::rules::ActionError::BoundCopy)
+    );
+    assert_eq!(
+        crate::v026g::rules::ActionError::BoundCopy.text_key(),
+        "st_cannot_upgrade_item"
+    );
+    // The item that wears one sold: the copy goes with it.
+    crate::v026g::rules::sell(&mut account, trousers, 1).unwrap();
+    assert!(account.item(copies[2].1).is_none());
+    assert_eq!(copies_of(&account, camo), [(spare, copies[0].1)]);
+    // The camouflage sold: it comes off every item, and is paid once.
+    let before_sale = account.generic_money;
+    let sold = crate::v026g::rules::sell(&mut account, camo, 1).unwrap();
+    assert_eq!(account.generic_money, before_sale + sold.money);
+    assert!(account.item(copies[0].1).is_none());
+    assert!(account.item(spare).unwrap().upgrades.is_empty());
+    assert!(account.inventory.iter().all(|item| item.copy_of == 0));
+    client
+        .receive_all(&wire::after_change(&account, NOW).unwrap())
+        .unwrap();
+    holds(&client, &account);
+}
+
+/// A camouflage worn itself, as the rule before copies had it, stays on
+/// its item through a load; put on another item, it gives the first a copy
+/// in its place, and is free again.
+#[test]
+fn a_camouflage_worn_under_the_old_rule_stays_valid() {
+    let mut account = rich();
+    let vest = give(&mut account, "edge_torso_2", &[]);
+    let spare = give(&mut account, "bm_torso_1", &[]);
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let worn = Upgrade {
+        id: camo,
+        a: dict("camo_city").into(),
+        value: 42,
+        param: 3,
+    };
+    account.item_mut(vest).unwrap().upgrades = vec![worn];
+    // A load changes nothing of it.
+    let mut loaded = account.clone();
+    assert!(!loaded.repair());
+    assert_eq!(loaded, account);
+    // Taken off by its own id, as before.
+    let mut off = account.clone();
+    assert_eq!(
+        detach_upgrade(&mut off, camo),
+        Ok(Detached {
+            host_item_id: vest,
+            upgrade_item_id: camo,
+            copy_dropped: false
+        })
+    );
+    assert!(off.item(camo).is_some());
+
+    // Onto the spare vest: the vest keeps it as a copy (its decal value
+    // too), and the spare vest gets one.
+    let mut client = client_of(&account);
+    let attached = attach_upgrade(&mut account, spare, camo, 3).unwrap();
+    assert!(attached.new_copy && !attached.detach_first);
+    takes_after_push(
+        &mut client,
+        &lobby::permitted_upgrade_attached(spare, attached.upgrade_item_id, 3, 0, false),
+        &account,
+    );
+    assert_eq!(host_of(&account, camo), None);
+    let copies = copies_of(&account, camo);
+    assert_eq!(copies.len(), 2);
+    assert_eq!(copies[1], (spare, attached.upgrade_item_id));
+    let (host, vest_copy) = copies[0];
+    assert_eq!(host, vest);
+    assert_eq!(
+        account.item(vest).unwrap().upgrades,
+        [Upgrade {
+            id: vest_copy,
+            ..worn
+        }]
+    );
+    // The camouflage named again, in the window it was just put on with:
+    // the spare vest's copy comes off, the vest keeps its own.
+    assert_eq!(
+        detach_upgrade(&mut account, camo).map(|detached| detached.host_item_id),
+        Ok(spare)
+    );
+    assert_eq!(copies_of(&account, camo), [(vest, vest_copy)]);
+}
+
+/// A loaded account keeps only copies that are worn and whose camouflage
+/// it owns: anything else is no item of its own to keep.
+#[test]
+fn a_loaded_account_keeps_only_worn_copies_of_owned_camouflages() {
+    let mut account = rich();
+    let vest = give(&mut account, "edge_torso_2", &[]);
+    let spare = give(&mut account, "bm_torso_1", &[]);
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let kept = attach_upgrade(&mut account, vest, camo, 3)
+        .unwrap()
+        .upgrade_item_id;
+    let worn = attach_upgrade(&mut account, spare, camo, 3)
+        .unwrap()
+        .upgrade_item_id;
+    let rifle = dict("ak_74m");
+    let mut damaged = account.clone();
+    // A copy on nothing, a copy of an item that is no camouflage of its
+    // kind, a copy of a copy.
+    let loose = damaged.add_item(dict("camo_city"), FULL_CONDITION);
+    damaged.item_mut(loose).unwrap().copy_of = camo;
+    let wrong = damaged.add_item(rifle, FULL_CONDITION);
+    damaged.item_mut(wrong).unwrap().copy_of = camo;
+    let chained = damaged.add_item(dict("camo_city"), FULL_CONDITION);
+    damaged.item_mut(chained).unwrap().copy_of = kept;
+    damaged.item_mut(spare).unwrap().upgrades[0].id = chained;
+    assert!(damaged.repair());
+    assert!(damaged.item(loose).is_none());
+    assert!(damaged.item(wrong).is_none());
+    assert!(damaged.item(chained).is_none());
+    assert!(damaged.item(worn).is_none());
+    assert!(damaged.item(spare).unwrap().upgrades.is_empty());
+    assert_eq!(copies_of(&damaged, camo), [(vest, kept)]);
+
+    // The camouflage gone behind the lobby's back: no copy is left.
+    let mut lost = account.clone();
+    lost.inventory.retain(|item| item.item_id != camo);
+    lost.sync_kits();
+    assert!(lost.inventory.iter().all(|item| item.copy_of == 0));
+    assert!(lost.item(vest).unwrap().upgrades.is_empty());
 }
 
 #[test]

@@ -523,6 +523,13 @@ pub fn upgrade_slots(host_dict_id: u16, upgrade_dict_id: u16) -> &'static [u8] {
     }
 }
 
+/// Whether `dict_id` is a camouflage (category 25, the kinds `*_camo`): a
+/// cosmetic that goes into [`CAMO_SLOT`].
+pub fn is_camouflage(dict_id: u16) -> bool {
+    item_params(dict_id)
+        .is_some_and(|params| params.modification != 0 && params.kind.ends_with("_camo"))
+}
+
 impl Modifications {
     /// The players' files ([`super::game_data`]), parsed once.
     pub fn shared() -> &'static Self {

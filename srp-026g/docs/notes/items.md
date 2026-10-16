@@ -163,6 +163,7 @@ srp's reading of what only the server knew:
 | wear is multiplied by `1 + value` of the item's "reliability" modifications | LIKELY |
 | the kit's items' `money_bonus` / `experience_bonus` / `reputation_bonus` (modifications 1230..1280, defaults of the premium items) add that share to a match's pay, shown in the screen's "premium items" column | LIKELY for the meaning; that the three bytes of the column are percents is GUESS |
 | any camouflage goes on any vest or trousers | [srp]: the data pairs none |
+| one camouflage owned goes on any number of items at once, each wearing a bound copy of it | [srp], the owner's rule (2026-10-16): §6 |
 
 ## 5. Not done
 
@@ -171,3 +172,52 @@ srp's reading of what only the server knew:
   craft timer the window has a clip for; no message that sets it was
   found, and srp crafts at once.
 - The camouflage's u64 (the decal editor serves both): kept as sent.
+
+## 6. One camouflage on many items (2026-10-16)
+
+The owner's rule: a player who owns one camouflage can have it on many
+items at once. Decals are left as they were (one item at a time): each has
+its own placement (`46 05`), and nothing asked for more.
+
+What the stock client does (read 2026-10-16 in the exe and the retail
+`lobby_menu.swf`; not yet seen in a running game):
+
+| what | PROVEN at |
+|---|---|
+| `drop_upgrade_item(item, upgrade)` (the upgrade window's drop and cancel, `on_item_sold`) sends **only the upgrade**: `46 02 <kit> <upgrade>` | 0x29A9E1 (`[eax+8]`, the host, is only logged), 0x29AAD5 → 0x2708C0 |
+| `83 46 02` (`process_detach_upgrade`): the cosmetic's own entry gets `is_attached_to = 0`, then it is taken off **the first item of the inventory that holds it** (`find_if` 0x277CF0 over lc+0x1EA978) | 0x275220..0x2753A1 |
+| `83 46 01`: `detach_first` runs `process_detach_upgrade` first; then host and cosmetic are looked up and **nothing more is done if either is missing**; the host's record in that slot comes off (its cosmetic gets `is_attached_to = 0`), the new record is pushed, the cosmetic gets `is_attached_to = host`. With `detach_first` 0 the cosmetic is left on any other item that holds it | 0x275585..0x275747 |
+| `is_attached_to` is not kept by the client: `update_inventory_item` is given it (0x287CC0's argument, written at 0x288189), and `setup_inventory_data` (0x89) makes it from a map of every item's upgrades, one host per cosmetic | 0x288520..0x28867A |
+| the stash shows an attached cosmetic as worn (`ItemRendererInv.equippedSprite`, from `equipped = is_attached_to`); nothing is hidden for it | `InventoryList.setupInventoryData`, `updateInventoryItem` |
+| the upgrade window fills a slot from the host's `upgrades` with **the inventory item of that id** (`create_item` → `getInventoryItem`; none: an empty slot); a slot keeps the id that was dropped on it until the window is opened again (`setData(..., false)` does not refill) | `UpgradeWindow.updateData`, `create_item`, `onItemDropped` |
+| a match takes the camouflage from the record's dict id (`item_config_cook` looks up `[record+4]`), not from the cosmetic item; only the kits' items go to a match | 0x2F18D0..0x2F18FA |
+
+So one id on many items (the obvious way) shows well but cannot be taken
+off one of them: `46 02` does not say which, and the client would take it
+off whichever comes first in its inventory. srp gives each item its own
+**bound copy** (`Item::copy_of` = the camouflage's item id; column
+`g26_items.copy_of`, schema step 8):
+
+- `46 01` with a camouflage of its own: a new copy goes on the host (one it
+  wears already, itself or a copy of it, is left as it is), and the
+  camouflage stays free in the stash. The inventory and the account are sent
+  **before** `83 46 01`, which names the copy: the client must hold it.
+- `46 01` with a copy (dragged from the stash, where it shows as worn): it
+  moves, `detach_first` as any cosmetic did.
+- `46 02` with a copy: it comes off and is gone. With the camouflage itself,
+  worn by nothing: the window it was just dropped on still names it, so its
+  newest copy is the one taken off (`83 46 02` names the copy).
+- A copy is gone when it comes off, when another cosmetic takes its slot,
+  when its item goes (sold, used up as a donor) or when the camouflage does.
+  A copy is not sold (`st_cannot_upgrade_item`); the camouflage sold takes
+  its copies off every item and is paid once. Nothing else moves items
+  between accounts.
+- Before copies a camouflage was worn as itself (its own id in the host's
+  record). Such an account loads as it was and the camouflage stays on its
+  item; put on another item, it leaves a copy in its place first, so it is
+  free again.
+
+The stash lists each copy beside the camouflage (they are items of the
+inventory: the client needs them so). Not yet seen in a running game: the
+stash and the upgrade window with several copies, a match showing each
+item's camouflage, and the window's drop right after a drop-on.

@@ -224,6 +224,19 @@ fn cosmetics_go_into_their_slots() {
     assert!(upgrade_slots(dict("ak_74m"), camo).is_empty());
     assert!(upgrade_slots(vest, dict("ak_74m")).is_empty());
     assert!(upgrade_slots(vest, 9999).is_empty());
+    // Only the camouflage is one.
+    assert!(is_camouflage(camo));
+    assert!(!is_camouflage(decal));
+    assert!(!is_camouflage(vest));
+    assert!(!is_camouflage(9999));
+    // Every camouflage the data has.
+    let camouflages = Dictionary::shared()
+        .items
+        .iter()
+        .filter(|item| item.category == 25)
+        .filter(|item| is_camouflage(item.dict_id))
+        .count();
+    assert_eq!(camouflages, 50);
 }
 
 #[test]
