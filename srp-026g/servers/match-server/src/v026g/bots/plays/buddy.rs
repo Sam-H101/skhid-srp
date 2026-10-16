@@ -60,7 +60,7 @@ pub fn tuning() -> PlayTuning {
 /// of the pair follows).
 pub fn leader<'a>(cx: &Ctx<'a>) -> Option<&'a PlaceView> {
     let partner = cx.bot.partner?;
-    if partner > cx.me.place {
+    if partner > cx.me.place || !cx.bot.paired {
         return None;
     }
     cx.view
@@ -72,7 +72,7 @@ pub fn leader<'a>(cx: &Ctx<'a>) -> Option<&'a PlaceView> {
 /// is left behind (farther than `wait_m`, nearer than `wait_max_m`).
 pub fn lagging<'a>(cx: &Ctx<'a>) -> Option<&'a PlaceView> {
     let partner = cx.bot.partner?;
-    if partner < cx.me.place {
+    if partner < cx.me.place || !cx.bot.paired {
         return None;
     }
     let num = |name| cx.num(PlayKind::Buddy, name);
@@ -175,6 +175,18 @@ mod tests {
         let alone = s.candidates(2);
         assert!(alone.iter().all(|c| c.kind != PlayKind::Buddy));
         assert!(alone.iter().any(|c| c.kind == PlayKind::Roam));
+        // A team's odd bot partners one way, for its trades: it follows
+        // no one, and no one waits for it.
+        let mut s = pair(40.0);
+        s.paired = false;
+        let odd = s.candidates(2);
+        assert!(odd.iter().all(|c| c.kind != PlayKind::Buddy), "{odd:#?}");
+        let mut s = pair(0.0);
+        s.partner = Some(2);
+        s.view.places[0].feet = Vec3::new(60.0, 0.0, 30.0);
+        assert!(lagging(&s.cx(0)).is_some());
+        s.paired = false;
+        assert!(lagging(&s.cx(0)).is_none());
     }
 
     #[test]
