@@ -252,6 +252,10 @@ pub struct CombatTuning {
     pub threat_ms: u32,
     pub threat_again_ms: u32,
     pub threat_match_m: f32,
+    /// Play 6 (no target): a heard shot is looked at `sound_ms`, and no
+    /// other before `sound_again_ms` more.
+    pub sound_ms: u32,
+    pub sound_again_ms: u32,
 }
 
 impl Default for CombatTuning {
@@ -322,6 +326,8 @@ impl Default for CombatTuning {
             threat_ms: 1_000,
             threat_again_ms: 1_500,
             threat_match_m: 6.0,
+            sound_ms: 1_000,
+            sound_again_ms: 1_500,
         }
     }
 }
@@ -451,8 +457,9 @@ pub struct Override {
     pub strafe: u32,
     /// `look_at` is a glance at a heard shot (play 6, or a threat not
     /// made by a hit), not an aim: the caller keeps the play's look when
-    /// the play runs, uses something or carries (a glance would stop the
-    /// sprint or the use; the bench lost a third of its deliveries).
+    /// the play uses something or carries (a glance there broke the use
+    /// and slowed the carrier: the bench lost a third of its deliveries
+    /// once play 6 ran again).
     pub glance: bool,
 }
 
@@ -526,6 +533,8 @@ pub struct Reflex {
     /// A threat looked at even with a target, and when the next may come.
     threat: Option<Threat>,
     next_threat: u32,
+    /// Play 6: the next turn to a heard shot not before this.
+    next_sound: u32,
     /// No shot at the target before this: noticed + the reaction delay.
     first_shot_at: u32,
     /// The life it counts for (`PlaceView::spawned`).
@@ -950,8 +959,15 @@ impl Reflex {
                         a.at.distance_xz(me.feet)
                             .total_cmp(&b.at.distance_xz(me.feet))
                     });
-                if let Some(track) = heard {
-                    self.sound = Some((track.at, now + 2_000));
+                // A look of `sound_ms`, again after `sound_again_ms`: heard
+                // tracks now last (no callout wipes them), and a bot
+                // turning at every think to every shot stopped doing
+                // anything else.
+                if let Some(track) = heard
+                    && now >= self.next_sound
+                {
+                    self.sound = Some((track.at, now + c.sound_ms));
+                    self.next_sound = now + c.sound_ms + c.sound_again_ms;
                 }
             }
         }
@@ -1616,9 +1632,10 @@ impl Reflex {
             // up, unless a shot was heard lately (play 6 first: the killer
             // is there, not at the body); else play 6.
             let shot = self.sound.is_some_and(|(_, until)| now < until);
-            if let Some((at, _)) = self.trade.filter(|(at, until)| {
-                now < *until && !shot && at.distance_xz(me.feet) <= c.trade_m
-            }) {
+            if let Some((at, _)) = self
+                .trade
+                .filter(|(at, until)| now < *until && !shot && at.distance_xz(me.feet) <= c.trade_m)
+            {
                 return Override {
                     look_at: Some(at + Vec3::new(0.0, 1.3, 0.0)),
                     keys: key::AIM | reload,
@@ -3584,6 +3601,64 @@ mod tests {
                 }
                 None => assert!(o.look_at.is_none(), "{o:?}"),
             }
+        }
+    }
+
+    /// Play 6 turns to a heard shot (not a step) for `sound_ms`, and not
+    /// again before `sound_again_ms` more, however long he keeps firing.
+    #[test]
+    fn play_6_looks_at_a_shot_a_moment_at_a_time() {
+        let me = body(0, 0, Vec3::ZERO, 0.0);
+        let at = Vec3::new(-12.0, 0.0, 30.0);
+        let aim = AimTuning::default();
+        let c = &aim.combat;
+        // A step heard: no turn.
+        let mut view = view_of(vec![me.clone(), body(1, 1, at, 0.0)]);
+        view.sounds = vec![Sound {
+            from: 1,
+            kind: SoundKind::Sprint,
+            at,
+            time: 1_000,
+        }];
+        let mut memory = Memory::default();
+        let mut reflex = Reflex::default();
+        let mut rng = Rng::new(36);
+        sense(&mut memory, &[percept(1, at, 1_000, Source::Heard)], 1_000);
+        reflex.think_with(
+            &me,
+            &Situation::of(&view),
+            &memory,
+            1_000,
+            &aim,
+            0.5,
+            &mut rng,
+        );
+        let o = reflex.tick(&me, &view, &memory, 1_050, true, &aim, 0.5, &mut rng);
+        assert!(o.look_at.is_none(), "{o:?}");
+        // Shots every think: looked at, then not, then again.
+        let mut looked = Vec::new();
+        let mut now = 2_000;
+        while now < 6_000 {
+            view.sounds = vec![shot(1, at, now)];
+            sense(&mut memory, &[percept(1, at, now, Source::Heard)], now);
+            reflex.think_with(
+                &me,
+                &Situation::of(&view),
+                &memory,
+                now,
+                &aim,
+                0.5,
+                &mut rng,
+            );
+            let o = reflex.tick(&me, &view, &memory, now + 50, true, &aim, 0.5, &mut rng);
+            looked.push((now, o.look_at.is_some_and(|p| p.distance_xz(at) < 0.1)));
+            now += 250;
+        }
+        let first = looked.iter().find(|l| l.1).map(|l| l.0).expect("looks");
+        assert_eq!(first, 2_000);
+        let period = c.sound_ms + c.sound_again_ms;
+        for &(t, on) in &looked {
+            assert_eq!(on, (t - first) % period < c.sound_ms, "{t}: {looked:?}");
         }
     }
 
