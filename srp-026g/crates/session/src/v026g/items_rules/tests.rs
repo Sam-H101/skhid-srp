@@ -168,43 +168,139 @@ fn cosmetics_go_on_and_come_off() {
         .collect();
     assert_eq!(slots, [(camo, 3), (first, 1)]);
 
-    // The camouflage onto the other vest: off this one first.
-    let moved = attach_upgrade(&mut account, other, camo, 3).unwrap();
-    assert!(moved.detach_first);
-    let message = lobby::permitted_upgrade_attached(other, camo, 3, 0, true);
+    // The camouflage onto the other vest too: this one keeps it.
+    let shared = attach_upgrade(&mut account, other, camo, 3).unwrap();
+    assert!(!shared.detach_first);
+    let message = lobby::permitted_upgrade_attached(other, camo, 3, 0, false);
     takes(&mut client, &message, &account);
-    assert_eq!(account.item(vest).unwrap().upgrades.len(), 1);
+    assert_eq!(account.item(vest).unwrap().upgrades.len(), 2);
     assert_eq!(account.item(other).unwrap().upgrades[0].id, camo);
+    // Again into the same slot: nothing changes.
+    let again = attach_upgrade(&mut account, other, camo, 3).unwrap();
+    assert!(!again.detach_first);
+    assert_eq!(account.item(other).unwrap().upgrades.len(), 1);
 
     // The decal editor's value.
     place_upgrade(&mut account, vest, first, 0x0102_0304_0506_0708).unwrap();
+    let held = |account: &Account, host: u32, upgrade: u32| {
+        account
+            .item(host)
+            .unwrap()
+            .upgrades
+            .iter()
+            .find(|held| held.id == upgrade)
+            .copied()
+    };
     assert_eq!(
-        account.item(vest).unwrap().upgrades[0].value,
+        held(&account, vest, first).unwrap().value,
         0x0102_0304_0506_0708
     );
-    assert!(place_upgrade(&mut account, vest, camo, 1).is_err());
+    assert!(place_upgrade(&mut account, other, first, 1).is_err());
     assert!(place_upgrade(&mut account, 999, first, 1).is_err());
     // The client wrote it itself: the next inventory agrees with it.
     client
         .receive_all(&wire::after_change(&account, NOW).unwrap())
         .unwrap();
 
-    // Off again, byte for byte.
-    assert_eq!(detach_upgrade(&mut account, camo), Ok(other));
-    let message = lobby::permitted_upgrade_detached(camo);
+    // Off the other vest, byte for byte; the first keeps it.
+    assert_eq!(detach_upgrade(&mut account, other, camo), Ok(Detached::Off));
+    let message = lobby::permitted_upgrade_detached(camo, other);
     let mut expected = vec![0x83, 0x46, 0x02];
     expected.extend(camo.to_le_bytes());
+    expected.extend(other.to_le_bytes());
     assert_eq!(bytes(&message), expected);
     takes(&mut client, &message, &account);
-    assert!(detach_upgrade(&mut account, camo).is_err());
+    assert!(held(&account, vest, camo).is_some());
+    assert_eq!(
+        detach_upgrade(&mut account, other, camo),
+        Err(ItemError::Upgrade("the cosmetic is not on that item"))
+    );
+    assert!(detach_upgrade(&mut account, 999, camo).is_err());
 
-    // A cosmetic that is sold is on no item any more.
+    // A cosmetic that is sold is on no item any more, and `46 02` for it
+    // (Flash's on_item_sold sends it after the sale) does nothing.
     crate::v026g::rules::sell(&mut account, first, 1).unwrap();
-    assert!(account.item(vest).unwrap().upgrades.is_empty());
+    assert!(held(&account, vest, first).is_none());
+    let before = account.clone();
+    assert_eq!(
+        detach_upgrade(&mut account, vest, first),
+        Ok(Detached::Gone)
+    );
+    assert_eq!(account, before);
 }
 
 #[test]
-fn moving_cosmetics_refreshes_every_kit_wearing_either_host() {
+fn one_cosmetic_is_worn_by_many_items() {
+    let mut account = rich();
+    let vests: Vec<u32> = ["edge_torso_2", "bm_torso_1", "edge_torso_2"]
+        .into_iter()
+        .map(|name| give(&mut account, name, &[]))
+        .collect();
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let decal = account.add_item(decal(), FULL_CONDITION);
+    let mut client = client_of(&account);
+    let items = account.inventory.len();
+    for &vest in &vests {
+        for (upgrade, slot) in [(camo, 3), (decal, 0)] {
+            let attached = attach_upgrade(&mut account, vest, upgrade, slot).unwrap();
+            assert!(!attached.detach_first);
+            let message = lobby::permitted_upgrade_attached(vest, upgrade, slot, 0, false);
+            takes(&mut client, &message, &account);
+        }
+    }
+    // No item more: the same two are on each vest.
+    assert_eq!(account.inventory.len(), items);
+    // Each vest has its own slot and place for the decal.
+    attach_upgrade(&mut account, vests[1], decal, 1).unwrap();
+    for (index, &vest) in vests.iter().enumerate() {
+        place_upgrade(&mut account, vest, decal, index as u64 + 1).unwrap();
+    }
+    let decal_on = |account: &Account, vest: u32| {
+        account
+            .item(vest)
+            .unwrap()
+            .upgrades
+            .iter()
+            .find(|held| held.id == decal)
+            .map(|held| (held.param, held.value))
+    };
+    assert_eq!(decal_on(&account, vests[0]), Some((0, 1)));
+    assert_eq!(decal_on(&account, vests[1]), Some((1, 2)));
+    assert_eq!(decal_on(&account, vests[2]), Some((0, 3)));
+    client
+        .receive_all(&wire::after_change(&account, NOW).unwrap())
+        .unwrap();
+    // Off one: the others keep it.
+    assert_eq!(
+        detach_upgrade(&mut account, vests[0], decal),
+        Ok(Detached::Off)
+    );
+    takes(
+        &mut client,
+        &lobby::permitted_upgrade_detached(decal, vests[0]),
+        &account,
+    );
+    assert_eq!(decal_on(&account, vests[0]), None);
+    assert_eq!(decal_on(&account, vests[2]), Some((0, 3)));
+    // The camouflage sold: off every vest, paid once.
+    let money = account.generic_money;
+    crate::v026g::rules::sell(&mut account, camo, 1).unwrap();
+    assert!(account.generic_money > money);
+    for &vest in &vests {
+        assert!(
+            account
+                .item(vest)
+                .unwrap()
+                .upgrades
+                .iter()
+                .all(|held| held.id != camo)
+        );
+    }
+    assert_eq!(decal_on(&account, vests[2]), Some((0, 3)));
+}
+
+#[test]
+fn a_cosmetic_put_on_another_item_stays_on_the_first() {
     for (cosmetic_dict, cosmetic_slot) in [(dict("camo_city"), 3), (decal(), 0)] {
         for equip_destination in [false, true] {
             let mut account = rich();
@@ -230,12 +326,14 @@ fn moving_cosmetics_refreshes_every_kit_wearing_either_host() {
             }
             attach_upgrade(&mut account, source, cosmetic, cosmetic_slot).unwrap();
             let before: Vec<_> = account.kits.iter().map(|kit| kit.revision).collect();
-            let moved = attach_upgrade(&mut account, destination, cosmetic, cosmetic_slot).unwrap();
-            assert!(moved.detach_first);
-            assert!(account.item(source).unwrap().upgrades.is_empty());
+            let shared =
+                attach_upgrade(&mut account, destination, cosmetic, cosmetic_slot).unwrap();
+            assert!(!shared.detach_first);
+            assert_eq!(account.item(source).unwrap().upgrades[0].id, cosmetic);
             assert_eq!(account.item(destination).unwrap().upgrades[0].id, cosmetic);
-            assert_eq!(account.kits[0].revision, before[0] + 1);
-            assert_eq!(account.kits[1].revision, before[1] + 1);
+            // Only the kits wearing the destination show another item.
+            assert_eq!(account.kits[0].revision, before[0]);
+            assert_eq!(account.kits[1].revision, before[1]);
             assert_eq!(
                 account.kits[2].revision,
                 before[2] + u32::from(equip_destination)

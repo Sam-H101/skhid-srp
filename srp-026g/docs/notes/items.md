@@ -88,7 +88,7 @@ own timer; `ItemControlPanel` shows `rerollTime / 60` minutes).
 | request | body (PROVEN) | Flash call |
 |---|---|---|
 | `46 01` | u32 active kit, **u32 host item, u32 cosmetic item, u8 slot**, u64 0 | `relocate_upgrade_item(item, upgrade, slot)` (0x29A984: args 0, 1, 2 in order) |
-| `46 02` | u32 active kit, u32 cosmetic item | `drop_upgrade_item(item, upgrade)`: only the second is sent |
+| `46 02` | u32 active kit, u32 cosmetic item; **u32 host item** with patch 30 (§6) | `drop_upgrade_item(item, upgrade)`: the stock exe sends only the second (0x29AAD5 → 0x2708C0; 0x29A9E1 reads the first for a log line) |
 | `46 05` | u32 active kit, **u32 host item, u32 cosmetic item**, u64 value | the decal editor 0x263950; the client then finds the host and the cosmetic's record and writes the value itself (0x270A1A..0x270AC6) |
 | `46 06` | u32 item | `item_reroll_opened` |
 | `46 07` | u32 item, u32 modification id (`item.mods[index]`), **bool gold** | `reroll_item_modifier(item, index, money type)` |
@@ -100,8 +100,8 @@ own timer; `ItemControlPanel` shows `rerollTime / 60` minutes).
 
 | ev | body | notes |
 |---|---|---|
-| 01 | u32 host, u32 cosmetic, u8 slot, u64 value, bool detach_first | `detach_first` takes **the cosmetic** off the item it is on (0x275589 → 0x275220 with the second u32), not the host's upgrades. Both items must be in the inventory or nothing is done |
-| 02 | u32 cosmetic | |
+| 01 | u32 host, u32 cosmetic, u8 slot, u64 value, bool detach_first | `detach_first` takes **the cosmetic** off the first item of the inventory holding it (0x275589 → 0x275220 with the second u32), not the host's upgrades; with patch 30, off the host (§6). Both items must be in the inventory or nothing is done; with `detach_first` 0 the cosmetic stays on any other item holding it |
+| 02 | u32 cosmetic; **u32 host** with patch 30 (§6) | the stock client takes it off the first item of the inventory holding it (find_if 0x277CF0); patch 30 off the host named |
 | 06 | u32 item, **u32 regular_cost, u32 premium_cost**, bool more; if more: **u32 the modification changed before, u32 reroll_time** | 0x2757CC → 0x29F430 → `root.fill_item_reroll_data {reroll_time, regular_cost, premium_cost, modifiers[]}`; each modifier gets `was_rerolled_before = (id == that u32)` and `reroll_available = state 0 and (none changed before or this one)` (0x29FC8D..0x29FD1A). The item must be in the inventory (no check, 0x29F58B) |
 | 07 | u32 item, 3 × u32 modification, u32 reroll_time | each is looked up as a modification (0x29F680 → 0x229FD0): an unknown id crashes. `item.reroll_time` is set |
 | 08 | u32 item, u32 old, u32 new, **u32 regular_cost, u32 premium_cost, u32 reroll_time** | the client replaces old by new in the inventory and the kit copies, then fills the window again with `new` as the one changed before (0x2759F0..0x275A16) |
@@ -163,6 +163,7 @@ srp's reading of what only the server knew:
 | wear is multiplied by `1 + value` of the item's "reliability" modifications | LIKELY |
 | the kit's items' `money_bonus` / `experience_bonus` / `reputation_bonus` (modifications 1230..1280, defaults of the premium items) add that share to a match's pay, shown in the screen's "premium items" column | LIKELY for the meaning; that the three bytes of the column are percents is GUESS |
 | any camouflage goes on any vest or trousers | [srp]: the data pairs none |
+| one cosmetic (camouflage, decal) is worn by any number of items at once, each with its own slot and value | [srp], the owner's rule (2026-10-16), with patch 30 of the client: §6 |
 
 ## 5. Not done
 
@@ -171,3 +172,69 @@ srp's reading of what only the server knew:
   craft timer the window has a clip for; no message that sets it was
   found, and srp crafts at once.
 - The camouflage's u64 (the decal editor serves both): kept as sent.
+
+## 6. One cosmetic on many items (2026-10-17)
+
+The owner's rule: a player who owns one camouflage or decal can have it on
+any number of items at once, and it is one item of the stash. The same is
+meant for weapon attachments later: nothing below is of the cosmetic's
+kind (any upgrade, any slot).
+
+What the stock client does with one id in the upgrades of several items
+(read 2026-10-16/17 in the exe and the retail `lobby_menu.swf`):
+
+| what | PROVEN at |
+|---|---|
+| each item keeps its own records `{upgrade id, dict id, u64, slot}` (+60h: begin, end, capacity; 3 inline); nothing in the inventory model forbids one id in several items' records | 0x275671..0x2756F1, 0x276EB0 |
+| the full inventory (`0x89`) builds every item from its own records; `is_attached_to` comes from a list of (upgrade, host) pairs made from all of them, the first pair of an id winning: the stash shows the cosmetic once, as worn | `fill_inventory_contents` 0x288520 (pairs 0x28B0F0, room for ten an item; search 0x28865A) |
+| the upgrade window of an item fills its slots from that item's records, each with the inventory item of the id (`create_item`): every item shows the cosmetic | `UpgradeWindow.updateData`, `create_item` |
+| the decal editor works on the item it is opened for: start (0x2636B0) finds the host by its id and the cosmetic's record in the host's records; its place (`46 05`) names the host | 0x29A830 → 0x2636B0, 0x263950 → 0x270950 |
+| a match takes each item's camouflage from its own record (`[record+4]`, the dict id) | 0x2F18D0..0x2F18FA |
+| `83 46 01` with `detach_first` 0 adds the record to the host and leaves the others | 0x275641..0x275747 |
+| **`46 02` names no item**: `drop_upgrade_item(item, upgrade)` (the window's drop and cancel, and `on_item_sold`) sends `46 02 <kit> <upgrade>` | 0x29A9E1 (`[eax+8]`, the item, only logged), 0x29AAD5 → 0x2708C0 |
+| **`83 46 02` and `detach_first` take it off the first item holding it**: `process_detach_upgrade` sets the cosmetic's `is_attached_to` to 0, then `find_if` over the inventory | 0x275220..0x2753A1, 0x277CF0 (its only call, 0x27534D) |
+| `on_item_sold` runs for a sold camouflage (category 25) that is worn: `drop_upgrade_item(is_attached_to, camo)`, after the sale's answer | 0x27654B..0x2765DB → 0x228FF0; `LobbyMenu.on_item_sold` |
+
+So the client holds one cosmetic on several items as it is; only taking it
+off one of them is ambiguous. **Patch 30** (`client-patches`,
+`shared_upgrades_026g.asm`, 181 bytes at `.srp`+700h, four sites; `client_patch.md`
+§3.28) makes `46 02 <kit> <upgrade> <item>` (the item the window shows),
+`83 46 02 <upgrade> <item>` take it off that item alone, and `detach_first`
+take it off the host of the answer (it was in another slot of it). No
+change of `lobby_menu.swf`.
+
+The server (`session::v026g::items_rules`):
+
+- `46 01`: the cosmetic goes into the slot of the host; what was in that
+  slot comes off the host; every other item keeps what it wears. Already
+  in that slot: nothing changes (its value kept). In another slot of the
+  host: it moves (`detach_first`). Only the kits wearing the host get new
+  revisions.
+- `46 02 <kit> <upgrade> <host>`: off that host alone. A cosmetic that is no
+  item any more (the `on_item_sold` that follows a sale) is off: `83 46
+  02`, not a refusal. A host that does not wear it: refused, then the
+  inventory.
+- `46 05`: the host's own record (each item its own decal place).
+- A cosmetic that goes (sold, used up as a donor) comes off every item
+  (`drop_gone_upgrades`), and is paid once. No new item is made for any
+  of this: the stash has the one cosmetic.
+- Persistence: as before (each host's records in its `upgrades` column);
+  any account loads unchanged.
+
+A game without patch 30 sends `46 02` without the host: the lobby cannot
+read it and refuses it (`84 46 st_cannot_relocate_item`, the request kind's
+text); the cosmetic stays on the item, and the window shows the slot empty
+until it is opened again. Its `83 46 02` reader would take the cosmetic off
+the first item holding it (the host after it is not read). The release asks
+for the patch's revision (`SRP_MIN_PATCH_REVISION`), so such a game does not
+sign in.
+
+**Weapon attachments** would use the same records and the same patch, but
+the client has no window for them: `UpgradeWindow` has the three decal
+slots and the camouflage slot only (`configUI`), `lobby_menu.swf` has no
+attachment UI, and what a match does with a record of another kind is not
+read. That is a Flash change and more reading, not part of this.
+
+Not yet seen in a running game: the stash with one camouflage on several
+items, the upgrade window's drop on each, and a match showing each item's
+camouflage.

@@ -1388,8 +1388,11 @@ const PROFILE: u8 = super::requests::id::PROFILE;
 
 /// `83 46 01`: an upgrade (a camouflage or decal, by its item id) went
 /// into `slot` of the host; an upgrade that was in the slot comes off.
-/// `detach_first` first takes the upgrade off the item it is on
-/// (0x275585). `value` is the upgrade's u64 (a decal's placement).
+/// `detach_first` first takes the upgrade off the host itself, where it
+/// was in another slot (0x275585; patch 30 of `client-patches`: the stock
+/// client took it off the first item of its inventory holding it). An
+/// upgrade may be on other items too: they keep it. `value` is the
+/// upgrade's u64 (a decal's placement).
 pub fn permitted_upgrade_attached(
     host_item_id: u32,
     upgrade_item_id: u32,
@@ -1406,10 +1409,14 @@ pub fn permitted_upgrade_attached(
         .done(ServerId::Permitted)
 }
 
-/// `83 46 02`: the upgrade with this item id came off its host.
-pub fn permitted_upgrade_detached(item_id: u32) -> ServerMessage {
+/// `83 46 02 <upgrade> <host>`: the upgrade with this item id came off
+/// the host; any other item wearing it keeps it. The host is patch 30's
+/// (`client-patches`, 0x275756): the stock client reads the upgrade alone
+/// and takes it off the first item of its inventory holding it.
+pub fn permitted_upgrade_detached(upgrade_item_id: u32, host_item_id: u32) -> ServerMessage {
     permitted_event(INVENTORY, 2)
-        .u32(item_id)
+        .u32(upgrade_item_id)
+        .u32(host_item_id)
         .done(ServerId::Permitted)
 }
 
