@@ -7,7 +7,8 @@
 //! bot cannot shoot (`Intent::hold_fire`) and is slower; at its own
 //! container, another use puts it in. The worlds say whether it carries
 //! (`PlaceView::carrying`, up to two seconds late), so each use is tried a
-//! few times at most.
+//! few times at most: twice where it stopped, then at other stands round
+//! the battery (`take`), as a player steps round a battery he cannot get.
 //!
 //! With the battery cheat off (`CheatTuning::batteries`) a bot goes only
 //! for batteries its team knows of (`Ctx::battery_lying`), and while some
@@ -39,12 +40,11 @@ pub const USE_NEAR_M: f32 = 1.6;
 /// stops at 1 rad (`kin`, PROVEN), so from a crouch (the eye 0.95 m up)
 /// over a battery on the floor no ray passes within the use's 0.2 m of
 /// its middle closer than about 0.3 m on the ground (`bots::tests`): that
-/// is a look down of about 1.2 rad. Past this the bot steps back first.
+/// is a look down of about 1.2 rad. Past this the bot steps off first.
 pub const TAKE_PITCH_MAX_RAD: f32 = 1.15;
 /// The look down a take stands for, radians: the eye about 1.2 m from a
-/// battery on the floor, the use's ray 1.5 m long. A step back goes
-/// there; the walk's arrival (the motor's `arrive_m`, 0.6 m) leaves it
-/// between about 0.5 and 1.2 m off, every one of them good.
+/// battery on the floor, the use's ray 1.5 m long. A take walks in to
+/// there, and of the stands round the battery prefers one near it.
 pub const TAKE_PITCH_RAD: f32 = 0.6;
 
 /// How far off a battery `below` metres under the eye the look down at
@@ -53,34 +53,184 @@ fn take_flat_m(below: f32, pitch: f32) -> f32 {
     below.max(0.0) / pitch.tan()
 }
 
-/// Where a bot right over a battery (its middle `aim`, `below` metres
-/// under the eye) steps back to so it can look at it:
-/// [`TAKE_PITCH_RAD`]'s distance off it, the way it came from (else
-/// behind its back), else round that way by eighths of a turn; a floor
-/// walked to in a straight line.
-fn take_back_spot(cx: &Ctx, aim: Vec3, below: f32) -> Option<Vec3> {
-    let me = cx.me.feet;
-    let flat = take_flat_m(below, TAKE_PITCH_RAD);
-    let (dx, dz) = (me.x - aim.x, me.z - aim.z);
-    let away = if dx.hypot(dz) > 0.05 {
-        dz.atan2(dx)
-    } else {
-        let [fx, fz] = crate::v026g::bots::kin::forward(cx.me.yaw);
-        (-fz).atan2(-fx)
+/// A stand round a battery is this near another to be the same, metres.
+const SAME_STAND_M: f32 = 0.35;
+/// The ring of stands round a battery tried after a stand failed: eight
+/// ways at these distances off it, metres.
+const RING_M: [f32; 3] = [0.6, 0.9, 1.2];
+/// From a ring's stand the look down at the battery is at most this,
+/// radians (the view's pitch stops at 1 rad, `kin`)...
+const RING_PITCH_MAX_RAD: f32 = 0.95;
+/// ... and the eye at most this far from it (the use's ray is 2 m; the
+/// body stops up to [`AT_STAND_M`] off the stand).
+const RING_USE_M: f32 = 1.7;
+/// Where it stopped, a use is pressed if the look down is at most this,
+/// radians: the view stops at 1 rad, and in the soaks uses at the stop
+/// over a steeper look passed 0.33-0.36 m from the battery's middle.
+const FIRST_PITCH_MAX_RAD: f32 = 0.98;
+/// A stand is reached within this up or down, metres (one on a crate is
+/// not reached from the floor beside it).
+const AT_STAND_UP_M: f32 = 0.4;
+/// A stand is reached within this, metres.
+const AT_STAND_M: f32 = 0.25;
+/// A stand this near in a clear line is walked to straight, by keys
+/// (`Intent::straight`); the route's arrival (the motor's `arrive_m`,
+/// 0.6 m) is too loose for a stand.
+const STRAIGHT_M: f32 = 2.5;
+/// The line from the eye to the battery is clear if nothing is hit short
+/// of it by more than this, metres (what it lies on or against).
+const USE_LINE_SLACK_M: f32 = 0.15;
+/// The way it came: where it last stood at least this far off the
+/// battery, metres; a step back out of a nook goes that way...
+const FROM_M: f32 = 0.8;
+/// ... until this far off the battery, metres, or for at most this, ms.
+const BACKED_M: f32 = 0.6;
+const BACKING_MS: u32 = 2_000;
+/// A stand failed is kept this long, ms.
+const FAILED_KEEP_MS: u32 = 90_000;
+/// At a stand, a use is pressed once the view is on the battery within
+/// this, radians, or after this long there anyway, ms.
+const SETTLED_RAD: f32 = 0.06;
+const SETTLE_MS: u32 = 1_500;
+/// Each use at a stand aims at the next of these heights over the
+/// battery's position (as the eye's height is a GUESS, `view`).
+const AIM_LIFTS_M: [f32; 2] = [BATTERY_AIM_M, 0.0];
+
+/// A stand a take of a battery gave up at (its uses spent, the battery
+/// still lying there): the bot keeps it for a while, so its next take of
+/// that battery stands elsewhere (in the owner's match of 2026-10-16 a
+/// bot took the same play and stand 9 times).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FailedStand {
+    pub battery: usize,
+    /// Where the battery lay.
+    pub at: Vec3,
+    pub feet: Vec3,
+    pub crouch: bool,
+    pub until: u32,
+}
+
+/// Where and how a body stands to take a battery.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TakeStand {
+    pub feet: Vec3,
+    pub crouch: bool,
+}
+
+impl TakeStand {
+    fn same(&self, feet: Vec3, crouch: bool) -> bool {
+        self.crouch == crouch && self.feet.distance_xz(feet) < SAME_STAND_M
+    }
+
+    fn eye(&self) -> Vec3 {
+        let up = if self.crouch {
+            view::EYE_CROUCHED
+        } else {
+            view::EYE_STANDING
+        };
+        self.feet + Vec3::new(0.0, up, 0.0)
+    }
+}
+
+/// How a use of a battery (its point `aim`) goes from a stand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum UseFrom {
+    /// The ray reaches it in a clear line; the look down, radians.
+    Clear(f32),
+    /// Right over it: the view does not look down that far.
+    Steep,
+    /// Farther than `max_m` from the eye.
+    Far,
+    /// Something lies between the eye and it (on the bullet mesh).
+    Blocked,
+}
+
+fn use_from(cx: &Ctx, stand: TakeStand, aim: Vec3, max_m: f32, max_pitch: f32) -> UseFrom {
+    let eye = stand.eye();
+    let d = aim - eye;
+    let length = d.length();
+    let pitch = (-d.y).atan2(d.x.hypot(d.z));
+    if pitch > max_pitch {
+        return UseFrom::Steep;
+    }
+    if length > max_m {
+        return UseFrom::Far;
+    }
+    if length > USE_LINE_SLACK_M
+        && cx
+            .tactics
+            .world
+            .sight
+            .ray_cast(eye, d * (1.0 / length), length - USE_LINE_SLACK_M)
+            .is_some()
+    {
+        return UseFrom::Blocked;
+    }
+    UseFrom::Clear(pitch)
+}
+
+/// The stands round a battery lying at `at` (its point to use `aim`): a
+/// ring of eight ways at [`RING_M`], on floors a walk may get to, crouched
+/// and standing, from which the eye is within the use's reach in a clear
+/// line, with their look down.
+fn ring_stands(cx: &Ctx, at: Vec3, aim: Vec3) -> Vec<(TakeStand, f32)> {
+    let grid = &cx.tactics.world.grid;
+    let mut out: Vec<(TakeStand, f32)> = Vec::new();
+    for k in 0..8 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+        for r in RING_M {
+            let p = Vec3::new(at.x + r * a.cos(), at.y, at.z + r * a.sin());
+            let Some(node) = grid.locate(p, 0.5) else {
+                continue;
+            };
+            let feet = grid.position(node);
+            if feet.distance_xz(p) > 0.3
+                || (feet.y - at.y).abs() > 2.5
+                || !cx.tactics.walkable(node)
+                || !cx.tactics.allowed(node, cx.now, cx.bot.side, false)
+            {
+                continue;
+            }
+            for crouch in [true, false] {
+                if out.iter().any(|(s, _)| s.same(feet, crouch)) {
+                    continue;
+                }
+                let stand = TakeStand { feet, crouch };
+                if let UseFrom::Clear(pitch) =
+                    use_from(cx, stand, aim, RING_USE_M, RING_PITCH_MAX_RAD)
+                    && cx.reachable(feet, false)
+                {
+                    out.push((stand, pitch));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Where a body right over a battery lying at `at` steps back to: a metre
+/// off it the way it came (`from`), else behind its back.
+fn back_spot(cx: &Ctx, at: Vec3, from: Option<Vec3>) -> Vec3 {
+    let (dx, dz) = match from {
+        Some(from) if from.distance_xz(at) > 0.05 => (from.x - at.x, from.z - at.z),
+        _ => {
+            let [fx, fz] = crate::v026g::bots::kin::forward(cx.me.yaw);
+            (-fx, -fz)
+        }
     };
-    [0, 1, -1, 2, -2, 3, -3, 4].into_iter().find_map(|k| {
-        let a = away + k as f32 * std::f32::consts::FRAC_PI_4;
-        let spot = Vec3::new(aim.x + flat * a.cos(), me.y, aim.z + flat * a.sin());
-        cx.tactics
-            .clear_line_for(me, spot, cx.now, cx.bot.side, false)
-            .then_some(spot)
-    })
+    let n = dx.hypot(dz).max(1e-3);
+    Vec3::new(at.x + dx / n, cx.me.feet.y, at.z + dz / n)
 }
 
 pub const NUMBERS: &[(&str, f32)] = &[
     ("reach_m", 1.5),
     ("use_every_s", 1.2),
-    ("tries", 4.0),
+    // Uses pressed at one stand; stands tried a take (the first where it
+    // stopped, then round the battery, `ring_stands`); how long it may
+    // take to reach a stand, seconds.
+    ("tries", 2.0),
+    ("stands", 4.0),
+    ("stand_walk_s", 5.0),
     ("give_up_s", 120.0),
     // A spawner's spot weighs this times the chance a missing battery lies
     // in sight of it (missing batteries x spots worth a look within
@@ -333,8 +483,22 @@ pub enum State {
     Search,
     Fetch,
     Take {
+        /// Uses pressed at this stand.
         tries: u8,
         last_use: u32,
+        /// The stand it goes to or uses from; `None` until the first: where
+        /// it stopped, if a use reaches from there.
+        stand: Option<TakeStand>,
+        /// Since when it heads for this stand, and since when it stands
+        /// there.
+        since: u32,
+        arrived: Option<u32>,
+        /// The stands tried this play.
+        tried: Vec<TakeStand>,
+        /// Where it last stood a step off the battery: the way it came.
+        from: Option<Vec3>,
+        /// Stepping back out of a nook since (no straight line to a stand).
+        backing: Option<u32>,
     },
     Bring,
     PutIn {
@@ -425,67 +589,18 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
                 *state = State::Take {
                     tries: 0,
                     last_use: 0,
+                    stand: None,
+                    since: cx.now,
+                    arrived: None,
+                    tried: Vec::new(),
+                    from: (cx.me.feet.distance_xz(at) >= FROM_M).then_some(cx.me.feet),
+                    backing: None,
                 };
                 return Step::Continue(Intent::stay().looking(Look::At(at)));
             }
             Step::Continue(Intent::to(stand, cx.pace_toward(stand)).within(num("reach_m") * 0.6))
         }
-        State::Take { tries: n, last_use } => {
-            let at = cx.point_of(target);
-            if *n >= tries {
-                return Step::Failed("could not take it");
-            }
-            // Seen gone at last (it was taken since the team saw it).
-            if !cx.tuning.cheats.batteries
-                && !matches!(target, TargetRef::Battery(b) if cx.battery_lying(b).is_some())
-            {
-                return Step::Failed("the battery is gone");
-            }
-            // The use's ray from the eye must hit the battery: at it, not a
-            // metre over it as at a place (`Look::At`), which from a
-            // crouch passes over a battery on the floor.
-            let mut intent = Intent::stay().crouched();
-            // Stepping back off it: no use pressed (none could take it),
-            // though the time counts as a try's (no endless step back).
-            let mut stepping_back = false;
-            if let Some(at) = at {
-                let aim = at + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
-                let eye = cx.me.feet + Vec3::new(0.0, view::EYE_CROUCHED, 0.0);
-                let below = eye.y - aim.y;
-                let stand = cx.tactics.stand_to_take(at);
-                if below.atan2(eye.distance_xz(aim)) > TAKE_PITCH_MAX_RAD {
-                    // Right over it: the view does not look down that far
-                    // (its pitch stops at 1 rad, `kin`), so the use's ray
-                    // passes beside it. A step back first.
-                    if let Some(back) = take_back_spot(cx, aim, below) {
-                        intent = Intent::to(back, Pace::Walk)
-                            .within(cx.tuning.feel.arrive_m + 0.1)
-                            .crouched();
-                        stepping_back = true;
-                    }
-                } else if (aim - eye).length() > USE_NEAR_M
-                    && let Some(stand) = stand
-                {
-                    // On the floor: stopped short of it, where the look
-                    // down is easy; on a shelf: at the floor beside it.
-                    let within = if (stand - at).length() < 0.01 {
-                        take_flat_m(below, TAKE_PITCH_RAD).max(0.25)
-                    } else {
-                        0.25
-                    };
-                    intent = Intent::to(stand, Pace::Walk).within(within).crouched();
-                }
-                intent = intent.looking(Look::Use(aim));
-            }
-            if cx.now >= *last_use + every {
-                *n += 1;
-                *last_use = cx.now;
-                if !stepping_back {
-                    intent = intent.pressing(key::USE);
-                }
-            }
-            Step::Continue(intent)
-        }
+        State::Take { .. } => take(state, target, cx),
         State::Bring => {
             if cx.me.carrying.is_none() {
                 return Step::Done("brought home");
@@ -531,6 +646,298 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             Step::Continue(intent)
         }
     }
+}
+
+/// A take: uses at the stand where it stopped; when they fail (or no use
+/// reaches from there: the battery under a ledge, right under its feet),
+/// at other stands round the battery, crouched and standing in turn, none
+/// it gave up at lately (`BotFacts::failed_stands`); wedged right over
+/// it with no line to walk off by, a step back the way it came.
+fn take(state: &mut State, target: TargetRef, cx: &Ctx) -> Step {
+    let num = |name| cx.num(PlayKind::Collect, name);
+    let every = (num("use_every_s") * 1000.0) as u32;
+    let per_stand = num("tries") as u8;
+    let stands = num("stands") as usize;
+    let walk_ms = (num("stand_walk_s") * 1000.0) as u32;
+    let State::Take {
+        tries,
+        last_use,
+        stand,
+        since,
+        arrived,
+        tried,
+        from,
+        backing,
+    } = state
+    else {
+        unreachable!("a take's state");
+    };
+    // Seen gone at last (it was taken since the team saw it), or taken.
+    let TargetRef::Battery(battery) = target else {
+        return Step::Failed("the battery is gone");
+    };
+    let Some(at) = cx.battery_lying(battery) else {
+        return Step::Failed(if cx.tuning.cheats.batteries {
+            "someone took it"
+        } else {
+            "the battery is gone"
+        });
+    };
+    let me = cx.me.feet;
+    // The use's ray from the eye must hit the battery: at it, not a metre
+    // over it as at a place (`Look::At`), which from a crouch passes over
+    // a battery on the floor.
+    let aim = at + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
+    if me.distance_xz(at) >= FROM_M {
+        *from = Some(me);
+    }
+    let gave_up = |s: TakeStand| {
+        cx.bot.failed_stands.iter().any(|f| {
+            f.until > cx.now
+                && f.battery == battery
+                && (f.at - at).length() < 0.5
+                && TakeStand {
+                    feet: f.feet,
+                    crouch: f.crouch,
+                }
+                .same(s.feet, s.crouch)
+        })
+    };
+    // Stepping back out of a nook: straight, no line looked at.
+    if let Some(started) = *backing {
+        if me.distance_xz(at) < BACKED_M && cx.now < started + BACKING_MS {
+            return Step::Continue(back_off(cx, at, aim, *from));
+        }
+        *backing = None;
+        *since = cx.now;
+    }
+    let mut failed = None;
+    // The first stand: where it stopped, if a use reaches from there.
+    if stand.is_none() && tried.is_empty() {
+        let here = TakeStand {
+            feet: me,
+            crouch: true,
+        };
+        match use_from(cx, here, aim, USE_NEAR_M, FIRST_PITCH_MAX_RAD) {
+            UseFrom::Clear(_) if !gave_up(here) => {
+                *stand = Some(here);
+                *since = cx.now;
+            }
+            UseFrom::Far if cx.now < *since + walk_ms => {
+                // On the floor: stopped short of it, where the look down
+                // is easy; on a shelf: at the floor beside it.
+                let Some(to) = cx.tactics.stand_to_take(at) else {
+                    return Step::Failed("no way to it");
+                };
+                let below = me.y + view::EYE_CROUCHED - aim.y;
+                let within = if (to - at).length() < 0.01 {
+                    take_flat_m(below, TAKE_PITCH_RAD).max(0.25)
+                } else {
+                    0.25
+                };
+                let intent = Intent::to(to, Pace::Walk).within(within).crouched();
+                return Step::Continue(straight_if_clear(cx, intent, to).looking(Look::Use(aim)));
+            }
+            _ => {
+                // Steep, blocked, too far still, or given up before.
+                tried.push(here);
+            }
+        }
+    }
+    if let Some(s) = *stand {
+        let off = me.distance_xz(s.feet);
+        let level = (me.y - s.feet.y).abs() <= AT_STAND_UP_M;
+        if level && (off <= AT_STAND_M || (arrived.is_some() && off <= AT_STAND_M * 2.0)) {
+            let arrived_at = *arrived.get_or_insert(cx.now);
+            let lift = AIM_LIFTS_M[usize::from(*tries) % AIM_LIFTS_M.len()];
+            let aim_now = at + Vec3::new(0.0, lift, 0.0);
+            let mut intent = Intent::stay().looking(Look::Use(aim_now));
+            if s.crouch {
+                intent = intent.crouched();
+            }
+            if cx.now < *last_use + every {
+                return Step::Continue(intent);
+            }
+            if *tries < per_stand {
+                // Off the stand where no use reaches (it stopped past it,
+                // or was pushed): back onto it first, a while.
+                let here = TakeStand {
+                    feet: me,
+                    crouch: s.crouch,
+                };
+                if off > 0.05
+                    && cx.now < arrived_at + SETTLE_MS
+                    && !matches!(
+                        use_from(cx, here, aim_now, RING_USE_M, FIRST_PITCH_MAX_RAD),
+                        UseFrom::Clear(_)
+                    )
+                {
+                    return Step::Continue(to_stand(cx, s, aim).within(0.05));
+                }
+                if settled(cx, s, aim_now) || cx.now >= arrived_at + SETTLE_MS {
+                    *tries += 1;
+                    *last_use = cx.now;
+                    intent = intent.pressing(key::USE);
+                }
+                return Step::Continue(intent);
+            }
+            // Its uses spent there: kept, and another stand.
+            failed = Some(FailedStand {
+                battery,
+                at,
+                feet: s.feet,
+                crouch: s.crouch,
+                until: cx.now + FAILED_KEEP_MS,
+            });
+            tried.push(s);
+            *stand = None;
+        } else if cx.now < *since + walk_ms {
+            return Step::Continue(to_stand(cx, s, aim));
+        } else {
+            // Not reached in time: another.
+            tried.push(s);
+            *stand = None;
+        }
+    }
+    // Another stand round it.
+    if tried.len() >= stands {
+        return match failed {
+            // Kept first; the play ends at the next step.
+            Some(_) => Step::Continue(Intent {
+                failed_stand: failed,
+                ..Intent::stay()
+            }),
+            None => Step::Failed("could not take it"),
+        };
+    }
+    let steep = matches!(
+        use_from(
+            cx,
+            TakeStand {
+                feet: me,
+                crouch: true
+            },
+            aim,
+            f32::INFINITY,
+            TAKE_PITCH_MAX_RAD
+        ),
+        UseFrom::Steep
+    );
+    let intent = match next_stand(cx, at, aim, tried, steep, &gave_up) {
+        Some(s) => {
+            *stand = Some(s);
+            *since = cx.now;
+            *arrived = None;
+            *tries = 0;
+            *last_use = 0;
+            to_stand(cx, s, aim)
+        }
+        None if steep && backing.is_none() => {
+            // Wedged right over it: a step back the way it came, with no
+            // line looked at (none is found from where it stands).
+            *backing = Some(cx.now);
+            back_off(cx, at, aim, *from)
+        }
+        None if failed.is_some() => Intent::stay(),
+        None => return Step::Failed("could not take it"),
+    };
+    Step::Continue(Intent {
+        failed_stand: failed,
+        ..intent
+    })
+}
+
+/// The next stand round a battery lying at `at`: of the ring's
+/// ([`ring_stands`]) not tried this play nor given up lately, the nearest
+/// in the stance not tried last, with an easy look down, on a side not
+/// tried; right over the battery (`steep`), only one it walks off to in a
+/// line.
+fn next_stand(
+    cx: &Ctx,
+    at: Vec3,
+    aim: Vec3,
+    tried: &[TakeStand],
+    steep: bool,
+    gave_up: &dyn Fn(TakeStand) -> bool,
+) -> Option<TakeStand> {
+    let me = cx.me.feet;
+    let prefer_crouch = tried.last().is_none_or(|t| !t.crouch);
+    let away = |feet: Vec3| (feet.z - at.z).atan2(feet.x - at.x);
+    ring_stands(cx, at, aim)
+        .into_iter()
+        .filter(|(s, _)| !gave_up(*s) && !tried.iter().any(|t| t.same(s.feet, s.crouch)))
+        .filter(|(s, _)| {
+            !steep
+                || (me.distance_xz(s.feet) <= STRAIGHT_M
+                    && cx
+                        .tactics
+                        .clear_line_for(me, s.feet, cx.now, cx.bot.side, false))
+        })
+        .map(|(s, pitch)| {
+            let side_tried = tried.iter().any(|t| {
+                t.feet.distance_xz(at) > 0.3
+                    && crate::v026g::bots::kin::wrap(away(t.feet) - away(s.feet)).abs() < 0.9
+            });
+            let cost = me.distance_xz(s.feet)
+                + if s.crouch == prefer_crouch { 0.0 } else { 0.6 }
+                + (pitch - TAKE_PITCH_RAD).abs() * 0.5
+                + if side_tried { 1.0 } else { 0.0 };
+            (s, cost)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| s)
+}
+
+/// To a stand, looking at the battery: straight if near in a clear line.
+fn to_stand(cx: &Ctx, s: TakeStand, aim: Vec3) -> Intent {
+    let mut intent = Intent::to(s.feet, Pace::Walk).within(AT_STAND_M * 0.5);
+    if s.crouch {
+        intent = intent.crouched();
+    }
+    straight_if_clear(cx, intent, s.feet).looking(Look::Use(aim))
+}
+
+/// The intent walked straight ([`Intent::straight`]) if `to` is within
+/// [`STRAIGHT_M`] in a line the walk grid clears.
+fn straight_if_clear(cx: &Ctx, intent: Intent, to: Vec3) -> Intent {
+    let me = cx.me.feet;
+    if me.distance_xz(to) <= STRAIGHT_M
+        && cx
+            .tactics
+            .clear_line_for(me, to, cx.now, cx.bot.side, false)
+    {
+        intent.straight()
+    } else {
+        intent
+    }
+}
+
+/// A step back off a battery the way it came ([`back_spot`]), straight
+/// with no line looked at, facing the battery from that side.
+fn back_off(cx: &Ctx, at: Vec3, aim: Vec3, from: Option<Vec3>) -> Intent {
+    let back = back_spot(cx, at, from);
+    let (dx, dz) = (at.x - back.x, at.z - back.z);
+    let n = dx.hypot(dz).max(1e-3);
+    let ahead = Vec3::new(at.x + dx / n, aim.y, at.z + dz / n);
+    Intent::to(back, Pace::Walk)
+        .within(0.1)
+        .crouched()
+        .straight()
+        .looking(Look::Use(ahead))
+}
+
+/// Whether the view looks at `aim` from the stand's eye (its own estimate
+/// of its view, `PlaceView`), within [`SETTLED_RAD`].
+fn settled(cx: &Ctx, stand: TakeStand, aim: Vec3) -> bool {
+    use crate::v026g::bots::kin::{wrap, yaw_of};
+    if cx.me.crouched() != stand.crouch {
+        return false;
+    }
+    let eye = cx.me.eye();
+    let (dx, dz) = (aim.x - eye.x, aim.z - eye.z);
+    let yaw = yaw_of([dx, dz]);
+    let pitch = (aim.y - eye.y).atan2(dx.hypot(dz)).clamp(-1.0, 1.0);
+    wrap(cx.me.yaw - yaw).abs() < SETTLED_RAD && (cx.me.pitch - pitch).abs() < SETTLED_RAD
 }
 
 #[cfg(test)]
@@ -1101,5 +1508,226 @@ mod tests {
             step(&mut state, target, &s.cx(0), &mut rng),
             Step::Failed("no way to it")
         );
+    }
+
+    /// The field with `solids` (walls 3 m high, `body::tests::wall_x`),
+    /// a battery at (25, 0, 12) (the battery cheat on) and the bot of team
+    /// 0 at `feet`.
+    fn take_field(solids: &[mapdata::Triangle], feet: Vec3) -> Scenario {
+        let mut s = Scenario::field(Mode::Batteries);
+        let world = crate::v026g::bots::tactics::tests::field_with_solids(solids, |_| {});
+        s.tactics = Tactics::new(world, 1.0);
+        s.bot(0, 0, feet);
+        s.battery(BatteryState::Free(TAKE_AT));
+        s.current = Some((PlayKind::Collect, TargetRef::Battery(0), s.view.clock));
+        s
+    }
+
+    const TAKE_AT: Vec3 = Vec3::new(25.0, 0.0, 12.0);
+
+    /// A take's state as the fetch leaves it, the bot having come `from`.
+    fn fresh_take(s: &Scenario, from: Option<Vec3>) -> State {
+        State::Take {
+            tries: 0,
+            last_use: 0,
+            stand: None,
+            since: s.view.clock,
+            arrived: None,
+            tried: Vec::new(),
+            from,
+            backing: None,
+        }
+    }
+
+    fn intent_of(step: Step) -> Intent {
+        match step {
+            Step::Continue(intent) => intent,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The bot stands at `feet`, crouched, looking at `aim` from there.
+    fn stand_at(s: &mut Scenario, feet: Vec3, aim: Vec3) {
+        use crate::v026g::bots::kin::yaw_of;
+        let me = s.bot(0, 0, feet);
+        me.keys = key::CROUCH;
+        let eye = me.eye();
+        me.yaw = yaw_of([aim.x - eye.x, aim.z - eye.z]);
+        me.pitch = (aim.y - eye.y).atan2(eye.distance_xz(aim));
+    }
+
+    /// Whether the crouched eye at `feet` sees the battery's point to use.
+    fn clear_from(s: &Scenario, feet: Vec3) -> bool {
+        let aim = TAKE_AT + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
+        let stand = TakeStand { feet, crouch: true };
+        matches!(
+            use_from(&s.cx(0), stand, aim, RING_USE_M, TAKE_PITCH_MAX_RAD),
+            UseFrom::Clear(_)
+        )
+    }
+
+    /// A wall between where the bot stopped and the battery (as in the
+    /// owner's match of 2026-10-16, b9 under a ledge: 9 uses aimed right
+    /// at it from where the bullet mesh blocks the line): no use is
+    /// pressed there; it goes round to a stand with a clear line, uses it
+    /// twice, and when that fails too keeps the stand and goes to another.
+    #[test]
+    fn a_take_blocked_where_it_stopped_goes_round_the_battery() {
+        use crate::v026g::bots::body::tests::wall_x;
+        let east = Vec3::new(26.3, 0.0, 12.0);
+        let mut s = take_field(&wall_x(25.6, 11.5, 12.5), east);
+        assert!(!clear_from(&s, east), "the wall blocks the line");
+        let target = TargetRef::Battery(0);
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        step(&mut state, target, &s.cx(0), &mut rng);
+        assert!(matches!(state, State::Take { .. }), "{state:?}");
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert_eq!(
+            intent.press & key::USE,
+            0,
+            "no use where the line is blocked"
+        );
+        let State::Take {
+            stand: Some(first),
+            ref tried,
+            ..
+        } = state
+        else {
+            panic!("{state:?}");
+        };
+        assert_eq!(tried.len(), 1);
+        let off = first.feet.distance_xz(TAKE_AT);
+        assert!((0.5..1.3).contains(&off), "{first:?}");
+        assert!(clear_from(&s, first.feet), "{first:?}");
+        assert!(matches!(intent.go, Go::To { at, .. } if at == first.feet));
+        assert!(matches!(intent.look, Look::Use(_)));
+        // There, the view on the battery: two uses, 1.2 s apart.
+        let aim = TAKE_AT + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
+        stand_at(&mut s, first.feet, aim);
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert_ne!(intent.press & key::USE, 0, "a use at the stand");
+        s.view.clock += 1_200;
+        stand_at(&mut s, first.feet, TAKE_AT);
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert_ne!(intent.press & key::USE, 0, "the second use, aimed lower");
+        // Both failed: the stand is kept, and another one taken.
+        s.view.clock += 1_200;
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        let failed = intent.failed_stand.expect("the stand is kept");
+        assert_eq!(
+            (failed.battery, failed.feet, failed.crouch),
+            (0, first.feet, true)
+        );
+        let State::Take {
+            stand: Some(second),
+            ..
+        } = state
+        else {
+            panic!("{state:?}");
+        };
+        assert!(second.feet.distance_xz(first.feet) >= SAME_STAND_M);
+        assert!(clear_from(&s, second.feet) || !second.crouch);
+        // The next take (the commander gives the play again) does not use
+        // the kept stand where it stands: it goes elsewhere at once.
+        s.failed_stands = vec![failed];
+        stand_at(&mut s, first.feet, aim);
+        let mut state = fresh_take(&s, Some(east));
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert_eq!(intent.press & key::USE, 0);
+        assert!(
+            matches!(intent.go, Go::To { at, .. } if at.distance_xz(first.feet) >= SAME_STAND_M),
+            "{intent:?}"
+        );
+        // Once it is forgotten, the stand is used again.
+        s.view.clock += FAILED_KEEP_MS;
+        let mut state = fresh_take(&s, Some(east));
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert_ne!(intent.press & key::USE, 0);
+    }
+
+    /// Right over the battery (the view does not look down that far) and
+    /// wedged: walls round it, no stand off it in a line. The bot steps
+    /// back the way it came, straight, with no line looked at (bot 10 of
+    /// 0x7db2c16a stood 25 s at 0.2 m from b9, the step back never taken);
+    /// out of its reach the play ends.
+    #[test]
+    fn a_take_wedged_right_over_the_battery_steps_back_the_way_it_came() {
+        use crate::v026g::bots::body::tests::wall_x;
+        let mut walls = Vec::new();
+        walls.extend(wall_x(24.6, 11.5, 12.5));
+        walls.extend(wall_x(25.4, 11.5, 12.5));
+        // Across z (the walls' x and z swapped).
+        for z in [11.6f32, 12.4] {
+            for mut t in wall_x(0.0, 24.5, 25.5) {
+                for v in &mut t.v {
+                    *v = Vec3::new(v.z, v.y, z);
+                }
+                walls.push(t);
+            }
+        }
+        let over = Vec3::new(25.05, 0.0, 12.0);
+        let mut s = take_field(&walls, over);
+        let target = TargetRef::Battery(0);
+        let mut rng = Rng::new(1);
+        let came = Vec3::new(24.0, 0.0, 12.0);
+        let mut state = fresh_take(&s, Some(came));
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert!(intent.straight, "{intent:?}");
+        assert!(
+            matches!(intent.go, Go::To { at, .. } if at.distance_xz(Vec3::new(24.0, 0.0, 12.0)) < 0.01),
+            "back the way it came: {intent:?}"
+        );
+        assert!(matches!(
+            state,
+            State::Take {
+                backing: Some(_),
+                ..
+            }
+        ));
+        // Not yet out: on back.
+        s.bot(0, 0, Vec3::new(24.8, 0.0, 12.0));
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        assert!(intent.straight && matches!(intent.go, Go::To { .. }));
+        // Out, and no stand round it: given up.
+        s.bot(0, 0, Vec3::new(24.3, 0.0, 12.0));
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Failed("could not take it")
+        );
+        // With no way it came known, behind its back.
+        let mut s = take_field(&walls, over);
+        s.view.places[0].yaw = std::f32::consts::FRAC_PI_2;
+        let [fx, fz] = crate::v026g::bots::kin::forward(s.view.places[0].yaw);
+        let mut state = fresh_take(&s, None);
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        let behind = Vec3::new(TAKE_AT.x - fx, 0.0, TAKE_AT.z - fz);
+        assert!(
+            matches!(intent.go, Go::To { at, .. } if at.distance_xz(behind) < 0.01),
+            "{intent:?}"
+        );
+    }
+
+    /// Right over the battery with room round it: a stand off it in a
+    /// line, walked to straight (no route: the route's arrival is 0.6 m).
+    #[test]
+    fn a_take_right_over_the_battery_steps_to_a_stand_in_a_line() {
+        let over = Vec3::new(25.05, 0.0, 12.0);
+        let s = take_field(&[], over);
+        let target = TargetRef::Battery(0);
+        let mut rng = Rng::new(1);
+        let mut state = fresh_take(&s, Some(Vec3::new(24.0, 0.0, 12.0)));
+        let intent = intent_of(step(&mut state, target, &s.cx(0), &mut rng));
+        let State::Take {
+            stand: Some(stand),
+            backing: None,
+            ..
+        } = state
+        else {
+            panic!("{state:?}");
+        };
+        assert!(intent.straight);
+        assert!(matches!(intent.go, Go::To { at, .. } if at == stand.feet));
+        assert!(clear_from(&s, stand.feet));
     }
 }
