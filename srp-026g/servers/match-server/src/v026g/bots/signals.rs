@@ -255,8 +255,8 @@ mod tests {
         }
         let (before, after, kd) = skill.balance(60_000, &tuning).unwrap();
         assert!(after < before && kd > tuning.kd_high);
-        // Not again before a minute; in the band nothing changes.
-        assert!(skill.balance(90_000, &tuning).is_none());
+        // Not again before `every_s` (30 s); in the band nothing changes.
+        assert!(skill.balance(75_000, &tuning).is_none());
         let mut even = Skill::new(&tuning);
         for k in 0..10 {
             even.duel(Duel {
