@@ -84,14 +84,15 @@ services:
       # a kept recording is made into the game's replay file in
       # SRP_REPLAY_DIR (a folder of its own, never inside the recordings')
       # when a player first asks for it, at the lowest CPU priority, and
-      # handed out only at /replays/<token> of the web page. Off until
-      # SRP_GAME_MODES_DIR names a folder of the data volume holding the
-      # game's gameplay/game_modes/*.options files (game data, copied there
-      # by hand, e.g. /srv/srp/data/game_modes). Behind the caddy26 proxy set
+      # handed out only at /replays/<token> of the web page. On by default:
+      # SRP_GAME_MODES_DIR is a folder of the data volume holding the game's
+      # gameplay/game_modes/*.options files (game data, copied there by
+      # hand, those of every patch included); `off` or empty switches replays
+      # off. Behind the caddy26 proxy set
       # SRP_WEB_TRUST_PROXY=on: failed /replays/ lookups are limited per
       # address.
       - SRP_REPLAY_DIR=${SRP_REPLAY_DIR:-/srv/srp/data/replays}
-      - SRP_GAME_MODES_DIR=${SRP_GAME_MODES_DIR:-}
+      - SRP_GAME_MODES_DIR=${SRP_GAME_MODES_DIR-/srv/srp/data/game_modes}
       - SRP_REPLAY_MAX_RECORDING_MB
       # Replays (.sur and .json) over this many MB together: the oldest go
       # (default 1000; apart from SRP_RECORD_MAX_MB).
@@ -146,14 +147,24 @@ services:
       - SRP_ENTRY_STATE_SECONDS
       - SRP_RELAY_PACK_MS
       - SRP_PACKET_LOG
-      # "Player vs Bots" (off unless SRP_PVB=on; the lobby's `pvb.rs`). Each
-      # match against bots may hold a bots' map of its own in memory (about
-      # 35-70 MB): raise SRP26_MEMORY with it.
-      - SRP_PVB
+      # "Player vs Bots" (the lobby's `pvb.rs`; on here, `off` in .env to
+      # switch it off; the code's own default is off). Each match against
+      # bots may hold a bots' map of its own in memory (35-150 MB, up to
+      # SRP_PVB_MAX_MATCHES maps): raise SRP26_MEMORY with it.
+      - SRP_PVB=${SRP_PVB:-on}
       - SRP_PVB_MAX_GEAR
       - SRP_PVB_MAX_MATCHES
       - SRP_PVB_PAY
       - SRP_PVB_STALL_S
+      # The bots' maps (docs/notes/player_bots_mapdata.md section 6): the
+      # <project>.mapdata files, game data copied by hand into the data
+      # volume. The grids and trees the server builds of them are written
+      # to <dir>/built (SRP_MAPDATA_BUILT) and read from there next time. A
+      # folder that is not there: bots without maps (a warning), as `off`.
+      - SRP_MAPDATA_DIR=${SRP_MAPDATA_DIR-/srv/srp/data/mapdata}
+      - SRP_MAPDATA_BUILT
+      - SRP_MAPDATA_KEEP
+      - SRP_MAPDATA_AT_ONCE
     ports:
       # Login: TLS over TCP.
       - "${SRP26_LOGIN_PORT:-2234}:${SRP26_LOGIN_PORT:-2234}/tcp"

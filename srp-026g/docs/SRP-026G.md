@@ -177,7 +177,7 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_RECORD_MIN_PLAYERS` | `6` | A recording is kept once this many players (test bots not counted) have entered its match, late joiners included; the others are deleted when their match ends |
 | `SRP_RECORD_MAX_MB` | `5000` | Kept recordings over this together: the oldest are deleted |
 | `SRP_REPLAY_DIR` | unset (off; the compose file sets `/srv/srp/data/replays`) | "Watch replay" (`docs/notes/replay_watch.md`): a kept recording is made into the game's replay file here (`<match id>.sur` and its sidecar `.json`) when a player first asks for it (never at a match's end; one at a time, 20 waiting at most, at nice 19 on Linux), kept for later asks, served only at `/replays/<token>`. Must be a folder of its own: not `SRP_RECORD_DIR`, inside it or around it (then replays are off, said in the log). Off without `SRP_RECORD_DIR` or `SRP_GAME_MODES_DIR` (the lobby answers `off`) |
-| `SRP_GAME_MODES_DIR` | unset | The game's `gameplay/game_modes/*.options` files (game data: never in the repository). The compose file passes it on only when set: copy the files into the data volume (for example `/srv/srp/data/game_modes`) and name that folder to switch replays on |
+| `SRP_GAME_MODES_DIR` | unset (off; the compose file sets `/srv/srp/data/game_modes`) | The game's `gameplay/game_modes/*.options` files, every patch's included (game data: never in the repository): copy them into the data volume's folder. `off` or empty in `.env`: replays off |
 | `SRP_REPLAY_MAX_RECORDING_MB` | `24` | A larger recording is not converted (status `failed`, not tried again until a restart): the conversion's memory grows with it (123 MiB for 13.5 MB, `replay_watch.md`) |
 | `SRP_REPLAY_MAX_MB` | `1000` | Replays (`.sur` and `.json` in `SRP_REPLAY_DIR`, outside `SRP_RECORD_MAX_MB`) over this together: the oldest are deleted after each conversion and at start (the one just made stays); a deleted one is made again when asked for |
 | `SRP_PACKET_LOG` | unset | A folder: every datagram of the lobby and the match server, one file a connection (the lobby sign-in's session id left out). **Set it for every live test** |
@@ -231,7 +231,7 @@ One player against the server's own bots, chosen in srp's changed lobby movie (`
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_PVB` | off | `on`: the mode is offered |
+| `SRP_PVB` | off (the compose file sets `on`) | `on`: the mode is offered |
 | `SRP_PVB_MAX_GEAR` | 5 | The highest equipment level let in (the client's own, of the kits that can be played), 0 to 15 |
 | `SRP_PVB_MAX_MATCHES` | 5 | The most matches against bots at once, 1 to 20 (choices held for a Play count too). With `SRP_PVB=on` the match server keeps up to this many bots' maps in memory (or `SRP_MAPDATA_AT_ONCE` if more): about 35-70 MB each |
 | `SRP_PVB_PAY` | 0.5 | The share of a match's silver and experience such a match pays, 0 to 1. It counts for no quest and no daily bonus, and moves no rating |
@@ -250,6 +250,10 @@ Each is an escape hatch for one thing not proven against a live client.
 | `SRP_RESYNC_WORLD_ONLY` | off | `on`: a playing client is resynced with 0xE8 alone |
 | `SRP_RESTORE_LIMIT` | 0 | Resyncs in a row without agreement after which a client is disconnected; 0: no limit |
 | `SRP_COMPRESS_STATE` | on | `off`: the world (0xE8) goes to the clients as it is, not as LZMA2 (since 2026-10-13; `docs/notes/match.md` section 27) |
+| `SRP_MAPDATA_DIR` | unset (off; the compose file sets `/srv/srp/data/mapdata`) | The bots' maps: the `<project>.mapdata` files (`docs/notes/player_bots_mapdata.md` section 6; game data, copied into the data volume by hand). A folder that is not there, or a project with no file: bots without maps (a warning) |
+| `SRP_MAPDATA_BUILT` | `<SRP_MAPDATA_DIR>/built` | Where the server writes the grids and trees it builds of the maps and reads them the next time; `off`: built at each load |
+| `SRP_MAPDATA_KEEP` | 1 | Built maps kept that no match holds |
+| `SRP_MAPDATA_AT_ONCE` | 1 | The most bots' maps in memory at once (with `SRP_PVB=on`, at least `SRP_PVB_MAX_MATCHES`) |
 | `SRP_BOTS_GIVE_WAY` | on | `off`: the server's own bots (`SRP_SERVER_BOTS`, testing only) stay to the end; on, one of a side leaves (0xEA) when a late joiner comes onto that side and it would otherwise be the larger one (`game/driven.rs`; a roster place is never freed by it) |
 | `SRP_ENTRY_STATE_SECONDS` | 4 | How long the first world of a game that has none yet is kept on its way before its sync starts over; 2 to 5, and less for an old snapshot (the ticks on the wire reach 6.35 s from the clock the game waits at). A game that plays is resynced within 1.75 s |
 | `SRP_RELAY_PACK_MS` | 15 | How long a relay or a drop order may wait for others to share its datagram (at most 50; 0: each goes at once). Anything else queued, a full datagram or an ack due sends them at once (since 2026-10-14; `docs/notes/transport.md` section 11.1) |

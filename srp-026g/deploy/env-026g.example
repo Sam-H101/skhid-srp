@@ -55,10 +55,11 @@ SRP_WEB_TRUST_PROXY=off
 # SRP_DOWNLOAD_URL=
 # SRP_DOWNLOAD_SHA256=
 
-# "Watch replay" (docs/notes/replay_watch.md): on once this names a folder
-# of the data volume with the game's gameplay/game_modes/*.options files
-# (game data: copy them there by hand, never into a repository). The
-# replays go to SRP_REPLAY_DIR (compose default /srv/srp/data/replays).
+# "Watch replay" (docs/notes/replay_watch.md): on with the compose
+# default, a folder of the data volume with the game's
+# gameplay/game_modes/*.options files, every patch's included (game data:
+# copy them there by hand, never into a repository); `off` switches it off.
+# The replays go to SRP_REPLAY_DIR (compose default /srv/srp/data/replays).
 # SRP_GAME_MODES_DIR=/srv/srp/data/game_modes
 # A larger recording is not converted (the conversion's memory grows with
 # it; 24 MB fits the 512 MB container).
@@ -168,17 +169,29 @@ RUST_LOG=info
 # SRP_CLAN_MAX_MEMBERS=30
 
 # "Player vs Bots": one player against the server's own bots, chosen in
-# the changed lobby movie (servers/lobby-server/src/v026g/pvb.rs). Off unless
-# on. The highest equipment level let in, the most such matches at once (the
-# server keeps a bots' map in memory for each, about 35-70 MB: with 5, give
-# SRP26_MEMORY about 400 MB more), the share of silver and experience they
-# pay, and the seconds after which a match whose player uploads no world it
-# is asked for is over.
-# SRP_PVB=off
+# the changed lobby movie (servers/lobby-server/src/v026g/pvb.rs). On with
+# the compose default; `off` switches it off. The highest equipment level
+# let in, the most such matches at once (the server keeps a bots' map in
+# memory for each, 35-150 MB: with 5, give SRP26_MEMORY about 750 MB
+# more), the share of silver and experience they pay, and the seconds
+# after which a match whose player uploads no world it is asked for is
+# over.
+# SRP_PVB=on
 # SRP_PVB_MAX_GEAR=5
 # SRP_PVB_MAX_MATCHES=5
 # SRP_PVB_PAY=0.5
 # SRP_PVB_STALL_S=60
+# The bots' maps (docs/notes/player_bots_mapdata.md section 6): the
+# <project>.mapdata files, copied by hand into the data volume (game data:
+# never into a repository). Compose default /srv/srp/data/mapdata; `off`:
+# no maps. The server writes what it builds of them to <dir>/built (or
+# SRP_MAPDATA_BUILT; `off`: built at each load), keeps SRP_MAPDATA_KEEP
+# built maps no match holds, and has at most SRP_MAPDATA_AT_ONCE in
+# memory (with Player vs Bots on, at least SRP_PVB_MAX_MATCHES).
+# SRP_MAPDATA_DIR=/srv/srp/data/mapdata
+# SRP_MAPDATA_BUILT=/srv/srp/data/mapdata/built
+# SRP_MAPDATA_KEEP=1
+# SRP_MAPDATA_AT_ONCE=1
 
 # Players who must accept before a clan is registered. The code's default is
 # 1; the game's own text (`st_clan_creation_info_description`) says "you need
