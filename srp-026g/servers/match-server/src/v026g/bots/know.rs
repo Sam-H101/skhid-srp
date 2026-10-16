@@ -304,13 +304,24 @@ pub const CARRIER_SEEN_KEEP_MS: u32 = 60_000;
 /// says he died, the team knew he carried it (a theft of ours, or seen
 /// carrying), and the game's HUD shows the dropped battery only to his
 /// team. A human walks to where he last saw him; the bots look there.
+///
+/// Or a battery of ours a thief dropped alive (F2 of the analysis of the
+/// owner's matches 0x652d/0x1a09 of 2026-10-16): the HUD told the theft and
+/// the container's count, the carrier no longer has it, and the battery is
+/// on his team's HUD only. The team looks round its container and where it
+/// last sensed him (`theft`: one bot for all these spots).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LookSpot {
     pub battery: usize,
     /// His last place the team itself sensed (the killer's sight, else
-    /// its last own sight, hearing or callout of him).
+    /// its last own sight, hearing or callout of him); or a spot of the
+    /// ring round our container.
     pub at: Vec3,
     pub time: u32,
+    /// Dropped after this (match ms) if nobody has looked.
+    pub until: u32,
+    /// A spot after a theft whose thief dropped the battery alive.
+    pub theft: bool,
 }
 
 /// A look spot nobody has looked at is dropped after this, ms.
@@ -510,7 +521,7 @@ impl TeamKnowledge {
         self.losses.retain(|loss| loss.time + LOSS_KEEP_MS >= now);
         self.carriers_seen
             .retain(|seen| seen.time + CARRIER_SEEN_KEEP_MS >= now);
-        self.looks.retain(|look| look.time + LOOK_KEEP_MS >= now);
+        self.looks.retain(|look| look.until >= now);
     }
 
     /// A bot of the team saw the enemy at `who` carrying `battery`.
@@ -540,6 +551,19 @@ impl TeamKnowledge {
     pub fn add_look(&mut self, look: LookSpot) {
         self.looks.retain(|l| l.battery != look.battery);
         self.looks.push(look);
+    }
+
+    /// Where the team looks for `battery`, dropped by a thief alive: the
+    /// spots `at`, until `until`.
+    pub fn add_theft_looks(&mut self, battery: usize, at: &[Vec3], time: u32, until: u32) {
+        self.looks.retain(|l| l.battery != battery);
+        self.looks.extend(at.iter().map(|&at| LookSpot {
+            battery,
+            at,
+            time,
+            until,
+            theft: true,
+        }));
     }
 
     /// The look spots still worth a look for team `team`: not the ones
