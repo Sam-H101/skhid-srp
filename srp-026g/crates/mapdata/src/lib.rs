@@ -61,6 +61,13 @@ pub use library::{Library, Materials, WalkerBehaviour};
 pub fn free_search_memory() {
     grid::free_scratches();
     regions::free_marks();
+    trim_freed_memory();
+}
+
+/// Hands memory the process has freed back to the system, with glibc
+/// (`malloc_trim`): it otherwise keeps freed blocks of a few MB for reuse,
+/// and the big ones a dropped world leaves. Nothing elsewhere.
+pub fn trim_freed_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         unsafe extern "C" {

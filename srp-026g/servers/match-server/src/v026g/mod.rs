@@ -76,8 +76,10 @@
 //!   (`mapdata-dump`) the server's own bots path on ([`bots::maps`]); a
 //!   map is built on a thread of its own the first time a match asks for
 //!   it, and `SRP_MAPDATA_KEEP` (default 1) built maps are kept besides
-//!   those running matches hold. Without it, or without the map's file,
-//!   bots keep their script. `SRP_MAPDATA_BUILT=<dir>` (default
+//!   those running matches hold; `SRP_MAPDATA_AT_ONCE` (default 1) maps
+//!   at most are in memory, and a match on another map waits for room
+//!   with its bots on their script. Without it, or without the map's
+//!   file, bots keep their script. `SRP_MAPDATA_BUILT=<dir>` (default
 //!   `<SRP_MAPDATA_DIR>/built`; `off`: build at each load): where the
 //!   built grids, sight trees and tactics are kept and read back
 //!   (`mapdata::built`);
@@ -304,6 +306,11 @@ impl Settings {
                     var("SRP_MAPDATA_KEEP").as_deref(),
                     bots::maps::KEEP as u32,
                 ),
+                parse_number(
+                    "SRP_MAPDATA_AT_ONCE",
+                    var("SRP_MAPDATA_AT_ONCE").as_deref(),
+                    bots::maps::AT_ONCE as u32,
+                ),
                 var("SRP_MAPDATA_BUILT").as_deref(),
             ),
             bots_give_way: parse_switch(
@@ -406,11 +413,13 @@ fn parse_snapshot_dir(value: Option<&str>) -> Option<PathBuf> {
 }
 
 /// `SRP_MAPDATA_DIR`: unset, empty or `off` for none; `keep` built worlds
-/// kept (`SRP_MAPDATA_KEEP`); the built files in `built`
+/// kept (`SRP_MAPDATA_KEEP`), `at_once` in memory at most
+/// (`SRP_MAPDATA_AT_ONCE`); the built files in `built`
 /// (`SRP_MAPDATA_BUILT`: unset or empty for `<dir>/built`, `off` for none).
 fn parse_mapdata_dir(
     value: Option<&str>,
     keep: u32,
+    at_once: u32,
     built: Option<&str>,
 ) -> Option<Arc<bots::maps::Maps>> {
     let dir = value
@@ -427,8 +436,9 @@ fn parse_mapdata_dir(
             None => "none (built at each load)".into(),
         };
         log::info!(
-            "Bot maps from {dir}, {} kept built; built files in {files}",
-            keep.max(1)
+            "Bot maps from {dir}, {} kept built, {} in memory at most; built files in {files}",
+            keep.max(1),
+            at_once.max(1)
         );
     } else {
         log::warn!("SRP_MAPDATA_DIR is `{dir}`, which is no directory; bots will have no maps");
@@ -436,6 +446,7 @@ fn parse_mapdata_dir(
     Some(bots::maps::Maps::configured(
         Some(dir.into()),
         keep as usize,
+        at_once as usize,
         built,
     ))
 }
