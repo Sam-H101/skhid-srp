@@ -432,12 +432,25 @@ impl TeamKnowledge {
     /// team whose bit is set in the battery's mask; the mask is empty when
     /// the battery appears, set to the picker's team alone on a pickup, to
     /// the carrier's team alone on a drop (a death too), emptied when it is
-    /// put in, and a player's spot adds his team (not modelled here). So:
-    /// - a battery dropped by our carrier is on our HUD where it lies;
-    /// - one our HUD showed goes from it when anybody picks it up, when it
-    ///   moved between the worlds unseen, or when it is put in;
+    /// put in, and a player's spot adds his team. The world carries that
+    /// mask (`m_spotted_mask`, `MatchView::marks`; `1 << team`: 1 is team
+    /// 0's, 2 team 1's, as the matches of 2026-10-16 show: every drop gave
+    /// the carrier's team's alone, never both), and a lying battery is on
+    /// our HUD exactly when our bit is set. It stays set when the game puts back a
+    /// battery that fell through the floor about 2 m away (level_01's hole
+    /// at about (-43.5, 3.8), matches 0x1a09…/0x7298…: team 1 lost its
+    /// battery for 125 s and 32 s when the HUD was reckoned from moves).
+    /// So:
+    /// - a battery dropped by our carrier is on our HUD where it lies,
+    ///   wherever the game moves it while it lies;
+    /// - one our HUD showed goes from it when anybody picks it up, or when
+    ///   it is put in;
     /// - one our teammate carries is known by him (the HUD shows him);
     /// - one only seen by a bot stays where it was seen.
+    ///
+    /// A view without the masks (a tool or test that gives none) reckons
+    /// the HUD from the states: our carrier's drop is ours, and a battery
+    /// that moved more than 1 m between two worlds left the HUD.
     pub fn hud_update(&mut self, team: u8, before: &MatchView, after: &MatchView, time: u32) {
         let team_of = |carrier: Option<Place>| carrier.and_then(|p| after.place(p)).map(|p| p.team);
         for (battery, now) in after.batteries.iter().enumerate() {
@@ -445,12 +458,16 @@ impl TeamKnowledge {
             let known = self.battery(battery).copied();
             match *now {
                 BatteryState::Free(at) => {
-                    let hud = match was {
+                    let hud = match (after.marks.get(battery), was) {
+                        // The client's own HUD.
+                        (Some(&mask), _) => mask & (1 << (team & 1)) != 0,
                         // Lying still: as it was.
-                        Some(BatteryState::Free(then)) if then.distance_xz(at) <= 1.0 => {
+                        (None, Some(BatteryState::Free(then))) if then.distance_xz(at) <= 1.0 => {
                             known.is_some_and(|k| k.hud)
                         }
-                        Some(BatteryState::Carried(carrier)) => team_of(carrier) == Some(team),
+                        (None, Some(BatteryState::Carried(carrier))) => {
+                            team_of(carrier) == Some(team)
+                        }
                         // New, moved unseen, or out of a container.
                         _ => false,
                     };
@@ -619,6 +636,7 @@ mod tests {
             points: [0, 0],
             places: vec![place(0, 0), place(1, 1)],
             batteries,
+            marks: vec![],
             containers: vec![],
             sounds: vec![],
             deaths: vec![],
@@ -710,6 +728,60 @@ mod tests {
         let ours_taken = vec![BatteryState::Home(1), BatteryState::Carried(Some(0))];
         step(&mut ours, &mut theirs, lying, ours_taken);
         assert!(ours.battery(1).is_none());
+    }
+
+    /// Matches 0x1a09…/0x7298… (level_01's floor hole at about (-43.5,
+    /// 3.8)): team 1's carrier died, the battery fell (y 19.6 -> -86) and
+    /// the game put it back 2 m away; the world's mask stayed 2 (team 1's
+    /// HUD) all the while, and so does the team's knowledge. Team 0's HUD
+    /// never had it. An enemy who picks it up and drops it between two
+    /// worlds within a metre takes it off our HUD (the mask says his team).
+    #[test]
+    fn the_hud_follows_the_worlds_mask_through_a_fall_and_a_reset() {
+        let marked = |batteries: Vec<BatteryState>, marks: Vec<u32>| MatchView {
+            marks,
+            ..battery_view(batteries)
+        };
+        let mut teams = [TeamKnowledge::default(), TeamKnowledge::default()];
+        let mut step = |from: &MatchView, to: &MatchView, time| {
+            for (team, knowledge) in teams.iter_mut().enumerate() {
+                knowledge.hud_update(team as u8, from, to, time);
+            }
+            teams.clone().map(|k| k.battery(0).copied())
+        };
+        let dropped = Vec3::new(-43.58, 19.55, 3.80);
+        let fallen = Vec3::new(-43.58, -86.0, 3.80);
+        let reset = Vec3::new(-41.6, 21.6, 3.5);
+        let spawned = marked(vec![BatteryState::Free(Vec3::ZERO)], vec![0]);
+        let carried = marked(vec![BatteryState::Carried(Some(1))], vec![0]);
+        let lying = |at| marked(vec![BatteryState::Free(at)], vec![2]);
+        assert_eq!(step(&spawned, &spawned, 1), [None, None]);
+        step(&spawned, &carried, 2);
+        let [ours, theirs] = step(&carried, &lying(dropped), 3);
+        assert!(ours.is_none());
+        assert_eq!(theirs.map(|k| (k.at, k.hud)), Some((dropped, true)));
+        // It falls, and the game puts it back 2 m away: still on team 1's
+        // HUD, where it lies now.
+        step(&lying(dropped), &lying(fallen), 4);
+        let [ours, theirs] = step(&lying(fallen), &lying(reset), 5);
+        assert!(ours.is_none());
+        assert!(dropped.distance_xz(reset) > 1.9);
+        assert_eq!(
+            theirs.map(|k| (k.at, k.time, k.hud)),
+            Some((reset, 5, true))
+        );
+        let [_, theirs] = step(&lying(reset), &lying(reset), 6);
+        assert_eq!(theirs.map(|k| k.at), Some(reset));
+        // Team 0's player picks it up and drops it within a metre between
+        // two worlds: the mask is team 0's now.
+        let near = reset + Vec3::new(0.5, 0.0, 0.0);
+        let theirs_now = marked(vec![BatteryState::Free(near)], vec![1]);
+        let [ours, theirs] = step(&lying(reset), &theirs_now, 7);
+        assert_eq!(ours.map(|k| (k.at, k.hud)), Some((near, true)));
+        assert!(theirs.is_none());
+        // Put in: on no HUD.
+        let home = marked(vec![BatteryState::Home(0)], vec![0]);
+        assert_eq!(step(&theirs_now, &home, 8), [None, None]);
     }
 
     #[test]

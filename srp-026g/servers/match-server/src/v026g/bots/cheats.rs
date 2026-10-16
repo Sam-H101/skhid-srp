@@ -125,6 +125,7 @@ mod tests {
             points: [0, 0],
             places: vec![body(0, 0, Vec3::ZERO), body(1, 1, thief_at)],
             batteries: vec![BatteryState::Carried(Some(1))],
+            marks: vec![],
             containers: vec![],
             sounds: vec![],
             deaths: vec![],

@@ -87,7 +87,10 @@ struct Body {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Lying {
-    Free(Vec3),
+    /// Where, and the HUD mask as the client keeps it
+    /// (`TeamKnowledge::hud_update`): 0 when it appears, the carrier's
+    /// team's bit alone when he drops it or dies with it.
+    Free(Vec3, u32),
     Carried(Place),
     Home(u8),
 }
@@ -190,7 +193,7 @@ impl Game {
                 .map
                 .battery_spawners
                 .iter()
-                .map(|s| Lying::Free(s.item))
+                .map(|s| Lying::Free(s.item, 0))
                 .collect()
         };
         let gun = Arms::fallback().primary.0;
@@ -373,7 +376,7 @@ impl Game {
             let stations = &self.world.map.stations;
             let at = stations[self.batteries.len() % stations.len()];
             self.batteries
-                .push(Lying::Free(at + Vec3::new(1.5, 0.3, 0.0)));
+                .push(Lying::Free(at + Vec3::new(1.5, 0.3, 0.0), 0));
             self.timed = Some((next + every, every));
         }
     }
@@ -454,7 +457,7 @@ impl Game {
             other.alive = false;
             other.dead_at = tick;
             if let Some(battery) = other.carrying.take() {
-                self.batteries[battery] = Lying::Free(other.feet);
+                self.batteries[battery] = Lying::Free(other.feet, 1 << other.team);
             }
             self.stats[target].1 += 1;
             self.stats[target].2 = 0;
@@ -510,7 +513,7 @@ impl Game {
             if pressed[place] & key::DROP != 0
                 && let Some(battery) = body.carrying
             {
-                self.batteries[battery] = Lying::Free(body.feet);
+                self.batteries[battery] = Lying::Free(body.feet, 1 << body.team);
                 self.bodies[place].carrying = None;
             }
             if pressed[place] & key::USE == 0 {
@@ -531,7 +534,7 @@ impl Game {
                 }
                 None => {
                     let free = self.batteries.iter().position(
-                        |b| matches!(b, Lying::Free(at) if self.uses_battery(&body, *at)),
+                        |b| matches!(b, Lying::Free(at, _) if self.uses_battery(&body, *at)),
                     );
                     let theirs = self.containers.iter().position(|(t, at)| {
                         *t != team && Self::uses(&body, *at + USE_BOX_UP, USE_BOX_M)
@@ -586,9 +589,17 @@ impl Game {
                 .batteries
                 .iter()
                 .map(|b| match b {
-                    Lying::Free(at) => BatteryState::Free(*at),
+                    Lying::Free(at, _) => BatteryState::Free(*at),
                     Lying::Carried(_) => BatteryState::Carried(None),
                     Lying::Home(id) => BatteryState::Home(*id),
+                })
+                .collect(),
+            marks: self
+                .batteries
+                .iter()
+                .map(|b| match b {
+                    Lying::Free(_, mask) => *mask,
+                    Lying::Carried(_) | Lying::Home(_) => 0,
                 })
                 .collect(),
             container_counts: (0..self.containers.len())
@@ -1775,7 +1786,7 @@ fn real_bot_cost() {
                     items.swap(i, j);
                 }
                 items.truncate(count);
-                game.batteries = items.into_iter().map(Lying::Free).collect();
+                game.batteries = items.into_iter().map(|at| Lying::Free(at, 0)).collect();
             }
             for place in 0..teams.len() {
                 bots.entered(place, true, 0);
@@ -2176,6 +2187,56 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
         playing: true,
     });
     assert!(made.iter().all(|made| made.place != 3));
+}
+
+/// The world's HUD mask reaches the teams' knowledge (`WorldFacts::marks`
+/// through the tracker to `TeamKnowledge::hud_update`): team 1's dropped
+/// battery that falls through level_01's floor and is put back 2 m away
+/// stays known to team 1 (matches 0x1a09…/0x7298…), never to team 0.
+#[test]
+fn a_dropped_battery_put_back_after_a_fall_stays_on_its_teams_hud() {
+    let teams = [0, 1];
+    let mut bots = Bots::new(
+        0xF1,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, true],
+        &[None; 2],
+        Arc::new(Tuning::default()),
+        Trace::none(0),
+    );
+    assert!(!bots.tuning.cheats.batteries);
+    for place in 0..2 {
+        bots.entered(place, true, 100);
+    }
+    let lying = |time: u32, at: Vec3, mask: u32| WorldFacts {
+        time,
+        batteries: vec![BatteryState::Free(at)],
+        marks: vec![mask],
+        ..WorldFacts::default()
+    };
+    let known = |bots: &Bots, team: usize| bots.teams[team].knowledge.battery(0).copied();
+    let dropped = Vec3::new(-43.58, 19.55, 3.80);
+    let reset = Vec3::new(-41.6, 21.6, 3.5);
+    bots.facts(lying(1_000, Vec3::new(-14.0, 21.7, -61.4), 0));
+    assert!(known(&bots, 0).is_none() && known(&bots, 1).is_none());
+    bots.facts(WorldFacts {
+        time: 2_000,
+        batteries: vec![BatteryState::Carried(None)],
+        marks: vec![0],
+        ..WorldFacts::default()
+    });
+    bots.facts(lying(3_000, dropped, 2));
+    assert!(known(&bots, 1).is_some_and(|k| k.hud));
+    bots.facts(lying(4_000, Vec3::new(dropped.x, -86.0, dropped.z), 2));
+    bots.facts(lying(5_000, reset, 2));
+    let kept = known(&bots, 1).expect("still on team 1's HUD");
+    assert!(kept.hud && kept.time == 5_000);
+    // In the bots' frame (without a map, the mirrored one).
+    let reset_frame = Vec3::new(reset.x, reset.y, -reset.z);
+    assert!((kept.at - reset_frame).length() < 1e-3, "{kept:?}");
+    assert!(known(&bots, 0).is_none());
 }
 
 /// A place's ammo lasts the match: a bot's kit keeps what it has left from
