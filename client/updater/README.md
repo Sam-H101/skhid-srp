@@ -22,7 +22,8 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   was built with (`SKHID_UPDATE_URL`, default `https://skhid.link`). HTTPS
   through Windows' own WinHTTP (its TLS, its certificate store, the system's
   proxy settings); plain HTTP only for `127.0.0.1` and `localhost`. No
-  redirect is followed, no cookie kept.
+  redirect of the update server is followed (a patch file's are, up to 5:
+  "Patches"), no cookie kept.
 - `GET /api/client-files` → `skhid-client-files 1`, `sha256 <hex>`,
   `size <bytes>`; `GET /download` → the ZIP. Both are routes of
   `srp-026g/servers/web-server`.
@@ -44,11 +45,13 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
   `GET /resources/<sha256>`. Best effort, once: it never fails the update
   ("Restoring resources.db" below).
 - Then, at every start, the patch step: `GET /patches`, the server's list
-  of resources.db's patches, each with its SHA-256 and the address of its
-  file (plain HTTP or HTTPS, any host); every patch file is hashed, a patch
-  file the list has not is deleted, a listed patch that is missing or
-  damaged is downloaded. Required: PLAY stays off until every listed patch
-  is in place ("Patches" below).
+  of resources.db's patches, each with its SHA-256 and the addresses of its
+  file (1 to 8, tried in order: mirrors; plain HTTP or HTTPS, any host);
+  every patch file is checked (hashed only when it changed since its last
+  hash, or that was a week ago: the quick check), a patch file the list has
+  not is deleted, a listed patch that is missing or damaged is downloaded
+  from the first address that gives it. Required: PLAY stays off until
+  every listed patch is in place ("Patches" below).
 - Writes `updater_skhid.state` (what is installed)
   and `updater_skhid.log` (what it did; no account name, no password; it
   does hold the game folder's path) beside itself. `updater_skhid.lock`
@@ -65,9 +68,9 @@ and without a C runtime, like `../bugtrap`. It imports `kernel32.dll`,
 |---|---|---|
 | `"<exe>" "update" "\\.\pipe\vostok_updater_pipe-<product>" ...` (also `full_update`) | the launcher | The update, reported over the launcher's pipe in the messages of the original updater (`logic/src/pipe.rs`). It stays until the launcher says stop or goes away |
 | `"<exe>" "copy" "<pipe>" ...` | the unpatched launcher | Answers "copy done" at once: nothing needs copying |
-| `updater_skhid.exe check` | a person, a script | The update without a launcher; an error is a message box |
+| `updater_skhid.exe check` | a person, a script | The update without a launcher, every patch file hashed whole whatever the quick check's record says: the repair, when a patch file may be damaged in a way the quick check does not see (bytes changed in place with the size and the time kept, as no program does by chance). An error is a message box |
 | `updater_skhid.exe check quiet` | a script | No box either. Exit code 0: done or nothing to do; 1: failed (the reason is in the log) |
-| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the last patch step did not end `ready` (a new overlay since, too), or the patch files are not now what its list says (one missing, damaged, or one more); else 0 |
+| `updater_skhid.exe ready` (`quiet`: no box) | `play_skhid.bat`, `play_skhid.sh` before they start the game | Reads only: no lock, no server, nothing written but the log. Exit code 1 (and a box that says to start the launcher) when the last patch step did not end `ready` (a new overlay since, too), or the patch files are not now what its list says (one missing, damaged, or one more; looked at with the quick check); else 0 |
 
 Exit codes: 0, 1 (failed), 2 (the launcher's pipe could not be opened), 3
 (an internal error; logged).
@@ -79,7 +82,7 @@ says so and does nothing.
 
 | Folder | What |
 |---|---|
-| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the earlier updaters' record of resources.db, the list of resources.db's patches) and what the restore and the patch step decide, the launcher's pipe messages, command-line splitting, the server address and a patch's. `cargo test` there runs on any host |
+| `logic/` | Everything that needs no Windows, as a library with no dependencies: SHA-256, DEFLATE and CRC-32, the ZIP reader and its name rules, the text formats (the server's answer, the installed state, the earlier updaters' record of resources.db, the list of resources.db's patches, the quick check's record) and what the restore and the patch step decide, the launcher's pipe messages, command-line splitting, the server address and a patch's. `cargo test` there runs on any host |
 | `exe/` | The program: WinHTTP, files, the pipe, the install with its undo, the texts a player sees. Built for `i686-pc-windows-msvc` with `-Z build-std=core,alloc` and `rust-lld`, as `../bugtrap` |
 | `tests/` | `test_updater.py`: the real exe against a web server on 127.0.0.1, with the test in the launcher's place on a real named pipe (Windows only). `test_db_patches.py`: the patch step and the restore, Windows or Wine. `test_game_download.py`: the original game's download. `fake_exe/`: a stand-in for the game and the launcher that writes down how it was started; it also holds a file as the game or an antivirus does, and is the launcher's end of its pipe, for the tests under Wine |
 
@@ -216,40 +219,113 @@ server lists (`logic/src/patches.rs`, `exe/src/patches.rs`).
 
 **The list.** `GET <server>/patches`, from the server the updater asks for
 everything else (`updater_skhid.url`, else the built-in
-`SKHID_UPDATE_URL`; so HTTPS in production):
+`SKHID_UPDATE_URL`; so HTTPS in production). srp writes it so:
 
 ```json
-{"patch_12": {"sha256": "<64 hex>", "url": "http://203.0.113.5/patch_12"},
- "patch_17": {"sha256": "<64 hex>", "url": "https://files.example/db/patch_17"}}
+{"patch_12": {"sha256": "<64 hex>", "urls": ["http://203.0.113.5/patch_12",
+     "https://drive.usercontent.google.com/download?id=<id>&export=download&confirm=t"]},
+ "patch_17": {"sha256": "<64 hex>", "urls": ["https://files.example/db/patch_17"]}}
 ```
 
 A JSON object and nothing else: every key `patch_<n>` with n from 1 to 255
 and no leading zero (the game's own rule), no key twice; every value an
-object of exactly `sha256` (64 hex characters, either case) and `url`
-(`http://` or `https://`, a host name or a bare IPv4 address, an optional
-port, and a path; no credentials, no fragment, no space, no `"` or `\`, no
-other scheme; at most 1024 bytes: `url::patch`, which srp-game-data's
+object of exactly two members, `sha256` (64 hex characters, either case)
+and the file's addresses: `urls`, an array of 1 to 8 strings, none twice,
+or `url`, one string (the form of updater 0.2.0, still read: an old list,
+the list it kept beside it), never both. An address is `http://` or
+`https://`, a host name or a bare IPv4 address, an optional port, and a
+path; no credentials, no fragment, no space, no `"` or `\`, no other
+scheme; at most 1024 bytes (`url::patch`, which srp-game-data's
 `server::is_url` mirrors, both tested with
-`logic/tests/data/patch_urls.txt`). No escape in any string. At most
-512 KB. `{}` is a list: no patch (every patch file is deleted). Anything
-else is refused whole, with nothing changed. 404 is "no list", not "no
-patch".
+`logic/tests/data/patch_urls.txt`). No escape in any string, no other
+member, no other value. At most 4 MB. `{}` is a list: no patch (every
+patch file is deleted). Anything else is refused whole, with nothing
+changed. 404 is "no list", not "no patch".
 
-**The files.** `GET <url>` of each entry, on whatever host the list names:
-a plain file server is enough. Plain HTTP is taken there, to any host, as
-it is not for the update server: the file is checked against the list's
-SHA-256, and the list came from the update server over HTTPS. No redirect
-is followed (a 302 is an error). The Content-Length, when the server sends
-one, is checked against the disk first, and a body shorter than it is an
-error.
+Updater 0.2.0 reads the `url` form only; it never meets the `urls` one. The
+release that brings 0.3.0 ships its ZIP and an srp that writes `urls`
+together, and an updater asks for the ZIP before the list: 0.2.0 finds a
+new `updater_skhid.exe` in it, installs it, and leaves the rest of the
+update to it ("the rest of the update is done by the new one": the
+launcher restarts, which starts the new updater at once; by hand, the next
+`check` does it). Until then `ready` refuses (a new overlay). Tested
+end to end (`test_db_patches.py`, with `SKHID_TEST_OLD_UPDATER`).
+
+**The files.** `GET <address>` of each entry, on whatever host the list
+names: a plain file server is enough. Plain HTTP is taken there, to any
+host, as it is not for the update server: the file is checked against the
+list's SHA-256, and the list came from the update server over HTTPS.
+
+- **Mirrors.** The addresses are tried in their order, each once a round,
+  two rounds a run. Any failure moves on to the next address: no
+  connection or a broken one, another status than 200, a web page
+  (`Content-Type: text/html`: a sign-in page, Google Drive's "cannot scan
+  this file for viruses" page), a body shorter than its Content-Length,
+  another SHA-256, too many redirects or one to an address a list may not
+  name. The second round tries again only the addresses that failed on the
+  network (no connection, cut short, a 5xx): another file or a web page
+  would be the same 3 s later. The log names each address and its failure
+  (`patches: resources.db.patch_<n>: address 2 of 3, <address> (try 1 of
+  2): <why>`); PLAY stays off only when every address failed. Not enough
+  disk, a file that cannot be written here: no other address would do
+  better, the run ends.
+- **Redirects** are followed, up to 5 a download (the 6th is a failure),
+  WinHTTP's own following being off: each `Location` (absolute, `//host`,
+  `/path`, `?query` or relative) is resolved against the address it came
+  from and taken only if it is one a list may name (`url::redirect`, then
+  `url::patch`: http or https, no credentials, no fragment, ...). From
+  HTTPS down to plain HTTP is taken, as plain HTTP is in a list: the
+  SHA-256 decides. The log names each hop.
+- **Google Drive.** Share the file with "anyone with the link" and list
+  `https://drive.usercontent.google.com/download?id=<id>&export=download&confirm=t`
+  (`<id>` of the link `https://drive.google.com/file/d/<id>/view`): that
+  form gives the file itself, whatever its size, without a cookie or a
+  sign-in (the original game's download uses it, `logic/src/game.rs`). The
+  `https://drive.google.com/uc?export=download&id=<id>` form redirects to
+  it, and for a large file answers a "cannot scan for viruses" web page
+  instead: that address fails and the next is tried. `release/add-mirror`
+  checks an address before it is listed.
+- No download is resumed: one that broke off is fetched again whole (the
+  owner's decision; a patch is tens of megabytes).
+- The Content-Length, when the server sends one, is checked against the
+  disk first, and a body shorter than it is an error.
+
+**The quick check.** A patch file is not read at every start. After it is
+downloaded or hashed whole, `updater_skhid.patches.checked` beside the
+updater records its SHA-256 with what Windows says of it
+(`GetFileInformationByHandle`: its size, last-write time, and file ID: the
+volume's serial number and the 64-bit file index), read before and after
+the hash (a file written to meanwhile is not recorded), and when it was
+hashed (`logic/src/checked.rs`):
+
+```text
+skhid-patches-checked 1
+file resources.db.patch_12 <sha256> <size> <last write> <volume> <index> <hashed at>
+end
+```
+
+At a later start a listed patch whose file has the same size, time and ID,
+whose recorded SHA-256 is the list's, and which was hashed less than 7 days
+ago (and not "after" now: a clock set back), counts as checked without a
+read. Anything else is hashed: another size, time or ID (written to,
+copied back, replaced, restored by hand), another SHA-256 in the list for
+it, no record or one that cannot be read (wholly: a record without its
+`end` line is none), a hash a week old, a file system that gives no file
+index. A file is hashed once a run at most: a download is hashed once (read
+back) and known in its place by its file ID after the rename, which keeps
+it. The launcher's run, a start without the server and `ready` take the
+quick check (`ready` does not write the record); `updater_skhid.exe check`
+hashes every file (the repair). The record holds no more than the list's
+patches; a delete or a damaged file drops its entry.
 
 **A run**, after the restore (also when nothing new was installed; under
 the installation lock):
 
 1. The list is fetched (three tries, 3 s apart; the launcher's stop is
    heard meanwhile) and read.
-2. Every listed patch's file is hashed, once. The launcher shows
-   "checking" and its bar over all the bytes.
+2. Every listed patch's file is checked once: by the quick check's record,
+   else hashed (`check`: every one hashed). The launcher shows "checking"
+   and its bar over the bytes hashed.
 3. When anything is to change (a file to delete or to download, or a list
    other than the one kept): `updater_skhid.patches.status` says
    `blocked checking` and the list is kept beside the updater as
@@ -259,16 +335,17 @@ the installation lock):
    one the list no longer has (a rollback), a name the game does not take
    (`_014`, `_0`, `_300`), a download left over (`.skhid-part`).
 5. A damaged listed patch is deleted. A missing or damaged one is
-   downloaded into `resources.db.patch_<n>.skhid-part` beside its place
-   (the disk must have its Content-Length plus 64 MB free, else nothing is
-   fetched), flushed, read back and hashed, and renamed to its name only
-   when it has the list's SHA-256. Two tries a run; a file that is still
-   wrong, or a network failure, ends the run. A `.skhid-part` that failed,
-   or was stopped, is deleted.
+   downloaded from its addresses in turn (above) into
+   `resources.db.patch_<n>.skhid-part` beside its place (the disk must have
+   its Content-Length plus 64 MB free, else nothing is fetched), flushed,
+   read back and hashed, and renamed to its name only when it has the
+   list's SHA-256. When every address failed, the run ends. A
+   `.skhid-part` that failed, or was stopped, is deleted.
 6. The folder is checked against the list as `ready` checks it: no other
-   patch file, the downloaded files hashed again in their place, the
+   patch file, the downloaded files as they were hashed (by their file ID
+   in place; hashed again there if the rename did not keep it), the
    others as step 2 found them (nothing touched them since). Then the
-   status says `ready`.
+   status says `ready`, and the record of the hashes is written.
 
 Before each delete and each rename, `resources.db` is opened by the updater
 alone and closed again: the game keeps the db open while it runs (not its
@@ -290,7 +367,7 @@ When the update server could not be asked this run (the overlay's offline
 case), or its list could not be fetched (the network, a status but 404),
 nothing is fetched: the game may be played when the last run ended
 `ready` and the folder is still what the kept list says (every file
-hashed); else PLAY stays off. A first start with the server down therefore
+checked, by the quick check); else PLAY stays off. A first start with the server down therefore
 keeps PLAY off, and so does a start without the server after a new overlay.
 
 What keeps PLAY off ("Error" in the launcher's line, the reason in its box,
@@ -304,8 +381,9 @@ done." after it:
 | The list cannot be fetched (network, a status but 404), and the folder was not checked in place before | "The list of the game's patches could not be fetched. <the network error>" |
 | `/patches` answers 404 | "<host> offers no list of the game's patches. Tell the server's operator." |
 | The list is not one (above; a Wi-Fi sign-in page too) | "The list of the game's patches from <host> cannot be used (<what>). Tell the server's operator." |
-| A file cannot be downloaded (network, a redirect, cut short) | "game\resources.db.patch_<n> could not be downloaded. <the network error>" |
-| A file has another SHA-256, twice | "<host> sent game\resources.db.patch_<n> with another checksum than its list says. Tell the server's operator." |
+| A file of one address cannot be downloaded (network, a status, a web page, too many redirects, cut short) | "game\resources.db.patch_<n> could not be downloaded. <the network error>" |
+| A file of one address has another SHA-256 | "<host> sent game\resources.db.patch_<n> with another checksum than its list says. Tell the server's operator." |
+| None of a patch's addresses (two or more) gave its file | "game\resources.db.patch_<n> could not be downloaded from any of its <k> addresses (each is in updater_skhid.log). The first: <its failure>" |
 | Not enough disk | "Not enough free disk space to update the game's files in <folder>: N MB needed, M MB free. ..." (N: the file's size and 64 MB) |
 | resources.db is held (the game runs) and a patch file is to change | "The game is running, so Skhid could not update the game's patches ... Close the game, then start the launcher again." |
 | A patch file stays held by another program | "Another program holds game\resources.db.patch_<n>, so Skhid could not update the game's patches. An antivirus may be scanning it: wait a minute, then start the launcher again." |
@@ -416,11 +494,42 @@ cut short, the server down, a db of another build);
 it needs Windows; its tests of the in-place plans are gone with them, and
 one checks the restart after a new updater with a patch listed.
 
+Run on 2026-10-16 (Linux, Wine 11.8 staging), 0.3.0 (mirrors, redirects,
+the quick check): the 66 unit tests; the 48 scenarios of
+`test_db_patches.py` (42 of the patch step: those before, with a wrong
+file now tried once and a redirect now followed; the first address down,
+a web page, a file of another checksum, each moving on to the next
+address; every address failing, the network one tried twice and the others
+once; five redirects followed across two servers and six refused, a
+redirect to an address a list may not name; the quick check: a launcher's
+run and `ready` reading no patch file, bytes changed in place with the size
+and time kept going unseen until `check`, a touched file and a copy put
+back hashed again, a hash 6 days old standing and one 8 days old or in the
+future done again, a record lost or spoilt, a new checksum in the list, a
+download known in place by its file ID, the server down; a list of the
+earlier form, and the one 0.2.0 kept read offline and by `ready`; and,
+with `SKHID_TEST_OLD_UPDATER`, 0.2.0 (built from main before this change)
+installing 0.3.0 without asking for `/patches`, then 0.3.0, as the launcher
+starts it, doing the patches of a `urls` list through a redirect. Six of
+the restore, as before); `test_game_download.py` (16, four skipped as
+before); `srp-026g/client-patches`' `test_release_overlay.py` and
+`test_linux_launcher.py` (40, one skipped). `test_updater.py` is not run:
+it needs Windows. The quick check's file ID is Wine's (the file's inode);
+on Windows it is NTFS's.
+
+The build of that commit (`SKHID_UPDATE_URL` unset), by
+`../check-reproducible.sh` the same in two folders:
+`updater_skhid.exe` 173,056 bytes, SHA-256
+`1ee62fd9825c51c40fb5314b84fb94f9a69812c9273baa2c0b7ad80d058aa8de`;
+`BugTrap.dll` unchanged,
+`e8e190edd04b600bf146925e21597dc3b06ca5778aef61991634974b781acc6d`.
+
 ## Not done
 
 - A signature on the ZIP made with a key that is not on the server. Today
   the ZIP is trusted because the HTTPS connection to the server is.
 - Resuming a broken download (the ZIP is a few megabytes; it is fetched
-  again).
+  again; a patch, from its next address, else at the next start, whole: by
+  the owner's decision).
 - Texts in other languages than English (the launcher shows them in an
   ANSI message box).

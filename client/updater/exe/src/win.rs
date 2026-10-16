@@ -5,24 +5,28 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::ptr::{null, null_mut};
 
+use updater_logic::checked::Identity;
 use updater_logic::sha256::Sha256;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, GENERIC_READ,
-    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, SYSTEMTIME,
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, FILETIME,
+    GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, SYSTEMTIME,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_ALWAYS, CreateDirectoryW, CreateFileW, DeleteFileW, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FindClose,
-    FindFirstFileW, FindNextFileW, FlushFileBuffers, GetDiskFreeSpaceExW, GetFileAttributesW,
-    GetFileSizeEx, INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING, MoveFileExW, OPEN_ALWAYS,
-    OPEN_EXISTING, ReadFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
+    BY_HANDLE_FILE_INFORMATION, CREATE_ALWAYS, CreateDirectoryW, CreateFileW, DeleteFileW,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FindClose, FindFirstFileW, FindNextFileW, FlushFileBuffers,
+    GetDiskFreeSpaceExW, GetFileAttributesW, GetFileInformationByHandle, GetFileSizeEx,
+    INVALID_FILE_ATTRIBUTES, MOVEFILE_REPLACE_EXISTING, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING,
+    ReadFile, SetFilePointerEx, WIN32_FIND_DATAW, WriteFile,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
     FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS, FormatMessageW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW;
-use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GetTickCount64};
+use windows_sys::Win32::System::SystemInformation::{
+    GetLocalTime, GetSystemTimeAsFileTime, GetTickCount64,
+};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, OpenMutexW, PROCESS_INFORMATION, STARTUPINFOW, Sleep,
 };
@@ -193,13 +197,48 @@ pub fn hash_file_with(
     path: &str,
     progress: &mut dyn FnMut(u64) -> bool,
 ) -> Result<(u64, [u8; 32]), Code> {
+    hash_file_identity(path, progress).map(|(size, sha256, _)| (size, sha256))
+}
+
+fn filetime(time: &FILETIME) -> u64 {
+    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+}
+
+/// What Windows says of an open file: its size, last-write time and file
+/// ID (`updater_logic::checked`).
+fn identity_of(file: &Handle) -> Result<Identity, Code> {
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { core::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.0, &mut info) } == 0 {
+        return Err(last_error());
+    }
+    Ok(Identity {
+        size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
+        written: filetime(&info.ftLastWriteTime),
+        volume: info.dwVolumeSerialNumber,
+        index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+/// What Windows says of a file, without reading it.
+pub fn identity(path: &str) -> Result<Identity, Code> {
+    identity_of(&open_read(path)?)
+}
+
+/// [`hash_file_with`], and what Windows says of the file before and after
+/// the read: `None` when that changed meanwhile (someone wrote to it) or
+/// cannot be told.
+pub fn hash_file_identity(
+    path: &str,
+    progress: &mut dyn FnMut(u64) -> bool,
+) -> Result<(u64, [u8; 32], Option<Identity>), Code> {
     let file = open_read(path)?;
+    let before = identity_of(&file).ok();
     let mut hash = Sha256::new();
     let mut buffer = alloc::vec![0_u8; 64 * 1024];
     let mut size = 0_u64;
     loop {
         match read_some(&file, &mut buffer)? {
-            0 => return Ok((size, hash.finish())),
+            0 => break,
             read => {
                 hash.update(&buffer[..read]);
                 size += read as u64;
@@ -209,6 +248,19 @@ pub fn hash_file_with(
             }
         }
     }
+    let after = identity_of(&file).ok();
+    let identity = before.filter(|before| Some(*before) == after && before.size == size);
+    Ok((size, hash.finish(), identity))
+}
+
+/// The time now, in Windows time (100 ns since 1601, UTC).
+pub fn now() -> u64 {
+    let mut time = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    unsafe { GetSystemTimeAsFileTime(&mut time) };
+    filetime(&time)
 }
 
 fn write_all(file: &Handle, mut data: &[u8]) -> Result<(), Code> {

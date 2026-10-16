@@ -1,14 +1,18 @@
 """End-to-end tests of the patch step and of the restore of resources.db: the
 real updater_skhid.exe, `check quiet` (no launcher, no box: the exit code,
-the log and the files tell what it did) or started by a stand-in for the
-launcher on its pipe, a web server on 127.0.0.1 in the place of the srp one
-that lists resources.db's patches at `/patches` with the address of each
-file (on itself, or on a second server), and `ready` and play_skhid.bat
-after it.
+the log and the files tell what it did; every patch file hashed) or started
+by a stand-in for the launcher on its pipe (the quick check), a web server
+on 127.0.0.1 in the place of the srp one that lists resources.db's patches
+at `/patches` with the addresses of each file (on itself, or on other
+servers), and `ready` and play_skhid.bat after it.
 
     cd client/updater
     ./build.sh
     python tests/test_db_patches.py [-v] [TestName ...]
+
+SKHID_TEST_OLD_UPDATER=<updater_skhid.exe 0.2.0> (client/updater of main
+before 0.3.0, built) also runs the release that brings this updater to a
+game of that one.
 
 On Windows the exe runs as it is; elsewhere under Wine (`wine` on the PATH,
 or SKHID_TEST_WINE; a prefix of its own in a temporary folder unless
@@ -269,6 +273,24 @@ class PatchTest(WineTest):
     def store_requests(self, site=None):
         return [path for path in (site or self.site).requests if path.startswith("/store/")]
 
+    RECORD = f"{X86}/updater_skhid.patches.checked"
+
+    def record(self):
+        """The quick check's record: patch file name -> its words after the
+        name (sha256, size, written, volume, index, hashed)."""
+        if not self.exists(self.RECORD):
+            return None
+        lines = self.read(self.RECORD).decode().split("\r\n")
+        self.assertEqual((lines[0], lines[-2:]), ("skhid-patches-checked 1", ["end", ""]))
+        return {line.split(" ")[1]: line.split(" ")[2:] for line in lines[1:-2]}
+
+    def hashed_in(self, run):
+        """How many patch files a run's log says it hashed."""
+        for line in run.splitlines():
+            if "patches: " in line and " file(s), " in line and " hashed in " in line:
+                return int(line.split("patches: ")[1].split(" ")[0])
+        return 0
+
     def status(self):
         name = f"{X86}/updater_skhid.patches.status"
         return self.read(name).decode() if self.exists(name) else None
@@ -315,6 +337,8 @@ class PatchTest(WineTest):
     def test_the_launcher_is_told_while_the_patches_are_checked(self):
         patches = self.make_patches(14, 17, size=3_000_000)
         self.assertEqual(self.run_updater(), 0, self.log())
+        # Without the record of the hashes, the launcher's run hashes both.
+        os.remove(self.path(self.RECORD))
         code, said = self.run_launched()
         self.assertEqual(code, 0, self.log())
         states = [frame[1] for frame in said if frame[0] == 0x02]
@@ -324,6 +348,14 @@ class PatchTest(WineTest):
         total = sum(len(data) for data in patches.values())
         progress = [struct.unpack_from("<QQ", frame, 1) for frame in said if frame[0] == 0x01]
         self.assertIn((total, total), progress)
+        # The next one reads neither: no "checking" but the overlay's.
+        mark = self.log_size()
+        code, said = self.run_launched()
+        self.assertEqual(code, 0, self.log())
+        states = [frame[1] for frame in said if frame[0] == 0x02]
+        self.assertEqual(states.count(CHECKING), 1, states)
+        self.assertIn("patches: 2 file(s) as they were when hashed in the last week: not read again",
+                      self.log_since(mark))
 
     def test_an_empty_list_has_nothing_to_do(self):
         self.assertEqual(self.run_updater(), 0, self.log())
@@ -399,8 +431,9 @@ class PatchTest(WineTest):
         patches = self.make_patches(1, 14)
         self.site.patch_bodies[14] = b"not patch 14"
         self.assertEqual(self.run_updater(), 1)
-        # Tried twice, never put in place; the good one is.
-        self.assertEqual(self.store_requests().count("/store/patch_14"), 2)
+        # Tried once (another file would not be better a second time), never
+        # put in place; the good one is.
+        self.assertEqual(self.store_requests().count("/store/patch_14"), 1)
         self.assertFalse(self.exists(self.patch_name(14)))
         self.assertEqual(self.read(self.patch_name(1)), patches[1])
         self.assert_blocked("sent game\\resources.db.patch_14 with another checksum than its list says",
@@ -412,20 +445,356 @@ class PatchTest(WineTest):
         self.assert_patches(patches)
         self.assertEqual(self.run_ready(), 0)
 
-    def test_a_redirect_is_not_followed(self):
+    def test_a_redirect_to_another_server_is_followed(self):
         patches = self.make_patches(14)
         elsewhere = harness.Site()
         self.others = [elsewhere]
         elsewhere.patches.update(patches)
         self.site.patch_redirects[14] = f"{elsewhere.url}/store/patch_14"
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assertEqual(self.store_requests(elsewhere), ["/store/patch_14"])
+        self.assert_patches(patches)
+        self.assertIn(f"/store/patch_14 redirects to {elsewhere.url}/store/patch_14", self.log())
+
+    # --- several addresses, redirects ------------------------------------
+
+    def two_sites(self):
+        others = [harness.Site(), harness.Site()]
+        self.others = others
+        return others
+
+    def test_the_first_address_down_the_second_gives_the_file(self):
+        patches = self.make_patches(14, 20)
+        down = harness.Site()
+        dead = down.url
+        down.close()
+        self.site.patch_urls = {n: [f"{dead}/store/patch_{n}", f"{self.site.url}/store/patch_{n}"]
+                                for n in patches}
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+        self.assertEqual(sorted(self.store_requests()), ["/store/patch_14", "/store/patch_20"])
+        log = self.log()
+        self.assertIn(f"patches: resources.db.patch_14: address 1 of 2, {dead}/store/patch_14 (try 1 of 2): "
+                      "Cannot connect to 127.0.0.1", log)
+        self.assertIn(f"patches: resources.db.patch_14: downloaded {self.site.url}/store/patch_14 "
+                      "(address 2 of 2), checksum right", log)
+        # As srp writes it, the list kept has both, in their order.
+        kept = json.loads(self.read(f"{X86}/updater_skhid.patches"))
+        self.assertEqual(kept["patch_14"]["urls"], self.site.patch_urls[14])
+        self.assertEqual(self.run_ready(), 0)
+
+    def test_a_web_page_in_the_place_of_the_file_moves_on_to_the_next_address(self):
+        patches = self.make_patches(14)
+        drive, files = self.two_sites()
+        drive.patches.update(patches)
+        drive.patch_html.add(14)
+        files.patches.update(patches)
+        self.site.patches.clear()
+        self.site.patches[14] = patches[14]
+        self.site.patch_urls = {14: [f"{drive.url}/store/patch_14", f"{files.url}/store/patch_14"]}
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+        self.assertEqual(self.store_requests(drive), ["/store/patch_14"], "a web page is not asked for twice")
+        self.assertEqual(self.store_requests(files), ["/store/patch_14"])
+        self.assertIn("127.0.0.1 answered /store/patch_14 with a web page, not the file", self.log())
+
+    def test_a_file_of_another_checksum_moves_on_to_the_next_address(self):
+        patches = self.make_patches(14)
+        stale, files = self.two_sites()
+        stale.patches[14] = b"an older patch 14"
+        files.patches.update(patches)
+        self.site.patch_urls = {14: [f"{stale.url}/store/patch_14", f"{files.url}/store/patch_14"]}
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+        self.assertEqual(self.store_requests(stale), ["/store/patch_14"])
+        self.assertIn(f"address 1 of 2, {stale.url}/store/patch_14 (try 1 of 2): {stale.url}/store/patch_14 "
+                      "(17 bytes) has SHA-256", self.log())
+        self.assertEqual(self.store_requests(), [])
+
+    def test_every_address_failing_keeps_play_off(self):
+        patches = self.make_patches(14)
+        down = harness.Site()
+        dead = down.url
+        down.close()
+        drive, stale = self.two_sites()
+        drive.patches.update(patches)
+        drive.patch_html.add(14)
+        stale.patches[14] = b"wrong"
+        self.site.patch_urls = {14: [f"{dead}/store/patch_14", f"{drive.url}/store/patch_14",
+                                     f"{stale.url}/store/patch_14"]}
         self.assertEqual(self.run_updater(), 1)
-        self.assertEqual(elsewhere.requests, [])
         self.assertFalse(self.exists(self.patch_name(14)))
-        self.assert_blocked("game\\resources.db.patch_14 could not be downloaded. "
-                            "127.0.0.1 answered /store/patch_14 with error 302")
+        self.assert_blocked("game\\resources.db.patch_14 could not be downloaded from any of its 3 addresses",
+                            "The first: Cannot connect to 127.0.0.1",
+                            f"address 1 of 3, {dead}/store/patch_14 (try 1 of 2)",
+                            f"address 1 of 3, {dead}/store/patch_14 (try 2 of 2)",
+                            f"address 2 of 3, {drive.url}/store/patch_14 (try 1 of 2): ",
+                            f"address 3 of 3, {stale.url}/store/patch_14 (try 1 of 2): ")
+        # The network may come back; a web page or another file would not.
+        self.assertEqual(self.store_requests(drive), ["/store/patch_14"])
+        self.assertEqual(self.store_requests(stale), ["/store/patch_14"])
+        self.assertNotIn("(try 2 of 2): " + f"{stale.url}", self.log())
+        self.assertEqual(self.run_ready(), 1)
+        # One address put right: the next start does it.
+        stale.patches[14] = patches[14]
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+
+    def test_a_chain_of_five_redirects_is_followed_and_six_are_not(self):
+        patches = self.make_patches(14, 20)
+        files = harness.Site()
+        self.others = [files]
+        files.patches.update(patches)
+        # Five hops: on this host, to the files' server, down to its plain
+        # HTTP (all are, here), by turns absolute and on the host.
+        self.site.patch_redirects[14] = f"{files.url}/hop/4/patch_14"
+        self.site.patch_urls = {14: [f"{self.site.url}/store/patch_14"],
+                                20: [f"{files.url}/hop/6/patch_20", f"{files.url}/hop/5/patch_20"]}
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+        log = self.log()
+        self.assertIn(f"{self.site.url}/store/patch_14 redirects to {files.url}/hop/4/patch_14", log)
+        self.assertIn(f"{self.site.url}/store/patch_14 redirects to {files.url}/hop/3/patch_14", log)
+        self.assertIn(f"{self.site.url}/store/patch_14 redirects to {files.url}/hop/0/patch_14", log)
+        # Six are refused, and the next address (five) is used.
+        self.assertIn(f"address 1 of 2, {files.url}/hop/6/patch_20 (try 1 of 2): 127.0.0.1 redirected "
+                      "/hop/6/patch_20 more than 5 times", log)
+        self.assertIn(f"downloaded {files.url}/hop/5/patch_20 (address 2 of 2)", log)
+        self.assertEqual(files.requests.count("/hop/6/patch_20"), 1, "not tried twice")
+
+    def test_a_redirect_to_an_address_a_list_may_not_name_is_refused(self):
+        patches = self.make_patches(14)
+        for location, said in [
+            ("ftp://127.0.0.1/patch_14", "ftp://127.0.0.1/patch_14"),
+            ("http://user:pw@127.0.0.1/store/patch_14", "http://user:pw@127.0.0.1/store/patch_14"),
+            ("file:///C:/Windows/win.ini", "file:///C:/Windows/win.ini"),
+        ]:
+            with self.subTest(location=location):
+                self.site.patch_redirects[14] = location
+                self.assertEqual(self.run_updater(), 1)
+                self.assertFalse(self.exists(self.patch_name(14)))
+                self.assert_blocked("127.0.0.1 redirected /store/patch_14 to an address the updater does not "
+                                    f"take: {said}")
         self.site.patch_redirects.clear()
         self.assertEqual(self.run_updater(), 0, self.log())
         self.assert_patches(patches)
+
+    # --- the quick check -------------------------------------------------
+
+    def test_a_file_as_it_was_hashed_is_not_read_again_until_check(self):
+        patches = self.make_patches(14, 17, size=2_000_000)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        record = self.record()
+        self.assertEqual(sorted(record), ["resources.db.patch_14", "resources.db.patch_17"])
+        self.assertEqual(record["resources.db.patch_14"][0], sha256(patches[14]))
+        self.assertEqual(int(record["resources.db.patch_14"][1]), len(patches[14]))
+        self.assertNotEqual(record["resources.db.patch_14"][4], "0", "a file index")
+        # The launcher's run, and `ready`: neither reads a patch file.
+        for run in (lambda: self.run_launched()[0], self.run_ready):
+            mark = self.log_size()
+            self.assertEqual(run(), 0, self.log())
+            self.assertEqual(self.hashed_in(self.log_since(mark)), 0, self.log_since(mark))
+            self.assertIn("2 file(s) as they were when hashed in the last week: not read again",
+                          self.log_since(mark))
+        # Proof that nothing was read: bytes changed in place with the size
+        # and the time kept (as no program does by chance) go unseen ...
+        path = self.path(self.patch_name(14))
+        times = os.stat(path)
+        with open(path, "r+b") as file:
+            file.seek(1000)
+            file.write(b"damaged")
+        os.utime(path, ns=(times.st_atime_ns, times.st_mtime_ns))
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        self.assertEqual(self.run_ready(), 0)
+        # ... until `check`, the repair, hashes every file.
+        self.site.requests.clear()
+        mark = self.log_size()
+        self.assertEqual(self.run_updater(), 0, self.log())
+        run = self.log_since(mark)
+        self.assertIn("patches: every patch file is hashed (check)", run)
+        self.assertEqual(self.hashed_in(run), 2, run)
+        self.assertIn("resources.db.patch_14 does not have the list's checksum: downloaded again", run)
+        self.assertEqual(self.store_requests(), ["/store/patch_14"])
+        self.assert_patches(patches)
+
+    def test_a_file_written_to_or_replaced_is_hashed_again(self):
+        patches = self.make_patches(14, 17)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        # Touched: another time.
+        os.utime(self.path(self.patch_name(14)), (time.time() - 100, time.time() - 100))
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        run = self.log_since(mark)
+        self.assertEqual(self.hashed_in(run), 1, run)
+        self.assertIn("1 file(s) as they were when hashed", run)
+        self.assertIn("0 to download, 0 to delete", run)
+        # Replaced by a copy of itself: another file ID, the same bytes.
+        path = self.path(self.patch_name(17))
+        shutil.copy2(path, path + ".copy")
+        os.replace(path + ".copy", path)
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        self.assertEqual(self.hashed_in(self.log_since(mark)), 1, self.log_since(mark))
+        # And the next run reads neither.
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        self.assertEqual(self.hashed_in(self.log_since(mark)), 0, self.log_since(mark))
+        self.assert_patches(patches)
+
+    def test_a_hash_older_than_a_week_is_done_again(self):
+        patches = self.make_patches(14)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        day = 24 * 3600 * 10_000_000
+        name = "resources.db.patch_14"
+        for days, hashed in [(6, 0), (8, 1), (-1, 1)]:
+            with self.subTest(days=days):
+                text = self.read(self.RECORD).decode()
+                words = text.split("\r\n")[1].split(" ")
+                words[-1] = str(int(words[-1]) - days * day)
+                self.write(self.RECORD, text.replace(text.split("\r\n")[1], " ".join(words)).encode())
+                mark = self.log_size()
+                self.assertEqual(self.run_launched()[0], 0, self.log())
+                run = self.log_since(mark)
+                self.assertEqual(self.hashed_in(run), hashed, run)
+                if hashed:
+                    # Hashed now: it stands for a week from now.
+                    now = int(self.record()[name][-1])
+                    if days > 0:
+                        self.assertGreater(now, int(words[-1]) + day // 2)
+                    else:
+                        self.assertLess(now, int(words[-1]))
+        self.assert_patches(patches)
+
+    def test_a_record_lost_or_spoilt_hashes_every_file(self):
+        self.make_patches(14, 17)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        good = self.read(self.RECORD)
+        for spoilt in (None, b"", b"skhid-patches-checked 1\r\n", good.replace(b"\r\nend", b"\r\nx\r\nend"),
+                       good[:-20], good.replace(b"skhid-patches-checked 1", b"skhid-patches-checked 2")):
+            with self.subTest(spoilt=spoilt):
+                if spoilt is None:
+                    os.remove(self.path(self.RECORD))
+                else:
+                    self.write(self.RECORD, spoilt)
+                mark = self.log_size()
+                self.assertEqual(self.run_launched()[0], 0, self.log())
+                self.assertEqual(self.hashed_in(self.log_since(mark)), 2, self.log_since(mark))
+                self.assertEqual(sorted(self.record()), ["resources.db.patch_14", "resources.db.patch_17"])
+
+    def test_a_new_checksum_in_the_list_is_hashed_and_downloaded(self):
+        patches = self.make_patches(14, 17)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        # The list changed for patch 14 (as no release does: a fix is the
+        # next revision; but the list decides).
+        patches[14] = b"patch 14, other bytes"
+        self.site.patches[14] = patches[14]
+        self.site.requests.clear()
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        run = self.log_since(mark)
+        self.assertEqual(self.hashed_in(run), 1, run)
+        self.assertEqual(self.store_requests(), ["/store/patch_14"])
+        self.assert_patches(patches)
+        self.assertEqual(self.record()["resources.db.patch_14"][0], sha256(patches[14]))
+
+    def test_a_download_is_hashed_once_and_known_in_place_by_its_file_id(self):
+        self.make_patches(14)
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        run = self.log_since(mark)
+        self.assertIn("patches: resources.db.patch_14: downloaded", run)
+        self.assertEqual(self.hashed_in(run), 0, run)
+        self.assertIn("patches: 1 patch(es) in place, checked", run)
+        self.assertEqual(self.status(), "ready\r\n")
+        mark = self.log_size()
+        self.assertEqual(self.run_ready(), 0)
+        self.assertEqual(self.hashed_in(self.log_since(mark)), 0, self.log_since(mark))
+
+    def test_the_server_down_takes_the_quick_check_too(self):
+        patches = self.make_patches(14)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.site.close()
+        mark = self.log_size()
+        self.assertEqual(self.run_launched()[0], 0, self.log())
+        run = self.log_since(mark)
+        self.assertIn("patches: the server could not be asked; the patches kept are in place", run)
+        self.assertEqual(self.hashed_in(run), 0, run)
+        # Damaged meanwhile, and `check`: found.
+        self.write(self.patch_name(14), b"damaged")
+        self.assertEqual(self.run_updater(), 1)
+        self.site = harness.Site()
+        self.site.patches.update(patches)
+
+    # --- the form of the list before updater 0.3.0 -----------------------
+
+    def test_a_list_of_the_earlier_form_is_still_read(self):
+        patches = self.make_patches(14, 17)
+        self.site.old_list = True
+        self.assertIn(b'"url": ', self.site.true_patch_list())
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assert_patches(patches)
+        kept = json.loads(self.read(f"{X86}/updater_skhid.patches"))
+        self.assertEqual(kept["patch_14"], {"sha256": sha256(patches[14]),
+                                            "urls": [f"{self.site.url}/store/patch_14"]})
+
+    def test_a_list_kept_by_the_updater_before_is_read_offline_and_by_ready(self):
+        patches = self.make_patches(14)
+        self.assertEqual(self.run_updater(), 0, self.log())
+        # As 0.2.0 kept it, and no record of hashes (it made none).
+        self.write(f"{X86}/updater_skhid.patches", (json.dumps(
+            {"patch_14": {"sha256": sha256(patches[14]), "url": f"{self.site.url}/store/patch_14"}}) + "\n").encode())
+        os.remove(self.path(self.RECORD))
+        self.assertEqual(self.run_ready(), 0, self.log())
+        self.site.close()
+        self.assertEqual(self.run_updater(), 0, self.log())
+        self.assertIn("patches: the server could not be asked; the patches kept are in place", self.log())
+        self.site = harness.Site()
+
+    @unittest.skipUnless(os.environ.get("SKHID_TEST_OLD_UPDATER"), "SKHID_TEST_OLD_UPDATER: the 0.2.0 exe")
+    def test_the_updater_before_installs_this_one_which_does_the_patches_of_urls(self):
+        """The release of 0.3.0: its ZIP and an srp that lists `urls`, at
+        once. A player's 0.2.0 asks for the overlay first, installs the new
+        updater and leaves the patch step to it (it never reads the new
+        list); the new one does it at once (the launcher restarts) or at the
+        next start."""
+        patches = self.make_patches(12, 14)
+        files = harness.Site()
+        self.others = [files]
+        files.patches.update(patches)
+        self.site.patch_urls = {n: [f"{self.site.url}/hop/1/patch_{n}", f"{files.url}/store/patch_{n}"]
+                                for n in patches}
+        # The player's game: 0.2.0, checked against an earlier list of
+        # patch 12 alone, in its form.
+        with open(os.environ["SKHID_TEST_OLD_UPDATER"], "rb") as file:
+            old = file.read()
+        self.assertNotEqual(old, self.updater_bytes)
+        self.write(f"{X86}/updater_skhid.exe", old)
+        self.write(self.patch_name(12), patches[12])
+        self.write(f"{X86}/updater_skhid.patches", (json.dumps(
+            {"patch_12": {"sha256": sha256(patches[12]), "url": f"{self.site.url}/store/patch_12"}}) + "\n").encode())
+        self.write(f"{X86}/updater_skhid.patches.status", b"ready\r\n")
+        self.offer(self.bundle())
+        self.assertEqual(self.run_updater(), 0, self.log())
+        log = self.log()
+        self.assertIn("---- updater 0.2.0 started", log)
+        self.assertIn("the rest of the update is done by the new one", log)
+        self.assertNotIn("/patches", self.site.requests, "0.2.0 never reads the new list")
+        self.assertEqual(self.read(f"{X86}/updater_skhid.exe"), self.updater_bytes)
+        self.assertEqual(self.status(), "blocked overlay changed\r\n")
+        self.assertEqual(self.run_ready(), 1)
+        # The new one, as the launcher starts it.
+        mark = self.log_size()
+        code, said = self.run_launched()
+        self.assertEqual(code, 0, self.log())
+        run = self.log_since(mark)
+        self.assertIn("---- updater 0.3.0 started", run)
+        self.assertIn("up to date", run)
+        self.assertIn(f"downloaded {self.site.url}/hop/1/patch_14 (address 1 of 2)", run)
+        self.assert_patches(patches)
+        self.assertEqual(self.status(), "ready\r\n")
+        self.assertEqual(json.loads(self.read(f"{X86}/updater_skhid.patches"))["patch_14"]["urls"],
+                         self.site.patch_urls[14])
+        self.assertEqual(self.run_ready(), 0)
 
     def test_a_file_cut_short_is_never_put_in_place(self):
         patches = self.make_patches(14)

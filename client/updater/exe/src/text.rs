@@ -45,9 +45,9 @@ fn megabytes(bytes: u64) -> u64 {
 }
 
 pub fn usage() -> String {
-    "The Skhid updater is started by launcher_skhid.exe. To update by hand, start it as: \
-     updater_skhid.exe check (to see whether the game's files are updated: updater_skhid.exe \
-     ready)"
+    "The Skhid updater is started by launcher_skhid.exe. To update by hand, every patch file \
+     hashed again, start it as: updater_skhid.exe check (to see whether the game's files are \
+     updated: updater_skhid.exe ready)"
         .into()
 }
 
@@ -184,6 +184,16 @@ pub fn http(server: &Url, path: &str, error: &HttpError) -> String {
             format!("The download from {host} broke off ({got} of {expected} bytes). Try again.")
         }
         HttpError::Stopped => "Stopped.".into(),
+        HttpError::Html => format!(
+            "{host} answered {path} with a web page, not the file (a sign-in or virus-scan page)."
+        ),
+        HttpError::Redirects => format!(
+            "{host} redirected {path} more than {} times.",
+            updater_logic::url::MAX_REDIRECTS
+        ),
+        HttpError::BadRedirect(location) => {
+            format!("{host} redirected {path} to an address the updater does not take: {location}")
+        }
     }
 }
 
@@ -298,6 +308,15 @@ pub fn patches_bad_list(server: &Url, detail: &str) -> String {
 
 pub fn patches_download(name: &str, reason: &str) -> String {
     format!("game\\{name} could not be downloaded. {reason}{PLAY_OFF}")
+}
+
+/// None of a patch's `count` addresses gave its file; `first`: what the
+/// first one's failure was.
+pub fn patches_no_address(name: &str, count: usize, first: &str) -> String {
+    format!(
+        "game\\{name} could not be downloaded from any of its {count} addresses (each is in \
+         updater_skhid.log). The first: {first}{PLAY_OFF}"
+    )
 }
 
 pub fn patches_wrong(server: &Url, name: &str) -> String {

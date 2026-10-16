@@ -12,23 +12,26 @@
 //! (over the update server's own address, HTTPS), and where each one is:
 //!
 //! ```text
-//! {"patch_12": {"sha256": "<64 hex>", "url": "http://203.0.113.5/patch_12"},
+//! {"patch_12": {"sha256": "<64 hex>", "urls": ["http://203.0.113.5/patch_12",
+//!                                              "https://mirror.example/patch_12"]},
 //!  "patch_17": {"sha256": "<64 hex>", "url": "https://files.example/patch_17"}}
 //! ```
 //!
 //! a JSON object and nothing else: every key `patch_<n>`, n from 1 to 255
 //! written without a leading zero (the game's own rule: `patch_014` is not
-//! a patch), no key twice; every value an object of exactly two strings,
-//! `sha256` (64 hex characters) and `url` (`http://` or `https://`, any
-//! host, a bare IP address too, and a path: [`crate::url::patch`]). Plain
-//! HTTP is taken for the files: each is checked against its `sha256`, which
-//! came over HTTPS. Whitespace between the parts is allowed; an escape in a
-//! string is not (no name, checksum or address needs one). Anything else is
-//! not a list: the step then changes nothing and PLAY stays off. `{}` is a
-//! list: no patch.
+//! a patch), no key twice; every value an object of exactly two members,
+//! `sha256` (64 hex characters) and the file's addresses: `urls`, an array
+//! of 1 to [`MAX_URLS`] of them, none twice, tried in their order, or (the
+//! form of updaters before 0.3.0, still read) `url`, one; never both. An
+//! address is `http://` or `https://`, any host, a bare IP address too, and
+//! a path ([`crate::url::patch`]). Plain HTTP is taken for the files: each
+//! is checked against its `sha256`, which came over HTTPS. Whitespace
+//! between the parts is allowed; an escape in a string is not (no name,
+//! checksum or address needs one). Anything else is not a list: the step
+//! then changes nothing and PLAY stays off. `{}` is a list: no patch.
 //!
-//! The file of `patch_<n>` is `GET <url>`, and goes to
-//! `game/resources.db.patch_<n>`. What is done with the folder:
+//! The file of `patch_<n>` is `GET <address>`, the first that gives it,
+//! and goes to `game/resources.db.patch_<n>`. What is done with the folder:
 //!
 //! - every listed patch whose file is missing, or whose SHA-256 is not the
 //!   list's, is downloaded (the damaged file deleted first);
@@ -44,13 +47,24 @@ use alloc::vec::Vec;
 use crate::sha256::{from_hex, to_hex};
 use crate::url::{self, Url};
 
-/// The longest list taken from the server: 255 entries with addresses of
-/// up to 1024 bytes ([`url::patch`]).
-pub const MAX_LIST: usize = 512 * 1024;
+/// The longest list taken from the server: 255 entries of up to
+/// [`MAX_URLS`] addresses of up to 1024 bytes each ([`url::patch`]).
+pub const MAX_LIST: usize = 4 << 20;
+/// The most addresses a patch may have.
+pub const MAX_URLS: usize = 8;
 /// What every patch file's name starts with, in the game folder.
 pub const FILE_PREFIX: &str = "resources.db.patch_";
 /// What a patch is named in the list (`patch_12`).
 const NAME_PREFIX: &str = "patch_";
+
+/// An address of a patch's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    /// As the list says it ...
+    pub text: String,
+    /// ... and read ([`url::patch`]).
+    pub url: Url,
+}
 
 /// One patch of the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,10 +72,8 @@ pub struct Patch {
     /// 1 to 255.
     pub number: u8,
     pub sha256: [u8; 32],
-    /// Where its file is, as the list says it ...
-    pub address: String,
-    /// ... and read ([`url::patch`]).
-    pub url: Url,
+    /// Where its file is: 1 to [`MAX_URLS`] addresses, tried in this order.
+    pub addresses: Vec<Address>,
 }
 
 impl Patch {
@@ -96,13 +108,16 @@ pub enum ListError {
     Syntax(usize),
     /// A key that is not `patch_<1..255>`.
     BadName(String),
-    /// A value that is not an object of `sha256` and `url` alone (the key's).
+    /// A value that is not an object of `sha256` and either `url` or `urls`
+    /// (1 to [`MAX_URLS`] strings) alone (the key's).
     BadEntry(String),
     /// A `sha256` that is not 64 hex characters (the key's).
     BadHash(String),
-    /// A `url` that is not an `http://` or `https://` address of a file
-    /// (the key's).
+    /// An address that is not an `http://` or `https://` address of a
+    /// file (the key's).
     BadUrl(String),
+    /// An address twice in one entry (the key's).
+    SameUrl(String),
     /// A key twice.
     Duplicate(String),
 }
@@ -143,7 +158,7 @@ fn number(digits: &str) -> Option<u8> {
     u8::try_from(value).ok().filter(|&n| n >= 1)
 }
 
-/// Reads the server's list (or the copy kept of it).
+/// Reads the server's list (or the copy kept of it), in either form.
 pub fn parse_list(bytes: &[u8]) -> Result<List, ListError> {
     if bytes.len() > MAX_LIST {
         return Err(ListError::TooLarge);
@@ -166,23 +181,32 @@ pub fn parse_list(bytes: &[u8]) -> Result<List, ListError> {
                 ListError::BadEntry(_) => ListError::BadEntry(name.into()),
                 other => other,
             })?;
-            let (Some(sha256), Some(address)) = (entry.0, entry.1) else {
+            let (Some(sha256), Some(texts)) = (entry.sha256, entry.addresses) else {
                 return Err(ListError::BadEntry(name.into()));
             };
             let sha256 = from_hex(sha256).ok_or_else(|| ListError::BadHash(name.into()))?;
-            let address = core::str::from_utf8(address)
-                .ok()
-                .filter(|address| address.len() <= 1024)
-                .ok_or_else(|| ListError::BadUrl(name.into()))?;
-            let url = url::patch(address).ok_or_else(|| ListError::BadUrl(name.into()))?;
+            let mut addresses: Vec<Address> = Vec::new();
+            for text in texts {
+                let text = core::str::from_utf8(text)
+                    .ok()
+                    .filter(|text| text.len() <= 1024)
+                    .ok_or_else(|| ListError::BadUrl(name.into()))?;
+                let url = url::patch(text).ok_or_else(|| ListError::BadUrl(name.into()))?;
+                if addresses.iter().any(|address| address.text == text) {
+                    return Err(ListError::SameUrl(name.into()));
+                }
+                addresses.push(Address {
+                    text: text.into(),
+                    url,
+                });
+            }
             if list.get(number).is_some() {
                 return Err(ListError::Duplicate(name.into()));
             }
             list.patches.push(Patch {
                 number,
                 sha256,
-                address: address.into(),
-                url,
+                addresses,
             });
             reader.space();
             if reader.take(b'}') {
@@ -200,7 +224,7 @@ pub fn parse_list(bytes: &[u8]) -> Result<List, ListError> {
 }
 
 /// The list as it is kept beside the updater: one line, in the order of
-/// the numbers.
+/// the numbers, every entry with its `urls`.
 pub fn write_list(list: &List) -> Vec<u8> {
     let mut out = Vec::from(&b"{"[..]);
     for (i, patch) in list.patches.iter().enumerate() {
@@ -211,12 +235,27 @@ pub fn write_list(list: &List) -> Vec<u8> {
         out.extend_from_slice(patch.name().as_bytes());
         out.extend_from_slice(b"\": {\"sha256\": \"");
         out.extend_from_slice(&to_hex(&patch.sha256));
-        out.extend_from_slice(b"\", \"url\": \"");
-        out.extend_from_slice(patch.address.as_bytes());
-        out.extend_from_slice(b"\"}");
+        out.extend_from_slice(b"\", \"urls\": [");
+        for (i, address) in patch.addresses.iter().enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b", ");
+            }
+            out.push(b'"');
+            out.extend_from_slice(address.text.as_bytes());
+            out.push(b'"');
+        }
+        out.extend_from_slice(b"]}");
     }
     out.extend_from_slice(b"}\n");
     out
+}
+
+/// A list's value as it was read: its checksum and its addresses, either
+/// form.
+#[derive(Default)]
+struct Entry<'a> {
+    sha256: Option<&'a [u8]>,
+    addresses: Option<Vec<&'a [u8]>>,
 }
 
 struct Reader<'a> {
@@ -252,43 +291,68 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// A list's value: `{"sha256": "...", "url": "..."}`, in either order,
+    fn at_string(&self) -> bool {
+        self.bytes.get(self.at) == Some(&b'"')
+    }
+
+    /// A list's value: `{"sha256": "...", "urls": ["...", ...]}` or
+    /// `{"sha256": "...", "url": "..."}`, the members in either order,
     /// nothing else. `BadEntry` (named by the caller) for another value.
-    #[allow(clippy::type_complexity)]
-    fn entry(&mut self) -> Result<(Option<&'a [u8]>, Option<&'a [u8]>), ListError> {
+    fn entry(&mut self) -> Result<Entry<'a>, ListError> {
         let bad = || ListError::BadEntry(String::new());
         if !self.take(b'{') {
             return Err(bad());
         }
-        let (mut sha256, mut address) = (None, None);
+        let mut entry = Entry::default();
         self.space();
         if self.take(b'}') {
             return Err(bad());
         }
         loop {
             self.space();
-            if self.bytes.get(self.at) != Some(&b'"') {
+            if !self.at_string() {
                 return Err(bad());
             }
             let key = self.string()?;
             self.space();
             self.expect(b':')?;
             self.space();
-            if self.bytes.get(self.at) != Some(&b'"') {
-                return Err(bad());
-            }
-            let value = self.string()?;
-            let slot = match key {
-                b"sha256" => &mut sha256,
-                b"url" => &mut address,
+            match key {
+                b"sha256" if entry.sha256.is_none() && self.at_string() => {
+                    entry.sha256 = Some(self.string()?);
+                }
+                // One of the two forms, once.
+                b"url" if entry.addresses.is_none() && self.at_string() => {
+                    entry.addresses = Some(alloc::vec![self.string()?]);
+                }
+                b"urls" if entry.addresses.is_none() => entry.addresses = Some(self.strings()?),
                 _ => return Err(bad()),
-            };
-            if slot.replace(value).is_some() {
-                return Err(bad());
             }
             self.space();
             if self.take(b'}') {
-                return Ok((sha256, address));
+                return Ok(entry);
+            }
+            self.expect(b',')?;
+        }
+    }
+
+    /// `urls`: an array of 1 to [`MAX_URLS`] strings. `BadEntry` for
+    /// another value.
+    fn strings(&mut self) -> Result<Vec<&'a [u8]>, ListError> {
+        let bad = || ListError::BadEntry(String::new());
+        if !self.take(b'[') {
+            return Err(bad());
+        }
+        let mut strings = Vec::new();
+        loop {
+            self.space();
+            if !self.at_string() || strings.len() == MAX_URLS {
+                return Err(bad());
+            }
+            strings.push(self.string()?);
+            self.space();
+            if self.take(b']') {
+                return Ok(strings);
             }
             self.expect(b',')?;
         }
@@ -438,18 +502,33 @@ mod tests {
         alloc::format!("http://203.0.113.5/patch_{number}")
     }
 
-    fn patch(number: u8, data: &[u8]) -> Patch {
-        let address = address(number);
-        Patch {
-            number,
-            sha256: digest(data),
-            url: url::patch(&address).unwrap(),
-            address,
+    fn addressed(text: &str) -> Address {
+        Address {
+            text: text.into(),
+            url: url::patch(text).unwrap(),
         }
     }
 
+    fn patch(number: u8, data: &[u8]) -> Patch {
+        Patch {
+            number,
+            sha256: digest(data),
+            addresses: alloc::vec![addressed(&address(number))],
+        }
+    }
+
+    /// An entry of the form before 0.3.0: one `url`.
     fn entry(name: &str, sha256: &str, url: &str) -> String {
         alloc::format!("\"{name}\": {{\"sha256\": \"{sha256}\", \"url\": \"{url}\"}}")
+    }
+
+    /// An entry of `urls`.
+    fn entry_urls(name: &str, sha256: &str, urls: &[&str]) -> String {
+        let urls: Vec<String> = urls.iter().map(|url| alloc::format!("\"{url}\"")).collect();
+        alloc::format!(
+            "\"{name}\": {{\"sha256\": \"{sha256}\", \"urls\": [{}]}}",
+            urls.join(", ")
+        )
     }
 
     /// A list of one entry.
@@ -464,7 +543,7 @@ mod tests {
     #[test]
     fn a_list_is_read_in_the_order_of_its_numbers() {
         let text = alloc::format!(
-            " {{\r\n  \"patch_17\" : {{ \"url\" : \"https://files.example.org:8443/db/patch_17\" ,\n\t\"sha256\":\"{}\" }},\n\t\"patch_14\":{{\"sha256\":\"{}\",\"url\":\"http://203.0.113.5/patch_14\"}} }}\n",
+            " {{\r\n  \"patch_17\" : {{ \"urls\" : [ \"https://files.example.org:8443/db/patch_17\" ,\n\"http://203.0.113.5/patch_17\"],\n\t\"sha256\":\"{}\" }},\n\t\"patch_14\":{{\"sha256\":\"{}\",\"urls\":[\"http://203.0.113.5/patch_14\"]}} }}\n",
             hex(b"17"),
             hex(b"14").to_ascii_uppercase()
         );
@@ -473,32 +552,166 @@ mod tests {
         assert_eq!(list.patches[0], patch(14, b"14"));
         let p17 = &list.patches[1];
         assert_eq!((p17.number, p17.sha256), (17, digest(b"17")));
-        assert_eq!(p17.address, "https://files.example.org:8443/db/patch_17");
+        // In the list's order.
         assert_eq!(
-            (
-                p17.url.secure,
-                p17.url.host.as_str(),
-                p17.url.port,
-                p17.url.prefix.as_str()
-            ),
+            p17.addresses
+                .iter()
+                .map(|address| address.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "https://files.example.org:8443/db/patch_17",
+                "http://203.0.113.5/patch_17"
+            ]
+        );
+        let url = &p17.addresses[0].url;
+        assert_eq!(
+            (url.secure, url.host.as_str(), url.port, url.prefix.as_str()),
             (true, "files.example.org", 8443, "/db/patch_17")
         );
-        assert!(!list.patches[0].url.secure);
+        assert!(!p17.addresses[1].url.secure);
         // Kept as it was read.
         assert_eq!(parse_list(&write_list(&list)), Ok(list.clone()));
         assert_eq!(
             write_list(&list),
             alloc::format!(
                 "{{{}, {}}}\n",
-                entry("patch_14", &hex(b"14"), "http://203.0.113.5/patch_14"),
-                entry(
+                entry_urls("patch_14", &hex(b"14"), &["http://203.0.113.5/patch_14"]),
+                entry_urls(
                     "patch_17",
                     &hex(b"17"),
-                    "https://files.example.org:8443/db/patch_17"
+                    &[
+                        "https://files.example.org:8443/db/patch_17",
+                        "http://203.0.113.5/patch_17"
+                    ]
                 )
             )
             .into_bytes()
         );
+    }
+
+    /// The form of the updaters before 0.3.0, and of the list they kept:
+    /// one `url`, read as a patch of one address and kept as `urls`.
+    #[test]
+    fn a_list_of_the_earlier_form_is_read_too() {
+        let text = alloc::format!(
+            "{{{}, {}}}",
+            entry("patch_14", &hex(b"14"), &address(14)),
+            entry_urls("patch_17", &hex(b"17"), &[&address(17)])
+        );
+        let list = parse_list(text.as_bytes()).unwrap();
+        assert_eq!(list.patches, [patch(14, b"14"), patch(17, b"17")]);
+        // What 0.2.0 kept beside it, as it wrote it.
+        let kept = alloc::format!(
+            "{{\"patch_12\": {{\"sha256\": \"{}\", \"url\": \"http://2.28.121.133:8090/resources.db.patch_12\"}}}}\n",
+            hex(b"12")
+        );
+        let list = parse_list(kept.as_bytes()).unwrap();
+        assert_eq!(list.patches[0].addresses.len(), 1);
+        assert_eq!(
+            list.patches[0].addresses[0].text,
+            "http://2.28.121.133:8090/resources.db.patch_12"
+        );
+        assert_eq!(parse_list(&write_list(&list)), Ok(list));
+    }
+
+    #[test]
+    fn a_patch_has_one_to_eight_addresses_none_twice() {
+        let h = hex(b"x");
+        let urls: Vec<String> = (1..=9)
+            .map(|n| alloc::format!("http://mirror{n}.example/patch_3"))
+            .collect();
+        let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
+        let list = |urls: &[&str]| {
+            parse_list(alloc::format!("{{{}}}", entry_urls("patch_3", &h, urls)).as_bytes())
+        };
+        for n in 1..=MAX_URLS {
+            let read = list(&refs[..n]).unwrap();
+            assert_eq!(read.patches[0].addresses.len(), n);
+            assert_eq!(read.patches[0].addresses[n - 1].text, urls[n - 1]);
+        }
+        assert_eq!(list(&refs[..9]), Err(ListError::BadEntry("patch_3".into())));
+        assert_eq!(list(&[]), Err(ListError::BadEntry("patch_3".into())));
+        assert_eq!(
+            list(&[refs[0], refs[1], refs[0]]),
+            Err(ListError::SameUrl("patch_3".into()))
+        );
+        // One bad address spoils the entry, wherever it is.
+        for bad in [
+            "ftp://203.0.113.5/patch_3",
+            "http://203.0.113.5/",
+            "patch_3",
+        ] {
+            assert_eq!(
+                list(&[refs[0], bad]),
+                Err(ListError::BadUrl("patch_3".into())),
+                "{bad}"
+            );
+            assert_eq!(
+                list(&[bad, refs[0]]),
+                Err(ListError::BadUrl("patch_3".into())),
+                "{bad}"
+            );
+        }
+        // The largest list fits.
+        let long: Vec<String> = (0..MAX_URLS)
+            .map(|n| alloc::format!("https://files{n}.example.org/{}", "a".repeat(990)))
+            .collect();
+        let long: Vec<&str> = long.iter().map(String::as_str).collect();
+        let mut text = String::from("{");
+        for n in 1..=255_u32 {
+            if n > 1 {
+                text.push(',');
+            }
+            text += &entry_urls(&alloc::format!("patch_{n}"), &h, &long);
+        }
+        text.push('}');
+        assert!(text.len() <= MAX_LIST);
+        let read = parse_list(text.as_bytes()).unwrap();
+        assert_eq!(read.patches.len(), 255);
+        assert!(write_list(&read).len() <= MAX_LIST);
+    }
+
+    #[test]
+    fn urls_is_an_array_of_strings_and_not_beside_url() {
+        let h = hex(b"x");
+        let a = address(2);
+        for bad in [
+            // Both forms in one entry.
+            alloc::format!("{{\"sha256\": \"{h}\", \"url\": \"{a}\", \"urls\": [\"{a}\"]}}"),
+            alloc::format!("{{\"urls\": [\"{a}\"], \"sha256\": \"{h}\", \"url\": \"{a}\"}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [\"{a}\"], \"urls\": [\"{a}\"]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": \"{a}\"}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [{{\"href\": \"{a}\"}}]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [5]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [null]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [[\"{a}\"]]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": null}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"URLS\": [\"{a}\"]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"mirrors\": [\"{a}\"]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [\"{a}\"], \"size\": \"5\"}}"),
+            alloc::format!("{{\"urls\": [\"{a}\"]}}"),
+        ] {
+            let text = alloc::format!("{{\"patch_2\": {bad}}}");
+            assert_eq!(
+                parse_list(text.as_bytes()),
+                Err(ListError::BadEntry("patch_2".into())),
+                "{bad}"
+            );
+        }
+        for bad in [
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [\"{a}\",]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [\"{a}\" \"{a}\"]}}"),
+            alloc::format!("{{\"sha256\": \"{h}\", \"urls\": [\"{a}\""),
+        ] {
+            let text = alloc::format!("{{\"patch_2\": {bad}}}");
+            assert!(
+                matches!(
+                    parse_list(text.as_bytes()),
+                    Err(ListError::Syntax(_) | ListError::BadEntry(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
