@@ -192,6 +192,9 @@ pub struct CombatTuning {
     pub camp_m: f32,
     /// Play 21: the partner's death spot is looked at this long, ms.
     pub trade_ms: u32,
+    /// ... if it lies within this, metres (farther, the bot could do
+    /// nothing there; a shot heard, play 6, comes first).
+    pub trade_m: f32,
     /// A tactical reload: no enemy seen for `reload_idle_ms` and at least
     /// this share of the magazine fired (one round at least). The reload
     /// of an empty weapon needs no number: its rounds are counted
@@ -297,6 +300,7 @@ impl Default for CombatTuning {
             camp_ms: 8_000,
             camp_m: 3.0,
             trade_ms: 3_000,
+            trade_m: 40.0,
             reload_idle_ms: 1_000,
             reload_some_share: 0.3,
             press_ms: 100,
@@ -1611,10 +1615,10 @@ impl Reflex {
             // Play 21: the partner's death spot, weapon up, unless a shot
             // was heard near lately (play 6 first: the killer is there, not
             // at the body); else play 6.
-            let near_shot = self.sound.is_some_and(|(at, until)| {
-                now < until && at.distance_xz(me.feet) <= c.threat_heard_m
-            });
-            if let Some((at, _)) = self.trade.filter(|(_, until)| now < *until && !near_shot) {
+            let shot = self.sound.is_some_and(|(_, until)| now < until);
+            if let Some((at, _)) = self.trade.filter(|(at, until)| {
+                now < *until && !shot && at.distance_xz(me.feet) <= c.trade_m
+            }) {
                 return Override {
                     look_at: Some(at + Vec3::new(0.0, 1.3, 0.0)),
                     keys: key::AIM | reload,
