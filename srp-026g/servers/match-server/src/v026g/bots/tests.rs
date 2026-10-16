@@ -126,6 +126,9 @@ struct Game {
     metric_rays: u64,
     delivered: [u32; 2],
     stolen: u32,
+    /// The places that took a battery out of the enemy's container, in
+    /// order (the bench reads them by the thief's play).
+    thieves: Vec<Place>,
 }
 
 /// The soak map: the 80 x 40 m field (a wall across its middle up to
@@ -217,6 +220,7 @@ impl Game {
             metric_rays: 0,
             delivered: [0, 0],
             stolen: 0,
+            thieves: Vec::new(),
             world,
         };
         for place in 0..teams.len() {
@@ -511,6 +515,7 @@ impl Game {
                         self.bodies[place].carrying = Some(battery);
                         self.points[usize::from(1 - team)] -= 1;
                         self.stolen += 1;
+                        self.thieves.push(place);
                     }
                 }
             }
@@ -1485,10 +1490,31 @@ fn real_bot_cost() {
             // with no route: a bot standing where it means to walk.
             let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
             let mut stood_by: std::collections::BTreeMap<String, u64> = Default::default();
+            // By the bot's play: takes (and those scoring under 0.05),
+            // kills, deaths, steals (the objective plays' yield, F2).
+            let mut by_play: std::collections::BTreeMap<String, [u32; 5]> = Default::default();
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
+                    let stats_before = game.stats.clone();
                     game.step();
+                    let play_of = |place: Place| {
+                        bots.bots[place]
+                            .as_ref()
+                            .and_then(|b| b.assignment.as_ref())
+                            .map_or("none".to_owned(), |a| format!("{:?}", a.kind))
+                    };
+                    for (place, (now, before)) in game.stats.iter().zip(&stats_before).enumerate() {
+                        if now.0 > before.0 {
+                            by_play.entry(play_of(place)).or_default()[2] += now.0 - before.0;
+                        }
+                        if now.1 > before.1 {
+                            by_play.entry(play_of(place)).or_default()[3] += now.1 - before.1;
+                        }
+                    }
+                    for place in std::mem::take(&mut game.thieves) {
+                        by_play.entry(play_of(place)).or_default()[4] += 1;
+                    }
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
                         if let Go::To { at, within_m } = bot.intent.go
@@ -1531,6 +1557,18 @@ fn real_bot_cost() {
                 let (made, notes) = timed_poll(&mut bots, clock_now, &mut times);
                 for note in notes {
                     decisions.note(&note);
+                    if let Some(rest) = note.text.strip_prefix("takes ") {
+                        let kind = rest.split(' ').next().unwrap_or("").to_owned();
+                        let score: f32 = rest
+                            .split("(score ")
+                            .nth(1)
+                            .and_then(|s| s.split(':').next())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1.0);
+                        let row = by_play.entry(kind).or_default();
+                        row[0] += 1;
+                        row[1] += u32::from(score < 0.05);
+                    }
                     let key: String = note
                         .text
                         .split(|c: char| c == '(' || c == ':' || c.is_ascii_digit())
@@ -1643,6 +1681,14 @@ fn real_bot_cost() {
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
+            let rows: Vec<String> = by_play
+                .iter()
+                .map(|(k, r)| format!("{k} {} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]))
+                .collect();
+            eprintln!(
+                "  by play (takes, under 0.05, kills, deaths, steals): {}",
+                rows.join("; ")
+            );
             let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
             eprintln!("  {line}");
             if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {

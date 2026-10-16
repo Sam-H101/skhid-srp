@@ -58,7 +58,8 @@ use super::tuning::{Personality, PlayTuning, Tuning};
 use super::view::{MatchView, Place, PlaceView};
 
 /// The rank bands, highest first: a candidate of a higher band beats any
-/// of a lower one (research B1 point 3).
+/// of a lower one (research B1 point 3); the commander counts an
+/// objective its curves all but rule out as roam (`team::Bands`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rank {
