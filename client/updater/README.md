@@ -318,6 +318,17 @@ quick check (`ready` does not write the record); `updater_skhid.exe check`
 hashes every file (the repair). The record holds no more than the list's
 patches; a delete or a damaged file drops its entry.
 
+What the quick check does not see, until the week is over or `check`:
+bytes changed with the size and the time kept. A program that writes
+leaves another time; but a copy put over the file that keeps the source's
+time (Explorer's "Replace", `cp -p`, a backup restored) can keep the
+file's ID too (the file is overwritten in place, not made anew), and then
+another file of the same size and the same time is taken unread. On Linux (Wine) the ID is the
+inode, which ext4 gives again to a file made after a delete: there a
+delete, a new file of the same size and the old time set on it (`touch
+-r`) is not seen either. Neither happens by chance with a patch's bytes;
+`check` is the repair.
+
 **A run**, after the restore (also when nothing new was installed; under
 the installation lock):
 
