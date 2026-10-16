@@ -1225,6 +1225,13 @@ fn real_bot_cost() {
                 searches.slices - searches_before.slices,
             );
             eprintln!(
+                "  pulled straight: {} paths of {} floors, {} straight-line checks, {:.1} ms",
+                searches.pulls - searches_before.pulls,
+                searches.pull_floors - searches_before.pull_floors,
+                searches.straight_checks - searches_before.straight_checks,
+                (searches.pull_us - searches_before.pull_us) / 1e3,
+            );
+            eprintln!(
                 "  grid searches {searched} ({:.1} a bot a second), {failed} failed; {:.2} ms each on average; {:.0} % of the bots' time",
                 searched as f64 / teams.len() as f64 / limit_s as f64,
                 search_us / 1e3 / searched.max(1) as f64,
