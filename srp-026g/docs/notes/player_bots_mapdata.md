@@ -768,6 +768,31 @@ stays 512 MB. What could make room: `dockerd` at 258 MB is far over its
 usual size (a restart or a look at its logs and caches, an action on the
 live host), or one bots' map at a time on the server.
 
+### One bots' map at a time (2026-10-16)
+
+The owner's choice after the host check: at most one bots' map in memory.
+The store (`bots::maps`) holds at most `SRP_MAPDATA_AT_ONCE` maps (default
+1, `maps::AT_ONCE`), counting those loading, those matches hold and the
+one kept after its match:
+- A match on a map already in memory (another match on it, or the kept
+  one) has it at once, as before.
+- A match on another map, while the maps in memory are all held by
+  matches or loading, waits (`MapState::Waiting`): its bots run the stage
+  0 script, as they do while a map loads, the match asks again at each
+  poll, and its bots take the map once it is loaded. The log says when it
+  began to wait and when the map came.
+- A kept map no match holds (by its tactics, or only by its world when a
+  match built tactics of its own) is dropped to make room before the next
+  is read, and the memory it freed is handed back to the system
+  (`mapdata::trim_freed_memory`, `malloc_trim` with glibc).
+
+So the server holds at most one map's 84-145 MB for bots. A second match
+of bots on another map plays its first minutes, or all of it, on the
+script; its bots never stand without a map. Test:
+`one_map_at_a_time_waits_for_room_and_drops_the_idle_one` (waits while the
+first map is held by its tactics or only its world, has the map in memory
+at once, drops the kept map for the next).
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map
