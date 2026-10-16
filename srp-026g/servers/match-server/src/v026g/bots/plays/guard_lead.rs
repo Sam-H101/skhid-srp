@@ -7,7 +7,8 @@
 //! container (players within 12 m of their own container fared worst).
 //!
 //! - Two slots per container, so at most two guards.
-//! - The spot: `SpotQuery` round our container with a sight line to it,
+//! - The spot: `SpotQuery` round our container with a sight line to it
+//!   (one that ends on its box: the box is solid in the sight tree),
 //!   off every enemy spawn area, picked at random among the best few and
 //!   away from a teammate's. The look turns between the container and its
 //!   approach every few seconds (drawn); every 35-60 s (drawn) it moves
@@ -108,6 +109,9 @@ impl Ctx<'_> {
         let num = |name| self.num(PlayKind::GuardLead, name);
         let query = SpotQuery {
             sight_to: Some(container),
+            // The container's box is solid in the sight tree: a sight line
+            // to it ends on its faces.
+            sight_body: self.tactics.container_body(container),
             prefer_high: num("prefer_high"),
             side: self.bot.side,
             samples: num("spot_samples") as usize,
@@ -342,6 +346,100 @@ mod tests {
             .collect();
         assert!(looks.contains(&OURS));
         assert!(looks.iter().any(|at| at.x > OURS.x + 10.0), "{looks:?}");
+    }
+
+    /// The 12 triangles of a solid box.
+    fn solid_box(center: Vec3, half: Vec3) -> Vec<mapdata::Triangle> {
+        let corner = |i: usize| {
+            let pick = |bit: usize, h: f32| if i >> bit & 1 == 1 { h } else { -h };
+            center + Vec3::new(pick(0, half.x), pick(1, half.y), pick(2, half.z))
+        };
+        let faces = [
+            [0, 1, 3, 2],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 3, 7, 6],
+            [0, 2, 6, 4],
+            [1, 3, 7, 5],
+        ];
+        faces
+            .iter()
+            .flat_map(|&[a, b, c, d]| {
+                [[a, b, c], [a, c, d]].map(|v| mapdata::Triangle {
+                    v: v.map(corner),
+                    walker: mapdata::WalkerBehaviour::BySlope,
+                })
+            })
+            .collect()
+    }
+
+    /// On the real maps the container's box is solid in the sight tree,
+    /// and the sight line goes to its middle: a line that ends on the box
+    /// sees it. (Before, no spot on any real map ever did; the play failed
+    /// at once and was taken again at the next think, ~670 times in a
+    /// 180 s bench match.)
+    #[test]
+    fn a_solid_container_box_is_seen_on_its_faces() {
+        use crate::v026g::bots::tactics::{SpotQuery, Tactics, tests::field_with_solids};
+        use mapdata::{Container, Rotation, Shape, ShapeKind};
+        let middle = OURS + Vec3::new(0.0, 1.0, 0.0);
+        let half = Vec3::new(1.0, 0.85, 0.65);
+        let body = Shape {
+            kind: ShapeKind::Box,
+            center: middle,
+            rotation: Rotation::IDENTITY,
+            half,
+        };
+        let world = field_with_solids(&solid_box(middle, half), |map| {
+            map.containers.push(Container {
+                position: OURS,
+                team: 0,
+                id: 0,
+                use_shapes: vec![body],
+            });
+        });
+        let mut s = scene();
+        s.tactics = Tactics::new(world, 1.0);
+        assert_eq!(s.tactics.container_body(OURS), Some(body));
+        let eye = Vec3::new(28.0, EYE_CROUCHED, 30.0);
+        assert!(!s.tactics.sees(eye, middle), "its own faces block the line");
+        assert!(s.tactics.sees_body(eye, middle, &body));
+        // Behind the wall across x = 40: not seen.
+        let behind = Vec3::new(50.0, EYE_CROUCHED, 10.0);
+        assert!(!s.tactics.sees_body(behind, middle, &body));
+        // A plain sight line finds no spot round it.
+        let plain = SpotQuery {
+            sight_to: Some(OURS),
+            ..SpotQuery::ring(OURS, 12.0, 20.0)
+        };
+        let mut rng = Rng::new(3);
+        assert!(
+            s.tactics
+                .spots(&plain, s.view.clock, 8, &mut rng)
+                .is_empty()
+        );
+        // The play finds one and holds it.
+        let steps = s.run(
+            0,
+            PlayKind::GuardLead,
+            TargetRef::Container(0),
+            100,
+            300,
+            3.5,
+        );
+        assert!(
+            steps.iter().all(|s| matches!(s, Step::Continue(_))),
+            "{:?}",
+            steps.last()
+        );
+        assert!(steps.iter().any(|s| matches!(
+            s,
+            Step::Continue(Intent {
+                go: Go::Stay,
+                crouch: true,
+                ..
+            })
+        )));
     }
 
     #[test]

@@ -793,6 +793,54 @@ script; its bots never stand without a map. Test:
 first map is held by its tactics or only its world, has the map in memory
 at once, drops the kept map for the next).
 
+### Guard spots see the container's box (2026-10-16)
+
+The real-map bench showed play 18 (guard the lead) taken and ended about
+every think: 27,609 takes over 96 matches of 180 s (12 runs, seeds 1-8),
+64,707 over 96 of 600 s. Every end was `no spot with a sight line`, on
+every map.
+
+**Cause (proven).** A guard spot must see the container: a ray from its
+crouched eyes to a metre over the container's place in the view, which is
+the middle of the container's use box (`Container::use_point`, the box's
+centre less a metre). On the real maps the container is a solid in the
+sight tree, so no ray from outside ever reaches its middle. Measured with
+a temporary probe on level_01, 04, 05 and 06: of 30-62 spots round each
+container, none saw it; every blocked ray stopped either on a wall or on
+the box itself (its first hit 0.00 m from the use box, 0.3-1.0 m short of
+the middle; the boxes are about 2 x 1.7 x 1.3 m). With no spot, `start`
+gave `NoSpot`, the first step failed, the commander was called at once,
+and the play, still the best candidate (no time since it last ran
+counts in its score), was taken again: the bot stood still while it
+lasted, and its team's commander ran again at every failure.
+
+**Fix.** `SpotQuery::sight_body`: the solid the sight target lies in. A
+spot sees the container when the ray hits nothing or first hits the
+container's use box (`Tactics::sees_body`, within 0.1 m of the box);
+`Tactics::container_body` finds the box of the map's container used at
+the view's point. Play 18 alone sets it (the only spot query aimed at a
+container); the other plays' queries are as before. Test:
+`a_solid_container_box_is_seen_on_its_faces` (fails without the fix).
+
+**Play, same seeds before and after** (the bench line now prints the
+points and the batteries stolen):
+
+| | 180 s, before | after | 600 s, before | after |
+|---|---|---|---|---|
+| GuardLead taken | 27,609 | 319 | 64,707 | 178 |
+| delivered | 1,584 | 1,588 | 2,528 | 2,526 |
+| stolen | 1 | 1 | 28 | 19 |
+| points at the end | 1,583 | 1,587 | 2,500 | 2,507 |
+| kills (both sides) | 801 | 768 | 3,429 | 3,385 |
+
+Every decisions digest of the three whole matches on the stand-in field
+is the one before (its container is no solid); on the real maps level_06
+4 v 4 and 10 v 10, level_03 10 v 10 and level_02 10 v 10 change. Kills
+fell 4 % at 180 s and 1.3 % at 600 s, both sides counted: guards hold
+crouched instead of roaming, and the extra commander runs are gone (on
+level_02 10 v 10 at 600 s no bot guarded after the fix, and kills still
+differ). Points and thefts, what the play is for, are as good or better.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map

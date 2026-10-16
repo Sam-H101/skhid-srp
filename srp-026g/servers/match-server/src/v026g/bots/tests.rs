@@ -1502,9 +1502,11 @@ fn real_bot_cost() {
             top.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  notes: {:?}", &top[..top.len().min(24)]);
             eprintln!(
-                "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}",
+                "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}; points {:?}, stolen {}",
                 100.0 * stood_ticks as f64 / goal_ticks.max(1) as f64,
-                game.delivered
+                game.delivered,
+                game.points,
+                game.stolen
             );
             let mut by: Vec<_> = stood_by.into_iter().collect();
             by.sort_by(|a, b| b.1.cmp(&a.1));

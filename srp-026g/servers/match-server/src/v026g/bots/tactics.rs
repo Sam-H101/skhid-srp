@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use mapdata::regions::Regions;
-use mapdata::{NodeId, Vec3, World};
+use mapdata::{NodeId, Shape, Vec3, World};
 
 use super::hazards::{HazardMarks, Hazards, PASS_MS};
 use super::path::{self, Route};
@@ -36,6 +36,10 @@ const ESCAPE_FLOORS: usize = 20_000;
 /// A way out ends at least this far from where it starts, metres: past the
 /// motor's arrival distance, so the body really walks out.
 const ESCAPE_MIN_M: f32 = 1.5;
+/// A sight ray's first hit this near a body is on the body, metres: on the
+/// real maps the rays toward a container's use box stop on its faces (0.00
+/// from the box, 2026-10-16 bench); this is for rounding.
+const BODY_HIT_M: f32 = 0.1;
 
 /// What one map's tactics hold for one hazard margin: the same for every
 /// match on the map, so matches share it ([`Tactics::of`]). Read-only once
@@ -90,6 +94,9 @@ pub struct SpotQuery {
     pub max_m: f32,
     /// The spot must see this point (from crouched eyes).
     pub sight_to: Option<Vec3>,
+    /// The solid `sight_to` lies in (a container's box): a sight line that
+    /// ends on it sees it ([`Tactics::sees_body`]).
+    pub sight_body: Option<Shape>,
     /// The spot must not be seen from this point.
     pub hidden_from: Option<Vec3>,
     /// Prefer spots higher than `around` (by this weight per metre).
@@ -107,6 +114,7 @@ impl SpotQuery {
             min_m,
             max_m,
             sight_to: None,
+            sight_body: None,
             hidden_from: None,
             prefer_high: 0.0,
             side: None,
@@ -722,6 +730,38 @@ impl Tactics {
         self.world.sight.visible(a, b)
     }
 
+    /// Whether `b`, a point inside `body` (a solid of the sight tree, such
+    /// as a container's box), shows from `a`: the ray toward it hits
+    /// nothing, or first hits `body` itself. [`Self::sees`] never sees a
+    /// point inside a solid: the box's own faces block the ray.
+    pub fn sees_body(&self, a: Vec3, b: Vec3, body: &Shape) -> bool {
+        let d = b - a;
+        let length = d.length();
+        if !length.is_finite() {
+            return false;
+        }
+        if length <= 0.02 {
+            return true;
+        }
+        let dir = d * (1.0 / length);
+        self.world
+            .sight
+            .ray_cast(a, dir, length - 0.01)
+            .is_none_or(|t| body.distance(a + dir * t) <= BODY_HIT_M)
+    }
+
+    /// The use box of the map's container used at `at` (its
+    /// [`mapdata::Container::use_point`], as the view has it), if the map
+    /// has one: the container's solid body for [`Self::sees_body`].
+    pub fn container_body(&self, at: Vec3) -> Option<Shape> {
+        self.world
+            .map
+            .containers
+            .iter()
+            .find(|c| (c.use_point() - at).length() < 0.5)
+            .and_then(|c| c.use_shapes.first().copied())
+    }
+
     /// The best spots for `query`, best first, at most `n`.
     pub fn spots(&self, query: &SpotQuery, time: u32, n: usize, rng: &mut Rng) -> Vec<Spot> {
         let grid = &self.world.grid;
@@ -760,10 +800,15 @@ impl Tactics {
                 break;
             }
             let eye = spot.at + Vec3::new(0.0, EYE_CROUCHED, 0.0);
-            if let Some(target) = query.sight_to
-                && !self.sees(eye, target + Vec3::new(0.0, 1.0, 0.0))
-            {
-                continue;
+            if let Some(target) = query.sight_to {
+                let target = target + Vec3::new(0.0, 1.0, 0.0);
+                let seen = match &query.sight_body {
+                    Some(body) => self.sees_body(eye, target, body),
+                    None => self.sees(eye, target),
+                };
+                if !seen {
+                    continue;
+                }
             }
             if let Some(from) = query.hidden_from
                 && self.sees(
@@ -839,8 +884,17 @@ pub(super) mod tests {
     /// [`field`] with its map data changed by `edit` (containers,
     /// batteries).
     pub fn field_with(edit: impl FnOnce(&mut MapData)) -> Arc<World> {
+        field_with_solids(&[], edit)
+    }
+
+    /// [`field_with`] with `solids` (more triangles) in its geometry.
+    pub fn field_with_solids(
+        solids: &[mapdata::Triangle],
+        edit: impl FnOnce(&mut MapData),
+    ) -> Arc<World> {
         let mut triangles = floor(0.0, 0.0, 80.0, 40.0, 0.0).to_vec();
         triangles.extend(wall_x(40.0, 0.0, 25.0));
+        triangles.extend_from_slice(solids);
         let grid = WalkGrid::build(
             &triangles,
             [0.0, 0.0, 80.0, 40.0],
