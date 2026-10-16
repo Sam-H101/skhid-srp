@@ -62,6 +62,7 @@ pub fn tuning() -> PlayTuning {
         considerations: vec![
             considerations::personality(),
             considerations::holding(),
+            considerations::not_behind_late(),
             considerations::near(250.0),
             // One bot per exit is the slot; fewer friends there is better.
             Consideration::new(Input::FriendsNearTarget, 0.0, 3.0, Curve::Linear).inverted(),

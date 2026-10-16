@@ -31,6 +31,9 @@ pub const NUMBERS: &[(&str, f32)] = &[
     // Not in the first this many seconds of the match (the batteries are
     // out on the map then, not in containers).
     ("after_s", 120.0),
+    // A team this far behind late in the match (`Input::BehindLate`)
+    // sends a second raider (two slots).
+    ("pair_behind", 0.5),
     ("give_up_s", 90.0),
 ];
 
@@ -73,11 +76,12 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     if theirs.batteries == 0 {
         return;
     }
-    out.extend(cx.candidate(
-        PlayKind::Raid,
-        TargetRef::Container(theirs.id),
-        Some(u32::from(theirs.id)),
-    ));
+    let target = TargetRef::Container(theirs.id);
+    out.extend(cx.candidate(PlayKind::Raid, target, Some(u32::from(theirs.id))));
+    // Behind late: a second bot raids too (holding gains nothing then).
+    if cx.sig.behind_late() >= cx.num(PlayKind::Raid, "pair_behind") && theirs.batteries >= 2 {
+        out.extend(cx.candidate(PlayKind::Raid, target, Some(0x100 | u32::from(theirs.id))));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +181,23 @@ mod tests {
         let mut out = Vec::new();
         candidates(&s.cx(0), &mut out);
         out
+    }
+
+    /// Far behind late in the match a second bot raids (a second slot),
+    /// while their container holds two or more; not when level.
+    #[test]
+    fn a_team_far_behind_late_sends_two_raiders() {
+        let slots = |s: &Scenario| raids(s).iter().map(|c| c.slot).collect::<Vec<_>>();
+        let mut s = raid(1);
+        s.time_left(100.0).points(0, 3);
+        let two = slots(&s);
+        assert_eq!(two.len(), 2, "{two:?}");
+        assert_ne!(two[0], two[1]);
+        s.container_count(1, 1);
+        assert_eq!(slots(&s).len(), 1);
+        let mut s = raid(1);
+        s.time_left(100.0).points(3, 3);
+        assert_eq!(slots(&s).len(), 1);
     }
 
     #[test]

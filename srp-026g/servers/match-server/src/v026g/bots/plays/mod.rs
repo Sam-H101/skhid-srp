@@ -498,7 +498,10 @@ impl Ctx<'_> {
     /// entered from a floor this bot may walk on, or from where it stands.
     /// Else the route search would answer no way, and the bot would stand
     /// still (a battery inside a zone the bots keep out of: level_02's
-    /// fruit cloud and stalactites; one on a shelf's top past the jump).
+    /// fruit cloud and stalactites; one on a shelf's top past the jump),
+    /// or a floor that zones on all match close round (a pocket of toxic
+    /// ground: the search's answer, made here for the whole match,
+    /// `Tactics::past_fixed_zones`).
     pub fn reachable(&self, at: Vec3, objective: bool) -> bool {
         let grid = &self.tactics.world.grid;
         let Some(goal) = grid.locate(at, 3.0) else {
@@ -508,8 +511,12 @@ impl Ctx<'_> {
             return false;
         }
         let start = grid.locate(self.me.feet, 1.5);
-        start == Some(goal)
-            || grid.entered_from(goal, |b| {
+        if start == Some(goal) {
+            return true;
+        }
+        let past = |b| self.tactics.past_fixed_zones(b);
+        (past(goal) || grid.entered_from(goal, past))
+            && grid.entered_from(goal, |b| {
                 Some(b) == start || self.tactics.allowed(b, self.now, self.bot.side, objective)
             })
     }
@@ -948,6 +955,22 @@ pub mod considerations {
             1.0,
             Curve::Piecewise {
                 points: vec![(0.0, 1.0), (0.5, 0.85), (1.0, 0.45)],
+            },
+        )
+    }
+
+    /// A play that holds a spot and waits, for a team behind late in the
+    /// match ([`Input::BehindLate`]): less and less, and none when far
+    /// behind with little time left, so its bots push for points (a raid,
+    /// late denial, a fetch, else forward: the hold plays are of the fight
+    /// band, which beats any play of the roam band whatever its score).
+    pub fn not_behind_late() -> Consideration {
+        Consideration::new(
+            Input::BehindLate,
+            0.0,
+            1.0,
+            Curve::Piecewise {
+                points: vec![(0.0, 1.0), (0.5, 0.6), (0.8, 0.0), (1.0, 0.0)],
             },
         )
     }

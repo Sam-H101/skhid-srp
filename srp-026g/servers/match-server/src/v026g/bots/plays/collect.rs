@@ -30,6 +30,47 @@ pub const BATTERY_AIM_M: f32 = 0.1;
 /// bot that stopped farther (the walk's arrival is loose, the spot to stand
 /// can be off the battery) steps in closer while it presses.
 pub const USE_NEAR_M: f32 = 1.6;
+/// The steepest look down a take is tried at, radians: the view's pitch
+/// stops at 1 rad (`kin`, PROVEN), so from a crouch (the eye 0.95 m up)
+/// over a battery on the floor no ray passes within the use's 0.2 m of
+/// its middle closer than about 0.3 m on the ground (`bots::tests`): that
+/// is a look down of about 1.2 rad. Past this the bot steps back first.
+pub const TAKE_PITCH_MAX_RAD: f32 = 1.15;
+/// The look down a take stands for, radians: the eye about 1.2 m from a
+/// battery on the floor, the use's ray 1.5 m long. A step back goes
+/// there; the walk's arrival (the motor's `arrive_m`, 0.6 m) leaves it
+/// between about 0.5 and 1.2 m off, every one of them good.
+pub const TAKE_PITCH_RAD: f32 = 0.6;
+
+/// How far off a battery `below` metres under the eye the look down at
+/// it is `pitch`, on the ground.
+fn take_flat_m(below: f32, pitch: f32) -> f32 {
+    below.max(0.0) / pitch.tan()
+}
+
+/// Where a bot right over a battery (its middle `aim`, `below` metres
+/// under the eye) steps back to so it can look at it:
+/// [`TAKE_PITCH_RAD`]'s distance off it, the way it came from (else
+/// behind its back), else round that way by eighths of a turn; a floor
+/// walked to in a straight line.
+fn take_back_spot(cx: &Ctx, aim: Vec3, below: f32) -> Option<Vec3> {
+    let me = cx.me.feet;
+    let flat = take_flat_m(below, TAKE_PITCH_RAD);
+    let (dx, dz) = (me.x - aim.x, me.z - aim.z);
+    let away = if dx.hypot(dz) > 0.05 {
+        dz.atan2(dx)
+    } else {
+        let [fx, fz] = crate::v026g::bots::kin::forward(cx.me.yaw);
+        (-fz).atan2(-fx)
+    };
+    [0, 1, -1, 2, -2, 3, -3, 4].into_iter().find_map(|k| {
+        let a = away + k as f32 * std::f32::consts::FRAC_PI_4;
+        let spot = Vec3::new(aim.x + flat * a.cos(), me.y, aim.z + flat * a.sin());
+        cx.tactics
+            .clear_line_for(me, spot, cx.now, cx.bot.side, false)
+            .then_some(spot)
+    })
+}
 
 pub const NUMBERS: &[(&str, f32)] = &[
     ("reach_m", 1.5),
@@ -62,6 +103,20 @@ pub fn tuning() -> PlayTuning {
     }
 }
 
+impl Ctx<'_> {
+    /// Whether a battery lying at `at` may be taken: a floor to stand on
+    /// for it (one on a shelf is taken from the floor beside it) that a way
+    /// may lead to ([`Ctx::reachable`]), and no search of this bot or its
+    /// team proved no way to it lately ([`Ctx::no_way_lately`]). A battery
+    /// no way leads to now (inside a hazard) is left for later. Ambush
+    /// asks it too: a battery nobody can take is not waited at.
+    pub fn can_take(&self, at: Vec3) -> bool {
+        self.tactics
+            .stand_to_take(at)
+            .is_some_and(|stand| self.reachable(stand, false) && !self.no_way_lately(stand))
+    }
+}
+
 pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
     if !cx.view.mode.has_batteries() {
         return;
@@ -78,15 +133,8 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
         }
         return;
     }
-    // A battery no way leads to now (inside a hazard) is left for later;
-    // one on a shelf is taken from the floor beside it.
-    let can_take = |at: Vec3| {
-        cx.tactics
-            .stand_to_take(at)
-            .is_some_and(|stand| cx.reachable(stand, false) && !cx.no_way_lately(stand))
-    };
     for battery in 0..cx.view.batteries.len() {
-        if cx.battery_lying(battery).is_some_and(can_take) {
+        if cx.battery_lying(battery).is_some_and(|at| cx.can_take(at)) {
             out.extend(cx.candidate(
                 PlayKind::Collect,
                 TargetRef::Battery(battery),
@@ -135,7 +183,7 @@ pub fn candidates(cx: &Ctx, out: &mut Vec<Candidate>) {
                 .get(j)
                 .is_some_and(|s| s.item.distance_xz(item) < spread)
         });
-        if (taken && !own) || !can_take(item) {
+        if (taken && !own) || !cx.can_take(item) {
             continue;
         }
         let near = worth
@@ -265,20 +313,44 @@ pub fn step(state: &mut State, target: TargetRef, cx: &Ctx, _rng: &mut Rng) -> S
             // metre over it as at a place (`Look::At`), which from a
             // crouch passes over a battery on the floor.
             let mut intent = Intent::stay().crouched();
+            // Stepping back off it: no use pressed (none could take it),
+            // though the time counts as a try's (no endless step back).
+            let mut stepping_back = false;
             if let Some(at) = at {
                 let aim = at + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
                 let eye = cx.me.feet + Vec3::new(0.0, view::EYE_CROUCHED, 0.0);
-                if (aim - eye).length() > USE_NEAR_M
-                    && let Some(stand) = cx.tactics.stand_to_take(at)
+                let below = eye.y - aim.y;
+                let stand = cx.tactics.stand_to_take(at);
+                if below.atan2(eye.distance_xz(aim)) > TAKE_PITCH_MAX_RAD {
+                    // Right over it: the view does not look down that far
+                    // (its pitch stops at 1 rad, `kin`), so the use's ray
+                    // passes beside it. A step back first.
+                    if let Some(back) = take_back_spot(cx, aim, below) {
+                        intent = Intent::to(back, Pace::Walk)
+                            .within(cx.tuning.feel.arrive_m + 0.1)
+                            .crouched();
+                        stepping_back = true;
+                    }
+                } else if (aim - eye).length() > USE_NEAR_M
+                    && let Some(stand) = stand
                 {
-                    intent = Intent::to(stand, Pace::Walk).within(0.25).crouched();
+                    // On the floor: stopped short of it, where the look
+                    // down is easy; on a shelf: at the floor beside it.
+                    let within = if (stand - at).length() < 0.01 {
+                        take_flat_m(below, TAKE_PITCH_RAD).max(0.25)
+                    } else {
+                        0.25
+                    };
+                    intent = Intent::to(stand, Pace::Walk).within(within).crouched();
                 }
                 intent = intent.looking(Look::Use(aim));
             }
             if cx.now >= *last_use + every {
                 *n += 1;
                 *last_use = cx.now;
-                intent = intent.pressing(key::USE);
+                if !stepping_back {
+                    intent = intent.pressing(key::USE);
+                }
             }
             Step::Continue(intent)
         }
@@ -577,6 +649,139 @@ mod tests {
             step(&mut state, target, &s.cx(0), &mut rng),
             Step::Failed("the battery is gone")
         );
+    }
+
+    /// A battery in a pocket that toxic ground (on all match) rings: the
+    /// floor it lies on is entered from free floors (the pocket's), so the
+    /// look at its next floors said yes, while the search says no way; now
+    /// the filter says no too, and a fetch of it gives up at once. One in
+    /// a ring of a switching zone is still tried (the zone opens).
+    #[test]
+    fn a_battery_in_a_pocket_ringed_by_toxic_ground_is_left() {
+        let ring = |kind_timer: bool| {
+            let world = crate::v026g::bots::tactics::tests::field_with(|map| {
+                let wall = |x: f32, z: f32, hx: f32, hz: f32| Shape {
+                    kind: ShapeKind::Box,
+                    center: Vec3::new(x, 1.0, z),
+                    rotation: Rotation::IDENTITY,
+                    half: Vec3::new(hx, 1.0, hz),
+                };
+                map.zones.push(Zone {
+                    kind: ZoneKind::Damage,
+                    name: "toxic".into(),
+                    team: -1,
+                    position: Vec3::new(20.0, 0.0, 30.0),
+                    damage_type: "toxic".into(),
+                    damage: None,
+                    shapes: vec![
+                        wall(20.0, 25.0, 5.5, 0.5),
+                        wall(20.0, 35.0, 5.5, 0.5),
+                        wall(15.0, 30.0, 0.5, 5.5),
+                        wall(25.0, 30.0, 0.5, 5.5),
+                    ],
+                });
+            });
+            let mut s = Scenario::field(Mode::Batteries);
+            s.tactics = Tactics::new(world, 1.0);
+            if kind_timer {
+                // As `Hazards::attach` makes a timer group's zone.
+                s.tactics.hazards.zones[0].control = crate::v026g::bots::anomalies::Control::Timer;
+            }
+            s.bot(0, 0, Vec3::new(10.0, 0.0, 10.0));
+            s.battery(BatteryState::Free(Vec3::new(20.0, 0.0, 30.0)));
+            s
+        };
+        let s = ring(false);
+        let at = Vec3::new(20.0, 0.0, 30.0);
+        assert!(
+            s.tactics
+                .route(Vec3::new(10.0, 0.0, 10.0), at, s.view.clock, Some(0))
+                .is_none(),
+            "no way in"
+        );
+        let goal = s.tactics.world.grid.locate(at, 3.0).unwrap();
+        assert!(s.tactics.allowed(goal, s.view.clock, Some(0), false));
+        assert!(collects(&s).is_empty());
+        let mut s = s;
+        let target = TargetRef::Battery(0);
+        s.current = Some((PlayKind::Collect, target, s.view.clock));
+        let mut rng = Rng::new(1);
+        let mut state = start(target, &s.cx(0), &mut rng);
+        assert_eq!(
+            step(&mut state, target, &s.cx(0), &mut rng),
+            Step::Failed("no way to it")
+        );
+        // A switching ring: the filter leaves it to the search.
+        assert_eq!(collects(&ring(true)), vec![TargetRef::Battery(0)]);
+    }
+
+    /// The real maps (private files; `SRP_MAPDATA_DIR`, in release): for
+    /// every battery spawner of the battery modes and a bot at each side's
+    /// first spawn, Collect's filter (`Ctx::reachable`) says what the
+    /// route search says, every zone on (as before the anomalies' attach).
+    /// At 8c1ce49 they disagreed on 11 spawners (22 of 982 pairs, on
+    /// level_01, 02, 03 and 07): pockets ringed by toxic ground, where the
+    /// filter's look at the goal's next floors said yes and the search no
+    /// (battery 4 of the owner's match of 2026-10-16: 183 takes).
+    #[test]
+    #[ignore = "needs the private map files"]
+    fn collects_filter_agrees_with_the_search_on_the_real_maps() {
+        let dir = std::env::var_os("SRP_MAPDATA_DIR").expect("set SRP_MAPDATA_DIR");
+        let mut wrong = Vec::new();
+        let mut pairs = 0;
+        for level in 1..=8u8 {
+            for mode in [2u8, 3] {
+                let path =
+                    std::path::Path::new(&dir).join(format!("level_{level:02}_day_{mode}.mapdata"));
+                let map = mapdata::MapData::read(&path).unwrap();
+                let world = std::sync::Arc::new(mapdata::World::build(
+                    map,
+                    mapdata::CELL,
+                    mapdata::Body::default(),
+                ));
+                let mut s = Scenario::field(Mode::Batteries);
+                s.tactics = Tactics::new(world.clone(), 1.0);
+                let started = std::time::Instant::now();
+                let spawn = world
+                    .grid
+                    .locate(world.map.spawns[0].position, 1.5)
+                    .unwrap();
+                assert!(s.tactics.past_fixed_zones(spawn));
+                eprintln!(
+                    "level {level} mode {mode}: past the fixed zones in {:.2} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+                for (i, spawner) in world.map.battery_spawners.iter().enumerate() {
+                    let Some(stand) = s.tactics.stand_to_take(spawner.item) else {
+                        continue;
+                    };
+                    for side in [0, 1] {
+                        let Some(from) = world
+                            .map
+                            .spawns
+                            .iter()
+                            .find(|spawn| spawn.team == side)
+                            .map(|spawn| spawn.position)
+                        else {
+                            continue;
+                        };
+                        s.side = Some(side);
+                        s.bot(0, side as u8, from);
+                        let filter = s.cx(0).reachable(stand, false);
+                        let search = s
+                            .tactics
+                            .route(from, stand, s.view.clock, Some(side))
+                            .is_some();
+                        pairs += 1;
+                        if filter != search {
+                            wrong.push((level, mode, i, side, filter, search));
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("{} of {pairs} disagree", wrong.len());
+        assert!(wrong.is_empty(), "{wrong:?}");
     }
 
     /// Fetching a battery a hazard closes round: the play gives up at once

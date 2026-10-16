@@ -111,6 +111,21 @@ pub struct Hazard {
     pub activity: Activity,
 }
 
+impl Hazard {
+    /// Whether its activity follows its core's prediction (a timer's, an
+    /// energy core's high states); else it is on all match.
+    pub fn switches(&self) -> bool {
+        match self.control {
+            Control::Static => false,
+            Control::Timer => true,
+            Control::Energy {
+                threshold,
+                per_second,
+            } => threshold > per_second * ENERGY_REACH_S,
+        }
+    }
+}
+
 /// The floors the damage zones mark, for one margin: the same for every
 /// match on the map, so matches share them ([`Hazards`] clones hold one
 /// `Arc`).
@@ -337,6 +352,19 @@ impl Hazards {
             .unwrap_or(0)
     }
 
+    /// Whether a zone that never switches off marks `node`
+    /// ([`Hazard::switches`]): the floor is shut all match. Every zone
+    /// until [`Self::attach`].
+    pub fn fixed_at(&self, node: NodeId) -> bool {
+        self.zones_at(node).any(|zone| !zone.switches())
+    }
+
+    /// Which zones never switch off, by index: what [`Self::fixed_at`]
+    /// reads; it changes only at [`Self::attach`].
+    pub fn fixed_zones(&self) -> Vec<bool> {
+        self.zones.iter().map(|zone| !zone.switches()).collect()
+    }
+
     /// Whether no zone marks `node` at all (a place to stay).
     pub fn hazard_free(&self, node: NodeId) -> bool {
         self.zone_of(node).is_none()
@@ -424,14 +452,7 @@ impl Hazards {
             return;
         };
         for hazard in &mut self.zones {
-            let follows = match hazard.control {
-                Control::Static => false,
-                Control::Timer => true,
-                Control::Energy {
-                    threshold,
-                    per_second,
-                } => threshold > per_second * ENERGY_REACH_S,
-            };
+            let follows = hazard.switches();
             hazard.activity = match anomalies.schedule(hazard.zone) {
                 Some(schedule) if follows => Activity::from_schedule(schedule, SWITCH_MARGIN_MS),
                 _ => Activity::Always,

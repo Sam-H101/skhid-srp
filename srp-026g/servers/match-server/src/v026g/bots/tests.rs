@@ -1094,6 +1094,138 @@ fn with_the_battery_cheat_whole_matches_are_won_by_batteries() {
     assert!(out.winner.is_some());
 }
 
+/// A crouched body right over a battery cannot use it: the view's pitch
+/// stops at 1 rad, and no ray of the use passes within its 0.2 m of the
+/// battery's middle closer than about 0.3 m (on the floor; the soak map's
+/// lie 0.3 m up). From where the take stands off it (`collect`), looking
+/// at it, it can. "Could not take it" 14 times in the owner's match of
+/// 2026-10-16, twice with the bot 0.1-0.2 m from the battery.
+#[test]
+fn a_body_right_over_a_battery_cannot_use_it_and_one_a_step_off_can() {
+    use super::plays::collect::{BATTERY_AIM_M, TAKE_PITCH_MAX_RAD, TAKE_PITCH_RAD};
+    let battery = Vec3::new(25.0, 0.0, 12.0);
+    let mut body = Game::new(soak_world(), &[0], 1, None, None).bodies[0].clone();
+    body.keys = key::CROUCH;
+    let any_look = |body: &mut Body| {
+        (0..64).any(|y| {
+            (-100..=100).any(|p| {
+                body.yaw = y as f32 * std::f32::consts::TAU / 64.0;
+                body.pitch = p as f32 / 100.0;
+                Game::uses(body, battery + BATTERY_MIDDLE, BATTERY_M)
+            })
+        })
+    };
+    for off in [0.0, 0.1, 0.2] {
+        body.feet = battery + Vec3::new(off, 0.0, 0.0);
+        assert!(!any_look(&mut body), "{off} m off");
+    }
+    // The take's stand: the look down at TAKE_PITCH_RAD, aimed as the
+    // motor aims (`Look::Use`); and as near as a take is tried without a
+    // step back (TAKE_PITCH_MAX_RAD), some look still uses it.
+    let aim = battery + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
+    let below = view::EYE_CROUCHED - BATTERY_AIM_M;
+    body.feet = battery + Vec3::new(below / TAKE_PITCH_MAX_RAD.tan() + 0.02, 0.0, 0.0);
+    assert!(any_look(&mut body), "at the steepest take");
+    body.feet = battery + Vec3::new(below / TAKE_PITCH_RAD.tan(), 0.0, 0.0);
+    let eye = Game::eye(&body);
+    body.yaw = kin::yaw_of([aim.x - eye.x, aim.z - eye.z]);
+    body.pitch = (aim.y - eye.y).atan2(eye.distance_xz(aim));
+    assert!(body.pitch.abs() < 1.0);
+    assert!(Game::uses(&body, battery + BATTERY_MIDDLE, BATTERY_M));
+}
+
+/// What one bot's search proved no way to, its team leaves for
+/// `TEAM_NO_WAY_KEEP_MS` from the proof (in the owner's match of
+/// 2026-10-16 six bots learnt one battery each on its own, 183 takes); a
+/// second proof keeps it longer; one goal near another is the same.
+#[test]
+fn a_goal_one_bot_found_no_way_to_is_left_by_its_team() {
+    let goal = Vec3::new(30.0, 0.0, 10.0);
+    let mut team = Vec::new();
+    // Proved at 10 s: the bot's own memory until 30 s.
+    learn_no_way(&mut team, &[(goal, 10_000 + NO_WAY_KEEP_MS)], 12_000);
+    assert_eq!(team, vec![(goal, 10_000 + TEAM_NO_WAY_KEEP_MS)]);
+    // Learnt again at the next tick: the same.
+    learn_no_way(&mut team, &[(goal, 10_000 + NO_WAY_KEEP_MS)], 12_500);
+    assert_eq!(team.len(), 1);
+    // Another bot proves it again at 40 s, a metre off.
+    let near = goal + Vec3::new(1.0, 0.0, 0.0);
+    learn_no_way(&mut team, &[(near, 40_000 + NO_WAY_KEEP_MS)], 41_000);
+    assert_eq!(team, vec![(goal, 40_000 + TEAM_NO_WAY_KEEP_MS)]);
+    assert!(TEAM_NO_WAY_KEEP_MS >= 3 * NO_WAY_KEEP_MS);
+}
+
+/// A bot standing right on a battery steps off it and takes it (it
+/// pressed use there four times, failed, and took the battery again).
+#[test]
+fn a_bot_standing_on_a_battery_steps_off_and_takes_it() {
+    let world = soak_world();
+    let mut tuning = Tuning::default();
+    tuning.cheats.batteries = true;
+    let teams = [0u8, 1];
+    let mut bots = Bots::new(
+        0x7A6E,
+        survarium::v026g::maps::mode::BATTERIES,
+        0,
+        &teams,
+        &[true, false],
+        &[None, None],
+        Arc::new(tuning),
+        Trace::none(0),
+    );
+    bots.map_ready(world.clone());
+    let mut game = Game::new(world.clone(), &teams, 7, None, None);
+    // On battery 1 (25, 0.3, 12), the other battery 25 m off; the enemy
+    // is no bot and stands at his spawn.
+    let on = Vec3::new(25.0, 0.0, 12.0);
+    game.bodies[0].node = world.grid.locate(on, 1.0);
+    game.bodies[0].feet = on;
+    bots.entered(0, true, 0);
+    let (mut clock, mut next_world, mut took) = (0, 1_000, None);
+    while clock < 12_000 && took.is_none() {
+        clock += 25;
+        while game.tick + TICK_MS <= clock {
+            game.step();
+        }
+        if clock >= next_world {
+            next_world += 1_000;
+            if let Some((_, fixes, health, facts)) = game.world_at(clock / TICK_MS * TICK_MS - 300)
+            {
+                for (place, (fix, health)) in fixes.into_iter().zip(health).enumerate() {
+                    bots.fixed(place, fix, Some(health));
+                }
+                bots.facts(facts);
+            }
+        }
+        let (made, _) = bots.poll(Clock {
+            clock,
+            time_left_s: 600.0,
+            total_s: 900.0,
+            playing: true,
+        });
+        for made in made {
+            let r = made.input.rotation;
+            let turn = (
+                half_value(u16::from_le_bytes([r[0], r[1]])),
+                half_value(u16::from_le_bytes([r[2], r[3]])),
+            );
+            let gun = Arms::fallback().primary.0;
+            game.inputs[made.place].push_back((made.time, made.input.actions, turn, None, gun));
+        }
+        if game.bodies[0].carrying.is_some() {
+            took = Some(clock);
+        }
+    }
+    let took = took.unwrap_or_else(|| {
+        panic!(
+            "not taken: at {:?}, batteries {:?}",
+            game.bodies[0].feet, game.batteries
+        )
+    });
+    // Its first move is at 2 s; a step off and a use or two.
+    assert!(took <= 7_000, "taken at {took} ms");
+}
+
 /// Where the time of the bots' polls goes, seconds.
 #[derive(Default)]
 struct Times {
