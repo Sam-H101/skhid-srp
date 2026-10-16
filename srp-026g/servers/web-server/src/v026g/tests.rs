@@ -580,7 +580,7 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     let stats = || world.web.route(&get("/api/stats"), "t");
     assert_eq!(
         stats().body,
-        r#"{"online":0,"registered":0,"matches":0,"queued":0}"#
+        r#"{"online":0,"registered":0,"matches":0,"queued":0,"last_match_ends_in":0}"#
     );
     let account = world.player("player-a", "test-password");
     let session = world.web.store.create_session(account);
@@ -590,7 +590,7 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     // Multiple connections for one account count once.
     assert_eq!(
         stats().body,
-        r#"{"online":1,"registered":1,"matches":0,"queued":0}"#
+        r#"{"online":1,"registered":1,"matches":0,"queued":0,"last_match_ends_in":0}"#
     );
     world.web.store.matchmaking().queue(
         &[session::Player {
@@ -606,7 +606,7 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     // A player waiting without a lobby connection remains present.
     assert_eq!(
         stats().body,
-        r#"{"online":1,"registered":1,"matches":0,"queued":1}"#
+        r#"{"online":1,"registered":1,"matches":0,"queued":1,"last_match_ends_in":0}"#
     );
     world
         .told
@@ -617,17 +617,75 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     assert_eq!(response.content_type.as_str(), "application/json");
     assert_eq!(
         response.body,
-        r#"{"online":1,"registered":1,"matches":2,"queued":1}"#
+        r#"{"online":1,"registered":1,"matches":2,"queued":1,"last_match_ends_in":0}"#
     );
     assert_eq!(world.web.store.match_count(), 0); // Use the host, not formed queue rosters.
     world.web.store.matchmaking().leave_queue(session);
     assert_eq!(
         stats().body,
-        r#"{"online":0,"registered":1,"matches":2,"queued":0}"#
+        r#"{"online":0,"registered":1,"matches":2,"queued":0,"last_match_ends_in":0}"#
     );
     assert_eq!(
         world.web.route(&post("/api/stats", &[]), "t").status,
         "404 Not Found"
+    );
+}
+
+#[test]
+fn public_stats_say_when_the_last_match_ends_at_the_latest() {
+    use std::time::Duration;
+    let world = world();
+    let stats = || world.web.route(&get("/api/stats"), "t").body;
+    let live = |phase, time_left: Option<Duration>| crate::LiveMatch {
+        map_id: 117,
+        phase,
+        players: [4, 3],
+        played: None,
+        time_left,
+        standing: None,
+    };
+    world
+        .told
+        .matches
+        .store(3, std::sync::atomic::Ordering::Relaxed);
+    // The longest time left of those in play, in whole seconds rounded up:
+    // the launcher's "Time left".
+    *world.told.live.locked() = vec![
+        live(crate::LivePhase::Playing, Some(Duration::from_secs(120))),
+        live(
+            crate::LivePhase::Playing,
+            Some(Duration::from_millis(299_200)),
+        ),
+        live(crate::LivePhase::Countdown, Some(Duration::from_secs(200))),
+    ];
+    assert_eq!(
+        stats(),
+        r#"{"online":0,"registered":0,"matches":3,"queued":0,"last_match_ends_in":300}"#
+    );
+    // One that has its result is about to go; one still loading has its
+    // whole wait, countdown and match time ahead (5 + 20 + 900 s).
+    *world.told.live.locked() = vec![
+        live(crate::LivePhase::Over, Some(Duration::ZERO)),
+        live(crate::LivePhase::Playing, Some(Duration::from_secs(60))),
+    ];
+    assert!(stats().ends_with(r#""last_match_ends_in":60}"#));
+    world
+        .told
+        .live
+        .locked()
+        .push(live(crate::LivePhase::Gathering, None));
+    assert!(stats().ends_with(r#""last_match_ends_in":925}"#));
+    // A map the client does not have: the time every playable mode has.
+    *world.told.live.locked() = vec![crate::LiveMatch {
+        map_id: 0,
+        ..live(crate::LivePhase::Gathering, None)
+    }];
+    assert!(stats().ends_with(r#""last_match_ends_in":925}"#));
+    // Only an ended one: nothing to wait for.
+    *world.told.live.locked() = vec![live(crate::LivePhase::Over, None)];
+    assert_eq!(
+        stats(),
+        r#"{"online":0,"registered":0,"matches":3,"queued":0,"last_match_ends_in":0}"#
     );
 }
 
@@ -660,7 +718,7 @@ fn public_stats_http_has_json_headers_and_ignores_language() {
     assert!(headers.contains(&format!("\r\nContent-Length: {}\r\n", body.len())));
     assert_eq!(
         body,
-        r#"{"online":0,"registered":0,"matches":0,"queued":0}"#
+        r#"{"online":0,"registered":0,"matches":0,"queued":0,"last_match_ends_in":0}"#
     );
 }
 
