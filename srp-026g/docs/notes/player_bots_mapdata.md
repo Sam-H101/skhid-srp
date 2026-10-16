@@ -465,6 +465,29 @@ A process loading level_01/day_4 from built files peaks at 72 MB (62-83
 before; other parts dominate there). The build itself still makes the
 whole grid first, so a first load's peak is as before (146 MB).
 
+**Batteries go in at the use box** (a decision change, 2026-10-16). The
+bots took a battery home to the container's `position`; a use is a 2 m ray
+from the eye that must hit the container's use box (`client_patch.md`,
+`detect_usable_object`, PROVEN), and the position lies 0.1-2.1 m from the
+box on level_01, 03, 07, 08 but 13-152 m on level_02, 04, 05, 06. On
+level_06 both positions are in the fire pit, 4 m apart, a floor no allowed
+floor leads into: every carrier's search was no way, and the 4 v 4 bots
+stood without a route 99.7 % of their ticks (0 kills). Players' 783
+put-ins (2026-10-14 worlds) are a median 4-6 m from the box, 22-56 m from
+the position. `Container::use_point` is a metre under the box's centre (as
+a body's feet: `locate` finds the floor beside the box, not its lid, and a
+look a metre over it is at the box); on all 16 containers of 8 maps that
+floor is 0.8-1.1 m from the box, the eye 0.8 m or less from it, and walked
+to from the own spawn (the position: 7 of 16 not). The bots' containers
+and the test game's puts and thefts use it. Failed searches, 180 s runs:
+level_06 4 v 4 2,021 to 528, 10 v 10 4,155 to 1,446; level_05 4 v 4 1,139
+to 27, 10 v 10 3,343 to 672; level_03 4 v 4 1,559 to 930. Batteries put
+in: level_06 0 to 10 and 0 to 16, level_04 1 to 9 and 1 to 16. The bots'
+time 0.17 to 0.35 % of a core (level_06 4 v 4): they walk and fight now.
+The three whole matches (no use boxes) and level_01 (Team Deathmatch) are
+unchanged. Still failing on level_06: batteries ringed by fire (a way only
+through it; players go there).
+
 Not changed: the decisions (proven above). The first load of a map on the
 host still builds it (and writes its files); the build's peak (near twice
 the grid) comes only then.

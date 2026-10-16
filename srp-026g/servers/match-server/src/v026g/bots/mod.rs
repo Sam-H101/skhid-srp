@@ -413,7 +413,7 @@ impl Bots {
                 containers.resize(id + 1, (0, Vec3::ZERO));
             }
             let team = teams.map_or(container.team.clamp(0, 1) as u8, |teams| teams[id.min(1)]);
-            containers[id] = (team, container.position);
+            containers[id] = (team, container.use_point());
         }
         self.tracker.set_containers(containers);
         let sides: std::collections::BTreeSet<i32> =

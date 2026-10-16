@@ -150,7 +150,7 @@ impl Game {
             .map
             .containers
             .iter()
-            .map(|c| (c.team as u8, c.position))
+            .map(|c| (c.team as u8, c.use_point()))
             .collect();
         // Timed batteries start with none lying about.
         let batteries = if timed.is_some() {
