@@ -354,6 +354,29 @@ impl Motor {
         Decision { keys: 0, turn }
     }
 
+    /// The decision of one tick that steps straight to `to`, a metre or
+    /// two off, no route (a take's stand round a battery, or a step back
+    /// out of a nook the walk grid has no line from): the legs pick the key
+    /// of the eight ways nearest the way to go while the view turns to
+    /// `aim`, else keeps its yaw; no sprint.
+    pub fn step_to(&mut self, pose: &Pose, to: Vec3, aim: Option<(f32, f32)>) -> Decision {
+        self.sprinting = false;
+        self.facing_ticks = 0;
+        self.look = None;
+        let turn = match aim {
+            Some((yaw, pitch)) => self.turn_toward(pose, yaw, pitch),
+            None => self.turn_toward(pose, pose.yaw, pose.pitch),
+        };
+        let (dx, dz) = (to.x - pose.feet.x, to.z - pose.feet.z);
+        if dx.abs() + dz.abs() < 1e-3 {
+            self.walking = false;
+            return Decision { keys: 0, turn };
+        }
+        self.walking = true;
+        let keys = keys_toward(wrap(yaw_of([dx, dz]) - (pose.yaw + turn.0)));
+        Decision { keys, turn }
+    }
+
     /// The decision of one tick standing still and looking about.
     pub fn stand(&mut self, pose: &Pose, rng: &mut Rng) -> Decision {
         self.walking = false;

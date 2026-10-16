@@ -277,6 +277,13 @@ pub struct Intent {
     /// The goal is in the enemy base (their container): their spawn area
     /// is open to the route (`Tactics::allowed`).
     pub objective: bool,
+    /// The goal is a step or two off in a line the play vouches for (a
+    /// take's stand round a battery, a step back out of a nook): walked to
+    /// by keys each tick, no route (`Motor::step_to`).
+    pub straight: bool,
+    /// A take's stand this step gave up at (`collect`): the bot keeps it,
+    /// so its next take of that battery stands elsewhere.
+    pub failed_stand: Option<collect::FailedStand>,
 }
 
 impl Intent {
@@ -290,6 +297,8 @@ impl Intent {
             hold: 0,
             fire: true,
             objective: false,
+            straight: false,
+            failed_stand: None,
         }
     }
 
@@ -339,6 +348,14 @@ impl Intent {
         }
     }
 
+    /// Walked to straight by keys ([`Intent::straight`]).
+    pub fn straight(self) -> Self {
+        Self {
+            straight: true,
+            ..self
+        }
+    }
+
     pub fn hold_fire(self) -> Self {
         Self {
             fire: false,
@@ -379,6 +396,8 @@ pub struct BotFacts<'a> {
     /// Plays that failed at once at a target, and until when they are
     /// not taken there again ([`SET_ASIDE_MS`]).
     pub set_aside: &'a [(PlayKind, TargetRef, u32)],
+    /// Stands its takes of batteries gave up at lately (`collect`).
+    pub failed_stands: &'a [collect::FailedStand],
     /// Nothing left to fire ([`super::reflex::Reflex::dry`]): it takes no
     /// play that seeks a fight ([`PlayKind::seeks_fight`]).
     pub dry: bool,
