@@ -1037,10 +1037,23 @@ fn real_bot_cost() {
             let rays_before = super::aimpoint::rays_cast();
             let limit_ms = limit_s * 1000;
             let (mut clock, mut next_world) = (0, 1_000);
+            // Living bots' ticks with a goal to walk to, and those of them
+            // with no route: a bot standing where it means to walk.
+            let (mut goal_ticks, mut stood_ticks) = (0u64, 0u64);
             while clock < limit_ms {
                 clock += 5;
                 while game.tick + TICK_MS <= clock {
                     game.step();
+                    for bot in bots.bots.iter().flatten() {
+                        let body = &game.bodies[bot.place];
+                        if let Go::To { at, within_m } = bot.intent.go
+                            && body.alive
+                            && body.feet.distance_xz(at) > within_m
+                        {
+                            goal_ticks += 1;
+                            stood_ticks += u64::from(bot.route.is_none());
+                        }
+                    }
                 }
                 if clock >= next_world {
                     next_world += 1_000;
@@ -1149,6 +1162,11 @@ fn real_bot_cost() {
             let mut top: Vec<_> = plays.into_iter().collect();
             top.sort_by(|a, b| b.1.cmp(&a.1));
             eprintln!("  notes: {:?}", &top[..top.len().min(12)]);
+            eprintln!(
+                "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}",
+                100.0 * stood_ticks as f64 / goal_ticks.max(1) as f64,
+                game.delivered
+            );
             let line = format!("{project} {per_team}v{per_team}: {}", decisions.line());
             eprintln!("  {line}");
             if let Some(out) = std::env::var_os("SRP_DECISIONS_OUT") {

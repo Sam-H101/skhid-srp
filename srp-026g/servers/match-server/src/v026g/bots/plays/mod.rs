@@ -433,15 +433,19 @@ impl Ctx<'_> {
     }
 
     /// Whether a way to `at` may be open now: the floor there (as the
-    /// motor finds it) is entered from a floor this bot may walk on, or
-    /// from where it stands. With none, the route search would answer no
-    /// way, and the bot would stand still (a battery inside a zone the
-    /// bots keep out of: level_02's fruit cloud and stalactites).
+    /// motor finds it) is one a walk from a spawn gets to, and it is
+    /// entered from a floor this bot may walk on, or from where it stands.
+    /// Else the route search would answer no way, and the bot would stand
+    /// still (a battery inside a zone the bots keep out of: level_02's
+    /// fruit cloud and stalactites; one on a shelf's top past the jump).
     pub fn reachable(&self, at: Vec3, objective: bool) -> bool {
         let grid = &self.tactics.world.grid;
         let Some(goal) = grid.locate(at, 3.0) else {
             return false;
         };
+        if !self.tactics.walkable(goal) {
+            return false;
+        }
         let start = grid.locate(self.me.feet, 1.5);
         start == Some(goal)
             || grid.entered_from(goal, |b| {
