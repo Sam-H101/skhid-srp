@@ -235,6 +235,19 @@ class ReleaseTests(unittest.TestCase):
         call, _ = self.build(self.root / 'cave', '--cave=hash-mismatch')
         self.assertEqual(call.args[1:], ('hash-mismatch', mock.ANY, 'release.example:2234', None))
 
+    def test_a_release_names_the_revision_of_the_default_exe(self):
+        call, _ = self.build(self.root / 'default')
+        self.assertEqual(call.kwargs, {'revision': None})
+        code = Path(overlay.P.late_join_bin()).read_bytes()
+        call, _ = self.build(self.root / 'release', '--revision=17')
+        self.assertEqual((call.args[1:], call.kwargs),
+                         (('section', mock.ANY, 'release.example:2234', code), {'revision': 17}))
+        refused = (('--revision=17', '--no-late-join'), ('--revision=17', '--cave=hash-mismatch'),
+                   ('--revision=017',), ('--revision=x',))
+        for n, options in enumerate(refused):
+            with self.subTest(options=options), self.assertRaises(SystemExit):
+                self.build(self.root / f'refused-{n}', *options)
+
     def test_windows_checkout_produces_a_unix_launcher(self):
         # Git's core.autocrlf can give the release builder a CRLF template.
         template = Path(overlay.HERE, 'play_skhid.sh').read_bytes().replace(b'\r\n', b'\n')

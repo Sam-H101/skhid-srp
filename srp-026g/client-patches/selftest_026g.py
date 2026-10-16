@@ -185,6 +185,11 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     it; its code sits at 0x220 of `.srp`, after the upload code and the
     default server and before the patches' mount (check 15's layout).
     check_replay_link_026g.py runs the handler on made-up links.
+30. the same build with --revision=<n> (a release's, REVISION + 1 and 255):
+    against the build without it, only the revision byte and the PE
+    checksum differ, and the version field says <n> with the shell_32.dll
+    flags as before (no patch is chosen by the number); REVISION - 1, 256
+    and a build without the late join are refused.
 """
 
 import ctypes
@@ -908,8 +913,10 @@ def version_field(image):
     return out
 
 
-def test_revision(original, image, mode, revision):
-    """The patch revision in the sign-in (client_patch.md section 6)."""
+def test_revision(original, image, mode, revision, late_join=False):
+    """The patch revision in the sign-in (client_patch.md section 6).
+    late_join: the default build, whose sign-in also has the shell_32.dll
+    check."""
     va, old, new = P.revision_site(revision)
     stock = list(b"0.26g0" + bytes(6)) + ["eula"]
     check(version_field(Image(original)) == stock,
@@ -925,7 +932,7 @@ def test_revision(original, image, mode, revision):
     check(rows.get(0x38085E) == "mov [esp+0x20],ecx" and rows.get(va) == f"mov byte [esp+0x27],{revision:#x}"
           and rows.get(va + 5) == "nop" and rows.get(0x380868) == "xor eax,eax",
           f"{va:#x}: `mov byte [esp+0x27],{revision:#x}` / `nop` between `mov [esp+0x20],ecx` and `xor eax,eax`")
-    stale_dll = revision == P.REVISION          # the build with the late join (revision 12) has it
+    stale_dll = late_join                       # the build with the late join (from revision 12) has it
     expected = list(b"0.26g0" + bytes([0, revision])) + (["stale_dll"] if stale_dll else [0]) + [0, 0, 0, "eula"]
     check(field == expected,
           f'the version field is "0.26g0", a zero, the revision {revision} in byte 7, '
@@ -2386,6 +2393,30 @@ def test_replay_link(original, image, before):
           "return (`popad / mov al,1 / pop esi / ret 4`); the link's pattern and the program's fixed name")
 
 
+def test_revision_override(original, default, server):
+    """Check 30: a release's --revision=<n> against the default build of the
+    same server: the revision byte and the PE checksum, nothing else."""
+    code = open(P.late_join_bin(), "rb").read()
+    upload = open(P.default_bin("section"), "rb").read()
+    byte, checksum_at = P.file_offset(P.REVISION_VA) + 4, P.Headers(default).checksum_at
+    for revision in (P.REVISION + 1, 255):
+        data, _ = P.build(original, "section", upload, server, code, revision=revision)
+        changed = [i for i in range(max(len(data), len(default)))
+                   if i >= len(data) or i >= len(default) or data[i] != default[i]]
+        check(len(data) == len(default) and data[byte] == revision
+              and all(i == byte or checksum_at <= i < checksum_at + 4 for i in changed),
+              f"--revision={revision}: the revision byte (file {byte:#x}) is {revision}; besides it only the PE "
+              f"checksum differs from the build of REVISION {P.REVISION} ({len(changed)} bytes)")
+        test_revision(original, Image(data), "section", revision, late_join=True)
+    for revision, late_join in ((P.REVISION - 1, code), (256, code), (P.REVISION + 1, None)):
+        try:
+            P.build(original, "section", upload, server, late_join, revision=revision)
+            refused = False
+        except SystemExit:
+            refused = True
+        check(refused, f"--revision={revision}{'' if late_join else ' without the late join'} is refused")
+
+
 def test_late_join(original, without, server, source):
     """The default build with the late join against `without`, the build
     of the same server without it (checked by everything above)."""
@@ -2586,7 +2617,8 @@ def test_late_join(original, without, server, source):
     test_mount_patches(original, image, before)
     test_forward_scroll(original, image, before)
     test_replay_link(original, image, before)
-    test_revision(original, image, "section", P.REVISION)
+    test_revision(original, image, "section", P.REVISION, late_join=True)
+    test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
     test_memory_check(original, image, "section")
     test_default_server(original, image, "section", server)

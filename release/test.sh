@@ -636,7 +636,7 @@ expect_refused "setup refuses another site on the port" "another site on port" "
 python3 - "$T/work" <<'EOF'
 import sys, zipfile
 at = 0x380862 - 0x11000 + 0x400
-for revision in (2, 11, 12, 13, 14, 15, 16, 17, 18):
+for revision in range(2, 21):
     exe = bytearray(at + 16)
     exe[at:at + 6] = bytes([0xC6, 0x44, 0x24, 0x27, revision, 0x90])
     with zipfile.ZipFile(f"{sys.argv[1]}/r{revision}.zip", "w") as z:
@@ -734,13 +734,18 @@ out=$(echo n | setsid -w "$here/deploy" --zip "$zip12" --server-data "$T/work/sg
 check "deploy: a no stops before any write" has "$out" "stopped: not confirmed"
 
 # release.sh
-# main: a checkout of its own (its origin a bare repository here) with the
-# REVISION and the srp-026g files the image is built of; the live tree is
-# main's. build-zip is a stand-in (the ZIP of main's revision); a minute is
-# a second.
+# main: a checkout of its own (its origin a bare repository here, which the
+# release's record goes to: its tag, its branch, the merge of its PR) with
+# the REVISION, the srp-026g files the image is built of, the revision
+# table and the changelog; the live tree is main's. build-zip is a stand-in
+# (the ZIP of the revision it is given); gh is one too (a PR is a file, its
+# merge a merge commit pushed to the bare repository's main); a minute is a
+# second.
 git_t() { git -c user.name=test -c user.email=test@example.org -c init.defaultBranch=main "$@"; }
 git_t init -q --bare "$T/origin.git"
 git_t clone -q "$T/origin.git" "$T/repo" 2>/dev/null
+git -C "$T/repo" config user.name "the owner"
+git -C "$T/repo" config user.email owner@example.org
 src=$T/repo/srp-026g
 mkdir -p "$src/client-patches" "$src/certs" "$src/crates/a/src" "$src/resources/binary-config-examples" \
     "$src/resources/game-026g" "$src/scripts" "$src/servers/srp/src" "$src/docs"
@@ -761,34 +766,114 @@ FROM debian:bookworm-slim
 COPY --from=build /srp /usr/local/bin/srp
 COPY certs ./certs
 DOCKERFILE
-commit() { # <revision> <message>
-    sed -i "s/^REVISION = .*/REVISION = $1/" "$src/client-patches/patch_026g.py"
-    git_t -C "$T/repo" add -A && git_t -C "$T/repo" commit -qm "$2" && git_t -C "$T/repo" push -q origin HEAD:main 2>/dev/null
+commit() { # <message>: a commit on main, after the records merged there
+    git_t -C "$T/repo" pull -q --ff-only origin main 2>/dev/null || true
+    git_t -C "$T/repo" add -A && git_t -C "$T/repo" commit -q --allow-empty -m "$1" && git_t -C "$T/repo" push -q origin HEAD:main 2>/dev/null
 }
-echo "REVISION = 12" >"$src/client-patches/patch_026g.py"
-commit 12 "revision 12"
+merge_pr() { # <number> <title>: a feature PR merged into main as GitHub does
+    git_t -C "$T/repo" pull -q --ff-only origin main 2>/dev/null || true
+    git_t -C "$T/repo" checkout -q -b "feat-$1"
+    echo "feature $1" >"$src/docs/feature-$1.md"
+    git_t -C "$T/repo" add -A && git_t -C "$T/repo" commit -qm "$2, the work"
+    git_t -C "$T/repo" checkout -q main
+    git_t -C "$T/repo" merge -q --no-ff "feat-$1" -m "Merge pull request #$1 from srp/feat-$1" -m "$2"
+    git_t -C "$T/repo" branch -q -D "feat-$1"
+    git_t -C "$T/repo" push -q origin HEAD:main 2>/dev/null
+}
+# REVISION is the last release's: the live exe's, 11.
+echo "REVISION = 11" >"$src/client-patches/patch_026g.py"
+printf '# Client patches\n\n| | |\n|---|---|\n| Revision 10 | ten |\n| Revision 11 | eleven |\n| Revision 4 | four |\n| The players'"'"' download | the zip |\n' \
+    >"$src/client-patches/README.md"
+printf '# Skhid 0.26g — what changed\n\nNewest first.\n\n---\n\n## 15 Oct, 20:02 — an older entry\n\n- something\n' >"$T/repo/CHANGELOG-SKHID-026G.md"
+commit "revision 11, as released"
 git -C "$T/repo" archive HEAD:srp-026g Cargo.toml Cargo.lock Dockerfile .dockerignore docker-compose.yml certs crates \
     resources/binary-config-examples resources/game-026g scripts servers | tar -x -C "$T/live"
 cat >"$T/build-zip" <<'STANDIN'
 #!/usr/bin/env bash
-# build-zip --ref <commit> --work <dir> [--test]: the ZIP of r<main's REVISION>.zip.
+# build-zip --ref <commit> --revision <n> --work <dir> [--test]: the ZIP of
+# r<n>.zip and the exe's two sha256 (exe.sha256); its arguments are the
+# last line of $TEST_DIR/build-zip.args.
+printf '%s\n' "$*" >>"$TEST_DIR/build-zip.args"
 while (($#)); do
     case $1 in
     --work) work=$2; shift 2 ;;
     --ref) ref=$2; shift 2 ;;
+    --revision) revision=$2; shift 2 ;;
     *) shift ;;
     esac
 done
 if [[ -e $TEST_DIR/build-zip-fails ]]; then echo "build-zip: the build failed" >&2; exit 1; fi
 # A slow build: the seconds of $TEST_DIR/build-zip-sleep.
 if [[ -s $TEST_DIR/build-zip-sleep ]]; then sleep "$(cat "$TEST_DIR/build-zip-sleep")"; fi
-revision=$(git -C "$TEST_DIR/repo" show "$ref:srp-026g/client-patches/patch_026g.py" | sed -n 's/^REVISION = //p')
+git -C "$TEST_DIR/repo" cat-file -e "$ref^{commit}" || exit 1
 mkdir -p "$work"
 cp "$TEST_DIR/work/r$revision.zip" "$work/Survarium-0.26g-srp-files.zip"
+printf '%s with-server\n%s without-server\n' "$(printf 'with %s' "$revision" | sha256sum | cut -c1-64)" \
+    "$(printf 'without %s' "$revision" | sha256sum | cut -c1-64)" >"$work/exe.sha256"
 echo "  CHANGED  game/binaries/x86/survarium_skhid.exe"
 echo "updater_skhid.exe: unchanged (the same file as live)"
 STANDIN
 chmod +x "$T/build-zip"
+# gh: `auth status` (not with $TEST_DIR/gh-no-auth), `pr create` (a PR is
+# $TEST_DIR/gh/<n>: its head branch, title and body; it prints its URL),
+# `pr merge <url> --merge` (a merge commit of the head branch pushed to the
+# bare repository's main, as GitHub makes it; refused with
+# $TEST_DIR/gh-merge-fails). Its calls are lines of $TEST_DIR/gh.log.
+cat >"$T/bin/gh" <<'STANDIN'
+#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"$TEST_DIR/gh.log"
+mkdir -p "$TEST_DIR/gh"
+case "$1 $2" in
+"auth status")
+    if [[ -e $TEST_DIR/gh-no-auth ]]; then echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; fi
+    echo "Logged in to github.com account the-owner" ;;
+"pr create")
+    shift 2
+    while (($#)); do
+        case $1 in
+        --head) head=$2; shift 2 ;;
+        --base) base=$2; shift 2 ;;
+        --title) title=$2; shift 2 ;;
+        --body-file) body=$(cat "$2"); shift 2 ;;
+        *) shift ;;
+        esac
+    done
+    [[ $base == main && -n $head && -n $title ]] || { echo "gh pr create: not a PR to main" >&2; exit 1; }
+    git -C "$TEST_DIR/origin.git" rev-parse -q --verify "refs/heads/$head" >/dev/null || { echo "no branch $head on origin" >&2; exit 1; }
+    n=$(($(ls "$TEST_DIR/gh" | grep -c '^[0-9]*$') + 150))
+    mkdir "$TEST_DIR/gh/$n"
+    printf '%s\n' "$head" >"$TEST_DIR/gh/$n/head"
+    printf '%s\n' "$title" >"$TEST_DIR/gh/$n/title"
+    printf '%s\n' "$body" >"$TEST_DIR/gh/$n/body"
+    echo open >"$TEST_DIR/gh/$n/state"
+    echo "https://github.com/srp/skhid-srp/pull/$n" ;;
+"pr merge")
+    n=${3##*/}
+    [[ -d $TEST_DIR/gh/$n && " $* " == *" --merge "* ]] || { echo "gh pr merge: no PR $3, or not --merge" >&2; exit 1; }
+    if [[ -e $TEST_DIR/gh-merge-fails ]]; then
+        echo "GraphQL: Repository rule violations found: Changes must be made through a pull request with an approving review (mergePullRequest)" >&2
+        exit 1
+    fi
+    clone=$(mktemp -d "$TEST_DIR/tmp/gh-merge.XXXXXX")
+    git clone -q "$TEST_DIR/origin.git" "$clone/r" 2>/dev/null &&
+        git -C "$clone/r" -c user.name=GitHub -c user.email=noreply@github.com merge -q --no-ff "origin/$(cat "$TEST_DIR/gh/$n/head")" \
+            -m "Merge pull request #$n from srp/$(cat "$TEST_DIR/gh/$n/head")" -m "$(cat "$TEST_DIR/gh/$n/title")" &&
+        git -C "$clone/r" push -q origin HEAD:main 2>/dev/null || exit 1
+    rm -rf "$clone"
+    echo merged >"$TEST_DIR/gh/$n/state" ;;
+*) echo "gh $*: not in the stand-in" >&2; exit 1 ;;
+esac
+STANDIN
+chmod +x "$T/bin/gh"
+# The record on the bare repository: a tag's object, main's file at <path>.
+origin_tag() { git -C "$T/origin.git" rev-parse -q --verify "refs/tags/$1" 2>/dev/null; }
+origin_branch() { git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$1" 2>/dev/null; }
+on_main() { git -C "$T/origin.git" show "main:$1"; }
+main_revision() { on_main srp-026g/client-patches/patch_026g.py | sed -n 's/^REVISION = //p'; }
+no_record() { # <revision>: neither the tag, nor the branch, nor REVISION <revision> on main
+    ! origin_tag "026g-rev$1" >/dev/null && ! origin_branch "release/record-rev$1" >/dev/null &&
+        test "$(main_revision)" != "$1" && ! git -C "$T/repo" rev-parse -q --verify "refs/tags/026g-rev$1" >/dev/null
+}
 mkdir -p "$T/game" "$T/tmp"
 cat >>"$T/release.env" <<ENV
 SKHID_GAME=$T/game
@@ -835,9 +920,14 @@ nothing_staged() { ! ls "$T/live/download/".*.new "$T"/live/release-rev*/*.part 
 first_line() { grep -n -- "$1" "$T/args" | tail -n +"${2:-1}" | head -n 1 | cut -d: -f1; }
 
 # A whole release, no new content (patch_3 and patch_12 listed), the server
-# code as live.
+# code as live; a feature PR merged since the last release (11, no tag yet).
+merge_pr 7 "A feature | with a bar"
+released=$(git -C "$T/repo" rev-parse HEAD)
 : >"$T/args"
 run yes --minutes 2 --label a || fail "release.sh: $out"
+check "release: its revision is the live exe's + 1" has "$out" "the live exe is revision 11: this release is revision 12"
+check "release: ... built so, main's patch_026g.py not edited (REVISION 11 there)" bash -c \
+    "tail -n 1 $T/build-zip.args | grep -q -- '--ref $released --revision 12 ' && git -C $T/repo show $released:srp-026g/client-patches/patch_026g.py | grep -qx 'REVISION = 11'"
 check "release: plans the maintenance from the jump host" test "$(admin_log)" = "plan 2"
 check "release: sees the countdown on the launcher page" has "$out" 'the launcher says "Maintenance in [12] min"'
 check "release: finds the server code as live" has "$out" "the live tree is main's"
@@ -867,11 +957,47 @@ check "release: leaves nothing staged" nothing_staged
 check "release: the maintenance ended with the restart" test ! -e "$T/state/maint"
 check "release: took the lock on the jump host" grep -q "^ssh jump mkdir $T/lock" "$T/args"
 check "release: ... and freed it" test ! -e "$T/lock"
+# The record: the tag on the commit built, the commit "Release revision 12"
+# merged into main as a merge commit.
+zip_sha=$(sha256sum <"$T/work/r12.zip" | cut -d' ' -f1)
+data_sha=$(sha256sum <"$T/live/download/server-game-data.db" | cut -d' ' -f1)
+exe_with=$(printf 'with 12' | sha256sum | cut -c1-64) exe_without=$(printf 'without 12' | sha256sum | cut -c1-64)
+check "release: the record: an annotated tag 026g-rev12 on origin" test "$(git -C "$T/origin.git" cat-file -t 026g-rev12 2>/dev/null)" = tag
+check "release: ... on the commit that was built" test "$(git -C "$T/origin.git" rev-parse '026g-rev12^{commit}' 2>/dev/null)" = "$released"
+tag_text=$(git -C "$T/origin.git" cat-file tag 026g-rev12 2>/dev/null || true)
+check "release: ... its message: the UTC time, the ZIP's and the server data's sha256" bash -c \
+    "grep -qE '^Revision 12, released 20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC$' <<<\"\$1\" && grep -q 'sha256 $zip_sha$' <<<\"\$1\" && grep -q 'server-game-data.db: sha256 $data_sha$' <<<\"\$1\" && grep -q 'sha256 $exe_with (--server=127.0.0.1:1234), $exe_without without a server' <<<\"\$1\"" _ "$tag_text"
+check "release: ... its tagger is the owner (no one else)" grep -q '^tagger the owner <owner@example.org>' <<<"$tag_text"
+check "release: main is a merge commit: the released commit, then the record" \
+    test "$(git -C "$T/origin.git" log -1 --format='%P' main)" = "$released $(git -C "$T/origin.git" rev-parse 'main^2')"
+check "release: ... the record PR's merge, as GitHub's" has "$(git -C "$T/origin.git" log -1 --format=%B main)" "^Merge pull request #[0-9]* from srp/release/record-rev12"
+record=$(git -C "$T/origin.git" log -1 --format=%B 'main^2')
+check "release: ... the record's commit: \"Release revision 12\", by the owner" bash -c \
+    "test \"\$(git -C $T/origin.git log -1 --format='%s|%an' 'main^2')\" = 'Release revision 12|the owner'"
+check "release: ... it says what shipped, no AI line" bash -c "grep -qx -- '- #7 A feature | with a bar' <<<\"\$1\" && ! grep -qi 'co-authored\|claude' <<<\"\$1\"" _ "$record"
+check "release: ... it changes the record's files and nothing else" test \
+    "$(git -C "$T/origin.git" diff --name-only "$released" 'main^2' | tr '\n' ' ')" = "CHANGELOG-SKHID-026G.md release/patches.tsv srp-026g/client-patches/README.md srp-026g/client-patches/patch_026g.py "
+check "release: ... REVISION = 12 on main" test "$(main_revision)" = 12
+row=$(on_main srp-026g/client-patches/README.md | grep '^| Revision 12 |' || true)
+check "release: ... the revision table's row, after 11's" bash -c "on_main() { git -C $T/origin.git show main:\$1; }; on_main srp-026g/client-patches/README.md | grep -A1 '^| Revision 11 |' | tail -n 1 | grep -q '^| Revision 12 |'"
+check "release: ... the row: the UTC time, the tag, the commit, what shipped" has "$row" \
+    "^| Revision 12 | Released 20[0-9-]* [0-9:]* UTC (tag \`026g-rev12\`, \`main\` ${released:0:7}). Shipped: #7 A feature \\\\| with a bar. "
+check "release: ... the row: the exe with and without the server, the ZIP, the server data" has "$row" \
+    "Without a server sha256 \`$exe_without\`, with \`--server=127.0.0.1:1234\` \`$exe_with\`. The ZIP: [0-9]* bytes, sha256 \`$zip_sha\`; the server data: sha256 \`$data_sha\`. No content patch of its own |$"
+changelog=$(on_main CHANGELOG-SKHID-026G.md)
+check "release: ... the changelog's entry to word, first under the rule" bash -c \
+    "sed -n '/^---\$/,\$p' <<<\"\$1\" | grep -m1 '^## ' | grep -qE '^## [0-9]+ [A-Z][a-z]{2}, [0-9]{2}:[0-9]{2} — TODO: the owner.s words \\(update required\\)\$' && grep -qx -- '- TODO: #7 A feature | with a bar' <<<\"\$1\" && grep -q '^## 15 Oct, 20:02 — an older entry' <<<\"\$1\"" _ "$changelog"
+check "release: ... release/patches.tsv as the server offers it" cmp -s <(on_main release/patches.tsv) "$T/patches.tsv"
+check "release: ... the record's branch pushed, its PR opened and merged" bash -c \
+    "grep -q '^gh pr create --base main --head release/record-rev12 --title Release revision 12 ' $T/gh.log && grep -q '^gh pr merge https://github.com/srp/skhid-srp/pull/[0-9]* --merge$' $T/gh.log && test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/heads/release/record-rev12)\""
+check "release: ... no worktree of the record left" bash -c "! git -C $T/repo worktree list | grep -q /record"
+check "release: ... says it all, and ends 0" bash -c "grep -q 'done     the PR merged (a merge commit): main has REVISION 12' <<<\"\$1\" && ! grep -q 'NOT COMPLETE' <<<\"\$1\"" _ "$out"
 
 # New content and new server code.
 echo "crates 2" >"$src/crates/a/src/lib.rs"
 printf 'services:\n  srp26:\n    environment:\n      - SRP_DAILY_BONUS\n' >"$src/docker-compose.yml"
-commit 13 "revision 13, server code"
+commit "server code"
+merge_pr 8 "Another feature"
 mkdir -p "$T/p13/gameplay/items" "$T/r13"
 echo "item 13" >"$T/p13/gameplay/items/d.options"
 "$bin" pack --dir "$T/p13" --out "$T/r13/resources.db.patch_13" >/dev/null
@@ -882,7 +1008,14 @@ check "release --resources: publishes the patch" cmp -s "$T/r13/resources.db.pat
 check "release --resources: adds its row to the list" test "$(rows "$T/patches.tsv")" = "resources.db.patch_3 resources.db.patch_12 resources.db.patch_13"
 check "release --resources: the server data offers it" offers patch_13
 check "release --resources: /patches offers it" grep -q patch_13 "$T/site/patches"
-check "release --resources: says to commit the list" has "$out" "Commit $T/patches.tsv"
+check "release --resources: its record: the tag 026g-rev13, REVISION 13 on main" bash -c "test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/tags/026g-rev13)\" && test \"\$1\" = 13" _ "$(main_revision)"
+check "release --resources: ... main's release/patches.tsv has the new row" cmp -s <(on_main release/patches.tsv) "$T/patches.tsv"
+row=$(on_main srp-026g/client-patches/README.md | grep '^| Revision 13 |' || true)
+check "release --resources: ... the row names the content patch" has "$row" \
+    "Its content: \`resources.db.patch_13\` ($(stat -c %s "$T/r13/resources.db.patch_13") bytes, sha256 \`$(sha256sum <"$T/r13/resources.db.patch_13" | cut -d' ' -f1)\`) |$"
+check "release --resources: ... it shipped what was merged since the tag of 12 (not 12's own, nor 12's record)" \
+    bash -c "grep -q 'Shipped: #8 Another feature\. ' <<<\"\$1\" && ! grep -q '#7\|record' <<<\"\$1\"" _ "$row"
+check "release --resources: ... the rows in revision order" test "$(on_main srp-026g/client-patches/README.md | sed -n 's/^| Revision \([0-9]*\) .*/\1/p' | tr '\n' ' ')" = "10 11 12 13 4 "
 check "release: finds the changed server code" has "$out" "CHANGED   crates/a/src/lib.rs"
 check "release: tags the running image by its ID" grep -q "docker tag $running_before srp-026g:before-rev13-[0-9-]*-b" "$T/log"
 check "release: builds main's source, staged in the folder" grep -q "docker compose --env-file $T/live/.env -f release-rev13-[0-9-]*-b/src/docker-compose.yml build srp26" "$T/log"
@@ -898,14 +1031,29 @@ check "release: SRP_MIN_PATCH_REVISION=13" grep -qx "SRP_MIN_PATCH_REVISION=13" 
 : >"$T/state/admin.log"
 expect_refused "release: a patch already listed" "is in $T/patches.tsv already: run without --resources" \
     "$here/release.sh" --resources "$T/r13/resources.db.patch_13"
-expect_refused "release: main's revision not above live" "is not above the live exe's 13" "$here/release.sh"
+expect_refused "release: --revision not above the live exe's" "--revision 13 is not above the live exe's 13" "$here/release.sh" --revision 13
+expect_refused "release: --revision below it too" "--revision 12 is not above the live exe's 13" "$here/release.sh" --revision 12
+expect_refused "release: --revision is a revision" "--revision 256: a revision is" "$here/release.sh" --revision 256
+touch "$T/gh-no-auth"
+expect_refused "release: needs gh signed in (the record's PR)" "gh is not signed in" "$here/release.sh"
+rm "$T/gh-no-auth"
+git -C "$T/repo" config user.useConfigOnly true
+git -C "$T/repo" config --unset user.email
+expect_refused "release: needs a git user (the record's tag and commit)" "has no user.name and user.email" \
+    env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "$here/release.sh"
+git -C "$T/repo" config user.email owner@example.org
+git -C "$T/repo" config --unset user.useConfigOnly
+git -C "$T/repo" tag -a 026g-rev14 -m "left by a run" HEAD
+expect_refused "release: a tag of its revision left here" "a tag 026g-rev14 is in $T/repo, not on origin" "$here/release.sh"
+git -C "$T/repo" tag -d 026g-rev14 >/dev/null
 echo "crates 3" >"$src/crates/a/src/lib.rs"
-commit 14 "revision 14, server code"
+commit "server code again"
 mkdir -p "$T/p14/gameplay/items" "$T/r14"
 echo "item 14" >"$T/p14/gameplay/items/e.options"
 "$bin" pack --dir "$T/p14" --out "$T/r14/resources.db.patch_14" >/dev/null
+mkdir -p "$T/r16" && cp "$T/r14/resources.db.patch_14" "$T/r16/resources.db.patch_16"
 expect_refused "release: a patch of another revision" "must be called resources.db.patch_14" \
-    "$here/release.sh" --resources "$T/r13/resources.db.patch_13"
+    "$here/release.sh" --resources "$T/r16/resources.db.patch_16"
 cp "$T/r14/resources.db.patch_14" "$T/patches/"
 expect_refused "release: a patch published but not listed" "already published, these same bytes, but not in" \
     "$here/release.sh" --resources "$T/r14/resources.db.patch_14"
@@ -1020,6 +1168,8 @@ check "release: ... puts the image tag back" grep -q "docker tag $(cat "$T/docke
 check "release: ... srp-026g:latest is the running image" test "$(cat "$T/docker/latest")" = "$(cat "$T/docker/running")"
 check "release: ... leaves the live files as they were" test "$(tree)" = "$before"
 check "release: ... restarts nothing" bash -c "! grep -q ' up ' $T/log"
+check "release: ... and makes no record: no tag, no branch, main's REVISION as it was" no_record 14
+check "release: ... no PR" bash -c "! grep -q record-rev14 $T/gh.log"
 
 # A no at the question before the swap.
 : >"$T/state/admin.log"
@@ -1087,6 +1237,7 @@ check "release: ... nothing staged" nothing_staged
 check "release: ... the folder says rolled-back" grep -qx rolled-back "$(folder 14 f)/state"
 check "release: ... the patch stays published and listed" bash -c "test -f $T/patches/resources.db.patch_14 && grep -q '^resources.db.patch_14' $T/patches.tsv"
 check "release: ... the lock freed" test ! -e "$T/lock"
+check "release: ... and no record (a rolled-back release leaves none)" no_record 14
 
 # srp refuses after it opened srp.db (and backed it up): the rollback puts
 # that backup back.
@@ -1119,6 +1270,12 @@ check "rollback --keep-db: the ZIP back" cmp -s "$T/work/r13.zip" "$T/live/downl
 check "rollback --keep-db: srp.db as it was" grep -q "^start $starts " "$T/volume/srp.db"
 check "rollback --keep-db: the setting back" grep -qx "SRP_MIN_PATCH_REVISION=13" "$T/live/.env"
 check "rollback --keep-db: the folder says rolled-back" grep -qx rolled-back "$(folder 14 d)/state"
+# Revision 14 went out and came back: the next release is not 14 again.
+expect_refused "release after a rollback: main's REVISION says 14 went out" "main's REVISION 14 says revision 14 went out already, and the live exe says 13 .*--revision 15" "$here/release.sh"
+expect_refused "release after a rollback: ... and its record is on origin" "the record of revision 14 is on origin already: refs/heads/release/record-rev14 refs/tags/026g-rev14" "$here/release.sh"
+run quiet --dry-run --revision 15 --minutes 1 || fail "release.sh --revision 15 --dry-run: $out"
+check "release --revision 15 after the rollback: accepted (the dry run)" has "$out" "the release: revision 13 -> 15 to the live server"
+check "release --dry-run: prints the record it would make" has "$out" '^\[dry run\] 7. once it went out, the record: git tag -a 026g-rev15'
 expect_refused "rollback refuses what is not a release folder" "not the name of a release folder" "$here/rollback" "../etc"
 # Rolled back again while players own items the old data lacks: no loop, the
 # advice to roll forward, and the way back to the release.
@@ -1134,14 +1291,20 @@ check "rollback: ... its way back puts the release in place again" bash -c "cmp 
 
 # --test: the test environment's compose project and patches server, no copy
 # of srp.db to the jump host (it is there).
-run quiet --test --dry-run --resources "$T/r14/resources.db.patch_14" || true
+# Its revision is the test exe's + 1 (here the same site: 15).
+mkdir -p "$T/p15/gameplay/items" "$T/r15"
+echo "item 15" >"$T/p15/gameplay/items/f.options"
+"$bin" pack --dir "$T/p15" --out "$T/r15/resources.db.patch_15" >/dev/null
+run quiet --test --dry-run --resources "$T/r15/resources.db.patch_15" || true
+check "release --test: its revision is the test exe's + 1" has "$out" "the test exe is revision 14: this release is revision 15"
+check "release --test: no record (the dry run says so)" has "$out" '^\[dry run\] 7. no record (--test: no commit, no tag)'
 check "release --test: compose project srptest" has "$out" "docker compose -p srptest up -d --no-deps --force-recreate srp26"
 check "release --test: the TEST patches server" has "$out" "On the TEST patches server"
 check "release --test: no copy of srp.db to the jump host" bash -c "! grep -q 'copied to the jump host' <<<\"\$1\"" _ "$out"
 
 # --no-maintenance: no countdown, the admin page never asked; prepared at
 # once, swapped as soon as "matches":0 (and once more right before the stop).
-commit 15 "revision 15"
+commit "for 15"
 : >"$T/state/admin.log"
 : >"$T/state/admin-seen.log"
 before=$(tree)
@@ -1200,7 +1363,7 @@ check "release --no-maintenance: ... frees the lock" test ! -e "$T/lock"
 # launcher page's "Time left", else a whole match. Then, during the
 # countdown, everything prepared and staged; the swap at the later of the
 # two. The dry run shows that order, and the minutes it would plan now.
-commit 16 "revision 16"
+commit "for 16"
 : >"$T/state/admin.log"
 : >"$T/state/admin-seen.log"
 : >"$T/state/admin-staged.log"
@@ -1417,19 +1580,44 @@ check "release: ... SRP_MIN_PATCH_REVISION=16" grep -qx "SRP_MIN_PATCH_REVISION=
 check "release: ... the folder's rollback" test -f "$(folder 16 auto)/rollback.sh" -a -f "$(folder 16 auto)/rollback.env"
 rm -f "$T/state/ends-in"
 
-# Staging that ends after the planned time: the swap at once.
-commit 17 "revision 17"
+# Staging that ends after the planned time: the swap at once. gh may not
+# merge the record's PR (a rule of the repository), and origin refuses the
+# tag ($T/tag-push-fails): the PR stays open, the tag is made here only, the
+# run says so, with what to do, and ends with 1; the next release waits for
+# the merge.
+commit "for 17"
 : >"$T/state/admin.log"
 echo 3 >"$T/build-zip-sleep"
-run yes --minutes 1 --label late || fail "release.sh, staged late: $out"
-rm -f "$T/build-zip-sleep"
+cat >"$T/origin.git/hooks/pre-receive" <<HOOK
+#!/usr/bin/env bash
+while read -r old new ref; do
+    if [[ -e $T/tag-push-fails && \$ref == refs/tags/* ]]; then echo "tags are refused here" >&2; exit 1; fi
+done
+HOOK
+chmod +x "$T/origin.git/hooks/pre-receive"
+touch "$T/gh-merge-fails" "$T/tag-push-fails"
+run yes --minutes 1 --label late && fail "release.sh, staged late, the PR not merged: ended 0"
+rm -f "$T/build-zip-sleep" "$T/gh-merge-fails" "$T/tag-push-fails"
+check "release: gh cannot merge the record's PR: said loudly at the end" bash -c \
+    "tail -n 4 <<<\"\$1\" | grep -q 'RELEASED, BUT THE RECORD IS NOT COMPLETE' && tail -n 3 <<<\"\$1\" | grep -q 'record.s PR https://github.com/srp/skhid-srp/pull/[0-9]* is OPEN, NOT MERGED: gh could not merge it (GraphQL: Repository rule violations'" _ "$out"
+check "release: origin refuses the tag: said, with the push to do by hand (the tag is made here)" bash -c \
+    "grep -q '^  - the push of the tag 026g-rev17: .*tags are refused here.*by hand: git -C [^ ]*repo push origin refs/tags/026g-rev17\$' <<<\"\$1\" && ! grep -q 'tag -a 026g-rev17' <<<\"\$1\" && git -C $T/repo rev-parse -q --verify refs/tags/026g-rev17 >/dev/null" _ "$out"
+check "release: ... the tag not on origin; the branch there, main's REVISION still 16" bash -c \
+    "test -z \"\$(git -C $T/origin.git rev-parse -q --verify refs/tags/026g-rev17)\" && test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/heads/release/record-rev17)\" && test \"\$1\" = 16" _ "$(main_revision)"
+expect_refused "release: the next one waits for the record's merge" "main's REVISION 16 is below the live exe's 17: the record of revision 17 is not on main (its PR still open? the end of that release.s log says what was not done)" "$here/release.sh"
+pr17=$(grep -l '^release/record-rev17$' "$T"/gh/*/head | head -n 1)
+quiet gh pr merge "https://github.com/srp/skhid-srp/pull/$(basename "$(dirname "$pr17")")" --merge
+check "release: ... merged by hand: main has REVISION 17" test "$(main_revision)" = 17
+push_tag=$(sed -n 's/^  - the push of the tag 026g-rev17: .*by hand: //p' <<<"$out")
+bash -c "$push_tag" >/dev/null 2>&1
+check "release: ... the tag pushed by hand as said: on origin, on the commit built" test "$(git -C "$T/origin.git" rev-parse -q --verify '026g-rev17^{commit}')" = "$(git -C "$T/origin.git" rev-parse 'main^1')"
 check "release: staged after the planned time: the swap at once" has "$out" "5. staged after the planned time: the swap at once"
 check "release: ... no wait for the planned time" bash -c "! grep -q 'waiting for the planned time' <<<\"\$1\"" _ "$out"
 check "release: ... then releases" cmp -s "$T/work/r17.zip" "$T/live/download/Survarium-0.26g-srp-files.zip"
 check "release: ... without cancelling" test "$(admin_log)" = "plan 1"
 
 # --now: no maintenance, no notice, no wait.
-commit 18 "revision 18"
+commit "for 18"
 expect_refused "release: --now and --minutes refused together" "and --now has none" "$here/release.sh" --now --minutes 5
 : >"$T/state/admin.log"
 : >"$T/state/admin-seen.log"
@@ -1449,6 +1637,7 @@ run yes --now --label nowf || true
 rm -f "$T/refuse-start"
 check "release --now: srp refusing to start: rolled back" has "$out" "rolled back: srp26 .*/patches .* as before"
 check "release --now: ... the ZIP never moved" cmp -s "$T/work/r17.zip" "$T/live/download/Survarium-0.26g-srp-files.zip"
+check "release --now: ... no record of 18" no_record 18
 # A match running: swapped anyway, and it says how many it ended.
 echo 1000 >"$T/state/busy"
 run yes --now --label now || fail "release.sh --now: $out"
@@ -1462,6 +1651,17 @@ check "release --now: ... never waited for a match" bash -c "! grep -q 'still ru
 check "release --now: ... planned nothing, asked no admin page" test ! -s "$T/state/admin.log" -a ! -s "$T/state/admin-seen.log"
 check "release --now: ... SRP_MIN_PATCH_REVISION=18" grep -qx "SRP_MIN_PATCH_REVISION=18" "$T/live/.env"
 check "release --now: ... frees the lock" test ! -e "$T/lock"
+check "release --now: ... its record: REVISION 18 on main, the tag" bash -c "test \"\$1\" = 18 && git -C $T/origin.git rev-parse -q --verify refs/tags/026g-rev18 >/dev/null" _ "$(main_revision)"
+
+# A real --test release: its revision is the test exe's + 1, and it makes
+# no record (no tag, no branch, no PR, main as it was).
+main_before=$(git -C "$T/origin.git" rev-parse main)
+: >"$T/gh.log"
+run yes --test --now --label t || fail "release.sh --test: $out"
+check "release --test: released revision 19 (the test exe's + 1)" bash -c "grep -qx SRP_MIN_PATCH_REVISION=19 $T/live/.env && cmp -s $T/work/r19.zip $T/live/download/Survarium-0.26g-srp-files.zip"
+check "release --test: no record" has "$out" "No record (--test): no commit, no tag."
+check "release --test: ... no tag, no branch" no_record 19
+check "release --test: ... main as it was, gh never asked" test "$(git -C "$T/origin.git" rev-parse main)|$(cat "$T/gh.log")" = "$main_before|"
 
 # No secret in any output or command line.
 check "release: the admin token is in no output" bash -c "! grep -qF -- '$token' $T/outputs"

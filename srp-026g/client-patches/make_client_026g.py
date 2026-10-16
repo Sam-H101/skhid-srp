@@ -10,6 +10,8 @@ USAGE
         [--cert-only | --cave=hash-mismatch]   another build of the exe (see patch_026g.py)
         [--no-late-join]             the exe without the late join: patch revision 4,
                                      for a server that asks for no later one
+        [--revision=<n>]             the default exe says patch revision <n>, a
+                                     release's, instead of REVISION (patch_026g.py)
         [--check]                    every check, nothing written
         [--pack-zip]                 write the output as a ZIP instead of a folder
         [--bugtrap=<BugTrap.dll>]     defaults to the Rust release build in this repo
@@ -441,12 +443,14 @@ def main():
     archive = False
     launcher, updater_path, site = True, UPDATER_EXE, None
     extractor_path = EXTRACTOR_EXE
-    late_join = True
+    late_join, revision = True, None
     for option in options:
         if option == "--check":
             check = True
         elif option == "--no-late-join":
             late_join = False
+        elif option.startswith("--revision="):
+            revision = P.parse_revision(option[len("--revision="):])
         elif option == "--pack-zip":
             archive = True
         elif option == "--cert-only":
@@ -486,7 +490,9 @@ def main():
     embedded = mode != "cert-only"
     # The late join is of the default build alone (patch revision 5).
     late_join_code = Path(P.late_join_bin()).read_bytes() if mode == "section" and late_join else None
-    exe, description = P.build(original, mode, code, server if embedded else None, late_join_code)
+    if revision is not None and late_join_code is None:
+        sys.exit("--revision goes with the default build only (not --no-late-join, --cave=hash-mismatch or --cert-only)")
+    exe, description = P.build(original, mode, code, server if embedded else None, late_join_code, revision=revision)
     exe = bytes(exe)
 
     # The certificates.

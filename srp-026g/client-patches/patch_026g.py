@@ -18,6 +18,11 @@ USAGE (this script never touches the source exe):
     python patch_026g.py <survarium.exe> <survarium_srp.exe> --server=<host>:<port>
         full patch with an embedded default login server; -server= at
         game launch still overrides it, and -replay keeps its original path
+    python patch_026g.py <survarium.exe> <survarium_srp.exe> --revision=<n>
+        the default build saying patch revision <n> instead of REVISION:
+        a release's (release/build-zip passes it). Only the revision byte
+        and the PE checksum differ; <n> is REVISION to 255. Not with
+        --no-late-join, --cave=hash-mismatch or --cert-only
     python patch_026g.py <survarium.exe> --check [--cave=...] [--cert-only]
         every check and patch in memory, nothing written
     python selftest_026g.py
@@ -83,9 +88,12 @@ Patches:
   `mov byte [esp+27h],REVISION` / `nop`: byte 7 of the field says which
   of these patches the exe has. The text stays "0.26g0", so a server that
   does not read the byte is not affected, and an exe without this patch
-  says 0. REVISION is raised in the change that makes a full build
-  something else for the game; a server can only tell two clients apart
-  by it;
+  says 0. REVISION is the revision of the last release: a release builds
+  with --revision=<the live exe's + 1> and then records that number here
+  itself (release/release.sh); a change that makes a full build something
+  else for the game never raises it. A server can only tell two clients
+  apart by it, so a server rule for a game with such a change asks for the
+  next release's revision, REVISION + 1;
 - the battery rule of modes 2 and 3 (gather_victory_items_rule_core's
   container event handler 0x313A50): two instructions become nops. When a
   team's count reaches the number of batteries the handler stores the
@@ -364,6 +372,14 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # original opened any text the server sent with ShellExecute. Nothing a match
 # computes: 11 to 14 play together. A server sends a replay link only to a
 # game that says 14 or more (an older one would open the text as a file).
+# 15 and 16: 14 with the revision byte alone changed (releases that needed a
+# number above the live one). After 16 each release has the live exe's + 1,
+# and README.md's revision table has its row, which the release writes.
+#
+# The revision of the last release. The release sets it (release/release.sh,
+# its "Release revision <n>" commit), never a feature change: a release
+# builds with --revision=<n>, the live exe's + 1, which changes the revision
+# byte alone, and records <n> here once it went out.
 REVISION = 16
 # The first revision whose default build takes the lobby's replay link
 # (REPLAY_LINK): the server's replay rule asks for it
@@ -1156,7 +1172,7 @@ def add_section(data, cave):
     return out
 
 
-def build(original, mode, code=None, server=None, late_join=None):
+def build(original, mode, code=None, server=None, late_join=None, revision=None):
     """Returns (patched file, description). mode: "cert-only", "section" or
     "hash-mismatch"; code = the assembled .bin for that cave. An optional
     server embeds a default host:port in full builds only. late_join = the
@@ -1167,7 +1183,11 @@ def build(original, mode, code=None, server=None, late_join=None):
     its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin), and its transparent effects scroll as in
     0.29 (forward_scroll_026g.section.bin), and the lobby's link starts the
-    updater for a replay link alone (replay_link_026g.section.bin)."""
+    updater for a replay link alone (replay_link_026g.section.bin).
+    revision: what the build with the late join says instead of REVISION
+    (a release's, REVISION to 255). It is the revision byte and nothing
+    else: every patch above is chosen by the kind of build, never by its
+    number."""
     if hashlib.sha256(original).hexdigest() != EXE_SHA256:
         sys.exit("the source is not the original 0.26g survarium.exe (sha256 mismatch)")
     if server is not None:
@@ -1179,7 +1199,16 @@ def build(original, mode, code=None, server=None, late_join=None):
             sys.exit("the late join needs the default build: its code and its state are sections of their own")
         if len(late_join) <= LATE_JOIN_ASM_SIZE:
             sys.exit("the late-join code is the 4096 bytes of late_join_026g.asm and the C code after them")
-    revision = REVISION if late_join is not None else REVISION_WITHOUT_LATE_JOIN
+    if revision is not None:
+        if late_join is None:
+            sys.exit(f"--revision is of the default build, with the late join (the others say "
+                     f"{REVISION_WITHOUT_LATE_JOIN}, or nothing)")
+        if type(revision) is not int or not REVISION <= revision <= 255:
+            sys.exit(f"--revision={revision}: a revision from {REVISION} (REVISION, the last release's) to 255")
+    if late_join is None:
+        revision = REVISION_WITHOUT_LATE_JOIN
+    elif revision is None:
+        revision = REVISION
     if late_join is not None:
         stale_dll = open(stale_dll_bin(), "rb").read()
         mount_patches = open(mount_patches_bin(), "rb").read()
@@ -1398,6 +1427,14 @@ def build(original, mode, code=None, server=None, late_join=None):
                   + (f", default login server {server}" if server is not None else ""))
 
 
+def parse_revision(text):
+    """--revision=<n>: n, a whole number without a sign or a leading zero
+    (build() checks its range)."""
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", text):
+        sys.exit(f"--revision={text}: a whole number from {REVISION} to 255")
+    return int(text)
+
+
 def default_bin(mode):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), f"snapshot_upload_026g.{mode}.bin")
 
@@ -1438,7 +1475,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--") or a == "--check"]
     options = [a for a in sys.argv[1:] if a.startswith("--") and a != "--check"]
     mode, bin_path, server = "section", None, None
-    late_join, late_join_path = True, None
+    late_join, late_join_path, revision = True, None, None
     for option in options:
         if option == "--cert-only":
             mode = "cert-only"
@@ -1452,9 +1489,11 @@ def main():
             bin_path = option[6:]
         elif option.startswith("--server="):
             server = parse_server(option[9:])
+        elif option.startswith("--revision="):
+            revision = parse_revision(option[11:])
         else:
             sys.exit(f"unknown option {option}\n\n{__doc__}")
-    if len(args) == 3:                                     # the draft's form: <exe> <out> <bin>
+    if len(args) == 3:                                    # the draft's form: <exe> <out> <bin>
         bin_path = args.pop()
     if len(args) != 2:
         sys.exit(__doc__)
@@ -1469,7 +1508,9 @@ def main():
         late_join_code = open(late_join_path or late_join_bin(), "rb").read()
     elif late_join_path:
         sys.exit("--late-join-bin goes with the default build only")
-    data, description = build(open(source, "rb").read(), mode, code, server, late_join_code)
+    if revision is not None and late_join_code is None:
+        sys.exit("--revision goes with the default build only (not --no-late-join, --cave=hash-mismatch or --cert-only)")
+    data, description = build(open(source, "rb").read(), mode, code, server, late_join_code, revision=revision)
     if target != "--check":
         with open(target, "wb") as out:
             out.write(data)

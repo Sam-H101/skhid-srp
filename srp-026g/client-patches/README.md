@@ -5,6 +5,16 @@ a patched `survarium.exe` and the login certificate. The game is not here;
 the tools below work on your own copy. The patched exe itself is never
 published.
 
+**The revisions below are the releases'.** Each release sets its own
+revision, the live exe's + 1, and builds with `--revision=<n>`; once it went
+out, `release/release.sh` itself commits `REVISION = <n>` in
+`patch_026g.py` and the `Revision <n>` row here (the UTC time, the exe's
+sha256 without and with the server, the ZIP's, what it shipped) and tags the
+commit it built `026g-rev<n>`. A feature PR never changes `REVISION` or
+this table, even when it changes the exe: it describes its patch in the
+sections below, and a server rule for it asks for `REVISION + 1`, the next
+release's. The "Result" row is the build of the revision named in it.
+
 | | |
 |---|---|
 | Original exe | `game/binaries/x86/survarium.exe`, 12 894 840 bytes, sha256 `ac33d9937015c2299bf62cc6b127cb308b48a3475b30fff2ddd65479ae3bf153` (the tools check it and refuse anything else) |
@@ -487,11 +497,13 @@ original bytes first, so another build or an already patched file is refused.
   the exe as before, and an exe without this patch says 0.
 - **What reads it:** the login server writes it in its log
   (`Client version: 0.26g0, patch revision 1`). It refuses nobody for it.
-- **The number:** `REVISION` in `patch_026g.py`, 4 now. Revision 1 introduced this
-  field; revision 2 adds the optional embedded login server; revision 3 the
-  battery rule (patch 9); revision 4 the two start-up sites (patch 10). Raise it in the
-  change that makes a full build something else for the game, so that
-  the two kinds of client can be told apart.
+- **The number:** `REVISION` in `patch_026g.py`, the last release's.
+  Revision 1 introduced this field; revision 2 adds the optional embedded
+  login server; revision 3 the battery rule (patch 9); revision 4 the two
+  start-up sites (patch 10). Each release has a number of its own, the live
+  exe's + 1 (`patch_026g.py --revision=<n>`, which changes this byte
+  alone), and sets `REVISION` to it once it went out (the table above), so
+  that the clients before and after it can be told apart.
 - It is what the exe says of itself, not proof: a changed exe can say
   anything.
 - Full builds only; `--cert-only` keeps the code. The self-test works the
