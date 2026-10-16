@@ -1,6 +1,6 @@
 ---
 name: skhid-release
-description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which at the owner's go plans the maintenance at once to start 30 seconds after the last running match ends, prepares and stages everything during the countdown and swaps it all in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision bump, the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
+description: Make a release of skhid-srp (the Survarium 0.26g server "Skhid") — a new players' download (exe, launcher, updater, crash reporter), new game content as a resources.db patch, server code, or any mix — with release/release.sh, which at the owner's go plans the maintenance at once to start 30 seconds after the last running match ends, prepares and stages everything during the countdown and swaps it all in at once, keeps a folder per release on the host and rolls back by itself when the new server does not come up. Covers the questions to ask first, the revision (each release sets it and tags itself), the offered-patch list, the dry run, the test environment, what to watch, rollback, and the step scripts in release/. Use when asked to make, ship, test or roll out a release of skhid-srp.
 ---
 
 # Making a Skhid 0.26g release
@@ -31,20 +31,36 @@ Ask, in this order:
 
 1. **Does it include new content?** If yes: **the path to the patch
    database**, `resources.db.patch_<rev>` (a standalone archive in the
-   game's format, named for the new revision; how it was made doesn't
-   matter). A folder of files at the paths the game reads them from
+   game's format, named for the release's revision, below; how it was made
+   doesn't matter). A folder of files at the paths the game reads them from
    (`gameplay/items/...`) is packed into one by
    `release/build-patch <folder> <rev>`.
-2. **Is the revision bumped on main?** Every release has a new patch
-   revision, content or not: it is how the server refuses games without the
-   new files. If `REVISION` in `srp-026g/client-patches/patch_026g.py` on
-   `origin/main` is not above the live exe's, the bump PR first. The patch
-   takes this number. From revision 12 on the exe expects the menus of
-   `resources.db.patch_12`: a release of revision 12 or later is refused
-   unless patch_12 is offered (in the list, or the `--resources` file).
-3. **Any server-code change?** `release.sh` compares main's `srp-026g`
+2. **Any server-code change?** `release.sh` compares main's `srp-026g`
    build inputs with the target's tree and builds the image when they
    differ; the owner may know better (`--server-code yes|no`).
+
+**The revision is the release's own.** Every release has a new patch
+revision, content or not: it is how the server refuses games without the
+new files. It is the live exe's + 1 (`--test`: the test exe's + 1), which
+`release.sh` reads from the target's ZIP and passes to the build
+(`build-zip --revision <n>`, `make_client_026g.py`/`patch_026g.py
+--revision=<n>`: the revision byte alone; nothing is edited first).
+`--revision <n>` names another, above the live exe's (a number once
+released is never used again: after a rollback the preflight says which).
+After a live release went out, the release itself records it (step 7):
+`REVISION = <n>` in `patch_026g.py`, the row of the revision table in
+`srp-026g/client-patches/README.md`, a changelog entry to word, the list,
+and the tag `026g-rev<n>`. So `REVISION` on main is always the last
+release's, and **a feature PR never changes `REVISION` or the revision
+table**, even when it changes the exe; a server rule for its game asks for
+the next release's revision, `REVISION + 1`. There is no bump PR. From
+revision 12 on the exe expects the menus of `resources.db.patch_12`: a
+release of revision 12 or later is refused unless patch_12 is offered (in
+the list, or the `--resources` file).
+
+The test environment's revision is its own exe's + 1, which can be another
+number than live's next: a patch tried there is named for the test's
+(a copy of the file under that name), then for live's.
 
 Then, first on the test environment, then live:
 
@@ -107,7 +123,7 @@ line, or the file, to have a URL downloaded whole again.
 
 ```
 release/release.sh [--resources <resources.db.patch_<rev>>] [--test]
-                   [--server-code auto|yes|no]
+                   [--revision <n>] [--server-code auto|yes|no]
                    [--minutes <n> | --no-maintenance] [--now]
                    [--match-wait <minutes>] [--label <word>] [--ref <branch>]
                    [--dry-run] [--yes --i-know]
@@ -127,7 +143,13 @@ The order, as it runs:
    to the jump host, through it to the live host, the patches server; the
    release lock free; nix; `$SKHID_GAME`; `$SKHID_STOCK_DB` with the stock
    sha256 (cached by size and time); free disk here and there;
-   srp-game-data builds; main's `REVISION` above the target exe's; the
+   srp-game-data builds; the release's revision `<n>` (the target exe's + 1,
+   or `--revision <n>` above it; not below main's `REVISION`); live: main's
+   `REVISION` (the last release's) is the live exe's or above and below
+   `<n>` (below the live exe's: the last record's PR is not merged; `<n>` or
+   above: that revision went out before and was rolled back), the tag
+   `026g-rev<n>` and the branch `release/record-rev<n>` are not on origin,
+   and `gh` is signed in; the
    admin page answers the jump host (not with `--no-maintenance` or `--now`); no
    maintenance planned already; no
    release folder left unfinished; `download/` on the file system of the
@@ -140,7 +162,7 @@ The order, as it runs:
    (as the updater fetches it, not a web page, the size and sha256; whole
    the first time, then from the cache above); patch_12 offered from
    revision 12 on; with
-   `--resources`: the name is `resources.db.patch_<main's REVISION>`,
+   `--resources`: the name is `resources.db.patch_<n>` (the release's revision),
    srp-game-data reads it over the stock db, it is neither published nor
    listed yet. Last, which server-code files differ, and which settings
    main's compose file newly passes that the target's `.env` sets (names
@@ -204,6 +226,35 @@ The order, as it runs:
    `/srv/skhid-backups/srp-db`: folder 700, files 600, a line in
    `SHA256SUMS` there), its sha256 compared on both ends. Only then the
    ZIP goes in place and `/api/client-files` must name it.
+7. **The record, live only, once it all went out** (never after a stop or
+   a rollback: those leave no commit and no tag; `--test` makes neither):
+   - an annotated tag `026g-rev<n>` on the commit that was built (main as
+     the preflight fetched it; its `REVISION` is still the one before, and
+     `--revision=<n>` makes the exe again), its message the UTC time, the
+     ZIP's, the server data's and the exe's sha256, pushed;
+   - the commit `Release revision <n>` on that same commit, as the git
+     user: `REVISION = <n>`, the revision table's row (after the highest
+     one: the UTC time, the tag, the commit, the exe's sha256 without and
+     with the server, the ZIP's size and sha256, the server data's, the
+     content patch, and what it shipped: the merged PRs since the tag
+     before, the record PRs left out), a `CHANGELOG-SKHID-026G.md` entry
+     under the rule, `TODO` for the owner to word, with those PRs, and
+     `release/patches.tsv` as the server offers it (the row
+     `upload-patch` added); pushed as `release/record-rev<n>`, a PR opened
+     (`gh pr create`) and merged as a merge commit (`gh pr merge --merge`).
+   A step gh or git cannot do is said at the end, loudly (`RELEASED, BUT
+   THE RECORD IS NOT COMPLETE`), with what to do, and the run ends with 1:
+   players have the release. The usual one: a rule of the repository (a
+   review required) lets the token open the PR but not merge it; the PR
+   stays open, and the next release's preflight refuses until it is
+   merged (a merge commit).
+
+   Why the release records itself after the fact, from the built commit,
+   and not a bump commit made first and built: what is built is exactly
+   main as reviewed, no commit nobody reviewed; a release that stops or is
+   rolled back leaves nothing to undo on main; and the tag names a commit
+   that is on main. The cost: the tagged commit's `REVISION` is the one
+   before, so the tag's message says the `--revision` it was built with.
 
 A **failed check** (srp refusing to start, `/patches` wrong, no backup of
 srp.db, the ZIP not handed out) prints srp's last log lines and the lines
@@ -356,7 +407,7 @@ shows the command, unless release.sh, already given the go-ahead, runs it):
 | `release/upload-patch [--test] [--dry-run] <file>` | publishes one patch: `.tmp`, sha256 there, `chmod 644`, `mv -n`, GET must be 200 with the sha256, then its row in the list; never replaces one | the patches server, the list |
 | `release/add-mirror [--test] <name> <url>` | another URL of a listed patch: downloaded as the updater does, not a web page, the row's size and sha256, then appended to the row | the list (and the URL cache) |
 | `release/build-server-db [--test] [--out <file>]` | `server-game-data.db` from the stock db and the list's patches (each first URL GET 200 with the row's size and sha256; each mirror checked as above), `srp-game-data build --patch "<file>=<urls>"` | a local file |
-| `release/build-zip [--test] [--ref <commit>] [--work <dir>]` | the players' ZIP from a fresh worktree of origin/main (never this checkout, never `git stash`): `--server`, `--site`, `--localization`, no resources.db regions; refuses an unbumped revision; entries against the site's ZIP | a worktree, the ZIP |
+| `release/build-zip [--test] [--ref <commit>] [--revision <n>] [--work <dir>]` | the players' ZIP from a fresh worktree of origin/main (never this checkout, never `git stash`): `--server`, `--site`, `--localization`, `--revision` (default: the site's exe's + 1; above it), no resources.db regions; the exe without a server too, both sha256 in `<work>/exe.sha256`; entries against the site's ZIP | a worktree, the ZIP |
 | `release/deploy --zip --server-data --revision [--label] [--dry-run]` | the swap on its own, in a window planned by hand: the release folder, the checks, the rollback on failure | the live host |
 | `release/rollback [--test] [--keep-db] [<folder>]` | a release folder's rollback | the target |
 | `release/setup-patches-server [--test] [--check]` | once: the patches folder and Caddy's site block for it (validate and reload; either failing puts the backup back) | the jump host's Caddy |
@@ -401,8 +452,14 @@ nixpkgs#shellcheck -c release/test.sh`); it sends nothing anywhere.
 
 ## Record
 
-A PR with `CHANGELOG-SKHID-026G.md` (players' wording, the UTC time, "update
-required"), the new rows of `release/patches.tsv`, and the hashes: ZIP,
-server data, each new patch, its revision (release.sh keeps the ZIP and the
-server data in its working folder and prints their hashes; the release
-folder has them in `new.sha`).
+The release makes it (step 7): the tag, and the merged commit `Release
+revision <n>`. What is left to the owner: the changelog entry's wording
+(its `TODO` heading and lines: players' words, "update required"), in a
+PR of its own. If the run ended with `THE RECORD IS NOT COMPLETE`, do
+what it says (merge the open PR as a merge commit; push the tag) before
+the next release. The release folder has the hashes in `new.sha` too.
+
+The token `gh` uses on the release PC must be allowed to push branches and
+tags and to open and merge PRs (`repo`, or a fine-grained token with
+Contents and Pull requests: read and write); a branch rule that requires a
+review keeps the record's PR open until someone merges it.

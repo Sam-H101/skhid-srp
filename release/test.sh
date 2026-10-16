@@ -965,7 +965,6 @@ tag_text=$(git -C "$T/origin.git" cat-file tag 026g-rev12 2>/dev/null || true)
 check "release: ... its message: the UTC time, the ZIP's and the server data's sha256" bash -c \
     "grep -qE '^Revision 12, released 20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} UTC$' <<<\"\$1\" && grep -q 'sha256 $zip_sha$' <<<\"\$1\" && grep -q 'server-game-data.db: sha256 $data_sha$' <<<\"\$1\" && grep -q 'sha256 $exe_with (--server=127.0.0.1:1234), $exe_without without a server' <<<\"\$1\"" _ "$tag_text"
 check "release: ... its tagger is the owner (no one else)" grep -q '^tagger the owner <owner@example.org>' <<<"$tag_text"
-merge=$(git -C "$T/origin.git" rev-parse main)
 check "release: main is a merge commit: the released commit, then the record" \
     test "$(git -C "$T/origin.git" log -1 --format='%P' main)" = "$released $(git -C "$T/origin.git" rev-parse 'main^2')"
 check "release: ... the record PR's merge, as GitHub's" has "$(git -C "$T/origin.git" log -1 --format=%B main)" "^Merge pull request #[0-9]* from srp/release/record-rev12"
@@ -1043,8 +1042,9 @@ commit "server code again"
 mkdir -p "$T/p14/gameplay/items" "$T/r14"
 echo "item 14" >"$T/p14/gameplay/items/e.options"
 "$bin" pack --dir "$T/p14" --out "$T/r14/resources.db.patch_14" >/dev/null
+mkdir -p "$T/r16" && cp "$T/r14/resources.db.patch_14" "$T/r16/resources.db.patch_16"
 expect_refused "release: a patch of another revision" "must be called resources.db.patch_14" \
-    "$here/release.sh" --resources "$T/r13/resources.db.patch_13"
+    "$here/release.sh" --resources "$T/r16/resources.db.patch_16"
 cp "$T/r14/resources.db.patch_14" "$T/patches/"
 expect_refused "release: a patch published but not listed" "already published, these same bytes, but not in" \
     "$here/release.sh" --resources "$T/r14/resources.db.patch_14"
@@ -1263,7 +1263,7 @@ check "rollback --keep-db: the setting back" grep -qx "SRP_MIN_PATCH_REVISION=13
 check "rollback --keep-db: the folder says rolled-back" grep -qx rolled-back "$(folder 14 d)/state"
 # Revision 14 went out and came back: the next release is not 14 again.
 expect_refused "release after a rollback: main's REVISION says 14 went out" "main's REVISION 14 says revision 14 went out already, and the live exe says 13 .*--revision 15" "$here/release.sh"
-expect_refused "release after a rollback: ... and its record is on origin" "the record of revision 14 is on origin already: refs/tags/026g-rev14 refs/heads/release/record-rev14" "$here/release.sh"
+expect_refused "release after a rollback: ... and its record is on origin" "the record of revision 14 is on origin already: refs/heads/release/record-rev14 refs/tags/026g-rev14" "$here/release.sh"
 run quiet --dry-run --revision 15 --minutes 1 || fail "release.sh --revision 15 --dry-run: $out"
 check "release --revision 15 after the rollback: accepted (the dry run)" has "$out" "the release: revision 13 -> 15 to the live server"
 check "release --dry-run: prints the record it would make" has "$out" '^\[dry run\] 7. once it went out, the record: git tag -a 026g-rev15'

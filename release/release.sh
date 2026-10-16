@@ -555,7 +555,7 @@ shipped_prs() {
         if ((n < rev && n > best)); then best=$n SHIPPED_SINCE=${tags[$n]}; fi
     done
     if [[ -z $SHIPPED_SINCE ]] || ! git -C "$REPO" cat-file -e "$SHIPPED_SINCE^{commit}" 2>/dev/null; then
-        SHIPPED_SINCE=$(git -C "$REPO" log --first-parent --diff-merges=first-parent -1 --format=%H \
+        SHIPPED_SINCE=$(git -C "$REPO" log --first-parent --diff-merges=first-parent -s -1 --format=%H \
             -G '^REVISION = ' "$commit" -- srp-026g/client-patches/patch_026g.py 2>/dev/null || true)
     fi
     git -C "$REPO" log --first-parent --merges --format='%s%x1f%b%x1e' "${SHIPPED_SINCE:+$SHIPPED_SINCE..}$commit" |
@@ -584,6 +584,7 @@ readme_row() { # <shipped: lines>
     else
         content="No content patch of its own"
     fi
+    # shellcheck disable=SC2016 # the backticks are Markdown
     printf '| Revision %s | Released %s UTC (tag `%s`, `main` %s). Shipped: %s. Without a server sha256 `%s`, with `--server=%s` `%s`. The ZIP: %s bytes, sha256 `%s`; the server data: sha256 `%s`. %s |\n' \
         "$rev" "$(date -u -d "@$released_at" '+%Y-%m-%d %H:%M')" "$(release_tag "$rev")" "${main_commit:0:7}" \
         "${shipped:-nothing merged since the release before}" "$EXE_WITHOUT" "$SKHID_GAME_SERVER" "$EXE_WITH" \
@@ -630,7 +631,7 @@ record_files() { # <wt> <shipped>
 }
 
 record_release() {
-    local tag branch wt shipped url answer
+    local tag branch wt shipped url answer line
     tag=$(release_tag "$rev") branch=$(record_branch "$rev") wt=$work/record
     progress "7. the record: tag $tag on $(git -C "$REPO" log -1 --format=%h "$main_commit"), the commit \"Release revision $rev\" on main"
     EXE_WITH=$(awk '$2 == "with-server" { print $1 }' "$work/zip/exe.sha256" 2>/dev/null || true)
@@ -675,7 +676,7 @@ record_release() {
         fi
         say
         say "Shipped:"
-        if [[ -n $shipped ]]; then sed 's/^/- /' <<<"$shipped"; else say "- nothing merged since the release before"; fi
+        if [[ -n $shipped ]]; then while IFS= read -r line; do say "- $line"; done <<<"$shipped"; else say "- nothing merged since the release before"; fi
         say
         say "The ZIP: sha256 $ZIP_SHA; the server data: sha256 $DATA_SHA."
     } >"$work/record.msg"
@@ -892,14 +893,14 @@ fi
 # The new patch.
 if [[ -n $resources ]]; then
     name=${resources##*/}
-    if [[ -n $rev && $name != "resources.db.patch_$rev" ]]; then
+    if [[ -n $(list_row "$name") ]]; then
+        problem "--resources: $name is in $PATCH_LIST already: run without --resources (the list is what is offered)"
+    elif [[ -n $rev && $name != "resources.db.patch_$rev" ]]; then
         problem "--resources: $name must be called resources.db.patch_$rev (this release's revision; the game mounts patch_<n> of revision n)"
     elif [[ ! -f $resources ]]; then
         problem "--resources: $resources: no such file"
     elif [[ $(head -c 13 "$resources") != little-endian ]]; then
         problem "--resources: $resources is not an archive of the game (no \"little-endian\" header)"
-    elif [[ -n $(list_row "$name") ]]; then
-        problem "--resources: $name is in $PATCH_LIST already: run without --resources (the list is what is offered)"
     elif [[ -n $bin && -f $SKHID_STOCK_DB ]]; then
         if "$bin" build --db "$SKHID_STOCK_DB" --patch "$resources=$PATCHES_URL/$name" \
             --out "$work/patch-check.db" >"$work/patch-check.log" 2>&1; then
