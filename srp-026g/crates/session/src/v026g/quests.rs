@@ -98,7 +98,7 @@ fn grenades_available_in_store(account: &Account) -> bool {
 /// qualify, and any seller may unlock the quest regardless of its faction.
 fn artifact_containers_available_in_store(account: &Account) -> bool {
     let modifications = Modifications::shared();
-    item_params::ITEM_PARAMS.iter().any(|item| {
+    item_params::all().iter().any(|item| {
         let has_container = item
             .default_modifications
             .iter()

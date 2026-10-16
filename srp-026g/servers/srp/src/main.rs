@@ -53,6 +53,12 @@ fn main() {
         log::error!("srp: {error}");
         std::process::exit(1);
     }
+    // The players' game files, before anything reads an item or a map:
+    // the accounts are checked against their dictionary.
+    if let Err(error) = survarium::v026g::game_data::init() {
+        log::error!("srp: {error}");
+        std::process::exit(1);
+    }
 
     let gather = match session::gather_window_from_env() {
         Ok(gather) => gather,

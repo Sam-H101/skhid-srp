@@ -53,8 +53,8 @@
 
 use binary_config_parser::tree::{ConfigError, ConfigValue};
 
-const QUESTS: &[u8] =
-    include_bytes!("../../../../resources/binary-config-examples/quests_026g.options");
+/// Its path in the archive.
+pub const PATH: &str = "gameplay/quests/quests.options";
 
 /// The factions whose quests the lobby shows.
 pub const FACTIONS: [u8; 4] = [1, 2, 3, 4];
@@ -301,7 +301,7 @@ pub struct Quests {
 impl Quests {
     pub fn shared() -> &'static Self {
         static SHARED: std::sync::OnceLock<Quests> = std::sync::OnceLock::new();
-        SHARED.get_or_init(|| Self::parse(QUESTS).expect("the embedded 0.26g quests parse"))
+        SHARED.get_or_init(|| Self::parse(super::game_data::file(PATH)).expect("the quests parse"))
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, ConfigError> {

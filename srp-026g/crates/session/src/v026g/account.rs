@@ -626,7 +626,7 @@ mod tests {
             account.kits[0].slots.iter().flatten().count(),
             loadout.items.len()
         );
-        assert!(account.kit_weight(&account.kits[0]) <= item_params::MAX_CARRIED_WEIGHT);
+        assert!(account.kit_weight(&account.kits[0]) <= item_params::player().max_carried_weight);
     }
 
     #[test]
