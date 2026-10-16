@@ -36,16 +36,16 @@
 //!   within `punish_heard_m` reloading or switching weapons during a duel:
 //!   the legs go at him for `punish_ms`;
 //! - **play 6, turn to a sound:** a shot heard, nothing seen: look there;
-//!   a step or a reload heard near from outside the view, or a teammate's
-//!   callout near: a glance there ([`CombatTuning::glance_heard_m`],
-//!   [`CombatTuning::glance_told_m`]);
-//! - **hit by a shooter it did not sense:** the HUD's hit marker gives
-//!   the direction (no distance, no shooter): it takes cover from that
-//!   direction, looks there a moment and calls it out to its team
-//!   ([`CombatTuning::hit_bearing`]);
+//!   a step or a reload heard near from outside the view: a glance there
+//!   ([`CombatTuning::glance_heard_m`]); a teammate's callout near
+//!   (off by default, [`CombatTuning::glance_told_m`]);
+//! - **hit by a shooter it did not sense** (off by default): the HUD's hit
+//!   marker gives the direction (no distance, no shooter): it takes cover
+//!   from that direction, looks there a moment and calls it out to its
+//!   team ([`CombatTuning::hit_bearing`]);
 //! - **outranged:** a short weapon against a seen sniper beyond its band
-//!   breaks sight and waits instead of a duel in the open
-//!   ([`CombatTuning::outranged_hide`]);
+//!   does not step in at him; it may break sight and wait instead (off by
+//!   default, [`CombatTuning::outranged_cover`]);
 //! - **play 7, break sight and re-peek:** hit while in a duel: to a spot
 //!   near by hidden from the enemy, wait 1-2 s, come back at a spot that
 //!   sees him from another angle, never the one it last fought from;
@@ -277,7 +277,9 @@ pub struct CombatTuning {
     /// No target: a teammate's callout (a told track) at most
     /// `glance_told_fresh_ms` old (from the sense that made it) within
     /// `glance_told_m`, from outside the view, is glanced at for
-    /// `glance_ms`, at most once every `glance_told_every_ms`.
+    /// `glance_ms`, at most once every `glance_told_every_ms`. OFF (0) by
+    /// default: the bots-only bench lost 1.5-4 deliveries a seed (of 124)
+    /// with it on, at 20-30 m and every 4-8 s.
     pub glance_told_m: f32,
     pub glance_told_fresh_ms: u32,
     pub glance_told_every_ms: u32,
@@ -287,15 +289,22 @@ pub struct CombatTuning {
     /// `hit_bearing_error_deg` of the true one. The world we read names no
     /// shooter of a hit, so the shooter is the enemy who fired in the last
     /// `hit_shot_ms` with his view on the bot (within `hit_aim_deg`); only
-    /// the direction to him is used, never his place or distance.
+    /// the direction to him is used, never his place or distance. OFF by
+    /// default: the bots-only bench (no shooter past 80 m in it) lost 2-4
+    /// deliveries a seed (of 124) with it on, kills +2-4; its worth
+    /// against a far human sniper is not measured.
     pub hit_bearing: bool,
+    /// ... also with a target seen (else it keeps on its target).
+    pub hit_bearing_with_target: bool,
     pub hit_bearing_error_deg: f32,
     pub hit_shot_ms: u32,
     pub hit_aim_deg: f32,
     /// A seen enemy within this of the marker's direction is the shooter.
     pub hit_match_deg: f32,
-    /// Cover from a direction: rays from the standing eyes along it (and
-    /// the marker's error either side) meet the world within this, metres.
+    /// With `hit_cover`, it takes cover from the marker's direction: a
+    /// spot whose rays from the standing eyes along it (and the marker's
+    /// error either side) meet the world within `hit_cover_m`, metres.
+    pub hit_cover: bool,
     pub hit_cover_m: f32,
     /// The look along the marker's direction is at a point this far,
     /// metres (a fixed one: no distance is known).
@@ -317,6 +326,9 @@ pub struct CombatTuning {
     pub outranged_cover: bool,
     pub outranged_aimed_deg: f32,
     pub outranged_again_ms: u32,
+    /// A glance (`Override::glance`) gives way to a play that runs
+    /// somewhere as well as to a use or a carry.
+    pub glance_run_yields: bool,
     /// Play 11 holds its ground at a target seen carrying a battery (he
     /// cannot shoot): no step back out of the band (match 0x15aa5b99: a
     /// Mosin bot backed off a carrier at 9-23 m, and he walked home).
@@ -393,17 +405,19 @@ impl Default for CombatTuning {
             threat_match_m: 6.0,
             sound_ms: 1_000,
             sound_again_ms: 1_500,
-            glance_heard_m: 15.0,
+            glance_heard_m: 10.0,
             glance_heard_share: 0.5,
-            glance_told_m: 30.0,
+            glance_told_m: 0.0,
             glance_told_fresh_ms: 3_000,
             glance_told_every_ms: 4_000,
             glance_ms: 1_000,
-            hit_bearing: true,
+            hit_bearing: false,
+            hit_bearing_with_target: false,
             hit_bearing_error_deg: 8.0,
             hit_shot_ms: 3_000,
             hit_aim_deg: 8.0,
             hit_match_deg: 15.0,
+            hit_cover: true,
             hit_cover_m: 30.0,
             hit_look_m: 30.0,
             hit_told_m: 40.0,
@@ -413,6 +427,7 @@ impl Default for CombatTuning {
             outranged_aimed_deg: 180.0,
             outranged_again_ms: 6_000,
             band_hold_on_carrier: true,
+            glance_run_yields: false,
         }
     }
 }
@@ -1228,6 +1243,7 @@ impl Reflex {
         if hit {
             if shooters.is_empty()
                 && c.hit_bearing
+                && (c.hit_bearing_with_target || target_at.is_none())
                 && let Some(toward) = hit_bearing(me, view, now, c, rng)
             {
                 self.threat = Some(Threat {
@@ -1463,7 +1479,7 @@ impl Reflex {
             && let Some(toward) = threat.bearing
         {
             // A carrier keeps its way home.
-            if me.carrying.is_some() {
+            if me.carrying.is_some() || !c.hit_cover {
                 return;
             }
             let spread = c.hit_bearing_error_deg.to_radians();
@@ -4177,7 +4193,13 @@ mod tests {
     /// view is not.
     #[test]
     fn with_no_target_a_callout_near_is_glanced_at_now_and_then() {
-        let aim = AimTuning::default();
+        let aim = AimTuning {
+            combat: CombatTuning {
+                glance_told_m: 30.0,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
         let c = &aim.combat;
         for (told_at, glances) in [
             (Vec3::new(-13.0, 0.0, -2.0), true),
@@ -4249,7 +4271,13 @@ mod tests {
         // it past its end; the shooter 120 m east, out of hearing and sight.
         let start = Vec3::new(38.0, 0.0, 30.0);
         let shooter_at = Vec3::new(158.0, 0.0, 30.0);
-        let aim = AimTuning::default();
+        let aim = AimTuning {
+            combat: CombatTuning {
+                hit_bearing: true,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
         let c = &aim.combat;
         let truth = bearing(start, shooter_at);
         let mut hid = 0;
@@ -4366,7 +4394,13 @@ mod tests {
             body(1, 1, shooter_at, bearing(shooter_at, start)),
             body(2, 1, near_at, 0.0),
         ]);
-        let aim = AimTuning::default();
+        let aim = AimTuning {
+            combat: CombatTuning {
+                hit_bearing: true,
+                ..CombatTuning::default()
+            },
+            ..AimTuning::default()
+        };
         let mut memory = Memory::default();
         let mut reflex = Reflex::default();
         let mut rng = Rng::new(61);
