@@ -702,7 +702,7 @@ if [[ -n $main_commit ]]; then
             code_changes=$(grep -cE '^(ADDED|CHANGED)' <<<"$code_report" || true)
             if ((code_changes)); then
                 okay "server code: $code_changes file(s) of main differ from the live tree:"
-                grep -E '^(ADDED|CHANGED)' <<<"$code_report" | head -n 30 | sed 's/^/             /'
+                grep -E '^(ADDED|CHANGED)' <<<"$code_report" | sed -n '1,30s/^/             /p'
                 ((code_changes <= 30)) || say "             ... ($code_changes in all)"
             else
                 okay "server code: the live tree is main's"
