@@ -602,10 +602,10 @@ before); `srp-026g/client-patches`' `test_release_overlay.py` and
 it needs Windows. The quick check's file ID is Wine's (the file's inode);
 on Windows it is NTFS's.
 
-The build of that commit (`SKHID_UPDATE_URL` unset), by
-`../check-reproducible.sh` the same in two folders:
-`updater_skhid.exe` 173,056 bytes, SHA-256
-`1ee62fd9825c51c40fb5314b84fb94f9a69812c9273baa2c0b7ad80d058aa8de`;
+The build of that commit with the replay watcher of #134 (`SKHID_UPDATE_URL`
+unset), by `../check-reproducible.sh` the same in two folders:
+`updater_skhid.exe` 204,288 bytes, SHA-256
+`13c0095632d9d305afc0bed7b7972043ae57ed68e7320654a7da84111d5fed4c`;
 `BugTrap.dll` unchanged,
 `e8e190edd04b600bf146925e21597dc3b06ca5778aef61991634974b781acc6d`.
 

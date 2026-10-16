@@ -218,7 +218,16 @@ fn download(server: &Url, request: &Request, part: &str) -> Result<(), Problem> 
         Err(HttpError::Status(status)) => return Err(Problem::Status(host, status)),
         // More than the link says: not this replay.
         Err(HttpError::TooLarge) => return Err(Problem::Damaged),
-        Err(error @ (HttpError::Network(..) | HttpError::Cut { .. } | HttpError::Stopped)) => {
+        // get_stream follows no redirect and reads no type: the last three
+        // are the patch files' (get_file) and never come here.
+        Err(
+            error @ (HttpError::Network(..)
+            | HttpError::Cut { .. }
+            | HttpError::Stopped
+            | HttpError::Html
+            | HttpError::Redirects
+            | HttpError::BadRedirect(_)),
+        ) => {
             log!("replay: {error:?}");
             return Err(Problem::Network(host));
         }
