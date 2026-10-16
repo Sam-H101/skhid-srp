@@ -713,6 +713,52 @@ floor a field (0.4-2.8 MB each), a flood each time the zones' set changes,
 and other routes (a flood breaks ties between ways of equal cost
 otherwise than the A*). Not built.
 
+### On host-like limits (2026-10-16)
+
+The 12 real-map runs as the host runs them: a Linux build (glibc 2.37,
+built in WSL, the toolchain and target on E:), in a systemd scope with
+512 MB, no swap and a 100 % CPU quota, pinned to one core
+(`private/host-measure/run-limited.sh`; checked inside: `memory.max`
+536870912, `memory.swap.max` 0, `cpu.max` 100000 100000). The bench now
+prints the process's resident memory on Linux: with the world (what the
+build freed handed back first), with the bots' tactics, and the peak in
+the match (`/proc/self/status`, the peak reset after the tactics).
+
+| map | with the world | with the tactics | peak, 10 v 10 | bots, 10 v 10 | worst poll, 10 v 10 |
+|---|---|---|---|---|---|
+| level_06/day_2 | 124 MB | 144 MB | 145 MB | 13.7 ms a second | 8.0 ms |
+| level_01/day_4 | 64 MB | 76-78 MB | 77 MB | 20.8 ms a second | 4.5 ms |
+| level_03/day_3 | 73 MB | 93 MB | 96 MB | 24.6 ms a second | 9.4 ms |
+| level_02/day_2 | 96 MB | 111 MB | 111 MB | 15.1 ms a second | 4.0 ms |
+| level_04/day_2 | 96 MB | 107 MB | 109 MB | 20.5 ms a second | 7.5 ms |
+| level_05/day_2 | 79 MB | 84 MB | 84 MB | 11.4 ms a second | 3.2 ms |
+
+- No run was stopped and the scope saw no out-of-memory event. Its peak,
+  360 MB, counts the page cache of the map files read and each world's
+  build from the map file; the server reads built files instead (no build
+  peak).
+- A match adds at most 3 MB over its tactics (the search arrays and the
+  bots' own state); the world and the tactics are the cost of a map.
+- The bots' time on one core is what it was with all cores (one thread).
+  On the host's core, about 2.6 times slower: 10 v 10 30-65 ms a second
+  (3-6.5 % of the core), the worst poll about 25 ms.
+
+**The memory budget.** The server used about 190 MB without bots
+(2026-10-14). Each map that bots play adds its world and tactics, 84-145
+MB, shared by every match on it, and the store keeps one more map past
+those matches use (`maps::KEEP`):
+
+| bot maps held | the server with them |
+|---|---|
+| one, the largest (level_06) | about 335 MB |
+| one playing and one kept (level_06, level_02) | about 445 MB |
+| two playing and one kept (level_06, level_02, level_03) | about 540 MB, past 512 |
+
+So one match of bots at a time fits with room; two at a time on the large
+maps, with a third map kept, would pass the container's 512 MB. That is
+item 10's choice: a larger limit, one bots' map at a time, or the kept map
+dropped while two play.
+
 ## 7. Anomalies on the match server
 
 `match-server` `v026g::bots::anomalies` runs every anomaly core of the map
