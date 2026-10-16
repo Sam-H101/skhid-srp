@@ -1102,7 +1102,7 @@ fn with_the_battery_cheat_whole_matches_are_won_by_batteries() {
 /// 2026-10-16, twice with the bot 0.1-0.2 m from the battery.
 #[test]
 fn a_body_right_over_a_battery_cannot_use_it_and_one_a_step_off_can() {
-    use super::plays::collect::{BATTERY_AIM_M, TAKE_PITCH_RAD};
+    use super::plays::collect::{BATTERY_AIM_M, TAKE_PITCH_MAX_RAD, TAKE_PITCH_RAD};
     let battery = Vec3::new(25.0, 0.0, 12.0);
     let mut body = Game::new(soak_world(), &[0], 1, None, None).bodies[0].clone();
     body.keys = key::CROUCH;
@@ -1120,9 +1120,12 @@ fn a_body_right_over_a_battery_cannot_use_it_and_one_a_step_off_can() {
         assert!(!any_look(&mut body), "{off} m off");
     }
     // The take's stand: the look down at TAKE_PITCH_RAD, aimed as the
-    // motor aims (`Look::Use`).
+    // motor aims (`Look::Use`); and as near as a take is tried without a
+    // step back (TAKE_PITCH_MAX_RAD), some look still uses it.
     let aim = battery + Vec3::new(0.0, BATTERY_AIM_M, 0.0);
     let below = view::EYE_CROUCHED - BATTERY_AIM_M;
+    body.feet = battery + Vec3::new(below / TAKE_PITCH_MAX_RAD.tan() + 0.02, 0.0, 0.0);
+    assert!(any_look(&mut body), "at the steepest take");
     body.feet = battery + Vec3::new(below / TAKE_PITCH_RAD.tan(), 0.0, 0.0);
     let eye = Game::eye(&body);
     body.yaw = kin::yaw_of([aim.x - eye.x, aim.z - eye.z]);

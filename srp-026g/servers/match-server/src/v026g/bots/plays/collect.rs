@@ -33,17 +33,14 @@ pub const USE_NEAR_M: f32 = 1.6;
 /// The steepest look down a take is tried at, radians: the view's pitch
 /// stops at 1 rad (`kin`, PROVEN), so from a crouch (the eye 0.95 m up)
 /// over a battery on the floor no ray passes within the use's 0.2 m of
-/// its middle closer than about 0.3 m (`bots::tests`); kept off the
-/// limit for the aim's error.
-pub const TAKE_PITCH_MAX_RAD: f32 = 0.85;
+/// its middle closer than about 0.3 m on the ground (`bots::tests`): that
+/// is a look down of about 1.2 rad. Past this the bot steps back first.
+pub const TAKE_PITCH_MAX_RAD: f32 = 1.15;
 /// The look down a take stands for, radians: the eye about 1.2 m from a
-/// battery on the floor, the use's ray 1.5 m long.
+/// battery on the floor, the use's ray 1.5 m long. A step back goes
+/// there; the walk's arrival (the motor's `arrive_m`, 0.6 m) leaves it
+/// between about 0.5 and 1.2 m off, every one of them good.
 pub const TAKE_PITCH_RAD: f32 = 0.6;
-
-/// The look down a step back off a battery aims for, radians: past
-/// [`TAKE_PITCH_RAD`], as the walk's arrival is loose (the motor's
-/// `arrive_m`) and must not end over it again.
-pub const TAKE_BACK_PITCH_RAD: f32 = 0.5;
 
 /// How far off a battery `below` metres under the eye the look down at
 /// it is `pitch`, on the ground.
@@ -53,11 +50,12 @@ fn take_flat_m(below: f32, pitch: f32) -> f32 {
 
 /// Where a bot right over a battery (its middle `aim`, `below` metres
 /// under the eye) steps back to so it can look at it:
-/// [`TAKE_BACK_PITCH_RAD`]'s distance off it, the way it came from (else behind its back), else round that way
-/// by eighths of a turn; a floor walked to in a straight line.
+/// [`TAKE_PITCH_RAD`]'s distance off it, the way it came from (else
+/// behind its back), else round that way by eighths of a turn; a floor
+/// walked to in a straight line.
 fn take_back_spot(cx: &Ctx, aim: Vec3, below: f32) -> Option<Vec3> {
     let me = cx.me.feet;
-    let flat = take_flat_m(below, TAKE_BACK_PITCH_RAD);
+    let flat = take_flat_m(below, TAKE_PITCH_RAD);
     let (dx, dz) = (me.x - aim.x, me.z - aim.z);
     let away = if dx.hypot(dz) > 0.05 {
         dz.atan2(dx)

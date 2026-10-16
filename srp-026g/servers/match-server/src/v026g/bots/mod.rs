@@ -1535,9 +1535,6 @@ impl Bots {
     }
 }
 
-/// How far `me` is from any fight, metres: the nearest enemy in the match
-/// and alive, shot heard (the view keeps the last few seconds of them) or
-/// death of the last [`FIGHT_DEATH_MS`]; infinite with none.
 /// A team learns its bot's goals with no way lately (`Bot::no_way_to`,
 /// kept [`NO_WAY_KEEP_MS`] from the proof): each is left by the team
 /// [`TEAM_NO_WAY_KEEP_MS`] from its latest proof.
@@ -1563,6 +1560,9 @@ fn team_no_way(own: &[(Vec3, u32)], team: &[(Vec3, u32)]) -> Vec<(Vec3, u32)> {
     own.iter().chain(team).copied().collect()
 }
 
+/// How far `me` is from any fight, metres: the nearest enemy in the match
+/// and alive, shot heard (the view keeps the last few seconds of them) or
+/// death of the last [`FIGHT_DEATH_MS`]; infinite with none.
 fn from_fight(view: &MatchView, me: &PlaceView) -> f32 {
     let enemies = view.enemies_of(me.team).map(|enemy| enemy.feet);
     let shots = view
