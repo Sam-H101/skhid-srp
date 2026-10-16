@@ -44,13 +44,14 @@ fn in_queue(decoded: &[Decoded]) -> Option<(u32, u16, [u16; 20])> {
 }
 
 #[test]
-fn a_match_has_its_players_mean_level_and_their_least_played_map() {
+fn a_match_has_its_players_mean_level_and_counts_its_map() {
     // No gather window: only the levels decide when the two meet.
     let mut world = World::new(Duration::ZERO);
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     // Alice's best kit is of level 10; Bob's of level 0. Between them they
-    // have played every map but Mamayev Kurgan (level_06).
+    // have played every map but Mamayev Kurgan (level_06), which is the
+    // likeliest to be drawn but not certain (`matchmaking::choose_map`).
     world.change(alice, |account| {
         arm_second_kit(account);
         for map in [1, 2, 3, 4, 5, 7, 8] {
@@ -64,6 +65,11 @@ fn a_match_has_its_players_mean_level_and_their_least_played_map() {
     });
     assert_eq!(matchmaking::level(&world.account(alice), 0).min, 10);
     assert_eq!(matchmaking::level(&world.account(bob), 0).min, 0);
+    let plays_before = |player| -> Vec<u32> {
+        let account = world.account(player);
+        (0..=9).map(|level| map_plays(&account, level)).collect()
+    };
+    let (alice_before, bob_before) = (plays_before(alice), plays_before(bob));
 
     // Each plays its first kit, the starter's.
     world.ask(alice, request::play(1));
@@ -96,17 +102,24 @@ fn a_match_has_its_players_mean_level_and_their_least_played_map() {
     assert_eq!(setup.match_level, 5);
     let map = maps::map_mode(setup.map_id).expect("a map of the dictionary");
     assert!(map.is_playable());
-    assert_eq!(map.level, 6);
     assert!(world.core.settings.maps.contains(&setup.map_id));
     // The roster is the two of them and no more: the client counts its 80 %
     // of it.
     assert_eq!(setup.players.len(), 2);
     drop(made);
 
-    // It is one more match on that map for each.
-    assert_eq!(map_plays(&world.account(alice), 6), 1);
-    assert_eq!(map_plays(&world.account(bob), 6), 1);
-    assert_eq!(map_plays(&world.account(bob), 1), 2);
+    // It is one more match on that map for each, and on no other.
+    for (player, before) in [(alice, alice_before), (bob, bob_before)] {
+        let account = world.account(player);
+        for level in 0..=9 {
+            let more = u32::from(level == map.level);
+            assert_eq!(
+                map_plays(&account, level),
+                before[usize::from(level)] + more,
+                "{level}"
+            );
+        }
+    }
     world.assert_clean();
 }
 
@@ -350,13 +363,32 @@ fn a_match_takes_two_sides_of_the_size_set_and_the_rest_wait() {
 }
 
 #[test]
-fn every_map_comes_up_before_one_comes_up_again() {
-    // Two players who play match after match: eight matches, eight maps.
+fn the_maps_lean_to_what_their_players_played_less() {
+    // A pool of two maps; both players have played the first 100 times and
+    // the second never. With the skew at its most (4) the second weighs 5,
+    // the first 1: of 60 matches the second comes up far more often, and
+    // the first still does (the plays reach the draw; no map is certain).
     let mut world = World::new(Duration::ZERO);
+    world.core.rng = survarium::v026g::drops::Rng::new(26);
+    let id_of = |level| {
+        maps::playable()
+            .find(|map| map.level == level)
+            .map(|map| map.id)
+            .unwrap()
+    };
+    world.core.settings.maps = vec![id_of(1), id_of(2)];
+    world.core.settings.map_skew = 4.0;
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
+    for player in [alice, bob] {
+        world.change(player, |account| {
+            for _ in 0..100 {
+                count_map_play(account, 1);
+            }
+        });
+    }
     let mut seen = Vec::new();
-    for round in 0..8 {
+    for round in 0..60 {
         world.ask(alice, request::play(1));
         world.ask(bob, request::play(1));
         world.advance(Duration::from_secs(2));
@@ -372,8 +404,11 @@ fn every_map_comes_up_before_one_comes_up_again() {
         world.take(alice);
         world.take(bob);
     }
-    seen.sort_unstable();
-    assert_eq!(seen, [1, 2, 3, 4, 5, 6, 7, 8]);
+    let first = seen.iter().filter(|&&level| level == 1).count();
+    let second = seen.iter().filter(|&&level| level == 2).count();
+    assert_eq!(first + second, 60);
+    assert!(second >= 2 * first, "{first} on the first, {second} on the second");
+    assert!(first >= 1, "the first map never came up");
     world.assert_clean();
 }
 
@@ -399,6 +434,20 @@ fn the_side_size_and_the_search_step_are_settings() {
     assert_eq!(parse_search_step("0"), None);
     assert_eq!(parse_search_step("3601"), None);
     assert_eq!(parse_search_step(""), None);
+}
+
+#[test]
+fn the_map_skew_is_a_setting() {
+    use crate::v026g::parse_map_skew;
+
+    assert_eq!(Settings::local("127.0.0.1:0").map_skew, 1.0);
+    assert_eq!(parse_map_skew(" 0.5 "), Some(0.5));
+    assert_eq!(parse_map_skew("0"), Some(0.0));
+    assert_eq!(parse_map_skew("4"), Some(4.0));
+    assert_eq!(parse_map_skew("4.1"), None);
+    assert_eq!(parse_map_skew("-1"), None);
+    assert_eq!(parse_map_skew("NaN"), None);
+    assert_eq!(parse_map_skew("much"), None);
 }
 
 #[test]

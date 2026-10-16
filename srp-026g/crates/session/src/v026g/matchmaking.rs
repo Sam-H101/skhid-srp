@@ -24,11 +24,14 @@
 //! what the original server took for a match of mixed levels is not in the
 //! client).
 //!
-//! **The map** is the one the match's players have played least ("the
-//! history of players' matches is taken into account now. The system
-//! selects the less played map", patch notes 0.25a): a map is a level
-//! (`level_01`..`level_08`), whatever its mode and weather; the mode is
-//! drawn among the modes allowed for it, then the weather.
+//! **The map** is drawn, more likely the less the match's players have
+//! played it ("the history of players' matches is taken into account now.
+//! The system selects the less played map", patch notes 0.25a): a map is
+//! a level (`level_01`..`level_09`), whatever its mode and weather.
+//! [choice] Not always the least played one, or a new map would be in
+//! every match until the players' counts caught up: each level of the pool
+//! has a weight from its players' average matches on it ([`map_weight`]), a
+//! level is drawn by weight, then a mode allowed for it, then the weather.
 
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::item_params::item_params;
@@ -121,7 +124,7 @@ pub fn match_level(levels: &[u8]) -> u16 {
 }
 
 /// How many matches the account was put in on the map `level`
-/// (`maps::MapMode::level`, 1..=8).
+/// (`maps::MapMode::level`, 1..=9).
 pub fn map_plays(account: &Account, level: u8) -> u32 {
     account
         .map_plays
@@ -141,15 +144,75 @@ pub fn count_map_play(account: &mut Account, level: u8) {
     }
 }
 
+/// `SRP_MATCH_MAP_SKEW` when unset: a map is at most twice as likely as
+/// the one the match's players played most.
+pub const DEFAULT_MAP_SKEW: f64 = 1.0;
+/// The most `SRP_MATCH_MAP_SKEW` can be.
+pub const MAX_MAP_SKEW: f64 = 4.0;
+/// The matches per player behind the most played level at which a level's
+/// weight is the most it gets.
+const SKEW_RAMP: f64 = 5.0;
+/// The weights are drawn as whole numbers of this many parts each.
+const WEIGHT_SCALE: f64 = 1000.0;
+
+/// The averages of the levels of a pool, each a level's matches per
+/// player of a match: the least, the most and the mean of them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoolPlays {
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+}
+
+/// How likely a level is drawn for a match, against the others of the
+/// pool; `average` is its players' matches on it per player. The level
+/// they played most has 1, one they played `k` fewer times each has
+/// `1 + skew * k / 5`, and `1 + skew` from 5 behind on (`skew`:
+/// `SRP_MATCH_MAP_SKEW`; 0: all alike).
+pub fn map_weight(average: f64, pool: &PoolPlays, skew: f64) -> f64 {
+    let behind = (pool.max - average).clamp(0.0, SKEW_RAMP);
+    1.0 + skew.max(0.0) * behind / SKEW_RAMP
+}
+
+/// The weights of `levels` ([`map_weight`]) as whole numbers, each 1 or
+/// more: `plays` is all the matches of a match's `players` on a level.
+fn level_weights(levels: &[u8], plays: impl Fn(u8) -> u64, players: usize, skew: f64) -> Vec<u32> {
+    let players = players.max(1) as f64;
+    let averages: Vec<f64> = levels
+        .iter()
+        .map(|&level| plays(level) as f64 / players)
+        .collect();
+    let stats = PoolPlays {
+        min: averages.iter().copied().fold(f64::INFINITY, f64::min),
+        max: averages.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        mean: averages.iter().sum::<f64>() / averages.len().max(1) as f64,
+    };
+    averages
+        .iter()
+        .map(|&average| {
+            // A weight under one part, or of no number, still leaves the
+            // level a chance.
+            let scaled = (map_weight(average, &stats, skew) * WEIGHT_SCALE).round();
+            if scaled >= 1.0 {
+                scaled.min(1e6) as u32
+            } else {
+                1
+            }
+        })
+        .collect()
+}
+
 /// The `maps_dict` id of a match, of the ids in `pool` (playable ones; the
-/// others are passed over): the map its players played least, `plays`
-/// being all of theirs on a map; of several such maps one is drawn, then a
+/// others are passed over): a level drawn by weight ([`map_weight`];
+/// `plays` is all the matches of the match's `players` on a level), then a
 /// mode the pool has for it, then one of that mode's ids (the weather).
 /// `below(n)` draws a number under `n`. `None` when the pool has no
 /// playable id.
 pub fn choose_map(
     pool: &[u8],
     plays: impl Fn(u8) -> u64,
+    players: usize,
+    skew: f64,
     mut below: impl FnMut(u32) -> u32,
 ) -> Option<u8> {
     let pool: Vec<&maps::MapMode> = pool
@@ -157,13 +220,24 @@ pub fn choose_map(
         .filter_map(|&id| maps::map_mode(id))
         .filter(|map| map.is_playable())
         .collect();
-    let mut draw = |count: usize| below(count as u32) as usize % count.max(1);
     let mut levels: Vec<u8> = pool.iter().map(|map| map.level).collect();
     levels.sort_unstable();
     levels.dedup();
-    let least = levels.iter().map(|&level| plays(level)).min()?;
-    levels.retain(|&level| plays(level) == least);
-    let level = levels[draw(levels.len())];
+    if levels.is_empty() {
+        return None;
+    }
+    let weights = level_weights(&levels, plays, players, skew);
+    let total: u32 = weights.iter().sum();
+    let mut left = below(total) % total;
+    let mut level = levels[levels.len() - 1];
+    for (&each, &weight) in levels.iter().zip(&weights) {
+        if left < weight {
+            level = each;
+            break;
+        }
+        left -= weight;
+    }
+    let mut draw = |count: usize| below(count as u32) as usize % count.max(1);
     let mut modes: Vec<u8> = pool
         .iter()
         .filter(|map| map.level == level)
@@ -184,6 +258,7 @@ pub fn choose_map(
 mod tests {
     use super::*;
     use crate::v026g::account::KitSlot;
+    use std::collections::BTreeMap;
 
     /// A dictionary item by its name.
     fn dict_id(name: &str) -> u16 {
@@ -320,23 +395,210 @@ mod tests {
         maps::playable().map(|map| map.id).collect()
     }
 
+    /// The levels of `pool`, as `choose_map` draws them.
+    fn levels_of(pool: &[u8]) -> Vec<u8> {
+        let mut levels: Vec<u8> = pool
+            .iter()
+            .filter_map(|&id| maps::map_mode(id))
+            .map(|map| map.level)
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        levels
+    }
+
+    /// How often `choose_map` gives each level over every number the
+    /// level's draw can take (the mode's and weather's take 0).
+    fn level_counts(
+        pool: &[u8],
+        plays: &dyn Fn(u8) -> u64,
+        players: usize,
+        skew: f64,
+    ) -> BTreeMap<u8, u32> {
+        let mut total = 0;
+        choose_map(pool, plays, players, skew, |bound| {
+            total = total.max(bound);
+            0
+        });
+        let mut counts = BTreeMap::new();
+        for number in 0..total {
+            let mut first = true;
+            let below = |_| {
+                if std::mem::take(&mut first) {
+                    number
+                } else {
+                    0
+                }
+            };
+            let id = choose_map(pool, plays, players, skew, below).unwrap();
+            *counts.entry(maps::map_mode(id).unwrap().level).or_default() += 1;
+        }
+        counts
+    }
+
+    /// A level's share of the draw, from the weights of `levels`.
+    fn share(levels: &[u8], plays: &dyn Fn(u8) -> u64, players: usize, skew: f64, of: u8) -> f64 {
+        let weights = level_weights(levels, plays, players, skew);
+        let total: u32 = weights.iter().sum();
+        let at = levels.iter().position(|&level| level == of).unwrap();
+        f64::from(weights[at]) / f64::from(total)
+    }
+
+    const LONDON: u8 = 9;
+    const NINE_LEVELS: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, LONDON];
+
     #[test]
-    fn the_least_played_map_is_chosen() {
+    fn a_weight_grows_over_five_plays_behind_the_most_played_level() {
+        let pool = PoolPlays {
+            min: 0.0,
+            max: 10.0,
+            mean: 8.0,
+        };
+        let weight = |average: f64, skew: f64| map_weight(average, &pool, skew);
+        assert_eq!(weight(10.0, DEFAULT_MAP_SKEW), 1.0);
+        assert!((weight(9.0, DEFAULT_MAP_SKEW) - 1.2).abs() < 1e-9);
+        assert!((weight(9.5, DEFAULT_MAP_SKEW) - 1.1).abs() < 1e-9);
+        assert_eq!(weight(5.0, DEFAULT_MAP_SKEW), 2.0);
+        assert_eq!(weight(0.0, DEFAULT_MAP_SKEW), 2.0);
+        assert_eq!(weight(0.0, MAX_MAP_SKEW), 5.0);
+        assert_eq!(weight(0.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn levels_played_alike_are_drawn_alike() {
         let pool = all_maps();
-        // Every map played but the Chemical Plant (level 4).
-        let plays = |level: u8| if level == 4 { 0 } else { 3 };
-        for draw in 0..40 {
-            let id = choose_map(&pool, plays, |bound| draw % bound.max(1)).unwrap();
-            assert_eq!(maps::map_mode(id).unwrap().level, 4, "draw {draw}");
+        for skew in [0.0, DEFAULT_MAP_SKEW, MAX_MAP_SKEW] {
+            let counts = level_counts(&pool, &|_| 12, 2, skew);
+            assert_eq!(counts.keys().copied().collect::<Vec<_>>(), levels_of(&pool));
+            assert!(
+                counts.values().all(|&count| count == 1000),
+                "{skew}: {counts:?}"
+            );
         }
-        // Two maps played equally little: either, by the draw.
-        let plays = |level: u8| if level == 2 || level == 7 { 1 } else { 9 };
-        let mut seen = std::collections::BTreeSet::new();
-        for draw in 0..40 {
-            let id = choose_map(&pool, plays, |bound| draw % bound.max(1)).unwrap();
-            seen.insert(maps::map_mode(id).unwrap().level);
+        assert!(
+            (share(&NINE_LEVELS, &|_| 5, 1, DEFAULT_MAP_SKEW, LONDON) - 1.0 / 9.0).abs() < 1e-9
+        );
+    }
+
+    #[test]
+    fn a_level_far_behind_is_twice_as_likely() {
+        // The newest level: 10 plays behind for each of 2 players.
+        let pool = all_maps();
+        let levels = levels_of(&pool);
+        let new = *levels.last().unwrap();
+        let plays = move |level: u8| if level == new { 0 } else { 20 };
+        let counts = level_counts(&pool, &plays, 2, DEFAULT_MAP_SKEW);
+        for (&level, &count) in &counts {
+            assert_eq!(
+                count,
+                if level == new { 2000 } else { 1000 },
+                "level {level}"
+            );
         }
-        assert_eq!(seen.into_iter().collect::<Vec<_>>(), [2, 7]);
+        // With London the ninth: 2 / 10, from 5 behind on.
+        let london = |behind: u64| {
+            move |level: u8| {
+                if level == LONDON {
+                    4 * (6 - behind)
+                } else {
+                    24
+                }
+            }
+        };
+        for behind in [5, 6] {
+            let share = share(&NINE_LEVELS, &london(behind), 4, DEFAULT_MAP_SKEW, LONDON);
+            assert!((share - 0.2).abs() < 1e-9, "{behind} behind: {share}");
+        }
+        // 1 behind: 1.2 / 9.2; 3 behind: 1.6 / 9.6.
+        let one = share(&NINE_LEVELS, &london(1), 4, DEFAULT_MAP_SKEW, LONDON);
+        assert!((one - 1.2 / 9.2).abs() < 1e-9, "{one}");
+        let three = share(&NINE_LEVELS, &london(3), 4, DEFAULT_MAP_SKEW, LONDON);
+        assert!((three - 1.6 / 9.6).abs() < 1e-9, "{three}");
+        // The most skew: 5 / 13.
+        let most = share(&NINE_LEVELS, &london(5), 4, MAX_MAP_SKEW, LONDON);
+        assert!((most - 5.0 / 13.0).abs() < 1e-9, "{most}");
+    }
+
+    #[test]
+    fn averages_are_per_player_and_fractional() {
+        // 3 players, 2 matches fewer among them: 2/3 behind, 1 + 2/15.
+        let plays = |level: u8| if level == LONDON { 28 } else { 30 };
+        let weights = level_weights(&NINE_LEVELS, plays, 3, DEFAULT_MAP_SKEW);
+        assert_eq!(weights[..8], [1000; 8]);
+        assert_eq!(weights[8], 1133);
+        // The same counts of 30 players are hardly a difference.
+        let weights = level_weights(&NINE_LEVELS, plays, 30, DEFAULT_MAP_SKEW);
+        assert_eq!(weights[8], 1013);
+    }
+
+    #[test]
+    fn no_skew_is_a_uniform_draw() {
+        let pool = all_maps();
+        let plays = |level: u8| u64::from(level) * 100;
+        let counts = level_counts(&pool, &plays, 1, 0.0);
+        assert!(counts.values().all(|&count| count == 1000), "{counts:?}");
+    }
+
+    #[test]
+    fn the_share_of_a_new_map_over_many_draws() {
+        // London unplayed, the others 6 matches a player ahead.
+        let plays = |level: u8| if level == LONDON { 0 } else { 60 };
+        let mut state = 7_u32;
+        let mut next = |bound: u32| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 8) % bound.max(1)
+        };
+        let weights = level_weights(&NINE_LEVELS, plays, 10, DEFAULT_MAP_SKEW);
+        let total: u32 = weights.iter().sum();
+        let draws = 20_000;
+        let mut london = 0;
+        for _ in 0..draws {
+            let mut left = next(total);
+            let at = weights.iter().position(|&weight| {
+                let hit = left < weight;
+                left = left.saturating_sub(weight);
+                hit
+            });
+            london += u32::from(at == Some(8));
+        }
+        let share = f64::from(london) / f64::from(draws);
+        assert!((share - 0.2).abs() < 0.015, "{share}");
+        // And through choose_map, on the pool's own newest level.
+        let pool = all_maps();
+        let new = *levels_of(&pool).last().unwrap();
+        let plays = move |level: u8| if level == new { 0 } else { 60 };
+        let draws = 20_000;
+        let picked = (0..draws)
+            .filter(|_| {
+                let id = choose_map(&pool, plays, 10, DEFAULT_MAP_SKEW, &mut next).unwrap();
+                maps::map_mode(id).unwrap().level == new
+            })
+            .count();
+        let expected = 2.0 / (2.0 + (levels_of(&pool).len() - 1) as f64);
+        let share = picked as f64 / f64::from(draws);
+        assert!(
+            (share - expected).abs() < 0.015,
+            "{share} against {expected}"
+        );
+    }
+
+    #[test]
+    fn no_level_is_ever_impossible() {
+        let pool = all_maps();
+        let levels = levels_of(&pool);
+        for skew in [0.0, DEFAULT_MAP_SKEW, MAX_MAP_SKEW] {
+            // One level played far more than all the others.
+            let plays = |level: u8| if level == levels[0] { 1_000_000 } else { 0 };
+            let counts = level_counts(&pool, &plays, 1, skew);
+            assert_eq!(counts.keys().copied().collect::<Vec<_>>(), levels, "{skew}");
+            assert!(
+                counts.values().all(|&count| count >= 1000),
+                "{skew}: {counts:?}"
+            );
+        }
+        // No players, or no matches: still every level.
+        let counts = level_counts(&pool, &|_| 0, 0, DEFAULT_MAP_SKEW);
+        assert_eq!(counts.len(), levels.len());
     }
 
     #[test]
@@ -350,7 +612,7 @@ mod tests {
         };
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..4000 {
-            seen.insert(choose_map(&pool, |_| 0, &mut next).unwrap());
+            seen.insert(choose_map(&pool, |_| 0, 1, DEFAULT_MAP_SKEW, &mut next).unwrap());
         }
         assert_eq!(seen.len(), pool.len());
 
@@ -359,21 +621,27 @@ mod tests {
             .filter(|map| map.level <= 2)
             .map(|map| map.id)
             .collect();
-        for draw in 0..50 {
-            // School was played less, also counting maps outside the pool.
-            let plays = |level: u8| u64::from(level != 2 && level != 5);
-            let id = choose_map(&pool, plays, |bound| draw % bound.max(1)).unwrap();
+        // School was played less, also counting maps outside the pool.
+        let plays = |level: u8| if level == 2 || level == 5 { 0 } else { 5 };
+        for _ in 0..200 {
+            let id = choose_map(&pool, plays, 1, DEFAULT_MAP_SKEW, &mut next).unwrap();
             let map = maps::map_mode(id).unwrap();
-            assert_eq!((map.level, map.mode), (2, maps::mode::TEAM_DEATHMATCH));
+            assert_eq!(map.mode, maps::mode::TEAM_DEATHMATCH);
             assert!(pool.contains(&id));
         }
+        let counts = level_counts(&pool, &plays, 1, DEFAULT_MAP_SKEW);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [(1, 1000), (2, 2000)]
+        );
     }
 
     #[test]
     fn a_pool_with_no_playable_map_gives_none() {
-        assert_eq!(choose_map(&[], |_| 0, |_| 0), None);
+        let choose = |pool: &[u8]| choose_map(pool, |_| 0, 1, DEFAULT_MAP_SKEW, |_| 0);
+        assert_eq!(choose(&[]), None);
         // 107 is a night config without a project; 141 the loopback one.
-        assert_eq!(choose_map(&[107, 141], |_| 0, |_| 0), None);
-        assert!(choose_map(&[107, 61], |_| 0, |_| 0).is_some());
+        assert_eq!(choose(&[107, 141]), None);
+        assert_eq!(choose(&[107, 61]), Some(61));
     }
 }

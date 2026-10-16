@@ -1292,6 +1292,8 @@ impl Core<'_> {
             None => matchmaking::choose_map(
                 &self.settings.maps,
                 |map| plays[usize::from(map)],
+                formed.seats.len(),
+                self.settings.map_skew,
                 |bound| rng.below(bound),
             )
             .or_else(|| maps::playable().next().map(|map| map.id))
