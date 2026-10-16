@@ -46,7 +46,9 @@ impl Scenario {
     /// The 80 x 40 m field of `tactics::tests::field` (side 0 spawns at
     /// x = 5, side 1 at x = 75, a wall across x = 40 up to z = 25), with
     /// a container of team 0 at (12, 0, 30) and of team 1 at (68, 0, 30),
-    /// at 600 s left of 900.
+    /// at 600 s left of 900. The batteries a test places are known to the
+    /// bot (the battery cheat on); the fair battery knowledge has its own
+    /// tests (`collect`, `know`, `sense`).
     pub fn field(mode: Mode) -> Self {
         let tactics = Tactics::new(crate::v026g::bots::tactics::tests::field(), 1.0);
         let view = MatchView {
@@ -77,6 +79,8 @@ impl Scenario {
             can_respawn: [true, true],
             next_battery: None,
         };
+        let mut tuning = Tuning::default();
+        tuning.cheats.batteries = true;
         let mut s = Self {
             view,
             memory: Memory::default(),
@@ -84,7 +88,7 @@ impl Scenario {
             sig: MatchSignals::default(),
             mods: Mods::default(),
             tactics,
-            tuning: Tuning::default(),
+            tuning,
             side: Some(0),
             current: None,
             last_ran: Vec::new(),

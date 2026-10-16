@@ -7,7 +7,7 @@ What server-driven bots (`player_bots.md`) should do in a match, built on the da
 Players' word (2026-10-14):
 - Picking up a battery takes time.
 - A battery carrier is slower and cannot shoot.
-- The HUD shows only marked batteries and the batteries last picked up by the player's own team.
+- The HUD shows only marked batteries and the batteries last picked up by the player's own team (PROVEN in the client since, below).
 - A battery the team picked up and did not deliver, when stolen, just disappears from the minimap: the thief is not shown.
 - Spawn areas can be one-way (left by drops), and there is nothing in them to go back for.
 
@@ -26,6 +26,11 @@ From the client code since (`player_bots.md` §2):
 - **Grenade** is bit 23, held until the throw starts. PROVEN.
 - **Pickup:** taking a battery is instant in code, with a LIKELY 0.6 s hands-up animation (`take_time`). Players feel it takes time; the bots plan with ~0.6 s and the recordings will say more.
 - **Carrier speed:** ×0.95, 3.325 m/s walking (PROVEN in code); the saved worlds show carriers at 3.32–3.33 m/s, LIKELY unable to sprint.
+- **What the HUD shows of the batteries** (read 2026-10-16 for the fair battery knowledge, §2.1). PROVEN in 0.21d with its symbols; the 0.26g functions matched to them have the same shape (the mask moved from +0x1B4 to +0x1A4):
+  - Each battery (`victory_item_core`) holds a two-bit team mask (bit 1 team 0, bit 2 team 1). The minimap's lying batteries (`gather_victory_items_rule::fill_match_hud_state`, 0.21d 0x1FBDF4, 0.26g 0x3140C0, drawn by `update_minimap_objects` as "artifact") and the battery icon on the screen (`game_world_ui::update_icons` 0x183437) are the batteries with no carrier whose mask holds the player's team.
+  - The mask is 0 when a battery is made (0x1E718E) and when it is put in a container (`deactivate` 0x1E7871; 0.26g 0x30104E). A pickup (`initialize` 0x1E7621; 0.26g 0x300BEA) and a drop, the carrier's death too (`deactivate` 0x1E78B3; 0.26g 0x3010A4), empty it and then call `set_spotted` with the carrier: the mask is the carrier's team alone. `set_spotted` (0x1E7F5F) adds the spotter's team; `victory_item_core::can_be_spotted_by` always says yes.
+  - So "marked batteries" are batteries a player spotted: LIKELY with the spot key (bit 28; the path from the key to `set_spotted` was not traced). "The team's own" are the ones its player last carried and dropped. A battery that appears at a spawner or a station is on no HUD until spotted, and a stolen one leaves the victims' HUD (the thief's team only), as the players said.
+  - The containers are always on the minimap (own and enemy base). The stations are on it in timed batteries only (0.26g 0x238CC9: "battery_spawn" icons when the mode is 3); the battery spawners never are.
 
 Still to read from match recordings (`SRP_RECORD_DIR`): how long humans really stand at a battery, and how they throw grenades.
 
@@ -41,10 +46,10 @@ The server knows everything; a bot that used it all would play like a wallhack. 
 | Inferred | What the HUD and kill feed give a human: deaths and respawn timers, score, match clock, the battery markers (marked ones and the team's own) |
 | Forgotten | An enemy not sensed for ~3 s becomes a last known position that fades |
 
-**Batteries:** a fair bot knows what the HUD shows (marked batteries and its team's) and finds the others by checking the spawner positions; a battery a bot sees becomes known to its team. By default bots also know every battery (below).
+**Batteries:** a fair bot knows what the HUD shows (marked batteries and its team's) and finds the others by checking the spawner positions; a battery a bot sees becomes known to its team. This is built (§2.1) and the default since 2026-10-16; the battery cheat below (every battery known) is off unless switched on.
 
 **A little cheating** (players' word, 2026-10-14: "a bit, not too much"). The plays work better with a few things a human can't know, kept small and never in the aim:
-- **Where batteries lie:** every battery's spawner and state, not only the HUD's. Saves the search, changes no fight.
+- **Where batteries lie** (off by default since 2026-10-16, `CheatTuning::batteries`): every battery's spawner and state, not only the HUD's. Saves the search, changes no fight; in a real match it showed (bots ran straight to the batteries).
 - **The thief:** when a battery of ours is stolen, his position with ~10 m of error, refreshed every few seconds until he is seen or delivers.
 - **A rough radar:** the nearest enemy's position with ~15 m of error every ~5 s while none is sensed (a human's map sense). It steers routes and where to look, never a shot.
 - **Senses a notch better:** hearing ranges ×1.25, last known positions kept ~5 s instead of ~3 s.
@@ -54,7 +59,35 @@ Still never:
 - reacting faster than the noticing delay;
 - perfect recoil and spread.
 
-**Difficulty:** a setting may loosen or tighten this (for example "hunter" bots with a sharper radar, or "fair" bots with none). The default is the small set above.
+**Difficulty:** a setting may loosen or tighten this (for example "hunter" bots with a sharper radar, or "fair" bots with none). The default is the small set above, without the battery cheat.
+
+### 2.1 Fair battery knowledge (built 2026-10-16)
+
+Used when `CheatTuning::batteries` is off (`bots/tuning.rs`): **the default since 2026-10-16**, the owner's choice after the numbers below. The owner found the all-knowing bots "a bit cheating" in a first real 4 v 4 (they ran straight to the batteries); this is what a human team knows instead.
+
+What a team knows (`know.rs` `TeamKnowledge::batteries`, `spawners_seen`):
+- **The HUD** (`TeamKnowledge::hud_update`, from two worlds' battery states, the client's mask of §1): a battery our carrier dropped is known where it lies and follows it while it lies there; a battery leaves our HUD when anybody picks it up, when it moved between two worlds with nobody seen carrying it, and when it is put in. One our teammate carries is known by him (the HUD shows teammates); the containers' counts are on the HUD. Not modelled: a human's spot of a battery (it would add the battery to his team's HUD; the bots then know less than the humans, never more).
+- **Sight** (`sense::sense_batteries`, each think): a battery lying in the bot's ~90° view within `battery_sight_m` (35 m, GUESS: small but lit) in a clear line on the bullet mesh, or within `battery_near_m` (3 m) at once, becomes known to the whole team where it lies. A spot the team believes holds a battery, seen so and empty, is forgotten: until then a battery taken by an enemy out of the bots' sight is still believed where it was seen (a human would not know either). A battery spawner's spot seen so is checked. At most `battery_rays` (3) rays a think, nearest first, from the poll's ray budget.
+- **The spawners' spots:** in the battery mode the 10 batteries lie at spawners drawn at random at the start (`gather_victory_items_rule::select_spawners`) and never come again, so a spot once seen is done; in timed batteries a station's spot is worth a look again after `spawner_recheck_ms` (45 s), and the Station play waits there anyway.
+
+What the plays do with it (`plays/collect.rs`, `Ctx::battery_lying`, `Ctx::battery_at`):
+- Collect (and Ambush) consider only the batteries the team believes lying somewhere; a fetch gives up when the battery is seen gone.
+- While batteries are missing (the mode's count less those in containers, carried by teammates or believed lying, `plays::batteries_unaccounted`), Collect offers the spawners' spots worth a look (`TargetRef::Spawner`), by no more bots than batteries are missing. A spot weighs `search_weight` (0.9) times the chance a missing battery lies in sight of it: missing batteries × spots worth a look within `cluster_m` (30 m) of it ÷ all spots worth a look, at least `search_min` (0.25); so a known battery comes first and a yard of several spots before a lone one. A new look is not taken within `spread_m` (20 m) of a spot a teammate is going to; a bot keeps its own spot (without that, bots near each other traded spots every commander tick: tried, 62,000 looks taken in 54 runs and bots standing 19 % of the time). A look ends once any bot of the team has seen the spot.
+- With the cheat on nothing of this runs: the decisions digests of the soaks and of the real-map runs are the same as before (15 of 15, `private/mapdata-digests/decisions-cheat-switch-on.txt`, made with `SRP_BENCH_CHEAT=1`, against `decisions-straight.txt`). The default's digests from here on: `decisions-fair-default.txt` (Team Deathmatch's unchanged).
+
+**Measured** (2026-10-16, `real_bot_cost` with `SRP_BENCH_BATTERIES=10`: 10 batteries at spawners drawn at random, as the game places them, instead of one at every spawner; the cheat then the default and `SRP_BENCH_FAIR=1` for it off, now off by default and `SRP_BENCH_CHEAT=1` for it on; scripts `private/mapdata-digests/fair-runs.sh`, `fair_summary.py`, logs `fair-*.log`). Batteries delivered (both sides), kills, and the share of bot ticks standing with a goal and no route:
+
+| Run | Cheat on | Cheat off |
+|---|---|---|
+| 180 s, 6 battery maps (levels 1-6, level 3 timed), 4 v 4 and 10 v 10, 8 seeds (96 runs) | 566 delivered, 1,449 kills, stood 7.2 % | 501 (−11 %), 1,447, 6.7 % |
+| the same, 4 v 4 only (48 runs) | 293, 318, 5.5 % | 250 (−15 %), 279, 5.4 % |
+| the same, 10 v 10 only (48 runs) | 273, 1,131, 7.8 % | 251 (−8 %), 1,168, 7.2 % |
+| 600 s, the 6 maps, 4 v 4, 8 seeds (48 runs) | 409, 1,216, 7.1 % | 376 (−8 %), 1,236, 6.5 % |
+
+- The loss is the opening search: over 600 s the fair bots bring 8 % fewer, over the first 180 s 11 %; kills are about the same (fewer in the short 4 v 4 runs, more in 10 v 10 and over 600 s), and they stand less.
+- Rays: 73.1 a bot a second with the cheat off against 72.1 (the battery looks). The bots' time is not comparable here (the runs ran side by side).
+- Tried and left out: a looking bot looking at its spot from up to 15 or 25 m (249 and 252 delivered against 258 without, 4 seeds); spots within 45 m counted as one yard instead of 30 m (263 against 258) and a battery seen from 50 m instead of 35 m (262 against 258), both within the noise; a first search without the cluster weight brought 469 in the 96 runs (−17 %).
+- The owner's rule (2026-10-14) is that bots never get dumber; the fair bots bring fewer batteries, the cheat is the "a bit, not too much" of §2. The owner chose the fair bots as the default (2026-10-16), knowing these numbers.
 
 ## 3. Plays
 

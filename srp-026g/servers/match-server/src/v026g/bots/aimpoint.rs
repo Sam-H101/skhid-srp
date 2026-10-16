@@ -156,6 +156,12 @@ pub fn rays_cast() -> u64 {
     RAYS.with(|r| r.get())
 }
 
+/// A clear line from `from` to `to` on the bullet mesh, one ray (counted
+/// with the bots' sight and aim rays).
+pub fn sight_line(sight: &RayTree, from: Vec3, to: Vec3) -> bool {
+    visible(sight, from, to)
+}
+
 fn visible(sight: &RayTree, from: Vec3, to: Vec3) -> bool {
     #[cfg(test)]
     RAYS.with(|r| r.set(r.get() + 1));
