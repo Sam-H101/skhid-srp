@@ -65,6 +65,8 @@ release's. The "Result" row is the build of the revision named in it.
 | `forward_scroll_026g.asm`, `forward_scroll_026g.section.bin` | The code of patch 28 (the transparent effects scroll as in 0.29, `scene_slomo` bound to 1.0) and that code assembled for 0xB00 of `.srp`; `patch_026g.py` reads the .bin. Assembling the source again gives the same bytes |
 | `replay_link_026g.asm`, `replay_link_026g.section.bin` | The source of patch 29's code ("Watch replay": the lobby's link starts the updater) and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_replay_link_026g.py` | Runs the original and patch 29's link callback on made-up links (needs Unicorn) |
+| `shared_upgrades_026g.asm`, `shared_upgrades_026g.section.bin` | The source of patch 30's code (one upgrade on several items: taking it off names the item) and that code assembled for 0x700 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
 | `check_forward_scroll_026g.py` | Runs the original's and the build's forward-effect compile, with patch 28's two hooks, on made-up materials and compares what each sends; runs the third hook against the game's own binding of `scene_time`; loaded as is and rebased (needs Unicorn). With `--rev12=` it compares the build with revision 12 byte by byte |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
@@ -1479,6 +1481,45 @@ runs the original and the build's callback on 16 good links, 83 others and
 six refusals of Windows (the original opens all of them; the build starts the
 updater for the good ones only); the byte comparison with revision 13
 (Revision 14 above). **Not run:** a game.
+
+### 30. One upgrade on several items (the next release's revision)
+
+The owner's rule: one camouflage or decal of the stash is worn by any number
+of items at once (later weapon attachments too). The client keeps an item's
+upgrades as records of its own and shows one upgrade on several items as it
+is: in each item's upgrade window, in a match, once in the stash
+(`../docs/notes/items.md` §6). Only taking it off named no item: the upgrade
+window's `drop_upgrade_item(item, upgrade)` sent `46 02 <kit> <upgrade>`, and
+the answer `83 46 02 <upgrade>` (and `83 46 01`'s `detach_first`) took it off
+the first item of the inventory that holds it.
+
+**The patch.** Only in the builds with the late join: four sites call or jump
+into `shared_upgrades_026g.asm` (181 bytes at `.srp`+700h, after the patches'
+mount and before the pickup code):
+
+- 0x29AAD5 (drop_upgrade_item's handler): `46 02 <kit> <upgrade> <item>`, the
+  item the window shows;
+- 0x275756 (`83 46 02`): reads `<upgrade> <item>`;
+- 0x275589 (`83 46 01`, `detach_first`): the item the answer puts it on
+  (it was in another slot of it);
+- 0x27534D (`process_detach_upgrade`'s search): the item of that id instead of
+  the first that holds the upgrade (0: the original's search).
+
+Nothing is of the upgrade's kind: any upgrade, any slot. No change of
+`lobby_menu.swf`. The server's rules are `session::v026g::items_rules`; it
+reads only the new `46 02` and sends only the new `83 46 02`, so it needs a
+game with this patch (`SRP_MIN_PATCH_REVISION`). Details:
+`../docs/notes/client_patch.md` section 3.28.
+
+**Revisions.** Nothing a match computes: a game with it and one without play
+together. The release gives it its number.
+
+Checked: `selftest_026g.py` check 31 (and check 15's layout of `.srp`'s
+first page); `check_shared_upgrades_026g.py` runs the original's and the
+build's drop handler and answers on made-up inventories (the original takes
+the upgrade off the first item holding it, the build off the item named,
+and no other); the byte comparison with the build of `main` (section 3.28:
+197 bytes differ, all of them the patch's). **Not run:** a game.
 
 ## Not ported, not done
 

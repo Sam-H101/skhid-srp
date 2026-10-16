@@ -190,6 +190,20 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     checksum differ, and the version field says <n> with the shell_32.dll
     flags as before (no patch is chosen by the number); REVISION - 1, 256
     and a build without the late join are refused.
+31. the same build: one upgrade on several items (patch 30). The upgrade
+    window's drop (0x29AAD5, in drop_upgrade_item's handler 0x29A9D0, the
+    delegate of the callback of that name), the `83 46 02` and `83 46 01`
+    cases (0x275756, 0x275589) and process_detach_upgrade's search
+    (0x27534D) call or jump into shared_upgrades_026g.asm at 0x700 of
+    `.srp`, after the patches' mount and before the pickup code (check
+    15's layout); each site is the original's in the original and the
+    build without the late join, nothing aims inside one and no
+    relocation is under one; the functions they replace calls of are
+    called from those sites alone; the handler reads the item and the
+    upgrade from the Flash arguments where the code reads them; the code
+    calls only the packet functions and process_detach_upgrade and holds
+    no address. check_shared_upgrades_026g.py runs the original's and the
+    build's code on inventories with an upgrade on several items.
 """
 
 import ctypes
@@ -364,6 +378,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.replay_link_bin(), "rb").read(),
           f"{os.path.basename(P.replay_link_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SHARED_UPGRADES_VA:#x}",
+                        os.path.join(HERE, "shared_upgrades_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.shared_upgrades_bin(), "rb").read(),
+          f"{os.path.basename(P.shared_upgrades_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -1028,6 +1049,7 @@ def late_join_sites():
          (P.SOUND_QUEUE_HOOK[0], len(P.SOUND_QUEUE_HOOK[1])),
          (P.SEEK_CLEAR_HOOK[0], len(P.SEEK_CLEAR_HOOK[1])),
          (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
+        [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites()
 
 
@@ -2393,6 +2415,75 @@ def test_replay_link(original, image, before):
           "return (`popad / mov al,1 / pop esi / ret 4`); the link's pattern and the program's fixed name")
 
 
+def test_shared_upgrades(original, image, before):
+    """Check 31: one upgrade on several items (patch 30, SHARED_UPGRADES_HOOKS).
+    The lobby's `46 02` and the answer `83 46 02` named no item, and the
+    answer took the upgrade off the first item holding it; the build's
+    four sites call or jump into shared_upgrades_026g.asm, which names the
+    item. check_shared_upgrades_026g.py runs the original's and the build's
+    code on inventories with an upgrade on several items."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    stock_texts = {
+        0x29AAD5: ["push edi", "push ecx", "call 0x2708c0"],
+        0x275756: ["mov ecx,[eax]", "push ecx", "add eax,byte +0x4", "push ebp", "mov [esi+0x4],eax",
+                   "call 0x275220"],
+        0x275589: ["push edi", "push ebp", "call 0x275220"],
+        0x27534D: ["call 0x277cf0"],
+    }
+    relocations = [rva for kind, rva in stock.relocations().values() if kind == 3]
+    for va, old, offset, opcode in P.SHARED_UPGRADES_HOOKS:
+        word = "call" if opcode == 0xE8 else "jmp"
+        entry = P.SHARED_UPGRADES_VA + offset
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+              and rows(stock, va, len(old)) == stock_texts[va]
+              and rows(image, va, len(old)) == [f"{word} {entry:#x}"] + ["nop"] * (len(old) - 5),
+              f"{va:#x}: `{' / '.join(stock_texts[va])}` in the original and the build without the late join, "
+              f"`{word} {entry:#x}`" + (f" and {len(old) - 5} nops" if len(old) > 5 else "") + " here")
+        hits = branches_into(original, va + 1, va + len(old))
+        under = [rva for rva in relocations if rva + 4 > va and rva < va + len(old)]
+        check(not hits and not under, f"{va:#x}: no branch or address aims inside the site, no base relocation "
+              "is under it" + "".join(", " + h for h in hits))
+    calls = lambda target: [h for h in branches_into(original, target, target + 1) if h.endswith("rel32")]
+    check(calls(0x2708C0) == ["0x29aad7 rel32"] and calls(P.PROCESS_DETACH_UPGRADE) == ["0x27558b rel32", "0x275760 rel32"]
+          and calls(0x277CF0) == ["0x27534d rel32"]
+          and not [h for h in branches_into(original, P.PROCESS_DETACH_UPGRADE, P.PROCESS_DETACH_UPGRADE + 1)
+                   if not h.endswith("rel32")],
+          "0x2708C0 (`46 02`) is called from drop_upgrade_item's handler alone, process_detach_upgrade 0x275220 "
+          "from the `83 46 01` and `83 46 02` cases alone (and is no value anywhere), find_if 0x277CF0 from "
+          "process_detach_upgrade alone")
+    names = struct.unpack("<I", stock.read(0x9C56E8, 4))[0]
+    text_at = lambda at: bytes(original[stock.offset(at):original.index(b"\0", stock.offset(at))])
+    found, at = [], 0
+    while (at := original.find(struct.pack("<I", P.DROP_UPGRADE_HANDLER), at)) != -1:
+        found.append(P.TEXT_VA + at - P.TEXT_FILE)
+        at += 1
+    check(text_at(names) == b"drop_upgrade_item" and found == [0x2818FB]
+          and rows(stock, 0x2818FA, 5) == [f"mov eax,{P.DROP_UPGRADE_HANDLER:#x}"]
+          and rows(stock, 0x29A9D9, 0x11) == ["mov eax,[ebp+0x8]", "mov eax,[eax+0x8]", "push ebx", "push esi",
+                                              "mov esi,[eax+0x8]", "xor ebx,ebx", "push edi", "mov edi,[eax+0x20]"]
+          and rows(stock, 0x29AACF, 6) == ["mov ecx,[esi+0x4620]"]
+          and rows(stock, 0x29AADC, 0xB) == ["pop edi", "pop esi", "mov al,0x1", "pop ebx", "mov esp,ebp",
+                                             "pop ebp", "ret 0x4"],
+          "the callback named drop_upgrade_item (0x9C56E8) is the delegate's `mov eax,0x29a9d0` at 0x2818FA, "
+          "the handler's one reference; it reads the item (esi) and the upgrade (edi) from the Flash arguments "
+          "([ebp+8] -> +8 -> +8 and +20h), the kit at +4620h, and after the call only pops what it pushed")
+    code = open(P.shared_upgrades_bin(), "rb").read()
+    check(image.read(P.SHARED_UPGRADES_VA, len(code)) == code,
+          f"shared_upgrades at {P.SHARED_UPGRADES_VA:#x} is shared_upgrades_026g.section.bin ({len(code)} bytes)")
+    listing = [row for row in ndisasm(code, P.SHARED_UPGRADES_VA) if row[2] != "int3"]
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    outside = {t for t in targets if not P.SHARED_UPGRADES_VA <= t < P.SHARED_UPGRADES_VA + len(code)}
+    starts = {address for address, _, _ in listing}
+    check(outside == {0x37A0E0, 0x7AB30, 0x379640, P.PROCESS_DETACH_UPGRADE, 0x275765, 0x277CF0}
+          and all(t in starts for t in targets - outside)
+          and all(P.SHARED_UPGRADES_VA + offset in starts for _, _, offset, _ in P.SHARED_UPGRADES_HOOKS)
+          and not [text for _, _, text in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|0x[0-9a-f]{6,}\]", text)],
+          "the code calls only new_packet, mutable_buffer::resize, enqueue and process_detach_upgrade, jumps only "
+          "to the `83 46 02` case's end and the original find_if, every branch inside it lands on an instruction, "
+          "and it holds no address (nothing to relocate)")
+
+
 def test_revision_override(original, default, server):
     """Check 30: a release's --revision=<n> against the default build of the
     same server: the revision byte and the PE checksum, nothing else."""
@@ -2444,9 +2535,11 @@ def test_late_join(original, without, server, source):
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
+    shared = open(P.shared_upgrades_bin(), "rb").read()
     pieces = [(0, len(first_page), "the build without the late join's first page"),
               (P.REPLAY_LINK_OFFSET, len(link), "the replay link code"),
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
+              (P.SHARED_UPGRADES_OFFSET, len(shared), "the shared upgrades' code"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
@@ -2461,7 +2554,9 @@ def test_late_join(original, without, server, source):
           and body[P.REPLAY_LINK_OFFSET:P.REPLAY_LINK_OFFSET + len(link)] == link
           and set(body[P.REPLAY_LINK_OFFSET + len(link):P.MOUNT_PATCHES_OFFSET]) <= {0xCC}
           and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
-          and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.PICKUP_OFFSET]) <= {0xCC}
+          and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.SHARED_UPGRADES_OFFSET]) <= {0xCC}
+          and body[P.SHARED_UPGRADES_OFFSET:P.SHARED_UPGRADES_OFFSET + len(shared)] == shared
+          and set(body[P.SHARED_UPGRADES_OFFSET + len(shared):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
@@ -2473,7 +2568,8 @@ def test_late_join(original, without, server, source):
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
-          f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
+          f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
+          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
           f"and the shell_32.dll check at "
           f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
@@ -2617,6 +2713,7 @@ def test_late_join(original, without, server, source):
     test_mount_patches(original, image, before)
     test_forward_scroll(original, image, before)
     test_replay_link(original, image, before)
+    test_shared_upgrades(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
