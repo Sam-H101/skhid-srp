@@ -1777,6 +1777,31 @@ fn real_bot_cost() {
                 items.truncate(count);
                 game.batteries = items.into_iter().map(Lying::Free).collect();
             }
+            // One side behind from the start (F0): `SRP_BENCH_START=a,b`
+            // puts `a` of the lying batteries in team 0's container and
+            // `b` in team 1's, with the points, the rest left lying.
+            let start: [u32; 2] = std::env::var("SRP_BENCH_START")
+                .ok()
+                .and_then(|s| {
+                    let (a, b) = s.split_once(',')?;
+                    Some([a.trim().parse().ok()?, b.trim().parse().ok()?])
+                })
+                .filter(|_| mode != mode::TEAM_DEATHMATCH)
+                .unwrap_or([0, 0]);
+            let mut lying = 0..game.batteries.len();
+            for team in 0..2u8 {
+                let Some(id) = game.containers.iter().position(|(t, _)| *t == team) else {
+                    continue;
+                };
+                for _ in 0..start[usize::from(team)] {
+                    let Some(battery) = lying.next() else {
+                        break;
+                    };
+                    game.batteries[battery] = Lying::Home(id as u8);
+                    game.points[usize::from(team)] += 1;
+                }
+            }
+            let start = game.points;
             for place in 0..teams.len() {
                 bots.entered(place, true, 0);
             }
@@ -1797,6 +1822,12 @@ fn real_bot_cost() {
             // By the bot's play: takes (and those scoring under 0.05),
             // kills, deaths, steals (the objective plays' yield, F2).
             let mut by_play: std::collections::BTreeMap<String, [u32; 5]> = Default::default();
+            // By team, the attacks on the enemy's container (F0): takes,
+            // living bot ticks on one, those with a teammate on one too,
+            // kills and deaths on one; and all steals; attacks replaced
+            // within 10 s of their take (the churn PR 123 cut).
+            let mut by_team = [[0u64; 7]; 2];
+            let mut last_take: Vec<Option<(bool, u32)>> = vec![None; teams.len()];
             // Living bots' ticks looking at a spawner's spot (Collect at a
             // `TargetRef::Spawner`), and their deaths while at it.
             let (mut search_ticks, mut search_deaths) = (0u64, 0u64);
@@ -1812,16 +1843,42 @@ fn real_bot_cost() {
                             .and_then(|b| b.assignment.as_ref())
                             .map_or("none".to_owned(), |a| format!("{:?}", a.kind))
                     };
+                    let attacking = |place: Place| {
+                        bots.bots[place]
+                            .as_ref()
+                            .and_then(|b| b.assignment.as_ref())
+                            .is_some_and(|a| super::team::attack(a.kind))
+                    };
                     for (place, (now, before)) in game.stats.iter().zip(&stats_before).enumerate() {
+                        let side = &mut by_team[usize::from(teams[place])];
                         if now.0 > before.0 {
                             by_play.entry(play_of(place)).or_default()[2] += now.0 - before.0;
+                            if attacking(place) {
+                                side[3] += u64::from(now.0 - before.0);
+                            }
                         }
                         if now.1 > before.1 {
                             by_play.entry(play_of(place)).or_default()[3] += now.1 - before.1;
+                            if attacking(place) {
+                                side[4] += u64::from(now.1 - before.1);
+                            }
                         }
                     }
                     for place in std::mem::take(&mut game.thieves) {
                         by_play.entry(play_of(place)).or_default()[4] += 1;
+                        by_team[usize::from(teams[place])][5] += 1;
+                    }
+                    let mut on_attack = [0u64; 2];
+                    for bot in bots.bots.iter().flatten() {
+                        if game.bodies[bot.place].alive && attacking(bot.place) {
+                            on_attack[usize::from(bot.team)] += 1;
+                        }
+                    }
+                    for (side, n) in by_team.iter_mut().zip(on_attack) {
+                        side[1] += n;
+                        if n >= 2 {
+                            side[2] += n;
+                        }
                     }
                     for bot in bots.bots.iter().flatten() {
                         let body = &game.bodies[bot.place];
@@ -1885,6 +1942,17 @@ fn real_bot_cost() {
                             .and_then(|s| s.split(':').next())
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(1.0);
+                        let is_attack = matches!(kind.as_str(), "Raid" | "Sneak" | "LateDenial");
+                        let side = &mut by_team[usize::from(teams[note.place])];
+                        if is_attack {
+                            side[0] += 1;
+                        }
+                        if let Some((true, at)) = last_take[note.place]
+                            && note.time < at + 10_000
+                        {
+                            side[6] += 1;
+                        }
+                        last_take[note.place] = Some((is_attack, note.time));
                         let row = by_play.entry(kind).or_default();
                         row[0] += 1;
                         row[1] += u32::from(score < 0.05);
@@ -2014,6 +2082,28 @@ fn real_bot_cost() {
                 .iter()
                 .map(|(k, r)| format!("{k} {} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]))
                 .collect();
+            let tick_s = f64::from(TICK_MS) / 1000.0;
+            let sides: Vec<String> = by_team
+                .iter()
+                .map(|r| {
+                    format!(
+                        "[{}, {:.0}, {:.0}, {}, {}, {}, {}]",
+                        r[0],
+                        r[1] as f64 * tick_s,
+                        r[2] as f64 * tick_s,
+                        r[3],
+                        r[4],
+                        r[5],
+                        r[6]
+                    )
+                })
+                .collect();
+            eprintln!(
+                "  by team (attack takes, attack bot-s, of them with a teammate attacking, attack kills, attack deaths, steals, attacks replaced within 10 s): {}; started {:?}, points {:?}",
+                sides.join(" "),
+                start,
+                game.points
+            );
             eprintln!(
                 "  by play (takes, under 0.05, kills, deaths, steals): {}",
                 rows.join("; ")

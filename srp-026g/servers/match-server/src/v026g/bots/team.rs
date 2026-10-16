@@ -9,6 +9,11 @@
 //! - **One bot does the job:** a second bot on a container a teammate
 //!   already has (a second raider, a second guard of the lead) needs
 //!   [`Bands::second`] to keep the objective band.
+//! - **Behind on points** (the HUD's score), an attack on the enemy's
+//!   container ([`attack`]) has [`Bands::behind_floor`] and
+//!   [`Bands::behind_second`] instead: it keeps the objective band, and a
+//!   second attacker may join it (F0 of the owner's matches 0x652d4e6e,
+//!   0x1a0961e2, 0x7298fb57).
 //! - **Commitment:** a bot keeps its play unless a candidate of a higher
 //!   band comes, or one of the same band beats it by [`MARGIN`] (research
 //!   B9: no flapping between near-equal plays).
@@ -48,6 +53,19 @@ pub struct Bands {
     /// slot, a sneak or a late denial a teammate already has) needs this
     /// score to keep the objective band.
     pub second: f32,
+    /// While the team is behind on points, an attack on the enemy's
+    /// container ([`attack`]) is held to this floor instead of
+    /// [`Bands::floor`]: their scores are products of many parts
+    /// (enemies dead, near the target, the way, aggression), so most sit
+    /// under 0.10. With the floor the team behind took none of those in
+    /// three real 7v7 matches (Hold, Group and Roam instead, 2-5 points
+    /// down, every battery home); before it, 25-43 % of them, and it came
+    /// back from -3 to 0 in one.
+    pub behind_floor: f32,
+    /// ... and a second attacker on the same container to this bar
+    /// instead of [`Bands::second`] (attacks in pairs, not one by one: a
+    /// late denial alone died 2.0-2.7 times a minute).
+    pub behind_second: f32,
 }
 
 impl Default for Bands {
@@ -57,24 +75,67 @@ impl Default for Bands {
             demote_to: Rank::Roam,
             keep: 0.5,
             second: 0.20,
+            behind_floor: 0.0,
+            behind_second: 0.0,
         }
     }
 }
 
+/// An attack on the enemy's container: what a team behind on points
+/// needs to win points back (the batteries home are taken only so).
+pub fn attack(kind: PlayKind) -> bool {
+    matches!(
+        kind,
+        PlayKind::Raid | PlayKind::Sneak | PlayKind::LateDenial
+    )
+}
+
 impl Bands {
+    /// The bands the commander uses: the defaults; in the bench (tests
+    /// only) changed by `SRP_BENCH_BANDS=name=value,...` (`floor`, `keep`,
+    /// `second`, `behind_floor`, `behind_second`).
+    pub fn used() -> Self {
+        #[cfg(test)]
+        {
+            static BANDS: std::sync::OnceLock<Bands> = std::sync::OnceLock::new();
+            *BANDS.get_or_init(|| {
+                let mut bands = Self::default();
+                let given = std::env::var("SRP_BENCH_BANDS").unwrap_or_default();
+                for pair in given.split(',').filter(|p| !p.is_empty()) {
+                    let (name, value) = pair.split_once('=').expect("SRP_BENCH_BANDS: name=value");
+                    let value: f32 = value.parse().expect("SRP_BENCH_BANDS: a number");
+                    match name {
+                        "floor" => bands.floor = value,
+                        "keep" => bands.keep = value,
+                        "second" => bands.second = value,
+                        "behind_floor" => bands.behind_floor = value,
+                        "behind_second" => bands.behind_second = value,
+                        _ => panic!("SRP_BENCH_BANDS: no band {name}"),
+                    }
+                }
+                bands
+            })
+        }
+        #[cfg(not(test))]
+        Self::default()
+    }
+
     /// The band `c` competes in: its rank, or [`Bands::demote_to`] for an
     /// objective under the floor, or under [`Bands::second`] when a
-    /// teammate already has its container (`second`). The bot's own
-    /// running play (`running`) is held to [`Bands::keep`] of the bar.
-    pub fn band(&self, c: &Candidate, running: bool, second: bool) -> Rank {
+    /// teammate already has its container (`second`); an attack of a
+    /// team `behind` on points has [`Bands::behind_floor`] and
+    /// [`Bands::behind_second`] instead. The bot's own running play
+    /// (`running`) is held to [`Bands::keep`] of the bar.
+    pub fn band(&self, c: &Candidate, running: bool, second: bool, behind: bool) -> Rank {
         if c.rank != Rank::Objective {
             return c.rank;
         }
-        let bar = if second {
-            self.floor.max(self.second)
+        let (floor, second_bar) = if behind && attack(c.kind) {
+            (self.behind_floor, self.behind_second)
         } else {
-            self.floor
+            (self.floor, self.second)
         };
+        let bar = if second { floor.max(second_bar) } else { floor };
         let bar = if running { bar * self.keep } else { bar };
         if c.score.get() < bar {
             self.demote_to.min(c.rank)
@@ -84,9 +145,9 @@ impl Bands {
     }
 
     /// The order of a bot's candidates: band, then score; the best first.
-    pub fn better(&self, a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
-        self.band(b, false, false)
-            .cmp(&self.band(a, false, false))
+    pub fn better(&self, a: &Candidate, b: &Candidate, behind: bool) -> std::cmp::Ordering {
+        self.band(b, false, false, behind)
+            .cmp(&self.band(a, false, false, behind))
             .then(b.score.get().total_cmp(&a.score.get()))
     }
 }
@@ -110,10 +171,16 @@ pub struct Asking<'a> {
     pub current: Option<&'a Assignment>,
 }
 
-/// The assignments for one commander tick: `(place, assignment, changed)`.
-/// A bot with no candidate at all gets none.
+/// The assignments for one commander tick: `(place, assignment, changed)`,
+/// the score level. A bot with no candidate at all gets none.
 pub fn assign(asking: Vec<Asking>, now: u32) -> Vec<(Place, Assignment, bool)> {
-    assign_with(asking, now, &Bands::default())
+    assign_at(asking, now, 0.0)
+}
+
+/// [`assign`] for a team at score gap `gap` (the HUD's points, ours less
+/// theirs).
+pub fn assign_at(asking: Vec<Asking>, now: u32, gap: f32) -> Vec<(Place, Assignment, bool)> {
+    assign_with(asking, now, &Bands::used(), gap)
 }
 
 /// Whether a teammate's play already goes to this container (one bot
@@ -127,15 +194,17 @@ pub fn assign_with(
     mut asking: Vec<Asking>,
     now: u32,
     bands: &Bands,
+    gap: f32,
 ) -> Vec<(Place, Assignment, bool)> {
+    let behind = gap < 0.0;
     for bot in &mut asking {
-        bot.candidates.sort_by(|a, b| bands.better(a, b));
+        bot.candidates.sort_by(|a, b| bands.better(a, b, behind));
     }
     // The best-placed bots first.
     asking.sort_by(|a, b| {
         let best = |x: &Asking| {
             x.candidates.first().map_or((Rank::Roam, 0.0), |c| {
-                (bands.band(c, false, false), c.score.get())
+                (bands.band(c, false, false, behind), c.score.get())
             })
         };
         let (ra, sa) = best(a);
@@ -173,7 +242,7 @@ pub fn assign_with(
             bot.current
                 .is_some_and(|current| c.kind == current.kind && c.target == current.target)
         };
-        let band = |c: &Candidate| bands.band(c, is_running(c), on_container(c, &given));
+        let band = |c: &Candidate| bands.band(c, is_running(c), on_container(c, &given), behind);
         // The best free candidate, its band read with the plays given so
         // far (the order above is the bands alone).
         let Some(best) = bot
@@ -370,6 +439,8 @@ mod tests {
         demote_to: Rank::Roam,
         keep: 0.5,
         second: 0.2,
+        behind_floor: 0.0,
+        behind_second: 0.0,
     };
 
     #[test]
@@ -383,6 +454,16 @@ mod tests {
         candidates: Vec<Candidate>,
         current: Option<&Assignment>,
     ) -> (PlayKind, bool) {
+        one_at(bands, candidates, current, 0.0)
+    }
+
+    /// [`one`] at a score gap.
+    fn one_at(
+        bands: &Bands,
+        candidates: Vec<Candidate>,
+        current: Option<&Assignment>,
+        gap: f32,
+    ) -> (PlayKind, bool) {
         let out = assign_with(
             vec![Asking {
                 place: 0,
@@ -391,6 +472,7 @@ mod tests {
             }],
             2_000,
             bands,
+            gap,
         );
         (out[0].1.kind, out[0].2)
     }
@@ -508,7 +590,7 @@ mod tests {
                     current: None,
                 },
             ];
-            let out = assign_with(asking, 1_000, &BANDS);
+            let out = assign_with(asking, 1_000, &BANDS, 0.0);
             let of = |place| out.iter().find(|(p, _, _)| *p == place).unwrap().1.kind;
             (of(1), of(2))
         };
@@ -531,11 +613,66 @@ mod tests {
                     current: None,
                 },
             ];
-            let out = assign_with(asking, 1_000, &BANDS);
+            let out = assign_with(asking, 1_000, &BANDS, 0.0);
             out.iter().find(|(p, _, _)| *p == 2).unwrap().1.kind
         };
         assert_eq!(guards(0.12), PlayKind::HoldExit);
         assert_eq!(guards(0.5), PlayKind::GuardLead);
+    }
+
+    #[test]
+    fn a_team_behind_attacks_the_enemy_container_whatever_the_score() {
+        // 7298 600.9 s, bot 12 at 0-5: LateDenial 0.102 lost to Roam 1.0;
+        // most attacks score under 0.05.
+        for attack in [PlayKind::Raid, PlayKind::Sneak, PlayKind::LateDenial] {
+            let all = || {
+                vec![
+                    on(attack, 0.03, 0),
+                    c(PlayKind::Crossfire, Rank::Fight, 0.85, None, 1),
+                    c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+                ]
+            };
+            assert_eq!(one_at(&BANDS, all(), None, -2.0).0, attack, "{attack:?}");
+            // Level or ahead the floor stands (PR 123's anti-churn).
+            assert_eq!(one_at(&BANDS, all(), None, 0.0).0, PlayKind::Crossfire);
+            assert_eq!(one_at(&BANDS, all(), None, 1.0).0, PlayKind::Crossfire);
+        }
+        // Other objectives keep the floor behind too: a hold (an ambush, a
+        // guard) gains a team behind nothing.
+        let ambush = vec![
+            c(PlayKind::Ambush, Rank::Objective, 0.03, Some(4), 4),
+            c(PlayKind::Roam, Rank::Roam, 1.0, None, 2),
+        ];
+        assert_eq!(one_at(&BANDS, ambush, None, -2.0).0, PlayKind::Roam);
+    }
+
+    #[test]
+    fn a_team_behind_sends_a_second_attacker() {
+        let run = |gap: f32| {
+            let asking = vec![
+                Asking {
+                    place: 1,
+                    candidates: vec![
+                        on(PlayKind::Raid, 0.4, 0),
+                        c(PlayKind::Cut, Rank::Fight, 0.3, None, 1),
+                    ],
+                    current: None,
+                },
+                Asking {
+                    place: 2,
+                    candidates: vec![
+                        on(PlayKind::Raid, 0.04, 0x100),
+                        c(PlayKind::Cut, Rank::Fight, 0.3, None, 2),
+                    ],
+                    current: None,
+                },
+            ];
+            let out = assign_with(asking, 1_000, &BANDS, gap);
+            let of = |place| out.iter().find(|(p, _, _)| *p == place).unwrap().1.kind;
+            (of(1), of(2))
+        };
+        assert_eq!(run(-1.0), (PlayKind::Raid, PlayKind::Raid));
+        assert_eq!(run(0.0), (PlayKind::Raid, PlayKind::Cut));
     }
 
     #[test]
