@@ -12,7 +12,9 @@
 //! rounds the corners in a curve as a player does, instead of reaching
 //! each one and turning on the spot.
 
-use mapdata::regions::Regions;
+#[cfg(test)]
+use mapdata::regions::Stage;
+use mapdata::regions::{Regions, RouteSearch};
 use mapdata::{LinkKind, NodeId, Search, Vec3, WalkGrid};
 
 /// A straight line is not tried farther than this (metres): the check
@@ -48,6 +50,14 @@ pub struct Searches {
     pub stages: [u64; 4],
     pub stage_us: [f64; 4],
     pub worst_us: f64,
+    /// Floors expanded, in all and by the largest search.
+    pub expanded: u64,
+    pub worst_expanded: u64,
+    /// Searches by floors expanded ([`EXPANDED_BUCKETS`]).
+    pub by_expanded: [u64; 8],
+    /// Searches that ran over more than one slice, and the slices.
+    pub sliced: u64,
+    pub slices: u64,
 }
 
 #[cfg(test)]
@@ -60,6 +70,11 @@ thread_local! {
             stages: [0; 4],
             stage_us: [0.0; 4],
             worst_us: 0.0,
+            expanded: 0,
+            worst_expanded: 0,
+            by_expanded: [0; 8],
+            sliced: 0,
+            slices: 0,
         })
     };
 }
@@ -67,6 +82,17 @@ thread_local! {
 #[cfg(test)]
 pub fn searches() -> Searches {
     SEARCHES.with(|s| s.get())
+}
+
+/// The worst search's time and floors forgotten: a run's own from here.
+#[cfg(test)]
+pub fn reset_worst() {
+    SEARCHES.with(|s| {
+        let mut c = s.get();
+        c.worst_us = 0.0;
+        c.worst_expanded = 0;
+        s.set(c);
+    });
 }
 
 /// The route from one floor to another, if there is one.
@@ -99,28 +125,140 @@ pub fn plan_in(
     allowed: impl Fn(NodeId) -> bool,
     region_ok: impl Fn(u32) -> bool,
 ) -> Option<Route> {
+    let mut iters = usize::MAX;
+    match plan_start(grid, regions, from, to, allowed, region_ok, &mut iters) {
+        Ok(route) => route,
+        Err(_) => unreachable!("an unbounded search ends"),
+    }
+}
+
+/// A [`plan_in`] under way ([`plan_start`]), as Detour's sliced path
+/// queries: it goes on in [`Planning::resume`].
+pub struct Planning {
+    search: RouteSearch,
+    #[cfg(test)]
+    us: f64,
+    #[cfg(test)]
+    slices: u64,
+}
+
+/// [`plan_in`] for at most `iters` floors expanded (taken off it): the
+/// route, or none, once the search ends within them; else the search,
+/// to go on with the same `allowed` and `region_ok`. A search that ends
+/// within them gives what [`plan_in`] gives.
+pub fn plan_start(
+    grid: &WalkGrid,
+    regions: &Regions,
+    from: NodeId,
+    to: NodeId,
+    allowed: impl Fn(NodeId) -> bool,
+    region_ok: impl Fn(u32) -> bool,
+    iters: &mut usize,
+) -> Result<Option<Route>, Planning> {
     #[cfg(test)]
     let started = std::time::Instant::now();
-    let (found, _stage) = regions.route_search(grid, from, to, &allowed, region_ok, usize::MAX);
-    let path = match found {
-        Search::Found(path) => Some(path),
+    match regions.start_route_search(grid, from, to, &allowed, &region_ok, usize::MAX) {
+        Err((found, _stage)) => {
+            #[cfg(test)]
+            count(&found, _stage, started.elapsed().as_secs_f64() * 1e6, 0, 1);
+            Ok(finish(grid, found, allowed))
+        }
+        Ok(search) => {
+            let mut planning = Planning {
+                search,
+                #[cfg(test)]
+                us: started.elapsed().as_secs_f64() * 1e6,
+                #[cfg(test)]
+                slices: 0,
+            };
+            match planning.resume(grid, regions, allowed, region_ok, iters) {
+                Some(route) => Ok(route),
+                None => Err(planning),
+            }
+        }
+    }
+}
+
+impl Planning {
+    /// Goes on for at most `iters` floors expanded (taken off it): the
+    /// route, or none, once the search ends; `None` while it goes on.
+    pub fn resume(
+        &mut self,
+        grid: &WalkGrid,
+        regions: &Regions,
+        allowed: impl Fn(NodeId) -> bool,
+        region_ok: impl Fn(u32) -> bool,
+        iters: &mut usize,
+    ) -> Option<Option<Route>> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let ended = self.search.step(regions, grid, &allowed, region_ok, iters);
+        #[cfg(test)]
+        {
+            self.us += started.elapsed().as_secs_f64() * 1e6;
+            self.slices += 1;
+        }
+        let (found, _stage) = ended?;
+        #[cfg(test)]
+        count(
+            &found,
+            _stage,
+            self.us,
+            self.search.expanded() as u64,
+            self.slices,
+        );
+        Some(finish(grid, found, allowed))
+    }
+
+    /// Floors expanded so far.
+    pub fn expanded(&self) -> usize {
+        self.search.expanded()
+    }
+
+    /// The way so far toward the goal, pulled straight, as Detour's
+    /// partial paths: a body heads that way while the search goes on.
+    /// None till a floor past the start was expanded.
+    pub fn partial(&self, grid: &WalkGrid, allowed: impl Fn(NodeId) -> bool) -> Option<Route> {
+        let path = self.search.partial()?;
+        (path.nodes.len() >= 2).then(|| pull(grid, path.nodes, allowed))
+    }
+}
+
+fn finish(grid: &WalkGrid, found: Search, allowed: impl Fn(NodeId) -> bool) -> Option<Route> {
+    match found {
+        Search::Found(path) => Some(pull(grid, path.nodes, allowed)),
         Search::NoWay | Search::TooFar => None,
-    };
-    #[cfg(test)]
+    }
+}
+
+/// A search ended, into the thread's counts.
+#[cfg(test)]
+fn count(found: &Search, stage: Stage, us: f64, expanded: u64, slices: u64) {
     SEARCHES.with(|s| {
         let mut c = s.get();
-        let took = started.elapsed().as_secs_f64() * 1e6;
         c.searches += 1;
-        c.failed += u64::from(path.is_none());
-        c.us += took;
-        c.stages[_stage as usize] += 1;
-        c.stage_us[_stage as usize] += took;
-        c.worst_us = c.worst_us.max(took);
+        c.failed += u64::from(!matches!(found, Search::Found(_)));
+        c.us += us;
+        c.stages[stage as usize] += 1;
+        c.stage_us[stage as usize] += us;
+        c.worst_us = c.worst_us.max(us);
+        c.expanded += expanded;
+        c.worst_expanded = c.worst_expanded.max(expanded);
+        let bucket = EXPANDED_BUCKETS
+            .iter()
+            .position(|&top| expanded <= top)
+            .unwrap_or(EXPANDED_BUCKETS.len());
+        c.by_expanded[bucket] += 1;
+        c.sliced += u64::from(slices > 1);
+        c.slices += slices;
         s.set(c);
     });
-    let path = path?;
-    Some(pull(grid, path.nodes, allowed))
 }
+
+/// The tops of the counts of searches by floors expanded
+/// ([`Searches::by_expanded`]); the last count is those above.
+#[cfg(test)]
+pub const EXPANDED_BUCKETS: [u64; 7] = [1_000, 5_000, 10_000, 20_000, 50_000, 100_000, 500_000];
 
 /// A grid path pulled straight: only the real corners left (module
 /// documentation).

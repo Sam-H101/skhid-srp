@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 use std::collections::BinaryHeap;
 
-use crate::grid::{Entry, LinkKind, NodeId, Search, WalkGrid};
+use crate::grid::{Entry, LinkKind, NodeId, Search, SlicedSearch, WalkGrid};
 use crate::math::Vec3;
 
 /// A block's side, in cells (8 m at 0.25 m cells).
@@ -375,9 +375,6 @@ struct Marks {
     parent: Vec<u32>,
     search: u32,
     open: BinaryHeap<Entry>,
-    /// Regions in the corridor: `== in_corridor`.
-    corridor: Vec<u32>,
-    in_corridor: u32,
 }
 
 impl Marks {
@@ -386,7 +383,6 @@ impl Marks {
             self.mark.resize(n, 0);
             self.cost.resize(n, f32::INFINITY);
             self.parent.resize(n, NONE);
-            self.corridor.resize(n, 0);
         }
     }
 
@@ -398,16 +394,6 @@ impl Marks {
             self.search = 1;
         }
         (2 * self.search, 2 * self.search + 1)
-    }
-
-    /// A new, empty corridor.
-    fn new_corridor(&mut self) -> u32 {
-        self.in_corridor += 1;
-        if self.in_corridor == u32::MAX {
-            self.corridor.fill(0);
-            self.in_corridor = 1;
-        }
-        self.in_corridor
     }
 }
 
@@ -446,73 +432,189 @@ impl Regions {
         region_ok: impl Fn(u32) -> bool,
         budget: usize,
     ) -> (Search, Stage) {
+        match self.start_route_search(grid, from, to, &allowed, &region_ok, budget) {
+            Ok(mut search) => {
+                let mut iters = usize::MAX;
+                search
+                    .step(self, grid, &allowed, &region_ok, &mut iters)
+                    .expect("an unbounded step ends the search")
+            }
+            Err(done) => done,
+        }
+    }
+
+    /// [`Self::route_search`] in slices ([`RouteSearch::step`]), each
+    /// stage's floors in the same order, so it ends with the same answer.
+    /// The checks and the regions' own search (a few thousand regions) are
+    /// made here at once; `Err` when they answer it.
+    pub fn start_route_search(
+        &self,
+        grid: &WalkGrid,
+        from: NodeId,
+        to: NodeId,
+        allowed: impl Fn(NodeId) -> bool,
+        region_ok: impl Fn(u32) -> bool,
+        budget: usize,
+    ) -> Result<RouteSearch, (Search, Stage)> {
         let n = grid.len();
         if from as usize >= n || to as usize >= n || !grid.may_reach(from, to) {
-            return (Search::NoWay, Stage::NoWay);
+            return Err((Search::NoWay, Stage::NoWay));
         }
         // The goal is reached only from a floor that links into it and is
         // let through (or is the start): with none, there is no way, and a
         // search would only prove it the long way (a goal inside a zone the
         // body keeps out of: the whole grid flooded).
         if from != to && !grid.entered_from(to, |b| b == from || allowed(b)) {
-            return (Search::NoWay, Stage::NoWay);
+            return Err((Search::NoWay, Stage::NoWay));
         }
-        let regions = self;
-        let (rf, rt) = (regions.of(from), regions.of(to));
+        let (rf, rt) = (self.of(from), self.of(to));
         let corridor = MARKS.with(|marks| {
             let mut marks = marks.borrow_mut();
-            let way = regions.corridor(grid, rf, rt, &region_ok, &mut marks)?;
-            Some(way)
+            self.corridor(grid, rf, rt, &region_ok, &mut marks)
         });
         let Some(way) = corridor else {
-            return (Search::NoWay, Stage::NoWay);
+            return Err((Search::NoWay, Stage::NoWay));
         };
-        let inside = |node: NodeId, mark: u32| {
-            MARKS.with(|marks| marks.borrow().corridor[regions.of(node) as usize] == mark)
+        let mut search = RouteSearch {
+            from,
+            to,
+            budget,
+            stage: Stage::Corridor,
+            ring: way,
+            inside: vec![0; self.len().div_ceil(64)],
+            search: None,
+            expanded: 0,
         };
-        // The corridor and the regions next to it ([`CORRIDOR_RINGS`]), then
-        // wider ([`WIDE_RINGS`]).
-        let mut ring: Vec<u32> = way;
-        for (rings, stage) in [
-            (CORRIDOR_RINGS, Stage::Corridor),
-            (WIDE_RINGS, Stage::Widened),
-        ] {
-            let mark = MARKS.with(|marks| {
-                let mut marks = marks.borrow_mut();
-                let mark = marks.new_corridor();
-                let mut all = std::mem::take(&mut ring);
-                for &r in &all {
-                    marks.corridor[r as usize] = mark;
-                }
-                let mut edge = all.clone();
-                for _ in 0..rings {
-                    let mut next = Vec::new();
-                    for &r in &edge {
-                        let near = regions
-                            .out(r)
-                            .iter()
-                            .map(|&(v, _)| v)
-                            .chain(regions.into(r).iter().copied());
-                        for v in near {
-                            if marks.corridor[v as usize] != mark && region_ok(v) {
-                                marks.corridor[v as usize] = mark;
-                                next.push(v);
-                            }
-                        }
-                    }
-                    all.extend_from_slice(&next);
-                    edge = next;
-                }
-                ring = all;
-                mark
-            });
-            if let found @ Search::Found(_) =
-                grid.search(from, to, |v| inside(v, mark) && allowed(v), usize::MAX)
-            {
-                return (found, stage);
+        search.widen(self, grid, CORRIDOR_RINGS, &region_ok)?;
+        Ok(search)
+    }
+}
+
+/// A [`Regions::route_search`] under way ([`Regions::start_route_search`]).
+pub struct RouteSearch {
+    from: NodeId,
+    to: NodeId,
+    /// The whole grid's search's budget.
+    budget: usize,
+    /// The stage searching: [`Stage::Corridor`], [`Stage::Widened`] or
+    /// [`Stage::Whole`].
+    stage: Stage,
+    /// The regions of the corridor searched now.
+    ring: Vec<u32>,
+    /// The same, a bit a region.
+    inside: Vec<u64>,
+    search: Option<SlicedSearch>,
+    /// Floors expanded by the stages done.
+    expanded: usize,
+}
+
+impl RouteSearch {
+    /// Goes on for at most `iters` floors expanded (taken off it): the
+    /// answer and the stage that gave it once the search ends, `None`
+    /// while it goes on. `allowed` and `region_ok` must be the ones it was
+    /// started with.
+    pub fn step(
+        &mut self,
+        regions: &Regions,
+        grid: &WalkGrid,
+        allowed: impl Fn(NodeId) -> bool,
+        region_ok: impl Fn(u32) -> bool,
+        iters: &mut usize,
+    ) -> Option<(Search, Stage)> {
+        loop {
+            let Some(search) = self.search.as_mut() else {
+                return Some((Search::NoWay, self.stage));
+            };
+            let found = if self.stage == Stage::Whole {
+                search.step(grid, &allowed, iters)?
+            } else {
+                let inside = &self.inside;
+                search.step(
+                    grid,
+                    |v| {
+                        let r = regions.of(v) as usize;
+                        inside[r / 64] & (1 << (r % 64)) != 0 && allowed(v)
+                    },
+                    iters,
+                )?
+            };
+            self.expanded += search.expanded();
+            if self.stage == Stage::Whole || matches!(found, Search::Found(_)) {
+                self.search = None;
+                return Some((found, self.stage));
+            }
+            // Not in this corridor: wider, then the whole grid.
+            let next = if self.stage == Stage::Corridor {
+                self.stage = Stage::Widened;
+                self.widen(regions, grid, WIDE_RINGS, &region_ok)
+            } else {
+                self.stage = Stage::Whole;
+                self.search = None;
+                grid.start_search(self.from, self.to, self.budget)
+                    .map(|search| self.search = Some(search))
+                    .map_err(|done| (done, Stage::Whole))
+            };
+            if let Err(done) = next {
+                return Some(done);
             }
         }
-        (grid.search(from, to, allowed, budget), Stage::Whole)
+    }
+
+    /// Floors expanded so far.
+    pub fn expanded(&self) -> usize {
+        self.expanded + self.search.as_ref().map_or(0, SlicedSearch::expanded)
+    }
+
+    /// The stage's way so far ([`SlicedSearch::partial`]): over floors its
+    /// filter lets through.
+    pub fn partial(&self) -> Option<crate::grid::Path> {
+        self.search.as_ref().map(SlicedSearch::partial)
+    }
+
+    /// The corridor so far and `rings` of regions round it (those
+    /// `region_ok` lets through), and its floors' search started.
+    fn widen(
+        &mut self,
+        regions: &Regions,
+        grid: &WalkGrid,
+        rings: usize,
+        region_ok: impl Fn(u32) -> bool,
+    ) -> Result<(), (Search, Stage)> {
+        let inside = &mut self.inside;
+        inside.fill(0);
+        let mut add = |r: u32| {
+            let (word, bit) = (r as usize / 64, 1u64 << (r % 64));
+            let new = inside[word] & bit == 0;
+            inside[word] |= bit;
+            new
+        };
+        for &r in &self.ring {
+            add(r);
+        }
+        let mut edge = self.ring.clone();
+        for _ in 0..rings {
+            let mut next = Vec::new();
+            for &r in &edge {
+                let near = regions
+                    .out(r)
+                    .iter()
+                    .map(|&(v, _)| v)
+                    .chain(regions.into(r).iter().copied());
+                for v in near {
+                    if region_ok(v) && add(v) {
+                        next.push(v);
+                    }
+                }
+            }
+            self.ring.extend_from_slice(&next);
+            edge = next;
+        }
+        self.search = None;
+        let search = grid
+            .start_search(self.from, self.to, usize::MAX)
+            .map_err(|done| (done, self.stage))?;
+        self.search = Some(search);
+        Ok(())
     }
 }
 
@@ -542,7 +644,10 @@ mod tests {
         };
         let (found, _) = regions.route_search(&grid, from, to, lane, |_| true, usize::MAX);
         assert!(matches!(found, Search::Found(_)));
-        assert!(matches!(grid.search(from, to, lane, usize::MAX), Search::Found(_)));
+        assert!(matches!(
+            grid.search(from, to, lane, usize::MAX),
+            Search::Found(_)
+        ));
         let next = grid.links(to).next().unwrap().0;
         // The start itself next to the goal: found.
         let (found, _) = regions.route_search(&grid, next, to, allowed, |_| true, usize::MAX);
@@ -573,6 +678,51 @@ mod tests {
                 "floor {node}"
             );
         }
+    }
+
+    /// The regions' search in slices of a few floors ends with the one
+    /// search's answer at every stage (the corridor, widened, the whole
+    /// grid), with other searches made between its slices.
+    #[test]
+    fn a_route_search_in_slices_ends_as_one() {
+        let grid = crate::grid::tests::two_rooms();
+        let regions = Regions::build(&grid, None);
+        let a = grid.locate(Vec3::new(2.0, 0.0, 2.0), 1.0).unwrap();
+        let b = grid.locate(Vec3::new(28.0, 0.0, 10.0), 1.0).unwrap();
+        let open = |_: NodeId| true;
+        // The door shut on the floors only: every corridor fails, the
+        // whole grid's search says no way.
+        let door = |n: NodeId| {
+            let p = grid.position(n);
+            !((14.0..16.0).contains(&p.x) && (5.0..7.0).contains(&p.z))
+        };
+        // A wall of shut floors across the first room but for a gap at its
+        // far side: a way round inside the corridor.
+        let detour = |n: NodeId| {
+            let p = grid.position(n);
+            !((7.0..7.5).contains(&p.x) && p.z < 11.0)
+        };
+        let mut stages = Vec::new();
+        for allowed in [&open as &dyn Fn(NodeId) -> bool, &door, &detour] {
+            let whole = regions.route_search(&grid, a, b, allowed, |_| true, usize::MAX);
+            let mut sliced = regions
+                .start_route_search(&grid, a, b, allowed, |_| true, usize::MAX)
+                .unwrap();
+            let mut slices = 0;
+            let found = loop {
+                let mut iters = 7;
+                if let Some(found) = sliced.step(&regions, &grid, allowed, |_| true, &mut iters) {
+                    break found;
+                }
+                slices += 1;
+                let _ = regions.route_search(&grid, b, a, |_| true, |_| true, usize::MAX);
+            };
+            assert_eq!(found, whole);
+            assert!(slices > 10, "{slices}");
+            stages.push(found.1);
+        }
+        // The door's case went through every stage.
+        assert_eq!(stages, [Stage::Corridor, Stage::Whole, Stage::Corridor]);
     }
 
     #[test]
