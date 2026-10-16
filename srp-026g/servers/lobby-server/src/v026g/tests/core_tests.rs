@@ -2336,6 +2336,7 @@ mod matches_now_tests;
 mod patch_check_tests;
 mod pvb_tests;
 mod queue_chat_tests;
+mod replay_tests;
 
 // ---- the premium shop, items for gold, the daily bonus, the tutorial, a
 // ---- nickname change (`shop`)

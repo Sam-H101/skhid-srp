@@ -528,13 +528,113 @@ impl File {
 /// Serializes installers in the same game folder, including while downloading.
 pub struct InstallLock(#[allow(dead_code)] Handle);
 pub fn install_lock(folder: &str) -> Result<InstallLock, Code> {
+    lock(folder, "updater_skhid.lock")
+}
+
+/// A file held open by this program alone while it lives: a second program
+/// that asks for the same one is refused (`ERROR_SHARING_VIOLATION`).
+pub fn lock(folder: &str, name: &str) -> Result<InstallLock, Code> {
     open(
-        &alloc::format!("{folder}\\updater_skhid.lock"),
+        &alloc::format!("{folder}\\{name}"),
         GENERIC_WRITE,
         0,
         OPEN_ALWAYS,
     )
     .map(InstallLock)
+}
+
+/// The files in `folder` that match `pattern`, each with the time it was
+/// last written (100 ns since 1601).
+pub fn list_with_times(folder: &str, pattern: &str) -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    let mut found: WIN32_FIND_DATAW = unsafe { core::mem::zeroed() };
+    let query = alloc::format!("{folder}\\{pattern}");
+    let handle = unsafe { FindFirstFileW(wide(&query).as_ptr(), &mut found) };
+    if handle == INVALID_HANDLE_VALUE {
+        return out;
+    }
+    loop {
+        if found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            let time = u64::from(found.ftLastWriteTime.dwHighDateTime) << 32
+                | u64::from(found.ftLastWriteTime.dwLowDateTime);
+            out.push((from_wide(&found.cFileName), time));
+        }
+        if unsafe { FindNextFileW(handle, &mut found) } == 0 {
+            break;
+        }
+    }
+    unsafe {
+        FindClose(handle);
+    }
+    out
+}
+
+/// The language the launcher keeps for the player
+/// (`HKCU\Software\Vostok Games\Survarium`, `language`, 0..4), read only.
+pub fn launcher_language() -> Option<u32> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut value = 0_u32;
+    let mut size = 4_u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide("Software\\Vostok Games\\Survarium").as_ptr(),
+            wide("language").as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&raw mut value).cast(),
+            &mut size,
+        )
+    };
+    (status == 0).then_some(value)
+}
+
+/// Whether the game, which reads its command line as ANSI text
+/// (`GetCommandLineA`), gets `text` back as it is, and in how many bytes.
+fn ansi_length(text: &str) -> Option<usize> {
+    use windows_sys::Win32::Globalization::{CP_ACP, CP_UTF8, GetACP, WC_NO_BEST_FIT_CHARS, WideCharToMultiByte};
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.is_empty() {
+        return Some(0);
+    }
+    if unsafe { GetACP() } == CP_UTF8 {
+        // The system's ANSI code page is UTF-8: every character is kept.
+        return Some(text.len());
+    }
+    let mut lost = 0;
+    let length = unsafe {
+        WideCharToMultiByte(
+            CP_ACP,
+            WC_NO_BEST_FIT_CHARS,
+            units.as_ptr(),
+            units.len() as i32,
+            null_mut(),
+            0,
+            null(),
+            &mut lost,
+        )
+    };
+    (length > 0 && lost == 0).then_some(length as usize)
+}
+
+/// The path of a file as the game can be given it on its command line: the
+/// path itself when the ANSI code page holds every character of it and it
+/// is at most `limit` bytes so, else its short (8.3) form when that is.
+pub fn game_path(path: &str, limit: usize) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    if ansi_length(path).is_some_and(|length| length <= limit) {
+        return Some(path.into());
+    }
+    let mut buffer = alloc::vec![0_u16; 1024];
+    let length = unsafe { GetShortPathNameW(wide(path).as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+        as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    let short = from_wide(&buffer[..length]);
+    ansi_length(&short)
+        .is_some_and(|length| length <= limit)
+        .then_some(short)
 }
 
 pub fn file_size(path: &str) -> Result<u64, Code> {

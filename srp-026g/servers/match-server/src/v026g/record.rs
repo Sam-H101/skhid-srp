@@ -46,9 +46,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use session::v026g::replays::Replays;
 use survarium::v026g::lzma2;
 
 /// The file's first bytes.
@@ -77,6 +79,38 @@ pub(crate) struct RecordSettings {
     pub min_players: usize,
     /// Kept files over this many bytes together: the oldest go.
     pub max_bytes: u64,
+    /// "Watch replay" (`SRP_REPLAY_DIR`): told of every file kept (its
+    /// replay is made when first asked for, [`super::replay`]), closed
+    /// under the minimum, or deleted by the cap (its replay goes too). Set
+    /// by [`super::run_on_with_replays`]; `None` from the environment alone.
+    pub replays: Option<Desk>,
+}
+
+/// The replays of the srp process, as the writer tells them of its files.
+#[derive(Clone)]
+pub(crate) struct Desk(pub Arc<Replays>);
+
+impl std::fmt::Debug for Desk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Replays")
+    }
+}
+
+impl PartialEq for Desk {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Desk {}
+
+/// The match of a kept recording's file name, `rec026g_<UTC
+/// start>_<id:08x>.srprec`.
+pub fn match_of_file(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_prefix("rec026g_")?;
+    let (_, id) = stem.rsplit_once('_')?;
+    session::v026g::replays::match_of_name(id, &format!(".{EXTENSION}"))
 }
 
 impl RecordSettings {
@@ -100,7 +134,14 @@ impl RecordSettings {
                 var("SRP_RECORD_MAX_MB").as_deref(),
                 5_000,
             )) << 20,
+            replays: None,
         })
+    }
+
+    fn tell(&self, event: impl FnOnce(&Replays)) {
+        if let Some(Desk(replays)) = &self.replays {
+            event(replays);
+        }
     }
 }
 
@@ -390,19 +431,33 @@ impl Writer {
         if !open.kept {
             drop(open.file.take());
             let _ = fs::remove_file(&open.path);
+            self.settings
+                .tell(|replays| replays.recording_not_kept(match_id));
             return;
         }
         write_block(&mut open);
-        if let Some(mut file) = open.file.take()
-            && let Err(error) = file.flush()
-        {
-            log::warn!("Recordings: can't write {}: {error}", open.path.display());
-        }
+        let written = match open.file.take() {
+            Some(mut file) => match file.flush() {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("Recordings: can't write {}: {error}", open.path.display());
+                    false
+                }
+            },
+            // A write failed earlier: the file is cut short.
+            None => false,
+        };
         let size = fs::metadata(&open.path).map_or(0, |meta| meta.len());
         log::info!(
             "Match {match_id:#x}: recording {} kept ({size} bytes)",
             open.path.display()
         );
+        // Closed and whole: its replay can be made from it now. (A file cut
+        // short is converted only if someone asks: what it has may do.)
+        if written {
+            self.settings
+                .tell(|replays| replays.recording_kept(match_id));
+        }
         self.prune();
     }
 
@@ -437,6 +492,10 @@ impl Writer {
             );
             if fs::remove_file(&path).is_ok() {
                 total -= size;
+                if let Some(match_id) = match_of_file(&path) {
+                    self.settings
+                        .tell(|replays| replays.recording_deleted(match_id));
+                }
             }
         }
     }
@@ -471,26 +530,88 @@ pub struct Record {
     pub bytes: Vec<u8>,
 }
 
-/// Every record of a recording file, in order. A file cut short (its
-/// server stopped) gives what its whole blocks hold.
-pub fn read(path: &Path) -> io::Result<Vec<Record>> {
-    let data = fs::read(path)?;
-    if data.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
+/// One record of a file as [`read_each`] hands it over: its bytes are
+/// borrowed from the block being read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordRef<'a> {
+    pub kind: u8,
+    pub place: u8,
+    pub at_ms: u32,
+    pub bytes: &'a [u8],
+}
+
+impl RecordRef<'_> {
+    pub fn to_record(self) -> Record {
+        Record {
+            kind: self.kind,
+            place: self.place,
+            at_ms: self.at_ms,
+            bytes: self.bytes.to_vec(),
+        }
+    }
+}
+
+impl Record {
+    pub fn borrowed(&self) -> RecordRef<'_> {
+        RecordRef {
+            kind: self.kind,
+            place: self.place,
+            at_ms: self.at_ms,
+            bytes: &self.bytes,
+        }
+    }
+}
+
+/// A block's raw length is never more than this: the writer packs a block
+/// once it holds [`BLOCK_BYTES`], and a record is one datagram or note
+/// past that. A larger length is not a block of ours (it is not unpacked).
+const MAX_BLOCK_RAW: usize = 64 << 20;
+
+/// Every record of a recording file, in order, one block in memory at a
+/// time: what the server's own replay conversion reads with, so a match
+/// of a million datagrams is never held whole (`replay`). A file cut
+/// short (its server stopped) gives what its whole blocks hold.
+pub fn read_each(path: &Path, mut each: impl FnMut(RecordRef<'_>)) -> io::Result<()> {
+    read_while(path, |record| {
+        each(record);
+        true
+    })
+}
+
+/// [`read_each`] until `each` says `false`: the blocks after that record's
+/// are not read or unpacked.
+fn read_while(path: &Path, mut each: impl FnMut(RecordRef<'_>) -> bool) -> io::Result<()> {
+    let mut file = io::BufReader::new(File::open(path)?);
+    let mut magic = [0u8; 8];
+    if io::Read::read_exact(&mut file, &mut magic).is_err() || magic != *MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "not a match recording",
         ));
     }
-    let mut records = Vec::new();
-    let mut rest = &data[MAGIC.len()..];
-    while rest.len() >= 8 {
-        let packed_len = u32::from_le_bytes(rest[0..4].try_into().expect("4 bytes")) as usize;
-        let raw_len = u32::from_le_bytes(rest[4..8].try_into().expect("4 bytes")) as usize;
-        let Some(packed) = rest.get(8..8 + packed_len) else {
-            break;
-        };
-        rest = &rest[8 + packed_len..];
-        let Some(raw) = lzma2::unpack(packed, raw_len) else {
+    let mut packed = Vec::new();
+    loop {
+        let mut head = [0u8; 8];
+        match io::Read::read_exact(&mut file, &mut head) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let packed_len = u32::from_le_bytes(head[0..4].try_into().expect("4 bytes")) as usize;
+        let raw_len = u32::from_le_bytes(head[4..8].try_into().expect("4 bytes")) as usize;
+        if raw_len > MAX_BLOCK_RAW || packed_len > MAX_BLOCK_RAW {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a block is larger than any the writer makes",
+            ));
+        }
+        packed.resize(packed_len, 0);
+        match io::Read::read_exact(&mut file, &mut packed) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        }
+        let Some(raw) = lzma2::unpack(&packed, raw_len) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "a block does not unpack",
@@ -502,16 +623,55 @@ pub fn read(path: &Path) -> io::Result<Vec<Record>> {
             let Some(bytes) = block.get(10..10 + len) else {
                 break;
             };
-            records.push(Record {
+            let more = each(RecordRef {
                 kind: block[0],
                 place: block[1],
                 at_ms: u32::from_le_bytes(block[2..6].try_into().expect("4 bytes")),
-                bytes: bytes.to_vec(),
+                bytes,
             });
+            if !more {
+                return Ok(());
+            }
             block = &block[10 + len..];
         }
     }
+    Ok(())
+}
+
+/// Every record of a recording file, in order. A file cut short (its
+/// server stopped) gives what its whole blocks hold.
+pub fn read(path: &Path) -> io::Result<Vec<Record>> {
+    let mut records = Vec::new();
+    read_each(path, |record| records.push(record.to_record()))?;
     Ok(records)
+}
+
+/// The notes of a recording file alone (its header, the places, the roster
+/// changes, the clock, the result): a few hundred small records.
+pub fn read_notes(path: &Path) -> io::Result<Vec<Record>> {
+    let mut notes = Vec::new();
+    read_each(path, |record| {
+        if record.kind == NOTE {
+            notes.push(record.to_record());
+        }
+    })?;
+    Ok(notes)
+}
+
+/// The first note of a recording file, its header (the writer puts it
+/// first, [`Recorder::open`]), so from the first block alone: what the
+/// replay conversion checks (the map, so the mode's file) before it unpacks
+/// the whole file. Reading stops at the first note; `None` for a file of
+/// none.
+pub fn read_header(path: &Path) -> io::Result<Option<Record>> {
+    let mut header = None;
+    read_while(path, |record| {
+        if record.kind == NOTE {
+            header = Some(record.to_record());
+        }
+        header.is_none()
+    })?;
+    Ok(header)
 }
 
 fn unix_ms(time: SystemTime) -> u64 {
@@ -552,6 +712,7 @@ mod tests {
             dir: dir.to_path_buf(),
             min_players,
             max_bytes: 1 << 30,
+            replays: None,
         }
     }
 
@@ -710,6 +871,93 @@ mod tests {
         assert_eq!(names.len(), 1, "{names:?}");
         assert!(names[0].ends_with("_00000003.srprec"), "{names:?}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_replays_hear_of_each_file_kept_dropped_or_deleted() {
+        use session::v026g::replays::{Known, ReplaySettings, Status};
+        let root = temp_dir("desk");
+        let dir = root.join("recordings");
+        fs::create_dir_all(&dir).unwrap();
+        // An old file the cap deletes, with its replay.
+        fs::write(
+            dir.join("rec026g_20261001-000000_00000001.srprec"),
+            [0; 600],
+        )
+        .unwrap();
+        let replays = Arc::new(Replays::new(
+            Some(
+                ReplaySettings {
+                    replay_dir: root.join("replays"),
+                    record_dir: dir.clone(),
+                    modes_dir: root.join("modes"),
+                    max_recording_bytes: 1 << 20,
+                    max_replay_bytes: 1 << 20,
+                }
+                .checked()
+                .unwrap(),
+            ),
+            2,
+        ));
+        let old_replay = replays.sur_path(1).unwrap();
+        fs::write(&old_replay, b"x").unwrap();
+        let mut settings = settings(&dir, 2);
+        settings.max_bytes = 700;
+        settings.replays = Some(Desk(replays.clone()));
+        let recorder = Recorder::start(settings).unwrap();
+        let now = Instant::now();
+        let mut kept = recorder.open(0xAB, serde_json::json!({}), now);
+        kept.entered(0);
+        kept.entered(1);
+        drop(kept);
+        let mut small = recorder.open(0xCD, serde_json::json!({}), now);
+        small.entered(0);
+        drop(small);
+        // The writer works on its own thread: wait for both closes.
+        let mut waited = false;
+        for _ in 0..300 {
+            let names = files(&dir);
+            let parts = names.iter().any(|name| name.ends_with(".part"));
+            let kept = names.iter().any(|name| name.ends_with("_000000ab.srprec"));
+            if !old_replay.exists() && kept && !parts {
+                waited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(waited, "{:?}", files(&dir));
+        // Kept, but converted only when someone asks for it.
+        assert!(replays.jobs().is_empty());
+        let known = Some(Known {
+            played: true,
+            places: 10,
+        });
+        let later = now + Duration::from_secs(10);
+        assert_eq!(
+            replays.ask(1, 0xCD, Some(14), known, later),
+            Status::NotRecorded
+        );
+        assert_eq!(replays.ask(2, 1, Some(14), known, later), Status::Gone);
+        assert_eq!(
+            replays.ask(3, 0xAB, Some(14), known, later),
+            Status::Preparing
+        );
+        assert_eq!(replays.jobs(), [0xAB]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_recordings_match_is_read_from_its_name_only() {
+        let at = |name: &str| match_of_file(Path::new(name));
+        assert_eq!(
+            at("rec026g_20261014-215125_1f07c8fb.srprec"),
+            Some(0x1F07_C8FB)
+        );
+        assert_eq!(at("/x/rec026g_20261014-215125_00000001.srprec"), Some(1));
+        assert_eq!(at("rec026g_20261014-215125_1f07c8fb.srprec.part"), None);
+        assert_eq!(at("rec026g_20261014-215125_1F07C8FB.srprec"), None);
+        assert_eq!(at("x_20261014-215125_1f07c8fb.srprec"), None);
+        assert_eq!(at("rec026g_1f07c8fb.srprec"), None);
     }
 
     #[test]

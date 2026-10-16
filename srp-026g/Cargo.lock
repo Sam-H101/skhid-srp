@@ -521,8 +521,10 @@ name = "match-server"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "libc",
  "log",
  "mapdata",
+ "openssl",
  "serde",
  "serde_json",
  "session",

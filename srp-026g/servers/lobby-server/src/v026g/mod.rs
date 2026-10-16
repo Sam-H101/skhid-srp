@@ -15,6 +15,9 @@
 //!   takes it;
 //! - `pvb`: "Player vs Bots": one player against the match server's own
 //!   bots, chosen in srp's changed lobby movie;
+//! - `replay`: the "Watch replay" of the movie's History: the ask, the
+//!   polls, the download link (`SRP_REPLAY_DIR`, set where srp starts the
+//!   lobby: [`Lobby::with_replays`]);
 //! - `social`: chat, friends, important messages, squads;
 //! - `clans`: clans, clan chat and clan-team Play.
 //!
@@ -128,6 +131,7 @@ mod patch_check;
 mod play;
 pub mod pvb;
 mod queue_chat;
+mod replay;
 mod shop;
 mod social;
 
@@ -151,6 +155,7 @@ use std::time::{Duration, Instant};
 use session::matchmaking_policy::DEFAULT_LATE_JOIN_PATIENCE;
 use session::v026g::GameAccounts;
 use session::v026g::balance::Weights;
+use session::v026g::replays::Replays;
 use session::v026g::rewards::Results;
 use session::{LockExt, SessionStore};
 use survarium::v026g::lobby::ServerMessage;
@@ -662,6 +667,9 @@ pub struct Lobby {
     host: Arc<dyn MatchHost>,
     inbox: Arc<Inbox>,
     settings: Settings,
+    /// "Watch replay" (`replay`): srp's replays, shared with the match
+    /// server and the web page; none, every ask is answered `off`.
+    replays: Option<Arc<Replays>>,
 }
 
 /// How long the loop waits for a datagram before it looks at its timers.
@@ -686,7 +694,14 @@ impl Lobby {
             host,
             inbox,
             settings,
+            replays: None,
         })
+    }
+
+    /// The replays the History's "Watch replay" asks for (`replay`).
+    pub fn with_replays(mut self, replays: Arc<Replays>) -> Self {
+        self.replays = Some(replays);
+        self
     }
 
     /// Where the socket is bound (for a port of 0, the one it was given).
@@ -711,6 +726,7 @@ impl Lobby {
             Instant::now(),
         );
         core.packet_log = PacketLog::from_env();
+        core.replays = self.replays.as_deref();
         let mut buffer = [0_u8; 2048];
         while !self.inbox.stopped() {
             match self.socket.recv_from(&mut buffer) {
