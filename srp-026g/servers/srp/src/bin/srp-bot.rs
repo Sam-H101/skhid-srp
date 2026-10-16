@@ -24,7 +24,7 @@ place in the match, stays to the end without playing, takes the results
 and presses Play again.
 
   srp-bot [--server HOST:PORT] [--name NAME] [--password PASSWORD]
-          [--count N] [--once] [--kit ID]
+          [--count N] [--once] [--kit ID] [--revision N]
 
   --server    the login server, as the game's -server= (default
               127.0.0.1:1234; or SRP_BOT_SERVER)
@@ -34,6 +34,9 @@ and presses Play again.
   --count N   N bots: bot-1 .. bot-N (default 1). The first waits in the
               queue; the others join once somebody else waits there.
   --once      stop after one match
+  --revision N  the patch revision the sign-in says (default 0); 5 or
+              later puts the bots in the queue of the games that speak
+              the late join, the only one such a game meets
   --kit ID    press Play with this kit id (default: the kit the account
               plays)
 
@@ -68,6 +71,7 @@ fn main() {
     let mut count = 1_usize;
     let mut once = false;
     let mut kit = None;
+    let mut revision = 0_u8;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -100,6 +104,11 @@ fn main() {
                         .unwrap_or_else(|_| fail("--kit must be a number")),
                 );
             }
+            "--revision" => {
+                revision = value("a number")
+                    .parse()
+                    .unwrap_or_else(|_| fail("--revision must be 0 to 255"));
+            }
             "--once" => once = true,
             "--help" | "-h" => {
                 print!("{USAGE}");
@@ -129,6 +138,7 @@ fn main() {
             password: password.clone(),
             once,
             kit,
+            revision,
         })
         .collect();
     let print: bot::Print = Arc::new(|line| println!("{} {line}", clock()));

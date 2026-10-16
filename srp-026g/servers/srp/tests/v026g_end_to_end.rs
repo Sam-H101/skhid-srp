@@ -1323,6 +1323,7 @@ impl BotRun {
             password: "the-bots-password".to_owned(),
             once,
             kit: None,
+            revision: 0,
         };
         let print: srp::bot::Print = {
             let lines = lines.clone();

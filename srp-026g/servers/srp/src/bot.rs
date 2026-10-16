@@ -97,6 +97,10 @@ pub struct Config {
     pub once: bool,
     /// The kit to press Play with; `None` for the one the account plays.
     pub kit: Option<u32>,
+    /// The patch revision its sign-in says: 0, or 5 and later for the
+    /// queue of the games that speak the late join (the lobby keeps the
+    /// two apart, so a bot of 0 never meets such a game).
+    pub revision: u8,
 }
 
 /// SHA-1 as the client prints it: 40 lower-case hex characters.
@@ -333,7 +337,12 @@ impl Bot {
                 return;
             }
         };
-        let answer = match sign_in(login, &self.config.name, &self.config.password) {
+        let answer = match sign_in_with_revision(
+            login,
+            &self.config.name,
+            &self.config.password,
+            self.config.revision,
+        ) {
             Ok(answer) => answer,
             Err(error) => {
                 self.say(&format!(
@@ -615,7 +624,12 @@ impl Bot {
                     let lobby_ip = self.lobby.as_ref().map(|lobby| lobby.addr.ip());
                     let ip = host.parse::<IpAddr>().ok().or(lobby_ip);
                     let link = ip.zip(socket().ok()).map(|(ip, socket)| {
-                        let mut client = MatchClient::idle(session);
+                        let mut client =
+                            if survarium::v026g::match_msgs::late_join::spoken_by(self.config.revision) {
+                                MatchClient::idle_growing(session)
+                            } else {
+                                MatchClient::idle(session)
+                            };
                         client.connect();
                         MatchLink {
                             addr: SocketAddr::new(ip, *port),

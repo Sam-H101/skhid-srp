@@ -498,6 +498,16 @@ impl Client {
         }
     }
 
+    /// The test bot of a game that speaks the late join (patch revision 5
+    /// on): `idle`, with the capability in its 0xD8 and worlds of twenty
+    /// places, so a match of the growing queue takes it.
+    pub fn idle_growing(session: u32) -> Self {
+        let mut client = Self::idle(session);
+        client.model.growing_roster = true;
+        client.sim.snapshot_players = 20;
+        client
+    }
+
     pub fn growing(session: u32, players: usize, map_id: u8) -> Self {
         let mut client = Self::new(session, true, players, map_id);
         client.model.growing_roster = true;
