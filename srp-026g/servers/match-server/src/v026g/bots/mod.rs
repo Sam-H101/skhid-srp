@@ -1556,8 +1556,15 @@ fn drive_tick(
         let (dx, dz) = (p.x - eye.x, p.z - eye.z);
         (kin::yaw_of([dx, dz]), (p.y - eye.y).atan2(dx.hypot(dz)))
     };
+    // A glance at a heard shot gives way to a play that runs, uses
+    // something or carries (`Override::glance`).
+    let glance_yields = over.glance
+        && (intent.pace == Pace::Run
+            || matches!(intent.look, Look::Use(_))
+            || me.carrying.is_some());
     let aim = over
         .look_at
+        .filter(|_| !glance_yields)
         .map(|p| {
             let (yaw, pitch) = aim_at(p);
             (yaw + over.error.0, pitch + over.error.1)

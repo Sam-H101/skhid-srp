@@ -445,6 +445,11 @@ pub struct Override {
     /// while the bot stands to aim at a seen target; the caller presses it
     /// only where the ground that side is clear.
     pub strafe: u32,
+    /// `look_at` is a glance at a heard shot (play 6, or a threat not
+    /// made by a hit), not an aim: the caller keeps the play's look when
+    /// the play runs, uses something or carries (a glance would stop the
+    /// sprint or the use; the bench lost a third of its deliveries).
+    pub glance: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -921,10 +926,22 @@ impl Reflex {
             None => {
                 self.target = None;
                 // Play 6: a shot heard lately, nothing seen: turn to it.
+                // A shot (`player_bots_behaviour.md` §3 play 6), not a
+                // step or a reload: one of the sounds of him it heard was
+                // a shot (with no view, any sound).
+                let fired = |who: Place| {
+                    view.is_none_or(|view| {
+                        view.sounds.iter().any(|sound| {
+                            sound.from == who
+                                && sound.kind == SoundKind::Shot
+                                && sound.time + 1_500 >= now
+                        })
+                    })
+                };
                 let heard = memory
                     .tracks()
                     .iter()
-                    .filter(|t| t.source == Source::Heard && t.time + 1_500 >= now)
+                    .filter(|t| t.source == Source::Heard && t.time + 1_500 >= now && fired(t.who))
                     .min_by(|a, b| {
                         a.at.distance_xz(me.feet)
                             .total_cmp(&b.at.distance_xz(me.feet))
@@ -1560,6 +1577,7 @@ impl Reflex {
                 legs: None,
                 band_m: self.band,
                 strafe: 0,
+                glance: false,
             };
         }
         let seen = self.target.and_then(|target| memory.seen(target, now));
@@ -1581,6 +1599,7 @@ impl Reflex {
                 keys: reload,
                 legs,
                 band_m: self.band,
+                glance: !threat.hit,
                 ..Override::default()
             };
         }
@@ -1608,6 +1627,7 @@ impl Reflex {
                     look_at: Some(at + Vec3::new(0.0, 1.4, 0.0)),
                     keys: reload,
                     legs,
+                    glance: true,
                     ..Override::default()
                 },
                 _ => Override {
@@ -1712,6 +1732,7 @@ impl Reflex {
             legs,
             band_m: self.band,
             strafe,
+            glance: false,
         }
     }
 
@@ -3519,11 +3540,12 @@ mod tests {
             (Vec3::new(-10.0, 0.0, -6.0), true),
             (Vec3::new(-40.0, 0.0, -6.0), false),
         ] {
-            let view = view_of(vec![
+            let mut view = view_of(vec![
                 me.clone(),
                 body(1, 1, shooter_at, 0.0),
                 body(3, 0, spot, 0.0),
             ]);
+            view.sounds = vec![shot(1, shooter_at, 1_100)];
             let mut team = TeamKnowledge::default();
             team.danger.push(DangerSpot {
                 at: spot,
