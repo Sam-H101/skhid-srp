@@ -220,12 +220,15 @@ pub fn sense_batteries(
             | BatteryLook::Gone(_, at)
             | BatteryLook::Spawner(_, at) => at,
         };
-        // A battery itself is tried at its top, middle and foot (a box
-        // 0.24 m high, `BATTERY_HEIGHTS`): a ledge or a nook may hide one
-        // and show another. A spot only at the top, as before.
+        // A battery, and a spot believed to hold one, are tried at the
+        // box's top, middle and foot (0.24 m high, `BATTERY_HEIGHTS`): a
+        // ledge or a nook may hide one and show another, and a take's
+        // stand has its line to the middle (a spot on a crate seen empty
+        // from below is forgotten, not tried at every stand). A spawner's
+        // spot only at the top, as before.
         let heights: &[f32] = match look {
-            BatteryLook::Battery(..) => &BATTERY_HEIGHTS,
-            _ => &BATTERY_HEIGHTS[..1],
+            BatteryLook::Battery(..) | BatteryLook::Gone(..) => &BATTERY_HEIGHTS,
+            BatteryLook::Spawner(..) => &BATTERY_HEIGHTS[..1],
         };
         let seen = near(at) || {
             if cast >= tuning.battery_rays {
@@ -467,8 +470,8 @@ mod tests {
     }
 
     /// A battery whose top a low strip hides (a nook's lip) is still seen
-    /// by its middle, as a human sees it; a spawner's spot is tried at the
-    /// top only.
+    /// by its middle, as a human sees it; so is a spot believed to hold one
+    /// that is empty (forgotten).
     #[test]
     fn a_battery_whose_top_is_hidden_is_seen_by_its_middle() {
         use crate::v026g::bots::view::BatteryState;
@@ -506,6 +509,20 @@ mod tests {
         );
         assert!(team.battery(0).is_some());
         assert_eq!(rays.0, 98, "the top, then the middle");
+        // Taken since: the spot, seen empty by its middle, is forgotten.
+        view.batteries = vec![BatteryState::Carried(None)];
+        sense_batteries(
+            &me,
+            &view,
+            &sight,
+            &[],
+            &SenseTuning::default(),
+            &mut team,
+            |_| true,
+            &mut rays,
+        );
+        assert!(team.battery(0).is_none());
+        assert_eq!(rays.0, 96);
     }
 
     #[test]
