@@ -132,7 +132,10 @@ impl Default for SenseTuning {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CheatTuning {
-    /// Every battery's state and place, not only the HUD's.
+    /// Every battery's state and place, not only the HUD's. Off by
+    /// default (the owner's word, 2026-10-16: the all-knowing bots ran
+    /// straight to the batteries): the fair battery knowledge instead
+    /// (`player_bots_behaviour.md` §2.1).
     pub batteries: bool,
     /// A thief's place with this error, metres, this often, ms (0: off).
     pub thief_error_m: f32,
@@ -150,7 +153,7 @@ pub struct CheatTuning {
 impl Default for CheatTuning {
     fn default() -> Self {
         Self {
-            batteries: true,
+            batteries: false,
             thief_error_m: 10.0,
             thief_every_ms: 3_000,
             radar_error_m: 15.0,

@@ -960,12 +960,12 @@ fn a_short_soak_without_the_battery_cheat_finds_and_brings_batteries() {
 
 /// [`four_bots_a_side_fight_and_bring_batteries_to_a_win`] and
 /// [`timed_batteries_are_waited_for_at_the_stations_and_brought_home`]
-/// with the battery cheat off.
+/// with the battery cheat on (off by default).
 #[test]
 #[ignore = "whole matches; run in release"]
-fn without_the_battery_cheat_whole_matches_are_still_won_by_batteries() {
+fn with_the_battery_cheat_whole_matches_are_won_by_batteries() {
     let mut tuning = Tuning::default();
-    tuning.cheats.batteries = false;
+    tuning.cheats.batteries = true;
     let out = soak_tuned(4, 3, 0, None, 900, 1, tuning.clone());
     eprintln!("{}", out.decisions.line());
     assert!(
@@ -1003,9 +1003,9 @@ struct Times {
 /// real-map runs at other budgets.
 fn bench_tuning() -> Tuning {
     let mut tuning = Tuning::default();
-    // The fair battery knowledge instead of the battery cheat.
-    if std::env::var_os("SRP_BENCH_FAIR").is_some() {
-        tuning.cheats.batteries = false;
+    // The battery cheat instead of the fair battery knowledge.
+    if std::env::var_os("SRP_BENCH_CHEAT").is_some() {
+        tuning.cheats.batteries = true;
     }
     if let Some(m) = std::env::var("SRP_BENCH_BATTERY_SIGHT_M")
         .ok()
