@@ -395,7 +395,8 @@ fn grouped(value: u64) -> String {
     out
 }
 
-/// The game's own name of a map (`st_level_0N_name` of its localization).
+/// The game's own name of a map (`st_level_0N_name` of its localization;
+/// London's, level 9, comes with `resources.db.patch_13`).
 fn map_name(lang: Lang, level: u8) -> String {
     match level {
         1 => lang.tr("Rudnya", "Рудня"),
@@ -406,6 +407,7 @@ fn map_name(lang: Lang, level: u8) -> String {
         6 => lang.tr("Mamayev Kurgan", "Мамаїв курган"),
         7 => lang.tr("Vector Laboratory", "Лабораторія \"Вектор\""),
         8 => lang.tr("Cologne", "Кельн"),
+        9 => lang.tr("London", "Лондон"),
         _ => "?".to_owned(),
     }
 }
@@ -905,6 +907,10 @@ mod tests {
         // A name of the game's with quotes in it stays inside its attribute.
         let radar = maps::playable().find(|map| map.level == 3).unwrap().id;
         assert!(row_uk(radar).contains("title=\"РЛС &quot;Восток&quot; · "));
+        // London (level 9) is in no stock data: its name is the patch's.
+        assert_eq!(map_name(Lang::En, 9), "London");
+        assert_eq!(map_name(Lang::Uk, 9), "Лондон");
+        assert_eq!(map_name(Lang::En, 10), "?");
     }
 
     fn row_uk(map_id: u8) -> String {
