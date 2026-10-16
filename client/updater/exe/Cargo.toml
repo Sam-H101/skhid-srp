@@ -1,6 +1,6 @@
 [package]
 name = "skhid-updater"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 # The updater the patched 0.26g launcher starts in the place of the game's

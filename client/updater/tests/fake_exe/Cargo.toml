@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 # A stand-in for the game and for the launcher in the updater's tests: it
-# writes down how it was started and ends. Never shipped.
+# writes down how it was started and ends, or holds a file, or is the
+# launcher's end of its pipe. Never shipped.
 
 [dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Environment", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading"] }
+updater_logic = { package = "skhid-updater-logic", path = "../../logic" }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Environment", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [profile.release]
 lto = true

@@ -400,8 +400,8 @@ enum Done {
     Failed(String),
 }
 
-/// The update: the overlay, then the resource step, then the patch step,
-/// all under the installation lock.
+/// The update: the overlay, then the restore of resources.db, then the
+/// patch step, all under the installation lock.
 fn update(session: &mut Session, layout: &Layout) -> Done {
     let _lock = match win::install_lock(&layout.exe_dir) {
         Ok(lock) => lock,
@@ -417,46 +417,41 @@ fn update(session: &mut Session, layout: &Layout) -> Done {
         Err(message) => return Done::Failed(message),
     };
     let done = overlay(session, layout, &server);
-    // The resource step is best effort unless its plan is required: then
-    // it must be in place before the game is played. It runs at every start
-    // the game may be played after, and with the server only when the
-    // server answered. When this updater or the launcher was replaced, the
-    // new ones start at once and do it.
+    // New Skhid files may need other patches than those checked so far: until
+    // a patch step with the server's list has checked the folder again,
+    // `ready` and a start without the server refuse.
+    if let Done::Installed { .. } = done {
+        patches::overlay_changed(layout);
+    }
+    // The restore and the patch step run at every start the game may be
+    // played after, with the server only when the server answered. When this
+    // updater or the launcher was replaced, the new ones start at once and
+    // do them.
     let server = match &done {
-        Done::UpToDate | Done::Installed { restart: false } => Some(&server),
-        Done::Offline(..) => None,
+        Done::UpToDate | Done::Installed { restart: false } => Ok(&server),
+        Done::Offline(_, reason) => Err(reason.as_str()),
         Done::Installed { restart: true } => {
             log!(
-                "resources: the updater or the launcher was replaced: the resource step is done by the new one"
+                "the updater or the launcher was replaced: the rest of the update is done by the new one"
             );
             return done;
         }
         Done::Stopped | Done::Failed(_) => return done,
     };
-    // A required plan (it grows the game's resources.db) that is not in
-    // place keeps PLAY off: a new exe with an old db crashes.
-    let installed = read_installed(layout);
-    match resources::run(session, layout, server, installed.as_ref()) {
-        resources::Outcome::Ready => {}
+    // Best effort: what an earlier updater wrote into resources.db in place
+    // gets its stock bytes back, once.
+    match resources::run(session, layout, server.ok()) {
+        resources::Outcome::Done => {}
         resources::Outcome::Stopped => return Done::Stopped,
-        resources::Outcome::Blocked(message) => return Done::Failed(message),
     }
-    // The patches of resources.db the server lists: required too, every
-    // one of them checked before the game is played.
+    // The patches of resources.db the server lists: required, every one of
+    // them checked before the game is played.
+    let installed = read_installed(layout);
     let overlay: Vec<&str> = installed
         .iter()
         .flat_map(|installed| installed.files.iter().map(|file| file.name.as_str()))
         .collect();
-    let offline = match &done {
-        Done::Offline(_, reason) => Some(reason.as_str()),
-        _ => None,
-    };
-    match patches::run(
-        session,
-        layout,
-        server.ok_or(offline.unwrap_or("")),
-        &overlay,
-    ) {
+    match patches::run(session, layout, server, &overlay) {
         patches::Outcome::Ready => done,
         patches::Outcome::Stopped => Done::Stopped,
         patches::Outcome::Blocked(message) => Done::Failed(message),
@@ -731,7 +726,7 @@ fn run() -> u32 {
     };
     if options.ready {
         // Read only: no lock, no server, no pipe.
-        return match resources::ready(&layout).and_then(|()| patches::ready(&layout)) {
+        return match patches::ready(&layout) {
             Ok(()) => {
                 log!("exit 0");
                 exit::OK
@@ -775,8 +770,8 @@ fn run() -> u32 {
 
     let code = match update(&mut session, &layout) {
         Done::UpToDate => {
-            // "Checking" clears a file name the resource step left in the
-            // launcher's line.
+            // "Checking" clears a file name the restore or the patch step
+            // left in the launcher's line.
             if session.named_file {
                 session.state(state::CHECKING);
             }

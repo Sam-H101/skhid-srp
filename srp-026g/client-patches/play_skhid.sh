@@ -127,15 +127,15 @@ if [[ $mode == launcher ]]; then
         || die "Launcher exited with an error. See $log"
     exit 0
 fi
-# A release that grows resources.db, and resources.db's patches the server
-# lists, must be in place first: the game with the new exe and the old db
-# crashes. The updater checks it (it reads only); no updater beside this
-# script, as without the launcher: no check.
+# resources.db's patches, the ones the server lists, must be in place first:
+# the exe of a release needs the content of its patches. The updater checks
+# them (it reads only); no updater beside this script, as without the
+# launcher: no check.
 if [[ -f updater_skhid.exe && ! -L updater_skhid.exe ]] \
     && ! "$WINE" updater_skhid.exe ready quiet >>"$log" 2>&1; then
-    die "Skhid has not finished updating the game's files (resources.db), so the game is not started.
+    die "Skhid has not finished updating the game's files (game/resources.db.patch_*), so the game is not started.
 Start the launcher (bash Skhid.sh launcher, or bash play_skhid.sh launcher): it finishes the update.
-Details: updater_skhid.log"
+Details: game/binaries/x86/updater_skhid.log"
 fi
 echo "Starting Survarium. Log: $log"
 args=("-localization=$localization" -mt_allocator=768 -minimum_resources_memory_size=768)
