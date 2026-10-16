@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# usage: release/build-zip [--test] [--ref <commit>] [--work <dir>]
+#
+# Builds the players' ZIP from a fresh worktree of origin/main and compares it
+# with the live one, entry by entry:
+#   1. git fetch origin main; a new worktree of it in <work>/src (never this
+#      checkout, never git stash);
+#   2. the live ZIP from $SKHID_SITE/download; refuses when main's patch
+#      REVISION (patch_026g.py) is not above the live exe's: bump it first;
+#   3. bugtrap.dll and updater_skhid.exe (nix develop ./srp-026g), then
+#      make_client_026g.py $SKHID_GAME ... --pack-zip
+#      --server=$SKHID_GAME_SERVER --localization=$SKHID_LOCALIZATION;
+#   4. prints every entry as same / CHANGED / ADDED / REMOVED against the
+#      live ZIP, and says whether updater_skhid.exe changed.
+#
+#   --test          for the test server: --server=$SKHID_TEST_GAME_SERVER
+#                   (still compared with the live ZIP, so the entries that
+#                   name the server differ too)
+#   --ref <commit>  build that instead of origin/main (a release is built
+#                   from main; this is for trying a branch)
+#   --work <dir>    an empty or new folder for it all (default: a new one
+#                   under $TMPDIR); the ZIP is <work>/Survarium-0.26g-srp-files.zip
+#
+# Reads only. Remove the worktree after with: git worktree remove <work>/src
+. "$(dirname "$0")/lib.sh"
+
+test_server=0 ref=origin/main work=''
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --test) test_server=1; shift ;;
+    --ref) (($# >= 2)) || usage 1; ref=$2; shift 2 ;;
+    --work) (($# >= 2)) || usage 1; work=$2; shift 2 ;;
+    *) die "unknown argument $1 (--help)" ;;
+    esac
+done
+need_cmds git nix curl sha256sum od
+load_env SKHID_GAME SKHID_SITE SKHID_LOCALIZATION
+if ((test_server)); then
+    load_env SKHID_TEST_GAME_SERVER
+    server=$SKHID_TEST_GAME_SERVER
+else
+    load_env SKHID_GAME_SERVER
+    server=$SKHID_GAME_SERVER
+fi
+[[ -d $SKHID_GAME ]] || die "SKHID_GAME: $SKHID_GAME is not a folder"
+if [[ -z $work ]]; then
+    work=$(mktemp -d "${TMPDIR:-/tmp}/skhid-zip.XXXXXX")
+else
+    mkdir -p "$work"
+    [[ -z $(ls -A "$work") ]] || die "$work: not empty"
+    work=$(cd "$work" && pwd)
+fi
+say "working in $work"
+
+# 1. The source.
+if [[ $ref == origin/main ]]; then
+    git -C "$ROOT" fetch --quiet origin main:refs/remotes/origin/main
+fi
+git -C "$ROOT" worktree add --quiet --detach "$work/src" "$ref"
+trap 'say "remove the worktree after: git -C $(q "$ROOT") worktree remove --force $(q "$work/src")"' EXIT
+commit=$(git -C "$work/src" log -1 --format='%h %s')
+say "building $ref: $commit"
+revision=$(sed -n 's/^REVISION = \([0-9][0-9]*\)$/\1/p' "$work/src/srp-026g/client-patches/patch_026g.py")
+is_revision "$revision" || die "no REVISION in patch_026g.py of $ref"
+
+# 2. The live ZIP, and its exe's revision.
+live_url=${SKHID_SITE%/}/download
+status=$(curl -sSL --max-time 600 -o "$work/live.zip" -w '%{http_code}' "$live_url" || true)
+[[ $status == 200 ]] || die "GET $live_url answered $status, not 200"
+exe=game/binaries/x86/survarium_skhid.exe
+live_revision=unknown
+if zip_extract "$work/live.zip" "$exe" "$work/live.exe"; then live_revision=$(exe_revision "$work/live.exe"); fi
+say "patch revision: $revision on $ref, $live_revision live"
+if [[ $live_revision == unknown ]]; then
+    say "WARNING: the live exe's revision cannot be read; compare by hand"
+elif ((revision <= live_revision)); then
+    die "the exe revision did not change ($revision on $ref, $live_revision live): bump REVISION in patch_026g.py first (skill step 2)"
+fi
+
+# 3. The build.
+say "building bugtrap.dll and updater_skhid.exe (log: $work/build.log) ..."
+if ! (cd "$work/src" && nix develop ./srp-026g -c bash -c \
+    'client/bugtrap/build.sh && bash client/updater/build.sh') >"$work/build.log" 2>&1; then
+    tail -n 30 "$work/build.log" >&2
+    die "the build failed (log: $work/build.log)"
+fi
+zip=$work/Survarium-0.26g-srp-files.zip
+(cd "$work/src/srp-026g/client-patches" &&
+    python make_client_026g.py "$SKHID_GAME" "$zip" --pack-zip \
+        --server="$server" --localization="$SKHID_LOCALIZATION") >"$work/make_client.log" 2>&1 || {
+    tail -n 30 "$work/make_client.log" >&2
+    die "make_client_026g.py failed (log: $work/make_client.log)"
+}
+zip_extract "$zip" "$exe" "$work/new.exe" || die "$zip has no $exe"
+built_revision=$(exe_revision "$work/new.exe")
+[[ $built_revision == "$revision" ]] || die "the built exe says revision $built_revision, not $revision"
+
+# 4. Entry by entry.
+declare -A old new
+while read -r sha path; do old[$path]=$sha; done < <(zip_hashes "$work/live.zip")
+while read -r sha path; do new[$path]=$sha; done < <(zip_hashes "$zip")
+say
+say "the new ZIP against the live one ($live_url):"
+changed=0
+while IFS= read -r path; do
+    if [[ -z ${old[$path]:-} ]]; then
+        state=ADDED changed=1
+    elif [[ -z ${new[$path]:-} ]]; then
+        state=REMOVED changed=1
+    elif [[ ${old[$path]} == "${new[$path]}" ]]; then
+        state=same
+    else
+        state=CHANGED changed=1
+    fi
+    printf '  %-8s %s\n' "$state" "$path"
+done < <(printf '%s\n' "${!old[@]}" "${!new[@]}" | LC_ALL=C sort -u)
+((changed)) || say "  (nothing changed)"
+updater=game/binaries/x86/updater_skhid.exe
+say
+if [[ -z ${new[$updater]:-} ]]; then
+    say "updater_skhid.exe: NOT IN THE NEW ZIP"
+elif [[ ${old[$updater]:-} == "${new[$updater]}" ]]; then
+    say "updater_skhid.exe: unchanged (the same file as live)"
+else
+    say "updater_skhid.exe: CHANGED: players get the new updater at their next launcher start"
+fi
+say "Every other change must be explained by a merged change; anything else is unreleased work riding along: stop."
+say
+say "$zip: $(size_of "$zip") bytes, sha256 $(sha256_of "$zip"), revision $revision, server $server"

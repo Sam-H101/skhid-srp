@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# usage: release/upload-patch [--dry-run] <resources.db.patch_<n>>
+#
+# Publishes one patch on the patches server ($SKHID_PATCHES_SSH,
+# $SKHID_PATCHES_DIR, served at $SKHID_PATCHES_URL), never overwriting one:
+#   1. refuses if $SKHID_PATCHES_DIR/<name> is already there;
+#   2. uploads to <name>.tmp, checks its sha256 there, chmod 644, mv into
+#      place (mv -n: an existing file is never replaced);
+#   3. GET $SKHID_PATCHES_URL/<name> must answer 200 with the local file's
+#      sha256.
+# Each write asks y/N first, showing the command. --dry-run prints them only.
+# A published patch is never changed or deleted: a fix is the next revision.
+. "$(dirname "$0")/lib.sh"
+
+file=
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -*) die "unknown option $1 (--help)" ;;
+    *) [[ -z $file ]] || usage 1; file=$1; shift ;;
+    esac
+done
+[[ -n $file ]] || usage 1
+name=${file##*/}
+patch_number "$name" >/dev/null ||
+    die "$name: the name must be resources.db.patch_<n>, n from 1 to 255 without a leading zero"
+[[ -f $file ]] || die "$file: no such file"
+[[ $(head -c 13 "$file") == little-endian ]] || die "$file: not an archive of the game (no \"little-endian\" header)"
+need_cmds ssh curl sha256sum
+load_env SKHID_PATCHES_SSH SKHID_PATCHES_DIR SKHID_PATCHES_URL
+
+sha=$(sha256_of "$file")
+size=$(size_of "$file")
+dir=$(q "$SKHID_PATCHES_DIR")
+url=${SKHID_PATCHES_URL%/}/$name
+say "$name: $size bytes, sha256 $sha"
+
+there=$(on_patches "cd $dir && if test -e $(q "$name"); then sha256sum < $(q "$name"); else echo none; fi")
+if [[ $there != none ]]; then
+    if [[ ${there%% *} == "$sha" ]]; then
+        die "$name is already published, with these same bytes: nothing to do"
+    fi
+    die "$name is already published with OTHER bytes (sha256 ${there%% *}); a published patch is never replaced: make the next revision"
+fi
+
+write_on patches "cat > $dir/$(q "$name.tmp")" "$file"
+if ((!DRY_RUN)); then
+    uploaded=$(on_patches "sha256sum < $dir/$(q "$name.tmp")")
+    [[ ${uploaded%% *} == "$sha" ]] ||
+        die "$name.tmp on the server has sha256 ${uploaded%% *}, not $sha; it is left there as .tmp, nothing published"
+    say "$name.tmp on the server: sha256 $sha, as here"
+fi
+write_on patches "cd $dir && test ! -e $(q "$name") && chmod 644 $(q "$name.tmp") && mv -n $(q "$name.tmp") $(q "$name") && test ! -e $(q "$name.tmp")"
+if ((DRY_RUN)); then
+    say "[dry run] then: GET $url must answer 200 with sha256 $sha"
+    exit 0
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+status=$(http_get "$url" "$work/$name")
+[[ $status == 200 ]] || die "GET $url answered $status, not 200"
+got=$(sha256_of "$work/$name")
+[[ $got == "$sha" ]] || die "GET $url gave sha256 $got, not $sha"
+say "published: $url (200, sha256 $sha)"
+say "next: release/build-server-db"

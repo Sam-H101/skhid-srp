@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# usage: release/build-patch <folder> <revision> [--out <file>]
+#
+# Packs a patch folder into resources.db.patch_<revision>: every file under
+# <folder> goes into the archive at its path there (<folder>/gameplay/x is
+# gameplay/x of the game's file system), by `srp-game-data pack`, which reads
+# the written file back and compares every file with the folder's.
+#
+#   <revision>     the release's patch revision, 1 to 255
+#   --out <file>   where to write it (default ./resources.db.patch_<revision>);
+#                  its name must be resources.db.patch_<revision>, the only
+#                  name the game mounts. Never overwritten.
+#
+# Nothing leaves this machine; next: release/upload-patch <file>.
+. "$(dirname "$0")/lib.sh"
+
+folder='' revision='' out=''
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --out) (($# >= 2)) || usage 1; out=$2; shift 2 ;;
+    -*) die "unknown option $1 (--help)" ;;
+    *)
+        if [[ -z $folder ]]; then folder=$1
+        elif [[ -z $revision ]]; then revision=$1
+        else usage 1; fi
+        shift ;;
+    esac
+done
+[[ -n $folder && -n $revision ]] || usage 1
+is_revision "$revision" || die "$revision: a revision is a number from 1 to 255"
+[[ -d $folder ]] || die "$folder: not a folder"
+name=resources.db.patch_$revision
+out=${out:-$name}
+[[ ${out##*/} == "$name" ]] || die "$out: the file must be called $name (the game mounts no other name)"
+[[ ! -e $out ]] || die "$out: already there; never overwritten"
+
+bin=$(game_data_bin)
+"$bin" pack --dir "$folder" --out "$out"
+say "$name: $(size_of "$out") bytes, sha256 $(sha256_of "$out")"
+say "next: release/upload-patch $out"
