@@ -282,8 +282,9 @@ test_patches_port=$(cat "$T/patches-test.port")
 site_port=$(cat "$T/site.port")
 P=http://127.0.0.1:$patches_port
 
-cp "$here/patches.tsv" "$T/patches.tsv"
-cp "$here/patches-test.tsv" "$T/patches-test.tsv"
+# The lists start empty (their comment lines only), whatever the real ones hold.
+grep "^#" "$here/patches.tsv" >"$T/patches.tsv"
+grep "^#" "$here/patches-test.tsv" >"$T/patches-test.tsv"
 cat >"$T/release.env" <<EOF
 SKHID_JUMP=jump
 SKHID_LIVE=live
