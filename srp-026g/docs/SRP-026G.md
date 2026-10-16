@@ -137,7 +137,7 @@ a project's respawn points, the bundles.
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_GAME_DATA` | unset (the compose file: `/srv/srp/download/server-game-data.db`) | The server's game data. **Required**: without it, or with a file that is missing, damaged or not made by `srp-game-data build`, srp does not start and says why |
+| `SRP_GAME_DATA` | unset (the compose file: `/srv/srp/download/server-game-data.db`) | The server's game data. **Required**: without it, or with a file that is missing, damaged or not made by `srp-game-data build`, srp does not start and says why; nor when it lacks an item, modification or quest an account of `srp.db` (or a kept results screen) names, or an item the code names (`session::v026g::known`, `survarium::v026g::tables::named_items`): srp never throws an item away for that, the data was made without a patch |
 
 The web page lists the data's patches for the players' updater at `GET
 /patches` (`servers/web-server/src/patches.rs`), in the game's order:
@@ -211,7 +211,7 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_GROWING_POPULATION_EXPONENT` | 1 | Which of several matches being played a player joins: the one with the highest (players with it)^this x minutes left |
 | `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
 | `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
-| `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start. (`SRP_PATCH_REVISION_CHECK`, `SRP_UPDATE_HINT` and `SRP_OUTDATED_TEXT` are gone) |
+| `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start, and so does a number under the newest patch of the server's game data (`resources.db.patch_<n>` is released with revision n: an older game lacks its items), with a line that says what to set |
 | `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and when a match starts (`Match found: Alice, Bob vs Carol`) |
 | `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
 | `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
@@ -483,6 +483,7 @@ not prove the notes agree with the client. Format only the files you touched
 cd srp-026g        (the certificates are read from .\certs)
 cargo run --release -p resources-db --bin srp-game-data -- build --dir <the game folder>\game --patch-url http://127.0.0.1/patches --out game-data.db
 set SRP_GAME_DATA=game-data.db
+set SRP_MIN_PATCH_REVISION=<the newest patch's n; leave it out without patches>
 cargo run -p srp
 survarium_srp.exe -localization=ukrainian -splash_screen=0 -server=127.0.0.1:1234 -mt_allocator=768 -minimum_resources_memory_size=768
 ```

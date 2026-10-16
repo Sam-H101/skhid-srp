@@ -76,9 +76,11 @@
 //! - `SRP_SQUADS` (default on), `SRP_SQUADS_OFF_TEXT`: with `off` nobody
 //!   is invited to a squad, and the one who tries is told so in a message
 //!   box (`social.rs`);
-//! - `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255
-//!   stops srp): a game older than that patch revision is refused at its
-//!   sign-in, and its sessions from before in the lobby (`patch_check`);
+//! - `SRP_MIN_PATCH_REVISION` (default none; not a number from 0 to 255,
+//!   or one under the newest patch of the game data, stops srp
+//!   (`check_min_patch_revision`)): a game older than that patch revision
+//!   is refused at its sign-in, and its sessions from before in the lobby
+//!   (`patch_check`);
 //! - `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none):
 //!   lines in the general chat when somebody joins or leaves the search and
 //!   when a match starts, with whom (`queue_chat.rs`);

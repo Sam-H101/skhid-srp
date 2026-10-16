@@ -52,8 +52,12 @@ services:
       # The server's game data (server-game-data.db, made by srp-game-data
       # build from resources.db and the patches the players mount): srp
       # takes every game table from it, offers its patches to the players'
-      # updater at /patches, and does not start without it. Read once, at
-      # start: a release replaces the file and restarts srp26.
+      # updater at /patches, and does not start without it, nor when
+      # SRP_MIN_PATCH_REVISION is under its newest patch or srp.db names an
+      # item it lacks. Read once, at start: a release replaces the file,
+      # sets SRP_MIN_PATCH_REVISION and recreates srp26
+      # (`docker compose up -d --no-deps --force-recreate srp26`; a restart
+      # keeps the old settings of .env).
       - SRP_GAME_DATA=${SRP_GAME_DATA:-/srv/srp/download/server-game-data.db}
       # Where the original game is had (the page's first step). The download
       # above is only the files that go over it.
@@ -89,6 +93,7 @@ services:
       - SRP_SIGN_INS_PER_MINUTE
       - SRP_REGISTRATIONS_PER_DAY
       - SRP_MATCH_GATHER_SECONDS
+      - SRP_MATCH_SEARCH_STEP_SECONDS
       - SRP_MATCH_FILL_PLAYERS
       - SRP_MATCH_QUIET_SECONDS
       - SRP_MATCH_MIN_PLAYERS
@@ -113,9 +118,17 @@ services:
       - SRP_MATCH_MODES
       - SRP_MATCH_MAPS
       - SRP_LOBBY_LINK_TIMEOUT_SECONDS
+      - SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS
+      - SRP_LOBBY_SESSION_GRACE_SECONDS
       - SRP_EXPERIENCE_RATE
       - SRP_MONEY_RATE
       - SRP_REPUTATION_RATE
+      - SRP_ITEM_WEAR
+      - SRP_DROP_CONDITION
+      - SRP_DROP_DEFECT
+      - SRP_DROP_PLAYTIME_BONUS
+      - SRP_DAILY_BONUS
+      - SRP_DAILY_BONUS_RESET_HOUR
       - SRP_CLAN_COST
       - SRP_CLAN_PLAYERS_REQUIRED
       - SRP_CLAN_MAX_MEMBERS
