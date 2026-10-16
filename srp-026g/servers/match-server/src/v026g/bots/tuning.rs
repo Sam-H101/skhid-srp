@@ -235,13 +235,13 @@ pub struct SkillTuning {
 impl Default for SkillTuning {
     fn default() -> Self {
         Self {
-            start: 0.5,
+            start: 0.65,
             min: 0.0,
             max: 1.0,
             step: 0.15,
             kd_low: 0.67,
             kd_high: 1.5,
-            every_s: 60,
+            every_s: 30,
             window_s: 300,
             min_events: 4,
         }
