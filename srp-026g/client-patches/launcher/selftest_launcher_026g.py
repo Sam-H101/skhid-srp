@@ -13,7 +13,7 @@ Checks:
  3. the jump in registry_key::get_string lands on the new code, and the new
     code comes back to the byte after the replaced instructions; the same
     for the Enter key's jump in the message loop;
- 4. the three addresses the launcher opens are the site's, where their
+ 4. the two addresses the launcher opens are the site's, where their
     operands point, and the operands are still relocated;
  5. no relocation touches a changed instruction (but the two disabled ones);
  6. no address of the game's old sites is left in the file;

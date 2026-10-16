@@ -3,12 +3,11 @@
 //! more, a scripted 0.26g client signed in through TLS and holding its
 //! lobby link, and plain HTTP requests as a browser makes them.
 //!
-//! What it shows: the page checks the password a player types as the 0.26g
-//! login keeps it; what the exchange and the admin change reaches the open
-//! game (through the strict client model: nothing a real client would drop
-//! or misread); the operator's text reaches every client and who signs in
-//! later; a ban from the admin page ends the 0.26g lobby link and refuses
-//! the next sign-in.
+//! What it shows: what the admin changes reaches the open game (through
+//! the strict client model: nothing a real client would drop or misread);
+//! the old exchange form changes nothing (it is in the game now); the
+//! operator's text reaches every client and who signs in later; a ban from
+//! the admin page ends the 0.26g lobby link and refuses the next sign-in.
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
@@ -252,49 +251,23 @@ fn the_page_changes_an_account_and_its_open_game_is_told() {
     };
     alice.forget();
 
-    // The exchange: another password changes nothing; the one typed in the
-    // game does, and the game is told the new balance.
-    let wrong = post(
-        web,
-        "/exchange",
-        &[
-            ("user", "WebAlice"),
-            ("password", "not-hers"),
-            ("gold", "1"),
-        ],
-    );
-    assert!(wrong.contains("Wrong user name or password"), "{wrong}");
-    let done = post(
+    // The exchange is in the game now: the form the page had, with the
+    // password typed in the game, is a page that is not there and changes
+    // nothing.
+    let sent = post(
         web,
         "/exchange",
         &[("user", "WebAlice"), ("password", password), ("gold", "3")],
     );
-    assert!(done.contains("Done: 300 silver for 3 gold"), "{done}");
-    alice.until("the new balance", |game| {
-        game.has(|message| {
-            matches!(message, Decoded::Money { generic, premium }
-                if *generic == silver - 300 && *premium == gold + 3)
-        })
-    });
-    // Sold back by the game's own rule.
-    let back = post(
-        web,
-        "/exchange",
-        &[
-            ("user", "WebAlice"),
-            ("password", password),
-            ("gold", "3"),
-            ("way", "sell"),
-        ],
-    );
-    assert!(back.contains("Done: 3 gold for 300 silver"), "{back}");
-    alice.until("the old balance", |game| {
-        game.has(|message| {
-            matches!(message, Decoded::Money { generic, premium }
-                if *generic == silver && *premium == gold)
-        })
-    });
-    alice.forget();
+    assert!(sent.starts_with("HTTP/1.0 404 Not Found\r\n"), "{sent}");
+    {
+        let account = stack.accounts.get(id).unwrap();
+        let account = account.locked();
+        assert_eq!(
+            (account.generic_money, account.premium_money),
+            (silver, gold)
+        );
+    }
 
     // The admin: premium time, a level, reputation. The game gets its
     // account again and its services (the premium hours).

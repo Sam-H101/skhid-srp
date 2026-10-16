@@ -1,8 +1,10 @@
 //! A small website for the people running srp.
 //!
 //! - `/` is a home page: what the project is and where it came from.
-//! - `/exchange` lets a player exchange silver for gold: user name and password,
-//!   then how much gold ([`SILVER_PER_GOLD`] silver each).
+//! - `/exchange` (the 0.26g page only, `GET`) says that silver and gold are
+//!   exchanged in the game now: the SHOP button of the launchers already in
+//!   players' hands opens it ([`v026g::in_the_game_now`]). Nothing is
+//!   exchanged on the page; on the 0.21d page it is "not found".
 //! - `/launcher/…` and `/api/client-files` (the 0.26g page only) are for the
 //!   patched game launcher and its updater ([`launcher`]): the page it shows
 //!   in its window, and which archive `/download` hands out now.
@@ -55,11 +57,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use session::v026g::replays::{Refused, Replays};
-use session::{Ban, LockExt, Net, SessionStore, SignInError};
+use session::{Ban, LockExt, Net, SessionStore};
 
-/// 10 000 silver for 100 gold.
-pub const SILVER_PER_GOLD: u32 = 100;
-/// The most gold one exchange buys.
 /// What the home page tells a new player, fixed at start-up.
 struct Connect {
     /// The login server as the client is told to reach it (`host:port`).
@@ -101,7 +100,6 @@ fn env_text(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-const MAX_EXCHANGE_GOLD: u32 = 10_000;
 const MAX_REQUEST: usize = 4096;
 const MAX_CONNECTIONS: u32 = 64;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -179,18 +177,19 @@ struct Stats {
 enum Form {
     None,
     Home(Stats),
-    Exchange,
     Admin(AdminView),
-    /// The 0.26g page's "not found" and exchange.
+    /// The 0.26g page's "not found".
     None26,
-    Exchange26,
+    /// The 0.26g page's `/exchange`: in the game now, in the launcher's
+    /// language ([`v026g::launcher_code`]).
+    InTheGame26(&'static str),
 }
 
 impl Form {
     fn is_026g(&self) -> bool {
         match self {
-            Self::None | Self::Exchange => false,
-            Self::None26 | Self::Exchange26 => true,
+            Self::None => false,
+            Self::None26 | Self::InTheGame26(_) => true,
             Self::Home(stats) => stats.v026g,
             Self::Admin(view) => view.g26,
         }
@@ -500,7 +499,7 @@ pub fn serve_on(
         _ => "admin off: SRP_ADMIN_TOKEN and SRP_ADMIN_PATH are needed".to_owned(),
     };
     log::info!(
-        "Web server on {} ({} page: exchange, {admin_state})",
+        "Web server on {} ({} page, {admin_state})",
         listener.local_addr()?,
         if game.is_some() { "0.26g" } else { "0.21d" }
     );
@@ -560,14 +559,6 @@ impl Request {
             .iter()
             .find(|(key, _)| key == name)
             .map_or("", |(_, value)| value.trim())
-    }
-
-    /// The field as sent, spaces kept (a password).
-    fn raw(&self, name: &str) -> &str {
-        self.form
-            .iter()
-            .find(|(key, _)| key == name)
-            .map_or("", |(_, value)| value.as_str())
     }
 }
 
@@ -937,8 +928,6 @@ impl Web {
                 }),
                 "",
             ),
-            ("GET", "/exchange") => page(request.lang, Form::Exchange, ""),
-            ("POST", "/exchange") => self.exchange(request, peer),
             ("GET", path) if self.is_admin_page(path, request) => {
                 page(request.lang, Form::Admin(AdminView::default()), "")
             }
@@ -963,115 +952,6 @@ impl Web {
             && request
                 .client
                 .is_some_and(|ip| self.admin_ips.iter().any(|net| net.contains(ip)))
-    }
-
-    fn exchange(&self, request: &Request, peer: &str) -> Response {
-        let lang = request.lang;
-        let user = request.field("user");
-        let wrong_login = lang.tr(
-            "Wrong user name or password.",
-            "Неправильне ім'я користувача або пароль.",
-        );
-        let gold: u32 = match request.field("gold").parse() {
-            Ok(gold) if (1..=MAX_EXCHANGE_GOLD).contains(&gold) => gold,
-            _ => {
-                return page(
-                    lang,
-                    Form::Exchange,
-                    &lang.tr(
-                        &format!("Gold must be 1 to {MAX_EXCHANGE_GOLD}."),
-                        &format!("Золота має бути від 1 до {MAX_EXCHANGE_GOLD}."),
-                    ),
-                );
-            }
-        };
-        let password = request.field("password").as_bytes();
-        let checked = match request.client {
-            Some(ip) => self.store.check_password_from(user, password, ip),
-            None => self.store.check_password(user, password),
-        };
-        let account_id = match checked {
-            Ok(id) => id,
-            Err(SignInError::Banned) => {
-                log::warn!("Exchange for banned account {user:?} from {peer} refused");
-                return page(
-                    lang,
-                    Form::Exchange,
-                    &lang.tr("This account is banned.", "Цей акаунт заблоковано."),
-                );
-            }
-            Err(SignInError::TooManyAttempts | SignInError::TooManyFromAddress) => {
-                return page(
-                    lang,
-                    Form::Exchange,
-                    &lang.tr(
-                        "Too many wrong passwords; wait a minute.",
-                        "Забагато хибних паролів; зачекайте хвилину.",
-                    ),
-                );
-            }
-            Err(_) => {
-                log::warn!("Exchange for {user:?} from {peer}: wrong user name or password");
-                return page(lang, Form::Exchange, &wrong_login);
-            }
-        };
-        let Some(account) = self.store.account(account_id) else {
-            return page(lang, Form::Exchange, &wrong_login);
-        };
-        let cost = gold * SILVER_PER_GOLD;
-        let result = {
-            let mut account = locked(&account);
-            let game = &mut account.game;
-            match (
-                game.generic_money.checked_sub(cost),
-                game.premium_money.checked_add(gold),
-            ) {
-                (Some(silver), Some(total)) => {
-                    game.generic_money = silver;
-                    game.premium_money = total;
-                    Ok((silver, total))
-                }
-                (None, _) => Err(lang.tr(
-                    &format!(
-                        "Not enough silver: {gold} gold costs {cost}, you have {}.",
-                        game.generic_money
-                    ),
-                    &format!(
-                        "Недостатньо срібла: {gold} золота коштує {cost}, у вас {}.",
-                        game.generic_money
-                    ),
-                )),
-                _ => Err(lang.tr(
-                    "That would overflow the gold balance.",
-                    "Баланс золота переповниться.",
-                )),
-            }
-        };
-        match result {
-            Ok((silver, total)) => {
-                self.store.mark_dirty(account_id);
-                self.store.save_soon();
-                log::info!(
-                    "Exchange for {user:?} from {peer}: {cost} silver for {gold} gold \
-                     (now {silver} silver, {total} gold)"
-                );
-                page(
-                    lang,
-                    Form::Exchange,
-                    &lang.tr(
-                        &format!(
-                            "Done: {cost} silver for {gold} gold. Now {silver} silver and \
-                             {total} gold. An open game shows it within a second."
-                        ),
-                        &format!(
-                            "Готово: {cost} срібла за {gold} золота. Тепер {silver} срібла і \
-                             {total} золота. Відкрита гра покаже це за секунду."
-                        ),
-                    ),
-                )
-            }
-            Err(error) => page(lang, Form::Exchange, &error),
-        }
     }
 
     fn admin(&self, request: &Request, peer: &str) -> Response {
@@ -1635,8 +1515,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
         )
     };
     let body = match form {
-        Form::Exchange => exchange_form(lang),
-        Form::Exchange26 => v026g::exchange_form(lang),
+        Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
         Form::Home(stats) => home(lang, stats),
         Form::None | Form::None26 => String::new(),
@@ -1656,13 +1535,12 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
              <title>{}</title><style>{STYLE}</style>\
              <header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
              <span class=tag>{}</span>\
-             <nav><a href=\"/?lang={code}\">{}</a> <a href=\"/exchange?lang={code}\">{}</a>{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>\
+             <nav><a href=\"/?lang={code}\">{}</a>{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>\
              <main>{test_notice}{notice}{body}</main>\
              <footer>{}</footer></html>",
             escape(&page_title(lang, version, test)),
             page_tag(lang, version, test),
             lang.tr("Home", "Головна"),
-            lang.tr("Exchange", "Обмін"),
             escape(&disclaimer),
         ),
     }
@@ -2058,7 +1936,7 @@ fn home(lang: Lang, stats: Stats) -> String {
         )
     };
     format!(
-        "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{start}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section> <p><a class=button href=\"/exchange?lang={}\">{}</a></p>",
+        "<section class=card><h1>{}</h1><p>{}</p><p>{}</p><p class=note><b>{}</b> {}</p>{stats}</section> <section class=card><h2>{}</h2><ol> {original}<li>{}<div class=dl>{download}{hash}</div></li> <li>{start}</li> <li>{}</li></ol></section> <section class=card><h2>{}</h2><ul class=rules>{rules}</ul></section>",
         lang.tr("Skhid", "Схід"),
         if squads {
             lang.tr(
@@ -2111,33 +1989,6 @@ fn home(lang: Lang, stats: Stats) -> String {
             "Увійдіть з будь-яким іменем і паролем: нове ім'я реєструється саме. Запам'ятайте пароль."
         ),
         lang.tr("How matches start", "Як починаються матчі"),
-        lang.code(),
-        if v026g {
-            lang.tr("Exchange silver and gold", "Обміняти срібло й золото")
-        } else {
-            lang.tr("Exchange silver for gold", "Обміняти срібло на золото")
-        },
-    )
-}
-
-fn exchange_form(lang: Lang) -> String {
-    let code = lang.code();
-    format!(
-        "<h1>{}</h1><form method=post action=/exchange autocomplete=off>\
-         <input type=hidden name=lang value={code}>\
-         <label for=u>{}</label><input id=u name=user required maxlength=99>\
-         <label for=p>{}</label><input id=p name=password type=password required maxlength=47>\
-         <label for=g>{}</label><input id=g name=gold type=number min=1 max=10000 required>\
-         <small>{}</small><br><button>{}</button></form>",
-        lang.tr("Silver for gold", "Срібло на золото"),
-        lang.tr("User name", "Ім'я користувача"),
-        lang.tr("Password", "Пароль"),
-        lang.tr("Gold to buy", "Скільки золота купити"),
-        lang.tr(
-            "100 silver for each gold (10 000 silver = 100 gold).",
-            "100 срібла за 1 золота (10 000 срібла = 100 золота)."
-        ),
-        lang.tr("Exchange", "Обміняти"),
     )
 }
 
@@ -2512,64 +2363,22 @@ mod tests {
     }
 
     #[test]
-    fn silver_becomes_gold_for_the_right_password_only() {
+    fn the_0_21d_page_has_no_exchange() {
         let web = web(None);
         web.store.sign_in("fighter", b"secret").unwrap();
-        let (silver, gold) = balances(&web, "fighter");
-
-        let wrong = web.exchange(
+        let before = balances(&web, "fighter");
+        assert_eq!(web.route(&get("/exchange"), "t").status, "404 Not Found");
+        let sent = web.route(
             &post(
                 "/exchange",
-                &[("user", "fighter"), ("password", "nope"), ("gold", "1")],
+                &[("user", "fighter"), ("password", "secret"), ("gold", "1")],
             ),
             "t",
         );
-        assert!(wrong.body.contains("Wrong user name or password"));
-        assert_eq!(balances(&web, "fighter"), (silver, gold));
-
-        let unknown = web.exchange(
-            &post(
-                "/exchange",
-                &[("user", "ghost"), ("password", "x"), ("gold", "1")],
-            ),
-            "t",
-        );
-        assert!(unknown.body.contains("Wrong user name or password"));
-        assert!(web.store.account_id_by_name("ghost").is_none());
-
-        let done = web.exchange(
-            &post(
-                "/exchange",
-                &[("user", "Fighter"), ("password", "secret"), ("gold", "2")],
-            ),
-            "t",
-        );
-        assert!(done.body.contains("Done"), "{}", done.body);
-        assert_eq!(balances(&web, "fighter"), (silver - 200, gold + 2));
-    }
-
-    #[test]
-    fn an_exchange_cannot_spend_silver_that_is_not_there() {
-        let web = web(None);
-        web.store.sign_in("poor", b"secret").unwrap();
-        let before = balances(&web, "poor");
-        let answer = web.exchange(
-            &post(
-                "/exchange",
-                &[("user", "poor"), ("password", "secret"), ("gold", "10000")],
-            ),
-            "t",
-        );
-        assert!(answer.body.contains("Not enough silver"), "{}", answer.body);
-        assert_eq!(balances(&web, "poor"), before);
-        let zero = web.exchange(
-            &post(
-                "/exchange",
-                &[("user", "poor"), ("password", "secret"), ("gold", "0")],
-            ),
-            "t",
-        );
-        assert!(zero.body.contains("Gold must be"));
+        assert_eq!(sent.status, "404 Not Found");
+        assert_eq!(balances(&web, "fighter"), before);
+        let home = web.route(&get("/"), "t").body;
+        assert!(!home.contains("/exchange"), "{home}");
     }
 
     #[test]
@@ -2635,7 +2444,7 @@ mod tests {
         assert!(banned.body.contains("&lt;aimbot&gt;"));
         assert_eq!(
             web.store.sign_in("cheater@x.test", b"secret"),
-            Err(SignInError::Banned)
+            Err(session::SignInError::Banned)
         );
         assert!(web.store.ip_ban("203.0.113.9".parse().unwrap()).is_some());
 
@@ -2834,13 +2643,13 @@ mod tests {
 
     #[test]
     fn a_test_server_says_so_on_every_page() {
-        let plain = page_as(Lang::En, Form::Exchange, "", false, None).body;
+        let plain = page_as(Lang::En, Form::None, "", false, None).body;
         assert!(plain.contains("<title>Skhid · Survarium 0.21d community server</title>"));
         assert!(!plain.contains("class=badge>"));
         assert!(!plain.contains("Test server."));
 
         let url = Some("https://skhid.link");
-        for form in [Form::Exchange, Form::Exchange26, Form::None26] {
+        for form in [Form::None, Form::InTheGame26("en"), Form::None26] {
             let test = page_as(Lang::En, form, "", true, url).body;
             assert!(test.contains(" TEST server</title>"), "{test}");
             assert!(test.contains("<span class=badge>TEST</span>"));
@@ -2881,7 +2690,7 @@ mod tests {
         );
         // Without the setting the pages are as they were.
         assert!(
-            !page(Lang::En, Form::Exchange, "")
+            !page(Lang::En, Form::None, "")
                 .body
                 .contains("Survarium 0.26g</a>")
         );
@@ -2889,11 +2698,11 @@ mod tests {
 
     #[test]
     fn pages_are_branded_unofficial_and_localized() {
-        let en = page(Lang::En, Form::Exchange, "").body;
-        let uk = page(Lang::Uk, Form::Exchange, "").body;
+        let en = page(Lang::En, Form::None, "").body;
+        let uk = page(Lang::Uk, Form::None, "").body;
         assert!(en.contains("СХІД") && en.contains("SKHID") && en.contains("unofficial"));
         assert!(uk.contains("СХІД") && uk.contains("Неофіційний ком'юніті"));
-        assert!(uk.contains("Срібло на золото") && en.contains("Silver for gold"));
+        assert!(uk.contains("Головна") && en.contains(">Home</a>"));
     }
 
     #[test]

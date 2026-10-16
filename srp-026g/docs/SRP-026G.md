@@ -36,7 +36,7 @@ survarium_srp.exe -server=<host>:1234
       |                     skills, quests, chat, friends, squads, the queue, results
       3. match   UDP 1236   lockstep: the server relays inputs and compares world
                             hashes; the world itself comes from a patched client
-      web page   HTTP 8088  home, silver and gold exchange, the admin page
+      web page   HTTP 8088  home, download, the launcher's page, the admin page
 ```
 
 0.26g has no browser server (port 80) and no presence pings. The 0.21d
@@ -353,14 +353,13 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   (`SRP_GAME_URL`); step two, the download of the few files that go over it;
   the launch line (`-localization=… -server=<host>:<port> -mt_allocator=768
   -minimum_resources_memory_size=768`); players online; how matches start.
-- `/exchange`: user name, the password typed in the game, an amount of gold,
-  and the way. Gold for silver is the game's own action
-  (`rules::exchange_premium`, 100 silver a gold); silver for gold is srp's
-  own, at the same rate (the client has no such button). 1 to 10 000 gold a
-  time. The password is checked as the 0.26g login keeps it (argon2id of the
-  lower-case hex SHA-1 of what was typed), with the same lockout; an unknown
-  name is never registered; nothing of it is logged. An account that never
-  signed in to the 0.26g lobby has nothing to exchange.
+- `/exchange` (`GET`): a short page saying that silver and gold are
+  exchanged in the game now (the lobby's exchange window,
+  `client-patches/README.md`, "Lobby exchange"), in the language of its
+  `?lang=` (`en`, `ua`, `ru`, `de`, `pl`, as the launcher sends them; else
+  the page's own). The SHOP button of the launchers players already have
+  opens it (the launcher has no SHOP button since). The page exchanges
+  nothing: a `POST` there is "not found" like any address it does not have.
 - `/resources/<sha256>` (64 lower-case hex digits; `GET` and `HEAD`): the
   file of that name in the folder `resources` beside `SRP_DOWNLOAD_FILE`, as
   `/download` hands out its file (a `Range` too, five at a time in slots of
@@ -495,8 +494,8 @@ cd srp-026g && cargo test --workspace --offline
   purchase, the queue, a whole match, the rewards and the results screen, to
   a second sign-in.
 - `servers/srp/tests/v026g_web.rs`: the same servers with the web page: the
-  exchange with a typed password, the admin's changes reaching an open game,
-  the operator's text, a ban ending the lobby link.
+  admin's changes reaching an open game, the old exchange form changing
+  nothing, the operator's text, a ban ending the lobby link.
 - Every server message has a byte-exact test, and every push in the tests
   goes through the strict client model.
 

@@ -173,7 +173,7 @@ services:
       # server on 80 and no presence pings).
       - "${SRP26_LOBBY_PORT:-2235}:${SRP26_LOBBY_PORT:-2235}/udp"
       - "${SRP26_MATCH_PORT:-2236}:${SRP26_MATCH_PORT:-2236}/udp"
-      # The web page (exchange, admin) is plain HTTP: this host only. Reach
+      # The web page (home, launcher, admin) is plain HTTP: this host only. Reach
       # it through an SSH tunnel, or put HTTPS in front (the caddy26 service
       # below, on a host whose 443 is free).
       - "127.0.0.1:${SRP26_WEB_PORT:-8098}:8088/tcp"

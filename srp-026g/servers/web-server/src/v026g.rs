@@ -1,17 +1,12 @@
-//! The page over the 0.26g stack (`srp::v026g`): the exchange and the admin
-//! act on the 0.26g accounts ([`GameAccounts`]) and tell the lobby, so an
-//! open game shows the change.
+//! The page over the 0.26g stack (`srp::v026g`): the admin acts on the
+//! 0.26g accounts ([`GameAccounts`]) and tells the lobby, so an open game
+//! shows the change.
 //!
-//! - The password a player types is checked as the 0.26g login server keeps
-//!   it: the client sends the SHA-1 of the password as 40 lower-case hex
-//!   characters, and the store keeps the argon2id hash of that digest
-//!   (`SessionStore::sign_in_with_digest_from`). So the page makes the same
-//!   digest of what was typed and gives it to `check_password_from`. Neither
-//!   the password nor the digest is logged or kept.
-//! - Gold for silver is the game's own action (`47 04`,
-//!   [`rules::exchange_premium`]). Silver for gold is srp's own, at the same
-//!   rate ([`rules::buy_premium`]): the stock client has no such button, the
-//!   lobby's patched exchange window (`client-patches/exchange`) has.
+//! - Silver and gold are exchanged in the game only: the lobby's exchange
+//!   window (`client-patches/exchange`, `47 04`, `rules::exchange_premium`
+//!   and `rules::buy_premium`). `GET /exchange`, which the SHOP button of
+//!   the launchers already in players' hands opens, says so in the
+//!   launcher's language ([`in_the_game_now`]); nothing else of it is left.
 //! - The admin's tabs: money, the account (premium time, experience or
 //!   level, reputation), an item by its `items_dict` id or name, and the
 //!   operator's text (`A5` / `A6`) for everyone in the lobby. Bans,
@@ -21,16 +16,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use session::LockExt;
+use session::v026g::GameAccounts;
 use session::v026g::account::{self, Account, MAX_LEVEL};
-use session::v026g::{GameAccounts, rules};
-use session::{LockExt, SignInError};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::lobby::FULL_CONDITION;
 
-use super::{
-    AdminView, Form, Lang, MAX_EXCHANGE_GOLD, Request, Response, Stats, Web, apply, delta, page,
-    unix_now,
-};
+use super::{AdminView, Form, Lang, Request, Response, Stats, Web, apply, delta, page, unix_now};
 
 /// What the page tells the 0.26g lobby. srp joins it to the lobby's inbox
 /// (`lobby_server::v026g::Inbox`); this crate does not know the lobby.
@@ -124,8 +116,6 @@ pub struct Game {
     pub replays: Option<Arc<session::v026g::replays::Replays>>,
 }
 
-/// The longest password the 0.26g client sends (its buffer is 48 bytes).
-const MAX_PASSWORD_LEN: usize = 47;
 /// The longest line of the operator's text: the client's buffers are 64
 /// bytes (`social.md` §5).
 pub(crate) const MAX_TEXT_LEN: usize = 63;
@@ -135,17 +125,6 @@ const MAX_GIVEN_ITEMS: u32 = 8;
 const MAX_GIVEN_UNITS: u32 = 100_000;
 /// The factions the lobby shows a reputation for.
 const FACTIONS: std::ops::RangeInclusive<u8> = 1..=4;
-
-/// SHA-1 as the 0.26g client prints it: 40 lower-case hex characters.
-fn sha1_hex(bytes: &[u8]) -> [u8; 40] {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = [0; 40];
-    for (pair, byte) in hex.chunks_mut(2).zip(openssl::sha::sha1(bytes)) {
-        pair[0] = HEX[usize::from(byte >> 4)];
-        pair[1] = HEX[usize::from(byte & 0xF)];
-    }
-    hex
-}
 
 /// Where the experience of `level` starts.
 fn level_start(level: u8) -> u32 {
@@ -184,8 +163,7 @@ impl Web {
                 }),
                 "",
             ),
-            ("GET", "/exchange") => page(lang, Form::Exchange26, ""),
-            ("POST", "/exchange") => self.exchange_026g(request, peer),
+            ("GET", "/exchange") => page(lang, Form::InTheGame26(launcher_code(request)), ""),
             ("GET", path) if self.is_admin_page(path, request) => page(
                 lang,
                 Form::Admin(AdminView {
@@ -200,139 +178,6 @@ impl Web {
                 content_type: super::ContentType::Html,
                 body: page(lang, Form::None26, &lang.tr("Not found.", "Не знайдено.")).body,
             },
-        }
-    }
-
-    /// The account `user` has with the typed `password`, checked as the
-    /// 0.26g login keeps it. An unknown name is refused, never registered.
-    fn check_typed_password(&self, request: &Request) -> Result<u32, SignInError> {
-        let user = request.field("user");
-        // As typed: the game hashes every byte, spaces too.
-        let password = request.raw("password").as_bytes();
-        if password.is_empty() || password.len() > MAX_PASSWORD_LEN {
-            return Err(SignInError::WrongPassword);
-        }
-        let digest = sha1_hex(password);
-        match request.client {
-            Some(ip) => self.store.check_password_from(user, &digest, ip),
-            None => self.store.check_password(user, &digest),
-        }
-    }
-
-    fn exchange_026g(&self, request: &Request, peer: &str) -> Response {
-        let lang = request.lang;
-        let answer = |message: String| page(lang, Form::Exchange26, &message);
-        let Some(game) = &self.game else {
-            return answer(String::new());
-        };
-        let user = request.field("user");
-        let wrong_login = lang.tr(
-            "Wrong user name or password.",
-            "Неправильне ім'я користувача або пароль.",
-        );
-        let gold: u32 = match request.field("gold").parse() {
-            Ok(gold) if (1..=MAX_EXCHANGE_GOLD).contains(&gold) => gold,
-            _ => {
-                return answer(lang.tr(
-                    &format!("Gold must be 1 to {MAX_EXCHANGE_GOLD}."),
-                    &format!("Золота має бути від 1 до {MAX_EXCHANGE_GOLD}."),
-                ));
-            }
-        };
-        let sell = request.field("way") == "sell";
-        let account_id = match self.check_typed_password(request) {
-            Ok(id) => id,
-            Err(SignInError::Banned) => {
-                log::warn!("Exchange for banned account {user:?} from {peer} refused");
-                return answer(lang.tr("This account is banned.", "Цей акаунт заблоковано."));
-            }
-            Err(SignInError::TooManyAttempts | SignInError::TooManyFromAddress) => {
-                return answer(lang.tr(
-                    "Too many wrong passwords; wait a minute.",
-                    "Забагато хибних паролів; зачекайте хвилину.",
-                ));
-            }
-            Err(_) => {
-                log::warn!("Exchange for {user:?} from {peer}: wrong user name or password");
-                return answer(wrong_login);
-            }
-        };
-        let Some(account) = game.accounts.get(account_id) else {
-            return answer(lang.tr(
-                "Sign in to the game once first: this account has nothing to exchange yet.",
-                "Спершу увійдіть у гру: цьому акаунту ще нічого обмінювати.",
-            ));
-        };
-        let rate = rules::PREMIUM_EXCHANGE_RATE;
-        let silver = gold.saturating_mul(rate);
-        let result = {
-            let mut account = account.locked();
-            let done = if sell {
-                // The game's own exchange (`47 04`).
-                match rules::exchange_premium(&mut account, gold) {
-                    Ok(_) => Ok(()),
-                    Err(rules::ActionError::NotEnoughPremiumMoney) => Err(lang.tr(
-                        &format!("Not enough gold: you have {}.", account.premium_money),
-                        &format!("Недостатньо золота: у вас {}.", account.premium_money),
-                    )),
-                    Err(_) => Err(lang.tr(
-                        "That would overflow the silver balance.",
-                        "Баланс срібла переповниться.",
-                    )),
-                }
-            } else {
-                // The lobby's exchange window does the same (`47 04`).
-                match rules::buy_premium(&mut account, gold) {
-                    Ok(_) => Ok(()),
-                    Err(rules::ActionError::NotEnoughMoney) => Err(lang.tr(
-                        &format!(
-                            "Not enough silver: {gold} gold costs {silver}, you have {}.",
-                            account.generic_money
-                        ),
-                        &format!(
-                            "Недостатньо срібла: {gold} золота коштує {silver}, у вас {}.",
-                            account.generic_money
-                        ),
-                    )),
-                    _ => Err(lang.tr(
-                        "That would overflow the gold balance.",
-                        "Баланс золота переповниться.",
-                    )),
-                }
-            };
-            done.map(|()| (account.generic_money, account.premium_money))
-        };
-        match result {
-            Ok((silver_now, gold_now)) => {
-                game.accounts.mark_dirty(account_id);
-                game.lobby.account_changed(account_id);
-                let (en, uk) = if sell {
-                    (
-                        format!("{gold} gold for {silver} silver"),
-                        format!("{gold} золота за {silver} срібла"),
-                    )
-                } else {
-                    (
-                        format!("{silver} silver for {gold} gold"),
-                        format!("{silver} срібла за {gold} золота"),
-                    )
-                };
-                log::info!(
-                    "Exchange for {user:?} from {peer}: {en} (now {silver_now} silver, \
-                     {gold_now} gold)"
-                );
-                answer(lang.tr(
-                    &format!(
-                        "Done: {en}. Now {silver_now} silver and {gold_now} gold. An open game \
-                         shows it within a second."
-                    ),
-                    &format!(
-                        "Готово: {uk}. Тепер {silver_now} срібла і {gold_now} золота. Відкрита \
-                         гра покаже це за секунду."
-                    ),
-                ))
-            }
-            Err(error) => answer(error),
         }
     }
 
@@ -642,34 +487,65 @@ impl Web {
     }
 }
 
-/// The exchange form of the 0.26g page: both ways.
-pub(crate) fn exchange_form(lang: Lang) -> String {
-    let code = lang.code();
-    let rate = rules::PREMIUM_EXCHANGE_RATE;
-    format!(
-        "<h1>{}</h1><form method=post action=/exchange autocomplete=off>\
-         <input type=hidden name=lang value={code}>\
-         <label for=u>{}</label><input id=u name=user required maxlength=99>\
-         <label for=p>{}</label><input id=p name=password type=password required maxlength=47>\
-         <label class=check><input type=radio name=way value=buy checked> {}</label>\
-         <label class=check><input type=radio name=way value=sell> {}</label>\
-         <label for=g>{}</label><input id=g name=gold type=number min=1 max={MAX_EXCHANGE_GOLD} required>\
-         <small>{}</small><br><button>{}</button></form>",
-        lang.tr("Silver and gold", "Срібло і золото"),
-        lang.tr("User name", "Ім'я користувача"),
-        lang.tr(
-            "Password (the one you type in the game)",
-            "Пароль (той, що ви вводите у грі)"
+/// The language of `/exchange?lang=<code>` as the launcher's SHOP button
+/// sends it: `ru`, `de` and `pl` as they are (this page has its text in
+/// them too), else the page's own ([`Lang::pick`]: `ua`, `uk`, `en`, the
+/// browser's).
+pub(crate) fn launcher_code(request: &Request) -> &'static str {
+    let query = request
+        .target
+        .split_once('?')
+        .map_or("", |(_, query)| query);
+    let chosen = query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "lang")
+        .map_or("", |(_, value)| value);
+    match chosen.to_ascii_lowercase().as_str() {
+        "ru" => "ru",
+        "de" => "de",
+        "pl" => "pl",
+        _ => request.lang.code(),
+    }
+}
+
+/// `/exchange`: the exchange is in the game now. The launchers already in
+/// players' hands open this address with their SHOP button, so it answers
+/// in the launcher's five languages (`code` of [`launcher_code`]).
+pub(crate) fn in_the_game_now(code: &str) -> String {
+    let (code, title, text) = match code {
+        "uk" => (
+            "uk",
+            "Тепер у грі",
+            "Срібло й золото тепер обмінюються в грі: у лобі натисніть на своє золото чи \
+             срібло вгорі екрана.",
         ),
-        lang.tr("Buy gold with silver", "Купити золото за срібло"),
-        lang.tr("Sell gold for silver", "Продати золото за срібло"),
-        lang.tr("Gold", "Золото"),
-        lang.tr(
-            &format!("{rate} silver for each gold, either way."),
-            &format!("{rate} срібла за 1 золота, в обидва боки."),
+        "ru" => (
+            "ru",
+            "Теперь в игре",
+            "Серебро и золото теперь обмениваются в игре: в лобби нажмите на своё золото или \
+             серебро вверху экрана.",
         ),
-        lang.tr("Exchange", "Обміняти"),
-    )
+        "de" => (
+            "de",
+            "Jetzt im Spiel",
+            "Silber und Gold werden jetzt im Spiel getauscht: Klicke in der Lobby oben auf dein \
+             Gold oder Silber.",
+        ),
+        "pl" => (
+            "pl",
+            "Teraz w grze",
+            "Srebro i złoto wymienia się teraz w grze: w lobby kliknij swoje złoto lub srebro u \
+             góry ekranu.",
+        ),
+        _ => (
+            "en",
+            "In the game now",
+            "Silver and gold are exchanged in the game now: in the lobby, click your gold or \
+             silver at the top of the screen.",
+        ),
+    };
+    format!("<section class=card lang={code}><h1>{title}</h1><p>{text}</p></section>")
 }
 
 #[cfg(test)]
