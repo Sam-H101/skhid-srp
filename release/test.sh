@@ -21,7 +21,7 @@ root=$(dirname "$here")
 command -v python3 >/dev/null || { echo "test.sh: python3 is needed" >&2; exit 1; }
 
 if command -v shellcheck >/dev/null; then
-    (cd "$here" && shellcheck -x -s bash lib.sh build-patch upload-patch build-server-db build-zip deploy rollback setup-patches-server release.sh test.sh &&
+    (cd "$here" && shellcheck -x -s bash lib.sh build-patch upload-patch add-mirror build-server-db build-zip deploy rollback setup-patches-server release.sh test.sh &&
         shellcheck -s sh host-rollback.sh)
     echo "ok   shellcheck"
 else
@@ -44,6 +44,8 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$T/bin" "$T/patches" "$T/patches-test" "$T/site/api" "$T/live/download" "$T/work" "$T/volume" "$T/docker/tags"
+# The scripts' cache (the URLs checked, the stock db's sha256) is the test's.
+export XDG_CACHE_HOME=$T/cache
 
 # The stand-ins.
 cat >"$T/bin/ssh" <<'EOF'
@@ -87,7 +89,7 @@ state=$TEST_DIR/docker
 offered() {
     if [[ -f $live/server-game-data.db ]]; then
         "$SRP_GAME_DATA_BIN" info "$live/server-game-data.db" |
-            sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) url \(.*\)$/\1 \2 \3/p'
+            sed -n 's/^  resources\.db\.\(patch_[0-9]*\) [0-9]* bytes sha256 \([0-9a-f]*\) urls \(.*\)$/\1 \2 \3/p'
     fi
 }
 backup() { # what srp does when it opens srp.db: VACUUM INTO backups/srp-<unix>.db
@@ -107,7 +109,7 @@ started() { # the container runs: what srp does at a start
     echo running >"$state/state"
     echo "start $n $(cat "$state/running")" >>"$TEST_DIR/volume/srp.db"
     if [[ ! -e $TEST_DIR/patches-stale ]]; then
-        offered | jq -Rn '[inputs | split(" ") | {key: .[0], value: {sha256: .[1], url: .[2]}}] | from_entries' >"$TEST_DIR/site/patches"
+        offered | jq -Rn '[inputs | split(" ") | {key: .[0], value: {sha256: .[1], urls: .[2:]}}] | from_entries' >"$TEST_DIR/site/patches"
     fi
     rm -f "$TEST_DIR/state/maint"
 }
@@ -199,6 +201,49 @@ EOF
 }
 serve "$T/patches" "$T/patches.port"
 serve "$T/patches-test" "$T/patches-test.port"
+# A mirror: /files/<name> of $T/mirror; /hop/<k>/<name> redirects k times
+# (on this host) before it is /files/<name>; /page/<name> is a web page
+# (Google Drive's virus-scan page). Each request is a line of
+# $T/mirror.log: its path and its Range header (- for none).
+mkdir -p "$T/mirror"
+python3 - "$T/mirror" "$T/mirror.port" "$T/mirror.log" >/dev/null 2>&1 <<'EOF' &
+import http.server, os, sys
+root, port_file, log = sys.argv[1:4]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def answer(self, status, body, kind="application/octet-stream", location=None):
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        if location:
+            self.send_header("Location", location)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError:
+            pass
+    def do_GET(self):
+        open(log, "a").write(f"{self.path} {self.headers.get('Range', '-')}\n")
+        parts = self.path.split("/")
+        if len(parts) == 4 and parts[1] == "hop":
+            hops = int(parts[2])
+            target = f"/hop/{hops - 1}/{parts[3]}" if hops > 1 else f"/files/{parts[3]}"
+            # As Google's: a redirect says it is a web page; only the last
+            # answer is the file's.
+            return self.answer(302, b"<html>Moved</html>", "text/html; charset=UTF-8", location=target)
+        if len(parts) == 3 and parts[1] == "page":
+            return self.answer(200, b"<!DOCTYPE html><html><title>Google Drive - Virus scan warning</title></html>",
+                               "text/html; charset=utf-8")
+        if len(parts) == 3 and parts[1] == "files" and os.path.isfile(os.path.join(root, parts[2])):
+            return self.answer(200, open(os.path.join(root, parts[2]), "rb").read())
+        return self.answer(404, b"not found\n", "text/plain")
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+open(port_file, "w").write(str(server.server_address[1]))
+server.serve_forever()
+EOF
+pids+=($!)
+for _ in $(seq 50); do [[ -s $T/mirror.port ]] && break; sleep 0.1; done
+M=http://127.0.0.1:$(cat "$T/mirror.port")
 # The site: its files, and as srp does, the launcher's places (the
 # maintenance countdown of $T/state/maint), the admin page at
 # /$(cat $T/state/admin-path) (its maintenance tab; the token of
@@ -430,7 +475,7 @@ sha12=$(sha256sum <"$T/r12/resources.db.patch_12" | cut -d' ' -f1)
 out=$(cd "$T/work" && "$here/build-server-db" --out "$T/work/sgd.db" 2>&1) || fail "build-server-db: $out"
 check "build-server-db builds" test -f "$T/work/sgd.db"
 check "build-server-db prints the offered list" \
-    has "$out" "  patch_3 sha256 $sha3 url $P/resources.db.patch_3"
+    has "$out" "  patch_3 sha256 $sha3 urls $P/resources.db.patch_3"
 check "build-server-db: a published file not in the list is not offered" bash -c "! grep -q patch_9 <<<\"\$1\"" _ "$out"
 check "the data is made of the stock db and the listed patches" quiet "$bin" check "$T/work/sgd.db" --db "$T/resources.db" \
     --patch "$patch=$P/resources.db.patch_3" --patch "$T/r12/resources.db.patch_12=$P/resources.db.patch_12"
@@ -449,7 +494,68 @@ expect_refused "build-server-db refuses a list out of order" "not above the row 
     env SKHID_RELEASE_ENV="$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/bad.tsv|")" "$here/build-server-db" --out "$T/work/sgd2.db"
 check "build-server-db: no file left by a refusal" test ! -e "$T/work/sgd2.db"
 out=$("$here/build-server-db" --test --out "$T/work/sgd-test.db" 2>&1) || fail "build-server-db --test: $out"
-check "build-server-db --test: the test list, the test URLs" has "$out" "  patch_12 sha256 $sha12 url http://127.0.0.1:$test_patches_port/resources.db.patch_12"
+check "build-server-db --test: the test list, the test URLs" has "$out" "  patch_12 sha256 $sha12 urls http://127.0.0.1:$test_patches_port/resources.db.patch_12"
+
+# Mirrors: add-mirror, a row of several URLs, build-server-db of it. On a
+# copy of the list (the live one stays that of sgd.db, which deploy takes).
+size3=$(stat -c %s "$patch")
+cp "$patch" "$T/mirror/resources.db.patch_3"
+# The patch's size, other bytes: an older file under the mirror's name.
+{ head -c $((size3 - 1)) "$patch"; printf '\377'; } >"$T/mirror/wrong_3"
+wrong3=$(sha256sum <"$T/mirror/wrong_3" | cut -d' ' -f1)
+cp "$T/patches.tsv" "$T/mirrored.tsv"
+menv=$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/mirrored.tsv|")
+am=(env SKHID_RELEASE_ENV="$menv" "$here/add-mirror")
+check "--help is the usage" has "$("$here/add-mirror" --help)" "usage: release/add-mirror"
+expect_refused "add-mirror: a patch not in the list" "is not in $T/mirrored.tsv" "${am[@]}" resources.db.patch_5 "$M/files/x"
+expect_refused "add-mirror: not a patch's name" "a patch's name is resources.db.patch_<n>" "${am[@]}" patch_3 "$M/files/x"
+for bad in "ftp://127.0.0.1/x" "http://user:pw@127.0.0.1/x" "http://127.0.0.1/a b" "http://127.0.0.1/a#b" "http://127.0.0.1/" "127.0.0.1/x"; do
+    expect_refused "add-mirror: a URL the updater does not take ($bad)" "is not a URL the players' updater takes" \
+        "${am[@]}" resources.db.patch_3 "$bad"
+done
+expect_refused "add-mirror: a URL the row has" "is in the row of resources.db.patch_3 already" \
+    "${am[@]}" resources.db.patch_3 "$P/resources.db.patch_3"
+expect_refused "add-mirror: a web page in the place of the file" "answers with a web page (text/html; charset=utf-8)" \
+    "${am[@]}" resources.db.patch_3 "$M/page/resources.db.patch_3"
+expect_refused "add-mirror: other bytes" "gave sha256 $wrong3, not $sha3" "${am[@]}" resources.db.patch_3 "$M/files/wrong_3"
+expect_refused "add-mirror: no such file" "answers 404, not 200" "${am[@]}" resources.db.patch_3 "$M/files/none"
+expect_refused "add-mirror: six redirects, as the updater refuses them" "hop/6/resources.db.patch_3 answers" \
+    "${am[@]}" resources.db.patch_3 "$M/hop/6/resources.db.patch_3"
+check "add-mirror: a refusal changes no row" cmp -s "$T/patches.tsv" "$T/mirrored.tsv"
+check "add-mirror: a refusal is not in the cache" bash -c "! grep -q 127.0.0.1:${M##*:}/ $T/cache/skhid-release/patch-urls.checked 2>/dev/null"
+out=$("${am[@]}" resources.db.patch_3 "$M/hop/5/resources.db.patch_3" 2>&1) || fail "add-mirror: $out"
+check "add-mirror: five redirects are followed, the URL added to the row" grep -qxF \
+    "$(printf 'resources.db.patch_3\t%s\t%s\t%s %s' "$sha3" "$size3" "$P/resources.db.patch_3" "$M/hop/5/resources.db.patch_3")" "$T/mirrored.tsv"
+check "add-mirror: every other line as it was" test "$(grep -v '^resources.db.patch_3' "$T/mirrored.tsv")" = "$(grep -v '^resources.db.patch_3' "$T/patches.tsv")"
+check "add-mirror: the URL is in the cache" grep -qxF "$sha3 $size3 $M/hop/5/resources.db.patch_3" "$T/cache/skhid-release/patch-urls.checked"
+out=$("${am[@]}" resources.db.patch_3 "$M/files/resources.db.patch_3" 2>&1) || fail "add-mirror: $out"
+check "add-mirror: says the order" has "$out" "now has 3 URLs, tried in this order"
+check "add-mirror: says to commit, and the next release" has "$out" "commit it; players get it with the next release"
+: >"$T/mirror.log"
+out=$(env SKHID_RELEASE_ENV="$menv" "$here/build-server-db" --out "$T/work/sgd-mirrors.db" 2>&1) || fail "build-server-db, mirrors: $out"
+check "build-server-db: the data offers the mirrors in their order" has "$out" \
+    "  patch_3 sha256 $sha3 urls $P/resources.db.patch_3 $M/hop/5/resources.db.patch_3 $M/files/resources.db.patch_3"
+check "build-server-db: a mirror checked before is asked for its first bytes only" \
+    bash -c "test -s $T/mirror.log && ! grep -v ' bytes=0-12\$' $T/mirror.log"
+check "build-server-db: says so" has "$out" "mirror $M/files/resources.db.patch_3: as checked before"
+check "the data is made of the list with its mirrors" quiet "$bin" check "$T/work/sgd-mirrors.db" --db "$T/resources.db" \
+    --patch "$patch=$P/resources.db.patch_3 $M/hop/5/resources.db.patch_3 $M/files/resources.db.patch_3" \
+    --patch "$T/r12/resources.db.patch_12=$P/resources.db.patch_12"
+mv "$T/mirror/resources.db.patch_3" "$T/mirror/kept_3"
+expect_refused "build-server-db: a mirror that no longer gives the patch" \
+    "resources.db.patch_3: $M/hop/5/resources.db.patch_3 answers 404 now (it gave the file before)" \
+    env SKHID_RELEASE_ENV="$menv" "$here/build-server-db" --out "$T/work/sgd-m2.db"
+mv "$T/mirror/kept_3" "$T/mirror/resources.db.patch_3"
+# The list's own rules for a row's URLs.
+nine=$(for n in 1 2 3 4 5 6 7 8; do printf ' %s/files/m%s' "$M" "$n"; done)
+for case in "$P/resources.db.patch_3  $M/x|one space apart" "$P/resources.db.patch_3 $M/x $M/x|is there twice" \
+    "$P/resources.db.patch_3$nine|9 URLs; the players' updater takes at most 8" \
+    "$P/resources.db.patch_3 ftp://127.0.0.1/x|ftp://127.0.0.1/x is not a URL the players' updater takes" \
+    "$M/x $P/resources.db.patch_3|$M/x is not $P/resources.db.patch_3"; do
+    printf 'resources.db.patch_3\t%s\t%s\t%s\n' "$sha3" "$size3" "${case%%|*}" >"$T/bad.tsv"
+    expect_refused "the list refuses a row: ${case#*|}" "${case#*|}" \
+        env SKHID_RELEASE_ENV="$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/bad.tsv|")" "$here/build-server-db" --out "$T/work/sgd2.db"
+done
 
 # setup-patches-server
 printf 'other.example {\n\timport stalker\n}\n' >"$T/Caddyfile"
@@ -813,6 +919,37 @@ check "release --dry-run: shows what /patches will offer" has "$out" "  patch_14
 check "release --dry-run: shows the swap and the restart" has "$out" "docker compose up -d --no-deps --force-recreate srp26"
 check "release --dry-run: shows the build" has "$out" "build srp26"
 check "release --dry-run: says so" has "$out" "dry run: nothing was planned, uploaded or changed"
+
+# The preflight checks every URL of every row, mirrors too: once whole,
+# then (the cache, across runs) by their first bytes.
+rm -f "$T/cache/skhid-release/patch-urls.checked"
+: >"$T/mirror.log"
+export SKHID_RELEASE_ENV
+SKHID_RELEASE_ENV=$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/mirrored.tsv|")
+run quiet --dry-run --minutes 2 || fail "release.sh --dry-run, mirrors: $out"
+check "release: checks every URL of the list" has "$out" \
+    "the offered-patch list: 2 patch(es), each on the patches server (patches) with its sha256, and its 4 URL(s) giving it"
+check "release: ... each mirror downloaded whole the first time" \
+    bash -c "grep -qx '/files/resources.db.patch_3 -' $T/mirror.log && grep -qx '/hop/5/resources.db.patch_3 -' $T/mirror.log"
+check "release: ... and kept in the cache" test "$(grep -c " $M/" "$T/cache/skhid-release/patch-urls.checked")" = 2
+check "release: shows the mirrors /patches will offer" has "$out" \
+    "  patch_3 $sha3 $P/resources.db.patch_3 $M/hop/5/resources.db.patch_3 $M/files/resources.db.patch_3"
+: >"$T/mirror.log"
+run quiet --dry-run --minutes 2 || fail "release.sh --dry-run, mirrors again: $out"
+check "release: the next run asks the mirrors for their first bytes only" \
+    bash -c "test -s $T/mirror.log && ! grep -v ' bytes=0-12\$' $T/mirror.log"
+mv "$T/mirror/resources.db.patch_3" "$T/mirror/kept_3"
+run quiet --dry-run --minutes 2 || true
+check "release: a mirror that no longer gives the patch is a problem" has "$out" \
+    "  - $T/mirrored.tsv: resources.db.patch_3: $M/files/resources.db.patch_3 answers 404 now (it gave the file before)"
+mv "$T/mirror/kept_3" "$T/mirror/resources.db.patch_3"
+printf 'resources.db.patch_3\t%s\t%s\t%s %s\nresources.db.patch_12\t%s\t%s\t%s\n' "$sha3" "$size3" "$P/resources.db.patch_3" \
+    "$M/page/resources.db.patch_3" "$sha12" "$(stat -c %s "$T/r12/resources.db.patch_12")" "$P/resources.db.patch_12" >"$T/page.tsv"
+SKHID_RELEASE_ENV=$(changed_env "s|^SKHID_PATCH_LIST=.*|SKHID_PATCH_LIST=$T/page.tsv|")
+run quiet --dry-run --minutes 2 || true
+check "release: a mirror that is a web page is a problem" has "$out" \
+    "resources.db.patch_3: $M/page/resources.db.patch_3 answers with a web page"
+SKHID_RELEASE_ENV=$T/release.env
 
 # A no at the first question: nothing at all.
 run no --minutes 1 || true

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# usage: release/add-mirror [--test] <resources.db.patch_<n>> <url>
+#
+# Adds a mirror of a published patch: another URL the players' updater may
+# download it from when the URLs before it fail (it tries a patch's URLs in
+# their order). The row of <name> in the offered-patch list
+# release/patches.tsv gets <url> at its end:
+#   1. the row must be there, without <url>, with fewer than 8 URLs, and
+#      <url> must have the form the updater takes (http:// or https://, a
+#      host name or a bare IPv4 address, an optional port, a path; no
+#      credentials, no #, no space, quote or backslash);
+#   2. GET <url> as the updater fetches it (up to 5 redirects, http and
+#      https only) must answer 200 with the file itself, not a web page,
+#      of the row's size and sha256 (a whole download, kept in the URL
+#      cache, ~/.cache/skhid-release/patch-urls.checked, so the release's
+#      preflight does not download it again);
+#   3. the URL is added to the row: commit the list. Players get it with
+#      the next release (release/build-server-db builds the server data of
+#      the list; srp's /patches offers what that data names).
+#
+# Google Drive: share the file with "anyone with the link" and give
+#   https://drive.usercontent.google.com/download?id=<id>&export=download&confirm=t
+# (the id of its link .../file/d/<id>/view). The drive.google.com/uc form
+# answers a large file with a "cannot scan for viruses" page, which the
+# updater and this script refuse.
+#
+# A mirror is taken out of a row by hand (the URLs are one space apart); the
+# first URL, on the patches server, stays.
+#
+#   --test   the test environment's list, release/patches-test.tsv
+. "$(dirname "$0")/lib.sh"
+
+name='' url='' which=live
+while (($#)); do
+    case $1 in
+    -h | --help) usage ;;
+    --test) which='test'; shift ;;
+    -*) die "unknown option $1 (--help)" ;;
+    *)
+        if [[ -z $name ]]; then name=$1; elif [[ -z $url ]]; then url=$1; else usage 1; fi
+        shift ;;
+    esac
+done
+[[ -n $name && -n $url ]] || usage 1
+patch_number "$name" >/dev/null ||
+    die "$name: a patch's name is resources.db.patch_<n>, n from 1 to 255 without a leading zero"
+need_cmds curl sha256sum
+load_env
+use_patches "$which"
+read_patch_list
+
+row=$(list_row "$name")
+[[ -n $row ]] || die "$name is not in $PATCH_LIST: publish it first (release/upload-patch)"
+read -r _ sha size urls <<<"$row"
+read -r -a each <<<"$urls"
+is_patch_url "$url" || die "$url is not a URL the players' updater takes for a patch (http:// or https://, a host name or a bare IPv4 address, an optional port, a path; no credentials, no #, no space, quote or backslash)"
+for known in "${each[@]}"; do
+    [[ $known != "$url" ]] || die "$url is in the row of $name already"
+done
+((${#each[@]} < MAX_PATCH_URLS)) ||
+    die "$name has $MAX_PATCH_URLS URLs already: the players' updater takes no more"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+say "$name: $size bytes, sha256 $sha; downloading $url as the updater does ..."
+check_patch_url "$url" "$sha" "$size" "$work" full || die "$URL_PROBLEM; not added to $PATCH_LIST"
+say "$url gives $name: 200, $size bytes, sha256 $sha"
+
+# The row, its URLs one more; every other line as it was.
+new=$PATCH_LIST.new.$$
+awk -v name="$name" -v url="$url" 'BEGIN { FS = OFS = "\t" }
+    { line = $0; sub(/\r$/, "", line) }
+    line !~ /^#/ && split(line, field, "\t") == 4 && field[1] == name && !done {
+        print field[1], field[2], field[3], field[4] " " url; done = 1; next }
+    { print }' "$PATCH_LIST" >"$new"
+[[ $(grep -c . "$new") == "$(grep -c . "$PATCH_LIST")" ]] || { rm -f "$new"; die "$PATCH_LIST: the row could not be changed"; }
+mv "$new" "$PATCH_LIST"
+read_patch_list
+[[ $(list_row "$name") == "$name $sha $size $urls $url" ]] || die "$PATCH_LIST: the row of $name is not what was meant now; look at it"
+say "added to $PATCH_LIST: $name now has $((${#each[@]} + 1)) URLs, tried in this order:"
+for known in "${each[@]}" "$url"; do say "  $known"; done
+if [[ $which == test ]]; then flag=' --test'; else flag=''; fi
+say "commit it; players get it with the next release (release/release.sh$flag; release/build-server-db$flag alone)"

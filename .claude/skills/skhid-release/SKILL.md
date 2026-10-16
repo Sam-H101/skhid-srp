@@ -63,14 +63,40 @@ the same without `--dry-run`, from a terminal: it asks y/N twice.
 
 The patches players get are an explicit, committed list:
 `release/patches.tsv` (live) and `release/patches-test.tsv` (test), one
-`<name> <sha256> <size> <url>` row per patch, tabs between, in revision
-order. The server data is built of exactly those rows and `/patches`
-offers exactly those; a file on the patches server that is not listed is
-offered to no one. `release/upload-patch` (and `release.sh --resources`)
-adds the row when it publishes: **commit the list with the release's
-record**. A row is never changed (a published patch is never replaced; a
-fix is the next revision). The preflight checks every row against the
-patches server (size, sha256, served at its URL).
+`<name> <sha256> <size> <urls>` row per patch, tabs between, in revision
+order. `<urls>` is the patch's URLs, one space apart, in the order the
+players' updater tries them: the patches server's (`$SKHID_PATCHES_URL/<name>`,
+always first), then mirrors; 1 to 8, none twice. The server data is built
+of exactly those rows and `/patches` offers exactly those; a file on the
+patches server that is not listed is offered to no one.
+`release/upload-patch` (and `release.sh --resources`) adds the row when it
+publishes: **commit the list with the release's record**. A row's patch is
+never changed (a published patch is never replaced; a fix is the next
+revision); only its mirrors may be. The preflight checks every row against
+the patches server (size, sha256) and every URL of it (below).
+
+**Mirrors.** `release/add-mirror [--test] <resources.db.patch_<n>> <url>`
+downloads the file from `<url>` as the updater does (up to 5 redirects,
+http and https only), checks it is not a web page and has the row's size
+and sha256, and appends the URL to the row; commit the list. Players get a
+mirror with the next release (the server data names the URLs; srp's
+`/patches` offers them). A mirror is removed by hand (the first URL stays).
+For **Google Drive**, share the file with "anyone with the link" and add
+`https://drive.usercontent.google.com/download?id=<id>&export=download&confirm=t`
+(the id of the link `.../file/d/<id>/view`): the `drive.google.com/uc`
+form answers a large file with a "cannot scan for viruses" HTML page,
+which the updater and the scripts refuse. The updater tries the URLs in
+order and moves on at any failure (no connection, another status than 200,
+a web page, cut short, another sha256); PLAY stays off only when every URL
+failed. There is no download resume: a broken download is fetched again
+whole.
+
+The checks of every URL (release.sh's preflight, build-server-db for the
+mirrors, add-mirror) download it whole once and keep the result per (URL,
+sha256) in `~/.cache/skhid-release/patch-urls.checked` (`$XDG_CACHE_HOME`
+if set): later runs ask such a URL for its first bytes only (200 or 206,
+not a web page, the archive's `little-endian` header). Delete a line, or
+the file, to have a URL downloaded whole again.
 
 ## release/release.sh
 
@@ -99,7 +125,10 @@ everything while the countdown runs, and at its end swaps it all in at once
    the updater's one-time restore to the stock resources.db fetches them);
    srp26's container and its image ID, which must be what `srp-026g:latest`
    names (else a restart would run an image no release made); the list's
-   rows on the patches server; patch_12 offered from revision 12 on; with
+   rows on the patches server, and every URL of every row giving the file
+   (as the updater fetches it, not a web page, the size and sha256; whole
+   the first time, then from the cache above); patch_12 offered from
+   revision 12 on; with
    `--resources`: the name is `resources.db.patch_<main's REVISION>`,
    srp-game-data reads it over the stock db, it is neither published nor
    listed yet. Last, which server-code files differ, and which settings
@@ -268,7 +297,8 @@ shows the command, unless release.sh, already given the go-ahead, runs it):
 |---|---|---|
 | `release/build-patch <folder> <rev> [--out <file>]` | packs a folder into `resources.db.patch_<rev>` (read back and compared) | a local file |
 | `release/upload-patch [--test] [--dry-run] <file>` | publishes one patch: `.tmp`, sha256 there, `chmod 644`, `mv -n`, GET must be 200 with the sha256, then its row in the list; never replaces one | the patches server, the list |
-| `release/build-server-db [--test] [--out <file>]` | `server-game-data.db` from the stock db and the list's patches (each GET 200 with the row's size and sha256) | a local file |
+| `release/add-mirror [--test] <name> <url>` | another URL of a listed patch: downloaded as the updater does, not a web page, the row's size and sha256, then appended to the row | the list (and the URL cache) |
+| `release/build-server-db [--test] [--out <file>]` | `server-game-data.db` from the stock db and the list's patches (each first URL GET 200 with the row's size and sha256; each mirror checked as above), `srp-game-data build --patch "<file>=<urls>"` | a local file |
 | `release/build-zip [--test] [--ref <commit>] [--work <dir>]` | the players' ZIP from a fresh worktree of origin/main (never this checkout, never `git stash`): `--server`, `--site`, `--localization`, no resources.db regions; refuses an unbumped revision; entries against the site's ZIP | a worktree, the ZIP |
 | `release/deploy --zip --server-data --revision [--label] [--dry-run]` | the swap on its own, in a window planned by hand: the release folder, the checks, the rollback on failure | the live host |
 | `release/rollback [--test] [--keep-db] [<folder>]` | a release folder's rollback | the target |
@@ -285,9 +315,19 @@ nixpkgs#shellcheck -c release/test.sh`); it sends nothing anywhere.
   normal). A later patch overrides files of earlier ones and adds new files;
   a patch can't delete. `n` is the **revision** the patch was released in.
 - The updater asks the game server for `GET /patches`
-  (`{"patch_12": {"sha256": "…", "url": "…"}, …}`), downloads the missing
-  ones, checks every patch's sha256, deletes local patches not in the list,
-  and keeps PLAY off until all match.
+  (`{"patch_12": {"sha256": "…", "urls": ["…", "…"]}, …}`), downloads the
+  missing ones from the first URL that gives each, checks every patch's
+  sha256, deletes local patches not in the list, and keeps PLAY off until
+  all match. It hashes a patch file only when it changed (its size, time
+  or file ID), the list changed for it, or its last hash is a week old;
+  `updater_skhid.exe check` hashes them all (the repair).
+- Updater 0.3.0 reads `urls`; 0.2.0 reads only `url`. The release that
+  ships 0.3.0 ships the ZIP and the server (which lists `urls`) together:
+  a 0.2.0 asks for the overlay first, installs 0.3.0, and leaves the patch
+  step to it (the launcher restarts it at once); it never reads the new
+  list. A rollback past it puts 0.2.0 back the same way (0.2.0 cannot
+  read the list 0.3.0 kept beside it, so a start without the server keeps
+  PLAY off until 0.2.0 has run once with it).
 - The **patches server** is plain file storage: `$SKHID_PATCHES_URL`
   (files in `$SKHID_PATCHES_DIR` on `$SKHID_PATCHES_SSH`). Patch files there
   are never deleted or changed.
