@@ -9,6 +9,28 @@ release that made it what it is now.
 
 ---
 
+## 16 Oct, 08:27 — Game update 12: Duty exoskeleton, bandit balaclava (update required)
+
+Start `Skhid.bat`: the launcher updates the game and then downloads the new
+game content, one file of 86 MB. PLAY turns on once it is in place and
+checked. An older game can no longer sign in.
+
+- **New armour: Duty exoskeleton.** Level 15, at Renaissance from rank 10
+  (Colonel), 300,000 silver. Body armour 0.87, head 0.72, isolation 0.70,
+  weight 35 kg. Takes the usual exoskeleton modifications. It is not found in
+  matches.
+- **New mask: bandit balaclava.** Level 8, at the Black Market from rank 5,
+  10,000 silver. Armour 30, isolation 15, weight 1 kg. It can also drop in
+  matches.
+- **Starting a match on a slow connection:** a player who loads late now gets
+  the other players' entries together with the world. Before, that player
+  could go out of step about 3 seconds into the match.
+- **Crash reports** now say when an old `shell_32.dll` left in the Windows
+  temporary folder caused the crash.
+- **Game content now comes as separate downloads.** Later content (items,
+  maps) comes the same way: the launcher fetches only what is new. Your
+  `resources.db` is put back to the original.
+
 ## 15 Oct, 20:02 — Fewer and shorter desyncs, outdated games stopped at sign-in
 
 - **An outdated game is stopped at sign-in** with the game's own "You're
