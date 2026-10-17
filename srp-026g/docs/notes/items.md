@@ -221,13 +221,16 @@ The server (`session::v026g::items_rules`):
 - Persistence: as before (each host's records in its `upgrades` column);
   any account loads unchanged.
 
-A game without patch 30 sends `46 02` without the host: the lobby cannot
-read it and refuses it (`84 46 st_cannot_relocate_item`, the request kind's
-text); the cosmetic stays on the item, and the window shows the slot empty
-until it is opened again. Its `83 46 02` reader would take the cosmetic off
-the first item holding it (the host after it is not read). The release asks
-for the patch's revision (`SRP_MIN_PATCH_REVISION`), so such a game does not
-sign in.
+A game without patch 30 sends `46 02` without the host. Until 2026-10-17
+the lobby could not read it and refused it (`84 46
+st_cannot_relocate_item`, "неможливо перемістити ...", seen in a local test
+with a weapon scope); now it reads host 0 and takes the cosmetic off the
+first item of the inventory holding it, which is what that game's own
+`83 46 02` reader does (find_if 0x277CF0; the host after the cosmetic is
+not read), so the two agree. With the cosmetic on several items that may
+not be the item the window showed; patch 30 names it. The release asks for
+the patch's revision (`SRP_MIN_PATCH_REVISION`), so such a game does not
+sign in to the players' server.
 
 **Weapon attachments** would use the same records and the same patch, but
 the client has no window for them: `UpgradeWindow` has the three decal

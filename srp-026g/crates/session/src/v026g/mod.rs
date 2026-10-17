@@ -176,6 +176,15 @@ impl GameAccounts {
             }
             if account.repair() || uncovered > 0 {
                 log::warn!("0.26g account {account_id} was not consistent; repaired");
+                for (host, record, why) in items_rules::upgrades_taken_off(&kept, &account) {
+                    log::warn!(
+                        "0.26g account {account_id}: upgrade {} (dict id {}, slot {}) taken off \
+                         item {host}: {why}",
+                        record.id,
+                        record.a,
+                        record.param
+                    );
+                }
                 dirty.insert(account_id);
             }
             saved.insert(account_id, kept);

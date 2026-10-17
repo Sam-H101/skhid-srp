@@ -408,7 +408,14 @@ impl<'a> Core<'a> {
                             self.handle(from, *message, now);
                         }
                         Err(error) => {
-                            log::warn!("A lobby message was not read: {error}");
+                            // The bytes too (at most 64), to see what a
+                            // client sent that the reader does not take.
+                            let shown = &payload[..payload.len().min(64)];
+                            let hex: String = shown.iter().map(|b| format!("{b:02x}")).collect();
+                            log::warn!(
+                                "A lobby message was not read: {error} ({} bytes: {hex})",
+                                payload.len()
+                            );
                             self.unreadable(from, id);
                         }
                     }

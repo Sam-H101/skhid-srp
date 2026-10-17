@@ -2,6 +2,7 @@
 //! push carries, and the pushes of a sign-in in the order the client needs
 //! (`docs/notes/lobby.md` §3).
 
+use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::lobby::{
     self, AccountBody, ItemDescr, Kit, KitSlot, MINUTES_TO_MAINTENANCE, Modification,
     NO_PROTECTION, OwnAccount, QuestRecord, ServerMessage, Upgrade, WireError, limits,
@@ -42,9 +43,17 @@ pub fn item_descr_at(item: &Item, now: u64) -> ItemDescr {
             .filter(|&&(id, state)| table.is_known(id, state))
             .map(|&(id, state)| Modification { id, state })
             .collect(),
+        // A record whose dict id the data lacks (a withdrawn scope variant)
+        // would have the client build the item with a modification it does
+        // not have; the load takes such records off, this is the last guard.
         upgrades: item
             .upgrades
             .iter()
+            .filter(|upgrade| {
+                u16::try_from(upgrade.a)
+                    .ok()
+                    .is_some_and(|dict_id| Dictionary::shared().item(dict_id).is_some())
+            })
             .map(|upgrade| Upgrade {
                 id: upgrade.id,
                 a: upgrade.a,

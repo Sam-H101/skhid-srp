@@ -1729,6 +1729,70 @@ mod tests {
         }
     }
 
+    /// A scope on a weapon reaches the match as its record: the owned scope
+    /// item's id and the variant made for the weapon (whose modification
+    /// the client applies, `survarium::v026g::scopes`), in slot 3; the
+    /// client's reader of the static info takes it as it is.
+    #[test]
+    fn a_scope_on_a_weapon_reaches_the_match_as_its_variant() {
+        use session::v026g::account::Upgrade as Record;
+        use survarium::v026g::dictionary::Dictionary;
+        use survarium::v026g::lobby::FULL_CONDITION;
+        use survarium::v026g::match_msgs::static_info::{
+            MatchOptions, SCORE_WEIGHTS, StaticInfo, parse_payload,
+        };
+
+        let dictionary = Dictionary::shared();
+        // A new account's kit, which a match loads; its weapon gets the
+        // scope.
+        let mut account = Account::new("Alice");
+        let weapon = [7, 10]
+            .into_iter()
+            .find_map(|slot| account.kits[0].slots[slot])
+            .expect("a new account's weapon")
+            .item_id;
+        // 0.26g's Leupold stands for a shop scope and its 1P69 (362) for
+        // the variant made for the weapon (the test data has none; the wire
+        // sends no record whose dict id the data lacks, and the record is
+        // otherwise carried as it is).
+        let scope = account.add_item(69, FULL_CONDITION);
+        let record = Record {
+            id: scope,
+            a: 362,
+            value: 0,
+            param: 3,
+        };
+        account.item_mut(weapon).unwrap().upgrades = vec![record];
+
+        let profile = match_profile(&account, 0, 0, 0);
+        let item = profile
+            .items
+            .iter()
+            .find(|item| item.instance_id == weapon)
+            .expect("the worn weapon");
+        assert_eq!(
+            item.upgrades,
+            [Upgrade {
+                id: scope,
+                unknown_4: 362,
+                unknown_8: 0,
+                param: 3,
+            }]
+        );
+        // The scope item itself is in no kit: not in the match.
+        assert!(profile.items.iter().all(|item| item.instance_id != scope));
+        let options = MatchOptions {
+            players: vec![profile.clone()],
+            map_id: maps::playable().next().unwrap().id,
+            match_id: 0x1234,
+            match_level: 1,
+            score_weights: SCORE_WEIGHTS,
+        };
+        let info = StaticInfo::new(&options, dictionary).expect("a client can hold it");
+        let (_, read) = parse_payload(&info.payload(0).unwrap(), dictionary).unwrap();
+        assert_eq!(read.players[0].items, profile.items);
+    }
+
     #[test]
     fn each_teams_bots_take_the_roles_by_the_shares() {
         use BotRole::*;

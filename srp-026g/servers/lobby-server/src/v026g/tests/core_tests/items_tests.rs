@@ -33,6 +33,11 @@ mod ask {
         (0x46, body(2, &[1, upgrade, host]))
     }
 
+    /// `46 02 <kit> <upgrade>`: a client without patch 30 names no host.
+    pub fn detach_stock(upgrade: u32) -> (u8, Vec<u8>) {
+        (0x46, body(2, &[1, upgrade]))
+    }
+
     /// `46 05 <kit> <host> <upgrade> <u64>`.
     pub fn place(host: u32, upgrade: u32, value: u64) -> (u8, Vec<u8>) {
         let mut body = body(5, &[1, host, upgrade]);
@@ -428,6 +433,76 @@ fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
         })
     );
     assert_same_items(&mut world, alice);
+    world.assert_clean();
+}
+
+/// A client without patch 30 (every released revision) takes an upgrade off
+/// with `46 02 <kit> <upgrade>`: it is answered, and the upgrade comes off
+/// the first item of the inventory holding it, where the client's own
+/// answer handling takes it off too. Before 2026-10-17 it was refused as
+/// cut short (the owner's "неможливо перемістити приціл").
+#[test]
+fn a_client_without_patch_30_takes_an_upgrade_off_its_first_holder() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let first = give(&mut world, alice, "edge_torso_2", &[]);
+    let second = give(&mut world, alice, "bm_torso_1", &[]);
+    let camo = give(&mut world, alice, "camo_city", &[]);
+    for vest in [first, second] {
+        world.ask(alice, ask::attach(vest, camo, 3));
+    }
+    world.take(alice);
+    world.ask(alice, ask::detach_stock(camo));
+    let decoded = world.take(alice);
+    assert_eq!(denial(&decoded, 0x46), None);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeDetached {
+            upgrade_item_id: camo,
+            host_item_id: 0
+        })
+    );
+    let wears =
+        |world: &World, vest: u32| !world.account(alice).item(vest).unwrap().upgrades.is_empty();
+    assert!(!wears(&world, first) && wears(&world, second));
+    assert_same_items(&mut world, alice);
+    world.assert_clean();
+}
+
+/// The players' game data before the release patch has no scope variant
+/// (`survarium::v026g::scopes`): no scope goes on a weapon, the stock
+/// scope items are not sold, and a `46 01` for one is refused with the
+/// game's text and the client's window put right. The rules with a pair
+/// table are `session::v026g::items_rules`' tests.
+#[test]
+fn a_scope_is_refused_while_the_game_data_has_no_variant() {
+    use survarium::v026g::prices;
+    use survarium::v026g::scopes::ScopeFits;
+    assert!(ScopeFits::shared().is_empty());
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let svd = give(&mut world, alice, "svd", &[]);
+    let rifle = give(&mut world, alice, "ak_74m", &[]);
+    let scopes = ["scope_pso1", "scope_leupold", "scope_giperon"]
+        .map(|name| give(&mut world, alice, name, &[]));
+    for scope in scopes {
+        assert!(prices::price(world.account(alice).item(scope).unwrap().dict_id).is_none());
+        for host in [svd, rifle] {
+            world.ask(alice, ask::attach(host, scope, 3));
+            let decoded = world.take(alice);
+            assert_eq!(
+                denial(&decoded, 0x46).as_deref(),
+                Some("st_cannot_upgrade_item")
+            );
+            assert!(
+                decoded
+                    .iter()
+                    .any(|m| matches!(m, Decoded::Inventory { .. }))
+            );
+            assert_same_items(&mut world, alice);
+        }
+    }
+    assert!(world.account(alice).item(svd).unwrap().upgrades.is_empty());
     world.assert_clean();
 }
 

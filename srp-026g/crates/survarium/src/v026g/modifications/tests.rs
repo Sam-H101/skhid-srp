@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::v026g::dictionary::Dictionary;
+use crate::v026g::scopes::SCOPE_SLOT;
 
 fn dict(name: &str) -> u16 {
     Dictionary::shared().item_named(name).unwrap().dict_id
@@ -224,6 +225,47 @@ fn cosmetics_go_into_their_slots() {
     assert!(upgrade_slots(dict("ak_74m"), camo).is_empty());
     assert!(upgrade_slots(vest, dict("ak_74m")).is_empty());
     assert!(upgrade_slots(vest, 9999).is_empty());
+}
+
+#[test]
+fn a_scope_goes_on_a_weapon_it_has_a_variant_for() {
+    use crate::v026g::scopes::fixtures::{self, AK_74N_PSO_1, COBRA, LONE_SCOPE, PSO_1, SVD_COBRA};
+    let fits = fixtures::fits();
+    let (ak, ak_premium, svd) = (dict("ak_74n"), dict("ak_74n_premium"), dict("svd"));
+    let (vest, camo) = (dict("edge_torso_2"), dict("camo_city"));
+    for weapon in [ak, ak_premium] {
+        assert_eq!(upgrade_slots_in(fits, weapon, PSO_1), [SCOPE_SLOT]);
+        assert_eq!(record_dict_in(fits, weapon, PSO_1), AK_74N_PSO_1);
+    }
+    assert_eq!(upgrade_slots_in(fits, svd, COBRA), [SCOPE_SLOT]);
+    assert_eq!(record_dict_in(fits, svd, COBRA), SVD_COBRA);
+    // No variant for the pair, a scope no variant names, a variant or
+    // 0.26g's own PSO-1 as the item, a vest as the host: nothing.
+    for (host, upgrade) in [
+        (svd, PSO_1),
+        (dict("ak_74m"), PSO_1),
+        (ak, LONE_SCOPE),
+        (ak, AK_74N_PSO_1),
+        (ak, 304),
+        (vest, PSO_1),
+    ] {
+        assert!(
+            upgrade_slots_in(fits, host, upgrade).is_empty(),
+            "{host} {upgrade}"
+        );
+    }
+    // Cosmetics as before; their record is their own id.
+    assert_eq!(upgrade_slots_in(fits, vest, camo), [CAMO_SLOT]);
+    assert_eq!(record_dict_in(fits, vest, camo), camo);
+    assert_eq!(record_slots_in(fits, vest, camo), [CAMO_SLOT]);
+    // A record holds the variant made for its weapon, nothing else.
+    assert_eq!(record_slots_in(fits, ak, AK_74N_PSO_1), [SCOPE_SLOT]);
+    assert!(record_slots_in(fits, svd, AK_74N_PSO_1).is_empty());
+    assert!(record_slots_in(fits, ak, PSO_1).is_empty());
+    assert!(record_slots_in(fits, vest, SVD_COBRA).is_empty());
+    // The players' data before the patch: no scope goes on anything.
+    assert!(upgrade_slots(svd, 304).is_empty());
+    assert!(upgrade_slots(dict("rem_700"), 69).is_empty());
 }
 
 #[test]
