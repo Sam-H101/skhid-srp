@@ -2140,7 +2140,7 @@ fn a_kit_change_before_play_is_a_life_more_for_the_supplies_used() {
     // Two lives (one death): at most 4.
     assert_eq!(used(0), [(medkit, 4)]);
     // A kit change before play began, a respawn in place with the new
-    // kit's medkits (patch 30): three lives, and all 5 were used.
+    // kit's medkits (patch 31): three lives, and all 5 were used.
     assert_eq!(used(1), [(medkit, 5)]);
 }
 

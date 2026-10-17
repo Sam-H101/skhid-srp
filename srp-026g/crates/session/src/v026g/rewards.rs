@@ -240,7 +240,7 @@ pub struct PlayerResult {
     pub longest_killstreak: u16,
     /// Its kit choices for a tick before play began (the match server's
     /// `PlayerResult::kit_changes`): each may have been a respawn in place
-    /// with the new kit's supplies (patch 30), a life more than its deaths
+    /// with the new kit's supplies (patch 31), a life more than its deaths
     /// for what the match used.
     pub kit_changes: u16,
     /// What the player had left in the last trusted snapshot: alive or

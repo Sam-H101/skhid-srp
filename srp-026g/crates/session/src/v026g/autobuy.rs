@@ -23,7 +23,7 @@
 //!      (`respawns + 1` times the most a kit's slots hold of the item: a
 //!      life takes at most its slots' counts out of the store, 0x2FCC4A;
 //!      a respawn is a death or a kit change before play began, which the
-//!      games of patch 30 make a respawn in place);
+//!      games of patch 31 make a respawn in place);
 //!    - for ammo, never more than the bullets the statistics counted
 //!      (event 22), except buckshot, whose round flies as ten bullets (its
 //!      config's `buckshot: 10`) while it is not known whether the counter

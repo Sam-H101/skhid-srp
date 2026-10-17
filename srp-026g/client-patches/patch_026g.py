@@ -45,6 +45,8 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425B00 forward_scroll_026g.asm -o forward_scroll_026g.section.bin
     (checked in). "Watch replay"'s link code comes from replay_link_026g.asm:
         nasm -f bin -DCAVE=0xA425220 replay_link_026g.asm -o replay_link_026g.section.bin
+    (checked in). One upgrade on several items comes from shared_upgrades_026g.asm:
+        nasm -f bin -DCAVE=0xA425700 shared_upgrades_026g.asm -o shared_upgrades_026g.section.bin
     (checked in). A kit chosen before the start comes from kit_change_026g.asm:
         nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
@@ -225,13 +227,25 @@ Patches:
   server, before the patches' mount): only `replay <8 hex> <32 hex> <64 hex>
   <1..10 digits>` starts updater_skhid.exe of this exe's folder with the
   command line `updater_skhid.exe <link>`; anything else does nothing;
-- a kit chosen before the match starts is played at once (patch 30, with
-  the late join, client_patch.md section 3.28): the respawn rule's tick
+- one upgrade (a camouflage, a decal) on several items at once (patch 30,
+  with the late join, client_patch.md section 3.28). Taking an upgrade off
+  named no item: the lobby's `46 02 <kit> <upgrade>` and the server's
+  answer `83 46 02 <upgrade>`, which took it off the first item of the
+  inventory holding it. Four calls or jumps into shared_upgrades_026g.asm
+  (.srp+700h, after the patches' mount, before the pickup code): the
+  upgrade window's drop (0x29AAD5) sends `46 02 <kit> <upgrade> <item>`, the
+  item the window shows; `83 46 02 <upgrade> <item>` (0x275756) and
+  `83 46 01`'s detach_first (0x275589, the item the answer puts it on)
+  give process_detach_upgrade an item, which it looks up by its id
+  (0x27534D) instead of the first that holds the upgrade;
+- a kit chosen before the match starts is played at once (patch 31, with
+  the late join, client_patch.md section 3.29): the respawn rule's tick
   (0x316820) first respawns, where it stands, a live player whose next kit
   is another while the match waits or counts down and who has no statistics
-  yet; the hud shows the kits to a player who becomes alive then (0x23B7DA)
-  and hides them from a live one once play begins (0x23B7FC). The code is
-  kit_change_026g.asm at 0xEC0 of `.srp`;
+  yet; the view of that spawn keeps the warmup's camera and input until play
+  begins (0x26794D); the hud shows the kits to a player who becomes alive
+  then (0x23B7DA) and hides them from a live one once play begins
+  (0x23B7FC). The code is kit_change_026g.asm at 0xEC0 of `.srp`;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -587,36 +601,48 @@ STALE_DLL_ENTRY = SECTION_VA + STALE_DLL_OFFSET
 STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
              b"\xE8" + struct.pack("<i", STALE_DLL_ENTRY - STALE_DLL_VA - 5) + b"\x90")
 
-# A kit chosen before the match starts is played at once (patch 30, README;
-# client_patch.md section 3.28): kit_change_026g.asm at KIT_CHANGE_OFFSET of
-# `.srp`, after the shell_32.dll check and before the late join, three
-# entries. The respawn rule's tick (0x316820, slot +50h of every respawn
-# rule's vtable; `push ebp` / `mov ebp,esp` / `sub esp,34h`) jumps first to
-# kit_change: while the time rule's state (core+18FE4h) is 1 or 2, a place
-# whose next kit (place+0Dh, the player's 0xDE as the place's tick 0x321790
-# took it) is another than the kit in use (place+0Ch), whose player is alive
-# and in the world and not due to spawn at that tick, and whose statistics
-# record is all zero (no event of any kind, no damage taken from a player),
-# is taken out of the world (vtable+24h, 1) and spawned (rule vtable+5Ch)
-# with a respawn point of its feet (player+43Ch), its yaw (+490h) and what is
-# left of its invulnerability (damage model+32Ch), as the tick does for a
-# place it respawns. No death and no respawn time. Every input it reads is in
-# the world, so every game and every replay of a tick does the same; what a
-# match computes changes from the first such kit choice: a game with it and
-# one without part there, so a server asks for the release's revision.
-# game_world_ui (0x23B740, the local player's state): when the local player
-# becomes alive, `call 0x23A1A0` / `push 0` at 0x23B7DA (then 0x2383B0, which
-# shows or hides the kits) jumps to ui_alive, which pushes 1 instead while
-# the match waits or counts down; at every update `lea eax,[ebp+0D0h]` at
-# 0x23B7FC calls ui_start, which hides the kits from a live player once play
-# has begun. No site holds an address: no base relocation under them.
+# A kit chosen before the match starts is played at once (patch 31, README;
+# client_patch.md section 3.29; the rules: docs/notes/kit-change-before-start.md):
+# kit_change_026g.asm at KIT_CHANGE_OFFSET of `.srp`, after the shell_32.dll
+# check and before the late join, four entries.
+# - The respawn rule's tick (0x316820, slot +50h of every respawn rule's
+#   vtable; `push ebp` / `mov ebp,esp` / `sub esp,34h`) jumps first to
+#   kit_change: while the time rule's state (core+18FE4h) is 1 or 2, a place
+#   whose next kit (place+0Dh, the relayed kit choice as the place's tick
+#   0x321790 took it) is another than the kit in use (place+0Ch), whose
+#   player is alive and in the world, and whose statistics record is all
+#   zero (no event of any kind, no damage taken from a player), is taken out
+#   of the world (vtable+24h, 1) and spawned (rule vtable+5Ch) with a respawn
+#   point of its feet (player+43Ch), its yaw (+490h) and what is left of its
+#   invulnerability (damage model+32Ch), as the tick does for a place it
+#   respawns. No death and no respawn time. The places tick before it and
+#   the time rule after it (tick lists 0 and 1, 0x2D1E3F): a switch is of a
+#   tick before play or of the tick whose time rule begins play, before that
+#   rule's change. Every input it reads is in the world, so every game and
+#   every replay of a tick does the same; what a match computes changes from
+#   the first such kit choice, so a release with it asks for its revision.
+# - The client's view of a spawn into another kit (0x2678E0) sets the
+#   player camera (`push 1` / `call 0x1F8200` at 0x26794D); it calls kit_view
+#   instead, which sets the warmup's camera and input (0x1F8190) unless the
+#   state the network client set the camera for (+1F1C60h, which the time
+#   rule's tick changes, 0x267AA0 -> 0x27B1A0, for a tick first played) is 3,
+#   as that change itself does.
+# - game_world_ui (0x23B740, the local player's state): when the local
+#   player becomes alive, `call 0x23A1A0` / `push 0` at 0x23B7DA (then
+#   0x2383B0, which shows or hides the kits) jumps to ui_alive, which pushes
+#   1 instead while that state is not 3; at every update `lea eax,[ebp+0D0h]`
+#   at 0x23B7FC calls ui_start, which hides the kits from a live player once
+#   it is 3.
+# No site holds an address: no base relocation under them.
 KIT_CHANGE_OFFSET = 0xEC0
 KIT_CHANGE_VA = SECTION_VA + KIT_CHANGE_OFFSET
 KIT_CHANGE_TICK_VA = 0x316820                 # player_respawn_rule's tick
+KIT_CHANGE_SHOWN_STATE = 0x1F1C60             # network client: the state the camera is set for
 KIT_CHANGE_HOOKS = (
     (KIT_CHANGE_TICK_VA, bytes.fromhex("558bec83ec34"), 0, 0xE9),   # the respawn rule's tick: kit_change
-    (0x23B7DA, bytes.fromhex("e8c1e9ffff6a00"), 0xE0, 0xE9),        # the local player alive: ui_alive
-    (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x100, 0xE8),         # every update: ui_start
+    (0x26794D, bytes.fromhex("6a01e8ac08f9ff"), 0xD8, 0xE8),        # the view of a kit change: kit_view
+    (0x23B7DA, bytes.fromhex("e8c1e9ffff6a00"), 0xF0, 0xE9),        # the local player alive: ui_alive
+    (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x106, 0xE8),         # every update: ui_start
 )
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
@@ -644,6 +670,43 @@ REPLAY_LINK_VA = SECTION_VA + REPLAY_LINK_OFFSET
 REPLAY_LINK_HANDLER = 0x28CDA0
 REPLAY_LINK_HOOK = (0x28CDB6, bytes.fromhex("6a016a006a00"), 0, 0xE9)
 REPLAY_LINK_BUFFER = 0x1E6144                 # in the lobby client
+
+# One upgrade on several items (patch 30, client_patch.md section 3.28):
+# shared_upgrades_026g.asm at SHARED_UPGRADES_OFFSET of `.srp`, after the
+# patches' mount (which ends at +6C3h) and before the pickup code; its four
+# entries at fixed offsets, one for each site:
+# - drop_upgrade_item's handler 0x29A9D0 (the delegate {lobby ui, 0x29A9D0},
+#   `mov eax,0x29a9d0` at 0x2818FA; Flash drop_upgrade_item(<item>,
+#   <upgrade>): the upgrade window's drop and cancel, and on_item_sold) at
+#   0x29AAD5: `push edi` / `push ecx` / `call 0x2708C0` (the only call of
+#   0x2708C0, which writes `46 02 <kit> <upgrade>`) -> a call of
+#   drop_upgrade, which writes `46 02 <kit> <upgrade> <item>`, and two nops;
+# - process_succeeded_inventory_action 0x275520, case 2 (`83 46 02`) at
+#   0x275756: `mov ecx,[eax]` / `push ecx` / `add eax,4` / `push ebp` /
+#   `mov [esi+4],eax` / `call 0x275220` -> a jump to detach_answer, which
+#   reads `<upgrade> <item>`, and ten nops;
+# - case 1 (`83 46 01`), detach_first, at 0x275589: `push edi` / `push
+#   ebp` / `call 0x275220` -> a call of detach_first (the item the answer
+#   puts the upgrade on, in ebx) and two nops;
+# - process_detach_upgrade 0x275220 (called from those two sites alone), at
+#   0x27534D: `call 0x277CF0` (find_if: the first item of the inventory
+#   holding the upgrade, the only call of it) -> a call of find_host, the
+#   item of the id its callers now give it as a third argument.
+# No site holds an address: no base relocation is under them.
+SHARED_UPGRADES_OFFSET = 0x700
+SHARED_UPGRADES_VA = SECTION_VA + SHARED_UPGRADES_OFFSET
+SHARED_UPGRADES_HOOKS = (
+    (0x29AAD5, bytes.fromhex("5751" "e8e45dfdff"), 0x00, 0xE8),                          # drop_upgrade
+    (0x275756, bytes.fromhex("8b08" "51" "83c004" "55" "894604" "e8bbfaffff"), 0x60, 0xE9),  # detach_answer
+    (0x275589, bytes.fromhex("5755" "e890fcffff"), 0x80, 0xE8),                          # detach_first
+    (0x27534D, bytes.fromhex("e89e290000"), 0x90, 0xE8),                                 # find_host
+)
+# The first bytes of each entry, as the .bin must have them.
+SHARED_UPGRADES_ENTRIES = {0x00: bytes.fromhex("8b5508"), 0x60: bytes.fromhex("8b08"),
+                           0x80: bytes.fromhex("535755"), 0x90: bytes.fromhex("8b542458")}
+DROP_UPGRADE_HANDLER = 0x29A9D0
+PROCESS_DETACH_UPGRADE = 0x275220
+INVENTORY_ACTION = 0x275520
 
 # The late join (client_patch.md section 3.11). Its code is the second page
 # of `.srp` and what follows it: 4096 bytes of late_join_026g.asm, whose
@@ -1224,7 +1287,9 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
     its sign-in says whether %TEMP%\\shell_32.dll exists
     (stale_dll_026g.section.bin), and its transparent effects scroll as in
     0.29 (forward_scroll_026g.section.bin), and the lobby's link starts the
-    updater for a replay link alone (replay_link_026g.section.bin).
+    updater for a replay link alone (replay_link_026g.section.bin), and an
+    upgrade taken off names the item it comes off
+    (shared_upgrades_026g.section.bin).
     revision: what the build with the late join says instead of REVISION
     (a release's, REVISION to 255). It is the revision byte and nothing
     else: every patch above is chosen by the kind of build, never by its
@@ -1405,12 +1470,13 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if STALE_DLL_OFFSET + len(stale_dll) > KIT_CHANGE_OFFSET \
                 or KIT_CHANGE_OFFSET + len(kit_change) > LATE_JOIN_OFFSET:
             sys.exit("the shell_32.dll check and the kit change do not fit before the late join")
-        # The first instruction of each entry: `pushad`, `call 0x23A1A0`,
-        # `cmp byte [esi+2DFh],0`.
-        entry = KIT_CHANGE_VA + KIT_CHANGE_HOOKS[1][2]
+        # The first instruction of each entry: `pushad`, `cmp dword
+        # [esi+1F1C60h],3`, `call 0x23A1A0`, `cmp byte [ebp+33Ch],0`.
+        entry = KIT_CHANGE_VA + KIT_CHANGE_HOOKS[2][2]
         if kit_change[0] != 0x60 \
-                or kit_change[0xE0:0xE5] != b"\xE8" + struct.pack("<i", 0x23A1A0 - entry - 5) \
-                or kit_change[0x100:0x107] != bytes.fromhex("80bedf02000000"):
+                or kit_change[0xD8:0xDF] != bytes.fromhex("83be601c1f0003") \
+                or kit_change[0xF0:0xF5] != b"\xE8" + struct.pack("<i", 0x23A1A0 - entry - 5) \
+                or kit_change[0x106:0x10D] != bytes.fromhex("80bd3c03000000"):
             sys.exit(f"kit_change_026g.section.bin: its entries are not where patch_026g.py jumps to them "
                      f"(assembled with -DCAVE={KIT_CHANGE_VA:#x}?)")
         for va, expected, offset, opcode in KIT_CHANGE_HOOKS:
@@ -1442,11 +1508,22 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         patch(data, va, expected, hook_bytes(REPLAY_LINK_VA, va, expected, offset, opcode))
         if neutralize_relocs(data, [(va, va + len(expected))]):
             sys.exit("a base relocation under the replay link's hook")
+        shared_upgrades = open(shared_upgrades_bin(), "rb").read()
+        if MOUNT_PATCHES_OFFSET + len(mount_patches) > SHARED_UPGRADES_OFFSET \
+                or SHARED_UPGRADES_OFFSET + len(shared_upgrades) > PICKUP_OFFSET:
+            sys.exit("the patches' mount, the shared upgrades' code and the pickup code do not fit")
+        if any(shared_upgrades[at:at + len(first)] != first for at, first in SHARED_UPGRADES_ENTRIES.items()):
+            sys.exit("shared_upgrades_026g.section.bin: its entries are not where patch_026g.py calls them")
+        for va, expected, offset, opcode in SHARED_UPGRADES_HOOKS:
+            patch(data, va, expected, hook_bytes(SHARED_UPGRADES_VA, va, expected, offset, opcode))
+            if neutralize_relocs(data, [(va, va + len(expected))]):
+                sys.exit(f"{va:#x}: a base relocation under a hook of the shared upgrades")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (REPLAY_LINK_OFFSET - len(cave)) + replay_link
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
+            cave = cave + b"\xCC" * (SHARED_UPGRADES_OFFSET - len(cave)) + shared_upgrades
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
@@ -1481,6 +1558,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the sign-in says whether %TEMP%\\shell_32.dll exists, "
                      "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0), "
                      "the lobby's link starts the updater for a replay link and opens nothing else, "
+                     "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
                      "a kit chosen before the match starts is played at once where the player stands"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
@@ -1504,6 +1582,10 @@ def default_server_bin(mode):
 
 def replay_link_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_link_026g.section.bin")
+
+
+def shared_upgrades_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "shared_upgrades_026g.section.bin")
 
 
 def stale_dll_bin():

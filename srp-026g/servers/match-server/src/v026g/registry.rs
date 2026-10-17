@@ -879,7 +879,7 @@ pub struct PlayerResult {
     /// The longest killstreak any trusted snapshot showed.
     pub longest_killstreak: u16,
     /// The kit choices it made for a tick before play began. A patched
-    /// game (patch 30) respawns a live player who has no statistics yet in
+    /// game (patch 31) respawns a live player who has no statistics yet in
     /// the chosen kit where it stands, with no death: each may be a life
     /// more than its deaths, with a kit's supplies of its own.
     pub kit_changes: u16,

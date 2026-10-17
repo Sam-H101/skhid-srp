@@ -172,18 +172,20 @@ impl TimelimitRule {
             .flatten()
     }
 
-    /// Whether a tick at `time` comes before play begins, as far as the
-    /// rule knows: while it waits, during the countdown before its end, and
-    /// in play before its start. The clients' kit change in place (patch
-    /// 30, `client_patch.md` section 3.28) acts in the first two alone.
+    /// Whether a game may still change a live player's kit at the tick at
+    /// `time` (patch 31, `client_patch.md` section 3.29): while the rule
+    /// waits or counts down, the tick that begins play included. In a
+    /// client's tick the respawn rule (tick list 0) runs before the time
+    /// rule (list 1), so at the tick whose time rule begins play the
+    /// respawn rule still sees the countdown.
     pub fn before_play(&self, time: u32) -> bool {
         match (self.state, self.start) {
             (state::WAITING_FOR_PLAYERS, _) => true,
             (state::COUNTDOWN, Some(start)) => {
-                time < start.saturating_add(self.params.countdown_ms)
+                time <= start.saturating_add(self.params.countdown_ms)
             }
             (state::COUNTDOWN, None) => true,
-            (state::IN_PROCESS, Some(start)) => time < start,
+            (state::IN_PROCESS, Some(start)) => time <= start,
             _ => false,
         }
     }
@@ -335,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn before_play_is_the_wait_and_the_countdown_up_to_its_end() {
+    fn before_play_is_the_wait_and_the_countdown_to_the_tick_play_begins_in() {
         let mut rule = TimelimitRule::new(params(2));
         assert!(!rule.before_play(0), "not ready: no match yet");
         rule.on_match_ready(50);
@@ -346,11 +348,11 @@ mod tests {
         );
         assert!(rule.before_play(1_000) && rule.before_play(20_950));
         assert!(
-            !rule.before_play(21_000),
-            "the countdown's end is play's start"
+            rule.before_play(21_000) && !rule.before_play(21_050),
+            "the tick play begins in is the last"
         );
         assert_eq!(rule.tick(21_000), Some(Transition::MatchStarted));
-        assert!(rule.before_play(20_950) && !rule.before_play(21_000) && !rule.before_play(30_000));
+        assert!(rule.before_play(21_000) && !rule.before_play(21_050) && !rule.before_play(30_000));
     }
 
     #[test]

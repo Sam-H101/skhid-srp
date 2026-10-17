@@ -454,7 +454,7 @@ fn a_profile_input_is_relayed_once() {
 
 #[test]
 fn kit_choices_before_play_are_counted_for_the_result() {
-    // Patch 30: a game respawns a live player in a kit chosen before play
+    // Patch 31: a game respawns a live player in a kit chosen before play
     // began, where it stands, with no death. The result says how many such
     // choices a player made: each may have been a life with a kit's
     // supplies of its own.

@@ -65,8 +65,10 @@ release's. The "Result" row is the build of the revision named in it.
 | `forward_scroll_026g.asm`, `forward_scroll_026g.section.bin` | The code of patch 28 (the transparent effects scroll as in 0.29, `scene_slomo` bound to 1.0) and that code assembled for 0xB00 of `.srp`; `patch_026g.py` reads the .bin. Assembling the source again gives the same bytes |
 | `replay_link_026g.asm`, `replay_link_026g.section.bin` | The source of patch 29's code ("Watch replay": the lobby's link starts the updater) and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_replay_link_026g.py` | Runs the original and patch 29's link callback on made-up links (needs Unicorn) |
-| `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 30's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
-| `check_kit_change_026g.py` | Runs the original and patch 30's respawn rule tick, with the game's own spawn, and the hud's update of the local player on made-up objects (needs Unicorn) |
+| `shared_upgrades_026g.asm`, `shared_upgrades_026g.section.bin` | The source of patch 30's code (one upgrade on several items: taking it off names the item) and that code assembled for 0x700 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
+| `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
 | `check_forward_scroll_026g.py` | Runs the original's and the build's forward-effect compile, with patch 28's two hooks, on made-up materials and compares what each sends; runs the third hook against the game's own binding of `scene_time`; loaded as is and rebased (needs Unicorn). With `--rev12=` it compares the build with revision 12 byte by byte |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
@@ -1482,48 +1484,89 @@ six refusals of Windows (the original opens all of them; the build starts the
 updater for the good ones only); the byte comparison with revision 13
 (Revision 14 above). **Not run:** a game.
 
-### 30. A kit chosen before the match starts is played at once (the next release's revision)
+### 30. One upgrade on several items (the next release's revision)
+
+The owner's rule: one camouflage or decal of the stash is worn by any number
+of items at once (later weapon attachments too). The client keeps an item's
+upgrades as records of its own and shows one upgrade on several items as it
+is: in each item's upgrade window, in a match, once in the stash
+(`../docs/notes/items.md` §6). Only taking it off named no item: the upgrade
+window's `drop_upgrade_item(item, upgrade)` sent `46 02 <kit> <upgrade>`, and
+the answer `83 46 02 <upgrade>` (and `83 46 01`'s `detach_first`) took it off
+the first item of the inventory that holds it.
+
+**The patch.** Only in the builds with the late join: four sites call or jump
+into `shared_upgrades_026g.asm` (181 bytes at `.srp`+700h, after the patches'
+mount and before the pickup code):
+
+- 0x29AAD5 (drop_upgrade_item's handler): `46 02 <kit> <upgrade> <item>`, the
+  item the window shows;
+- 0x275756 (`83 46 02`): reads `<upgrade> <item>`;
+- 0x275589 (`83 46 01`, `detach_first`): the item the answer puts it on
+  (it was in another slot of it);
+- 0x27534D (`process_detach_upgrade`'s search): the item of that id instead of
+  the first that holds the upgrade (0: the original's search).
+
+Nothing is of the upgrade's kind: any upgrade, any slot. No change of
+`lobby_menu.swf`. The server's rules are `session::v026g::items_rules`; it
+reads only the new `46 02` and sends only the new `83 46 02`, so it needs a
+game with this patch (`SRP_MIN_PATCH_REVISION`). Details:
+`../docs/notes/client_patch.md` section 3.28.
+
+**Revisions.** Nothing a match computes: a game with it and one without play
+together. The release gives it its number.
+
+Checked: `selftest_026g.py` check 31 (and check 15's layout of `.srp`'s
+first page); `check_shared_upgrades_026g.py` runs the original's and the
+build's drop handler and answers on made-up inventories (the original takes
+the upgrade off the first item holding it, the build off the item named,
+and no other); the byte comparison with the build of `main` (section 3.28:
+197 bytes differ, all of them the patch's). **Not run:** a game.
+### 31. A kit chosen before the match starts is played at once (the next release's revision)
 
 The owner's wish (2026-10-17): a player may change kits while the match
-loads, not only after a death. In a match the stock game shows the kits
-(`root.show_profiles_selector`) on the death screen alone, and a kit chosen
-(0xDE, relayed as 0xF3) is only the place's next kit, taken at the next
-spawn (`../docs/notes/match.md` section 23). Every game runs the whole
-simulation, so a server alone cannot put a player into another kit: each
-game must do it, at the same tick.
+loads, not only after a death. The rules the code and the tests follow are
+`../docs/notes/kit-change-before-start.md`. In a match the stock game shows
+the kits (`root.show_profiles_selector`) on the death screen alone, and a
+kit chosen (0xDE, relayed as 0xF3) is only the place's next kit, taken at
+the next spawn (`../docs/notes/match.md` section 23). Every game runs the
+whole simulation, so a server alone cannot put a player into another kit:
+each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
-316 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
-join, in the 320 bytes left there):
+319 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
+join, in the 320 bytes left there), four sites:
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
   or "countdown" (core+18FE4h is 1 or 2, the state the world holds). A place
-  whose next kit is another than the kit in use, whose player is alive, in
-  the world and not due to spawn at that tick, and whose statistics record
-  is all zero (no shot, no hit, no kill, no event of any kind, no damage
-  taken from a player in this match), is respawned at once in the new kit by
-  the rule's own two calls, as the tick does for a place it respawns: the
-  player out of the world, then the spawn with a respawn point made of the
-  player's feet, its yaw and what is left of its invulnerability. Same
-  position and facing (the look up or down is level again, as at any
-  spawn); no death, no respawn time, no ticket.
-- The hud: when the local player becomes alive (0x23B7DA) while the match
-  waits or counts down, the kits are shown, as on the death screen, instead
-  of hidden; a pick hides them as on the death screen, and at every update
-  (0x23B7FC) they are hidden from a live player once play has begun.
+  whose next kit is another than the kit in use, whose player is alive and
+  in the world, and whose statistics record is all zero (no shot, hit, kill
+  or other event, no damage taken from a player in this match), is
+  respawned at once in the new kit by the rule's own two calls, as the tick
+  does for a place it respawns: out of the world, then the spawn with a
+  respawn point of the player's feet, its yaw and what is left of its
+  invulnerability. Same position and facing (the look up or down is level
+  again, as at any spawn); no death, no respawn time, no ticket.
+- The client's view of that spawn (0x2678E0 at 0x26794D) gave the player
+  camera and the input's first person mode: the first test in a game had
+  the player in first person and free to move during the countdown. It now
+  gives the warmup's camera and input until play begins, by the state the
+  network client keeps for the camera (+1F1C60h), exactly as the time
+  rule's own change does (0x27B1C8).
+- The hud: when the local player becomes alive (0x23B7DA) while the camera
+  is the warmup's, the kits are shown, as on the death screen; a pick hides
+  them as on the death screen, and at every update (0x23B7FC) they are
+  hidden from a live player once the camera is play's.
 
-What decides is in every world (the time rule's state, the places' kits,
-the alive and in-world flags, the respawn times, the statistics, the
-player's transform and its damage model), so every game and every replay of
-a tick does the same. Several changes before the start are possible, each
-while the player has done nothing yet; ammunition and consumables come out
-of the same store as at any spawn (the removal puts magazines and slots back
-first, `../docs/notes/client_patch.md` section 3.20). The cutoff is the
-match's start (the end of the 20 s countdown), the same for every player: a
-newcomer to a match in play gets nothing new. After it, or once the player
-has statistics, a pick is the next kit, as before. `../docs/notes/client_patch.md`
-section 3.28 has the details.
+**Order.** In a tick the places (which take the kit choices) and the
+respawn rule run in tick list 0 and the time rule in list 1: a switch is of
+a tick before play, or of the tick whose time rule begins play, and then
+before that rule's change, never after it. The camera follows the state of
+the newest tick first played, which a rollback does not set back. The kit
+choice a switch acts on is the one in the place's list at its tick, the
+same relayed entries in every game. `../docs/notes/client_patch.md` section
+3.29 has the proof.
 
 **Revisions.** What a match computes changes from the first kit chosen by a
 live player before the start: a game with this patch and one without part
@@ -1531,25 +1574,21 @@ there, so the release that brings it asks for its own revision
 (`SRP_MIN_PATCH_REVISION`). The match server counts such choices for the
 results (`PlayerResult::kit_changes`, a life more each for what the match is
 taken to have used of a player's stacks, `session::v026g::autobuy`), and its
-own bots pick a kit only once play has begun. Replays recorded before this
-patch in which a live player chose a kit before the start play differently in
-a game with it (only bots with too few rounds and players who died before the
-start chose kits then).
+own bots pick a kit only once play has begun. Replays recorded before it in
+which a live player chose a kit before the start play differently in a game
+with it; refusing them is a separate change.
 
-Checked: `selftest_026g.py` check 31 (and check 15's layout of `.srp`'s
+Checked: `selftest_026g.py` check 32 (and check 15's layout of `.srp`'s
 first page); `check_kit_change_026g.py` runs the original's and the build's
-tick start with the game's own spawn on made-up rules, places and players (a
-change while waiting and counting down, none in play or after it, none for a
-dead player, one out of the world, one due to spawn, one with a shot, a kill
-or damage in any kit, none without statistics, the invulnerability carried
-over, two places in one tick; the original never changes a kit) and the
-hud's update (shown to a live player before the start, hidden at the start;
-the death screen as before); two broken builds fail it. **Not run:** a game.
-To check in a game (two clients, a match of two): before the countdown ends,
-the kits show on spawning; pick another; the player stays where it stands,
-facing the same way, in the new kit, and the other game sees the same; the
-same after firing a shot does not change the kit until the next death; once
-play has begun the kits are hidden.
+tick start with the places' own tick and the game's own spawn, the view of a
+kit change and the hud's update on made-up objects: the cases of the rules,
+the ticks around the start (a choice for the last tick before play, for the
+tick play begins in, for the first tick of play), the camera before play, in
+play and after a rollback over the start, a late joiner; the original never
+changes a live player's kit; three broken builds fail it. **Run in a game
+once (2026-10-17, the build before the view's fix):** the kit changed, the
+player was then in first person and free to move during the countdown.
+**Not run in a game: this build.**
 
 ## Not ported, not done
 

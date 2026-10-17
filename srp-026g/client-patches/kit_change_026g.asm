@@ -1,6 +1,7 @@
-; Patch 30: a kit chosen before the match starts is played at once (build
-; 2777, client_patch.md section 3.28). Three entries at fixed offsets
-; (KIT_CHANGE_* in patch_026g.py, which checks each hook's target).
+; Patch 31: a kit chosen before the match starts is played at once (build
+; 2777, client_patch.md section 3.29; the rules: ../docs/notes/
+; kit-change-before-start.md). Four entries at fixed offsets (KIT_CHANGE_*
+; in patch_026g.py, which checks each hook's target).
 ;   nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
 BITS 32
 ORG CAVE
@@ -13,14 +14,16 @@ ORG CAVE
 %define FEET        0x43C          ; player: the feet, float3
 %define YAW         0x490          ; player: m_rotation_y
 %define ALIVE       0x33C          ; player: m_is_alive; +33Fh: in the world's tick lists
-%define CLIENT_CORE 0x1F8          ; game_world_core_client: its core
+%define SHOWN_STATE 0x1F1C60       ; network client: the time rule's state the camera was last set for
+%define IN_PROCESS  3
 
 ; The respawn rule's tick (0x316820; ecx = the rule, [esp+8] the tick's
 ; time; thiscall, three arguments, `ret 0Ch`) begins here, at every tick of
-; every game and every replay of a tick, before the rule spawns the places
-; whose respawn time is now. While the match waits or counts down (state 1
-; or 2), each place is tried (try_place). Then the three instructions the
-; jump replaced.
+; every game and every replay of a tick. It runs in the tick list 0, after
+; the places' ticks (which take the kit choices, 0x321790) and before the
+; time rule's (list 1), which may make the state 3 at this very tick: so a
+; state of 1 or 2 here means play has not begun before this tick. Each place
+; is tried (try_place); then the three instructions the jump replaced.
 kit_change:
     pushad
     mov ebx, ecx                    ; the rule
@@ -46,20 +49,18 @@ kit_change:
 .no:
     ret
 ; ebx = the rule, esi = the core, edi = the place, ebp = the time; keeps
-; them. A place whose next kit (the player's 0xDE, set by the place's tick
-; 0x321790) is not the kit in use, whose player is alive, in the world and
-; not due to spawn at this tick (the tick spawns it in the next kit
-; itself), and which has no statistics yet (no shot, no hit, no kill, no
-; event of any kind and no damage taken from a player in this match), is
-; respawned in the next kit where it stands, by the rule's own two calls as
-; its tick makes them for a place it respawns (0x316999, 0x3169B9): the
-; player out of the world (vtable+24h, 1), then the spawn (rule
-; vtable+5Ch) with the place, a respawn point made of the player's feet,
-; its yaw and what is left of its spawn protection, and the time. No death
-; is counted and no respawn time set.
+; them. A place whose next kit is another than the kit in use, whose player
+; is alive and in the world (so not due to spawn: a respawn time is set only
+; for a dead player, and a player entering is not in the world yet), and
+; which has no statistics yet (no shot, no hit, no kill, no event of any
+; kind and no damage taken from a player in this match), is respawned in the
+; next kit where it stands, by the rule's own two calls as its tick makes
+; them for a place it respawns (0x316999, 0x3169B9): the player out of the
+; world (vtable+24h, 1), then the spawn (rule vtable+5Ch) with the place, a
+; respawn point made of the player's feet, its yaw and what is left of its
+; invulnerability, and the time. No death is counted and no respawn time
+; set.
 try_place:
-    cmp [ebx+edi*4+0x138], ebp
-    je kit_change.no
     imul eax, edi, 0x30
     add eax, [esi+PLACES]
     movzx ecx, byte [eax+0xd]       ; the next kit
@@ -123,35 +124,53 @@ try_place:
     call [eax+0x5c]                 ; the spawn (0x316DA0)
     add esp, 0x24
     ret
-times 0xE0-($-$$) db 0xcc
+times 0xD8-($-$$) db 0xcc
+
+; The client's view of a spawn into another kit (0x2678E0, slot +60h of the
+; client's respawn rule; esi = the network client, eax = the game world),
+; after it has made the new kit's player the local one: `push 1` / `call
+; 0x1F8200` (the player camera, first person, the input's first person
+; mode) at 0x26794D. As the time rule's change does (0x27B1C8, called from
+; its tick 0x267AA0 for a tick first played), the camera and the input are
+; the player's in play (state 3) and the warmup's otherwise, by the state
+; the network client keeps for them (+1F1C60h), which only a first play of
+; a tick changes: a rollback that plays a spawn again after play began
+; leaves the player in play.
+kit_view:
+    cmp dword [esi+SHOWN_STATE], IN_PROCESS
+    jne .warmup
+    push 1
+    call 0x1f8200
+    ret
+.warmup:
+    mov edx, eax
+    jmp 0x1f8190                    ; switch_to_warmup_camera(edx)
+times 0xF0-($-$$) db 0xcc
 
 ; game_world_ui (esi; ebp = the local player) when the local player has
 ; just become alive: at 0x23B7DA `call 0x23A1A0` / `push 0`, then the call
 ; that shows or hides the kits (0x23B7F5: `mov eax,esi` / `call 0x2383B0`).
-; The original hides them; while the match waits or counts down they are
-; shown, as on the death screen.
+; The original hides them; while the camera is the warmup's (the shown
+; state is not 3) they are shown, as on the death screen.
 ui_alive:
     call 0x23a1a0                   ; with al and edx as the original set them
-    call match_state
-    xor ecx, ecx
-    dec eax
-    shr eax, 1
-    setz cl
-    push ecx
+    call shown_state
+    cmp eax, IN_PROCESS
+    setne al                        ; 0x2383B0 reads the low byte alone
+    push eax
     jmp 0x23b7f5
-times 0x100-($-$$) db 0xcc
+times 0x106-($-$$) db 0xcc
 
-; At every update after that (0x23B7FC, `lea eax,[ebp+0D0h]`): kits shown
-; to a live player once the match is in process are hidden. eax, ecx and
-; edx are not read after it before they are written.
+; At every update after that (0x23B7FC, `lea eax,[ebp+0D0h]`): once the
+; camera is the player's (state 3), the kits are hidden from a live player
+; (0x2383B0 returns at once when they are not shown). eax, ecx and edx are
+; not read after it before they are written.
 ui_start:
-    cmp byte [esi+0x2df], 0         ; the kits shown
-    je .done
     cmp byte [ebp+ALIVE], 0
     je .done
-    call match_state
-    cmp eax, 3
-    jb .done
+    call shown_state
+    cmp eax, IN_PROCESS
+    jne .done
     push 0
     mov eax, esi
     call 0x2383b0
@@ -159,10 +178,10 @@ ui_start:
     lea eax, [ebp+0xd0]
     ret
 
-; eax = the time rule's state in the hud's game (whose world 0x2383B0's
-; 0x1F8120 reads as it is).
-match_state:
-    mov eax, [esi+0x18]             ; the game
-    mov eax, [eax+0x4d4c]           ; its world (game_world_core_client)
-    mov eax, [eax+CLIENT_CORE+TIME_STATE]
+; eax = the state the network client of the hud's game set the camera for.
+shown_state:
+    mov eax, [esi+0x18]             ; the game world
+    mov eax, [eax+0x9c]             ; the game
+    mov eax, [eax+0x53ac]           ; the network client (0x23B74F)
+    mov eax, [eax+SHOWN_STATE]
     ret

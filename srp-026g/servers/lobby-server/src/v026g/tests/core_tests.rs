@@ -573,10 +573,12 @@ fn what_srp_does_not_have_is_refused_never_ignored() {
     let refused: Vec<(u8, Vec<u8>, &str)> = vec![
         // Clan-team Play.
         (0x30, 1_u32.to_le_bytes().to_vec(), "st_must_be_in_clan_team"),
-        // Cosmetics the account has not: attach, detach (`items_tests`
-        // has the ones it has).
+        // A cosmetic the account has not, attached (`items_tests` has the
+        // ones it has, and a detach of a cosmetic that is gone, which is
+        // off).
         (0x46, u32s(1, &[1, 5, 6], &[0, 0, 0, 0, 0, 0, 0, 0, 0]), "st_cannot_upgrade_item"),
-        (0x46, u32s(2, &[1, 5], &[]), "st_cannot_upgrade_item"),
+        // A detach without its host (a game without patch 30) is no request.
+        (0x46, u32s(2, &[1, 5], &[]), "st_cannot_relocate_item"),
         // A drop card, an item used.
         (0x46, u32s(3, &[5, 6], &[]), "st_cannot_use_drop_card"),
         (0x46, u32s(4, &[5], &[]), "st_error_while_using_premium_access_voucher"),

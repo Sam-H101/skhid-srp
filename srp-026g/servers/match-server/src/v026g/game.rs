@@ -871,7 +871,7 @@ pub(crate) struct Game {
     state: Option<Observed>,
     best_streaks: Vec<u16>,
     /// By place: the kit choices relayed for a tick before play began
-    /// (`TimelimitRule::before_play`), when a patched game (patch 30)
+    /// (`TimelimitRule::before_play`), when a patched game (patch 31)
     /// respawns a live player in the chosen kit where it stands. At most as
     /// many lives more than its deaths: [`PlayerResult::kit_changes`].
     kit_changes: Vec<u16>,
@@ -3401,7 +3401,7 @@ impl Game {
 
     /// A kit choice of the player at `index`, relayed for `time`: counted
     /// when it comes before play begins, when the games may respawn the
-    /// player in that kit where it stands (patch 30) without a death.
+    /// player in that kit where it stands (patch 31) without a death.
     pub(crate) fn note_kit_choice(&mut self, index: usize, time: u32) {
         if self.rule.before_play(time)
             && let Some(count) = self.kit_changes.get_mut(index)
