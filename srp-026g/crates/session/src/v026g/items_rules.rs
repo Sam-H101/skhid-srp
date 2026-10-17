@@ -238,6 +238,34 @@ pub fn drop_gone_upgrades_in(inventory: &mut [Item], scopes: &ScopeFits) -> Vec<
     stripped
 }
 
+/// The upgrade records of `before` that `after` (the same account,
+/// repaired) no longer has, each as `(host item id, record, why)`: for the
+/// log of a load ([`super::GameAccounts::with_repository`]).
+pub fn upgrades_taken_off(before: &Account, after: &Account) -> Vec<(u32, Upgrade, &'static str)> {
+    let dictionary = Dictionary::shared();
+    let mut gone = Vec::new();
+    for item in &before.inventory {
+        let kept = after.item(item.item_id).map(|kept| &kept.upgrades);
+        for record in &item.upgrades {
+            if kept.is_some_and(|kept| kept.contains(record)) {
+                continue;
+            }
+            let known = u16::try_from(record.a)
+                .ok()
+                .is_some_and(|dict_id| dictionary.item(dict_id).is_some());
+            let why = if !known {
+                "its dict id is no longer in the game data"
+            } else if after.item(record.id).is_none() {
+                "its upgrade item is gone"
+            } else {
+                "it does not fit the item (a withdrawn scope pair, or another slot)"
+            };
+            gone.push((item.item_id, *record, why));
+        }
+    }
+    gone
+}
+
 /// Makes a loaded item one the client can be sent: no modification or
 /// defect its tables lack (it reads the row it did not find), no more of
 /// its own than three, no offer of what it lacks, and upgrades that are in

@@ -12,6 +12,16 @@
 //! ([`GameAccounts::with_repository`](super::GameAccounts::with_repository)),
 //! and nothing of the accounts is changed. [`Account::repair`] never deletes
 //! anything for an unknown definition.
+//!
+//! Not checked here: the dict id an upgrade record holds. A scope's record
+//! holds a variant (`survarium::v026g::scopes`), an entry of the game data
+//! that is no item anyone owns; a release may withdraw a pair or a variant.
+//! Such a record is repaired, not refused: the load takes it off the item
+//! and says so ([`super::items_rules::upgrades_taken_off`]), a kept results
+//! screen loses it when restored ([`super::rewards::Results::restored`]),
+//! and the wire never sends one whose dict id the data lacks
+//! ([`super::wire::item_descr_at`]). The scope item a player owns is an
+//! item like any other and stays checked.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -73,9 +83,6 @@ impl Lacking {
             for &(id, _) in &item.modifications {
                 self.modification(id, &place);
             }
-            for upgrade in &item.upgrades {
-                self.item(upgrade.a, &place);
-            }
             let reroll = &item.reroll;
             if reroll.modification != 0 {
                 self.modification(reroll.modification, &place);
@@ -103,9 +110,6 @@ impl Lacking {
         self.item(u32::from(item.dict_id), place);
         for modification in &item.modifications {
             self.modification(modification.id, place);
-        }
-        for upgrade in &item.upgrades {
-            self.item(upgrade.a, place);
         }
     }
 

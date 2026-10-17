@@ -3014,3 +3014,89 @@ fn one_who_left_or_never_got_in_and_the_balance_rating() {
     let bob = account(&store, 11).balance;
     assert_eq!((bob.rating < 0, bob.matches), (true, 1));
 }
+
+/// A release withdraws a scope pair after records of it were kept (round 4f
+/// on the local test server, 2026-10-17: a kept results screen named the
+/// variant 2432, Kedr + Docter, and srp refused to start). srp starts: the
+/// account's record and the report's are taken off, and both are written
+/// again; the scope item the player owns stays.
+#[test]
+fn a_withdrawn_scope_variant_in_the_kept_state_is_taken_off_at_start() {
+    const WITHDRAWN: u32 = 2432;
+    let players = alice_and_bob();
+    let mut repository = MemoryGameRepository::default();
+    let store = kept_accounts(&players, &repository);
+    let results = Results::attached(&store);
+    results
+        .settle(&match_of(MATCH), &store, &at(NOW), &mut Rng::new(5))
+        .unwrap();
+    store.flush();
+    drop(results);
+    drop(store);
+    assert!(Dictionary::shared().item(WITHDRAWN as u16).is_none());
+
+    // The kept report's first item and Alice's weapon name the variant.
+    let key = format!("{REPORT_KEY}{MATCH}");
+    let rows = repository.load_results().unwrap();
+    let body = &rows.iter().find(|(row, _)| *row == key).unwrap().1;
+    let mut report: MatchReport = serde_json::from_str(body).unwrap();
+    report.players[0].body.items[0]
+        .upgrades
+        .push(lobby::Upgrade {
+            id: 9000,
+            a: WITHDRAWN,
+            value: 0,
+            param: 3,
+        });
+    repository
+        .save_result(&key, &serde_json::to_string(&report).unwrap())
+        .unwrap();
+    let alice_id = players[0].account_id;
+    let mut alice = repository.get(alice_id).unwrap();
+    let weapon = [7, 10]
+        .into_iter()
+        .find_map(|slot| alice.kits[0].slots[slot])
+        .unwrap()
+        .item_id;
+    // 0.26g's Leupold stands for the shop scope the player owns.
+    let scope = alice.add_item(69, FULL_CONDITION);
+    let record = crate::v026g::account::Upgrade {
+        id: scope,
+        a: WITHDRAWN,
+        value: 0,
+        param: 3,
+    };
+    alice.item_mut(weapon).unwrap().upgrades.push(record);
+    repository.save(alice_id, &alice).unwrap();
+
+    // srp starts again: no refusal.
+    let store = kept_accounts(&players, &repository);
+    assert_eq!(
+        items_rules::upgrades_taken_off(&alice, &store.get(alice_id).unwrap().locked()),
+        [(weapon, record, "its dict id is no longer in the game data")]
+    );
+    {
+        let account = store.get(alice_id).unwrap();
+        let account = account.locked();
+        assert!(account.item(weapon).unwrap().upgrades.is_empty());
+        assert!(account.item(scope).is_some(), "the scope item stays");
+    }
+    assert!(store.is_dirty(alice_id));
+    let results = Results::attached(&store);
+    let kept = results.find(MATCH).unwrap();
+    assert!(
+        kept.players[0].body.items[0]
+            .upgrades
+            .iter()
+            .all(|upgrade| upgrade.a != WITHDRAWN)
+    );
+    // Both are written again: the next start has nothing to take off.
+    store.flush();
+    assert!(repository.get(alice_id).unwrap().item(weapon).unwrap().upgrades.is_empty());
+    let rows = repository.load_results().unwrap();
+    let body = &rows.iter().find(|(row, _)| *row == key).unwrap().1;
+    assert!(!body.contains(&format!("\"a\":{WITHDRAWN}")), "{body}");
+    drop(results);
+    let store = kept_accounts(&players, &repository);
+    assert!(!store.is_dirty(alice_id));
+}

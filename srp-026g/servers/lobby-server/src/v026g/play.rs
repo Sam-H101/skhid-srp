@@ -1751,13 +1751,14 @@ mod tests {
             .find_map(|slot| account.kits[0].slots[slot])
             .expect("a new account's weapon")
             .item_id;
-        // 0.26g's Leupold stands for a shop scope and 2026 for its variant
-        // made for the weapon (the test data has none: the record is
-        // carried as it is, never looked up on the way).
+        // 0.26g's Leupold stands for a shop scope and its 1P69 (362) for
+        // the variant made for the weapon (the test data has none; the wire
+        // sends no record whose dict id the data lacks, and the record is
+        // otherwise carried as it is).
         let scope = account.add_item(69, FULL_CONDITION);
         let record = Record {
             id: scope,
-            a: 2026,
+            a: 362,
             value: 0,
             param: 3,
         };
@@ -1773,7 +1774,7 @@ mod tests {
             item.upgrades,
             [Upgrade {
                 id: scope,
-                unknown_4: 2026,
+                unknown_4: 362,
                 unknown_8: 0,
                 param: 3,
             }]

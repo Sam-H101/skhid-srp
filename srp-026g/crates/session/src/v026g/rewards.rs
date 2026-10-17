@@ -545,6 +545,37 @@ fn report_key(match_id: u32) -> String {
     format!("{REPORT_KEY}{match_id}")
 }
 
+/// Takes off the upgrade records of a kept report's items that the game data
+/// no longer has (a dict id of no item) or no longer fits (a scope variant
+/// that is not made for its item any more, `survarium::v026g::scopes`): a
+/// release that withdraws a scope pair leaves old results screens behind.
+/// Returns how many were taken off.
+pub(crate) fn drop_stale_upgrades(report: &mut MatchReport) -> usize {
+    let dictionary = Dictionary::shared();
+    let scopes = survarium::v026g::scopes::ScopeFits::shared();
+    let mut taken = 0;
+    let mut clean = |item: &mut lobby::ItemDescr| {
+        let host = item.dict_id;
+        let before = item.upgrades.len();
+        item.upgrades.retain(|record| {
+            u16::try_from(record.a).ok().is_some_and(|dict_id| {
+                dictionary.item(dict_id).is_some()
+                    && (!scopes.is_variant(dict_id) || scopes.fits(host, dict_id))
+            })
+        });
+        taken += before - item.upgrades.len();
+    };
+    for player in &mut report.players {
+        if let Some(dropped) = &mut player.full.dropped {
+            clean(dropped);
+        }
+        for item in &mut player.body.items {
+            clean(item);
+        }
+    }
+    taken
+}
+
 /// The reports of a repository's rows that read ([`Results::restored`]
 /// keeps those a state lists), for the start's check of what they name
 /// (`super::known`).
@@ -770,9 +801,8 @@ impl Results {
                         inner.changes.state = true;
                     }
                 }
-            } else if let Some(match_id) = key
-                .strip_prefix(REPORT_KEY)
-                .and_then(|id| id.parse().ok())
+            } else if let Some(match_id) =
+                key.strip_prefix(REPORT_KEY).and_then(|id| id.parse().ok())
             {
                 bodies.insert(match_id, body);
             }
@@ -784,11 +814,22 @@ impl Results {
                 continue;
             };
             match serde_json::from_str::<MatchReport>(&body) {
-                Ok(report) if report.match_id == match_id => {
+                Ok(mut report) if report.match_id == match_id => {
+                    let stale = drop_stale_upgrades(&mut report);
+                    if stale > 0 {
+                        log::warn!(
+                            "The kept report of match {match_id:#x} named {stale} upgrade \
+                             record(s) the game data no longer has or fits (a withdrawn scope \
+                             pair); taken off"
+                        );
+                        inner.changes.saved.push(match_id);
+                    }
                     inner.reports.push_back(Arc::new(report));
                 }
                 Ok(_) => {
-                    log::warn!("The kept report of match {match_id:#x} is another match's; dropped");
+                    log::warn!(
+                        "The kept report of match {match_id:#x} is another match's; dropped"
+                    );
                     inner.changes.state = true;
                     inner.changes.deleted.push(match_id);
                 }
@@ -837,9 +878,7 @@ impl Results {
                 return;
             }
             let changes = std::mem::take(&mut inner.changes);
-            let state = changes
-                .state
-                .then(|| serde_json::to_string(&inner.state()));
+            let state = changes.state.then(|| serde_json::to_string(&inner.state()));
             let saved: Vec<(u32, Result<String, serde_json::Error>)> = changes
                 .saved
                 .iter()

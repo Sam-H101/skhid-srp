@@ -372,12 +372,14 @@ fn a_cosmetic_put_on_another_item_stays_on_the_first() {
 /// players' data before the release patch: no pair at all), so the table
 /// is made up over items the dictionary has, which the wire needs for an
 /// owned item: 0.26g's own Leupold (69) and PSO-1 (304) stand for two
-/// shop scopes; the variants' ids are only held by records.
+/// shop scopes. The variants' stand-ins are other ids the dictionary has
+/// (the 1P69 and two rifles): the wire sends only a record whose dict id is
+/// an item of the game data (`wire::item_descr_at`).
 const SCOPE: u16 = 69;
 const OTHER_SCOPE: u16 = 304;
-const AK_VARIANT: u16 = 2001;
-const AK_OTHER_VARIANT: u16 = 2003;
-const SVD_VARIANT: u16 = 2026;
+const AK_VARIANT: u16 = 362;
+const AK_OTHER_VARIANT: u16 = 363;
+const SVD_VARIANT: u16 = 364;
 
 fn scope_table() -> ScopeFits {
     use survarium::v026g::scopes::Fit;

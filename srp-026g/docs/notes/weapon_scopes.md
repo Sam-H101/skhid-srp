@@ -92,6 +92,16 @@ in `crates/session/src/v026g/items_rules.rs`.
 - **Repair of what is kept.** On load (`make_safe`) a scope record must hold a variant made for
   its weapon, in slot 3; after any change of the inventory (`drop_gone_upgrades`) a record must be
   the one its scope item makes on that weapon. Anything else is taken off.
+- **A release that withdraws a pair or a variant** never stops srp. A record's dict id is not part
+  of the start's check of the kept state (`known.rs`, which still refuses an *owned item* the data
+  lacks). An account's record that no longer fits, or whose variant is gone, is taken off at the
+  load, logged with its reason, and the account is written again. A kept results screen loses such
+  records when it is restored, logged, and is written again. The wire never sends a record whose
+  dict id the data lacks. Seen on a local test server on 2026-10-17: a kept report named a
+  withdrawn variant and the start was refused; test
+  `a_withdrawn_scope_variant_in_the_kept_state_is_taken_off_at_start`. Not covered: match
+  recordings and replays of matches played before the withdrawal keep the old records (raw
+  datagrams); a game that watches such a replay loads them.
 - **Matches.** Records reach the match as they are (`play.rs` `match_profile`, the static info's
   item upgrades); the scope item itself is in no kit slot, so it is not in the match, adds no
   weight, wears nothing and does not count toward the gear level (matchmaking, team balance).
