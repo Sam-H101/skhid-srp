@@ -124,7 +124,8 @@ pub fn check(data: &GameData) -> Result<(), GameDataError> {
 pub type Named = (&'static str, &'static str);
 
 /// Every item this crate's code names: the starter kit and stash, the
-/// shop's exceptions and ammo prices, the bundles' contents. Each is
+/// shop's exceptions and ammo prices (but for [`super::prices::UNRELEASED`]),
+/// the bundles' contents. Each is
 /// looked up by name when used, and one the dictionary lacks would be
 /// skipped there, or panic: [`check`] refuses data that lacks any.
 pub fn named_items() -> Vec<Named> {
@@ -139,15 +140,21 @@ pub fn named_items() -> Vec<Named> {
             .iter()
             .map(|&name| ("loadouts::STARTER_STASH", name)),
     );
+    // Not the items of a patch not released yet: data may lack them.
+    let released = |name: &&str| !super::prices::UNRELEASED.contains(name);
     named.extend(
         super::prices::EXCEPTIONS
             .iter()
-            .map(|&(name, _)| ("prices::EXCEPTIONS", name)),
+            .map(|&(name, _)| name)
+            .filter(released)
+            .map(|name| ("prices::EXCEPTIONS", name)),
     );
     named.extend(
         super::prices::AMMO_PRICES
             .iter()
-            .map(|&(name, _, _)| ("prices::AMMO_PRICES", name)),
+            .map(|&(name, _, _)| name)
+            .filter(released)
+            .map(|name| ("prices::AMMO_PRICES", name)),
     );
     for bundle in &super::shop_offers::BUNDLES {
         named.extend(
@@ -208,6 +215,12 @@ mod tests {
         assert!(named.contains(&("loadouts::STARTER", "tt_33")));
         assert!(named.contains(&("shop_offers::BUNDLES", "vss_premium")));
         assert!(named.contains(&("prices::EXCEPTIONS", "medkit")));
+        // The rows of a patch not released are not asked for.
+        assert!(
+            named
+                .iter()
+                .all(|(_, name)| !super::super::prices::UNRELEASED.contains(name))
+        );
         assert_eq!(lacking(Dictionary::shared(), &named), Vec::<String>::new());
         assert_eq!(check(super::super::game_data::shared()), Ok(()));
     }
