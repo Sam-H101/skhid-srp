@@ -431,6 +431,43 @@ fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
     world.assert_clean();
 }
 
+/// The players' game data before the release patch has no scope variant
+/// (`survarium::v026g::scopes`): no scope goes on a weapon, the stock
+/// scope items are not sold, and a `46 01` for one is refused with the
+/// game's text and the client's window put right. The rules with a pair
+/// table are `session::v026g::items_rules`' tests.
+#[test]
+fn a_scope_is_refused_while_the_game_data_has_no_variant() {
+    use survarium::v026g::prices;
+    use survarium::v026g::scopes::ScopeFits;
+    assert!(ScopeFits::shared().is_empty());
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let svd = give(&mut world, alice, "svd", &[]);
+    let rifle = give(&mut world, alice, "ak_74m", &[]);
+    let scopes = ["scope_pso1", "scope_leupold", "scope_giperon"]
+        .map(|name| give(&mut world, alice, name, &[]));
+    for scope in scopes {
+        assert!(prices::price(world.account(alice).item(scope).unwrap().dict_id).is_none());
+        for host in [svd, rifle] {
+            world.ask(alice, ask::attach(host, scope, 3));
+            let decoded = world.take(alice);
+            assert_eq!(
+                denial(&decoded, 0x46).as_deref(),
+                Some("st_cannot_upgrade_item")
+            );
+            assert!(
+                decoded
+                    .iter()
+                    .any(|m| matches!(m, Decoded::Inventory { .. }))
+            );
+            assert_same_items(&mut world, alice);
+        }
+    }
+    assert!(world.account(alice).item(svd).unwrap().upgrades.is_empty());
+    world.assert_clean();
+}
+
 #[test]
 fn a_modification_is_rerolled_and_chosen() {
     let mut world = World::new(Duration::from_secs(60));

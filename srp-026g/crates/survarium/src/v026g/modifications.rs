@@ -75,6 +75,7 @@ use super::dictionary::Dictionary;
 use super::drops::Rng;
 use super::game_data::{GameData, GameDataError};
 use super::item_params::item_params;
+use super::scopes::{SCOPE_SLOT, ScopeFits};
 
 /// The paths of the three files in the archive.
 pub const MODIFICATIONS_PATH: &str = "gameplay/items/modifications/modifications.options";
@@ -500,13 +501,28 @@ impl ItemMods {
     }
 }
 
-/// The upgrade slots `upgrade_dict_id` may go into on `host_dict_id`: a
-/// camouflage (category 25, the kinds `*_camo`) into [`CAMO_SLOT`] of an
-/// item with `camo_available`, a decal (category 26, `*_decl`) into the
-/// [`DECAL_SLOTS`] of one with `decal_available`. Empty: it does not go
-/// on. `items_compatibility` pairs no cosmetic with anything, so any
-/// camouflage goes on any such item [as far as the data says].
+/// The upgrade slots `upgrade_dict_id` may go into on `host_dict_id`, by
+/// the game data's scopes ([`upgrade_slots_in`]).
 pub fn upgrade_slots(host_dict_id: u16, upgrade_dict_id: u16) -> &'static [u8] {
+    upgrade_slots_in(ScopeFits::shared(), host_dict_id, upgrade_dict_id)
+}
+
+/// The upgrade slots `upgrade_dict_id` may go into on `host_dict_id`: a
+/// scope item that has a variant for the weapon (`scopes`) into
+/// [`SCOPE_SLOT`]; a camouflage (category 25, the kinds `*_camo`) into
+/// [`CAMO_SLOT`] of an item with `camo_available`, a decal (category 26,
+/// `*_decl`) into the [`DECAL_SLOTS`] of one with `decal_available`. Empty:
+/// it does not go on. `items_compatibility` pairs no cosmetic with
+/// anything, so any camouflage goes on any such item [as far as the data
+/// says].
+pub fn upgrade_slots_in(
+    scopes: &ScopeFits,
+    host_dict_id: u16,
+    upgrade_dict_id: u16,
+) -> &'static [u8] {
+    if scopes.variant(host_dict_id, upgrade_dict_id).is_some() {
+        return &[SCOPE_SLOT];
+    }
     let (Some(host), Some(upgrade)) = (item_mods(host_dict_id), item_params(upgrade_dict_id))
     else {
         return &[];
@@ -520,6 +536,35 @@ pub fn upgrade_slots(host_dict_id: u16, upgrade_dict_id: u16) -> &'static [u8] {
         &DECAL_SLOTS
     } else {
         &[]
+    }
+}
+
+/// The dict id an upgrade record of `upgrade_dict_id` on `host_dict_id`
+/// holds: for a scope item, the variant made for that weapon (the client
+/// builds the weapon with the modification of the record's dict id,
+/// [`super::scopes`]); for any other upgrade, its own.
+pub fn record_dict_in(scopes: &ScopeFits, host_dict_id: u16, upgrade_dict_id: u16) -> u16 {
+    scopes
+        .variant(host_dict_id, upgrade_dict_id)
+        .unwrap_or(upgrade_dict_id)
+}
+
+/// The slots a record holding `record_dict_id` may be in on `host_dict_id`:
+/// a variant made for that weapon in [`SCOPE_SLOT`]; none for any other
+/// variant (placed for another weapon's mount and eye line) or a scope
+/// item's own id (records hold variants); a cosmetic's
+/// ([`upgrade_slots_in`]).
+pub fn record_slots_in(
+    scopes: &ScopeFits,
+    host_dict_id: u16,
+    record_dict_id: u16,
+) -> &'static [u8] {
+    if scopes.fits(host_dict_id, record_dict_id) {
+        &[SCOPE_SLOT]
+    } else if scopes.is_variant(record_dict_id) || scopes.is_scope(record_dict_id) {
+        &[]
+    } else {
+        upgrade_slots_in(scopes, host_dict_id, record_dict_id)
     }
 }
 

@@ -15,6 +15,7 @@ use super::localization;
 use super::maps;
 use super::modifications::{self, Modifications};
 use super::quests::{self, Quests};
+use super::scopes::ScopeFits;
 use super::skills::{self, SkillsTree};
 
 /// The file at `path` of `data`, which a table needs.
@@ -65,6 +66,10 @@ pub fn check(data: &GameData) -> Result<(), GameDataError> {
         }
     }
     modifications::derive_item_mods(data, &dictionary)?;
+    // A variant left out is logged when the table is first used
+    // ([`ScopeFits::shared`]); only a scope config that does not read stops
+    // srp.
+    ScopeFits::derive(data, &dictionary)?;
     maps::derive(data, &dictionary)?;
     for language in localization::Language::ALL {
         localization::of(data, language)?;

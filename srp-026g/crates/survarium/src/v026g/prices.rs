@@ -71,12 +71,20 @@
 //! - not listed: anything with `base_cost` 0 (the starting weapons and
 //!   their ammo, artefacts, money), premium items (their cost is gold; they
 //!   belong to the premium shop, 0x95), weapons with no faction (the bundle
-//!   weapons IZh-27, Vityaz, VSS, SR-3M, and the SOCOM 16), scopes and
-//!   artefacts (as 0.21d), and cosmetics and vouchers (the wiki lists
-//!   camouflages and decals at ranks; not applied).
+//!   weapons IZh-27, Vityaz, VSS, SR-3M, and the SOCOM 16), artefacts (as
+//!   0.21d), and cosmetics and vouchers (the wiki lists camouflages and
+//!   decals at ranks; not applied);
+//! - scopes: only the scope items the game data has variants for
+//!   ([`super::scopes`]), at their `base_cost`, by seller 0 at no rank
+//!   [srp: a scope is view-only, so nothing to unlock]. 0.26g's own three
+//!   (Leupold, PSO-1, 1P69), the variants and any other category-22 entry
+//!   are not sold. The price is the dictionary's, as for any item: the
+//!   client shows a quarter of it for selling (`InventoryList.sellObject`),
+//!   so a price set anywhere else would not agree with what it shows.
 
 use super::dictionary::{Dictionary, Item};
 use super::item_params::{ItemParams, item_params};
+use super::scopes::{SCOPE_CATEGORY, ScopeFits};
 
 /// 0.26g faction ids (`factions_dict`), as 0.21d's.
 pub use crate::prices::faction;
@@ -291,10 +299,28 @@ fn top_level(dictionary: &Dictionary, faction_id: u8) -> u8 {
 
 /// Who sells `item` and at which reputation level: `(seller, level)`, by
 /// seller. [`EXCEPTIONS`] first, else the module's rule; ammo at level 0
-/// ([`AMMO_NEEDS_RANK`]).
+/// ([`AMMO_NEEDS_RANK`]); scopes by the game data's ([`sellers_of_in`]).
 pub fn sellers_of(dictionary: &Dictionary, item: &Item, params: &ItemParams) -> Vec<(u8, u8)> {
+    sellers_of_in(dictionary, ScopeFits::shared(), item, params)
+}
+
+/// [`sellers_of`] with `scopes`: a scope item of a pair with a price is
+/// sold by seller 0 at level 0; no other category-22 item is.
+pub fn sellers_of_in(
+    dictionary: &Dictionary,
+    scopes: &ScopeFits,
+    item: &Item,
+    params: &ItemParams,
+) -> Vec<(u8, u8)> {
     if item.is_premium {
         return Vec::new();
+    }
+    if item.category == SCOPE_CATEGORY {
+        return if item.base_cost != 0 && scopes.is_scope(item.dict_id) {
+            vec![(0, 0)]
+        } else {
+            Vec::new()
+        };
     }
     let gear = GEAR.contains(&item.category);
     let supply = SUPPLIES.contains(&item.category) && item.is_stack;
@@ -842,5 +868,45 @@ mod tests {
         assert_eq!(repair_cost(dictionary, 3, 50), 2375);
         assert_eq!(repair_cost(dictionary, 3, 100), 0);
         assert_eq!(repair_cost(dictionary, 7, 0), 0);
+    }
+
+    #[test]
+    fn scope_items_with_variants_are_sold_to_everyone_at_their_cost() {
+        use super::super::game_data;
+        use super::super::scopes::fixtures::{
+            self, AK_74N_PSO_1, BROKEN, COBRA, COBRA_COST, LONE_SCOPE, PSO_1, PSO_1_COST,
+        };
+        let data = fixtures::with_scopes();
+        let dictionary = fixtures::dictionary_of(&data);
+        let fits = fixtures::fits();
+        let sellers = |dict_id: u16| {
+            let item = dictionary.item(dict_id).unwrap();
+            let config = game_data::config(&data, &item.cfg_name).unwrap().unwrap();
+            let params = ItemParams::from_config(dict_id, &config).unwrap();
+            sellers_of_in(&dictionary, fits, item, &params)
+        };
+        // Seller 0, no rank: every player may buy; the dictionary's price.
+        for (dict_id, cost) in [(PSO_1, PSO_1_COST), (COBRA, COBRA_COST)] {
+            assert_eq!(sellers(dict_id), [(0, 0)]);
+            assert_eq!(shop_cost(dictionary.item(dict_id).unwrap()), cost);
+            // Selling back pays a quarter, as the client shows.
+            assert_eq!(
+                sell_price(&dictionary, dict_id, 100, 100),
+                u64::from(cost / 4)
+            );
+        }
+        // Not a scope item no variant names, not a variant, not 0.26g's
+        // own scopes (which have a base_cost: Leupold 25,000, PSO-1
+        // 20,000).
+        let mut unsold = vec![LONE_SCOPE, AK_74N_PSO_1, 69, 304, 362];
+        unsold.extend(BROKEN);
+        for dict_id in unsold {
+            assert!(sellers(dict_id).is_empty(), "{dict_id}");
+        }
+        // The players' data before the patch has no variant: no scope in
+        // the list.
+        assert!(price_list().iter().all(|record| {
+            Dictionary::shared().item(record.dict_id).unwrap().category != SCOPE_CATEGORY
+        }));
     }
 }
