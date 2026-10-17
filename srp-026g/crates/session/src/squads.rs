@@ -173,8 +173,10 @@ impl Squads {
                 return Err(SquadError::NotCommander);
             }
             // Checked under the lock: of two accepted invites added at
-            // once, only the first gets the last place.
+            // once, only the first gets the last place. The other invite
+            // is used up: it was for a place that is gone.
             if squad.members.len() >= size {
+                inner.accepted.remove(&(commander, member));
                 return Err(SquadError::Full);
             }
         }
@@ -319,6 +321,10 @@ mod tests {
         assert!(squads.is_full(A) && squads.is_full(B));
         assert_eq!(squads.add(A, C), Err(SquadError::Full));
         assert_eq!(squads.of(C), None);
+        assert!(!squads.has_accepted(A, C));
+        // A place freed later does not take C on that old invite.
+        squads.leave(B).unwrap();
+        assert_eq!(squads.add(A, C), Err(SquadError::NotInvited));
     }
 
     #[test]

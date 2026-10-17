@@ -148,7 +148,7 @@ fn with_squads_of_two_a_third_invite_is_refused_and_its_sender_told() {
 
 /// Alice invites Bob and Carol before either is in: both invites go out.
 /// Both accept before her client adds either (the two `4A 02` come one
-/// after the other): only the first is added, and she is told.
+/// after the other): only the first is added, and she and Carol are told.
 #[test]
 fn with_squads_of_two_two_invites_accepted_at_once_add_one() {
     let mut world = world_of(2, Duration::from_secs(600));
@@ -163,6 +163,8 @@ fn with_squads_of_two_two_invites_accepted_at_once_add_one() {
     assert_eq!(importants(&decoded, 3, "Bob").len(), 1);
     assert_eq!(importants(&decoded, 3, "Carol").len(), 1);
 
+    world.take(bob);
+    world.take(carol);
     world.ask(alice, request::add_squad_member("Bob"));
     world.ask(alice, request::add_squad_member("Carol"));
     let (alice_id, bob_id) = (world.ids[alice].0, world.ids[bob].0);
@@ -172,6 +174,16 @@ fn with_squads_of_two_two_invites_accepted_at_once_add_one() {
         denial(&world.take(alice), id::PROFILE).as_deref(),
         Some("Squads are limited to 2 players.")
     );
+    assert_eq!(
+        denial(&world.take(carol), id::PROFILE).as_deref(),
+        Some("Squads are limited to 2 players.")
+    );
+    assert_eq!(denial(&world.take(bob), id::PROFILE), None);
+    // Bob leaves: Carol's old acceptance does not take the place.
+    world.ask(bob, request::leave_squad());
+    world.ask(alice, request::add_squad_member("Carol"));
+    assert!(members(&world, alice).is_empty());
+    assert!(members(&world, carol).is_empty());
     world.assert_clean();
 }
 

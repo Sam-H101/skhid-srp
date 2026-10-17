@@ -523,7 +523,7 @@ So: on the general, match and team channels a stock client lets through at most 
 | `50` (answer 0 to a squad invite) or `4D` type 3 after it | the inviter's squad filled since the invite | `84 49 00 <SRP_SQUAD_FULL_TEXT>` to the player who accepted, once; nothing to the inviter | 9.8; the acceptance is not kept nor passed on |
 | `4D` type 3 (the client's own "membership accepted") | can not be passed on | nothing | not the player's act |
 | `4E 04` (ignore by a typed name) | the name is no account | `A3 08` (the list as it is), then `84 49 00 st_player_not_found` | |
-| `4A 02` | the squad is full (two invites accepted before either was added) | the squad as it is (`A1`), then `84 49 00 <SRP_SQUAD_FULL_TEXT>` | 9.8; the one squad refusal that is told, with `84 49` (`84 4A` would be dropped) |
+| `4A 02` | the squad is full (two invites accepted before either was added) | `84 49 00 <SRP_SQUAD_FULL_TEXT>` to the inviter and to the player who was not added; the inviter gets the squad as it is (`A1`) | 9.8; the one squad refusal that is told, with `84 49` (`84 4A` would be dropped) |
 | `4A 01..04` | refused (not the commander, not invited, in no squad) | the squad as it is (`A1`), no text | `84 4A` is dropped by the client and the game has no text (9.2) |
 | `3D` | the match's report is gone | nothing; but see 9.5 | 0x93 is always a player's kits (0x271A30): there is no "nothing to show" answer |
 
@@ -598,8 +598,10 @@ are fine, with no change to how the sides are made (`matchmaking.md` §8.5).
     the inviter, and the player who accepted is told the same text, once.
   - Both acceptances came before either was added: the inviter's client
     sends two `4A 02`. `Squads::add` checks the size under its lock, so
-    only the first is added; the second is refused (`SquadError::Full`),
-    the inviter gets its squad as it is (`A1`) and the same message box.
+    only the first is added; the second is refused (`SquadError::Full`)
+    and its acceptance is used up (a place freed later does not take that
+    player on it). The inviter gets its squad as it is (`A1`) and the
+    same message box, and so does the player who was not added.
 - **Leaving frees the place.** A member leaving (`4A 04`), dropped (`4A
   03`), or the squad disbanded (`4A 01`): the next invite goes out. A
   squad of one is none (`squads.rs`), so its last player is

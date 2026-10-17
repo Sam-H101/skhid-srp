@@ -743,12 +743,15 @@ impl Core<'_> {
     /// squad): its squad keys are labels and the two invite requests. So a
     /// refusal means the client's picture of the squad was old: it is sent
     /// the squad as it is. The one exception is a full squad (two invites
-    /// accepted before either was added, `SRP_SQUAD_SIZE`): the commander
-    /// gets the same message box as for an invite into a full squad, with
-    /// `84 49`, which shows a text at any time.
+    /// accepted before either was added, `SRP_SQUAD_SIZE`): the commander,
+    /// and the player who was not added, get the same message box as for
+    /// an invite into a full squad, with `84 49`, which shows a text at any
+    /// time.
     pub(super) fn squad_action(&mut self, who: &Who, message: &ClientMessage) {
         let squads = self.store.squads();
         let me = who.account_id;
+        // The player who accepted but found the squad full (`4A 02`).
+        let mut not_added = None;
         let result = match message {
             ClientMessage::DisbandSquad => squads.disband(me),
             // Squads are off (`SRP_SQUADS`): nobody is added, whatever a
@@ -757,7 +760,13 @@ impl Core<'_> {
                 Err(SquadError::NotInvited)
             }
             ClientMessage::AddSquadMember { name } => match self.account_named(name, me) {
-                Some(member) => squads.add(me, member).map(drop),
+                Some(member) => {
+                    let added = squads.add(me, member).map(drop);
+                    if added == Err(SquadError::Full) {
+                        not_added = Some(member);
+                    }
+                    added
+                }
                 None => Err(SquadError::NotInvited),
             },
             ClientMessage::DropSquadMember { account_id } => squads.drop_member(me, *account_id),
@@ -770,10 +779,15 @@ impl Core<'_> {
                 log::info!("{}: squad change {message:?} refused: {error:?}", who.name);
                 // Two accepted invites added at once, the last place taken
                 // by the first: the commander is told in the message box
-                // of `84 49` (`84 4A` shows nothing).
+                // of `84 49` (`84 4A` shows nothing), and so is the player
+                // who accepted and was not added.
                 if error == SquadError::Full {
                     let text = self.squad_full_text();
                     self.deny(who.addr, id::PROFILE, &text);
+                    let member = not_added.and_then(|member| self.by_account.get(&member));
+                    if let Some(addr) = member.copied() {
+                        self.deny(addr, id::PROFILE, &text);
+                    }
                 }
                 // Its client asked for a change to a squad the server does
                 // not have as it shows it: it gets the squad as it is.
