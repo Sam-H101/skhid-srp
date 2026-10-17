@@ -652,9 +652,9 @@ KIT_CHANGE_TICK_VA = 0x316820                 # player_respawn_rule's tick
 KIT_CHANGE_SHOWN_STATE = 0x1F1C60             # network client: the state the camera is set for
 KIT_CHANGE_HOOKS = (
     (KIT_CHANGE_TICK_VA, bytes.fromhex("558bec83ec34"), 0, 0xE9),   # the respawn rule's tick: kit_change
-    (0x26794D, bytes.fromhex("6a01e8ac08f9ff"), 0xD8, 0xE8),        # the view of a kit change: kit_view
-    (0x23B7DA, bytes.fromhex("e8c1e9ffff6a00"), 0xF0, 0xE9),        # the local player alive: ui_alive
-    (0x23B7FC, bytes.fromhex("8d85d0000000"), 0xFF, 0xE8),          # every update: ui_start
+    (0x26794D, bytes.fromhex("6a01e8ac08f9ff"), 0xE1, 0xE8),        # the view of a kit change: kit_view
+    (0x23B7DA, bytes.fromhex("e8c1e9ffff6a00"), 0xF9, 0xE9),        # the local player alive: ui_alive
+    (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x108, 0xE8),         # every update: ui_start
 )
 KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pick: the kits stay
 
@@ -1485,11 +1485,12 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             sys.exit("the shell_32.dll check and the kit change do not fit before the late join")
         # The first instruction of each entry: `pushad`, `cmp dword
         # [esi+1F1C60h],3`, `call 0x23A1A0`, `cmp byte [ebp+33Ch],0`.
-        entry = KIT_CHANGE_VA + KIT_CHANGE_HOOKS[2][2]
+        view, alive, update = (offset for _, _, offset, _ in KIT_CHANGE_HOOKS[1:])
+        to_ui = b"\xE8" + struct.pack("<i", 0x23A1A0 - (KIT_CHANGE_VA + alive) - 5)
         if kit_change[0] != 0x60 \
-                or kit_change[0xD8:0xDF] != bytes.fromhex("83be601c1f0003") \
-                or kit_change[0xF0:0xF5] != b"\xE8" + struct.pack("<i", 0x23A1A0 - entry - 5) \
-                or kit_change[0xFF:0x106] != bytes.fromhex("80bd3c03000000"):
+                or kit_change[view:view + 7] != bytes.fromhex("83be601c1f0003") \
+                or kit_change[alive:alive + 5] != to_ui \
+                or kit_change[update:update + 7] != bytes.fromhex("80bd3c03000000"):
             sys.exit(f"kit_change_026g.section.bin: its entries are not where patch_026g.py jumps to them "
                      f"(assembled with -DCAVE={KIT_CHANGE_VA:#x}?)")
         for va, expected, offset, opcode in KIT_CHANGE_HOOKS:

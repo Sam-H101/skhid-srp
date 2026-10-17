@@ -20,7 +20,11 @@ match waits or counts down, and only then: in the last tick before play, in
 the tick whose time rule begins play (the places and the respawn rule tick
 before the time rule, check 32 of selftest_026g.py), never after; whatever
 tick the choice came to a game in, by the time the choice is for; never a
-dead player, one out of the world, one with any statistics, a late joiner.
+dead player, one out of the world, one with any statistics, a late joiner,
+nor a place past the end of the core's places (the buffer holds 20, a match
+of fewer places leaves the rest as memory had it). The new kit's damage
+model is given its protection at every switch, -1 when none is left, never
+left with what an earlier life gave it.
 The view keeps the warmup's camera and input before play and gives the
 player's in play, by the state the network client set the camera for. The
 hud shows the kits to a player who becomes alive before play, keeps them
@@ -106,7 +110,8 @@ class Tick(Emu):
         self.core = core
         self.nodes = 0
         for at, value in ((RULE, RVT), (RULE + 0x134, core), (RVT + 0x5C, SPAWN), (RVT + 0x60, VIEW),
-                          (core + 0x18458, PLACES), (core + 0x18FA8, STATS), (STATS, SVT),
+                          (core + 0x18458, PLACES), (core + 0x1845C, PLACES + 20 * 0x30),
+                          (core + 0x18FA8, STATS), (STATS, SVT),
                           (SVT + 0x2C, STAT_EVENT), (PVT + 0x1C, INIT), (PVT + 0x20, PUT),
                           (PVT + 0x24, REMOVE), (DMI + 8, DAMAGE), (core + 0x89D8, LISTS)):
             self.word(at, value)
@@ -131,6 +136,11 @@ class Tick(Emu):
 
     def state(self, value):
         self.word(self.core + 0x18FE4, value)
+
+    def places(self, count):
+        """A match of `count` places: the core's places end there; the
+        entries after it are as an earlier match left them."""
+        self.word(self.core + 0x1845C, PLACES + count * 0x30)
 
     def alive(self, place, kit=0, feet=(1.0, 2.0, 3.0), yaw=0.5, protected_until=None):
         p = player_at(place, kit)
@@ -308,6 +318,22 @@ def tick_cases():
         [switched(3, 0, 1)]
     yield "places 0 and 19", lambda t: (t.alive(0), t.choose(0, 2), t.alive(19, kit=1), t.choose(19, 0)), \
         [switched(0, 0, 2), switched(19, 1, 0)]
+    # A match of six places: the entries past them are not this match's,
+    # whatever an earlier match left in them.
+    yield "a match of six places", lambda t: (t.places(6), t.alive(5), t.choose(5, 1), t.alive(6), t.choose(6, 1),
+                                              t.alive(12, kit=2), t.choose(12, 0)), [switched(5, 0, 1)]
+    yield "no places", lambda t: (t.places(0), plain(t)), []
+    # The new kit played before (an earlier switch gave it a protection that
+    # is over, and a fade): the spawn is given -1 - now, so it writes -1 and
+    # no fade, as in a game that loaded a world since and has that kit's
+    # player as it was made.
+    yield "the new kit protected before", lambda t: (plain(t), t.word(player_at(3, 1) + 0x900 + 0x32C, NOW - 9000),
+                                                     t.word(player_at(3, 1) + 0x900 + 0x330, 1500)), \
+        [switched(3, 0, 1)]
+    yield "the new kit protected before, 2.5 s more", \
+        lambda t: (t.alive(3, protected_until=NOW + 2500), t.choose(3, 1),
+                   t.word(player_at(3, 1) + 0x900 + 0x32C, NOW - 9000), t.word(player_at(3, 1) + 0x900 + 0x330, 1500)), \
+        [switched(3, 0, 1, protection=2500)]
     # A late joiner comes into a match in play: its slot is bound with its
     # first kit current and next (0x321820), it spawns in it, and a choice
     # of its is for its next life.
@@ -334,6 +360,7 @@ def check_tick(data, patched):
                 protection = moved[0][1]
                 until = t.read(new + 0x900 + 0x32C)
                 assert until == (NOW + protection if protection else 0xFFFFFFFF), (name, until)
+                assert t.read(new + 0x900 + 0x330) == 0, name
             else:
                 assert kits == before[place], (patched, name, place)
         checks += 1
@@ -611,10 +638,14 @@ def main():
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
         checks += check_death(data, is_patched)
-    # A build that does not look at the statistics, or at the state, fails;
-    # so does one whose view always gives the warmup.
+    # A build that does not look at the statistics, or at the state, or at
+    # the end of the places, or that gives the spawn no protection when none
+    # is left (which leaves the new kit's damage model as it was), fails; so
+    # does one whose view always gives the warmup.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
                             (bytes.fromhex("48d1e8750d"), bytes.fromhex("48d1e8eb00"), check_boundary),
+                            (bytes.fromhex("3b865c84010073ee"), bytes.fromhex("3b865c8401009090"), check_tick),
+                            (bytes.fromhex("29e8770489e8f7d0"), bytes.fromhex("29e8770431c09090"), check_tick),
                             (bytes.fromhex("83be601c1f000375"), bytes.fromhex("83be601c1f0003eb"), check_view)):
         broken = bytearray(patched)
         at = broken.rfind(old)                     # in `.srp`, the last section with bytes
@@ -626,7 +657,7 @@ def main():
             checks += 1
         else:
             sys.exit(f"a broken build ({new.hex()}) passed")
-    print(f"patch 31: {checks} runs as expected (the original, the build and three broken builds)")
+    print(f"patch 31: {checks} runs as expected (the original, the build and five broken builds)")
 
 
 if __name__ == "__main__":

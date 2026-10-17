@@ -1534,20 +1534,26 @@ whole simulation, so a server alone cannot put a player into another kit:
 each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
-310 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
+319 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
 join), four sites, and nine nops at a fifth:
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
-  or "countdown" (core+18FE4h is 1 or 2, the state the world holds). A place
+  or "countdown" (core+18FE4h is 1 or 2, the state the world holds), up to
+  the end of the core's places (their buffer holds 20; past a match's places
+  it holds what memory had, an earlier match's players among them). A place
   whose next kit is another than the kit in use, whose player is alive and
   in the world, and whose statistics record is all zero (no shot, hit, kill
   or other event, no damage taken from a player in this match), is
   respawned at once in the new kit by the rule's own two calls, as the tick
   does for a place it respawns: out of the world, then the spawn with a
   respawn point of the player's feet, its yaw and what is left of its
-  invulnerability. Same position and facing (the look up or down is level
-  again, as at any spawn); no death, no respawn time, no ticket.
+  invulnerability; with none left, one the spawn makes -1 (not
+  invulnerable): a protection of 0 would leave the new kit's damage model
+  with what an earlier life gave it, which a game that loaded a world since
+  does not have (the world holds the kit in use's player alone). Same
+  position and facing (the look up or down is level again, as at any
+  spawn); no death, no respawn time, no ticket.
 - The client's view of that spawn (0x2678E0 at 0x26794D) gave the player
   camera and the input's first person mode: the first test in a game had
   the player in first person and free to move during the countdown. It now
@@ -1596,12 +1602,20 @@ kit change, the hud's update, the pick and a death screen's respawn on
 made-up objects: the cases of the rules,
 the ticks around the start (a choice for the last tick before play, for the
 tick play begins in, for the first tick of play), the camera before play, in
-play and after a rollback over the start, a late joiner; the original never
-changes a live player's kit; three broken builds fail it. **Run in a game
+play and after a rollback over the start, a late joiner, a match of six
+places with an earlier match's entries past them, a new kit whose damage
+model an earlier life left protected; the original never changes a live
+player's kit; five broken builds fail it. **Run in a game
 (2026-10-17):** the first build: the kit changed, the player was then in
 first person and free to move during the countdown; with the view's fix
 (d8acf39): the camera and the movement lock right, a click on a kit reset
-the cursor. **Not run in a game: this build.**
+the cursor; 3417c05 (two games): a switch before the start in place with
+the warmup's camera, the cursor kept, re-picks, re-picks on the death
+screen, the start's release. **Not run in a game: this build**, which adds
+the end of the places and the protection when none is left (a switch of a
+place of the match plays as in 3417c05; with no protection left the new kit
+is not invulnerable in either, and in the tick its protection ends it now
+is not).
 
 ## Not ported, not done
 
