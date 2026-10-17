@@ -123,6 +123,7 @@ va	status	ref_021d	name
 0x0003ad50	inferred-medium	0x0002b4ec	vostok::collision::aabb_object::cuboid_test
 0x0003aee0	inferred-medium	0x0002b601	vostok::buffer_vector<vostok::collision::triangle_result>::push_back
 0x0003b3f0	inferred-medium	0x0002b879	vostok::collision::animated_object::~animated_object
+0x0003b5a0	inferred-medium	0x0002b9ad	vostok::detail::strcmp_s
 0x0003b690	inferred-medium	0x0002ba17	vostok::collision::triangle_mesh_geometry::`scalar deleting destructor'
 0x0003b890	inferred-high	0x0002bbda	vostok::collision::helper::predicate
 0x0003b910	inferred-medium	0x0002bcbd	vostok::collision::triangle_mesh_geometry::aabb_query
@@ -179,6 +180,7 @@ va	status	ref_021d	name
 0x000487e0	inferred-medium	0x0003a6bd	vostok::vfs::mounter::free_mount_branch
 0x000490a0	inferred-medium	0x00035f90	vostok::vfs::mount_root_node_base<1>::mount_root_node_base<1>
 0x00049170	inferred-medium	0x00035bbb	vostok::vfs::base_node<1>::base_node<1>
+0x0004bc10	inferred-medium	0x00033f6f	vostok::vfs::vfs_iterator::get_physical_path
 0x0004be70	inferred-medium	0x000343f9	vostok::vfs::get_compressed_file_size<1>
 0x0004d4e0	inferred-medium	0x0003557a	vostok::vfs::virtual_file_system::try_reference_to_pending_mount_unsafe
 0x0004e7e0	inferred-medium	0x000364ba	vostok::vfs::free_nodes_to_expand
@@ -643,6 +645,10 @@ va	status	ref_021d	name
 0x0010b630	inferred-medium	0x000ccad9	vostok::resources::device_manager::device_manager
 0x0010b6d0	inferred-medium	0x000ccb4c	vostok::resources::device_manager::pre_allocate
 0x0010b810	inferred-medium	0x000ccc6e	vostok::resources::device_manager::fill_pre_allocated
+0x0010bcc0	inferred-medium	0x000cd023	vostok::resources::hdd_manager_sorting_predicate::operator()
+0x0010be80	inferred-medium	0x000cd15f	vostok::resources::hdd_manager::grab_sorted_queries
+0x0010bf70	inferred-medium	0x000cd25e	stlp_std::priv::__introsort_loop<vostok::resources::query_result * *,vostok::resources::query_result *,int,vostok::resources::hdd_manager_sorting_predicate>
+0x0010c280	inferred-medium	0x000cd46c	stlp_std::priv::__unguarded_linear_insert<vostok::resources::query_result * *,vostok::resources::query_result *,vostok::resources::hdd_manager_sorting_predicate>
 0x0010d0f0	inferred-medium	0x000ce1a4	vostok::tasks::thread_pool::deactivate_task_thread
 0x0010d150	inferred-medium	0x000ce1f7	vostok::tasks::thread_pool::try_activate_task_thread
 0x0010d1c0	inferred-medium	0x000ce273	vostok::tasks::thread_pool::deactivate_if_oversubscribed
