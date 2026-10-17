@@ -247,6 +247,14 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     only the list walk reaches that end; no relocation under the two bytes,
     no branch into them. check_baked_texture_026g.py runs the original's
     and the build's list on the loads of the crash.
+37. the same build: the memory arena "ai" is 4 MiB (patch 36). In the
+    static initializer 0x1E8B50 the original and the build without the late
+    join have `mov dword [esp+0x18],0x40000` at 0x1E8CCB, this build
+    `mov dword [esp+0x18],0x400000`, between `mov esi,[0xa808fc]` (the
+    arenas' list) and `mov dword [esp+0x24],0x9fa4e0` ("ai") / `call
+    0xe21c0`, after the arena 0xA967D8's vtable store; only byte 0x1E8CD1
+    differs (04h -> 40h); "ai" is named there alone; no relocation under
+    the instruction, no branch of the initializer into it.
 """
 
 import ctypes
@@ -754,6 +762,8 @@ def test_baked_texture_missing(original, image, before):
     is a `jmp` to the function's `return false`; the build without the late
     join keeps it."""
     va, old, new = P.BAKED_TEXTURE_MISSING
+    # ndisasm 2.16 writes the absolute operand as `[dword ...]`.
+    FLAG_TEST = ("cmp byte [0x226091d],0x0", "cmp byte [dword 0x226091d],0x0")
     stock = Image(original)
     start, end = 0x131B40, 0x131ED0
     original_rows = ndisasm(stock.read(start, end - start), start)
@@ -763,7 +773,7 @@ def test_baked_texture_missing(original, image, before):
           f"{va:#x}: the original's `{old.hex()}` (jnz short), kept by the build without the late join, "
           f"`{new.hex()}` (jmp short) in this one")
     text = stock.read(0x9EE3F4, 33)
-    check(original_at.get(0x131C11) == "jnz 0x131bb3" and original_at.get(0x131C17) == "cmp byte [0x226091d],0x0"
+    check(original_at.get(0x131C11) == "jnz 0x131bb3" and original_at.get(0x131C17) in FLAG_TEST
           and original_at.get(va) == "jnz 0x131c73" and original_at.get(0x131C27) == "push dword 0x9ee3f4"
           and original_at.get(0x131C58) == "call 0x113450" and original_at.get(0x131C72) == "int3"
           and original_at.get(0x131C73) == "lea ecx,[esp+0x48]" and original_at.get(0x131C7C) == "xor al,al"
@@ -772,7 +782,7 @@ def test_baked_texture_missing(original, image, before):
           "the original: after the list's last record (`jnz 0x131bb3`) the flag test, the assertion "
           "\"Saved baked texture %s not found\" (0x113450), `int3`; 0x131c73 lets the resource go and "
           "returns false (`xor al,al` ... `ret 0xc`)")
-    check(rows.get(0x131C17) == "cmp byte [0x226091d],0x0" and rows.get(va) in ("jmp short 0x131c73", "jmp 0x131c73")
+    check(rows.get(0x131C17) in FLAG_TEST and rows.get(va) in ("jmp short 0x131c73", "jmp 0x131c73")
           and all(rows.get(a) == original_at.get(a) for a in (0x131C20, 0x131C73, 0x131C7C, 0x131C85)),
           f"{va:#x}: `jmp short 0x131c73`, the rest of the function the original's")
     # The not-found end is reached from the list walk alone, and nothing
@@ -787,6 +797,41 @@ def test_baked_texture_missing(original, image, before):
     hits = [f"{address:#x}: {text}" for address, _, text in original_rows
             if branch_target(text) is not None and va + 1 <= branch_target(text) < va + len(old)]
     check(not hits, "no branch of the function lands inside the two bytes")
+
+
+def test_ai_arena(original, image, before):
+    """The memory arena "ai" is 4 MiB (patch 36, client_patch.md section
+    3.34): the size its static initializer registers, an immediate; the
+    build without the late join keeps 256 KiB."""
+    va, old, new = P.AI_ARENA
+    stock = Image(original)
+    start, end = 0x1E8B50, 0x1E8D9C
+    original_rows = ndisasm(stock.read(start, end - start), start)
+    original_at = {address: text for address, _, text in original_rows}
+    rows = {address: text for address, _, text in ndisasm(image.read(start, end - start), start)}
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new,
+          f"{va:#x}: the original's `{old.hex()}` (0x40000), kept by the build without the late join, "
+          f"`{new.hex()}` (0x400000) in this one")
+    check(original_at.get(0x1E8C60) == "mov dword [dword 0xa967d8],0x9e68dc"
+          and original_at.get(0x1E8CBD) == "mov esi,[dword 0xa808fc]" and original_at.get(0x1E8CC3) == "lea edi,[esp+0x10]"
+          and original_at.get(va) == "mov dword [esp+0x18],0x40000"
+          and original_at.get(0x1E8CDB) == "mov dword [esp+0x24],0x9fa4e0" and original_at.get(0x1E8CE3) == "call 0xe21c0"
+          and original_at.get(0x1E8D9B) == "ret" and stock.read(0x9FA4E0, 3) == b"ai\0",
+          "the original: the arena 0xa967d8's vtable store, the arenas' list [0xa808fc], the size 0x40000, "
+          "the name \"ai\" (0x9fa4e0), the registration 0xe21c0; the initializer ends at 0x1e8d9b")
+    check(rows.get(va) == f"mov dword [esp+0x18],{P.AI_ARENA_SIZE:#x}"
+          and all(rows.get(a) == original_at.get(a) for a in (0x1E8CBD, 0x1E8CD3, 0x1E8CDB, 0x1E8CE3, 0x1E8D9B)),
+          f"{va:#x}: `mov dword [esp+0x18],{P.AI_ARENA_SIZE:#x}`, the rest of the initializer the original's")
+    found = image.read(va, len(old))
+    check([i for i in range(len(old)) if found[i] != old[i]] == [6], f"one byte differs there: {va + 6:#x} 04 -> 40")
+    named = [P.TEXT_VA + m.start() - P.TEXT_FILE for m in re.finditer(re.escape(struct.pack("<I", 0x9FA4E0)), original)
+             if P.TEXT_FILE <= m.start() < P.TEXT_FILE + P.TEXT_VSIZE]
+    check(named == [0x1E8CDF], f"the name \"ai\" (0x9fa4e0) is used in the code at 0x1e8cdb alone: {[hex(a) for a in named]}")
+    relocated = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not relocated, "no base relocation of the original is under the instruction")
+    hits = [f"{address:#x}: {text}" for address, _, text in original_rows
+            if branch_target(text) is not None and va + 1 <= branch_target(text) < va + len(old)]
+    check(not hits, "no branch of the initializer lands inside the instruction")
 
 
 def test_start_up_folder(original, image, mode):
@@ -1152,7 +1197,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
         [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
-        [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))]
+        [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))] + \
+        [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))]
 
 
 def pickup_sites():
@@ -3030,6 +3076,7 @@ def test_late_join(original, without, server, source):
     test_kit_change(original, image, before)
     test_read_order(original, image, before)
     test_baked_texture_missing(original, image, before)
+    test_ai_arena(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
