@@ -11,8 +11,10 @@ README patch 31, `client_patch.md` section 3.29; the server: `TimelimitRule::bef
 - **Who:** a player in the match from its start, alive, who has done nothing yet: no shot, hit,
   kill or other event, no damage from another player. Several switches allowed until then.
 - **Effect:** respawn in the same place, same facing (the look up or down is level, as at any
-  spawn), what is left of the spawn invulnerability kept, with the chosen kit; no death, no
-  timer, no ticket; supplies from the account as at any spawn.
+  spawn), what is left of the spawn invulnerability kept (none left: not invulnerable, the
+  new kit's own earlier protection never kept), with the chosen kit; no death, no timer, no
+  ticket; supplies from the account as at any spawn. Only the match's own places (the core's
+  list, never the buffer past its end).
 - **State:** after a switch the player stays in the pre-start state (warmup camera, movement
   lock) taken from the match's current state, the one the network client set the camera for
   (+1F1C60h); the start then releases them like everyone.
