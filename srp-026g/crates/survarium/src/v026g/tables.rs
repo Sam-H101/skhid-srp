@@ -9,7 +9,7 @@ use super::awards::Awards;
 use super::dictionary::{self, Dictionary};
 use super::drops::{self, Drops};
 use super::game_data::{GameData, GameDataError};
-use super::item_params::{self, PlayerLimits};
+use super::item_params::{self, ItemParams, PlayerLimits};
 use super::loadouts::{self, Loadouts};
 use super::localization;
 use super::maps;
@@ -33,8 +33,9 @@ fn parsed<T>(
 
 /// Builds every table of `data` and checks what one file says of another:
 /// each item's config is there, each default modification is one of
-/// `modifications.options`, ids are once in the dictionary, and every item
-/// the code names is in it ([`named_items`]).
+/// `modifications.options`, ids are once in the dictionary, every item
+/// the code names is in it ([`named_items`]), and every shop camouflage has
+/// a seller ([`check_shop_camos`]).
 pub fn check(data: &GameData) -> Result<(), GameDataError> {
     let dictionary = parsed(
         dictionary::PATH,
@@ -64,6 +65,7 @@ pub fn check(data: &GameData) -> Result<(), GameDataError> {
             }
         }
     }
+    check_shop_camos(&dictionary, &params)?;
     modifications::derive_item_mods(data, &dictionary)?;
     maps::derive(data, &dictionary)?;
     for language in localization::Language::ALL {
@@ -130,6 +132,11 @@ pub fn named_items() -> Vec<Named> {
             .iter()
             .map(|&(name, _, _)| ("prices::AMMO_PRICES", name)),
     );
+    named.extend(
+        super::prices::OWNER_PRICES
+            .iter()
+            .map(|&(name, _, _)| ("prices::OWNER_PRICES", name)),
+    );
     for bundle in &super::shop_offers::BUNDLES {
         named.extend(
             bundle
@@ -179,6 +186,34 @@ fn check_named(data: &GameData, dictionary: &Dictionary) -> Result<(), GameDataE
     }
 }
 
+/// Every shop camouflage of `dictionary` ([`super::prices::is_shop_camo`])
+/// is in a folder a faction sells from ([`super::prices::camo_shop`]): one
+/// in another folder (a patch's new one, or the Edge's) would be left out
+/// of the shop unseen, so the start is refused naming it, until
+/// `prices::CAMO_SHOPS` names its folder.
+fn check_shop_camos(dictionary: &Dictionary, params: &[ItemParams]) -> Result<(), GameDataError> {
+    let unsold: Vec<String> = dictionary
+        .items
+        .iter()
+        .filter(|item| {
+            params
+                .binary_search_by_key(&item.dict_id, |row| row.dict_id)
+                .is_ok_and(|index| super::prices::is_shop_camo(item, &params[index]))
+                && super::prices::camo_shop(&item.cfg_name).is_none()
+        })
+        .map(|item| format!("{} `{}` ({})", item.dict_id, item.name, item.cfg_name))
+        .collect();
+    if unsold.is_empty() {
+        return Ok(());
+    }
+    Err(GameDataError(format!(
+        "shop camouflages ({}) in a folder no faction sells from: {}; name the folder in \
+         prices::CAMO_SHOPS",
+        super::prices::SHOP_CAMO,
+        unsold.join(", ")
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +224,8 @@ mod tests {
         assert!(named.contains(&("loadouts::STARTER", "tt_33")));
         assert!(named.contains(&("shop_offers::BUNDLES", "vss_premium")));
         assert!(named.contains(&("prices::EXCEPTIONS", "medkit")));
+        assert!(named.contains(&("prices::EXCEPTIONS", "vityaz")));
+        assert!(named.contains(&("prices::OWNER_PRICES", "vityaz")));
         assert_eq!(lacking(Dictionary::shared(), &named), Vec::<String>::new());
         assert_eq!(check(super::super::game_data::shared()), Ok(()));
     }
@@ -218,5 +255,39 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("srp-game-data build"), "{error}");
+    }
+
+    /// A shop camouflage in a folder no faction sells from refuses the
+    /// start, naming it; the test data's eight are in their factions'.
+    #[test]
+    fn a_shop_camouflage_of_no_factions_folder_is_refused() {
+        let dictionary = Dictionary::shared();
+        let params = item_params::all();
+        assert_eq!(check_shop_camos(dictionary, params), Ok(()));
+        let mut moved = dictionary.clone();
+        let denim = moved
+            .items
+            .iter_mut()
+            .find(|item| item.name == "camo_denim")
+            .unwrap();
+        denim.cfg_name = "gameplay/items/upgrades/camouflages/edge/camo_denim.options".into();
+        let error = check_shop_camos(&moved, params).unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "163 `camo_denim` (gameplay/items/upgrades/camouflages/edge/camo_denim.options)"
+            ),
+            "{error}"
+        );
+        assert!(error.contains("prices::CAMO_SHOPS"), "{error}");
+        // A drop camouflage of that folder is no shop camouflage.
+        let mut moved = dictionary.clone();
+        let raven = moved
+            .items
+            .iter_mut()
+            .find(|item| item.name == "camo_black_leather_01")
+            .unwrap();
+        raven.cfg_name =
+            "gameplay/items/upgrades/camouflages/edge/camo_black_leather_01.options".into();
+        assert_eq!(check_shop_camos(&moved, params), Ok(()));
     }
 }
