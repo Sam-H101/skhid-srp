@@ -11,14 +11,16 @@
 # libssl-dev and a C compiler.
 name: Build
 on:
+  # Every branch pushed here, a PR's too (one run per push: no
+  # pull_request trigger beside it).
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
   workflow_dispatch:
 
+# A newer push of a branch stops its run still going; `main`'s all finish.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
