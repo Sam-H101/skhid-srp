@@ -1044,6 +1044,9 @@ check "release: ... the record writes 13 for it" test "$(on_main srp-026g/crates
     "$(printf '11\tthe TDM end\n13\ta new kit before the start (#8)')"
 check "release: ... and says so in its commit" has "$(git -C "$T/origin.git" log -1 --format=%B 'main^2')" \
     "^It changes what a match computes (a new kit before the start (#8)): 13 in place of"
+expect_refused "release: the live server built with \`next\`, not built again, would take the new revision for it" \
+    "the live server was built with a \`next\` row of srp-026g/crates/session/src/v026g/simulation_changes.tsv, and the server code is not built (--server-code no)" \
+    "$here/release.sh" --server-code no
 
 # Refused in the preflight, before anything.
 : >"$T/state/admin.log"

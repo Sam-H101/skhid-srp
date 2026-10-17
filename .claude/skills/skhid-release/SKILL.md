@@ -74,7 +74,9 @@ typing it: its server takes `next` for its `SRP_MIN_PATCH_REVISION` (the
 release's own, set at the swap), and its record writes the number in place
 of `next`. The preflight says which (`replays: this release changes what a
 match computes (…)` or `replays: no change … is marked`), refuses `next`
-with `--server-code no`, and notes when the exe's patches changed since the
+with `--server-code no` (and `--server-code no` when the running server was
+built with `next`: made anew with this release's revision, it would take
+that for it), and notes when the exe's patches changed since the
 last tag with nothing marked: **read that line to the owner**; if the
 change does alter a match, stop and have the row added by a PR first.
 

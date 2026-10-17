@@ -49,8 +49,10 @@
 #      adds (it cannot know its revision): the server takes `next` for its
 #      SRP_MIN_PATCH_REVISION, this release's, so recordings of older games
 #      are refused from the swap on (the player is told why), and the record
-#      writes the number in; with one, the server code must be built; with
-#      none, a note when the exe's patches changed since the last tag;
+#      writes the number in; with one, the server code must be built (and
+#      also when the target's tree still has one: its server would take
+#      this release's revision for it); with none, a note when the exe's
+#      patches changed since the last tag;
 #   2. takes the release lock, then waits for the go: the owner's word that
 #      players may feel the release from now on (y at its prompt, n stops;
 #      or touch the go file it names under ~/.cache/skhid-release/; --yes
@@ -1099,6 +1101,15 @@ if [[ -n $main_commit ]]; then
             fi
         else
             okay "replays: no change of what a match computes is marked ($SIMULATION_CHANGES): recordings from revision ${sim_last:-?} on stay watchable"
+            # The running server was built from a tree with `next` (the
+            # release before changed what a match computes; its record
+            # wrote the number on main since): made anew with this
+            # release's SRP_MIN_PATCH_REVISION and not rebuilt, it would
+            # take this revision for `next`.
+            if ((target_ok && !build_code)) &&
+                on_target "cd $D && awk -F '\t' '\$1 == \"next\" { found = 1 } END { exit !found }' ${SIMULATION_CHANGES#srp-026g/}" 2>/dev/null; then
+                problem "replays: the live server was built with a \`next\` row of $SIMULATION_CHANGES, and the server code is not built (--server-code no): made anew with SRP_MIN_PATCH_REVISION=${rev:-<n>}, it would take ${rev:-<n>} for \`next\` and refuse the recordings of the games before it, which stay watchable"
+            fi
             # The exe's patches changed since the last release: said, in
             # case a change of the simulation was not marked.
             if [[ -n $main_rev ]] && since=$(git -C "$REPO" rev-parse -q --verify "refs/tags/$(release_tag "$main_rev")^{commit}"); then
