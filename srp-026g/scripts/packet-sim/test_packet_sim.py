@@ -151,6 +151,12 @@ class RuleTest(unittest.TestCase):
         self.assertFalse(match("addr:127.0.0.1:5001"))
         self.assertTrue(match("new-after:20", started=25))
         self.assertFalse(match("new-after:20", started=5))
+        nxt = ps.peer_matcher("next-after:20")
+        port = type("F", (), {"name": "match"})()
+        a, b, c = (FakeSession(index=i, started=t) for i, t in ((1, 5), (2, 21), (3, 22)))
+        for s in (a, b, c):
+            s.forwarder, s.generation = port, 1
+        self.assertEqual([nxt(a), nxt(b), nxt(c), nxt(b)], [False, True, False, True])
         self.assertTrue(match("late:10", joined_after=40))
         self.assertFalse(match("late:10", joined_after=3))
         with self.assertRaises(ValueError):
@@ -212,6 +218,70 @@ class RuleTest(unittest.TestCase):
         self.assertFalse(sim.resolve(late, "up", 60.5)[1])
         self.assertFalse(sim.resolve(late, "up", 65.5)[1])
         self.assertEqual(sim.resolve(session(lobby), "up", 6)[2], 7)
+
+
+class MessageIdsTest(unittest.TestCase):
+    """Datagrams as srp's packet log of a real game (rev 18) recorded them."""
+
+    def test_single_messages_and_keepalives(self):
+        self.assertEqual(ps.message_ids(bytes.fromhex("00ff00d8934faf7c80"), "up"), (0xD8,))
+        self.assertEqual(ps.message_ids(bytes.fromhex("010080d9934faf7c00808080"), "up"), (0xD9,))
+        self.assertEqual(ps.message_ids(bytes.fromhex("000000e3cc16cc16"), "down"), (0xE3,))
+        self.assertEqual(ps.message_ids(bytes.fromhex("0d0478fc"), "down"), (0xFC,))
+        self.assertEqual(ps.message_ids(b"\x01\x02", "up"), ())
+
+    def test_split_and_multi(self):
+        # The first part of a split 0xE4 (static info): FF E4 x part count ...
+        part = bytes.fromhex("010140ffe40000020001023900") + bytes(40)
+        self.assertEqual(ps.message_ids(part, "down"), (0xE4,))
+        # A multi datagram (F=1 in ack0, no tail): two relays and a ping.
+        multi = bytes([5, 9, 0x01, 0xEB]) + bytes(10) + bytes([0xEB]) + bytes(10) + bytes([0xE6, 7]) + bytes(4)
+        self.assertEqual(ps.message_ids(multi, "down"), (0xEB, 0xEB, 0xE6))
+        # Up: a late-join answer (an impossible chunk head, 20 bytes) behind which a DA comes.
+        answer = bytes([9, 3, 0x01, 0xE0]) + b"\xff" * 6 + b"\0\0" + bytes(12) + bytes([0xDA])
+        self.assertEqual(ps.message_ids(answer, "up"), (0xE0, 0xDA))
+        # A snapshot chunk (time 50, offset 0, total 10) joined with a hash report.
+        chunk = bytes([9, 3, 0x01, 0xE0]) + (50).to_bytes(4, "little") + (0).to_bytes(2, "little") \
+            + (10).to_bytes(2, "little") + bytes(10) + bytes([0xDF]) + bytes(5)
+        self.assertEqual(ps.message_ids(chunk, "up"), (0xE0, 0xDF))
+
+    def test_ids_rules_pick_datagrams_and_count_limits(self):
+        profile = ps.Profile.parse({"events": [
+            {"port": "match", "dir": "down", "action": "drop", "at": 0, "duration": 10, "ids": "E4", "count": 1},
+            {"port": "match", "dir": "up", "action": "drop", "at": 0, "duration": 10, "ids": ["da"]}]}, "t")
+        sim = ps.Simulator(profile, out=None)
+        match = type("F", (), {"name": "match"})()
+        s = FakeSession()
+        s.forwarder, s.name, s.generation = match, "match#1", 1
+        e4 = bytes.fromhex("010140ffe40000020001023900") + bytes(40)
+        e3 = bytes.fromhex("000000e3cc16cc16")
+        self.assertFalse(sim.resolve(s, "down", 1, e3)[1])
+        self.assertTrue(sim.resolve(s, "down", 1, e4)[1])
+        self.assertFalse(sim.resolve(s, "down", 2, e4)[1])  # count 1: the second copy passes
+        self.assertTrue(sim.resolve(s, "up", 2, bytes([7, 3, 0, 0xDA]))[1])
+        self.assertFalse(sim.resolve(s, "up", 2, bytes([7, 3, 0, 0xFC]))[1])
+        self.assertFalse(sim.resolve(s, "up", 2)[1])  # no datagram (a TCP chunk): an ids rule does not apply
+        with self.assertRaises(ValueError):
+            ps.Rule.parse({"action": "set", "count": 2, "loss_pct": 1}, event=True)
+
+    def test_an_event_can_count_from_a_message(self):
+        profile = ps.Profile.parse({"events": [
+            {"port": "match", "action": "drop", "anchor": "id:DA", "at": 0.5, "duration": 2}]}, "t")
+        sim = ps.Simulator(profile, out=None)
+        self.assertEqual(sim.anchor_ids, {0xDA})
+        match = type("F", (), {"name": "match", "kind": "udp"})()
+        s = FakeSession()
+        s.forwarder, s.name, s.generation, s.first_seen = match, "match#1", 1, {}
+        s.streams = {"up": ps.Stream(random.Random(1)), "down": ps.Stream(random.Random(2))}
+        self.assertFalse(sim.resolve(s, "down", 10)[1])  # no 0xDA yet: no window
+        sim.offer(s, "up", bytes([7, 3, 0, 0xDA]), lambda data: None)
+        seen = s.first_seen[0xDA]
+        self.assertFalse(sim.resolve(s, "down", seen + 0.4)[1])
+        self.assertTrue(sim.resolve(s, "down", seen + 0.6)[1])
+        self.assertFalse(sim.resolve(s, "down", seen + 2.6)[1])
+        with self.assertRaises(ValueError):
+            ps.Rule.parse({"action": "drop", "anchor": "id:DA,DB"}, event=True)
+        self.assertEqual(ps.spec_dict("ids=E4,E8 count=2")["count"], 2)
 
 
 class XrandrTest(unittest.TestCase):
@@ -395,10 +465,13 @@ class ForwardingTest(unittest.TestCase):
         second = self.client()
         self.assertEqual(self.exchange(second, 3, wait=0.3), [])
         self.assertEqual(len(self.exchange(first, 3)), 3)  # the one already there is untouched
+        third = self.client()
+        self.assertEqual(len(self.exchange(third, 3)), 3)  # and so is one after the next
         rows = ps.control_request(control, {"cmd": "stats"})["stats"]
         by_peer = {row["peer"]: row for row in rows if row["port"] == "match"}
         self.assertEqual(by_peer[2]["up"]["drop:event"], 3)
         self.assertNotIn("drop:event", by_peer[1]["up"])
+        self.assertNotIn("drop:event", by_peer[3]["up"])
         # A blackout of everyone from now, for 0.3 s.
         self.assertTrue(ps.control_request(control, {"cmd": "event", "event": {
             "port": "match", "action": "drop", "duration": 0.3}})["ok"])
@@ -407,7 +480,7 @@ class ForwardingTest(unittest.TestCase):
         self.assertEqual(len(self.exchange(first, 2)), 2)
         bad = ps.control_request(control, {"cmd": "event", "event": {"action": "boom"}})
         self.assertFalse(bad["ok"])
-        first.close(), second.close()
+        first.close(), second.close(), third.close()
 
     def test_tcp_pass_through_and_stall(self):
         self.start({"events": [{"port": "login", "action": "hold", "at": 0, "duration": 0.5}]})

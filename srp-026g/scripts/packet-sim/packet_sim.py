@@ -141,6 +141,128 @@ def decide(link: Link, state: LinkState, now: float, size: int,
 
 
 # --------------------------------------------------------------------------
+# What a match datagram carries (transport.md §2, §3, §4): the message ids,
+# for rules that pick packets by them. Best effort: a datagram it cannot
+# read gives the ids read so far (an empty tuple at worst), never an error.
+
+# Server to client: id -> (fixed payload length or None for a length prefix,
+# whether a unique/order byte follows the id). ED/EE are worked out from
+# their mask (3 bytes in a game with the late join, revision 5 on).
+DOWN_IDS = {0xE3: (4, False), 0xE4: (None, True), 0xE5: (7, True), 0xE6: (4, True), 0xE7: (2, True),
+            0xE8: (None, True), 0xE9: (2, False), 0xEA: (2, False), 0xEB: (10, False), 0xEC: (11, False),
+            0xED: ("mask", False), 0xEE: ("mask", False), 0xEF: (2, False), 0xF0: (4, False),
+            0xF1: (1, False), 0xF2: (2, False), 0xF3: (3, False), 0xF4: (2, False), 0xF5: (1, False),
+            0xF6: (None, True)}
+# Client to server: all fixed, none with a unique byte; an 0xE0 with a
+# payload is a patched game's snapshot chunk or late-join answer
+# (`upload_len`, as srp's `udp_transport::wire::carrier_len`).
+UP_IDS = {0xD8: 5, 0xD9: 4, 0xDA: 0, 0xDB: 6, 0xDC: 9, 0xDD: 10, 0xDE: 2, 0xDF: 5, 0xE0: 0, 0xE1: 0}
+LOW_LEVEL = range(0xFA, 0xFF)
+MASK_BYTES = 3
+
+
+def upload_len(rest: bytes) -> int | None:
+    """The length of an 0xE0's payload in a multi datagram, or None for a
+    plain leave: a late-join answer (an impossible chunk head, 20 bytes) or
+    a snapshot chunk (`u32 time, u16 offset, u16 total`, its data)."""
+    if len(rest) < 8:
+        return None
+    if rest[:8] == b"\xff" * 6 + b"\0\0":
+        return 20 if len(rest) >= 20 else None
+    time, offset, total = int.from_bytes(rest[:4], "little"), int.from_bytes(rest[4:6], "little"), \
+        int.from_bytes(rest[6:8], "little")
+    if not (time % 50 == 0 and offset % 480 == 0 and offset < total <= 0x8000):
+        return None
+    length = 8 + min(480, total - offset)
+    return length if len(rest) >= length else None
+
+
+def message_ids(data: bytes, direction: str) -> tuple[int, ...]:
+    """The message ids of a 0.26g match datagram, in order (low-level ones,
+    0xFA..0xFE, included). Split parts give their message's id."""
+    if len(data) < 4:
+        return ()
+    ack0, end = data[2], len(data)
+    if ack0 & 0x80:  # tail ack bytes, read back from the end until one without bit 7
+        while end > 3 and data[end - 1] & 0x80:
+            end -= 1
+        if end <= 3:
+            return ()
+        multi = data[end - 1] & 1
+        end -= 1
+    else:
+        multi = ack0 & 1
+    area = data[3:end]
+    ids: list[int] = []
+    i = 0
+    while i < len(area):
+        mid = area[i]
+        i += 1
+        if mid in LOW_LEVEL:
+            ids.append(mid)
+            break
+        split = mid == 0xFF
+        if split:
+            if i >= len(area):
+                break
+            mid = area[i]
+            i += 1
+        ids.append(mid)
+        if not multi:
+            break
+        if direction == UP:
+            if mid not in UP_IDS:
+                break
+            length, extra = UP_IDS[mid], False
+            if mid == 0xE0 and not split:
+                length = upload_len(area[i:]) or 0
+        else:
+            if mid not in DOWN_IDS:
+                break
+            length, extra = DOWN_IDS[mid]
+        i += 1 if extra else 0
+        if split:
+            if i >= len(area):
+                break
+            part = area[i]
+            i += 1 + (1 if part == 0 else 0)
+            if length is not None and length != "mask":
+                length = None  # a part of a variable id carries a length in a multi datagram
+        if length == "mask":
+            head = 1 if mid == 0xED else 2
+            if i + head + MASK_BYTES > len(area):
+                break
+            bits = sum(bin(b).count("1") for b in area[i + head:i + head + MASK_BYTES])
+            length = head + MASK_BYTES + 8 * bits
+        elif length is None:
+            if i >= len(area):
+                break
+            length = area[i]
+            i += 1
+            if length == 0xFF:
+                if i + 2 > len(area):
+                    break
+                length = int.from_bytes(area[i:i + 2], "little")
+                i += 2
+        i += length
+    return tuple(ids)
+
+
+def parse_ids(text) -> frozenset[int]:
+    """`E4,E8` / `0xe4 e8` / a list of numbers: message ids (hex)."""
+    words = text if isinstance(text, (list, tuple)) else str(text).replace(",", " ").split()
+    out = set()
+    for word in words:
+        value = word if isinstance(word, int) else int(str(word).lower().removeprefix("0x"), 16)
+        if not 0 <= value <= 0xFF:
+            raise ValueError(f"a message id is a byte, not {word!r}")
+        out.add(value)
+    if not out:
+        raise ValueError("ids names no message id")
+    return frozenset(out)
+
+
+# --------------------------------------------------------------------------
 # Rules, events and profiles.
 
 ACTIONS = ("set", "drop", "hold")
@@ -163,25 +285,41 @@ class Rule:
     every: float = 0.0
     anchor: str = "start"
     label: str = ""
+    ids: frozenset | None = None   # only datagrams with one of these message ids (match port)
+    count: int = 0                 # drop/hold at most this many datagrams a client, direction and window; 0 = all
     matchers: list = field(default_factory=list, repr=False, compare=False)
 
     @classmethod
     def parse(cls, data: dict, event: bool) -> Rule:
         data = dict(data)
-        scope = {k: data.pop(k) for k in ("port", "peer", "dir", "action", "at", "duration", "every", "anchor", "label")
+        scope = {k: data.pop(k) for k in ("port", "peer", "dir", "action", "at", "duration", "every", "anchor", "label",
+                                          "count")
                  if k in data}
+        ids = parse_ids(data.pop("ids")) if "ids" in data else None
         link = dict(data.pop("link", {}))
         link.update({k: data.pop(k) for k in list(data) if k in Link.keys()})
         if data:
             raise ValueError(f"unknown key(s) {sorted(data)} in {'event' if event else 'rule'}")
-        rule = cls(link=check_link(link), **{k: v for k, v in scope.items()})
+        rule = cls(link=check_link(link), ids=ids, **{k: v for k, v in scope.items()})
         rule.port, rule.peer, rule.label = str(rule.port), str(rule.peer), str(rule.label)
+        rule.count = int(rule.count)
+        if rule.count < 0:
+            raise ValueError("count must be >= 0")
+        if rule.count and rule.action == "set":
+            raise ValueError("count is for drop and hold events")
         if rule.dir not in ("up", "down", "both"):
             raise ValueError(f"dir must be up, down or both, not {rule.dir!r}")
         if rule.action not in ACTIONS:
             raise ValueError(f"action must be one of {ACTIONS}, not {rule.action!r}")
-        if rule.anchor not in ANCHORS:
-            raise ValueError(f"anchor must be one of {ANCHORS}, not {rule.anchor!r}")
+        rule.anchor_id = None
+        if str(rule.anchor).lower().startswith("id:"):
+            ids = parse_ids(rule.anchor[3:])
+            if len(ids) != 1:
+                raise ValueError("anchor id:XX names one message id")
+            rule.anchor_id = next(iter(ids))
+        elif rule.anchor not in ANCHORS:
+            raise ValueError(f"anchor must be one of {ANCHORS} or id:XX (a client's first datagram with message "
+                             f"XX, either way), not {rule.anchor!r}")
         if event:
             if rule.at is None:
                 rule.at = 0.0
@@ -197,6 +335,10 @@ class Rule:
         rule.matchers = [peer_matcher(s) for s in rule.peer.split(",")]  # validates, once
         if not rule.label:
             rule.label = f"{rule.action} {rule.port}/{rule.peer}/{rule.dir}" + (f"@{rule.at:g}s" if event else "")
+            if rule.ids:
+                rule.label += " ids " + ",".join(f"{i:02X}" for i in sorted(rule.ids))
+            if rule.count:
+                rule.label += f" x{rule.count}"
         return rule
 
     def applies(self, port: str, direction: str) -> bool:
@@ -205,11 +347,19 @@ class Rule:
     def selects(self, session) -> bool:
         return any(matcher(session) for matcher in self.matchers)
 
-    def window(self, t: float, session_start: float) -> tuple[int, float] | None:
-        """(window number, its end) when the rule is on at `t`, else None."""
+    def window(self, t: float, session) -> tuple[int, float] | None:
+        """(window number, its end) when the rule is on at `t` for `session`
+        (or a session's start time, for `anchor` start and session), else None."""
         if self.at is None:
             return 0, math.inf
-        origin = self.at + (session_start if self.anchor == "session" else 0.0)
+        if getattr(self, "anchor_id", None) is not None:
+            seen = getattr(session, "first_seen", {}).get(self.anchor_id)
+            if seen is None:
+                return None
+            origin = self.at + seen
+        else:
+            start = session if isinstance(session, (int, float)) else session.started
+            origin = self.at + (start if self.anchor == "session" else 0.0)
         if t < origin:
             return None
         k = math.floor((t - origin) / self.every) if self.every else 0
@@ -220,8 +370,9 @@ class Rule:
 def peer_matcher(selector: str):
     """A client selector: * (everyone), N (the N-th client to send on that
     port, from 1), addr:HOST:PORT, new-after:S (a session that began S or
-    more seconds after the start), late:S (a session that began while
-    another client of that port had been there S seconds: a late joiner)."""
+    more seconds after the start), next-after:S (the first of those on
+    each port, alone), late:S (a session that began while another client
+    of that port had been there S seconds: a late joiner)."""
     selector = selector.strip()
     if selector in ("*", "all"):
         return lambda peer: True
@@ -231,12 +382,23 @@ def peer_matcher(selector: str):
     kind, _, value = selector.partition(":")
     if kind == "addr" and value:
         return lambda peer: peer.label_addr == value
+    if kind == "next-after":
+        seconds = float(value)
+        chosen: dict = {}  # port -> (index, generation) of the first session from `seconds` on
+
+        def first(peer) -> bool:
+            if peer.started < seconds:
+                return False
+            port = getattr(getattr(peer, "forwarder", None), "name", "")
+            key = (peer.index, getattr(peer, "generation", 1))
+            return chosen.setdefault(port, key) == key
+        return first
     if kind in ("new-after", "late"):
         seconds = float(value)
         if kind == "new-after":
             return lambda peer: peer.started >= seconds
         return lambda peer: peer.joined_after >= seconds
-    raise ValueError(f"unknown client selector {selector!r} (*, N, addr:HOST:PORT, new-after:S, late:S)")
+    raise ValueError(f"unknown client selector {selector!r} (*, N, addr:HOST:PORT, new-after:S, next-after:S, late:S)")
 
 
 @dataclass
@@ -279,7 +441,8 @@ def spec_dict(text: str) -> dict:
         key, sep, value = word.partition("=")
         if not sep:
             raise ValueError(f"expected key=value, not {word!r}")
-        data[key] = float(value) if key in Link.keys() or key in ("at", "duration", "every") else value
+        data[key] = (float(value) if key in Link.keys() or key in ("at", "duration", "every")
+                     else int(value) if key == "count" else value)
     return data
 
 
@@ -312,6 +475,7 @@ class Session:
                         for d in (UP, DOWN)}
         self.upstream: socket.socket | None = None
         self.closed = False
+        self.first_seen: dict[int, float] = {}  # message id -> when it first passed here (either way)
 
     @property
     def name(self) -> str:
@@ -516,6 +680,7 @@ class Simulator:
         self.forwarders: list = []
         self.closed: list[Session] = []
         self.hits: set = set()
+        self.counted: dict = {}
         self.log = log.open("a", buffering=1) if log else None
         self.log_all, self.log_bytes = log_all, log_bytes
         self.stats_every, self.session_idle, self.out = stats_every, session_idle, out
@@ -526,6 +691,11 @@ class Simulator:
 
     def now(self) -> float:
         return self.clock() - self.t0
+
+    @property
+    def anchor_ids(self) -> set[int]:
+        """The message ids some event counts from (`anchor` id:XX)."""
+        return {r.anchor_id for r in itertools.chain(self.rules, self.events) if getattr(r, "anchor_id", None) is not None}
 
     # -- setup
     def add(self, kind: str, name: str, listen: tuple[str, int], target: tuple[str, int]):
@@ -541,17 +711,34 @@ class Simulator:
         return self.control.getsockname()
 
     # -- the model applied
-    def resolve(self, session: Session, direction: str, t: float) -> tuple[Link, bool, float]:
+    def resolve(self, session: Session, direction: str, t: float,
+                data: bytes | None = None) -> tuple[Link, bool, float]:
         """The link, whether a drop is on, and until when a hold is, for one
-        client's direction at `t`."""
+        client's direction at `t` (for the datagram `data`: a rule with
+        `ids` takes only datagrams with one of them; without `data`, a TCP
+        chunk, such a rule does not apply)."""
         link, drop, hold = Link(), False, 0.0
         port = session.forwarder.name
+        ids = None
         for rule in itertools.chain(self.rules, self.events):
             if not rule.applies(port, direction):
                 continue
-            window = rule.window(t, session.started)
+            window = rule.window(t, session)
             if window is None or not rule.selects(session):
                 continue
+            if rule.ids is not None:
+                if data is None:
+                    continue
+                if ids is None:
+                    ids = set(message_ids(data, direction))
+                if not ids & rule.ids:
+                    continue
+            if rule.count:
+                key = (id(rule), session.name, session.generation, direction, window[0])
+                used = self.counted.get(key, 0)
+                if used >= rule.count:
+                    continue
+                self.counted[key] = used + 1
             if rule.at is not None:
                 key = (id(rule), session.name, session.generation, direction, window[0])
                 if key not in self.hits:
@@ -571,8 +758,14 @@ class Simulator:
     def offer(self, session: Session, direction: str, data: bytes, send) -> None:
         t = self.now()
         stream = session.streams[direction]
+        if self.anchor_ids and session.forwarder.kind == "udp":
+            for mid in self.anchor_ids.intersection(message_ids(data, direction)):
+                if mid not in session.first_seen:
+                    session.first_seen[mid] = t
+                    self.write_log({"t": round(t, 4), "first": f"{mid:02X}", "port": session.forwarder.name,
+                                    "peer": session.index, "dir": direction})
         with self.lock:
-            link, drop, hold = self.resolve(session, direction, t)
+            link, drop, hold = self.resolve(session, direction, t, data)
         times, verdict = decide(link, stream.state, t, len(data), drop, hold)
         stream.count("in")
         stream.count("in_bytes", len(data))
@@ -592,6 +785,8 @@ class Simulator:
                 record["delay_ms"] = round((times[0] - t) * 1000, 2)
             if self.log_bytes:
                 record["head"] = data[:self.log_bytes].hex()
+            if session.forwarder.name == "match":
+                record["ids"] = " ".join(f"{i:02X}" for i in message_ids(data, direction))
             self.write_log(record)
 
     def deliver_due(self) -> float | None:
@@ -662,7 +857,9 @@ class Simulator:
             spec = dict(request["event"])
             now = self.now()
             if spec.get("peer") == "new":
-                spec["peer"] = f"new-after:{now!r}"  # unrounded: a client may come within the millisecond
+                # The next client to come on that port, alone (unrounded:
+                # it may come within the millisecond).
+                spec["peer"] = f"next-after:{now!r}"
             if spec.get("anchor", "start") == "start":
                 spec["at"] = float(spec.get("at", 0)) + now  # ctl's `at` counts from now
             rule = Rule.parse(spec, event=True)
@@ -859,8 +1056,14 @@ def cmd_ctl(args) -> int:
             raise ValueError(f"ctl {args.action} PORT SECONDS")
         event = {"port": args.words[0], "action": args.action, "duration": float(args.words[1]),
                  "peer": args.peer, "dir": args.dir, "at": args.after}
+        if args.ids:
+            event["ids"] = args.ids
+        if args.count:
+            event["count"] = args.count
         if args.on_join:
             event.update(peer="new" if args.peer == "*" else args.peer, anchor="session")
+        if args.from_id:
+            event["anchor"] = f"id:{args.from_id}"
         request = {"cmd": "event", "event": event}
     reply = control_request(args.control, request)
     if args.action == "stats" and reply.get("ok") and not args.json:
@@ -1161,7 +1364,10 @@ def cmd_shot(args) -> int:
     if not xwd or not magick:
         raise ValueError("needs xwd (nixpkgs#xorg.xwd) and ImageMagick's magick on PATH")
     grab = subprocess.run([xwd, "-root", "-silent", "-display", args.display], check=True, capture_output=True)
-    subprocess.run([magick, "xwd:-", f"png:{args.file}"], input=grab.stdout, check=True)
+    # The PNG comes back on stdout and is written here: a magick that runs
+    # in a sandbox of its own (this system's) cannot open a path under /tmp.
+    png = subprocess.run([magick, "xwd:-", "png:-"], input=grab.stdout, check=True, capture_output=True)
+    args.file.write_bytes(png.stdout)
     return 0
 
 
@@ -1215,6 +1421,11 @@ def main(argv: list[str] | None = None) -> int:
     ctl.add_argument("--dir", default="both", choices=("up", "down", "both"))
     ctl.add_argument("--after", type=float, default=0.0, metavar="S",
                      help="drop/hold: start S seconds from now (from the join with --on-join)")
+    ctl.add_argument("--ids", metavar="E4,E8", help="drop/hold: only match datagrams with one of these message ids")
+    ctl.add_argument("--count", type=int, default=0, metavar="N",
+                     help="drop/hold: at most N datagrams a client and direction (0: all in the window)")
+    ctl.add_argument("--from-id", metavar="XX",
+                     help="drop/hold: count --after from the client's first datagram with message XX (e.g. DA)")
     ctl.add_argument("--on-join", action="store_true",
                      help="drop/hold: arm it for the next client that starts on PORT (a late joiner)")
     ctl.set_defaults(func=cmd_ctl)
