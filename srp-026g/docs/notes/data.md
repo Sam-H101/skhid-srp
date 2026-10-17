@@ -515,6 +515,43 @@ Evidence: the 0.26g exe (VAs) and `flash_movies/lobby_menu.swf` decompiled with 
   records keep their sellers and carry level 0, which the lobby shows as buyable at any
   reputation (`canBuy = _unlockedLevel[seller] >= level`). A buy goes through any seller
   of the item whose rank the account has [srp's choice].
+- **The factions' camouflages, the Vityaz and the Lancaster (2026-10-17, the owner's rules;
+  `prices.rs`):**
+  - **A faction's own camouflage is sold by that faction, at no rank, for its `base_cost` in
+    silver.** A faction's own camouflage is one of category 25 whose config's `type` is
+    `stk_camo` (the game's "stock" camouflage), that is not premium and has a `base_cost`
+    (`is_shop_camo`). Its seller is the folder its config is filed in under
+    `gameplay/items/upgrades/camouflages/`: `scavengers` the Scavengers, `black_market` the
+    Black Market, `renesance` Renaissance (`CAMO_SHOPS`); the configs' own `faction` is 0, so
+    the folder is the only thing in the data that names the shop. The record's level is 0.
+    A camouflage is no stack: a step is one item, and the buy dialog pays silver for what is
+    not premium (`MessageAsk`: `_money_type = isPremium`), so the price is `base_cost` as
+    for any other silver item. The live data (stock with patches 12, 14 and 17) has eight,
+    each item level 1 and drop weight 0, so nothing gave them before: Black death 154
+    (8,000), Ifrit 162 (3,000), Denim 163 (1,000) of the Black Market; Oakley 169 and
+    Huntsman 170 (10,000 each) of Renaissance; Ghost 184 (8,000), Quilted fabric 185
+    (1,000), Seeker 187 (3,000) of the Scavengers. The same folders hold 19 drop camouflages
+    (`drp_camo`, `base_cost` 1) and premium ones (`prm_camo`, sold one by one for gold,
+    `premium.md`): their `type` keeps them out. The wiki of January 2015 lists some of the
+    eight at ranks (Quilted fabric 1, Seeker 3, Ghost 5; `progression_sources.md` §3); not
+    applied, the owner's rule is no rank. A shop camouflage in a folder no faction sells from
+    (a new patch's, or one of the Edge's) stops srp at start, naming it (`tables::check`),
+    so none is left out of the shop unseen.
+  - **The New Year 2015 camouflage stays unsold** (`camo_new_year`, 737; `prm_camo`, not
+    flagged premium, `base_cost` 0): an event camouflage, unavailable by the owner's
+    decision. Its price of 0 would make it free.
+  - **The PP-19-01 Vityaz (19) and the MP-27M Lancaster (108) are sold to everyone**: seller
+    0, level 0 (`EXCEPTIONS`; their configs name no faction, so the rule sold them nowhere).
+    The Lancaster for its `base_cost`, 2,500; **the Vityaz for 25,000, the owner's price**
+    (`OWNER_PRICES`; its `base_cost` is 12,000 and stays so in the data). Both still drop,
+    and their premium copies stay in gold bundles 12 and 10. The VSS, the SR-3M and the
+    SOCOM 16 stay unsold. The shop shows the record's cost (`GangShop.setupShopItems`:
+    `item.cost = p[i].cost`), but the item's descriptor keeps the game's (`descrData.cost`
+    is set from the record only when the exe gave none): an owned Vityaz shows 12,000, sells
+    for a quarter of it times its condition (at most 3,000; the lobby shows it so and the
+    server pays it so, `prices::sell_price` takes `base_cost`), and is repaired by it. So
+    buying for 25,000 and selling back cannot make silver. PROVEN in the ActionScript and
+    the code; not yet seen in a running game, nor the camouflages in the factions' tabs.
 - **What a new account owns (2026-10-12, `loadouts.rs`):** the TT-33, the Mosin carbine and
   the PPSh-41 with a clip of each free ammo (7.62x25, 7.62x54R): the wiki of February 2015
   names the three as every new player's, and they are the only weapons and ammo with

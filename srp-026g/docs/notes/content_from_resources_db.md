@@ -106,7 +106,8 @@ nor the patch files; those are at their URLs.
 ## What stays in code
 
 What the game's files do not say: the shop's exceptions (`prices::EXCEPTIONS`,
-by item name; the Bandit balaclava and the Duty exoskeleton have none and go
+by item name; the owner's prices of `prices::OWNER_PRICES`; which faction sells
+the camouflages of each folder, `prices::CAMO_SHOPS`; the Bandit balaclava and the Duty exoskeleton have none and go
 by the rule: Black Market's balaclava of item level 8 at rank 5, its last;
 Renaissance's exoskeleton of level 15 at rank 10), the bundles, a project's
 respawn points and container teams, the loadouts of new accounts.

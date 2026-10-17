@@ -81,7 +81,8 @@ match is level 1 (`money_k` 1.47), which is what makes its money rows whole numb
 5. The condition and defect a dropped item arrives with; the team's premium drop bonus; the
    TDM drop formula; why the screenshot shows 90 %.
 6. New-player protection; the least players to start a match; the matchmaking level range.
-7. Whether to sell camouflages and decals at faction ranks as the wiki lists them.
+7. Whether to sell decals at faction ranks as the wiki lists them. (Camouflages: the
+   factions' own are sold at no rank since 2026-10-17, the owner's choice.)
 8. The medkit's price: 50 on the wiki, 20 in the client data.
 
 ## Sources and how to read them again
@@ -242,7 +243,7 @@ Other match-reward facts:
 | 9A-91 and VSK-94 | sold by the Fringe Settlers at ranks 8 and 9 ("Fringe Settlers ... Added new weapons: H&K UMP45, 9A-91, VSK-94"); both configs say faction 3 | PN 0.25a; W-2015-01-25; W-2015-02-18 | official + wiki | official | Renaissance (the config's faction) | **seller Edge** for dict ids 303 and 305 |
 | Ammo needs a rank | "7.62x54 7N1 is on sale at the Renaissance Army store on the 7th level of reputation (Captain)"; 0.27a: "Purchase of ammunition no longer requires reputation" | PN 0.26c; PN 0.27a | official | official | every ammo under seller 0, rank 0 (`prices.rs`) | **sell ammo by the factions at a rank**, table below; since 2026-10-13 by the same factions **at no rank** (the owner's choice, as 0.27a: `prices.rs` `AMMO_NEEDS_RANK`) |
 | Consumables and grenades by faction | bandages Scavengers 1; medkit, antitoxin, RGD-5 Scavengers 3; trap Black Market 1; anesthetic, RGD-5 Black Market 3; RDG-M smoke Renaissance 1 and Edge 1; boosters at the "Independent Traders" | W-2015-01-25; W-2015-02-22 `Items` | wiki | wiki of the time | all under seller 0 | as listed; boosters stay under seller 0 |
-| Cosmetics at ranks | camouflages and decals in the lists ("Quilted fabric", "Scavengers rookie" at rank 1, "Seeker" 3, "Ghost" and "Scavengers veteran" 5 ...) | W-2015-01-25 | wiki | wiki of the time | not sold | optional; the names need matching to dict ids |
+| Cosmetics at ranks | camouflages and decals in the lists ("Quilted fabric", "Scavengers rookie" at rank 1, "Seeker" 3, "Ghost" and "Scavengers veteran" 5 ...) | W-2015-01-25 | wiki | wiki of the time | since 2026-10-17 the factions' own camouflages (`stk_camo`) by the faction of their folder at **no rank** (the owner's choice; `data.md`, "Settled in step 4"); decals not sold | the decals' names need matching to dict ids |
 | Notice at a new rank | "In the notification window when reaching a faction level we have added a list of unlocked items" | PN 0.26g | official | official | `#ru` notice | nothing to do (the client builds it) |
 
 Ammo by seller and rank (W-2015-01-25; where a faction is not named the ammo was not on its

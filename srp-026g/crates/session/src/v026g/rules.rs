@@ -1659,10 +1659,15 @@ mod tests {
     #[test]
     fn buying_gear_makes_new_items_and_needs_the_sellers_level() {
         let dictionary = Dictionary::shared();
-        // The cheapest gear a faction sells at level 0 or 1.
+        // The cheapest gear a faction sells at level 0 or 1 (no cosmetic,
+        // category 25 on).
         let record = prices::price_list()
             .iter()
-            .filter(|record| record.faction_id != 0 && !dictionary.is_stack(record.dict_id))
+            .filter(|record| {
+                record.faction_id != 0
+                    && !dictionary.is_stack(record.dict_id)
+                    && dictionary.item(record.dict_id).unwrap().category < 25
+            })
             .min_by_key(|record| (record.level, record.cost))
             .unwrap();
         let mut account = rich(record.cost * 3);
@@ -1744,6 +1749,37 @@ mod tests {
             buy(&mut account, 9999, 1, 0, INVENTORY_SLOT, 1, NOW),
             Err(ActionError::NotSold)
         );
+    }
+
+    #[test]
+    fn a_faction_camouflage_and_the_vityaz_are_bought_at_no_rank() {
+        // Known to no faction: the Black Market's Denim (1,000) from the
+        // Black Market, the Vityaz (25,000, the owner's price) and the
+        // Lancaster (2,500) from seller 0, whichever seller is named for
+        // those.
+        let denim = dict("camo_denim");
+        let mut account = rich(1_000);
+        let bought = buy(&mut account, denim, 1, 2, INVENTORY_SLOT, 1, NOW).unwrap();
+        assert_eq!(bought.len(), 1);
+        assert_eq!(account.item(bought[0].item_id).unwrap().dict_id, denim);
+        assert_eq!(account.generic_money, 0);
+        // Not from another faction.
+        assert_eq!(
+            buy(&mut rich(1_000), denim, 1, 1, INVENTORY_SLOT, 1, NOW),
+            Err(ActionError::NotSold)
+        );
+        for (name, cost) in [("vityaz", 25_000), ("izh_27_lancaster", 2_500)] {
+            let weapon = dict(name);
+            let mut account = rich(cost);
+            let bought = buy(&mut account, weapon, 1, 0, INVENTORY_SLOT, 1, NOW).unwrap();
+            assert_eq!(bought[0].value, FULL_CONDITION, "{name}");
+            assert_eq!(account.generic_money, 0, "{name}");
+            assert_eq!(
+                buy(&mut rich(cost - 1), weapon, 1, 0, INVENTORY_SLOT, 1, NOW),
+                Err(ActionError::NotEnoughMoney),
+                "{name}"
+            );
+        }
     }
 
     #[test]
