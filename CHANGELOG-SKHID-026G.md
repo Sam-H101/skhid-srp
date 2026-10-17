@@ -311,3 +311,14 @@ kept and can be put back).
 - TODO: #151 Replays of older games: refused, said why; a release raises the oldest replayable revision
 - TODO: #150 Patch 31: a kit chosen before the match starts is played at once
 - TODO: #152 Patch 31: the switch looks only at the match's places and always gives the new kit its protection
+
+## 17 Oct, 15:38 — TODO: the owner's words (update required)
+
+<!-- Revision 18 (026g-rev18), released 2026-10-17 15:38 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #157 Revision 17's SVD: 10 damage points less, checked on the candidate data
+- TODO: #156 026g client patch 33: the archive reads' order is a strict weak ordering
+- TODO: #160 026g client patch 35: a baked camouflage texture missing from the baker's list is baked again instead of stopping the game
+- TODO: #161 patches.tsv: patch_17's Google Drive mirror
+- TODO: #163 Shop: the factions' camouflages, the Vityaz and the Lancaster are sold
+- TODO: #162 Client patch 36: the memory arena "ai" is 4 MiB instead of 256 KiB
