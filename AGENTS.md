@@ -16,6 +16,9 @@
 - Releases go through `release/release.sh` and the `skhid-release` skill
   (`.claude/skills/skhid-release/SKILL.md`). Nothing players feel (a maintenance, a restart, the swap)
   happens without the owner's go at that moment.
+- A PR that changes what a match computes (replays of older games would play out otherwise) adds the
+  row `next<TAB><what>` to `srp-026g/crates/session/src/v026g/simulation_changes.tsv`; the release
+  that ships it makes `next` its own revision, and replays recorded before it are refused.
 - New game content ships as `resources.db.patch_<revision>` files listed in `release/patches.tsv`; the
   server reads everything about maps and items from the game data it is given
   (`server-game-data.db`), never from tables kept in code.

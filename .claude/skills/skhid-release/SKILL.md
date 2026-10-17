@@ -58,6 +58,26 @@ revision 12 on the exe expects the menus of `resources.db.patch_12`: a
 release of revision 12 or later is refused unless patch_12 is offered (in
 the list, or the `--resources` file).
 
+**Replays, and a change of what a match computes.** A game is given a
+replay only when every game of its recording was of the oldest replayable
+revision or later: the last row of
+`srp-026g/crates/session/src/v026g/simulation_changes.tsv` (a recording of
+older games plays out otherwise; one with no revision kept, from before
+2026-10-15, is refused too). The player sees the movie's "This replay was
+recorded by a game version that yours cannot play." and a message box in
+the game's language naming the revisions and the release tag to watch it
+with. A PR that changes what a match computes (an exe patch of the
+game's rules, a kit or a respawn the game computes otherwise, ...) cannot
+know its revision: it adds the row `next<TAB><what, the PR>` at the end of
+that list. The release that ships it is that revision without anyone
+typing it: its server takes `next` for its `SRP_MIN_PATCH_REVISION` (the
+release's own, set at the swap), and its record writes the number in place
+of `next`. The preflight says which (`replays: this release changes what a
+match computes (…)` or `replays: no change … is marked`), refuses `next`
+with `--server-code no`, and notes when the exe's patches changed since the
+last tag with nothing marked: **read that line to the owner**; if the
+change does alter a match, stop and have the row added by a PR first.
+
 The test environment's revision is its own exe's + 1, which can be another
 number than live's next: a patch tried there is named for the test's
 (a copy of the file under that name), then for live's.
@@ -165,9 +185,12 @@ The order, as it runs:
    revision 12 on; with
    `--resources`: the name is `resources.db.patch_<n>` (the release's revision),
    srp-game-data reads it over the stock db, it is neither published nor
-   listed yet. Last, which server-code files differ, and which settings
+   listed yet. Last, which server-code files differ, which settings
    main's compose file newly passes that the target's `.env` sets (names
-   only: their values take effect at the recreate).
+   only: their values take effect at the recreate), and whether main
+   changes what a match computes (a `next` row of `simulation_changes.tsv`,
+   above: then the image must be built; with none, a note when the exe's
+   patches changed since the last tag).
 2. **The lock, then the go.** Right after the preflight it stops and
    waits: y at its prompt (n stops), or `touch` the go file it prints
    (`~/.cache/skhid-release/go-<release folder>`); `--yes` does not give
@@ -241,7 +264,9 @@ The order, as it runs:
      before, the record PRs left out), a `CHANGELOG-SKHID-026G.md` entry
      under the rule, `TODO` for the owner to word, with those PRs, and
      `release/patches.tsv` as the server offers it (the row
-     `upload-patch` added); pushed as `release/record-rev<n>`, a PR opened
+     `upload-patch` added), and `<n>` in place of a `next` row of
+     `simulation_changes.tsv` (said in the commit); pushed as
+     `release/record-rev<n>`, a PR opened
      (`gh pr create`) and merged as a merge commit (`gh pr merge --merge`).
    A step gh or git cannot do is said at the end, loudly (`RELEASED, BUT
    THE RECORD IS NOT COMPLETE`), with what to do, and the run ends with 1:

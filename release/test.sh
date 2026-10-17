@@ -748,7 +748,10 @@ git -C "$T/repo" config user.name "the owner"
 git -C "$T/repo" config user.email owner@example.org
 src=$T/repo/srp-026g
 mkdir -p "$src/client-patches" "$src/certs" "$src/crates/a/src" "$src/resources/binary-config-examples" \
-    "$src/resources/game-026g" "$src/scripts" "$src/servers/srp/src" "$src/docs"
+    "$src/resources/game-026g" "$src/scripts" "$src/servers/srp/src" "$src/docs" "$src/crates/session/src/v026g"
+# The changes of what a match computes (the replays' list), none to come.
+sim=$src/crates/session/src/v026g/simulation_changes.tsv
+printf '# revision\twhat changed\n11\tthe TDM end\n' >"$sim"
 for f in Cargo.toml Cargo.lock Dockerfile .dockerignore docker-compose.yml certs/login.crt crates/a/src/lib.rs \
     resources/binary-config-examples/a.cfg resources/game-026g/README scripts/run.sh servers/srp/src/main.rs docs/notes.md; do
     echo "$f 1" >"$src/$f"
@@ -992,12 +995,19 @@ check "release: ... the record's branch pushed, its PR opened and merged" bash -
     "grep -q '^gh pr create --base main --head release/record-rev12 --title Release revision 12 ' $T/gh.log && grep -q '^gh pr merge https://github.com/srp/skhid-srp/pull/[0-9]* --merge$' $T/gh.log && test -n \"\$(git -C $T/origin.git rev-parse -q --verify refs/heads/release/record-rev12)\""
 check "release: ... no worktree of the record left" bash -c "! git -C $T/repo worktree list | grep -q /record"
 check "release: ... says it all, and ends 0" bash -c "grep -q 'done     the PR merged (a merge commit): main has REVISION 12' <<<\"\$1\" && ! grep -q 'NOT COMPLETE' <<<\"\$1\"" _ "$out"
+check "release: no change of what a match computes: said, the replays' list as it was" bash -c \
+    "grep -q 'replays: no change of what a match computes is marked (.*): recordings from revision 11 on stay watchable' <<<\"\$1\" && git -C $T/origin.git show main:srp-026g/crates/session/src/v026g/simulation_changes.tsv | grep -qx \$'11\tthe TDM end'" _ "$out"
 
 # New content and new server code.
 echo "crates 2" >"$src/crates/a/src/lib.rs"
 printf 'services:\n  srp26:\n    environment:\n      - SRP_DAILY_BONUS\n' >"$src/docker-compose.yml"
 commit "server code"
 merge_pr 8 "Another feature"
+# A PR changed what a match computes: it marks it `next`.
+printf 'next\ta new kit before the start (#8)\n' >>"$sim"
+commit "a change of what a match computes"
+expect_refused "release: a change of what a match computes needs the server built" \
+    "simulation_changes.tsv has a \`next\` row, but the server code is not built (--server-code no)" "$here/release.sh" --server-code no
 mkdir -p "$T/p13/gameplay/items" "$T/r13"
 echo "item 13" >"$T/p13/gameplay/items/d.options"
 "$bin" pack --dir "$T/p13" --out "$T/r13/resources.db.patch_13" >/dev/null
@@ -1026,6 +1036,14 @@ check "release: the rollback puts the image back" grep -qx "OLD_IMAGE=$running_b
 check "release: the rollback has srp.db of before the release" test -s "$(folder 13 b)/$(cat "$(folder 13 b)/srp-db.name")"
 check "release: leaves nothing staged (the source either)" nothing_staged
 check "release: SRP_MIN_PATCH_REVISION=13" grep -qx "SRP_MIN_PATCH_REVISION=13" "$T/live/.env"
+check "release: says it changes what a match computes" has "$out" \
+    "replays: this release changes what a match computes (a new kit before the start (#8)): recordings of games before revision 13 are refused from it on"
+check "release: ... the server built with \`next\` (it takes SRP_MIN_PATCH_REVISION, 13)" bash -c \
+    "git -C $T/origin.git show 026g-rev13:srp-026g/crates/session/src/v026g/simulation_changes.tsv | grep -q \$'^next\t' && grep -q \$'^next\t' $T/live/crates/session/src/v026g/simulation_changes.tsv"
+check "release: ... the record writes 13 for it" test "$(on_main srp-026g/crates/session/src/v026g/simulation_changes.tsv | grep -v '^#')" = \
+    "$(printf '11\tthe TDM end\n13\ta new kit before the start (#8)')"
+check "release: ... and says so in its commit" has "$(git -C "$T/origin.git" log -1 --format=%B 'main^2')" \
+    "^It changes what a match computes (a new kit before the start (#8)): 13 in place of"
 
 # Refused in the preflight, before anything.
 : >"$T/state/admin.log"
@@ -1276,6 +1294,24 @@ expect_refused "release after a rollback: ... and its record is on origin" "the 
 run quiet --dry-run --revision 15 --minutes 1 || fail "release.sh --revision 15 --dry-run: $out"
 check "release --revision 15 after the rollback: accepted (the dry run)" has "$out" "the release: revision 13 -> 15 to the live server"
 check "release --dry-run: prints the record it would make" has "$out" '^\[dry run\] 7. once it went out, the record: git tag -a 026g-rev15'
+check "release --dry-run: ... no change of what a match computes, and no exe patch changed: no note" bash -c \
+    "! grep -q 'note     the exe.s patches changed' <<<\"\$1\"" _ "$out"
+# An exe patch changed since the last release's tag, and nothing marked:
+# a note; marked, the record it would make writes the revision for it.
+echo "the rule" >"$src/client-patches/a_rule_026g.asm"
+commit "an exe patch"
+run quiet --dry-run --revision 15 --minutes 1 || fail "release.sh --revision 15 --dry-run: $out"
+check "release --dry-run: an exe patch changed, nothing marked: the note names it" has "$out" \
+    "note     the exe's patches changed since 026g-rev14 (a_rule_026g.asm), and no change of what a match computes is marked"
+printf 'next\tthe rule\n' >>"$sim"
+commit "the rule changes what a match computes"
+run quiet --dry-run --revision 15 --minutes 1 || fail "release.sh --revision 15 --dry-run: $out"
+check "release --dry-run: marked: no note, the release says so" bash -c \
+    "! grep -q 'note     the exe.s patches changed' <<<\"\$1\" && grep -q '^  replays: what a match computes changes (the rule): recordings of games before revision 15 are refused from the swap on' <<<\"\$1\"" _ "$out"
+check "release --dry-run: ... and the record it would make writes 15 for \`next\`" has "$out" \
+    "15 for \`next\` in srp-026g/crates/session/src/v026g/simulation_changes.tsv), pushed as release/record-rev15"
+sed -i '/^next\t/d' "$sim"
+commit "the rule, not yet"
 expect_refused "rollback refuses what is not a release folder" "not the name of a release folder" "$here/rollback" "../etc"
 # Rolled back again while players own items the old data lacks: no loop, the
 # advice to roll forward, and the way back to the release.
