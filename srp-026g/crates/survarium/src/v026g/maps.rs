@@ -679,21 +679,18 @@ mod tests {
         std::path::PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")))
     }
 
-    /// The live game data: 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
-    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces: patch 12 and
-    /// patch 14, London) over it. The maps of 0.26g, levels 1 to 8, have
-    /// what srp had by hand; London is played too (ids 181 to 183) with
-    /// its project's values, and named by its patch.
-    #[test]
-    #[ignore = "needs 0.26g's resources.db and skhid's patches"]
-    fn the_live_data_gives_what_srp_had_by_hand_and_london() {
+    /// The server data of 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
+    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces) and then
+    /// `more` over it, checked as srp checks it at start.
+    fn live_data(more: &[std::path::PathBuf]) -> GameData {
         use resources_db::server::{PatchFile, build, url_in};
         let db = env_path("SRP_TEST_RESOURCES_DB");
         let patches: Vec<PatchFile> = std::env::var("SRP_TEST_SKHID_PATCHES")
             .expect("SRP_TEST_SKHID_PATCHES")
             .split_whitespace()
+            .map(std::path::PathBuf::from)
+            .chain(more.iter().cloned())
             .map(|path| {
-                let path = std::path::PathBuf::from(path);
                 let name = path.file_name().unwrap().to_str().unwrap().to_owned();
                 PatchFile {
                     urls: vec![url_in("http://203.0.113.5/patches", &name)],
@@ -705,6 +702,18 @@ mod tests {
         let mut archive = resources_db::Archive::new(std::io::Cursor::new(built.bytes)).unwrap();
         let data = GameData::from_archive(&mut archive, "live".into()).unwrap();
         super::super::tables::check(&data).unwrap();
+        data
+    }
+
+    /// The live game data: 0.26g's archive (`SRP_TEST_RESOURCES_DB`) with
+    /// skhid's patches (`SRP_TEST_SKHID_PATCHES`, by spaces: patch 12 and
+    /// patch 14, London) over it. The maps of 0.26g, levels 1 to 8, have
+    /// what srp had by hand; London is played too (ids 181 to 183) with
+    /// its project's values, and named by its patch.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db and skhid's patches"]
+    fn the_live_data_gives_what_srp_had_by_hand_and_london() {
+        let data = live_data(&[]);
         let table = fixtures::table_of(&data).unwrap();
         let played: Vec<&MapMode> = table.iter().filter(|map| map.is_playable()).collect();
         let stock: Vec<u8> = playable().map(|map| map.id).collect();
@@ -748,6 +757,70 @@ mod tests {
             use super::super::localization::Language;
             assert_eq!(names(Language::English).as_deref(), Some("London"));
             assert_eq!(names(Language::Ukrainian).as_deref(), Some("Лондон"));
+        }
+    }
+
+    /// Revision 17's balance change: the SVD (items_dict 63, the only item
+    /// of `wpn_svd.options`) does 10 damage points less, 110 to 100: the
+    /// game stores 1.1 and 1.0 (`parameters.bullet_damage`; the lobby's
+    /// damage line, `ui_desc.props_list` prop 1, says 110 and 100). Every
+    /// other weapon and ammo config is as the live data has it (the SVD's
+    /// 7.62x54 ammo is shared and unchanged). srp reads no damage: the game
+    /// computes it, and the server data carries the file.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db, skhid's patches and revision 17's patch"]
+    fn revision_17_svd_does_10_damage_points_less() {
+        use super::super::dictionary::{self, Dictionary};
+        let before = live_data(&[]);
+        let after = live_data(&[env_path("SRP_TEST_PATCH_17")]);
+        let dictionary = Dictionary::parse(after.file(dictionary::PATH).unwrap()).unwrap();
+        let svd: Vec<_> = dictionary
+            .items
+            .iter()
+            .filter(|item| item.cfg_name == "gameplay/items/weapons/wpn_svd.options")
+            .collect();
+        assert_eq!(
+            svd.iter()
+                .map(|item| (item.dict_id, item.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(63, "svd")]
+        );
+        let damage = |data: &GameData| {
+            let config =
+                ConfigValue::parse(data.file("gameplay/items/weapons/wpn_svd.options").unwrap())
+                    .unwrap();
+            let shown = config
+                .req("ui_desc")
+                .unwrap()
+                .req("props_list")
+                .unwrap()
+                .children()
+                .into_iter()
+                .find(|prop| prop.i32_at("prop_id").unwrap() == 1)
+                .unwrap()
+                .str_at("prop_value")
+                .unwrap()
+                .to_owned();
+            (
+                config
+                    .req("parameters")
+                    .unwrap()
+                    .f32_at("bullet_damage")
+                    .unwrap(),
+                shown,
+            )
+        };
+        assert_eq!(damage(&before), (1.1, "110".to_owned()));
+        assert_eq!(damage(&after), (1.0, "100".to_owned()));
+        for item in &dictionary.items {
+            if item.cfg_name.starts_with("gameplay/items/weapons/") && item.dict_id != 63 {
+                assert_eq!(
+                    before.file(&item.cfg_name),
+                    after.file(&item.cfg_name),
+                    "{}",
+                    item.cfg_name
+                );
+            }
         }
     }
 }
