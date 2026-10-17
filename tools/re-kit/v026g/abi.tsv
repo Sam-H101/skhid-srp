@@ -200,6 +200,7 @@ va	name	source	ret_cleanup	result
 0x000f70e0	vostok::memory::writer::seek	manual	4	
 0x000f8480	vostok::resources::resources_manager::add_fs_task	manual	0	
 0x000fef60	vostok::render::renderer_cook::destroy_resource	manual		
+0x0010bcc0	vostok::resources::hdd_manager_sorting_predicate::operator()	manual	4	AL: the first query before the second
 0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	manual	32	
 0x00110620	vostok::network::network_world::network_world	manual	8	EAX: Constructed receiver pointer
 0x00110970	vostok::network::network_world::initialize	manual	0	

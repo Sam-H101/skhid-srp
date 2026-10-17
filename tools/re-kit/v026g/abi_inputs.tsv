@@ -583,6 +583,8 @@ va	name	location	role	basis
 0x000f70e0	vostok::memory::writer::seek	entry ESP+4	new position	observed
 0x000f8480	vostok::resources::resources_manager::add_fs_task	EAX	fs task	observed
 0x000fef60	vostok::render::renderer_cook::destroy_resource	entry ESP+4	resource pointer	observed
+0x0010bcc0	vostok::resources::hdd_manager_sorting_predicate::operator()	EAX	the first query_result	observed
+0x0010bcc0	vostok::resources::hdd_manager_sorting_predicate::operator()	entry ESP+4	the second query_result	observed
 0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	ECX	network-world receiver	observed
 0x001104b0	vostok::network::network_world::set_on_dispatch_callbacks	entry ESP+4..+35	32-byte by-value callback aggregate	observed
 0x00110620	vostok::network::network_world::network_world	EDI	network-world receiver	observed

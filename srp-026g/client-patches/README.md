@@ -69,6 +69,8 @@ release's. The "Result" row is the build of the revision named in it.
 | `shared_upgrades_026g.asm`, `shared_upgrades_026g.section.bin` | The source of patch 30's code (one upgrade on several items: taking it off names the item) and that code assembled for 0x700 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
 | `check_forward_scroll_026g.py` | Runs the original's and the build's forward-effect compile, with patch 28's two hooks, on made-up materials and compares what each sends; runs the third hook against the game's own binding of `scene_time`; loaded as is and rebased (needs Unicorn). With `--rev12=` it compares the build with revision 12 byte by byte |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
@@ -1617,6 +1619,56 @@ the end of the places and the protection when none is left (a switch of a
 place of the match plays as in 3417c05; with no protection left the new kit
 is not invulnerable in either, and in the tick its protection ends it now
 is not).
+
+### 33. The order of the archive reads is a strict weak ordering (the next release's revision)
+
+A defect of the stock engine that patch 27 (the game mounts
+`resources.db.patch_<n>` over `resources.db`) brought out: a lobby of the
+scope round 4d crashed (2026-10-17, access violation at 0x10BCCE reading
+0xA4) once its kit weapons' sounds were read from two archives at once.
+
+**The stock code.** `hdd_manager::grab_sorted_queries` (0x10BE80) takes the
+pending read queries into an array on its stack and sorts them with
+std::sort (introsort 0x10BF70, final insertion sort 0x10C060), whose
+partition and insertion (0x10C0B0, 0x10C280) run unguarded: they need the
+predicate to be a strict weak ordering. The predicate,
+`hdd_manager_sorting_predicate` (0x10BCC0; 0.21d's 0xCD023, the same code):
+a null iterator first; the same parent (+158h): the priority (+2B8h)
+descending; two reads of one archive (the same physical path): the file
+offset; anything else: the parent, or the query's own address. Reads of one
+archive go by offset, reads of two archives by address: three reads make a
+cycle, and the sort then reads past the front of its array (the round 4d
+dump: the 0 before a 58-slot buffer taken as a query). With `resources.db`
+alone this could not happen between archives.
+
+**The patch.** Only in the builds with the late join. The predicate's 0x1A0
+bytes are `read_order_026g.asm` in place (the same entry and convention;
+the body holds no address, nothing outside aims inside it, only the sort's
+helpers call it): a strict lexicographic order, a null iterator first
+(nulls by address), then the priority descending, reads from an archive
+before others, then for archive reads the archive's path and the file
+offset, for others the parent or the query. Reads of one archive keep
+their order (within a priority, in file order); a batch of one archive
+whose queries of different priorities share a parent sorts as before.
+`../docs/notes/client_patch.md` section 3.31.
+
+**Revisions.** Only the order in which files are read: nothing a match
+computes, a game with it and one without play together. The release gives
+it its number.
+
+Checked: `selftest_026g.py` check 34; `check_read_order_026g.py` runs the
+original's and the build's predicate with the game's own
+`get_physical_path`, `strcmp_s` and `get_file_offs`, and the game's own
+sort, as is and rebased: on random sets over two and three archives, loose
+files and null iterators the build's predicate is a strict weak ordering
+(the original's is not on most of them); on 400 random batches of 17 to 58
+reads the sort with it compares only the array's queries and leaves them
+sorted, where the original's leaves its array (on a fixed batch of 26 reads
+of two archives it reads the 0 before the array, as in the dump); on
+single-archive and loose-only sets in which different priorities share a
+parent, the two answer alike for every pair. The byte comparison with the
+build of `main` 8511083: 397 bytes differ, the PE checksum and the
+predicate's. **Not run:** a game.
 
 ## Not ported, not done
 

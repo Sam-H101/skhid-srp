@@ -228,6 +228,16 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     client+1F1C60h), byte for byte. The code calls and leaves only to what
     it names, stores nothing but on its stack; no relocation under a site
     and nothing aims inside one. check_kit_change_026g.py runs it.
+34. the same build: the order of the archive reads is a strict weak
+    ordering (patch 33). hdd_manager_sorting_predicate's 0x1A0 bytes at
+    0x10BCC0 are the original's in the original and the build without the
+    late join, read_order_026g.bin here; no base relocation is in them,
+    nothing outside aims inside them, its fifteen calls are all in the
+    std::sort helpers of grab_sorted_queries (0x10BF70..0x10C3ED), which it
+    alone calls; the new code calls only get_physical_path, strcmp_s and
+    get_file_offs, leaves only by `ret 4`, every branch inside lands on an
+    instruction, it holds no absolute address and int3 fills the rest.
+    check_read_order_026g.py runs it.
 """
 
 import ctypes
@@ -416,6 +426,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.shared_upgrades_bin(), "rb").read(),
           f"{os.path.basename(P.shared_upgrades_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", os.path.join(HERE, "read_order_026g.asm"), "-o", out],
+                       check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.read_order_bin(), "rb").read(),
+          f"{os.path.basename(P.read_order_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -1082,7 +1099,8 @@ def late_join_sites():
          (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
-        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))]
+        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
+        [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)]
 
 
 def pickup_sites():
@@ -2675,6 +2693,54 @@ def test_shared_upgrades(original, image, before):
           "and it holds no address (nothing to relocate)")
 
 
+def test_read_order(original, image, before):
+    """Check 34: the order of the archive reads (patch 33, READ_ORDER_*).
+    check_read_order_026g.py runs the original's and the build's predicate
+    and the game's sort on made-up read queries."""
+    stock = Image(original)
+    va, size = P.READ_ORDER_VA, P.READ_ORDER_SIZE
+    code = open(P.read_order_bin(), "rb").read()
+    check(hashlib.sha256(stock.read(va, size)).hexdigest() == P.READ_ORDER_SHA256
+          and before.read(va, size) == stock.read(va, size) and image.read(va, size) == code and len(code) == size,
+          f"{va:#x}: hdd_manager_sorting_predicate's {size:#x} bytes are the original's in the original and the build "
+          "without the late join, read_order_026g.bin here")
+    stock_rows = ndisasm(stock.read(va, size), va)
+    rets = [address for address, _, t in stock_rows if t.startswith("ret")]
+    check(stock_rows[0][2] == "sub esp,0x250" and [t for _, _, t in stock_rows if t.startswith("ret")] == ["ret 0x4"] * 8
+          and rets[-1] == 0x10BE56 and set(stock.read(0x10BE59, 7)) == {0xCC},
+          "the original body: `sub esp,0x250`, eight `ret 4`, the last at 0x10BE56; int3 from 0x10BE59 to the next "
+          "function, 0x10BE60")
+    relocations = [rva for kind, rva in stock.relocations().values() if kind == 3]
+    # A byte pattern is a branch only where an instruction starts: the scan of
+    # the bytes around is checked against the linear listing of the
+    # predicate and grab_sorted_queries (0x10BCC0..0x10BF70).
+    around = {address for address, _, _ in ndisasm(stock.read(va, 0x10BF70 - va), va)}
+    hits = [h for h in branches_into(original, va + 1, va + size)
+            if not (va <= int(h.split()[0], 16) < va + size)
+            and (h.endswith("value") or int(h.split()[0], 16) >= 0x10BF70 or int(h.split()[0], 16) in around)]
+    check(not [rva for rva in relocations if rva + 4 > va and rva < va + size] and not hits,
+          f"no base relocation is in {va:#x}..{va + size:#x} and nothing outside aims inside it (a byte pattern "
+          "counted where an instruction starts)" + "".join(", " + h for h in hits))
+    calls = lambda target: [h for h in branches_into(original, target, target + 1)]
+    helpers = sorted(int(h.split()[0], 16) for h in calls(va))
+    check(len(helpers) == 15 and all(0x10BF70 <= at < 0x10C3F0 for at in helpers)
+          and calls(0x10BF70) == ["0x10bf13 rel32", "0x10c025 rel32"] and calls(0x10C060) == ["0x10bf1e rel32"],
+          "the predicate's fifteen calls are all in the sort's helpers 0x10BF70..0x10C3ED; the introsort 0x10BF70 is "
+          "called by grab_sorted_queries (0x10BF13) and itself (0x10C025), the final insertion sort 0x10C060 by "
+          "grab_sorted_queries alone (0x10BF1E)")
+    listing = [row for row in ndisasm(code, va) if row[2] != "int3"]
+    end = listing[-1][0] + len(listing[-1][1]) // 2
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    outside = {t for t in targets if not va <= t < va + size}
+    starts = {address for address, _, _ in listing}
+    check(outside == {0x4BC10, 0x3B5A0, 0x47160} and all(t in starts for t in targets - outside)
+          and [t for _, _, t in listing if t.startswith("ret")] == ["ret 0x4"] and set(code[end - va:]) == {0xCC}
+          and not [t for _, _, t in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", t)],
+          "the new code calls only get_physical_path (0x4BC10), strcmp_s (0x3B5A0) and get_file_offs (0x47160), "
+          f"returns by its one `ret 4`, every branch inside lands on an instruction, it holds no absolute address, "
+          f"and int3 fills it from {end:#x}")
+
+
 def test_revision_override(original, default, server):
     """Check 30: a release's --revision=<n> against the default build of the
     same server: the revision byte and the PE checksum, nothing else."""
@@ -2910,6 +2976,7 @@ def test_late_join(original, without, server, source):
     test_replay_link(original, image, before)
     test_shared_upgrades(original, image, before)
     test_kit_change(original, image, before)
+    test_read_order(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")

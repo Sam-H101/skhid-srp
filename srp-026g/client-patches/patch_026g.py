@@ -49,6 +49,9 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425700 shared_upgrades_026g.asm -o shared_upgrades_026g.section.bin
     (checked in). A kit chosen before the start comes from kit_change_026g.asm:
         nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
+    (checked in). The archive reads' order comes from read_order_026g.asm, which
+    replaces hdd_manager_sorting_predicate's body in place:
+        nasm -f bin read_order_026g.asm -o read_order_026g.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -248,6 +251,15 @@ Patches:
   death screen (0x233F28), and hides them from a live one once play begins
   (0x23B7FC). The code is
   kit_change_026g.asm at 0xEC0 of `.srp`;
+- the order of the archive reads is a strict weak ordering (patch 33, with
+  the late join, client_patch.md section 3.31): hdd_manager's sort of the
+  pending reads (0x10BE80, std::sort with unguarded loops) used a predicate
+  (0x10BCC0) that cycles when a batch reads from two archives (resources.db
+  and a patch mounted over it), and the sort then read past its array: the
+  lobby crash of round 4d. Its 0x1A0 bytes are read_order_026g.asm: a null
+  iterator first, then the priority (+2B8h) descending, archive reads before
+  others, then the archive's path and the file offset (others: the parent
+  +158h or the query);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -657,6 +669,18 @@ KIT_CHANGE_HOOKS = (
     (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x108, 0xE8),         # every update: ui_start
 )
 KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pick: the kits stay
+
+# The order of the archive reads (patch 33, README; client_patch.md section
+# 3.31). vostok::resources::hdd_manager_sorting_predicate::operator()
+# (0x10BCC0, eax = one query_result, [esp+4] the other, `ret 4`, al = less;
+# the name is 0.21d's, 0xCD023, the same code) is called by the std::sort of
+# hdd_manager::grab_sorted_queries (0x10BE80) alone: its fifteen calls are in
+# the sort's helpers 0x10BF70..0x10C3ED. Its body, 0x1A0 bytes to the next
+# function (code to 0x10BE58, int3 after), holds no address (no base
+# relocation) and nothing aims inside it; read_order_026g.asm replaces it in
+# place, the same entry and convention.
+READ_ORDER_VA, READ_ORDER_SIZE = 0x10BCC0, 0x1A0
+READ_ORDER_SHA256 = "3c49ddd03438f137bbf3ec844d41ed3c4247d6d815595f1d494a515e112d0aa8"
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1500,6 +1524,15 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         patch(data, *KIT_PICK)
         if neutralize_relocs(data, [(KIT_PICK[0], KIT_PICK[0] + len(KIT_PICK[1]))]):
             sys.exit("a base relocation under the hiding of the kits after a pick")
+        read_order = open(read_order_bin(), "rb").read()
+        at = file_offset(READ_ORDER_VA)
+        if len(read_order) != READ_ORDER_SIZE:
+            sys.exit(f"read_order_026g.bin is {len(read_order)} bytes, not {READ_ORDER_SIZE:#x}")
+        if hashlib.sha256(data[at:at + READ_ORDER_SIZE]).hexdigest() != READ_ORDER_SHA256:
+            sys.exit(f"{READ_ORDER_VA:#x}: hdd_manager_sorting_predicate is not the original")
+        data[at:at + READ_ORDER_SIZE] = read_order
+        if neutralize_relocs(data, [(READ_ORDER_VA, READ_ORDER_VA + READ_ORDER_SIZE)]):
+            sys.exit("a base relocation under hdd_manager_sorting_predicate")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1576,7 +1609,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0), "
                      "the lobby's link starts the updater for a replay link and opens nothing else, "
                      "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
-                     "a kit chosen before the match starts is played at once where the player stands"
+                     "a kit chosen before the match starts is played at once where the player stands, "
+                     "the archive reads' order is a strict weak ordering"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1623,6 +1657,10 @@ def forward_scroll_bin():
 
 def seek_clear_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_seek_026g.section.bin")
+
+
+def read_order_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "read_order_026g.bin")
 
 
 def kit_change_bin():
