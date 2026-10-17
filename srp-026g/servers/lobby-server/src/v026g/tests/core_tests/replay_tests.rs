@@ -197,3 +197,162 @@ fn a_preparing_row_carries_the_place_in_the_conversion_line() {
     world.assert_clean();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `4F` of a game in `language` (the general room in slot 1, the
+/// language byte last, as 0x26C320 sends it).
+fn subscribe(language: u8) -> (u8, Vec<u8>) {
+    let ids: [u32; 10] = [0, 7, u32::MAX, 0, 1, 0, 0, 0, 0, 0];
+    let mut body: Vec<u8> = ids.iter().flat_map(|id| id.to_le_bytes()).collect();
+    body.push(language);
+    (0x4F, body)
+}
+
+/// Replays whose oldest given revision is `oldest`, with a made replay of
+/// `MATCH` recorded by games of `revisions`, for every account.
+fn replays_of(root: &std::path::Path, oldest: u8, revisions: Vec<Option<u8>>) -> &'static Replays {
+    let settings = ReplaySettings {
+        replay_dir: root.join("replays"),
+        record_dir: root.join("recordings"),
+        modes_dir: root.join("modes"),
+        max_recording_bytes: 1 << 20,
+        max_replay_bytes: 1 << 20,
+    }
+    .checked()
+    .unwrap();
+    let replays: &'static Replays = Box::leak(Box::new(
+        Replays::new(Some(settings), 6).with_oldest_revision(oldest),
+    ));
+    std::fs::write(replays.sur_path(MATCH).unwrap(), b"0123456789ab").unwrap();
+    let sidecar = Sidecar {
+        match_id: MATCH,
+        size: 12,
+        sha256: "cd".repeat(32),
+        revisions,
+        account_ids: Vec::new(),
+        made_at: 0,
+    };
+    std::fs::write(replays.json_path(MATCH).unwrap(), sidecar.to_json()).unwrap();
+    replays
+}
+
+/// A poll: the `R1` row, and the message box's text if one came after it
+/// (never a link).
+fn poll_refused(world: &mut World, index: usize) -> (String, Option<String>) {
+    world.take(index);
+    world.ask(index, request::ranking(REPLAY_START, 1));
+    match &world.take(index)[..] {
+        [Decoded::EloList(rows)] => (rows[0].0.clone(), None),
+        [Decoded::EloList(rows), Decoded::Denied { op, text }] => {
+            assert_eq!(*op, 0x49, "the message box and nothing else");
+            (rows[0].0.clone(), Some(text.clone()))
+        }
+        other => panic!("not a refused answer: {other:?}"),
+    }
+}
+
+#[test]
+fn a_replay_of_games_before_the_last_simulation_change_is_refused_and_said_why() {
+    let root = temp("older");
+    let mut world = World::new(Duration::from_secs(60));
+    let taras = player(&mut world, "Taras", 17);
+    let emma = player(&mut world, "Emma", 17);
+    // Revision 17 changed what a match computes; the match was of 16.
+    world.core.replays = Some(replays_of(&root, 17, vec![Some(16), None, Some(16)]));
+    world.ask(taras, subscribe(2));
+
+    world.ask(taras, request::player_details(REPLAY_ASK, MATCH));
+    let (row, said) = poll_refused(&mut world, taras);
+    assert_eq!(row, "R1;incompatible;1f07c8fb;0");
+    let said = said.expect("a message box with the first answer");
+    assert!(said.contains("старою версією гри (ревізія 16)"), "{said}");
+    assert!(
+        said.ends_with("Дивитися його можна лише в тому випуску: 026g-rev16."),
+        "{said}"
+    );
+    // The movie's next polls: the row alone.
+    assert_eq!(
+        poll_refused(&mut world, taras),
+        ("R1;incompatible;1f07c8fb;0".into(), None)
+    );
+    // A game that said no language (or English): English.
+    world.ask(emma, request::player_details(REPLAY_ASK, MATCH));
+    let (_, said) = poll_refused(&mut world, emma);
+    assert_eq!(
+        said.as_deref(),
+        Some(
+            "This replay was recorded with an older version of the game (revision 16), which \
+             plays matches differently. It can be watched only with that release: 026g-rev16."
+        )
+    );
+    // Asked again later: said again.
+    world.advance(Duration::from_secs(3));
+    world.ask(taras, request::player_details(REPLAY_ASK, MATCH));
+    assert!(poll_refused(&mut world, taras).1.is_some());
+    world.assert_clean();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_replay_recorded_before_the_revisions_were_kept_is_refused() {
+    let root = temp("unknown");
+    let mut world = World::new(Duration::from_secs(60));
+    let ivan = player(&mut world, "Ivan", 16);
+    world.core.replays = Some(replays_of(&root, 11, vec![None, None]));
+    world.ask(ivan, subscribe(1));
+    world.ask(ivan, request::player_details(REPLAY_ASK, MATCH));
+    let (row, said) = poll_refused(&mut world, ivan);
+    assert_eq!(row, "R1;incompatible;1f07c8fb;0");
+    assert!(
+        said.unwrap()
+            .starts_with("Этот повтор записан старой версией игры")
+    );
+    world.assert_clean();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn every_refusal_fits_the_message_box_in_every_language() {
+    use crate::v026g::replay::refusal_text;
+    use session::v026g::replays::Refusal;
+    let refusals = [
+        Refusal::Unknown,
+        // The longest: two three-digit revisions and a tag.
+        Refusal::Older {
+            from: 199,
+            to: 254,
+            oldest: 255,
+        },
+        Refusal::Older {
+            from: 13,
+            to: 14,
+            oldest: 17,
+        },
+        Refusal::Newer { from: 199, to: 255 },
+    ];
+    let english: Vec<String> = refusals
+        .iter()
+        .map(|&refusal| refusal_text(refusal, Some(0)))
+        .collect();
+    for language in [None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(9)] {
+        for (n, &refusal) in refusals.iter().enumerate() {
+            let text = refusal_text(refusal, language);
+            assert!(
+                text.len() <= 255,
+                "{language:?} {refusal:?}: {} bytes",
+                text.len()
+            );
+            if matches!(language, Some(1..=4)) {
+                assert_ne!(text, english[n], "{language:?} {refusal:?}");
+            }
+            for part in ["199-254", "026g-rev254", "13-14", "199-255"] {
+                assert_eq!(
+                    text.contains(part),
+                    english[n].contains(part),
+                    "{language:?} {part}"
+                );
+            }
+        }
+    }
+    // 14 has no tag: the release of that revision, unnamed.
+    assert!(!refusal_text(refusals[2], None).contains("026g-rev"));
+}

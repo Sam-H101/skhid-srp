@@ -46,11 +46,95 @@ pub use survarium::v026g::lobby::{REPLAY_ASK, REPLAY_START};
 /// the updater from the replay link: `client_patch.md` section 3.27;
 /// revisions 12 and 13 have no replay link).
 pub const MIN_REVISION: u8 = 14;
-/// The oldest patch revision whose recordings a game of [`MIN_REVISION`]
-/// or later is given: revision 11 changed the game's rules (the Team
-/// Deathmatch end, the batteries under the floor), so a match of older
-/// games plays differently in a newer one [LIKELY: not tried].
-pub const OLDEST_RECORDED_REVISION: u8 = 11;
+/// The patch revisions that changed what a match computes, oldest first
+/// (`simulation_changes.tsv` beside this file, which says how a PR adds
+/// one): a match of games older than the last one plays out otherwise in
+/// a newer game [LIKELY: not tried], so its recording is not given to one
+/// ([`oldest_replayable`]).
+pub const SIMULATION_CHANGES: &str = include_str!("simulation_changes.tsv");
+
+/// A row of [`SIMULATION_CHANGES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimulationChange<'a> {
+    /// `None`: `next`, the revision of the release that ships it.
+    pub revision: Option<u8>,
+    pub what: &'a str,
+}
+
+/// The rows of a simulation changes list, or what is wrong with it: a
+/// revision is 1 to 255, above the row before it, and `next` is the last
+/// row and the only one.
+pub fn simulation_changes(text: &str) -> Result<Vec<SimulationChange<'_>>, String> {
+    let mut rows: Vec<SimulationChange<'_>> = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (revision, what) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("line {}: no tab after its revision", n + 1))?;
+        if what.trim().is_empty() {
+            return Err(format!("line {}: it does not say what changed", n + 1));
+        }
+        if rows.last().is_some_and(|row| row.revision.is_none()) {
+            return Err(format!("line {}: a row after `next`", n + 1));
+        }
+        let revision = match revision {
+            "next" => None,
+            number => Some(
+                number
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|&r| r > 0)
+                    .ok_or_else(|| format!("line {}: `{number}` is no revision", n + 1))?,
+            ),
+        };
+        if let (Some(revision), Some(Some(before))) =
+            (revision, rows.last().map(|row| row.revision))
+            && revision <= before
+        {
+            return Err(format!("line {}: {revision} is not above {before}", n + 1));
+        }
+        rows.push(SimulationChange { revision, what });
+    }
+    if rows.is_empty() {
+        return Err("no row".to_owned());
+    }
+    Ok(rows)
+}
+
+/// The oldest patch revision whose recordings are given to a game: the
+/// last row of [`SIMULATION_CHANGES`]. `next` is the revision of the
+/// release that ships it, which is the server's `SRP_MIN_PATCH_REVISION`
+/// (`min_patch_revision`; the release sets it at its swap); with none (0:
+/// a server of no release), the row before it. Never below that row.
+pub fn oldest_replayable(changes: &[SimulationChange<'_>], min_patch_revision: u8) -> u8 {
+    let last_number = changes
+        .iter()
+        .rev()
+        .find_map(|row| row.revision)
+        .unwrap_or(0);
+    match changes.last() {
+        Some(SimulationChange { revision: None, .. }) if min_patch_revision > 0 => {
+            min_patch_revision.max(last_number)
+        }
+        _ => last_number,
+    }
+}
+
+/// [`oldest_replayable`] of [`SIMULATION_CHANGES`] (a list a test reads:
+/// `the_simulation_changes_list_reads`).
+pub fn oldest_replayable_here(min_patch_revision: u8) -> u8 {
+    let changes = simulation_changes(SIMULATION_CHANGES).expect("simulation_changes.tsv reads");
+    oldest_replayable(&changes, min_patch_revision)
+}
+
+/// The release tag a revision went out with (`release/release.sh` tags
+/// every release from 15 on; 12 was tagged by hand; 13, 14 and the ones
+/// before 12 have none).
+pub fn release_tag(revision: u8) -> Option<String> {
+    (revision == 12 || revision >= 15).then(|| format!("026g-rev{revision}"))
+}
 /// How long a token lives.
 pub const TOKEN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 /// The downloads one token makes (a broken download resumes with the next).
@@ -321,19 +405,49 @@ impl Sidecar {
         })
     }
 
-    /// Whether a game of `revision` may play this replay: every revision
-    /// the recording's games had is [`OLDEST_RECORDED_REVISION`] or later
-    /// and no later than the asker's (a newer game's match may play out
-    /// otherwise in an older one). 0 (a session the server did not know)
-    /// and places that never connected are not counted; a recording made
-    /// before the revisions were kept has none, and is played.
-    pub fn plays_on(&self, revision: u8) -> bool {
-        self.revisions
-            .iter()
-            .flatten()
-            .filter(|&&known| known != 0)
-            .all(|&known| (OLDEST_RECORDED_REVISION..=revision).contains(&known))
+    /// Why a game of `revision` may not play this replay, if it may not:
+    /// every revision the recording's games had must be `oldest` (the
+    /// oldest replayable, [`oldest_replayable`]) or later and no later than
+    /// the asker's (a newer game's match may play out otherwise in an
+    /// older one). 0 (a session the server did not know) and places that
+    /// never connected are not counted; a recording with no revision at
+    /// all (made before 2026-10-15, when the revisions began to be kept)
+    /// is not played (the owner, 2026-10-17: its games' revision is not
+    /// guessed).
+    pub fn refusal(&self, revision: u8, oldest: u8) -> Option<Refusal> {
+        let known = || {
+            self.revisions
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|&known| known != 0)
+        };
+        let (Some(from), Some(to)) = (known().min(), known().max()) else {
+            return Some(Refusal::Unknown);
+        };
+        if from < oldest {
+            Some(Refusal::Older { from, to, oldest })
+        } else if to > revision {
+            Some(Refusal::Newer { from, to })
+        } else {
+            None
+        }
     }
+}
+
+/// Why a made replay is not given to a game ([`Sidecar::refusal`]): its
+/// status is [`Status::Incompatible`], and the lobby tells the player why
+/// ([`Answer::refusal`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// No game of the recording has a known revision: recorded before the
+    /// revisions were kept.
+    Unknown,
+    /// Recorded by games of revisions `from` to `to`, below `oldest`, the
+    /// oldest whose recordings the server gives.
+    Older { from: u8, to: u8, oldest: u8 },
+    /// Recorded by games newer than the asker's.
+    Newer { from: u8, to: u8 },
 }
 
 /// What a `ready` answer carries: the link's parts.
@@ -358,6 +472,9 @@ pub struct Answer {
     /// (its recording is still being written). Else 0.
     pub place: u32,
     pub ready: Option<Ready>,
+    /// With [`Status::Incompatible`], why: in the first answer of the ask
+    /// only (the lobby tells the player once each time it asks).
+    pub refusal: Option<Refusal>,
 }
 
 impl Answer {
@@ -420,6 +537,8 @@ struct Ask {
     /// Kept for asking again while it is `preparing`.
     revision: u8,
     known: Option<Known>,
+    /// Why it is [`Status::Incompatible`], until an answer carries it.
+    refusal: Option<Refusal>,
     /// When it was last looked at; `None`: at the next poll (the writer or
     /// the conversion has news of its match).
     checked: Option<Instant>,
@@ -545,6 +664,9 @@ pub struct Replays {
     settings: Option<ReplaySettings>,
     /// The minimum of players a recording is kept for (`SRP_RECORD_MIN_PLAYERS`).
     min_players: usize,
+    /// The oldest patch revision whose recordings are given
+    /// ([`oldest_replayable`]).
+    oldest: u8,
     inner: Mutex<Inner>,
     work: Condvar,
 }
@@ -620,9 +742,21 @@ impl Replays {
         Self {
             settings,
             min_players,
+            oldest: oldest_replayable_here(0),
             inner: Mutex::new(Inner::default()),
             work: Condvar::new(),
         }
+    }
+
+    /// The oldest patch revision whose recordings are given: the server's
+    /// [`oldest_replayable_here`] (else the list's last number).
+    pub fn with_oldest_revision(mut self, oldest: u8) -> Self {
+        self.oldest = oldest;
+        self
+    }
+
+    pub fn oldest_revision(&self) -> u8 {
+        self.oldest
     }
 
     pub fn settings(&self) -> Option<&ReplaySettings> {
@@ -726,13 +860,15 @@ impl Replays {
                     ready: None,
                     revision: revision.unwrap_or(0),
                     known,
+                    refusal: None,
                     checked: Some(at),
                 },
             );
             return Status::Busy;
         }
         let revision = revision.unwrap_or(0);
-        let (status, ready) = self.evaluate(&mut inner, account_id, match_id, revision, known, now);
+        let (status, ready, refusal) =
+            self.evaluate(&mut inner, account_id, match_id, revision, known, now);
         inner.asks.insert(
             account_id,
             Ask {
@@ -742,6 +878,7 @@ impl Replays {
                 ready,
                 revision,
                 known,
+                refusal,
                 checked: Some(now),
             },
         );
@@ -765,6 +902,7 @@ impl Replays {
                 size: 0,
                 place: 0,
                 ready: None,
+                refusal: None,
             };
         };
         let (match_id, status, revision, known) =
@@ -773,14 +911,19 @@ impl Replays {
             .checked
             .is_none_or(|at| now.saturating_duration_since(at) >= RECHECK_EVERY);
         if status == Status::Preparing && due {
-            let (status, ready) =
+            let (status, ready, refusal) =
                 self.evaluate(&mut inner, account_id, match_id, revision, known, now);
             if let Some(ask) = inner.asks.get_mut(&account_id) {
                 ask.status = status;
                 ask.ready = ready;
+                ask.refusal = refusal;
                 ask.checked = Some(now);
             }
         }
+        let refusal = inner
+            .asks
+            .get_mut(&account_id)
+            .and_then(|ask| ask.refusal.take());
         let ask = &inner.asks[&account_id];
         Answer {
             status: ask.status,
@@ -792,9 +935,11 @@ impl Replays {
                 0
             },
             ready: ask.ready.clone(),
+            refusal,
         }
     }
 
+    /// [`Self::look`], with why it is [`Status::Incompatible`] when it is.
     fn evaluate(
         &self,
         inner: &mut Inner,
@@ -803,28 +948,52 @@ impl Replays {
         revision: u8,
         known: Option<Known>,
         now: Instant,
-    ) -> (Status, Option<Ready>) {
+    ) -> (Status, Option<Ready>, Option<Refusal>) {
+        match self.look(inner, account_id, match_id, revision, known, now) {
+            Ok((status, ready)) => (status, ready, None),
+            Err(refusal) => {
+                log::info!(
+                    "Replays: account {account_id} is not given match {match_id:#x} for its game \
+                     revision {revision}: {refusal:?} (the oldest given: {})",
+                    self.oldest
+                );
+                (Status::Incompatible, None, Some(refusal))
+            }
+        }
+    }
+
+    /// What an ask gets: its status (and the link's parts when ready), or
+    /// why the replay made is not for the asker's game.
+    fn look(
+        &self,
+        inner: &mut Inner,
+        account_id: u32,
+        match_id: u32,
+        revision: u8,
+        known: Option<Known>,
+        now: Instant,
+    ) -> Result<(Status, Option<Ready>), Refusal> {
         #[cfg(test)]
         {
             inner.evaluations += 1;
         }
         if self.settings.is_none() {
-            return (Status::Off, None);
+            return Ok((Status::Off, None));
         }
         if revision < MIN_REVISION {
-            return (Status::OldGame, None);
+            return Ok((Status::OldGame, None));
         }
         if known.is_some_and(|known| !known.played) {
-            return (Status::NotYours, None);
+            return Ok((Status::NotYours, None));
         }
         if let Some(sidecar) = self.made(match_id) {
             if !sidecar.account_ids.is_empty() && !sidecar.account_ids.contains(&account_id) {
-                return (Status::NotYours, None);
+                return Ok((Status::NotYours, None));
             }
-            if !sidecar.plays_on(revision) {
-                return (Status::Incompatible, None);
+            if let Some(refusal) = sidecar.refusal(revision, self.oldest) {
+                return Err(refusal);
             }
-            return match self.issue(inner, account_id, match_id, now) {
+            return Ok(match self.issue(inner, account_id, match_id, now) {
                 Some(token) => {
                     log::info!(
                         "Replays: account {account_id} is given match {match_id:#x} ({} bytes), \
@@ -842,29 +1011,29 @@ impl Replays {
                     )
                 }
                 None => (Status::Busy, None),
-            };
+            });
         }
         // Asked for already: every asker of the match waits for the one job.
         if inner.converting == Some(match_id) || inner.jobs.contains(&match_id) {
-            return (Status::Preparing, None);
+            return Ok((Status::Preparing, None));
         }
         if inner
             .failed
             .get(&match_id)
             .is_some_and(|failed| failed.until.is_none_or(|until| now < until))
         {
-            return (Status::Failed, None);
+            return Ok((Status::Failed, None));
         }
         if inner.deleted.contains(&match_id) {
-            return (Status::Gone, None);
+            return Ok((Status::Gone, None));
         }
         if inner.not_kept.contains(&match_id) {
-            return (Status::NotRecorded, None);
+            return Ok((Status::NotRecorded, None));
         }
-        match self.recorded(inner, match_id, now) {
+        Ok(match self.recorded(inner, match_id, now) {
             Recorded::Kept => {
                 if inner.jobs.len() >= MAX_JOBS {
-                    return (Status::Busy, None);
+                    return Ok((Status::Busy, None));
                 }
                 // Converted when first asked for, not when its match ends.
                 inner.jobs.push_back(match_id);
@@ -882,7 +1051,7 @@ impl Replays {
                 Some(known) if known.places < self.min_players => (Status::NotRecorded, None),
                 _ => (Status::Gone, None),
             },
-        }
+        })
     }
 
     /// A new token for the account and the match: the account's live one
@@ -1134,7 +1303,7 @@ mod tests {
             match_id,
             size: 1,
             sha256: "0".repeat(64),
-            revisions: Vec::new(),
+            revisions: vec![Some(14)],
             account_ids: Vec::new(),
             made_at: 0,
         };
@@ -1326,7 +1495,7 @@ mod tests {
                 match_id,
                 size: 1,
                 sha256: "0".repeat(64),
-                revisions: Vec::new(),
+                revisions: vec![Some(14)],
                 account_ids: Vec::new(),
                 made_at: 0,
             };
@@ -1412,13 +1581,175 @@ mod tests {
             account_ids: Vec::new(),
             made_at: 0,
         };
-        assert!(sidecar(Vec::new()).plays_on(14));
+        // No revision kept (before 2026-10-15), or none known: not played.
+        assert_eq!(sidecar(Vec::new()).refusal(14, 11), Some(Refusal::Unknown));
+        assert_eq!(
+            sidecar(vec![None, Some(0)]).refusal(14, 11),
+            Some(Refusal::Unknown)
+        );
         // Every recorded revision between 11 and the asker's own: 12 and
         // 13 compute a match as 11 and 14 do.
-        assert!(sidecar(vec![None, Some(0), Some(11), Some(12), Some(14)]).plays_on(14));
-        assert!(!sidecar(vec![Some(10), Some(14)]).plays_on(14));
-        assert!(!sidecar(vec![Some(15)]).plays_on(14));
-        assert!(sidecar(vec![Some(15)]).plays_on(16));
+        assert_eq!(
+            sidecar(vec![None, Some(0), Some(11), Some(12), Some(14)]).refusal(14, 11),
+            None
+        );
+        assert_eq!(
+            sidecar(vec![Some(10), Some(14)]).refusal(14, 11),
+            Some(Refusal::Older {
+                from: 10,
+                to: 14,
+                oldest: 11
+            })
+        );
+        assert_eq!(
+            sidecar(vec![Some(15)]).refusal(14, 11),
+            Some(Refusal::Newer { from: 15, to: 15 })
+        );
+        assert_eq!(sidecar(vec![Some(15)]).refusal(16, 11), None);
+        // A release that changed the simulation, 17: 16's recordings go.
+        assert_eq!(
+            sidecar(vec![Some(16), Some(16)]).refusal(17, 17),
+            Some(Refusal::Older {
+                from: 16,
+                to: 16,
+                oldest: 17
+            })
+        );
+        assert_eq!(sidecar(vec![Some(17)]).refusal(18, 17), None);
+    }
+
+    #[test]
+    fn the_simulation_changes_list_reads() {
+        let changes = simulation_changes(SIMULATION_CHANGES).expect("it reads");
+        assert!(changes.iter().all(|row| !row.what.trim().is_empty()));
+        // 11 the oldest given now; `next` (a PR's change not yet released)
+        // would be the server's own revision.
+        let last = changes.last().unwrap();
+        let before = changes.iter().rev().find_map(|row| row.revision).unwrap();
+        assert!(before >= 11);
+        match last.revision {
+            Some(revision) => assert_eq!(oldest_replayable_here(20), revision),
+            None => assert_eq!(oldest_replayable_here(200), 200),
+        }
+        assert_eq!(oldest_replayable_here(0), before);
+    }
+
+    #[test]
+    fn next_is_the_release_s_revision_and_the_list_s_rules_hold() {
+        let list =
+            "# a comment\n\n3\tthe battery rule\n11\tthe TDM end\nnext\ta new kit at the start\n";
+        let changes = simulation_changes(list).unwrap();
+        assert_eq!(
+            changes.iter().map(|row| row.revision).collect::<Vec<_>>(),
+            [Some(3), Some(11), None]
+        );
+        assert_eq!(changes[2].what, "a new kit at the start");
+        // The release of 17 runs with SRP_MIN_PATCH_REVISION=17.
+        assert_eq!(oldest_replayable(&changes, 17), 17);
+        // No release (a local server): the number before it.
+        assert_eq!(oldest_replayable(&changes, 0), 11);
+        // Never below the last number.
+        assert_eq!(oldest_replayable(&changes, 5), 11);
+        // Its record wrote 17 for `next`: 17, whatever the server's revision.
+        let recorded = list.replace("next\t", "17\t");
+        assert_eq!(
+            oldest_replayable(&simulation_changes(&recorded).unwrap(), 18),
+            17
+        );
+        assert_eq!(
+            oldest_replayable(&simulation_changes("11\tx\n").unwrap(), 16),
+            11
+        );
+        for bad in [
+            "",
+            "# only a comment\n",
+            "11 the TDM end\n",
+            "11\t\n",
+            "0\tzero\n",
+            "256\ttoo high\n",
+            "x\tno number\n",
+            "11\ta\n11\tthe same again\n",
+            "12\ta\n11\tlower\n",
+            "next\ta\nnext\tanother\n",
+            "next\ta\n18\tafter next\n",
+        ] {
+            assert!(simulation_changes(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_tag_is_named_for_the_releases_that_have_one() {
+        assert_eq!(release_tag(16).as_deref(), Some("026g-rev16"));
+        assert_eq!(release_tag(12).as_deref(), Some("026g-rev12"));
+        for untagged in [11, 13, 14] {
+            assert_eq!(release_tag(untagged), None);
+        }
+    }
+
+    #[test]
+    fn a_refused_replay_says_why_once_an_ask_and_gives_no_token() {
+        let root = temp("why");
+        let replays = Replays::new(Some(settings(&root)), 6).with_oldest_revision(17);
+        made(&replays, vec![Some(16), None]);
+        let mut now = Instant::now();
+        assert_eq!(
+            replays.ask(ALICE, MATCH, Some(17), played(), now),
+            Status::Incompatible
+        );
+        let first = replays.answer(ALICE, now);
+        assert_eq!(first.status, Status::Incompatible);
+        assert_eq!(
+            first.refusal,
+            Some(Refusal::Older {
+                from: 16,
+                to: 16,
+                oldest: 17
+            })
+        );
+        assert!(first.ready.is_none() && first.link().is_none());
+        // The movie's next polls: the status, the why said already.
+        let again = replays.answer(ALICE, now);
+        assert_eq!((again.status, again.refusal), (Status::Incompatible, None));
+        // The same ask twice at once stands; asked again later, it is said
+        // again.
+        assert_eq!(
+            replays.ask(ALICE, MATCH, Some(17), played(), now),
+            Status::Incompatible
+        );
+        assert_eq!(replays.answer(ALICE, now).refusal, None);
+        now += ASK_EVERY;
+        replays.ask(ALICE, MATCH, Some(17), played(), now);
+        assert!(replays.answer(ALICE, now).refusal.is_some());
+        // A recording with no revision at all: refused too.
+        made(&replays, Vec::new());
+        now += ASK_EVERY;
+        replays.ask(ALICE, MATCH, Some(17), played(), now);
+        assert_eq!(replays.answer(ALICE, now).refusal, Some(Refusal::Unknown));
+        assert!(replays.inner.locked().tokens.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_replay_made_while_the_asker_waits_says_why_it_is_refused() {
+        let root = temp("why-later");
+        let replays = Replays::new(Some(settings(&root)), 6);
+        kept(&replays, MATCH);
+        let now = Instant::now();
+        assert_eq!(
+            replays.ask(ALICE, MATCH, Some(16), played(), now),
+            Status::Preparing
+        );
+        assert_eq!(replays.answer(ALICE, now).refusal, None);
+        assert_eq!(replays.next_job(), Some(MATCH));
+        made(&replays, Vec::new());
+        replays.job_done(MATCH, Ok(()), now);
+        let answer = replays.answer(ALICE, now);
+        assert_eq!(
+            (answer.status, answer.refusal),
+            (Status::Incompatible, Some(Refusal::Unknown))
+        );
+        assert_eq!(replays.answer(ALICE, now).refusal, None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1474,7 +1805,7 @@ mod tests {
         assert_eq!(replays.next_job(), Some(MATCH));
         let answer = replays.answer(ALICE, later);
         assert_eq!((answer.status, answer.place), (Status::Preparing, 1));
-        made(&replays, Vec::new());
+        made(&replays, vec![Some(14)]);
         replays.job_done(MATCH, Ok(()), later);
         // The conversion's news is looked at by the next poll at once.
         let answer = replays.answer(ALICE, later);
@@ -1501,7 +1832,7 @@ mod tests {
             replays.ask(BOB, MATCH, Some(14), played(), now),
             Status::Failed
         );
-        made(&replays, Vec::new());
+        made(&replays, vec![Some(14)]);
         replays.recording_deleted(MATCH);
         assert!(!replays.sur_path(MATCH).unwrap().exists());
         assert!(!replays.json_path(MATCH).unwrap().exists());
@@ -1802,7 +2133,7 @@ mod tests {
     fn a_replay_whose_file_is_not_its_sidecars_is_not_given() {
         let root = temp("mismatch");
         let replays = Replays::new(Some(settings(&root)), 6);
-        made(&replays, Vec::new());
+        made(&replays, vec![Some(14)]);
         std::fs::write(replays.sur_path(MATCH).unwrap(), b"longer than it was").unwrap();
         let now = Instant::now();
         assert_eq!(
