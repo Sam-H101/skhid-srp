@@ -416,7 +416,7 @@ fn the_operators_text_and_a_ban_reach_the_026g_lobby() {
 /// What the players' updater asks after the Skhid files: `GET
 /// /patches`, with no token, from the same page. It lists the patches the
 /// server's game data was made of (the test data: 0.26g's archive with
-/// patches 14, 15 and 16), in the game's order.
+/// patches 14, 15, 16 and 17), in the game's order.
 #[test]
 fn the_updater_is_told_the_patches_the_server_runs_on() {
     let (stack, web) = start("patches");
@@ -443,7 +443,7 @@ fn the_updater_is_told_the_patches_the_server_runs_on() {
             format!("\"{name}\":{{\"sha256\":\"{sha256}\",\"urls\":[\"{url}\"]}}")
         })
         .collect();
-    assert_eq!(expected.len(), 3);
+    assert_eq!(expected.len(), 4);
     assert_eq!(body, format!("{{{}}}", expected.join(",")));
     assert!(body.starts_with(
         "{\"patch_14\":{\"sha256\":\"7535d0d0c287cf1c3c338936fdef54edb7f36e1334d7e872801a27d505d4c6c3\",\

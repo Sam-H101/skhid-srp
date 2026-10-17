@@ -170,6 +170,10 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
         // level of reputation (Captain)" (PN 0.26c, official).
         ("ammo_7.62x54_7n1", &[(REN, 7), (EDGE, 4)]),
         ("ammo_9x19p_7n31", &[(EDGE, 4)]),
+        // 5.56x45, the H&K 416A5's (content pack weapons-hk416, ported from
+        // 0.31a2): sold as the round of Edge's other level-9 automatic, the
+        // PP-2000's 9x19 7N31 [owner's choice of seller and level, 2026-10-17].
+        ("ammo_5.56x45", &[(EDGE, 4)]),
         ("ammo_5.45x39_7n10", &[(REN, 5), (EDGE, 5)]),
         ("ammo_pab9", &[(REN, 8), (EDGE, 8)]),
         ("ammo_sp5", &[(REN, 9), (EDGE, 9)]),
@@ -235,6 +239,8 @@ pub const AMMO_PRICES: &[(&str, u32, u32)] = &[
     ("ammo_7.62x54_7n1", 220, 110),
     ("ammo_7.62x39_7n23", 80, 40),
     ("ammo_9x19p_7n31", 70, 35),
+    // The 7N31's price, as its level-9 round.
+    ("ammo_5.56x45", 70, 35),
     // Half is 42.5.
     ("ammo_5.45x39_7n10", 85, 40),
     ("ammo_pab9", 100, 50),
@@ -726,6 +732,21 @@ mod tests {
     }
 
     #[test]
+    fn the_hk416_and_its_round_sell_as_the_pp2000_and_its_round() {
+        // The H&K 416A5 (test patch 17): Edge, item level 9, by the rule at
+        // rank 4, as the PP-2000; its 5.56x45 by Edge as the PP-2000's 9x19
+        // 7N31, at its price.
+        let dictionary = Dictionary::shared();
+        assert_eq!(sold_by("hk416"), sold_by("pp2000"));
+        assert_eq!(sold_by("hk416"), [(faction::EDGE, 4)]);
+        assert_eq!(sold_by("ammo_5.56x45"), sold_by("ammo_9x19p_7n31"));
+        let round = dictionary.item_named("ammo_5.56x45").unwrap();
+        let theirs = dictionary.item_named("ammo_9x19p_7n31").unwrap();
+        assert_eq!(price(round.dict_id).unwrap().cost, price(theirs.dict_id).unwrap().cost);
+        assert!(dictionary.compatible(round.dict_id, dictionary.item_named("hk416").unwrap().dict_id));
+    }
+
+    #[test]
     fn every_ammo_is_sold_to_everyone() {
         let dictionary = Dictionary::shared();
         let ammo: Vec<&Item> = dictionary
@@ -733,7 +754,8 @@ mod tests {
             .iter()
             .filter(|item| item_params(item.dict_id).is_some_and(|params| params.kind == "ammo"))
             .collect();
-        assert_eq!(ammo.len(), 29);
+        // 0.26g's 29 and the test patch 17's 5.56x45.
+        assert_eq!(ammo.len(), 30);
         // Known to nobody.
         let nobody = |_: u8| 0;
         for item in ammo {

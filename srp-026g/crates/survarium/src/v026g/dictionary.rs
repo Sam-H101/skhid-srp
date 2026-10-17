@@ -311,9 +311,10 @@ mod tests {
     #[test]
     fn reads_the_026g_dictionary() {
         let dictionary = Dictionary::shared();
-        // 0.26g's 384, and the Bandit balaclava (1810) of the test patch 15
-        // (`resources/game-026g/`).
-        assert_eq!(dictionary.items.len(), 385);
+        // 0.26g's 384, the Bandit balaclava (1810) of the test patch 15, and
+        // the H&K 416A5 (763), 5.56x45 (841) and EOTech 552 (819) of the test
+        // patch 17 (`resources/game-026g/`).
+        assert_eq!(dictionary.items.len(), 388);
         assert_eq!(dictionary.categories.len(), 29);
         assert_eq!(dictionary.slot_restrictions.len(), 77);
         assert_eq!(dictionary.factions.len(), 6);
@@ -341,12 +342,13 @@ mod tests {
     #[test]
     fn items_per_category_are_those_of_the_dump() {
         let dictionary = Dictionary::shared();
-        // 0.26g's, and the test patch's balaclava (a mask, 2).
+        // 0.26g's, the test patch 15's balaclava (a mask, 2) and the test
+        // patch 17's H&K (8), 5.56x45 (9) and EOTech (22).
         #[rustfmt::skip]
         let expected = [
-            (1, 14), (2, 9), (3, 24), (4, 10), (5, 23), (6, 14), (7, 17), (8, 15), (9, 9),
+            (1, 14), (2, 9), (3, 24), (4, 10), (5, 23), (6, 14), (7, 17), (8, 16), (9, 10),
             (10, 10), (11, 1), (12, 3), (13, 10), (14, 8), (15, 10), (16, 2), (17, 5), (18, 8),
-            (19, 2), (20, 9), (21, 1), (22, 3), (23, 0), (24, 2), (25, 50), (26, 120), (27, 4),
+            (19, 2), (20, 9), (21, 1), (22, 4), (23, 0), (24, 2), (25, 50), (26, 120), (27, 4),
             (28, 1), (29, 1),
         ];
         for (category, count) in expected {
@@ -414,11 +416,13 @@ mod tests {
         // Money goes in no slot.
         assert!((0..PROFILE_SLOTS as u8).all(|slot| !dictionary.fits(214, slot)));
 
-        // 94 pairs in the file; those naming an id no item has are set aside.
+        // 94 pairs in the file and the test patch 17's H&K and 5.56x45; those
+        // naming an id no item has are set aside.
         assert_eq!(
             dictionary.compatibility.len() + dictionary.dangling_compatibility.len(),
-            94
+            95
         );
+        assert!(dictionary.compatible(763, 841));
         let mut dangling: Vec<u16> = dictionary
             .dangling_compatibility
             .iter()

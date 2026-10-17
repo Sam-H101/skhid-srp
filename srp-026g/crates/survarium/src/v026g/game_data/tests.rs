@@ -4,9 +4,10 @@ use super::*;
 fn the_test_archive_is_0_26g_with_the_test_patches() {
     let data = shared();
     assert_eq!(data.origin, TEST_ORIGIN);
-    // 0.26g's 508, the Bandit balaclava's config of patch 15, and the
-    // English and Ukrainian localizations.
-    assert_eq!(data.len(), 511);
+    // 0.26g's 508, the Bandit balaclava's config of patch 15, the H&K
+    // 416A5's, its 5.56x45's and its EOTech's of patch 17, and the English
+    // and Ukrainian localizations.
+    assert_eq!(data.len(), 514);
     assert!(data.file("localization/ukrainian/localization").is_some());
     assert!(
         data.file("gameplay/items/armour/mask/bandit_026.options")
@@ -17,18 +18,22 @@ fn the_test_archive_is_0_26g_with_the_test_patches() {
     // not.
     assert!(data.has_project("level_01/day_2"));
     assert!(!data.has_project("level_08/night_2"));
-    // It names what it was made of: 0.26g's archive and patches 14, 15
-    // and 16, in the game's order, each with the URL the players fetch it
+    // It names what it was made of: 0.26g's archive and patches 14, 15,
+    // 16 and 17, in the game's order, each with the URL the players fetch it
     // from.
     let provenance = &data.provenance;
     assert_eq!(provenance.db.name, "resources.db");
     assert_eq!(provenance.db.size, 6_285_533_906);
     let offered: Vec<(String, &str, &[String])> = provenance.offered().collect();
     let keys: Vec<&str> = offered.iter().map(|(key, _, _)| key.as_str()).collect();
-    assert_eq!(keys, ["patch_14", "patch_15", "patch_16"]);
+    assert_eq!(keys, ["patch_14", "patch_15", "patch_16", "patch_17"]);
     assert_eq!(
         offered[2].1,
         "add87569ed39cfe693ac02e7f4a7aaaea89e003ce7715be0cb972a99c036d093"
+    );
+    assert_eq!(
+        offered[3].1,
+        "b4576fc1faef77c4eb1f861d0fddaf0b3785e26f84a90e8e82e09d5bb3b0d94e"
     );
     assert_eq!(
         offered[0].2,
@@ -199,24 +204,34 @@ fn the_test_data_is_0_26g_with_the_test_patches() {
     let stock = build(&db, &[]).unwrap();
     let mut archive = Archive::new(Cursor::new(stock.bytes)).unwrap();
     let stock = GameData::from_archive(&mut archive, "0.26g".into()).unwrap();
-    super::super::tables::check(&stock).unwrap();
+    // 0.26g's own archive lacks only the test patch 17's round, which the
+    // shop tables name.
+    let missing = super::super::tables::check(&stock).unwrap_err().to_string();
+    assert!(
+        missing.contains("lacks what srp's code names: prices::EXCEPTIONS ammo_5.56x45, prices::AMMO_PRICES ammo_5.56x45."),
+        "{missing}"
+    );
     let patched = shared();
     let changed = [
         dictionary::PATH,
         "gameplay/items/armour/mask/bandit_026.options",
         "gameplay/items/weapons/wpn_svd.options",
-        // Patch 15 has its texts.
+        // Patch 17: the H&K 416A5, its 5.56x45 and its EOTech.
+        "gameplay/items/weapons/assault/hk416.options",
+        "gameplay/items/weapons/ammo/ammo_5.56x45.options",
+        "gameplay/items/scopes/eotech_552.options",
+        // Patches 15 and 17 have their texts.
         "localization/english/localization",
         "localization/ukrainian/localization",
     ];
-    assert_eq!(stock.len() + 1, patched.len());
+    assert_eq!(stock.len() + 4, patched.len());
     for (path, bytes) in &patched.files {
         if !changed.contains(&path.as_str()) {
             assert_eq!(stock.file(path), Some(bytes.as_slice()), "{path}");
         }
     }
     assert_eq!(stock.projects, patched.projects);
-    let new = |id: u16| id == 1810;
+    let new = |id: u16| [1810, 763, 841, 819].contains(&id);
     let stock_dictionary = Dictionary::parse(stock.file(dictionary::PATH).unwrap()).unwrap();
     let mut items = Dictionary::shared().items.clone();
     items.retain(|item| !new(item.dict_id));

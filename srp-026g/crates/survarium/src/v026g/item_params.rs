@@ -362,8 +362,9 @@ mod tests {
     #[test]
     fn every_dictionary_item_has_parameters() {
         let dictionary = Dictionary::shared();
-        // 0.26g's 384, and the Bandit balaclava of the test patch 15.
-        assert_eq!(all().len(), 385);
+        // 0.26g's 384, the Bandit balaclava of the test patch 15, and the
+        // H&K 416A5, its 5.56x45 and EOTech of the test patch 17.
+        assert_eq!(all().len(), 388);
         assert!(all().windows(2).all(|w| w[0].dict_id < w[1].dict_id));
         for item in &dictionary.items {
             let params = item_params(item.dict_id).unwrap();
