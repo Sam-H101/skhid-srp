@@ -49,6 +49,8 @@ USAGE (this script never touches the source exe):
         nasm -f bin -DCAVE=0xA425700 shared_upgrades_026g.asm -o shared_upgrades_026g.section.bin
     (checked in). A kit chosen before the start comes from kit_change_026g.asm:
         nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
+    (checked in). The commit_suicide key comes from suicide_key_026g.asm:
+        nasm -f bin -DCAVE=0xA425980 suicide_key_026g.asm -o suicide_key_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -248,6 +250,12 @@ Patches:
   death screen (0x233F28), and hides them from a live one once play begins
   (0x23B7FC). The code is
   kit_change_026g.asm at 0xEC0 of `.srp`;
+- the commit_suicide key (K) kills one's own player (patch 34, with the late
+  join, client_patch.md section 3.32): the input builder (0x241250) never
+  asked for action 1Fh, so the action mask never had bit 24, which the match
+  simulation still reads as a hit on one's own head (0x2D8BC1). Its last
+  action call (0x242196) calls suicide_key_026g.asm at 0x980 of `.srp`
+  first, which sets bit 24 on the key going down;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -657,6 +665,28 @@ KIT_CHANGE_HOOKS = (
     (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x108, 0xE8),         # every update: ui_start
 )
 KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pick: the kits stay
+
+# The commit_suicide key kills one's own player (patch 34, README;
+# client_patch.md section 3.32). commit_suicide is game action 1Fh (action
+# table 0xA74AF0, entry 0xA74D20, default key kK); a key bound to it reaches
+# the player input handler's event buffer (+98h) like any other (0x23FEAC),
+# but the input builder (player_input_handler::process_first_person_mode,
+# 0x241250) asks action_present 0x242460(handler, action, &state) for 35
+# actions and 1Fh is not one of them: bit 24 of the action mask
+# (handler+33Ch) is never set. The match simulation reads it in
+# base_player::process_quick_slots (0x2D8BC1, called by the input apply
+# 0x2D86E0 for every player's input): a hit on the player's own head bone
+# "brain" (vtable+20h = 0x2D9AE0 -> hit_impl 0x2D9B90), the attacker the
+# player; on_player_killed (0x2F4F38) counts a death and a suicide for it,
+# no kill. The builder's last call (spot, 0x242196, ebx = the handler) calls
+# suicide_key_026g.asm at SUICIDE_KEY_OFFSET of `.srp` (after the pickup
+# code, before the seek code): it asks 0x242460 for 1Fh, sets bit 24 when
+# the key went down (state 0, as spot does), and jumps to 0x242460 with the
+# original arguments and return address. No base relocation under the site.
+SUICIDE_KEY_OFFSET = 0x980
+SUICIDE_KEY_VA = SECTION_VA + SUICIDE_KEY_OFFSET
+ACTION_STATE_VA = 0x242460                    # player_input_handler: the state of a buffered action
+SUICIDE_KEY_HOOK = (0x242196, bytes.fromhex("e8c5020000"), 0, 0xE8)
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1500,6 +1530,18 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         patch(data, *KIT_PICK)
         if neutralize_relocs(data, [(KIT_PICK[0], KIT_PICK[0] + len(KIT_PICK[1]))]):
             sys.exit("a base relocation under the hiding of the kits after a pick")
+        suicide_key = open(suicide_key_bin(), "rb").read()
+        if PICKUP_OFFSET + len(pickup) > SUICIDE_KEY_OFFSET \
+                or SUICIDE_KEY_OFFSET + len(suicide_key) > SEEK_CLEAR_OFFSET:
+            sys.exit("the pickup code, the suicide key and the seek code do not fit")
+        # It begins `push dword [esp+0Ch]` and ends `jmp 0x242460`.
+        if suicide_key[:4] != bytes.fromhex("ff74240c") or suicide_key[-5:] != \
+                b"\xE9" + struct.pack("<i", ACTION_STATE_VA - (SUICIDE_KEY_VA + len(suicide_key))):
+            sys.exit(f"suicide_key_026g.section.bin was assembled for another address: -DCAVE={SUICIDE_KEY_VA:#x}")
+        va, expected, offset, opcode = SUICIDE_KEY_HOOK
+        patch(data, va, expected, hook_bytes(SUICIDE_KEY_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the suicide key's hook")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1542,6 +1584,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (SHARED_UPGRADES_OFFSET - len(cave)) + shared_upgrades
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
+            cave = cave + b"\xCC" * (SUICIDE_KEY_OFFSET - len(cave)) + suicide_key
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
@@ -1576,7 +1619,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the transparent effects scroll their textures as in 0.29 (scene_slomo bound to 1.0), "
                      "the lobby's link starts the updater for a replay link and opens nothing else, "
                      "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
-                     "a kit chosen before the match starts is played at once where the player stands"
+                     "a kit chosen before the match starts is played at once where the player stands, "
+                     "the commit_suicide key (K) kills one's own player"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1623,6 +1667,10 @@ def forward_scroll_bin():
 
 def seek_clear_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_seek_026g.section.bin")
+
+
+def suicide_key_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "suicide_key_026g.section.bin")
 
 
 def kit_change_bin():

@@ -228,6 +228,18 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     client+1F1C60h), byte for byte. The code calls and leaves only to what
     it names, stores nothing but on its stack; no relocation under a site
     and nothing aims inside one. check_kit_change_026g.py runs it.
+35. the same build: the commit_suicide key kills one's own player (patch
+    34, suicide_key_026g.asm at SUICIDE_KEY_OFFSET of `.srp`). The
+    original: the action table's entry 0xA74D20 is commit_suicide, action
+    1Fh, default key kK; the input builder 0x241250 asks 0x242460 for 35
+    actions, 1Fh not among them, and sets no 1000000h in the action mask;
+    base_player::process_quick_slots reads bit 24 at 0x2D8BC1 and is called
+    from the input apply 0x2D86E0 alone (0x2D8777). The spot call at
+    0x242196 is `call 0x242460` in the original and the build without the
+    late join, `call` the code here; the code is suicide_key_026g.section.bin,
+    calls and leaves only to 0x242460, holds no absolute address and every
+    branch inside lands on an instruction; no relocation under the site and
+    nothing aims inside it. check_suicide_key_026g.py runs it.
 """
 
 import ctypes
@@ -402,6 +414,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.kit_change_bin(), "rb").read(),
           f"{os.path.basename(P.kit_change_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SUICIDE_KEY_VA:#x}",
+                        os.path.join(HERE, "suicide_key_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.suicide_key_bin(), "rb").read(),
+          f"{os.path.basename(P.suicide_key_bin())} is current ({len(fresh)} bytes)")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.REPLAY_LINK_VA:#x}",
@@ -1082,7 +1101,8 @@ def late_join_sites():
          (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
-        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))]
+        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
+        [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))]
 
 
 def pickup_sites():
@@ -2488,6 +2508,59 @@ def test_kit_change(original, image, before):
           + "".join(f"\n          {a:#x}" for a in found + under))
 
 
+def test_suicide_key(original, image, before):
+    """Check 35: the commit_suicide key (patch 34, SUICIDE_KEY_*).
+    check_suicide_key_026g.py runs the builder's last call on made-up input
+    handlers."""
+    stock = Image(original)
+    name, action, kind, _, key = struct.unpack("<5I", stock.read(0xA74D20, 20))
+    cstr = lambda va: stock.read(va, 32).split(b"\0")[0]
+    check(cstr(name) == b"commit_suicide" and action == 0x1F and kind == 5 and cstr(key) == b"kK",
+          "the action table's entry 0xA74D20 is commit_suicide, action 1Fh, kind 5, default key kK")
+    rows = ndisasm(stock.read(0x241250, 0x2421B0 - 0x241250), 0x241250)
+    # The pushes before each call, nearest first: ebx (the handler), the
+    # action, &state (one call has other instructions between them).
+    pushes = lambda i: [text for _, _, text in reversed(rows[max(0, i - 10):i]) if text.startswith("push ")]
+    asked = [int(pushes(i)[1].split("+")[1], 16) for i, row in enumerate(rows)
+             if row[2] == "call 0x242460" and pushes(i)[0] == "push ebx" and pushes(i)[1].startswith("push byte +")]
+    calls = [row for row in rows if row[2] == "call 0x242460"]
+    masks = [int(row[2].split(",")[1].split()[-1].lstrip("+"), 16) for row in rows
+             if row[2].startswith("or dword [ebx+0x33c],")]
+    callers = sorted(int(h.split()[0], 16) for h in branches_into(original, 0x242460, 0x242461))
+    check(len(calls) == len(asked) == 35 and 0x1F not in asked and masks and 0x1000000 not in masks,
+          f"the input builder 0x241250 asks 0x242460 for 35 actions ({len(asked)} read), 1Fh not among them, and "
+          "never ors 1000000h into the action mask (+33Ch)")
+    check(all(0x241250 <= at < 0x2421B0 for at in callers) and len(callers) == 35,
+          "0x242460 is called by the input builder alone, 35 times")
+    quick = [int(h.split()[0], 16) for h in branches_into(original, 0x2D8BB0, 0x2D8BB1)]
+    check(stock.read(0x2D8BC1, 7) == bytes.fromhex("f7470400000001") and quick == [0x2D8777],
+          "base_player::process_quick_slots tests bit 24 of the input (0x2D8BC1 `test dword [edi+4],1000000h`) and "
+          "is called from the input apply 0x2D86E0 alone (0x2D8777)")
+    va, old, offset, opcode = P.SUICIDE_KEY_HOOK
+    new = P.hook_bytes(P.SUICIDE_KEY_VA, va, old, offset, opcode)
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
+          f"{va:#x}: `call 0x242460` (spot) in the original and the build without the late join, "
+          f"`call {P.SUICIDE_KEY_VA:#x}` here")
+    code = open(P.suicide_key_bin(), "rb").read()
+    check(image.read(P.SUICIDE_KEY_VA, len(code)) == code,
+          f"the code at {P.SUICIDE_KEY_VA:#x} is suicide_key_026g.section.bin ({len(code)} bytes)")
+    listing = ndisasm(code, P.SUICIDE_KEY_VA)
+    inside = lambda target: P.SUICIDE_KEY_VA <= target < P.SUICIDE_KEY_VA + len(code)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    starts = {address for address, _, _ in listing}
+    check({t for t in targets if not inside(t)} == {P.ACTION_STATE_VA}
+          and all(t in starts for t in targets if inside(t)) and listing[-1][2] == "jmp 0x242460"
+          and not [t for _, _, t in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", t)],
+          "the code calls and leaves only to 0x242460 (it ends `jmp 0x242460`), every branch inside lands on an "
+          "instruction, and it holds no absolute address")
+    hits = aimed_inside(original, va, len(old), 0x80)
+    spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
+    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    check(len(hits) == len(spelled) and not under,
+          "nothing aims inside the site (a 4-byte value spelling an address there is no pointer without a "
+          "relocation) and no base relocation is under it" + "".join(f", {h:#x}" for h in hits + under))
+
+
 def imports(image):
     """{IAT slot VA: (dll, function)} of the import table and the delay-load
     table (its addresses are VAs in this exe)."""
@@ -2725,6 +2798,7 @@ def test_late_join(original, without, server, source):
     mount_patches = open(P.mount_patches_bin(), "rb").read()
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     kit_change = open(P.kit_change_bin(), "rb").read()
+    suicide_key = open(P.suicide_key_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
     shared = open(P.shared_upgrades_bin(), "rb").read()
@@ -2733,6 +2807,7 @@ def test_late_join(original, without, server, source):
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.SHARED_UPGRADES_OFFSET, len(shared), "the shared upgrades' code"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
+              (P.SUICIDE_KEY_OFFSET, len(suicide_key), "the suicide key"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
@@ -2751,7 +2826,9 @@ def test_late_join(original, without, server, source):
           and body[P.SHARED_UPGRADES_OFFSET:P.SHARED_UPGRADES_OFFSET + len(shared)] == shared
           and set(body[P.SHARED_UPGRADES_OFFSET + len(shared):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
-          and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
+          and set(body[P.PICKUP_OFFSET + len(pickup):P.SUICIDE_KEY_OFFSET]) <= {0xCC}
+          and body[P.SUICIDE_KEY_OFFSET:P.SUICIDE_KEY_OFFSET + len(suicide_key)] == suicide_key
+          and set(body[P.SUICIDE_KEY_OFFSET + len(suicide_key):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
           and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
           and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
@@ -2764,7 +2841,8 @@ def test_late_join(original, without, server, source):
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
-          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
+          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, "
+          f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
           f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
           f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the code follows, then int3 padding")
@@ -2910,6 +2988,7 @@ def test_late_join(original, without, server, source):
     test_replay_link(original, image, before)
     test_shared_upgrades(original, image, before)
     test_kit_change(original, image, before)
+    test_suicide_key(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
