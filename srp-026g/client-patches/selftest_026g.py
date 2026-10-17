@@ -204,6 +204,30 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     calls only the packet functions and process_detach_upgrade and holds
     no address. check_shared_upgrades_026g.py runs the original's and the
     build's code on inventories with an upgrade on several items.
+32. the same build: a kit chosen before the match starts is played at
+    once (patch 31, kit_change_026g.asm at KIT_CHANGE_OFFSET of `.srp`).
+    The respawn rule's tick (0x316820, slot +50h of the respawn rules'
+    vtables) is a jump to kit_change and a nop where the original and the
+    build without the late join have `push ebp` / `mov ebp,esp` /
+    `sub esp,34h`; the client's view of a spawn into another kit (0x2678E0,
+    the client rule's +60h) calls kit_view where it pushed 1 and called the
+    player camera; the hud's update of the local player's state has
+    `jmp ui_alive` and two nops where it called 0x23A1A0 and pushed 0 for
+    the call that hides the kits (0x2383B0, which alone calls
+    root.show_profiles_selector, and which only the profile_changed callback
+    and this update call), and `call ui_start` and a nop where it begins to
+    let go of the player; the profile_changed callback has nine nops where
+    it pushed 0 and called 0x2383B0. In the original: the tick, the
+    spawn and its point,
+    the view's registers; the time rule's states at core+18FE4h; the order
+    of a tick (tick list 0 before the time rule's list 1; in the build the
+    respawn rule's key, from the core's counter, before the places', the late
+    join's (place+1) << 16) and the camera's state (the client's
+    time rule sets the player camera in play, the warmup's otherwise, when
+    its state changes in a tick first played, and keeps it at network
+    client+1F1C60h), byte for byte. The code calls and leaves only to what
+    it names, stores nothing but on its stack; no relocation under a site
+    and nothing aims inside one. check_kit_change_026g.py runs it.
 """
 
 import ctypes
@@ -371,6 +395,13 @@ def test_bins():
                         os.path.join(HERE, "mount_patches_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
     check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.KIT_CHANGE_VA:#x}",
+                        os.path.join(HERE, "kit_change_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.kit_change_bin(), "rb").read(),
+          f"{os.path.basename(P.kit_change_bin())} is current ({len(fresh)} bytes)")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.REPLAY_LINK_VA:#x}",
@@ -1050,7 +1081,8 @@ def late_join_sites():
          (P.SEEK_CLEAR_HOOK[0], len(P.SEEK_CLEAR_HOOK[1])),
          (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
-        [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites()
+        [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
+        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))]
 
 
 def pickup_sites():
@@ -2297,6 +2329,165 @@ def test_seek_clear(original, image, before):
           "seek_clear: the vtable found relative to itself, 0x245C50 for the functors, the lea and back to 0x1EE3A9")
 
 
+# The hud's update of the local player's state (0x23B740): its body.
+UPDATE_PLAYER_STATE = (0x23B740, 0x23B81A)
+RESPAWN_TICK = (0x316820, 0x316A24)
+KIT_VIEW = (0x2678E0, 0x26797F)                      # the client's view of a spawn into another kit
+RESPAWN_VTABLES = (0xA16014, 0xA16084, 0xA06D1C)    # the core's, the server's, the client's (+50h, +5Ch)
+# (address, the original's bytes, what they are) that the order of a tick and
+# the camera's state rest on.
+KIT_CHANGE_ORDER = (
+    (0x316A3A, "8b90b08f01008b1289912c010000", "the respawn rule's key: the core's counter"),
+    (0x316A50, "81c11c010000c6411400ff8040880100", "the respawn rule's node into tick list 0 (core+18840h)"),
+    (0x318070, "81c110010000c6411401ff8050880100", "the time rule's node into tick list 1 (core+18850h)"),
+    (0x321877, "8b88b08f01008b115f895520", "a place's key at its bind: the core's counter"),
+    (0x2D28F6, "8d48108b4028c6411400ff8040880100", "a place's node into tick list 0 when it enters"),
+    (0x2D385A, "89742420", "the core's counter of keys is 0 when it binds its places"),
+    (0x2D3B2B, "8bb5248801008bbd28880100", "the core gives its rules the core, after the places"),
+    (0x2D1E3F, "8db1408801008d99b0880100", "the world's tick goes through lists 0 to 6"),
+    (0x2D1E5C, "e8bffeffff83c610", "list by list, each sorted by key (0x2D1D20)"),
+    (0x267A75, "c74004a07a2600", "the client's time rule ticks through 0x267AA0"),
+    (0x267AAA, "e851060b00", "which steps the rule (logic_tick)"),
+    (0x267AD2, "3bb1c48f0100762e", "and only for a tick first played"),
+    (0x267AE6, "8bbf4801000039be601c1f007414", "compares its state with the camera's"),
+    (0x267AFB, "89be601c1f007405e898360100", "keeps it and sets the camera (0x27B1A0)"),
+    (0x27B1C8, "83be601c1f0003740c", "the player camera in play"),
+    (0x27B1D8, "e9b3cff7ff", "the warmup's otherwise (0x1F8190)"),
+    (0x27B1E3, "6a01e816d0f7ff", "first person in play"),
+)
+
+
+def test_kit_change(original, image, before):
+    """Check 32: a kit chosen before the match starts is played at once."""
+    stock = Image(original)
+    texts = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    names = ("kit_change", "kit_view", "ui_alive", "ui_start")
+    wanted = (["push ebp", "mov ebp,esp", "sub esp,byte +0x34"],
+              ["push byte +0x1", "call 0x1f8200"],
+              ["call 0x23a1a0", "push byte +0x0"],
+              ["lea eax,[ebp+0xd0]"])
+    for (va, old, offset, opcode), name, original_texts in zip(P.KIT_CHANGE_HOOKS, names, wanted):
+        rows = ndisasm(image.read(va, len(old)), va)
+        word = "call" if opcode == 0xE8 else "jmp"
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+              and texts(stock, va, len(old)) == original_texts
+              and rows[0][2].startswith(word) and branch_target(rows[0][2]) == P.KIT_CHANGE_VA + offset
+              and all(text == "nop" for _, _, text in rows[1:]) and len(rows) == len(old) - 4,
+              f"{va:#x}: `{' / '.join(original_texts)}` is `{rows[0][2]}` + {len(rows) - 1} nop ({name}); "
+              "the build without the late join keeps it")
+    # The tick: every respawn rule's +50h, the spawn their +5Ch; the tick
+    # reads the respawn times, takes a player in the world out with 1, and
+    # spawns through +5Ch with (place, point, time). The view of a spawn
+    # into another kit is the client's rule's +60h, which the spawn calls.
+    slot = lambda vt, at: struct.unpack("<I", stock.read(vt + at, 4))[0]
+    slots = [(slot(vt, 0x50), slot(vt, 0x5C)) for vt in RESPAWN_VTABLES]
+    start, end = RESPAWN_TICK
+    tick = texts(stock, start, end - start)
+    check(slots == [(P.KIT_CHANGE_TICK_VA, 0x316DA0)] * 3 and slot(0xA06D1C, 0x60) == KIT_VIEW[0]
+          and "cmp [edx],ecx" in tick and "mov edx,[eax+0x24]" in tick and "mov eax,[eax+0x5c]" in tick
+          and tick[-1] == "ret 0xc",
+          "the respawn rules' vtables (core, server, client) have the tick at +50h and the spawn at +5Ch, the "
+          "client's the view of a kit change at +60h; the tick compares the respawn times, takes a player out "
+          "through vtable+24h and spawns through +5Ch, `ret 0Ch`")
+    spawn = texts(stock, 0x316DA0, 0x113)
+    check("mov edi,[esp+0x1c]" in spawn and "lea eax,[edi+0x8]" in spawn and "fld dword [edi+0x14]" in spawn
+          and "cmp dword [edi+0x20],byte +0x0" in spawn and "mov [eax+0x32c],ecx" in spawn
+          and "mov [eax+0xc],dl" in spawn and "mov eax,[edx+0x60]" in spawn and spawn[-1] == "ret 0xc",
+          "the spawn makes the next kit current, tells the view of a change of kit (+60h) and reads its point's "
+          "+8 (the position), +14h (the yaw) and +20h (the protection, into the damage model's +32Ch), `ret 0Ch`")
+    view = texts(stock, KIT_VIEW[0], KIT_VIEW[1] - KIT_VIEW[0])
+    check(view[:3] == ["push ebx", "mov ebx,ecx", "mov eax,[ebx+0x1a8]"] and "mov esi,[eax+0x53ac]" in view
+          and view.count("call 0x1f8200") == 1 and view[-1] == "ret 0x4"
+          and not any(text.startswith("mov esi") for text in view[view.index("mov esi,[eax+0x53ac]") + 1:]),
+          "the view of a kit change keeps the network client in esi to its end and gives the player camera once")
+    states = [address for address, _, text in ndisasm(stock.read(0x317EE0, 0x480), 0x317EE0)
+              if text.endswith("+0x18fe4],eax") or text.endswith("+0x18fe4],ecx") or text.endswith("+0x18fe4],esi")
+              or text.endswith("+0x18fe4],edx")]
+    check(len(states) >= 4, f"the time rule writes its state to core+18FE4h ({len(states)} stores: "
+          "start, countdown, in process, deserialize)")
+    # A pick: the profile_changed callback's hiding of the kits is nops.
+    va, old, new = P.KIT_PICK
+    check(image.read(va, len(old)) == new and stock.read(va, len(old)) == old and before.read(va, len(old)) == old,
+          f"{va:#x}: `push 0` / `mov eax,ebx` / `call 0x2383b0` after a pick are nine nops: the kits stay shown and "
+          "the hud's cursor where it is; the build without the late join keeps them")
+    # The order of a tick and the camera's state. In the build the late
+    # join binds each place with a counter of its own from (place+1) << 16
+    # (bind_slot_reserved, at the core's bind 0x2D3880) and gives the core's
+    # counter back after: the rules' keys come from it, from 0.
+    wrong = [f"{va:#x} ({what})" for va, old, what in KIT_CHANGE_ORDER if stock.read(va, len(old) // 2).hex() != old]
+    binding = texts(stock, 0x2D3880, 0x2D3B47 - 0x2D3880)
+    late = open(P.late_join_bin(), "rb").read()[:P.LATE_JOIN_ASM_SIZE]
+    own_keys = bytes.fromhex("0fb6462c40c1e0108945f08b83b08f01008945f48d45f08983b08f0100")
+    given_back = bytes.fromhex("8b45f48983b08f0100")
+    rows = ndisasm(image.read(0x2D3880, 5), 0x2D3880)
+    check(not wrong and not any(text.startswith("ret") for text in binding)
+          and late.count(own_keys) == 1 and late.find(given_back) > late.find(own_keys)
+          and branch_target(rows[0][2]) == P.LATE_JOIN_VA,
+          "a tick plays list 0 before the time rule's list 1; in the build list 0 has the respawn rule (its key from "
+          "the core's counter, from 0) before the places (keys (place+1) << 16, the late join's bind_slot, which "
+          "gives the counter back): a kit choice for a tick is played by the respawn rule at the next one; the "
+          "client's time rule sets the camera, the player's in play (state 3) and the warmup's otherwise, when its "
+          "state changes in a tick first played, and keeps that state at network client+1F1C60h"
+          + "".join(f"\n          {w}" for w in wrong))
+    text = bytes(original[P.file_offset(P.TEXT_VA):P.file_offset(P.TEXT_VA) + P.TEXT_VSIZE])
+    callers = [P.TEXT_VA + at for at in range(len(text) - 5)
+               if text[at] == 0xE8 and P.TEXT_VA + at + 5 + struct.unpack_from("<i", text, at + 1)[0] == 0x2383B0]
+    selector = struct.pack("<I", 0xA03704)                     # "root.show_profiles_selector"
+    users = [P.TEXT_VA + at for at in range(len(text) - 4) if text[at:at + 4] == selector]
+    pick = texts(stock, 0x233F06, 0x31)
+    check(callers == [0x233F2C, 0x23B7F7] and users == [0x238451] and stock.read(0xA03704, 28) == b"root.show_profiles_selector\0"
+          and stock.read(0x233F07, 4) == struct.pack("<I", 0xA03280) and stock.read(0xA03280, 16) == b"profile_changed\0"
+          and pick[pick.index("call 0x1f8070"):] == ["call 0x1f8070", "push byte +0x0", "mov eax,ebx", "call 0x2383b0",
+                                                    "pop edi", "pop esi", "pop ebx", "ret 0x10"],
+          "the kits are shown or hidden by 0x2383B0 alone (root.show_profiles_selector, at 0x238451), which the "
+          "profile_changed callback (0x233F2C, to hide them after it queued the pick, 0x1F8070) and this update "
+          "(0x23B7F7) call, nothing else")
+    code = open(P.kit_change_bin(), "rb").read()
+    check(image.read(P.KIT_CHANGE_VA, len(code)) == code,
+          f"the code at {P.KIT_CHANGE_VA:#x} is kit_change_026g.section.bin ({len(code)} bytes)")
+    rows = [row for row in ndisasm(code, P.KIT_CHANGE_VA) if row[2] != "int3"]
+    inside = lambda target: P.KIT_CHANGE_VA <= target < P.KIT_CHANGE_VA + len(code)
+    calls = sorted({text for _, _, text in rows if text.startswith("call")
+                    and not ((target := branch_target(text)) is not None and inside(target))})
+    leaves = sorted({target for _, _, text in rows if (target := branch_target(text)) is not None
+                     and not inside(target)})
+    stores = sorted({text for _, _, text in rows if re.match(r"^mov \[", text)})
+    check(calls == sorted({"call 0x1f8200", "call 0x23a1a0", "call 0x2383b0", "call [edx+0x8]",
+                           "call [eax+0x24]", "call [eax+0x5c]"})
+          and leaves == [0x1F8190, 0x1F8200, 0x2383B0, 0x23A1A0, 0x23B7FC, 0x316826] and stores == [],
+          "outside itself it calls only the damage model's holder (+108h vtable+8), the player's way out of the "
+          "world (vtable+24h), the rule's spawn (vtable+5Ch), the player camera, 0x23A1A0 and the kits' show or "
+          "hide (0x2383B0); it leaves only to 0x316826, 0x23B7FC and the warmup camera and by its returns; it "
+          "stores nothing but on its stack"
+          + "".join(f"\n          {text}" for text in calls + [hex(t) for t in leaves] + stores))
+    # Nothing aims inside the four sites; no relocation is under them. A
+    # pointer of the image has a base relocation: the four bytes of the
+    # file that happen to spell an address inside a site (0x23B800 and
+    # 0x23B801 are in .text's code) are not pointers unless one is there.
+    found = []
+    sites = [(va, old) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [P.KIT_PICK[:2]]
+    pointers = {}
+    for kind, at in stock.relocations().values():
+        if kind == 3:
+            try:
+                pointers[at] = struct.unpack("<I", stock.read(at, 4))[0]
+            except ValueError:                     # past a section's file data: zero
+                pass
+    for va, old in [(va, old) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [P.KIT_PICK[:2]]:
+        hits = aimed_inside(original, va, len(old), 0)
+        spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
+        found += hits[:len(hits) - len(spelled)]
+        found += [at for at, value in pointers.items() if va < value < va + len(old)]
+    for lo, hi in (RESPAWN_TICK, UPDATE_PLAYER_STATE, KIT_VIEW, (0x233E80, 0x233F37)):
+        found += [address for address, _, text in ndisasm(stock.read(lo, hi - lo), lo)
+                  if (target := branch_target(text)) is not None
+                  and any(va < target < va + len(old) for va, old in sites)]
+    under = [v for kind, v in stock.relocations().values() if kind == 3
+             and any(va - 3 < v < va + len(old) for va, old in sites)]
+    check(not found and not under, "no branch or address aims inside the five sites, no base relocation under them"
+          + "".join(f"\n          {a:#x}" for a in found + under))
+
+
 def imports(image):
     """{IAT slot VA: (dll, function)} of the import table and the delay-load
     table (its addresses are VAs in this exe)."""
@@ -2533,6 +2724,7 @@ def test_late_join(original, without, server, source):
     stale_dll = open(P.stale_dll_bin(), "rb").read()
     mount_patches = open(P.mount_patches_bin(), "rb").read()
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
+    kit_change = open(P.kit_change_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
     shared = open(P.shared_upgrades_bin(), "rb").read()
@@ -2544,6 +2736,7 @@ def test_late_join(original, without, server, source):
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
+              (P.KIT_CHANGE_OFFSET, len(kit_change), "the kit change"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
                 for a, b in zip(pieces, pieces[1:]) if a[0] + a[1] > b[0]]
@@ -2564,15 +2757,17 @@ def test_late_join(original, without, server, source):
           and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
           and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
-          and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.LATE_JOIN_OFFSET]) <= {0xCC}
+          and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.KIT_CHANGE_OFFSET]) <= {0xCC}
+          and body[P.KIT_CHANGE_OFFSET:P.KIT_CHANGE_OFFSET + len(kit_change)] == kit_change
+          and set(body[P.KIT_CHANGE_OFFSET + len(kit_change):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
           and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
           f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
-          f"and the shell_32.dll check at "
-          f"+{P.STALE_DLL_OFFSET:#x}, the code follows, then int3 padding")
+          f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
+          f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the code follows, then int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
           and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
@@ -2714,6 +2909,7 @@ def test_late_join(original, without, server, source):
     test_forward_scroll(original, image, before)
     test_replay_link(original, image, before)
     test_shared_upgrades(original, image, before)
+    test_kit_change(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")

@@ -453,6 +453,42 @@ fn a_profile_input_is_relayed_once() {
 }
 
 #[test]
+fn kit_choices_before_play_are_counted_for_the_result() {
+    // Patch 31: a game respawns a live player in a kit chosen before play
+    // began, where it stands, with no death. The result says how many such
+    // choices a player made: each may have been a life with a kit's
+    // supplies of its own.
+    let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
+    bench.join_all();
+    settle(&mut bench);
+    assert_eq!(bench.game().rule_state(), state::COUNTDOWN);
+    bench.clients[1].profile_input(2);
+    bench.run(300);
+    bench.clients[1].profile_input(0);
+    bench.run(300);
+    bench.run_long(20_000);
+    assert_eq!(bench.game().rule_state(), state::IN_PROCESS);
+    // In play a choice is for the next life, as it always was.
+    bench.clients[1].profile_input(1);
+    bench.clients[0].profile_input(1);
+    bench.run(300);
+    bench.clients[0].leave();
+    bench.clients[1].leave();
+    bench.run(1_500);
+    let result = bench.results.try_recv().expect("a result");
+    assert!(result.played_ms.is_some());
+    assert_eq!(
+        result
+            .players
+            .iter()
+            .map(|player| player.kit_changes)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+    bench.assert_no_faults();
+}
+
+#[test]
 fn a_late_joiner_starts_from_a_fresh_snapshot_and_gets_what_came_since() {
     let mut bench = Bench::new(2, MAP_BATTERIES, Settings::default());
     bench.join(0);

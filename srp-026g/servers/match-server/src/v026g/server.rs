@@ -544,6 +544,7 @@ impl Server {
                             kills: 0,
                             deaths: 0,
                             longest_killstreak: 0,
+                            kit_changes: 0,
                             supplies: None,
                         })
                         .collect(),

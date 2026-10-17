@@ -253,6 +253,7 @@ pub fn match_result(result: matches::MatchResult) -> rewards::MatchResult {
                 kills: player.kills,
                 deaths: player.deaths,
                 longest_killstreak: player.longest_killstreak,
+                kit_changes: player.kit_changes,
                 supplies: player.supplies,
             })
             .collect(),

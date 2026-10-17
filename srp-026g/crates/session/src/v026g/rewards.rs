@@ -238,6 +238,11 @@ pub struct PlayerResult {
     pub kills: u16,
     pub deaths: u16,
     pub longest_killstreak: u16,
+    /// Its kit choices for a tick before play began (the match server's
+    /// `PlayerResult::kit_changes`): each may have been a respawn in place
+    /// with the new kit's supplies (patch 31), a life more than its deaths
+    /// for what the match used.
+    pub kit_changes: u16,
     /// What the player had left in the last trusted snapshot: alive or
     /// not, the kit in use, and what is left of every item of its profile
     /// (`Supplies::left` adds a stack item up). `None`: not known.
@@ -1574,9 +1579,10 @@ impl<'a> Shared<'a> {
             let shots: Vec<u32> = (0..KITS)
                 .map(|kit| u32::from(events[event::BULLET_FIRE][kit]))
                 .collect();
-            let deaths = total(&events, event::DEATH);
+            let respawns =
+                total(&events, event::DEATH).saturating_add(u32::from(player.kit_changes));
             reward.supplies_used =
-                super::autobuy::used(account, player.supplies.as_ref(), &shots, deaths);
+                super::autobuy::used(account, player.supplies.as_ref(), &shots, respawns);
         }
         // A new player is one with no experience yet: its first drop is
         // from the new player's table.

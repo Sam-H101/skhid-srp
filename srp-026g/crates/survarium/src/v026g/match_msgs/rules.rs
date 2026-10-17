@@ -172,6 +172,25 @@ impl TimelimitRule {
             .flatten()
     }
 
+    /// Whether a kit choice for the tick at `time` may still change a live
+    /// player's kit in a game (patch 31, `client_patch.md` section 3.29):
+    /// for a tick before the one that begins play. In a client's tick the
+    /// respawn rule runs before the places, which take the tick's kit
+    /// choices (tick list 0), and the time rule after both (list 1): a
+    /// choice for a tick is played at the next one, and the last tick that
+    /// still sees the countdown is the one that begins play.
+    pub fn before_play(&self, time: u32) -> bool {
+        match (self.state, self.start) {
+            (state::WAITING_FOR_PLAYERS, _) => true,
+            (state::COUNTDOWN, Some(start)) => {
+                time < start.saturating_add(self.params.countdown_ms)
+            }
+            (state::COUNTDOWN, None) => true,
+            (state::IN_PROCESS, Some(start)) => time < start,
+            _ => false,
+        }
+    }
+
     /// When the time limit ends the match: known from the countdown on.
     pub fn time_limit_at(&self) -> Option<u32> {
         let start = self.start?;
@@ -316,6 +335,25 @@ mod tests {
         assert!(start_condition(0xFFFF, 20, 0.8));
         // A lone tester in a padded roster of 3 waits.
         assert!(!start_condition(0b001, 3, 0.8));
+    }
+
+    #[test]
+    fn before_play_is_the_wait_and_the_countdown_to_the_tick_before_play() {
+        let mut rule = TimelimitRule::new(params(2));
+        assert!(!rule.before_play(0), "not ready: no match yet");
+        rule.on_match_ready(50);
+        assert!(rule.before_play(50) && rule.before_play(1_000_000));
+        assert_eq!(
+            rule.on_player_entered(0, 1_000),
+            Some(Transition::CountdownStarted)
+        );
+        assert!(rule.before_play(1_000) && rule.before_play(20_950));
+        assert!(
+            !rule.before_play(21_000),
+            "a choice for the tick play begins in is played in play"
+        );
+        assert_eq!(rule.tick(21_000), Some(Transition::MatchStarted));
+        assert!(rule.before_play(20_950) && !rule.before_play(21_000) && !rule.before_play(30_000));
     }
 
     #[test]

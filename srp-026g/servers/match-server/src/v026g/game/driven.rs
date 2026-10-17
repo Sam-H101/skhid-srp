@@ -802,6 +802,9 @@ impl Game {
             }
         }
         for (index, time, what) in due {
+            if matches!(what, Relayed::Profile { .. }) {
+                self.note_kit_choice(index, time);
+            }
             self.relay_to_others(index, &what, time, now);
             self.inputs.push((time, index, what));
         }

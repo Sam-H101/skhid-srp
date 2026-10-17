@@ -162,6 +162,7 @@ impl Game {
         for place in self.players()..formed.places.len() {
             self.peers.push(None);
             self.best_streaks.push(0);
+            self.kit_changes.push(0);
             self.push_driven_place(formed.places[place].team);
             self.admissions.push(Some(Admission::new(now)));
         }

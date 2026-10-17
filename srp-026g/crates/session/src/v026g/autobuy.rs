@@ -20,8 +20,10 @@
 //!    and no 0.26g snapshot was seen yet, what it says is held to what can
 //!    be true:
 //!    - never more than a life takes times the lives the player had
-//!      (`deaths + 1` times the most a kit's slots hold of the item: a life
-//!      takes at most its slots' counts out of the store, 0x2FCC4A);
+//!      (`respawns + 1` times the most a kit's slots hold of the item: a
+//!      life takes at most its slots' counts out of the store, 0x2FCC4A;
+//!      a respawn is a death or a kit change before play began, which the
+//!      games of patch 31 make a respawn in place);
 //!    - for ammo, never more than the bullets the statistics counted
 //!      (event 22), except buckshot, whose round flies as ten bullets (its
 //!      config's `buckshot: 10`) while it is not known whether the counter
@@ -139,13 +141,14 @@ fn used_by_counters(account: &Account, shots: &[u32], buckshot: Option<u16>) -> 
 /// What the match is known to have used of the account's stacks: `(dict
 /// id, units)`. `supplies` is the player's block of the last trusted
 /// snapshot, `shots[kit]` the bullets its counters say each kit fired,
-/// `deaths` how often it died. Call it before the match's pay or drop
+/// `respawns` how often it began a new life: its deaths and its kit
+/// changes before play began. Call it before the match's pay or drop
 /// changes a stack. See the module.
 pub fn used(
     account: &Account,
     supplies: Option<&Supplies>,
     shots: &[u32],
-    deaths: u32,
+    respawns: u32,
 ) -> Vec<(u16, u32)> {
     let dictionary = Dictionary::shared();
     let buckshot = dictionary.item_named(BUCKSHOT).map(|item| item.dict_id);
@@ -155,7 +158,7 @@ pub fn used(
             let fired: u32 = shots
                 .iter()
                 .fold(0, |sum, &shots| sum.saturating_add(shots));
-            let lives = deaths.saturating_add(1);
+            let lives = respawns.saturating_add(1);
             supplies
                 .left()
                 .into_iter()
