@@ -81,8 +81,9 @@ fn compatibility_rows_of_scopes_leave_srp_as_it_was() {
     use super::super::tables;
     let data = fixtures::with_scopes();
     let dictionary = fixtures::dictionary_of(&data);
+    let fits = fixtures::fits();
     let rows = fixtures::compatibility_rows();
-    assert!(!rows.is_empty());
+    assert_eq!(rows.len(), 5 + fixtures::STOCK_ROWS.len());
     for (weapon, scope) in rows {
         assert!(dictionary.compatible(weapon, scope) && dictionary.compatible(scope, weapon));
     }
@@ -104,6 +105,22 @@ fn compatibility_rows_of_scopes_leave_srp_as_it_was() {
                 item.dict_id
             );
         }
+    }
+    // The seven rows weapon / stock scope (69, 304, 362) make no stock scope
+    // a shop scope: not sold, not put on any weapon (the pairs above are
+    // the variants' alone), and no slot (checked above).
+    for (weapon, stock) in fixtures::STOCK_ROWS {
+        let weapon = dict(weapon);
+        assert!(dictionary.compatible(weapon, stock));
+        assert!(!fits.is_scope(stock) && !fits.is_variant(stock));
+        assert!(super::super::modifications::upgrade_slots_in(fits, weapon, stock).is_empty());
+        let item = dictionary.item(stock).unwrap();
+        let config = game_data::config(&data, &item.cfg_name).unwrap().unwrap();
+        let params = super::super::item_params::ItemParams::from_config(stock, &config).unwrap();
+        assert!(
+            super::super::prices::sellers_of_in(&dictionary, fits, item, &params).is_empty(),
+            "{stock}"
+        );
     }
     assert_eq!(tables::check(&data), Ok(()));
     // Data with a slot for scopes stops srp at start.

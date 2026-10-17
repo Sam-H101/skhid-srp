@@ -299,18 +299,38 @@ pub fn with_scopes() -> GameData {
 }
 
 /// The weapon and scope item of each `items_compatibility` row the
-/// fixture adds: one for each pair its variants make.
+/// fixture adds, as the release plans them: one for each pair its variants
+/// make, and one for each weapon and its stock scope ([`STOCK_ROWS`]: the
+/// lobby movie shows a greyed "standard scope" in an empty slot).
 pub fn compatibility_rows() -> Vec<(u16, u16)> {
     let dict = |name: &str| Dictionary::shared().item_named(name).unwrap().dict_id;
     let (ak, ak_premium, svd) = (dict("ak_74n"), dict("ak_74n_premium"), dict("svd"));
-    vec![
+    let mut rows = vec![
         (ak, PSO_1),
         (ak_premium, PSO_1),
         (ak, COBRA),
         (ak_premium, COBRA),
         (svd, COBRA),
-    ]
+    ];
+    rows.extend(
+        STOCK_ROWS
+            .iter()
+            .map(|&(weapon, stock)| (dict(weapon), stock)),
+    );
+    rows
 }
+
+/// Each 0.26g weapon with a stock scope and that scope (its config's
+/// `addons.rifle_scope_dict_id`): seven rows.
+pub const STOCK_ROWS: [(&str, u16); 7] = [
+    ("rem_700", 69),
+    ("svd", 304),
+    ("vsk_94", 304),
+    ("vss", 304),
+    ("vss_premium", 304),
+    ("sv_98", 362),
+    ("vssk", 362),
+];
 
 /// [`with_scopes`], and `slots` as `(category, profile slot)` rows of
 /// `slots_restrictions` (a data mistake a test makes).

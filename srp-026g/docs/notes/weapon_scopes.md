@@ -103,7 +103,9 @@ in `crates/session/src/v026g/items_rules.rs`.
    `srp_scope_fit` block; the weapon configs that get an `addons` placeholder; the twelve scope
    items (dict ids 2101-2112) in `items_dict` with their `base_cost`; and 99
    `items_compatibility` rows, weapon and scope item (premium copies counted), for the lobby
-   movie to grey out a scope that does not fit. In the game's file `items_compatibility` and
+   movie to grey out a scope that does not fit, plus 7 rows weapon and its stock scope (69, 304,
+   362) for a greyed "standard scope" in an empty slot. A stock scope stays no shop scope: not
+   sold, not attachable, no kit slot. In the game's file `items_compatibility` and
    `slots_restrictions` are named tables (`compatibility_<n>`, `restriction_<n>`): new rows need
    names of their own. srp reads compatibility only for items in a kit's ammo slots
    (`check_play`), where no scope can be: such rows change nothing on the server. A
