@@ -9,31 +9,6 @@ release that made it what it is now.
 
 ---
 
-## DRAFT (not released; the owner words it, the release sets the time) — Game update 19: weapon scopes, new weapons (update required)
-
-Start `Skhid.bat`: the launcher updates the game and then downloads the new
-game content, one file of 721 MB. PLAY turns on once it is in place and
-checked. An older game can no longer sign in.
-
-- **Weapon scopes.** Buy a scope once in the shop (any player, no rank) and
-  put it on any number of your weapons it fits, in the weapon's upgrade
-  window («Оптика»). Twelve scopes, 6,000 to 15,000 silver: PSO-1, PSO-1
-  (old), PU 3.5x, 1P69 Hyperon, Leupold Mk4, ACOG TA31, Elcan SpecterDR,
-  Cobra EKP-8, EOTech 552, Aimpoint CompM4, Docter, Leupold DeltaPoint. Each
-  sits on the weapon where that weapon takes it.
-- **The upgrade window shows the weapon** you are fitting, close up, in your
-  character's hands.
-- **21 new weapons from a later Survarium build**, with their own ammunition,
-  sold by the factions: Kedr, AEK-919K, vz. 58, Valmet, SOC Vepr, FN FNC,
-  M4A1, HK416, MSBS Radon, MP7, MP7 with silencer, KRISS Vector, FN P90,
-  Vepr-12, Saiga-12, PKP "Pecheneg", NeoStead 2000 and more (premium and camo
-  copies included). New ammunition: 5.56x45, 4.6x30, 5.7x28, 7.62x54 7N13,
-  12x70 smallshot.
-- **K kills your own character** in a match (the game's own "commit suicide"
-  key), to respawn and pick another kit quickly. It counts as a death.
-- **Fixed:** the Duty exoskeleton's description is shorter in Russian and
-  Ukrainian (the long text could break the item card).
-
 ## 16 Oct, 08:27 — Game update 12: Duty exoskeleton, bandit balaclava (update required)
 
 Start `Skhid.bat`: the launcher updates the game and then downloads the new
