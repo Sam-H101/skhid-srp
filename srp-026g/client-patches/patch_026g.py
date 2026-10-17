@@ -244,8 +244,9 @@ Patches:
   is another while the match waits or counts down and who has no statistics
   yet; the view of that spawn keeps the warmup's camera and input until play
   begins (0x26794D); the hud shows the kits to a player who becomes alive
-  then (0x23B7DA), keeps them and the cursor after a pick (0x233F28) and
-  hides them from a live one once play begins (0x23B7FC). The code is
+  then (0x23B7DA), keeps them and the cursor after a pick, also on the
+  death screen (0x233F28), and hides them from a live one once play begins
+  (0x23B7FC). The code is
   kit_change_026g.asm at 0xEC0 of `.srp`;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
@@ -605,7 +606,7 @@ STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
 # A kit chosen before the match starts is played at once (patch 31, README;
 # client_patch.md section 3.29; the rules: docs/notes/kit-change-before-start.md):
 # kit_change_026g.asm at KIT_CHANGE_OFFSET of `.srp`, after the shell_32.dll
-# check and before the late join, five entries.
+# check and before the late join, four entries, and nops at one site.
 # - The respawn rule's tick (0x316820, slot +50h of every respawn rule's
 #   vtable; `push ebp` / `mov ebp,esp` / `sub esp,34h`) jumps first to
 #   kit_change: while the time rule's state (core+18FE4h) is 1 or 2, a place
@@ -616,10 +617,14 @@ STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
 #   of the world (vtable+24h, 1) and spawned (rule vtable+5Ch) with a respawn
 #   point of its feet (player+43Ch), its yaw (+490h) and what is left of its
 #   invulnerability (damage model+32Ch), as the tick does for a place it
-#   respawns. No death and no respawn time. The places tick before it and
-#   the time rule after it (tick lists 0 and 1, 0x2D1E3F): a switch is of a
-#   tick before play or of the tick whose time rule begins play, before that
-#   rule's change. Every input it reads is in the world, so every game and
+#   respawns. No death and no respawn time. In the builds with the late
+#   join it ticks before the places (tick list 0 by key: the late join's
+#   binds key the places (place+1) << 16, the rules have the core's counter
+#   from 0) and the time rule after both (list 1, 0x2D1E3F): a choice for a
+#   tick is played at the next one, a switch is of a tick before play or of
+#   the tick whose time rule begins play, before that rule's change, and a
+#   choice for the tick a dead player respawns in is its next life's. Every
+#   input it reads is in the world, so every game and
 #   every replay of a tick does the same; what a match computes changes from
 #   the first such kit choice, so a release with it asks for its revision.
 # - The client's view of a spawn into another kit (0x2678E0) sets the
@@ -636,8 +641,10 @@ STALE_DLL = (STALE_DLL_VA, bytes.fromhex("894708" "88570c"),
 #   same for a live player.
 # - the profile_changed callback hid the kits after a pick (`push 0` /
 #   `mov eax,ebx` / `call 0x2383B0` at 0x233F28), and with them the hud's
-#   cursor (0x23A930); it calls kit_pick instead, which keeps them shown,
-#   and the cursor as it is, while that state is not 3.
+#   cursor (0x23A930), which showing them again put back at the centre: the
+#   nine bytes are nops (KIT_PICK). The kits stay shown, the cursor where it
+#   is, for another pick, before the start and on the death screen; they
+#   are hidden when the player becomes alive in play, as before.
 # No site holds an address: no base relocation under them.
 KIT_CHANGE_OFFSET = 0xEC0
 KIT_CHANGE_VA = SECTION_VA + KIT_CHANGE_OFFSET
@@ -648,8 +655,8 @@ KIT_CHANGE_HOOKS = (
     (0x26794D, bytes.fromhex("6a01e8ac08f9ff"), 0xD8, 0xE8),        # the view of a kit change: kit_view
     (0x23B7DA, bytes.fromhex("e8c1e9ffff6a00"), 0xF0, 0xE9),        # the local player alive: ui_alive
     (0x23B7FC, bytes.fromhex("8d85d0000000"), 0xFF, 0xE8),          # every update: ui_start
-    (0x233F28, bytes.fromhex("6a008bc3e87f440000"), 0x114, 0xE8),   # a pick: kit_pick
 )
+KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pick: the kits stay
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1477,20 +1484,21 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                 or KIT_CHANGE_OFFSET + len(kit_change) > LATE_JOIN_OFFSET:
             sys.exit("the shell_32.dll check and the kit change do not fit before the late join")
         # The first instruction of each entry: `pushad`, `cmp dword
-        # [esi+1F1C60h],3`, `call 0x23A1A0`, `cmp byte [ebp+33Ch],0`,
-        # `push esi`.
+        # [esi+1F1C60h],3`, `call 0x23A1A0`, `cmp byte [ebp+33Ch],0`.
         entry = KIT_CHANGE_VA + KIT_CHANGE_HOOKS[2][2]
         if kit_change[0] != 0x60 \
                 or kit_change[0xD8:0xDF] != bytes.fromhex("83be601c1f0003") \
                 or kit_change[0xF0:0xF5] != b"\xE8" + struct.pack("<i", 0x23A1A0 - entry - 5) \
-                or kit_change[0xFF:0x106] != bytes.fromhex("80bd3c03000000") \
-                or kit_change[0x114] != 0x56:
+                or kit_change[0xFF:0x106] != bytes.fromhex("80bd3c03000000"):
             sys.exit(f"kit_change_026g.section.bin: its entries are not where patch_026g.py jumps to them "
                      f"(assembled with -DCAVE={KIT_CHANGE_VA:#x}?)")
         for va, expected, offset, opcode in KIT_CHANGE_HOOKS:
             patch(data, va, expected, hook_bytes(KIT_CHANGE_VA, va, expected, offset, opcode))
             if neutralize_relocs(data, [(va, va + len(expected))]):
                 sys.exit(f"{va:#x}: a base relocation under a hook of the kit change")
+        patch(data, *KIT_PICK)
+        if neutralize_relocs(data, [(KIT_PICK[0], KIT_PICK[0] + len(KIT_PICK[1]))]):
+            sys.exit("a base relocation under the hiding of the kits after a pick")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):

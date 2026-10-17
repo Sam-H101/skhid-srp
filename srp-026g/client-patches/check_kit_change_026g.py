@@ -226,15 +226,40 @@ class Tick(Emu):
         assert emu.reg_read(UC_X86_REG_FPSW) & 0x3800 == 0, "x87 stack left non-empty"
         return self.calls
 
-    def world_tick(self, time):
-        """One tick in the game's order: the places (tick list 0, keys from
-        their binds), the respawn rule (list 0, a later key), then the time
-        rule (list 1), which begins play at START."""
+    def world_tick(self, time, start=START):
+        """One tick in the order of the builds with the late join: the
+        respawn rule (tick list 0, the core's counter for its key: this
+        patch's pass, then the spawn of each place due now), the places
+        (list 0, keys (place+1) << 16 from the late join's binds), then the
+        time rule (list 1), which begins play at `start`."""
+        self.run(time)
+        for place in range(20):
+            if self.read(RULE + 0x138 + place * 4) == time:
+                self.spawn(place, time)
         for place in range(20):
             self.call(PLACE_TICK, PLACES + place * 0x30, time)
-        self.run(time)
-        if time >= START:
+        if time >= start:
             self.state(3)
+
+    def spawn(self, place, time):
+        """The tick's own spawn of a place due now (0x3169B9: the game's
+        spawn 0x316DA0 with (place, point, time)), at a point of the map."""
+        point = STACK - 0x400
+        self.emu.mem_write(point, bytes(0x24))
+        self.emu.mem_write(point + 8, struct.pack("<4f", 50.0, 0.0, -20.0, 1.5))
+        emu = self.emu
+        for at, value in ((STACK, STOP), (STACK + 4, place), (STACK + 8, point), (STACK + 12, time)):
+            self.word(at, value)
+        emu.reg_write(UC_X86_REG_ESP, STACK)
+        emu.reg_write(UC_X86_REG_ECX, RULE)
+        emu.emu_start(SPAWN, STOP, count=20000)
+        assert emu.reg_read(UC_X86_REG_ESP) == STACK + 16
+
+    def die(self, place, respawn_at):
+        """The place's player dead, its respawn time set (0x316AA0)."""
+        kit = self.kits(place)[0]
+        self.byte(player_at(place, kit) + 0x33C, 0)
+        self.word(RULE + 0x138 + place * 4, respawn_at)
 
     def kits(self, place):
         entry = PLACES + place * 0x30
@@ -318,21 +343,25 @@ def check_tick(data, patched):
 def boundary_cases():
     """(name, the relayed choices as (time, kit), the ticks played, the
     tick of the build's switch or None, the kits after)."""
-    ticks = [START - 100, START - 50, START, START + 50, START + 100]
-    yield "a choice for the last tick before play", [(START - 50, 1)], ticks, START - 50, (1, 1)
-    yield "a choice for the tick play begins in", [(START, 1)], ticks, START, (1, 1)
+    ticks = [START - 150, START - 100, START - 50, START, START + 50, START + 100]
+    # A choice for a tick is the place's next kit from that tick's places on,
+    # so the respawn rule plays it at the next tick.
+    yield "a choice for two ticks before play", [(START - 100, 1)], ticks, START - 50, (1, 1)
+    yield "a choice for the last tick before play", [(START - 50, 1)], ticks, START, (1, 1)
+    yield "a choice for the tick play begins in", [(START, 1)], ticks, None, (0, 1)
     yield "a choice for the first tick of play", [(START + 50, 1)], ticks, None, (0, 1)
-    yield "two choices before play, the last wins", [(START - 100, 2), (START - 50, 1)], ticks, \
-        [START - 100, START - 50], (1, 1)
-    yield "a choice before, and one in play", [(START - 50, 2), (START + 50, 1)], ticks, START - 50, (2, 1)
+    yield "two choices before play, the last wins", [(START - 150, 2), (START - 50, 1)], ticks, \
+        [START - 100, START], (1, 1)
+    yield "a choice before, and one in play", [(START - 50, 2), (START + 50, 1)], ticks, START, (2, 1)
 
 
 def check_boundary(data, patched):
     """The world's ticks around the start in the game's order: a choice
-    switches in the tick it is for while that tick is before play or is the
-    one play begins in, never later. A game that gets the choice late plays
-    those ticks again from a world before it (a rollback): a fresh game with
-    the choice in its list is that game, and switches at the same tick."""
+    switches at the tick after the one it is for while that is before play
+    or is the one play begins in (before the time rule's change), never
+    later. A game that gets the choice late plays those ticks again from a
+    world before it (a rollback): a fresh game with the choice in its list
+    is that game, and switches at the same tick."""
     checks = 0
     for name, choices, ticks, at, after in boundary_cases():
         t = Tick(data)
@@ -517,11 +546,13 @@ class Pick(Hud):
 
 
 def pick_cases():
-    """(name, alive, the state the camera is set for, the original's, the build's): the kits are shown."""
+    """(name, alive, the state the camera is set for, the original's, the
+    build's): the kits are shown; the build leaves them so, and the hud's
+    cursor where it is, for another pick."""
     for state in (0, 1, 2):
         yield f"a pick alive in state {state}", 1, state, [("kits", 0)], []
     yield "a pick dead before the start", 0, 2, [("kits", 0)], []
-    yield "a pick dead in play", 0, 3, [("kits", 0)], [("kits", 0)]
+    yield "a pick on the death screen in play", 0, 3, [("kits", 0)], []
 
 
 def check_pick(data, patched):
@@ -529,6 +560,43 @@ def check_pick(data, patched):
     for name, alive, state, original, build in pick_cases():
         pick = Pick(data, alive, alive, 1, state)
         assert pick.run() == (build if patched else original), (patched, name, pick.calls)
+        checks += 1
+    return checks
+
+
+def death_cases():
+    """(name, the relayed choices as (time, kit), the kit of the respawn,
+    the next kit after it): a dead player in play, due to respawn at R."""
+    R = 30_000
+    yield "a pick", [(R - 2000, 1)], 1, 1
+    yield "a pick and a re-pick: the last wins", [(R - 2000, 1), (R - 1000, 2)], 2, 2
+    yield "a pick for the tick before the respawn", [(R - 2000, 1), (R - 50, 2)], 2, 2
+    yield "a pick for the tick of the respawn: the next life's", [(R - 2000, 1), (R, 2)], 1, 2
+    yield "no pick", [], 0, 0
+
+
+def check_death(data, patched):
+    """The death screen in play: the original's and the build's respawn
+    alike, by the last kit choice for a tick before the respawn's; a choice
+    for the respawn's tick is the next life's (the respawn rule ticks before
+    the places). No switch while alive in play."""
+    R = 30_000
+    checks = 0
+    for name, choices, kit, after in death_cases():
+        t = Tick(data)
+        t.state(3)
+        t.alive(9)
+        t.die(9, R)
+        for time, choice in choices:
+            t.relay(9, time, choice)
+        for time in range(R - 2100, R + 150, 50):
+            t.world_tick(time, start=0)
+        spawned = [call for call in t.calls if call[0] == "initialize"]
+        assert spawned == [("initialize", player_at(9, kit), R,
+                            struct.unpack("<3f", struct.pack("<3f", 50.0, 0.0, -20.0)), 1.5, 0.0)], \
+            (patched, name, spawned)
+        assert t.kits(9) == (kit, after), (patched, name, t.kits(9))
+        assert not [call for call in t.calls if call[0] == "remove"], (patched, name)
         checks += 1
     return checks
 
@@ -542,6 +610,7 @@ def main():
     for data, is_patched in ((original, False), (patched, True)):
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
+        checks += check_death(data, is_patched)
     # A build that does not look at the statistics, or at the state, fails;
     # so does one whose view always gives the warmup.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),

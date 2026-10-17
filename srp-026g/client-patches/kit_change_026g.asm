@@ -1,7 +1,10 @@
 ; Patch 31: a kit chosen before the match starts is played at once (build
 ; 2777, client_patch.md section 3.29; the rules: ../docs/notes/
-; kit-change-before-start.md). Five entries at fixed offsets (KIT_CHANGE_*
-; in patch_026g.py, which checks each hook's target).
+; kit-change-before-start.md). Four entries at fixed offsets (KIT_CHANGE_*
+; in patch_026g.py, which checks each hook's target). The profile_changed
+; callback's hiding of the kits after a pick (0x233F28) is nops
+; (KIT_PICK): the kits stay shown, and the hud's cursor where it is, for
+; another pick, before the start and on the death screen alike.
 ;   nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
 BITS 32
 ORG CAVE
@@ -19,11 +22,14 @@ ORG CAVE
 
 ; The respawn rule's tick (0x316820; ecx = the rule, [esp+8] the tick's
 ; time; thiscall, three arguments, `ret 0Ch`) begins here, at every tick of
-; every game and every replay of a tick. It runs in the tick list 0, after
-; the places' ticks (which take the kit choices, 0x321790) and before the
-; time rule's (list 1), which may make the state 3 at this very tick: so a
-; state of 1 or 2 here means play has not begun before this tick. Each place
-; is tried (try_place); then the three instructions the jump replaced.
+; every game and every replay of a tick. It runs in the tick list 0, before
+; the places' ticks (the late join's binds give the places the keys
+; (place+1) << 16, the rules have the core's own counter, from 0), which take
+; the kit choices of this tick (0x321790): it acts on the next kit as the
+; tick before left it. The time rule ticks after both (list 1) and may make
+; the state 3 at this very tick: so a state of 1 or 2 here means play has
+; not begun before this tick. Each place is tried (try_place); then the
+; three instructions the jump replaced.
 kit_change:
     pushad
     mov ebx, ecx                    ; the rule
@@ -168,18 +174,6 @@ ui_start:
     call kits_until_play
 .done:
     lea eax, [ebp+0xd0]
-    ret
-
-; The profile_changed callback (0x233F06, ebx = the hud), after it queued
-; the kit chosen: `push 0` / `mov eax,ebx` / `call 0x2383B0` (0x233F28) hid
-; the kits, and with them the hud's cursor (0x23A930). Before play they stay
-; shown, the cursor where it is, for another pick; in play they are hidden
-; as before.
-kit_pick:
-    push esi
-    mov esi, ebx
-    call kits_until_play
-    pop esi
     ret
 
 ; esi = the hud: the kits shown when the state the network client of the

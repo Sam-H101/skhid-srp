@@ -1534,8 +1534,8 @@ whole simulation, so a server alone cannot put a player into another kit:
 each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
-320 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
-join, the 320 bytes left there), five sites:
+310 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
+join), four sites, and nine nops at a fifth:
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
@@ -1557,15 +1557,21 @@ join, the 320 bytes left there), five sites:
 - The hud: when the local player becomes alive (0x23B7DA) and at every
   update (0x23B7FC) a live player has the kits shown while the camera is the
   warmup's and hidden once it is play's. A pick (the `profile_changed`
-  callback, 0x233F28) hid them, and the hud's cursor with them: the second
-  game test's "clicking on a new set resets cursor". Before play they now
-  stay shown, the cursor where it is, for another pick; in play a pick (on
-  the death screen) hides them as before.
+  callback, 0x233F28) hid them and the hud's cursor with them, and the
+  switch's own change of the local player showed them again, the cursor
+  back at the centre: the second game test's "clicking on a new set resets
+  cursor". The hiding after a pick is nine nops: the kits stay shown, the
+  cursor where it is, for another pick, before the start and on the death
+  screen alike, until the player becomes alive (in play they are then
+  hidden as before).
 
-**Order.** In a tick the places (which take the kit choices) and the
-respawn rule run in tick list 0 and the time rule in list 1: a switch is of
-a tick before play, or of the tick whose time rule begins play, and then
-before that rule's change, never after it. The camera follows the state of
+**Order.** In a tick of a build with the late join the respawn rule runs
+first (tick list 0, its key from the core's counter), then the places, which
+take the tick's kit choices (list 0, the late join's keys (place+1) << 16),
+then the time rule (list 1): a choice is played at the next tick, a switch
+at the latest in the tick whose time rule begins play, before that rule's
+change, never after it; on the death screen a choice for the respawn's own
+tick is the life after's. The camera follows the state of
 the newest tick first played, which a rollback does not set back. The kit
 choice a switch acts on is the one in the place's list at its tick, the
 same relayed entries in every game. `../docs/notes/client_patch.md` section
@@ -1586,7 +1592,8 @@ the release that ships it on.
 Checked: `selftest_026g.py` check 32 (and check 15's layout of `.srp`'s
 first page); `check_kit_change_026g.py` runs the original's and the build's
 tick start with the places' own tick and the game's own spawn, the view of a
-kit change, the hud's update and the pick on made-up objects: the cases of the rules,
+kit change, the hud's update, the pick and a death screen's respawn on
+made-up objects: the cases of the rules,
 the ticks around the start (a choice for the last tick before play, for the
 tick play begins in, for the first tick of play), the camera before play, in
 play and after a rollback over the start, a late joiner; the original never

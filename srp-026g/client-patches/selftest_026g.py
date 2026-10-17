@@ -216,12 +216,13 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     the call that hides the kits (0x2383B0, which alone calls
     root.show_profiles_selector, and which only the profile_changed callback
     and this update call), and `call ui_start` and a nop where it begins to
-    let go of the player; the profile_changed callback calls kit_pick
-    where it pushed 0 and called 0x2383B0. In the original: the tick, the
+    let go of the player; the profile_changed callback has nine nops where
+    it pushed 0 and called 0x2383B0. In the original: the tick, the
     spawn and its point,
     the view's registers; the time rule's states at core+18FE4h; the order
-    of a tick (the places and the respawn rule in tick list 0, the places'
-    keys first, the time rule in list 1) and the camera's state (the client's
+    of a tick (tick list 0 before the time rule's list 1; in the build the
+    respawn rule's key, from the core's counter, before the places', the late
+    join's (place+1) << 16) and the camera's state (the client's
     time rule sets the player camera in play, the warmup's otherwise, when
     its state changes in a tick first played, and keeps it at network
     client+1F1C60h), byte for byte. The code calls and leaves only to what
@@ -1081,7 +1082,7 @@ def late_join_sites():
          (P.REPLAY_LINK_HOOK[0], len(P.REPLAY_LINK_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
-        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS]
+        [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))]
 
 
 def pickup_sites():
@@ -2341,7 +2342,7 @@ KIT_CHANGE_ORDER = (
     (0x318070, "81c110010000c6411401ff8050880100", "the time rule's node into tick list 1 (core+18850h)"),
     (0x321877, "8b88b08f01008b115f895520", "a place's key at its bind: the core's counter"),
     (0x2D28F6, "8d48108b4028c6411400ff8040880100", "a place's node into tick list 0 when it enters"),
-    (0x2D3880, "e89bdf0400", "the core binds its places (0x321820)"),
+    (0x2D385A, "89742420", "the core's counter of keys is 0 when it binds its places"),
     (0x2D3B2B, "8bb5248801008bbd28880100", "the core gives its rules the core, after the places"),
     (0x2D1E3F, "8db1408801008d99b0880100", "the world's tick goes through lists 0 to 6"),
     (0x2D1E5C, "e8bffeffff83c610", "list by list, each sorted by key (0x2D1D20)"),
@@ -2360,12 +2361,11 @@ def test_kit_change(original, image, before):
     """Check 32: a kit chosen before the match starts is played at once."""
     stock = Image(original)
     texts = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
-    names = ("kit_change", "kit_view", "ui_alive", "ui_start", "kit_pick")
+    names = ("kit_change", "kit_view", "ui_alive", "ui_start")
     wanted = (["push ebp", "mov ebp,esp", "sub esp,byte +0x34"],
               ["push byte +0x1", "call 0x1f8200"],
               ["call 0x23a1a0", "push byte +0x0"],
-              ["lea eax,[ebp+0xd0]"],
-              ["push byte +0x0", "mov eax,ebx", "call 0x2383b0"])
+              ["lea eax,[ebp+0xd0]"])
     for (va, old, offset, opcode), name, original_texts in zip(P.KIT_CHANGE_HOOKS, names, wanted):
         rows = ndisasm(image.read(va, len(old)), va)
         word = "call" if opcode == 0xE8 else "jmp"
@@ -2405,14 +2405,29 @@ def test_kit_change(original, image, before):
               or text.endswith("+0x18fe4],edx")]
     check(len(states) >= 4, f"the time rule writes its state to core+18FE4h ({len(states)} stores: "
           "start, countdown, in process, deserialize)")
-    # The order of a tick and the camera's state.
+    # A pick: the profile_changed callback's hiding of the kits is nops.
+    va, old, new = P.KIT_PICK
+    check(image.read(va, len(old)) == new and stock.read(va, len(old)) == old and before.read(va, len(old)) == old,
+          f"{va:#x}: `push 0` / `mov eax,ebx` / `call 0x2383b0` after a pick are nine nops: the kits stay shown and "
+          "the hud's cursor where it is; the build without the late join keeps them")
+    # The order of a tick and the camera's state. In the build the late
+    # join binds each place with a counter of its own from (place+1) << 16
+    # (bind_slot_reserved, at the core's bind 0x2D3880) and gives the core's
+    # counter back after: the rules' keys come from it, from 0.
     wrong = [f"{va:#x} ({what})" for va, old, what in KIT_CHANGE_ORDER if stock.read(va, len(old) // 2).hex() != old]
     binding = texts(stock, 0x2D3880, 0x2D3B47 - 0x2D3880)
-    check(not wrong and not any(text.startswith("ret") for text in binding),
-          "a tick plays the places and the respawn rule (list 0; the places' keys first: the core binds them before "
-          "it gives the rules the core, in one function) before the time rule (list 1); the client's time rule "
-          "sets the camera, the player's in play (state 3) and the warmup's otherwise, when its state changes in "
-          "a tick first played, and keeps that state at network client+1F1C60h"
+    late = open(P.late_join_bin(), "rb").read()[:P.LATE_JOIN_ASM_SIZE]
+    own_keys = bytes.fromhex("0fb6462c40c1e0108945f08b83b08f01008945f48d45f08983b08f0100")
+    given_back = bytes.fromhex("8b45f48983b08f0100")
+    rows = ndisasm(image.read(0x2D3880, 5), 0x2D3880)
+    check(not wrong and not any(text.startswith("ret") for text in binding)
+          and late.count(own_keys) == 1 and late.find(given_back) > late.find(own_keys)
+          and branch_target(rows[0][2]) == P.LATE_JOIN_VA,
+          "a tick plays list 0 before the time rule's list 1; in the build list 0 has the respawn rule (its key from "
+          "the core's counter, from 0) before the places (keys (place+1) << 16, the late join's bind_slot, which "
+          "gives the counter back): a kit choice for a tick is played by the respawn rule at the next one; the "
+          "client's time rule sets the camera, the player's in play (state 3) and the warmup's otherwise, when its "
+          "state changes in a tick first played, and keeps that state at network client+1F1C60h"
           + "".join(f"\n          {w}" for w in wrong))
     text = bytes(original[P.file_offset(P.TEXT_VA):P.file_offset(P.TEXT_VA) + P.TEXT_VSIZE])
     callers = [P.TEXT_VA + at for at in range(len(text) - 5)
@@ -2450,6 +2465,7 @@ def test_kit_change(original, image, before):
     # file that happen to spell an address inside a site (0x23B800 and
     # 0x23B801 are in .text's code) are not pointers unless one is there.
     found = []
+    sites = [(va, old) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [P.KIT_PICK[:2]]
     pointers = {}
     for kind, at in stock.relocations().values():
         if kind == 3:
@@ -2457,7 +2473,7 @@ def test_kit_change(original, image, before):
                 pointers[at] = struct.unpack("<I", stock.read(at, 4))[0]
             except ValueError:                     # past a section's file data: zero
                 pass
-    for va, old, _, _ in P.KIT_CHANGE_HOOKS:
+    for va, old in [(va, old) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [P.KIT_PICK[:2]]:
         hits = aimed_inside(original, va, len(old), 0)
         spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
         found += hits[:len(hits) - len(spelled)]
@@ -2465,9 +2481,9 @@ def test_kit_change(original, image, before):
     for lo, hi in (RESPAWN_TICK, UPDATE_PLAYER_STATE, KIT_VIEW, (0x233E80, 0x233F37)):
         found += [address for address, _, text in ndisasm(stock.read(lo, hi - lo), lo)
                   if (target := branch_target(text)) is not None
-                  and any(va < target < va + len(old) for va, old, _, _ in P.KIT_CHANGE_HOOKS)]
+                  and any(va < target < va + len(old) for va, old in sites)]
     under = [v for kind, v in stock.relocations().values() if kind == 3
-             and any(va - 3 < v < va + len(old) for va, old, _, _ in P.KIT_CHANGE_HOOKS)]
+             and any(va - 3 < v < va + len(old) for va, old in sites)]
     check(not found and not under, "no branch or address aims inside the five sites, no base relocation under them"
           + "".join(f"\n          {a:#x}" for a in found + under))
 
