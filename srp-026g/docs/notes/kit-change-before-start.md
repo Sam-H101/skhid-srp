@@ -19,14 +19,16 @@ README patch 31, `client_patch.md` section 3.29; the server: `TimelimitRule::bef
   taken by the places' tick and applied by the respawn rule in tick list 0, before the time
   rule (list 1) changes the state, the same order on every client and in every replay of a
   tick; a switch is applied before the start transition or not at all.
-- **HUD:** the kit selector shows at spawn before the start, hides on pick and at the start.
-  One pick per spawn: a switch is not a spawn for the HUD, so the selector does not open again
-  after it (a second switch needs a second pick the HUD does not offer).
+- **HUD:** the kit selector shows at spawn before the start and stays open after a pick, the
+  cursor where it was (another pick switches again); it hides at the start. It is shown exactly
+  while the camera is the pre-start one.
 - **Late joiners:** join only after the start; no selector, no switch, their spawn untouched;
   they start with their first kit (the lowest kit the match loaded, as the slot's bind takes
   it; the same on `main`).
 - **Bots:** pick a kit only after the start.
 - **Results/supplies:** each kit choice before play counts as a life for supplies used;
   per-kit counters unaffected (a switch needs counters all zero).
-- **Release:** changes the simulation: the release raises the minimum patch revision (it always
-  does) and old replays are refused (separate PR).
+- **Release:** changes the simulation: the `next` row of
+  `crates/session/src/v026g/simulation_changes.tsv` says so; the release that ships it makes
+  that row its revision, its server's minimum patch revision, and from it on replays recorded by
+  older games are refused (`session::v026g::replays`).

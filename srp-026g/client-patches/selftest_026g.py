@@ -216,7 +216,9 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     the call that hides the kits (0x2383B0, which alone calls
     root.show_profiles_selector, and which only the profile_changed callback
     and this update call), and `call ui_start` and a nop where it begins to
-    let go of the player. In the original: the tick, the spawn and its point,
+    let go of the player; the profile_changed callback calls kit_pick
+    where it pushed 0 and called 0x2383B0. In the original: the tick, the
+    spawn and its point,
     the view's registers; the time rule's states at core+18FE4h; the order
     of a tick (the places and the respawn rule in tick list 0, the places'
     keys first, the time rule in list 1) and the camera's state (the client's
@@ -2358,11 +2360,12 @@ def test_kit_change(original, image, before):
     """Check 32: a kit chosen before the match starts is played at once."""
     stock = Image(original)
     texts = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
-    names = ("kit_change", "kit_view", "ui_alive", "ui_start")
+    names = ("kit_change", "kit_view", "ui_alive", "ui_start", "kit_pick")
     wanted = (["push ebp", "mov ebp,esp", "sub esp,byte +0x34"],
               ["push byte +0x1", "call 0x1f8200"],
               ["call 0x23a1a0", "push byte +0x0"],
-              ["lea eax,[ebp+0xd0]"])
+              ["lea eax,[ebp+0xd0]"],
+              ["push byte +0x0", "mov eax,ebx", "call 0x2383b0"])
     for (va, old, offset, opcode), name, original_texts in zip(P.KIT_CHANGE_HOOKS, names, wanted):
         rows = ndisasm(image.read(va, len(old)), va)
         word = "call" if opcode == 0xE8 else "jmp"
@@ -2416,9 +2419,14 @@ def test_kit_change(original, image, before):
                if text[at] == 0xE8 and P.TEXT_VA + at + 5 + struct.unpack_from("<i", text, at + 1)[0] == 0x2383B0]
     selector = struct.pack("<I", 0xA03704)                     # "root.show_profiles_selector"
     users = [P.TEXT_VA + at for at in range(len(text) - 4) if text[at:at + 4] == selector]
-    check(callers == [0x233F2C, 0x23B7F7] and users == [0x238451] and stock.read(0xA03704, 28) == b"root.show_profiles_selector\0",
+    pick = texts(stock, 0x233F06, 0x31)
+    check(callers == [0x233F2C, 0x23B7F7] and users == [0x238451] and stock.read(0xA03704, 28) == b"root.show_profiles_selector\0"
+          and stock.read(0x233F07, 4) == struct.pack("<I", 0xA03280) and stock.read(0xA03280, 16) == b"profile_changed\0"
+          and pick[pick.index("call 0x1f8070"):] == ["call 0x1f8070", "push byte +0x0", "mov eax,ebx", "call 0x2383b0",
+                                                    "pop edi", "pop esi", "pop ebx", "ret 0x10"],
           "the kits are shown or hidden by 0x2383B0 alone (root.show_profiles_selector, at 0x238451), which the "
-          "profile_changed callback (0x233F2C, to hide them) and this update (0x23B7F7) call, nothing else")
+          "profile_changed callback (0x233F2C, to hide them after it queued the pick, 0x1F8070) and this update "
+          "(0x23B7F7) call, nothing else")
     code = open(P.kit_change_bin(), "rb").read()
     check(image.read(P.KIT_CHANGE_VA, len(code)) == code,
           f"the code at {P.KIT_CHANGE_VA:#x} is kit_change_026g.section.bin ({len(code)} bytes)")
@@ -2431,10 +2439,10 @@ def test_kit_change(original, image, before):
     stores = sorted({text for _, _, text in rows if re.match(r"^mov \[", text)})
     check(calls == sorted({"call 0x1f8200", "call 0x23a1a0", "call 0x2383b0", "call [edx+0x8]",
                            "call [eax+0x24]", "call [eax+0x5c]"})
-          and leaves == [0x1F8190, 0x1F8200, 0x2383B0, 0x23A1A0, 0x23B7F5, 0x316826] and stores == [],
+          and leaves == [0x1F8190, 0x1F8200, 0x2383B0, 0x23A1A0, 0x23B7FC, 0x316826] and stores == [],
           "outside itself it calls only the damage model's holder (+108h vtable+8), the player's way out of the "
           "world (vtable+24h), the rule's spawn (vtable+5Ch), the player camera, 0x23A1A0 and the kits' show or "
-          "hide (0x2383B0); it leaves only to 0x316826, 0x23B7F5 and the warmup camera and by its returns; it "
+          "hide (0x2383B0); it leaves only to 0x316826, 0x23B7FC and the warmup camera and by its returns; it "
           "stores nothing but on its stack"
           + "".join(f"\n          {text}" for text in calls + [hex(t) for t in leaves] + stores))
     # Nothing aims inside the four sites; no relocation is under them. A
@@ -2454,13 +2462,13 @@ def test_kit_change(original, image, before):
         spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
         found += hits[:len(hits) - len(spelled)]
         found += [at for at, value in pointers.items() if va < value < va + len(old)]
-    for lo, hi in (RESPAWN_TICK, UPDATE_PLAYER_STATE, KIT_VIEW):
+    for lo, hi in (RESPAWN_TICK, UPDATE_PLAYER_STATE, KIT_VIEW, (0x233E80, 0x233F37)):
         found += [address for address, _, text in ndisasm(stock.read(lo, hi - lo), lo)
                   if (target := branch_target(text)) is not None
                   and any(va < target < va + len(old) for va, old, _, _ in P.KIT_CHANGE_HOOKS)]
     under = [v for kind, v in stock.relocations().values() if kind == 3
              and any(va - 3 < v < va + len(old) for va, old, _, _ in P.KIT_CHANGE_HOOKS)]
-    check(not found and not under, "no branch or address aims inside the four sites, no base relocation under them"
+    check(not found and not under, "no branch or address aims inside the five sites, no base relocation under them"
           + "".join(f"\n          {a:#x}" for a in found + under))
 
 

@@ -1,6 +1,6 @@
 ; Patch 31: a kit chosen before the match starts is played at once (build
 ; 2777, client_patch.md section 3.29; the rules: ../docs/notes/
-; kit-change-before-start.md). Four entries at fixed offsets (KIT_CHANGE_*
+; kit-change-before-start.md). Five entries at fixed offsets (KIT_CHANGE_*
 ; in patch_026g.py, which checks each hook's target).
 ;   nasm -f bin -DCAVE=0xA425EC0 kit_change_026g.asm -o kit_change_026g.section.bin
 BITS 32
@@ -148,40 +148,50 @@ kit_view:
 times 0xF0-($-$$) db 0xcc
 
 ; game_world_ui (esi; ebp = the local player) when the local player has
-; just become alive: at 0x23B7DA `call 0x23A1A0` / `push 0`, then the call
-; that shows or hides the kits (0x23B7F5: `mov eax,esi` / `call 0x2383B0`).
-; The original hides them; while the camera is the warmup's (the shown
-; state is not 3) they are shown, as on the death screen.
+; just become alive: at 0x23B7DA `call 0x23A1A0` / `push 0` / ... /
+; `call 0x2383B0` (the call that shows or hides the kits, 0x23B7F5). The
+; original hides them; while the camera is the warmup's (the state the
+; network client set it for is not 3) they are shown, as on the death screen.
 ui_alive:
     call 0x23a1a0                   ; with al and edx as the original set them
-    call shown_state
-    cmp eax, IN_PROCESS
-    setne al                        ; 0x2383B0 reads the low byte alone
-    push eax
-    jmp 0x23b7f5
-times 0x106-($-$$) db 0xcc
+    call kits_until_play
+    jmp 0x23b7fc
+times 0xFF-($-$$) db 0xcc
 
-; At every update after that (0x23B7FC, `lea eax,[ebp+0D0h]`): once the
-; camera is the player's (state 3), the kits are hidden from a live player
-; (0x2383B0 returns at once when they are not shown). eax, ecx and edx are
-; not read after it before they are written.
+; At every update (0x23B7FC, `lea eax,[ebp+0D0h]`): a live local player has
+; the kits shown before play and hidden in play (0x2383B0 returns at once
+; when they are as asked). eax, ecx and edx are not read after it before
+; they are written.
 ui_start:
     cmp byte [ebp+ALIVE], 0
     je .done
-    call shown_state
-    cmp eax, IN_PROCESS
-    jne .done
-    push 0
-    mov eax, esi
-    call 0x2383b0
+    call kits_until_play
 .done:
     lea eax, [ebp+0xd0]
     ret
 
-; eax = the state the network client of the hud's game set the camera for.
-shown_state:
+; The profile_changed callback (0x233F06, ebx = the hud), after it queued
+; the kit chosen: `push 0` / `mov eax,ebx` / `call 0x2383B0` (0x233F28) hid
+; the kits, and with them the hud's cursor (0x23A930). Before play they stay
+; shown, the cursor where it is, for another pick; in play they are hidden
+; as before.
+kit_pick:
+    push esi
+    mov esi, ebx
+    call kits_until_play
+    pop esi
+    ret
+
+; esi = the hud: the kits shown when the state the network client of the
+; hud's game set the camera for is not 3, hidden when it is (0x2383B0 with
+; eax = the hud and that flag in the low byte, which alone it reads).
+kits_until_play:
     mov eax, [esi+0x18]             ; the game world
     mov eax, [eax+0x9c]             ; the game
     mov eax, [eax+0x53ac]           ; the network client (0x23B74F)
-    mov eax, [eax+SHOWN_STATE]
+    cmp dword [eax+SHOWN_STATE], IN_PROCESS
+    setne al
+    push eax
+    mov eax, esi
+    call 0x2383b0
     ret

@@ -1534,8 +1534,8 @@ whole simulation, so a server alone cannot put a player into another kit:
 each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
-319 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
-join, in the 320 bytes left there), four sites:
+320 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
+join, the 320 bytes left there), five sites:
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
@@ -1554,10 +1554,13 @@ join, in the 320 bytes left there), four sites:
   gives the warmup's camera and input until play begins, by the state the
   network client keeps for the camera (+1F1C60h), exactly as the time
   rule's own change does (0x27B1C8).
-- The hud: when the local player becomes alive (0x23B7DA) while the camera
-  is the warmup's, the kits are shown, as on the death screen; a pick hides
-  them as on the death screen, and at every update (0x23B7FC) they are
-  hidden from a live player once the camera is play's.
+- The hud: when the local player becomes alive (0x23B7DA) and at every
+  update (0x23B7FC) a live player has the kits shown while the camera is the
+  warmup's and hidden once it is play's. A pick (the `profile_changed`
+  callback, 0x233F28) hid them, and the hud's cursor with them: the second
+  game test's "clicking on a new set resets cursor". Before play they now
+  stay shown, the cursor where it is, for another pick; in play a pick (on
+  the death screen) hides them as before.
 
 **Order.** In a tick the places (which take the kit choices) and the
 respawn rule run in tick list 0 and the time rule in list 1: a switch is of
@@ -1576,19 +1579,22 @@ results (`PlayerResult::kit_changes`, a life more each for what the match is
 taken to have used of a player's stacks, `session::v026g::autobuy`), and its
 own bots pick a kit only once play has begun. Replays recorded before it in
 which a live player chose a kit before the start play differently in a game
-with it; refusing them is a separate change.
+with it: the change is the `next` row of
+`../crates/session/src/v026g/simulation_changes.tsv`, so they are refused from
+the release that ships it on.
 
 Checked: `selftest_026g.py` check 32 (and check 15's layout of `.srp`'s
 first page); `check_kit_change_026g.py` runs the original's and the build's
 tick start with the places' own tick and the game's own spawn, the view of a
-kit change and the hud's update on made-up objects: the cases of the rules,
+kit change, the hud's update and the pick on made-up objects: the cases of the rules,
 the ticks around the start (a choice for the last tick before play, for the
 tick play begins in, for the first tick of play), the camera before play, in
 play and after a rollback over the start, a late joiner; the original never
 changes a live player's kit; three broken builds fail it. **Run in a game
-once (2026-10-17, the build before the view's fix):** the kit changed, the
-player was then in first person and free to move during the countdown.
-**Not run in a game: this build.**
+(2026-10-17):** the first build: the kit changed, the player was then in
+first person and free to move during the countdown; with the view's fix
+(d8acf39): the camera and the movement lock right, a click on a kit reset
+the cursor. **Not run in a game: this build.**
 
 ## Not ported, not done
 

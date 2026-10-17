@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the original and patch 31's respawn rule tick (0x316820), the
 client's view of a kit change (0x2678E0) and the hud's update of the local
-player's state (0x23B7B3) on made-up objects.
+player's state (0x23B7B3) and the kits' pick (0x233F28) on made-up
+objects.
 
     python check_kit_change_026g.py <original survarium.exe>
 
@@ -22,8 +23,9 @@ tick the choice came to a game in, by the time the choice is for; never a
 dead player, one out of the world, one with any statistics, a late joiner.
 The view keeps the warmup's camera and input before play and gives the
 player's in play, by the state the network client set the camera for. The
-hud shows the kits to a player who becomes alive before play and hides them
-from a live one in play. The original does none of it: it never changes a
+hud shows the kits to a player who becomes alive before play, keeps them
+shown (and its cursor) after a pick before play, and hides them from a live
+one in play. The original does none of it: it never changes a
 kit of a live player, its view always gives the player camera, and its hud
 only hides the kits at a respawn and shows them at a death. Says nothing
 about what the real initialize, physics, cameras and hud movie do.
@@ -476,6 +478,7 @@ def hud_cases():
         yield f"alive in state {state}", 1, 0, 1, state, [("kits", 0)], []
         yield f"alive in state {state}, kits hidden", 1, 0, 0, state, [], [("kits", 1)]
         yield f"kits shown, alive in state {state}", 1, 1, 1, state, [], []
+        yield f"kits hidden, alive in state {state}", 1, 1, 0, state, [], [("kits", 1)]
     yield "alive in play", 1, 0, 1, 3, [("kits", 0)], [("kits", 0)]
     yield "a late joiner alive", 1, 0, 0, 3, [], []
     yield "dead before the start", 0, 1, 0, 2, [("kits", 1)], [("kits", 1)]
@@ -494,6 +497,42 @@ def check_hud(data, patched):
     return checks
 
 
+# The profile_changed callback after it queued the pick (0x1F8070): from
+# 0x233F28 (ebx = the hud) to its `pop edi` (0x233F31).
+PICK_FROM, PICK_TO = 0x233F28, 0x233F31
+
+
+class Pick(Hud):
+    def run(self):
+        emu = self.emu
+        emu.reg_write(UC_X86_REG_ESP, STACK)
+        emu.reg_write(UC_X86_REG_EBX, UI)
+        emu.reg_write(UC_X86_REG_ESI, 0x12345678)
+        emu.reg_write(UC_X86_REG_EBP, 0x0BADF00D)
+        emu.emu_start(PICK_FROM, PICK_TO, count=1000)
+        assert emu.reg_read(UC_X86_REG_EIP) == PICK_TO and emu.reg_read(UC_X86_REG_ESP) == STACK
+        assert (emu.reg_read(UC_X86_REG_EBX), emu.reg_read(UC_X86_REG_ESI), emu.reg_read(UC_X86_REG_EBP)) \
+            == (UI, 0x12345678, 0x0BADF00D)
+        return self.calls
+
+
+def pick_cases():
+    """(name, alive, the state the camera is set for, the original's, the build's): the kits are shown."""
+    for state in (0, 1, 2):
+        yield f"a pick alive in state {state}", 1, state, [("kits", 0)], []
+    yield "a pick dead before the start", 0, 2, [("kits", 0)], []
+    yield "a pick dead in play", 0, 3, [("kits", 0)], [("kits", 0)]
+
+
+def check_pick(data, patched):
+    checks = 0
+    for name, alive, state, original, build in pick_cases():
+        pick = Pick(data, alive, alive, 1, state)
+        assert pick.run() == (build if patched else original), (patched, name, pick.calls)
+        checks += 1
+    return checks
+
+
 def main():
     original = open(sys.argv[1], "rb").read()
     code = open(base.default_bin("section"), "rb").read()
@@ -502,7 +541,7 @@ def main():
     checks = 0
     for data, is_patched in ((original, False), (patched, True)):
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
-        checks += check_view(data, is_patched) + check_hud(data, is_patched)
+        checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
     # A build that does not look at the statistics, or at the state, fails;
     # so does one whose view always gives the warmup.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
