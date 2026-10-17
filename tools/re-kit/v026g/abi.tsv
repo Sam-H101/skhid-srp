@@ -997,6 +997,7 @@ va	name	source	ret_cleanup	result
 0x0027c1f0	survarium::network_client::register_message_in_stats	manual	4	
 0x0027c5f0	survarium::network_client::process_player_entered_match	manual	4	
 0x0027c690	survarium::network_client::process_player_left_match	manual	4	
+0x00284b10	survarium::lobby_character::setup_profile	manual	8	
 0x0028de20	survarium::lobby_menu::add_quest	manual	4	
 0x0028e690	survarium::lobby_menu::create_quest_ui_message	manual	12	
 0x0028f350	survarium::object_environment_probe::`scalar deleting destructor'	manual	4	

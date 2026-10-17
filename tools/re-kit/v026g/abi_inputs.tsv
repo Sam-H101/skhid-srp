@@ -2382,6 +2382,9 @@ va	name	location	role	basis
 0x0027c5f0	survarium::network_client::process_player_entered_match	stack+4	network_client receiver	observed
 0x0027c690	survarium::network_client::process_player_left_match	ESI	network_client receiver	observed
 0x0027c690	survarium::network_client::process_player_left_match	stack+4	packet buffer_reader	observed
+0x00284b10	survarium::lobby_character::setup_profile	EAX	the profile to copy (account profile, 0x4634 bytes)	observed
+0x00284b10	survarium::lobby_character::setup_profile	entry ESP+4	the lobby_character	observed
+0x00284b10	survarium::lobby_character::setup_profile	entry ESP+8	the kit to show (byte, 0..2)	observed
 0x0028de20	survarium::lobby_menu::add_quest	ESI	lobby menu	inferred
 0x0028de20	survarium::lobby_menu::add_quest	stack+4	quest record	inferred
 0x0028e690	survarium::lobby_menu::create_quest_ui_message	stack+4	menu receiver	inferred

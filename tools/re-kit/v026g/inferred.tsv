@@ -1610,6 +1610,10 @@ va	status	ref_021d	name
 0x0027f780	inferred-medium	0x001a3c98	survarium::network_client::draw_match_stats
 0x00280f70	inferred-medium		survarium::lobby_menu_logic::state_by_name
 0x002812e0	inferred-medium		survarium::lobby_menu_logic::call
+0x00283bc0	inferred-medium	0x001a421e	survarium::lobby_camera::lobby_camera
+0x00283ef0	inferred-medium	0x001a4482	survarium::lobby_camera::tick
+0x00284b10	inferred-medium	0x001a481b	survarium::lobby_character::setup_profile
+0x00284f20	inferred-medium	0x001a4a3c	survarium::lobby_character::on_player_ready
 0x00285180	inferred-medium	0x001a4bc5	vostok::detail::concrete_type_helper<survarium::player_initial_info>::copy_helper
 0x002852a0	inferred-medium	0x001a4d1e	survarium::simple_game_project::`scalar deleting destructor'
 0x00285750	inferred-medium		survarium::simple_game_project::set_game_world_core
