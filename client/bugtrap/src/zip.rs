@@ -593,8 +593,17 @@ struct Huffman {
     count: [u16; 16],
     symbol: [u16; 288],
 }
+/// The longest code that may leave bit patterns unused. The check must refuse
+/// what zlib (and so the players' unzip tools) refuses: a code-length code
+/// must be complete; a dynamic block's literal/length or distance code too,
+/// unless it is a single code of one bit. Only the fixed codes have unused
+/// patterns (literal/lengths 286, 287 and distances 30, 31), which are refused
+/// when they are decoded.
+const COMPLETE: usize = 0;
+const ONE_BIT: usize = 1;
+const FIXED: usize = 15;
 impl Huffman {
-    fn new(lengths: &[u8]) -> Result<Self, u32> {
+    fn new(lengths: &[u8], unused_up_to: usize) -> Result<Self, u32> {
         let mut h = Huffman {
             count: [0; 16],
             symbol: [0; 288],
@@ -603,11 +612,20 @@ impl Huffman {
             h.count[l as usize] += 1;
         }
         let mut left: i32 = 1;
+        let mut longest = 0;
         for len in 1..16 {
             left = (left << 1) - h.count[len] as i32;
             if left < 0 {
                 return Err(ERROR_INVALID_DATA);
             }
+            if h.count[len] != 0 {
+                longest = len;
+            }
+        }
+        // No code at all is left to the decoding (zlib does the same): a
+        // stream that needs one is refused there.
+        if left > 0 && longest > unused_up_to {
+            return Err(ERROR_INVALID_DATA);
         }
         let mut offs = [0u16; 16];
         for len in 1..15 {
@@ -740,7 +758,7 @@ pub fn check(src: &mut dyn Source, mem: &mut Memory) -> Result<(u32, u64), u32> 
                 for &s in &CODE_ORDER[..hclen] {
                     cl[s] = r.bits(3)? as u8;
                 }
-                let h = Huffman::new(&cl)?;
+                let h = Huffman::new(&cl, COMPLETE)?;
                 let mut k = 0;
                 while k < hlit + hdist {
                     let s = r.decode(&h)?;
@@ -762,8 +780,9 @@ pub fn check(src: &mut dyn Source, mem: &mut Memory) -> Result<(u32, u64), u32> 
                 }
                 (hlit, hdist)
             };
-            let lit = Huffman::new(&lengths[..hlit])?;
-            let dist = Huffman::new(&lengths[hlit..hlit + hdist])?;
+            let unused = if kind == 1 { FIXED } else { ONE_BIT };
+            let lit = Huffman::new(&lengths[..hlit], unused)?;
+            let dist = Huffman::new(&lengths[hlit..hlit + hdist], unused)?;
             loop {
                 let s = r.decode(&lit)?;
                 if s < 256 {
@@ -997,6 +1016,128 @@ mod tests {
         assert!(check(&mut Slice(&long, 1 << 20), &mut Memory::new(&mut words)).is_err());
         let short = &packed[..packed.len() - 1];
         assert!(check(&mut Slice(short, 1 << 20), &mut Memory::new(&mut words)).is_err());
+    }
+
+    /// One last dynamic block of the literals `text`, with the given code
+    /// lengths and all 19 code-length code lengths (`cl`, or made to fit).
+    fn dynamic(lit: &[u8], dist: &[u8], cl: Option<[u8; 19]>, text: &[u8]) -> Vec<u8> {
+        let seq: Vec<u8> = lit.iter().chain(dist).copied().collect();
+        let cl_len = cl.unwrap_or_else(|| {
+            let mut freq = [0u32; 19];
+            seq.iter().for_each(|&l| freq[l as usize] += 1);
+            at_least_two(&mut freq);
+            let mut cl_len = [0u8; 19];
+            code_lengths(&freq, 7, &mut cl_len);
+            cl_len
+        });
+        let (mut cl_code, mut lit_code) = ([0u16; 19], [0u16; 286]);
+        canonical(&cl_len, &mut cl_code);
+        canonical(lit, &mut lit_code);
+        let mut out = vec![0u8; 4096];
+        let mut bits = Bits {
+            out: &mut out,
+            n: 0,
+            acc: 0,
+            count: 0,
+        };
+        bits.put(1 | 2 << 1, 3);
+        bits.put((lit.len() - 257) as u32, 5);
+        bits.put((dist.len() - 1) as u32, 5);
+        bits.put(19 - 4, 4);
+        for &s in &CODE_ORDER {
+            bits.put(cl_len[s] as u32, 3);
+        }
+        for &l in &seq {
+            bits.put(cl_code[l as usize] as u32, cl_len[l as usize] as u32);
+        }
+        for &b in text.iter().chain(&[0]) {
+            let s = if b == 0 { 256 } else { b as usize };
+            bits.put(lit_code[s] as u32, lit[s] as u32);
+        }
+        bits.align();
+        let n = bits.n;
+        out.truncate(n);
+        out
+    }
+
+    // The check is the last word before the dump is deleted: it must refuse
+    // the codes zlib refuses (an unused bit pattern, but in a single one-bit
+    // code), or a damaged ZIP that no unzip tool opens could take the dump's
+    // place. And it reads what zlib makes: fixed codes.
+    #[test]
+    fn check_refuses_what_zlib_refuses() {
+        let mut lit = [0u8; 257];
+        lit[b'a' as usize] = 1;
+        lit[256] = 1;
+        let mut lit_short = lit;
+        lit_short[256] = 2;
+        let text = b"aaa";
+        let cases = [
+            ("complete codes", dynamic(&lit, &[1, 1], None, text), true),
+            (
+                "a single one-bit distance code",
+                dynamic(&lit, &[1], None, text),
+                true,
+            ),
+            ("no distance code", dynamic(&lit, &[0], None, text), true),
+            (
+                "an incomplete distance code",
+                dynamic(&lit, &[2], None, text),
+                false,
+            ),
+            (
+                "an incomplete literal code",
+                dynamic(&lit_short, &[1], None, text),
+                false,
+            ),
+            (
+                "an incomplete code-length code",
+                dynamic(&lit, &[1], Some([5; 19]), text),
+                false,
+            ),
+        ];
+        let mut words = vec![0u32; MEMORY_WORDS];
+        for (what, stream, valid) in &cases {
+            let r = check(&mut Slice(stream, 1 << 20), &mut Memory::new(&mut words));
+            let want = Ok((crc32(0, text), text.len() as u64));
+            assert_eq!(r == want, *valid, "{what}: {r:?}");
+            assert!(*valid || r.is_err(), "{what}: {r:?}");
+        }
+        // zlib.compressobj(9, DEFLATED, -15, 9, Z_FIXED) of this text.
+        let fixed = [
+            0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0xd7, 0x51, 0xc8, 0x40, 0xa2, 0x14, 0xca, 0xf3, 0x8b,
+            0x72, 0x52, 0x00,
+        ];
+        let text = b"hello, hello, hello world";
+        assert_eq!(
+            check(&mut Slice(&fixed, 5), &mut Memory::new(&mut words)),
+            Ok((crc32(0, text), text.len() as u64))
+        );
+        // And zlib agrees on each case (when there is a python3 on PATH).
+        let dir = std::env::temp_dir().join(format!("srp-inflate-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, (_, stream, valid)) in cases.iter().enumerate() {
+            std::fs::write(dir.join(format!("{i}-{}.deflate", *valid as u8)), stream).unwrap();
+        }
+        let script = r#"
+import pathlib, sys, zlib
+for p in sorted(pathlib.Path(sys.argv[1]).glob("*.deflate")):
+    try:
+        zlib.decompress(p.read_bytes(), -15)
+        ok = True
+    except zlib.error:
+        ok = False
+    assert ok == p.stem.endswith("-1"), p.name
+print("python zlib: same verdicts")
+"#;
+        match Command::new("python3")
+            .args(["-I", "-c", script, dir.to_str().unwrap()])
+            .status()
+        {
+            Ok(status) => assert!(status.success()),
+            Err(_) => eprintln!("no python3: zlib not run"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

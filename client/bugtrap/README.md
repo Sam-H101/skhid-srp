@@ -101,7 +101,8 @@ A dump is about 160–190 MB (it holds the game's data segments); zipped, it is
   when complete.
 - Checked before the dump goes: the whole ZIP is read back; its records must
   be the ones written and its data must inflate to the dump's size and
-  CRC-32. Then the `.dmp` is deleted and the dialog names the `.zip`.
+  CRC-32, refusing what zlib refuses (such as a Huffman code with unused
+  bit patterns). Then the `.dmp` is deleted and the dialog names the `.zip`.
 - On any failure (no memory, disk full, a file of that name, a dump of 4 GiB
   or more, more than 60 seconds): the `.part` file is deleted, the `.dmp` is
   kept and the dialog names it as before. A crash or forced exit while zipping
@@ -221,8 +222,10 @@ rustc --edition 2024 -O --test src/zip.rs -o target/zip-test
 
 The ZIP tests round-trip empty, tiny, zero, repetitive, random and dump-like
 inputs across block and read boundaries, check the CRC-32, the code-length
-limits and that damaged or truncated streams are refused, and have Python's
-`zipfile` read a 40 MB ZIP made as the DLL makes it (when `python3` is on PATH).
+limits and that damaged or truncated streams are refused, that the check
+refuses the incomplete codes zlib refuses and reads zlib's fixed codes, and have
+Python's `zipfile` read a 40 MB ZIP made as the DLL makes it (when `python3` is
+on PATH).
 
 Every crash case reads its dump out of the `.zip` with `zipfile` (CRC checked,
 one member named like the ZIP, not UTF-8 flagged) and checks that no `.dmp` or
