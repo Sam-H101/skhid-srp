@@ -1713,6 +1713,39 @@ the default build differs in the byte at file 0x12101E and the PE checksum
 and in nothing else (compared byte by byte); `--no-late-join` gives the
 revision 4 exe byte for byte as before. **Not run:** a game.
 
+### 36. The memory arena "ai" is 4 MiB (the next release's revision)
+
+A player's game stopped on 2026-10-17 at 14:24 UTC in a 20-player match
+with the fatal "not enough memory for arena [ai]"
+(`memory_doug_lea_allocator.cpp`, line 53; out_of_memory_with_crash
+0xE4D70, `int3` at 0xE4EA5), on the cooker thread: weapon_core_cook's
+query_weapon_states → the weapon's state machine (0x2DF780) →
+ai::fsm::append_transition (0x38C970); three live dumps were read. A stock 0.26g limit that Skhid reaches: a match has one player object
+for each usable kit, three a player since the kits of #148, and every
+player object's weapons build their state machines in this arena.
+
+The engine's memory arenas are registered by static initializers, each
+with its size as a constant. The one of "ai" (0x1E8CCB:
+`mov dword [esp+18h],40000h`, the name at 0x9FA4E0, then the registration
+0xE21C0 into the arenas' list at [0xA808FC]) asks for 256 KiB; no option
+or setting is read there, so nothing outside the exe can change it. The
+arena (0xA967D8, a doug_lea allocator) is used by ai::fsm alone: 0x28 bytes
+a transition, pop_state, generalized_action (`../docs/notes/client_patch.md`
+section 3.34).
+
+**The patch.** Only in the builds with the late join: the immediate becomes
+400000h (4 MiB; one byte, file 0x1D80D1, 04h -> 40h). The other arenas
+reserve about 1835 MiB together and the exe is large-address-aware, so the
+3.75 MiB more is nothing to the address space. Nothing a match computes;
+a game with it and one without play together.
+
+Checked: `selftest_026g.py` check 37. Against the build of `main` 838cce1
+without it, the default build (also with `--server=skhid.link:1234`, with
+and without `--revision=`) differs in the byte at file 0x1D80D1 and the PE
+checksum and in nothing else (compared byte by byte); `--no-late-join`,
+`--cave=hash-mismatch` and `--cert-only` give the same exes as before.
+**Not run:** a game.
+
 ## Not ported, not done
 
 - The 0.21d mode 3 battery patch is not needed: 0.26g serializes the

@@ -417,6 +417,7 @@ va	status	ref_021d	name
 0x000e0e60	inferred-medium	0x000ae806	vostok::memory::managed_allocator::~managed_allocator
 0x000e12d0	inferred-medium	0x000aeaf2	vostok::memory::initialize
 0x000e1370	inferred-medium	0x000aeb83	vostok::memory::dump_statistics
+0x000e21c0	inferred-medium		vostok::memory::register_allocator
 0x000e2250	inferred-medium	0x000af033	vostok::math::align_down<unsigned __int64>
 0x000e2490	inferred-medium	0x000af212	boost::detail::function::functor_manager<void (__cdecl*)(char const *)>::manager
 0x000e2620	inferred-medium	0x00025a17	vostok::logging::memory_base_allocator_wrapper::allocate

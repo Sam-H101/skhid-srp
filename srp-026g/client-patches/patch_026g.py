@@ -274,6 +274,15 @@ Patches:
   `jnz` at 0x131C1E after the assertion's "ignore" flag test becomes a
   `jmp`: the function's own path for that flag, `return false`, so that
   load is made again as the first was;
+- the memory arena "ai" is 4 MiB instead of 256 KiB (patch 36, with the
+  late join, client_patch.md section 3.34). A static initializer registers
+  the arena with its size as an immediate (`mov dword [esp+18h],40000h` at
+  0x1E8CCB, the name "ai" at 0x9FA4E0, then 0xE21C0); no option is read
+  there. Only ai::fsm allocates from it (fsm::append_transition 0x38C970,
+  0x28 bytes a transition), and every weapon's state machine is made in
+  it: a 20-player match with three kits each (one player object per kit)
+  ran out of it and stopped the game with "not enough memory for arena
+  [ai]" (seen live 2026-10-17). The immediate becomes 400000h;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -478,6 +487,20 @@ TDM_DEATHS = (0x3160F1, bytes.fromhex("0f85e6000000"), b"\x90" * 6)
 # (0x12DB40) answers with "Texture %s is corrupted!" and result_requery,
 # as for a CRC that differs. jnz -> jmp: the flag test is kept, unused.
 BAKED_TEXTURE_MISSING = (0x131C1E, bytes.fromhex("7553"), bytes.fromhex("eb53"))
+
+# The memory arena "ai": a static initializer (0x1E8B50) makes the doug_lea
+# arena 0xA967D8 (vtable 0x9E68DC at 0x1E8C60) and registers it in the
+# arenas' list at [0xA808FC] with 0xE21C0: {allocator, ?, size (u64),
+# base, name} on its stack, the size `mov dword [esp+18h],40000h` at
+# 0x1E8CCB (256 KiB), the name "ai" (0x9FA4E0) at 0x1E8CDB. Its one user
+# is ai::fsm (append_transition 0x38C970: 0x28 bytes a transition,
+# pop_state, generalized_action): the weapons' state machines of every
+# player object. Full: memory_doug_lea_allocator.cpp:53 "not enough memory
+# for arena [ai]" (out_of_memory_with_crash 0xE4D70). 4 MiB; a number,
+# no relocation under it.
+AI_ARENA_VA = 0x1E8CCB
+AI_ARENA_SIZE = 0x400000
+AI_ARENA = (AI_ARENA_VA, bytes.fromhex("c744241800000400"), bytes.fromhex("c744241800004000"))
 
 # replay_network_client's "is this place mine" (vtable 0x9FF344, slot +0x54
 # at 0x9FF398) is 0x54E10, `xor al,al` / `ret 4`. The client respawn rule's
@@ -1482,6 +1505,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         sites.append((TDM_DEATHS[0], TDM_DEATHS[0] + len(TDM_DEATHS[1])))
         patch(data, *BAKED_TEXTURE_MISSING)
         sites.append((BAKED_TEXTURE_MISSING[0], BAKED_TEXTURE_MISSING[0] + len(BAKED_TEXTURE_MISSING[1])))
+        patch(data, *AI_ARENA)
+        sites.append((AI_ARENA_VA, AI_ARENA_VA + len(AI_ARENA[1])))
         patch(data, *REPLAY_REATTACH_THUNK)
         sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
         # An address: its relocation stays.
@@ -1638,7 +1663,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the lobby's link starts the updater for a replay link and opens nothing else, "
                      "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
                      "a kit chosen before the match starts is played at once where the player stands, "
-                     "the archive reads' order is a strict weak ordering"
+                     "the archive reads' order is a strict weak ordering, "
+                     f"the ai arena is {AI_ARENA_SIZE >> 20} MiB"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
