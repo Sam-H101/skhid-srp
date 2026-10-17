@@ -296,3 +296,18 @@ kept and can be put back).
   reputation bar and rank do.
 - The kit's ammo window shows the original price for ammo you own; the shop
   price is the one the server uses.
+
+## 17 Oct, 12:30 — TODO: the owner's words (update required)
+
+<!-- Revision 17 (026g-rev17), released 2026-10-17 12:30 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #143 AGENTS.md: releases set the revision and tag; where the game's symbols are
+- TODO: #141 release.sh: the go first, the maintenance at once, the build during the countdown; --now
+- TODO: #142 0.26g: every map from the game data, nothing by level
+- TODO: #144 Launcher without SHOP, site without the silver and gold exchange
+- TODO: #145 release.sh: each release sets its revision (live + 1) and records and tags itself
+- TODO: #148 The third kit for every account, premium or not
+- TODO: #149 One cosmetic worn by many items (exe patch 30: taking it off names the item)
+- TODO: #151 Replays of older games: refused, said why; a release raises the oldest replayable revision
+- TODO: #150 Patch 31: a kit chosen before the match starts is played at once
+- TODO: #152 Patch 31: the switch looks only at the match's places and always gives the new kit its protection
