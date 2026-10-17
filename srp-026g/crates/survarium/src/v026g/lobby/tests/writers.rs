@@ -1006,7 +1006,10 @@ fn inventory_action_answers() {
         &permitted_upgrade_attached(1, 2, 3, 0x0102030405060708, true),
         "83 46 01 01000000 02000000 03 0807060504030201 01",
     );
-    assert_bytes(&permitted_upgrade_detached(9), "83 46 02 09000000");
+    assert_bytes(
+        &permitted_upgrade_detached(9, 4),
+        "83 46 02 09000000 04000000",
+    );
     assert_bytes(&permitted_item_used(9), "83 46 04 09000000");
     assert_bytes(
         &permitted_reroll_window(1, 2, 3, None),

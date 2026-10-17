@@ -710,7 +710,9 @@ fn item_actions_change_the_inventory() {
     );
 
     // An upgrade goes on with its dict id; one already in the slot comes
-    // off; `detach_first` takes it off its other host.
+    // off. One upgrade may be on several items (patch 30): `detach_first`
+    // takes it off the host itself (another slot of it), and `83 46 02`
+    // off the host it names; the other items keep it.
     client
         .receive(&permitted_upgrade_attached(1, 3, 3, 0, false))
         .unwrap();
@@ -724,13 +726,22 @@ fn item_actions_change_the_inventory() {
         }]
     );
     client
-        .receive(&permitted_upgrade_attached(2, 3, 0, 5, true))
+        .receive(&permitted_upgrade_attached(2, 3, 0, 5, false))
         .unwrap();
-    assert!(client.inventory()[0].upgrades.is_empty());
+    assert_eq!(client.inventory()[0].upgrades.len(), 1);
     assert_eq!(client.inventory()[1].upgrades[0].param, 0);
     assert_eq!(client.inventory()[1].upgrades[0].value, 5);
-    client.receive(&permitted_upgrade_detached(3)).unwrap();
+    client
+        .receive(&permitted_upgrade_attached(2, 3, 1, 6, true))
+        .unwrap();
+    assert_eq!(client.inventory()[0].upgrades[0].param, 3);
+    assert_eq!(client.inventory()[1].upgrades.len(), 1);
+    assert_eq!(client.inventory()[1].upgrades[0].param, 1);
+    client.receive(&permitted_upgrade_detached(3, 2)).unwrap();
     assert!(client.inventory()[1].upgrades.is_empty());
+    assert_eq!(client.inventory()[0].upgrades.len(), 1);
+    client.receive(&permitted_upgrade_detached(3, 1)).unwrap();
+    assert!(client.inventory()[0].upgrades.is_empty());
 
     // Crafting: the donor goes, and a modification comes or goes.
     let crafted = |crafted| permitted_crafted(1, crafted).unwrap();

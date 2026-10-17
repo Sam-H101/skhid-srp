@@ -28,9 +28,9 @@ mod ask {
         (0x46, body)
     }
 
-    /// `46 02 <kit> <upgrade>`.
-    pub fn detach(upgrade: u32) -> (u8, Vec<u8>) {
-        (0x46, body(2, &[1, upgrade]))
+    /// `46 02 <kit> <upgrade> <host>` (patch 30's).
+    pub fn detach(host: u32, upgrade: u32) -> (u8, Vec<u8>) {
+        (0x46, body(2, &[1, upgrade, host]))
     }
 
     /// `46 05 <kit> <host> <upgrade> <u64>`.
@@ -208,14 +208,17 @@ fn a_camouflage_and_decals_go_on_a_vest() {
         Some("st_cannot_upgrade_item")
     );
 
-    world.ask(alice, ask::detach(camo));
+    world.ask(alice, ask::detach(vest, camo));
     let decoded = world.take(alice);
     assert_eq!(
         decoded[0],
-        Decoded::Permitted(Permitted::UpgradeDetached { item_id: camo })
+        Decoded::Permitted(Permitted::UpgradeDetached {
+            upgrade_item_id: camo,
+            host_item_id: vest
+        })
     );
     assert_same_items(&mut world, alice);
-    world.ask(alice, ask::detach(camo));
+    world.ask(alice, ask::detach(vest, camo));
     assert_eq!(
         denial(&world.take(alice), 0x46).as_deref(),
         Some("st_cannot_upgrade_item")
@@ -223,9 +226,11 @@ fn a_camouflage_and_decals_go_on_a_vest() {
     world.assert_clean();
 }
 
-/// Exercise the owner's account update without requiring a squad, and
-/// optionally the independent squadmate cache that uses the same revision.
-fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
+/// One camouflage on the worn vest and a spare one: putting it on the spare
+/// leaves the worn vest (and its kit) as they were; taking it off the worn
+/// vest refreshes the owner's kit, and the squadmate's cache of it when
+/// there is a squad, and leaves it on the spare.
+fn sharing_camouflage_with_a_spare_vest(with_squad: bool) {
     let mut world = World::new(Duration::from_secs(60));
     let observer = with_squad.then(|| world.connect("Alice"));
     let actor = world.connect("Bob");
@@ -277,9 +282,26 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
     assert!(messages.iter().any(|message| matches!(
         message,
         Decoded::Permitted(Permitted::UpgradeAttached {
-            detach_first: true,
+            detach_first: false,
             ..
         })
+    )));
+    assert_eq!(world.account(actor).kits[0].revision, revision);
+    for vest in [source, destination] {
+        assert_eq!(
+            world.account(actor).item(vest).unwrap().upgrades[0].id,
+            cosmetic
+        );
+    }
+    assert_same_items(&mut world, actor);
+    world.ask(actor, ask::detach(source, cosmetic));
+    let messages = world.take(actor);
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Decoded::Permitted(Permitted::UpgradeDetached {
+            upgrade_item_id,
+            host_item_id,
+        }) if *upgrade_item_id == cosmetic && *host_item_id == source
     )));
     let updated = messages
         .iter()
@@ -322,13 +344,91 @@ fn moving_camouflage_to_a_spare_vest(with_squad: bool) {
 }
 
 #[test]
-fn moving_camouflage_refreshes_the_owner_without_a_squad() {
-    moving_camouflage_to_a_spare_vest(false);
+fn shared_camouflage_taken_off_refreshes_the_owner_without_a_squad() {
+    sharing_camouflage_with_a_spare_vest(false);
 }
 
 #[test]
-fn moving_camouflage_refreshes_the_squadmate() {
-    moving_camouflage_to_a_spare_vest(true);
+fn shared_camouflage_taken_off_refreshes_the_squadmate() {
+    sharing_camouflage_with_a_spare_vest(true);
+}
+
+#[test]
+fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let vests = [
+        give(&mut world, alice, "edge_torso_2", &[]),
+        give(&mut world, alice, "bm_torso_1", &[]),
+        give(&mut world, alice, "edge_torso_2", &[]),
+    ];
+    let camo = give(&mut world, alice, "camo_city", &[]);
+    let decal_name = Dictionary::shared()
+        .items
+        .iter()
+        .find(|item| item.category == 26)
+        .unwrap()
+        .name
+        .clone();
+    let decal = give(&mut world, alice, &decal_name, &[]);
+    for vest in vests {
+        world.ask(alice, ask::attach(vest, camo, 3));
+        world.ask(alice, ask::attach(vest, decal, 0));
+    }
+    world.take(alice);
+    assert_same_items(&mut world, alice);
+    let inventory = world.account(alice).inventory.len();
+    // The decal's place is each vest's own.
+    for (index, vest) in vests.into_iter().enumerate() {
+        world.ask(alice, ask::place(vest, decal, 0x100 + index as u64));
+    }
+    assert!(world.take(alice).is_empty());
+    for (index, vest) in vests.into_iter().enumerate() {
+        let upgrades = world.account(alice).item(vest).unwrap().upgrades.clone();
+        assert_eq!(upgrades.len(), 2);
+        assert_eq!(upgrades[1].value, 0x100 + index as u64);
+    }
+    // Off the middle vest: the others keep it; nothing new is in the stash.
+    world.ask(alice, ask::detach(vests[1], camo));
+    world.take(alice);
+    assert_same_items(&mut world, alice);
+    let worn = |world: &World, upgrade: u32| -> Vec<u32> {
+        vests
+            .into_iter()
+            .filter(|&vest| {
+                world
+                    .account(alice)
+                    .item(vest)
+                    .unwrap()
+                    .upgrades
+                    .iter()
+                    .any(|held| held.id == upgrade)
+            })
+            .collect()
+    };
+    assert_eq!(worn(&world, camo), [vests[0], vests[2]]);
+    assert_eq!(worn(&world, decal), vests);
+    assert_eq!(world.account(alice).inventory.len(), inventory);
+    // Sold, it comes off every vest; the client's echo (Flash's
+    // on_item_sold sends `46 02` for it with one of them) is answered as
+    // off, not refused (which would show an error for the sale).
+    world.ask(alice, request::sell(camo, 1));
+    world.take(alice);
+    assert_eq!(worn(&world, camo), Vec::<u32>::new());
+    assert_eq!(worn(&world, decal), vests);
+    assert_same_items(&mut world, alice);
+    world.ask(alice, ask::detach(vests[0], camo));
+    let decoded = world.take(alice);
+    assert_eq!(denial(&decoded, 0x46), None);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeDetached {
+            upgrade_item_id: camo,
+            host_item_id: vests[0]
+        })
+    );
+    assert_same_items(&mut world, alice);
+    world.assert_clean();
 }
 
 #[test]

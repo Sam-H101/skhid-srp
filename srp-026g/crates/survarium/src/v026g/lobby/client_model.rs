@@ -114,7 +114,8 @@ pub enum Permitted {
         detach_first: bool,
     },
     UpgradeDetached {
-        item_id: u32,
+        upgrade_item_id: u32,
+        host_item_id: u32,
     },
     ItemUsed {
         item_id: u32,
@@ -648,7 +649,7 @@ impl Client {
                 detach_first,
             }) => {
                 if *detach_first {
-                    self.detach(*upgrade_item_id);
+                    self.detach(*upgrade_item_id, *host_item_id);
                 }
                 // Both must be found, or nothing is done (0x27565B).
                 let upgrade_dict = self.find(*upgrade_item_id).map(|item| item.dict_id);
@@ -666,7 +667,10 @@ impl Client {
                     });
                 }
             }
-            Decoded::Permitted(Permitted::UpgradeDetached { item_id }) => self.detach(*item_id),
+            Decoded::Permitted(Permitted::UpgradeDetached {
+                upgrade_item_id,
+                host_item_id,
+            }) => self.detach(*upgrade_item_id, *host_item_id),
             Decoded::Permitted(Permitted::RerollResult {
                 item_id,
                 reroll_time,
@@ -806,11 +810,21 @@ impl Client {
         }
     }
 
-    /// The upgrade with this item id comes off whatever item has it
-    /// (0x275220).
-    fn detach(&mut self, upgrade_item_id: u32) {
-        for item in &mut self.inventory {
-            item.upgrades
+    /// The upgrade with this item id comes off the host (0x275220 with
+    /// patch 30's host, 0x27534D); other items wearing it keep it. A host
+    /// of 0 is the stock client's search: the first item holding it.
+    fn detach(&mut self, upgrade_item_id: u32, host_item_id: u32) {
+        let host = self.inventory.iter_mut().find(|item| {
+            if host_item_id == 0 {
+                item.upgrades
+                    .iter()
+                    .any(|upgrade| upgrade.id == upgrade_item_id)
+            } else {
+                item.item_id == host_item_id
+            }
+        });
+        if let Some(host) = host {
+            host.upgrades
                 .retain(|upgrade| upgrade.id != upgrade_item_id);
         }
     }
@@ -1021,7 +1035,10 @@ impl Client {
                         value: r.u64()?,
                         detach_first: r.bool()?,
                     },
-                    2 => Permitted::UpgradeDetached { item_id: r.u32()? },
+                    2 => Permitted::UpgradeDetached {
+                        upgrade_item_id: r.u32()?,
+                        host_item_id: r.u32()?,
+                    },
                     4 => Permitted::ItemUsed { item_id: r.u32()? },
                     6 => {
                         let (item_id, a, b) = (r.u32()?, r.u32()?, r.u32()?);

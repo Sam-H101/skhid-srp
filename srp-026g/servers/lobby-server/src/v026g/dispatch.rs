@@ -228,8 +228,10 @@ impl Core<'_> {
             // item, `a1` the cosmetic, `a2` its slot.
             M::AttachUpgrade { a0, a1, a2, .. } => self.attach_upgrade(who, a0, a1, a2),
             M::DetachUpgrade {
-                upgrade_item_id, ..
-            } => self.detach_upgrade(who, upgrade_item_id),
+                upgrade_item_id,
+                host_item_id,
+                ..
+            } => self.detach_upgrade(who, host_item_id, upgrade_item_id),
             M::ApplyDecal {
                 item_id, a, value, ..
             } => self.place_upgrade(who, item_id, a, value),
