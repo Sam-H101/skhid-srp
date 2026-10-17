@@ -322,3 +322,9 @@ kept and can be put back).
 - TODO: #161 patches.tsv: patch_17's Google Drive mirror
 - TODO: #163 Shop: the factions' camouflages, the Vityaz and the Lancaster are sold
 - TODO: #162 Client patch 36: the memory arena "ai" is 4 MiB instead of 256 KiB
+
+## 17 Oct, 18:12 — TODO: the owner's words (update required)
+
+<!-- Revision 19 (026g-rev19), released 2026-10-17 18:12 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #168 Release of weapon scopes and the 0.29a3 weapons: #153 + #155 + #159 on main
