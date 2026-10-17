@@ -577,8 +577,10 @@ fn what_srp_does_not_have_is_refused_never_ignored() {
         // ones it has, and a detach of a cosmetic that is gone, which is
         // off).
         (0x46, u32s(1, &[1, 5, 6], &[0, 0, 0, 0, 0, 0, 0, 0, 0]), "st_cannot_upgrade_item"),
-        // A detach without its host (a game without patch 30) is no request.
-        (0x46, u32s(2, &[1, 5], &[]), "st_cannot_relocate_item"),
+        // A detach cut short before its upgrade is no request. (One
+        // without its host, a game without patch 30, is read: host 0,
+        // `items_tests`.)
+        (0x46, u32s(2, &[1], &[]), "st_cannot_relocate_item"),
         // A drop card, an item used.
         (0x46, u32s(3, &[5, 6], &[]), "st_cannot_use_drop_card"),
         (0x46, u32s(4, &[5], &[]), "st_error_while_using_premium_access_voucher"),

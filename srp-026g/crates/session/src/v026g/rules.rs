@@ -870,6 +870,35 @@ mod tests {
         }
     }
 
+    /// A scope (category 22) has no profile slot: no move puts it into a
+    /// kit, and a loaded kit that holds one loses it. So no scope is ever in
+    /// a kit's ammo slots, where `check_play` reads `items_compatibility`
+    /// (the rows weapon/scope item the lobby movie may add change nothing).
+    #[test]
+    fn a_scope_never_goes_into_a_kit_slot() {
+        let mut account = account();
+        let scope_id = account.add_item(304, FULL_CONDITION);
+        let scope = account.item(scope_id).unwrap().clone();
+        for slot in 0..KIT_SLOTS as u8 {
+            assert_eq!(
+                move_items(
+                    &mut account,
+                    1,
+                    &[relocation(&scope, INVENTORY_SLOT, slot, 1)],
+                    NOW
+                ),
+                Err(ActionError::WrongSlot),
+                "slot {slot}"
+            );
+        }
+        account.kits[0].slots[8] = Some(KitSlot {
+            item_id: scope_id,
+            count: 1,
+        });
+        assert!(account.repair());
+        assert_eq!(account.kits[0].slots[8], None);
+    }
+
     fn rich(money: u32) -> Account {
         let mut account = account();
         account.generic_money = money;

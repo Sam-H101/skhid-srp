@@ -62,6 +62,7 @@ use binary_config_parser::tree::{ConfigError, ConfigValue};
 
 use super::dictionary::Dictionary;
 use super::item_params::{ItemParams, item_params, shop_unit};
+use super::scopes::SCOPE_CATEGORY;
 pub use crate::v021d::drops::Rng;
 
 /// Its path in the archive.
@@ -304,7 +305,9 @@ fn droppable(
     dictionary
         .items
         .iter()
-        .filter(move |item| item.category == category)
+        // [srp] Scopes are bought, never dropped (the shop's scope items
+        // and the variants, `super::scopes`), whatever a drop table says.
+        .filter(move |item| item.category == category && category != SCOPE_CATEGORY)
         .filter_map(|item| item_params(item.dict_id))
         .filter(|params| params.drop_weight > 0)
 }

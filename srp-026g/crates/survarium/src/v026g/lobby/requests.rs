@@ -223,8 +223,10 @@ pub enum ClientMessage {
     /// `46 02`: take a cosmetic off an item: `upgrade_item_id` off
     /// `host_item_id`. The host is patch 30's (`client-patches`, 0x29AAD5:
     /// the upgrade window's item, which Flash's `drop_upgrade_item` passes
-    /// first); a stock client sends the kit and the upgrade alone, which
-    /// is refused as too short.
+    /// first). A client without patch 30 (every released revision up to
+    /// 16) sends the kit and the upgrade alone (0x2708C0): `host_item_id`
+    /// is then 0, and the stock client takes the upgrade off the first item
+    /// of its inventory that holds it (0x275220 → find_if 0x277CF0).
     DetachUpgrade {
         kit_id: u32,
         upgrade_item_id: u32,
@@ -662,7 +664,8 @@ fn parse_inventory(r: &mut Reader<'_>) -> Result<ClientMessage, ParseError> {
         0x02 => M::DetachUpgrade {
             kit_id: r.u32()?,
             upgrade_item_id: r.u32()?,
-            host_item_id: r.u32()?,
+            // A stock client ends here (no patch 30).
+            host_item_id: if r.rest.is_empty() { 0 } else { r.u32()? },
         },
         0x03 => M::UseDropCard {
             a0: r.u32()?,

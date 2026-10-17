@@ -228,6 +228,32 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     client+1F1C60h), byte for byte. The code calls and leaves only to what
     it names, stores nothing but on its stack; no relocation under a site
     and nothing aims inside one. check_kit_change_026g.py runs it.
+33. the same build: a weapon's upgrade window shows the weapon (patch 32,
+    weapon_preview_026g.asm at WEAPON_PREVIEW_OFFSET of `.srp`, after the
+    late join's code, its state at WEAPON_PREVIEW_STATE_OFFSET of `.srpd`).
+    The camera calls of start_item_upgrade's 0x265DE0 (0x265E73) and
+    exit_item_upgrade's 0x265F10 (0x265F44) call start_cam and exit_cam;
+    setup_profile's first six bytes (0x284B10) jump to setup_hook; the
+    three loads of the camera's least distance in its tick (0x284081,
+    0x28428C, 0x284316) call min_step or min_final, with three nops. In the
+    original and the build without the late join each site is what it was;
+    the movie's callbacks start_item_upgrade and exit_item_upgrade are the
+    delegates of 0x29A870 and 0x29A890, which call 0x265DE0 and 0x265F10
+    with the lobby ui's character (+694h); the camera's setter 0x2845C0 is
+    called from those two sites alone, setup_profile from the lobby's
+    refresh, the squad panels' and its own re-call alone; the float at
+    0xA7AFA4 is 1.5 and the tick reads it at those three sites alone; the
+    upgrade mode (+D515h) is set by 0x265DE0 alone, cleared by 0x265F10 and
+    the character's constructor. Nothing aims inside a site; the base
+    relocations under the three loads are disabled, none other. The code
+    calls and leaves only to setup_profile, its body after the six bytes
+    and the camera's setter, holds no absolute address and keeps its state
+    where it was assembled for. The draw: the character's update's write of
+    the player's decal pose (0x284A33, the only write but the player's
+    ctor; its readers are player::mt_draw and player::insert alone; +D515h
+    is read there alone) calls weapon_draw_026g.asm's player_mode, at
+    WEAPON_DRAW_OFFSET of `.srp` (check 15's layout), which reads the same
+    state. check_weapon_preview_026g.py runs it.
 34. the same build: the order of the archive reads is a strict weak
     ordering (patch 33). hdd_manager_sorting_predicate's 0x1A0 bytes at
     0x10BCC0 are the original's in the original and the build without the
@@ -238,6 +264,18 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     get_file_offs, leaves only by `ret 4`, every branch inside lands on an
     instruction, it holds no absolute address and int3 fills the rest.
     check_read_order_026g.py runs it.
+35. the same build: the commit_suicide key kills one's own player (patch
+    34, suicide_key_026g.asm at SUICIDE_KEY_OFFSET of `.srp`). The
+    original: the action table's entry 0xA74D20 is commit_suicide, action
+    1Fh, default key kK; the input builder 0x241250 asks 0x242460 for 35
+    actions, 1Fh not among them, and sets no 1000000h in the action mask;
+    base_player::process_quick_slots reads bit 24 at 0x2D8BC1 and is called
+    from the input apply 0x2D86E0 alone (0x2D8777). The spot call at
+    0x242196 is `call 0x242460` in the original and the build without the
+    late join, `call` the code here; the code is suicide_key_026g.section.bin,
+    calls and leaves only to 0x242460, holds no absolute address and every
+    branch inside lands on an instruction; no relocation under the site and
+    nothing aims inside it. check_suicide_key_026g.py runs it.
 36. the same build: a baked texture no longer in the baker's list is made
     again (patch 35). check_loaded_baked_texture (0x131B40) has `jmp short
     0x131c73` at 0x131C1E where the original and the build without the late
@@ -431,6 +469,13 @@ def test_bins():
           f"{os.path.basename(P.kit_change_bin())} is current ({len(fresh)} bytes)")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SUICIDE_KEY_VA:#x}",
+                        os.path.join(HERE, "suicide_key_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.suicide_key_bin(), "rb").read(),
+          f"{os.path.basename(P.suicide_key_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.REPLAY_LINK_VA:#x}",
                         os.path.join(HERE, "replay_link_026g.asm"), "-o", out], check=True, timeout=60)
         fresh = open(out, "rb").read()
@@ -450,6 +495,21 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.read_order_bin(), "rb").read(),
           f"{os.path.basename(P.read_order_bin())} is current ({len(fresh)} bytes)")
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.WEAPON_PREVIEW_STATE_OFFSET
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.WEAPON_PREVIEW_VA:#x}", f"-DSTATE={state:#x}",
+                        os.path.join(HERE, "weapon_preview_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.weapon_preview_bin(), "rb").read(),
+          f"{os.path.basename(P.weapon_preview_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.WEAPON_DRAW_VA:#x}", f"-DSTATE={state:#x}",
+                        os.path.join(HERE, "weapon_draw_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.weapon_draw_bin(), "rb").read(),
+          f"{os.path.basename(P.weapon_draw_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -1198,7 +1258,9 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
         [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
         [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))] + \
-        [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))]
+        [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))] + \
+        [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
+        [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))]
 
 
 def pickup_sites():
@@ -2604,6 +2666,59 @@ def test_kit_change(original, image, before):
           + "".join(f"\n          {a:#x}" for a in found + under))
 
 
+def test_suicide_key(original, image, before):
+    """Check 35: the commit_suicide key (patch 34, SUICIDE_KEY_*).
+    check_suicide_key_026g.py runs the builder's last call on made-up input
+    handlers."""
+    stock = Image(original)
+    name, action, kind, _, key = struct.unpack("<5I", stock.read(0xA74D20, 20))
+    cstr = lambda va: stock.read(va, 32).split(b"\0")[0]
+    check(cstr(name) == b"commit_suicide" and action == 0x1F and kind == 5 and cstr(key) == b"kK",
+          "the action table's entry 0xA74D20 is commit_suicide, action 1Fh, kind 5, default key kK")
+    rows = ndisasm(stock.read(0x241250, 0x2421B0 - 0x241250), 0x241250)
+    # The pushes before each call, nearest first: ebx (the handler), the
+    # action, &state (one call has other instructions between them).
+    pushes = lambda i: [text for _, _, text in reversed(rows[max(0, i - 10):i]) if text.startswith("push ")]
+    asked = [int(pushes(i)[1].split("+")[1], 16) for i, row in enumerate(rows)
+             if row[2] == "call 0x242460" and pushes(i)[0] == "push ebx" and pushes(i)[1].startswith("push byte +")]
+    calls = [row for row in rows if row[2] == "call 0x242460"]
+    masks = [int(row[2].split(",")[1].split()[-1].lstrip("+"), 16) for row in rows
+             if row[2].startswith("or dword [ebx+0x33c],")]
+    callers = sorted(int(h.split()[0], 16) for h in branches_into(original, 0x242460, 0x242461))
+    check(len(calls) == len(asked) == 35 and 0x1F not in asked and masks and 0x1000000 not in masks,
+          f"the input builder 0x241250 asks 0x242460 for 35 actions ({len(asked)} read), 1Fh not among them, and "
+          "never ors 1000000h into the action mask (+33Ch)")
+    check(all(0x241250 <= at < 0x2421B0 for at in callers) and len(callers) == 35,
+          "0x242460 is called by the input builder alone, 35 times")
+    quick = [int(h.split()[0], 16) for h in branches_into(original, 0x2D8BB0, 0x2D8BB1)]
+    check(stock.read(0x2D8BC1, 7) == bytes.fromhex("f7470400000001") and quick == [0x2D8777],
+          "base_player::process_quick_slots tests bit 24 of the input (0x2D8BC1 `test dword [edi+4],1000000h`) and "
+          "is called from the input apply 0x2D86E0 alone (0x2D8777)")
+    va, old, offset, opcode = P.SUICIDE_KEY_HOOK
+    new = P.hook_bytes(P.SUICIDE_KEY_VA, va, old, offset, opcode)
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
+          f"{va:#x}: `call 0x242460` (spot) in the original and the build without the late join, "
+          f"`call {P.SUICIDE_KEY_VA:#x}` here")
+    code = open(P.suicide_key_bin(), "rb").read()
+    check(image.read(P.SUICIDE_KEY_VA, len(code)) == code,
+          f"the code at {P.SUICIDE_KEY_VA:#x} is suicide_key_026g.section.bin ({len(code)} bytes)")
+    listing = ndisasm(code, P.SUICIDE_KEY_VA)
+    inside = lambda target: P.SUICIDE_KEY_VA <= target < P.SUICIDE_KEY_VA + len(code)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    starts = {address for address, _, _ in listing}
+    check({t for t in targets if not inside(t)} == {P.ACTION_STATE_VA}
+          and all(t in starts for t in targets if inside(t)) and listing[-1][2] == "jmp 0x242460"
+          and not [t for _, _, t in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", t)],
+          "the code calls and leaves only to 0x242460 (it ends `jmp 0x242460`), every branch inside lands on an "
+          "instruction, and it holds no absolute address")
+    hits = aimed_inside(original, va, len(old), 0x80)
+    spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
+    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    check(len(hits) == len(spelled) and not under,
+          "nothing aims inside the site (a 4-byte value spelling an address there is no pointer without a "
+          "relocation) and no base relocation is under it" + "".join(f", {h:#x}" for h in hits + under))
+
+
 def imports(image):
     """{IAT slot VA: (dll, function)} of the import table and the delay-load
     table (its addresses are VAs in this exe)."""
@@ -2837,6 +2952,125 @@ def test_read_order(original, image, before):
           "the new code calls only get_physical_path (0x4BC10), strcmp_s (0x3B5A0) and get_file_offs (0x47160), "
           f"returns by its one `ret 4`, every branch inside lands on an instruction, it holds no absolute address, "
           f"and int3 fills it from {end:#x}")
+def test_weapon_preview(original, image, before):
+    """Check 33: a weapon's upgrade window shows the weapon (patch 32,
+    WEAPON_PREVIEW_HOOKS). check_weapon_preview_026g.py runs the original's
+    and the build's code on a made-up lobby."""
+    stock = Image(original)
+    rows = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    stock_texts = {
+        0x265E73: ["call 0x2845c0"], 0x265F44: ["call 0x2845c0"],
+        0x284B10: ["push ebp", "mov ebp,esp", "and esp,byte -0x8"],
+        0x284081: ["movss xmm1,dword [dword 0xa7afa4]"], 0x28428C: ["movss xmm1,dword [dword 0xa7afa4]"],
+        0x284316: ["movss xmm0,dword [dword 0xa7afa4]"],
+    }
+    relocations = [rva for kind, rva in stock.relocations().values() if kind == 3]
+    now = [rva for kind, rva in image.relocations().values() if kind == 3]
+    for va, old, offset, opcode in P.WEAPON_PREVIEW_HOOKS:
+        word = "call" if opcode == 0xE8 else "jmp"
+        entry = P.WEAPON_PREVIEW_VA + offset
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+              and rows(stock, va, len(old)) == stock_texts[va]
+              and rows(image, va, len(old)) == [f"{word} {entry:#x}"] + ["nop"] * (len(old) - 5),
+              f"{va:#x}: `{' / '.join(stock_texts[va])}` in the original and the build without the late join, "
+              f"`{word} {entry:#x}`" + (f" and {len(old) - 5} nops" if len(old) > 5 else "") + " here")
+        hits = branches_into(original, va + 1, va + len(old))
+        under = [rva for rva in relocations if rva + 4 > va and rva < va + len(old)]
+        expected = [va + 4] if old[:3] == b"\xf3\x0f\x10" else []
+        check(not hits and under == expected and not [rva for rva in now if rva + 4 > va and rva < va + len(old)],
+              f"{va:#x}: no branch or address aims inside the site; "
+              + (f"the base relocation of its address ({va + 4:#x}) is disabled" if expected
+                 else "no base relocation is under it") + "".join(", " + h for h in hits))
+    calls = lambda target: [h for h in branches_into(original, target, target + 1)]
+    check(calls(0x2845C0) == ["0x265e73 rel32", "0x265f44 rel32"]
+          and calls(P.WEAPON_PREVIEW_HOOKS[2][0]) == ["0x222a42 rel32", "0x223029 rel32", "0x2850c5 rel32"]
+          and calls(0x265DE0) == ["0x29a882 rel32"] and calls(0x265F10) == ["0x29a897 rel32"],
+          "the camera's setter 0x2845C0 is called from the two sites alone, setup_profile 0x284B10 from the "
+          "lobby's refresh 0x222A42, the squad panels' 0x223029 and its own re-call 0x2850C5 alone, 0x265DE0 and "
+          "0x265F10 from the start_item_upgrade and exit_item_upgrade handlers alone (and none is a value anywhere)")
+    names = struct.unpack("<120I", stock.read(0x9C56C8, 480))
+    text_at = lambda at: bytes(original[stock.offset(at):original.index(b"\0", stock.offset(at))])
+    # The delegates are registered in the order of the names, 20h apart:
+    # drop_upgrade_item (8) is `mov eax,0x29a9d0` at 0x2818FA (check 31).
+    check(text_at(names[5]) == b"start_item_upgrade" and text_at(names[6]) == b"exit_item_upgrade"
+          and text_at(names[8]) == b"drop_upgrade_item"
+          and rows(stock, 0x281843, 5) == ["mov eax,0x29a870"] and rows(stock, 0x281880, 5) == ["mov eax,0x29a890"]
+          and rows(stock, 0x2818FA, 5) == ["mov eax,0x29a9d0"]
+          and rows(stock, 0x29A870, 0x1E) == ["mov eax,[esp+0x4]", "mov edx,[eax+0x8]", "push esi",
+                                              "mov esi,[ecx+0x694]", "push edi", "mov edi,[edx+0x8]",
+                                              "call 0x265de0", "pop edi", "mov al,0x1", "pop esi", "ret 0x4"]
+          and rows(stock, 0x29A890, 0x12) == ["push esi", "mov esi,[ecx+0x694]", "call 0x265f10", "mov al,0x1",
+                                              "pop esi", "ret 0x4"],
+          "the callbacks start_item_upgrade (5) and exit_item_upgrade (6) are the delegates 0x29A870 and 0x29A890, "
+          "registered as drop_upgrade_item's (8); they call 0x265DE0 (esi = the lobby ui's character +694h, edi = "
+          "the item) and 0x265F10 (esi = the character)")
+    floats = struct.unpack("<f", stock.read(P.WEAPON_PREVIEW_LEAST, 4))[0]
+    tick = [address for address, _, text in ndisasm(stock.read(0x283EF0, 0x5D7), 0x283EF0) if "0xa7afa4" in text]
+    everywhere = [address for address, _, text in ndisasm(stock.read(0x283B00, 0x1000), 0x283B00)
+                  if "0xa7afa4" in text]
+    check(floats == 1.5 and tick == [0x284081, 0x28428C, 0x284316] and everywhere == tick,
+          "the float at 0xA7AFA4 is 1.5; the lobby camera's tick (0x283EF0) and its other functions read it at "
+          "the three sites alone")
+    writes = [address for address, _, text in ndisasm(stock.read(0x263000, 0x23000), 0x263000)
+              if re.search(r"mov (?:byte )?\[e[a-z]{2}\+0xd515\],", text)]
+    init = rows(stock, 0x265B76, 6)
+    check(writes == [0x265E0B, 0x265F1D] and rows(stock, 0x265E0B, 7) == ["mov byte [esi+0xd515],0x1"]
+          and init == ["mov [esi+0x24],al", "mov [esi+0x25],al"] and rows(stock, 0x2847D0, 0xB)
+          == ["lea esi,[ebp+0xd4f0]", "call 0x265b40"],
+          "the upgrade mode (+D515h) is set to 1 by 0x265DE0 alone and to 0 by 0x265F10; the constructor "
+          "(0x284730 -> 0x265B40 on +D4F0h) clears it (+25h)")
+    code = open(P.weapon_preview_bin(), "rb").read()
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.WEAPON_PREVIEW_STATE_OFFSET
+    check(image.read(P.WEAPON_PREVIEW_VA, len(code)) == code and P.weapon_preview_state(code) == state,
+          f"the weapon preview at {P.WEAPON_PREVIEW_VA:#x} is weapon_preview_026g.section.bin ({len(code)} bytes), "
+          f"its state at {state:#x} (0x{P.WEAPON_PREVIEW_STATE_OFFSET:X} of .srpd, after the patches' mount's)")
+    listing = ndisasm(code[:code.index(struct.pack("<f", 1.5))], P.WEAPON_PREVIEW_VA)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    outside = {t for t in targets if not P.WEAPON_PREVIEW_VA <= t < P.WEAPON_PREVIEW_VA + len(code)}
+    starts = {address for address, _, _ in listing}
+    check(outside == {0x284B10, 0x284B16, 0x2845C0}
+          and all(t in starts for t in targets - outside)
+          and all(P.WEAPON_PREVIEW_VA + offset in starts for _, _, offset, _ in P.WEAPON_PREVIEW_HOOKS)
+          and not [text for _, _, text in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", text)],
+          "the code calls only setup_profile, jumps only to its body after the six bytes and to the camera's "
+          "setter, every branch inside it lands on an instruction, and no operand is an absolute address")
+    # The draw.
+    va, old, offset, opcode = P.WEAPON_DRAW_HOOK
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and rows(stock, va, len(old)) == ["mov [ecx+0xf49c],al"]
+          and rows(image, va, len(old)) == [f"call {P.WEAPON_DRAW_VA:#x}", "nop"]
+          and rows(stock, 0x2849F8, 6) == ["mov al,[ebx+0xd515]"]
+          and rows(stock, 0x284A20, 0x13) == ["mov ecx,[ebx+0xd2b8]", "test ecx,ecx", "jz 0x284a83",
+                                              "mov edx,0x119190", "test edx,edx", "jz 0x284a83"]
+          and rows(stock, 0x284A39, 0xB) == ["fld dword [ebx+0x14]", "push ecx", "lea esi,[esp+0x14]",
+                                             "fstp dword [esp]"],
+          f"{va:#x}: `mov [ecx+0xf49c],al` (the player's decal pose, al = the character's +D515h read at "
+          f"0x2849F8, ecx its player +D2B8h) in the original and the build without the late join, "
+          f"`call {P.WEAPON_DRAW_VA:#x}` and a nop here; what follows reads no flag before setting it")
+    hits = branches_into(original, va + 1, va + len(old))
+    check(not hits and not [rva for rva in relocations if rva + 4 > va and rva < va + len(old)],
+          f"{va:#x}: no branch or address aims inside the site, no base relocation is under it"
+          + "".join(", " + h for h in hits))
+    pose = [(address, text) for address, _, text in ndisasm(stock.read(P.TEXT_VA, P.TEXT_VSIZE), P.TEXT_VA)
+            if "+0xf49c]" in text]
+    upgrade = [address for address, _, text in ndisasm(stock.read(0x263000, 0x23000), 0x263000)
+               if "+0xd515]" in text]
+    check([a for a, t in pose if t.startswith("mov")] == [0x1F1BFB, 0x284A33]
+          and [a for a, t in pose if t.startswith("cmp")] == [0x1F30E2, 0x2476F8, 0x24778F]
+          and len(pose) == 5 and upgrade == [0x265E0B, 0x265F1D, 0x2849F8],
+          "the decal pose (+F49Ch) is written by the player's ctor (0x1F1BFB, 0) and 0x284A33 alone and read by "
+          "player::insert (0x1F30E2) and player::mt_draw (0x2476F8 the bind pose, 0x24778F the held item) alone; "
+          "the upgrade mode (+D515h) is read at 0x2849F8 alone")
+    draw = open(P.weapon_draw_bin(), "rb").read()
+    listing = ndisasm(draw, P.WEAPON_DRAW_VA)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    starts = {address for address, _, _ in listing}
+    check(image.read(P.WEAPON_DRAW_VA, len(draw)) == draw and P.weapon_draw_state(draw) == state
+          and all(P.WEAPON_DRAW_VA <= t < P.WEAPON_DRAW_VA + len(draw) and t in starts for t in targets)
+          and [text for _, _, text in listing].count("ret") == 2
+          and not [text for _, _, text in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", text)],
+          f"the draw at {P.WEAPON_DRAW_VA:#x} is weapon_draw_026g.section.bin ({len(draw)} bytes), reads the state "
+          f"at {state:#x}, branches only inside itself, returns at its two ends and holds no absolute address")
 
 
 def test_revision_override(original, default, server):
@@ -2876,12 +3110,15 @@ def test_late_join(original, without, server, source):
     sections, old_sections = image.sections, before.sections
     name, rva, vsize, raw, rsize, flags = sections[-2]
     align = lambda value, to: (value + to - 1) // to * to
+    weapon_preview = open(P.weapon_preview_bin(), "rb").read()
+    weapon_draw = open(P.weapon_draw_bin(), "rb").read()
     first_page = bytes(without[old_sections[-1][3]:old_sections[-1][3] + old_sections[-1][2]])
     check(len(sections) == 9 and sections[:7] == old_sections[:7], "9 sections; the original's seven are untouched")
     check(name == P.SECTION_NAME and rva == P.SECTION_RVA and flags == P.SECTION_CHARACTERISTICS
-          and vsize == P.LATE_JOIN_OFFSET + len(code) and rsize == align(vsize, headers.file_alignment)
-          and raw == old_sections[-1][3],
-          f".srp: virtual {vsize:#x} = one page and the {len(code)} bytes of late-join code, file {raw:#x}+{rsize:#x}")
+          and vsize == P.WEAPON_PREVIEW_OFFSET + len(weapon_preview)
+          and rsize == align(vsize, headers.file_alignment) and raw == old_sections[-1][3],
+          f".srp: virtual {vsize:#x} = one page, the {len(code)} bytes of late-join code and the weapon preview's "
+          f"{len(weapon_preview)} at +{P.WEAPON_PREVIEW_OFFSET:#x}, file {raw:#x}+{rsize:#x}")
     body = bytes(data[raw:raw + rsize])
     pickup = open(P.pickup_bin(), "rb").read()
     seek = open(P.seek_clear_bin(), "rb").read()
@@ -2889,6 +3126,7 @@ def test_late_join(original, without, server, source):
     mount_patches = open(P.mount_patches_bin(), "rb").read()
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     kit_change = open(P.kit_change_bin(), "rb").read()
+    suicide_key = open(P.suicide_key_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
     shared = open(P.shared_upgrades_bin(), "rb").read()
@@ -2897,11 +3135,15 @@ def test_late_join(original, without, server, source):
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.SHARED_UPGRADES_OFFSET, len(shared), "the shared upgrades' code"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
+              (P.SUICIDE_KEY_OFFSET, len(suicide_key), "the suicide key"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
+              (P.WEAPON_DRAW_OFFSET, len(weapon_draw), "the weapon preview's draw"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.KIT_CHANGE_OFFSET, len(kit_change), "the kit change"),
-              (P.LATE_JOIN_OFFSET, len(code), "the late-join code")]
+              (P.LATE_JOIN_OFFSET, len(code), "the late-join code"),
+              (P.WEAPON_PREVIEW_OFFSET, len(weapon_preview), "the weapon preview"),
+              (P.late_join_state_va(code) - P.SECTION_VA, 0, "the state page")]
     overlaps = [f"{a[2]} ends at {a[0] + a[1]:#x}, past {b[2]} at {b[0]:#x}"
                 for a, b in zip(pieces, pieces[1:]) if a[0] + a[1] > b[0]]
     check(not overlaps, "the first page's code does not overlap: " + ", ".join(
@@ -2915,23 +3157,32 @@ def test_late_join(original, without, server, source):
           and body[P.SHARED_UPGRADES_OFFSET:P.SHARED_UPGRADES_OFFSET + len(shared)] == shared
           and set(body[P.SHARED_UPGRADES_OFFSET + len(shared):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
-          and set(body[P.PICKUP_OFFSET + len(pickup):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
+          and set(body[P.PICKUP_OFFSET + len(pickup):P.SUICIDE_KEY_OFFSET]) <= {0xCC}
+          and body[P.SUICIDE_KEY_OFFSET:P.SUICIDE_KEY_OFFSET + len(suicide_key)] == suicide_key
+          and set(body[P.SUICIDE_KEY_OFFSET + len(suicide_key):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
           and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
           and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
-          and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.WEAPON_DRAW_OFFSET]) <= {0xCC}
+          and body[P.WEAPON_DRAW_OFFSET:P.WEAPON_DRAW_OFFSET + len(weapon_draw)] == weapon_draw
+          and set(body[P.WEAPON_DRAW_OFFSET + len(weapon_draw):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.KIT_CHANGE_OFFSET]) <= {0xCC}
           and body[P.KIT_CHANGE_OFFSET:P.KIT_CHANGE_OFFSET + len(kit_change)] == kit_change
           and set(body[P.KIT_CHANGE_OFFSET + len(kit_change):P.LATE_JOIN_OFFSET]) <= {0xCC}
           and body[P.LATE_JOIN_OFFSET:P.LATE_JOIN_OFFSET + len(code)] == code
-          and set(body[P.LATE_JOIN_OFFSET + len(code):]) <= {0xCC},
+          and set(body[P.LATE_JOIN_OFFSET + len(code):P.WEAPON_PREVIEW_OFFSET]) <= {0xCC}
+          and body[P.WEAPON_PREVIEW_OFFSET:P.WEAPON_PREVIEW_OFFSET + len(weapon_preview)] == weapon_preview
+          and set(body[P.WEAPON_PREVIEW_OFFSET + len(weapon_preview):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
-          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
-          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
+          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, "
+          f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the seek "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
+          f"the weapon preview's draw at +{P.WEAPON_DRAW_OFFSET:#x}, "
           f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
-          f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the code follows, then int3 padding")
+          f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the late-join code follows, then int3 padding, "
+          f"the weapon preview at +{P.WEAPON_PREVIEW_OFFSET:#x} and int3 padding")
     name, state_rva, state_size, state_raw, state_rsize, flags = sections[-1]
     check(name == P.LATE_JOIN_STATE_NAME and flags == P.LATE_JOIN_STATE_CHARACTERISTICS
           and state_size == P.LATE_JOIN_STATE_SIZE and (state_raw, state_rsize) == (0, 0)
@@ -2967,8 +3218,8 @@ def test_late_join(original, without, server, source):
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
     # The entries of the relocation table that are disabled (scene::remove_model's
-    # branch, uro_fov's least, the pickup's distance).
-    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC, P.PICKUP_RELOC}
+    # branch, uro_fov's least, the pickup's distance, the lobby camera's least).
+    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC, P.PICKUP_RELOC, *P.WEAPON_PREVIEW_RELOCS}
     ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
                if kind == 3 and va in disabled]
     allowed = bytearray(raw)
@@ -3034,9 +3285,11 @@ def test_late_join(original, without, server, source):
     under = lambda relocations: [va for kind, va in relocations.values()
                                  if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in sites)]
     # The sites with an address in them: scene::remove_model's branch, the
-    # field-of-view setting's two in place and the pickup's distance.
+    # field-of-view setting's two in place, the pickup's distance and the
+    # lobby camera's three loads of its least distance.
     fov_sites = {va for va, _, _ in P.FOV_PATCHES}
-    with_address = {P.REMOVE_MODEL_VA, P.PICKUP_HOOKS[0][0]} | fov_sites
+    with_address = {P.REMOVE_MODEL_VA, P.PICKUP_HOOKS[0][0]} | fov_sites | \
+        {va for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS if old[:3] == b"\xf3\x0f\x10"}
     kept = [(lo, hi) for lo, hi in sites if lo not in with_address]
     under_kept = [va for kind, va in Image(original).relocations().values()
                   if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in kept)]
@@ -3051,7 +3304,8 @@ def test_late_join(original, without, server, source):
           and any(kind == 3 and va == option for kind, va in now.values()),
           "no base relocation is under a late-join site but those of scene::remove_model's branch "
           f"({P.REMOVE_MODEL_VA + 2:#x}), of uro_fov's least ({P.FOV_MINIMUM_RELOC:#x}) and of the pickup's "
-          f"distance ({P.PICKUP_RELOC:#x}), which are disabled, "
+          f"distance ({P.PICKUP_RELOC:#x}) and of the lobby camera's least "
+          f"({', '.join(f'{va:#x}' for va in P.WEAPON_PREVIEW_RELOCS)}), which are disabled, "
           f"and of the field-of-view option's name "
           f"({option:#x}, an address for an address), which stays; the rest of the table is the build's without it")
 
@@ -3077,6 +3331,8 @@ def test_late_join(original, without, server, source):
     test_read_order(original, image, before)
     test_baked_texture_missing(original, image, before)
     test_ai_arena(original, image, before)
+    test_weapon_preview(original, image, before)
+    test_suicide_key(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")

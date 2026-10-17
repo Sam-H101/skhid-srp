@@ -79,12 +79,20 @@
 //!   their ammo, artefacts, money, the New Year 2015 camouflage), premium
 //!   items (their cost is gold; they belong to the premium shop, 0x95, or
 //!   are sold one by one for gold, `shop_offers`), the other weapons with no
-//!   faction (VSS, SR-3M, the SOCOM 16), scopes and artefacts (as 0.21d),
-//!   vouchers, decals and the drop camouflages (the wiki lists decals at
-//!   ranks; not applied).
+//!   faction (VSS, SR-3M, the SOCOM 16), artefacts (as 0.21d), vouchers,
+//!   decals and the drop camouflages (the wiki lists decals at ranks; not
+//!   applied);
+//! - scopes: only the scope items the game data has variants for
+//!   ([`super::scopes`]), at their `base_cost`, by seller 0 at no rank
+//!   [srp: a scope is view-only, so nothing to unlock]. 0.26g's own three
+//!   (Leupold, PSO-1, 1P69), the variants and any other category-22 entry
+//!   are not sold. The price is the dictionary's, as for any item: the
+//!   client shows a quarter of it for selling (`InventoryList.sellObject`),
+//!   so a price set anywhere else would not agree with what it shows.
 
 use super::dictionary::{Dictionary, Item};
 use super::item_params::{ItemParams, item_params};
+use super::scopes::{SCOPE_CATEGORY, ScopeFits};
 
 /// 0.26g faction ids (`factions_dict`), as 0.21d's.
 pub use crate::prices::faction;
@@ -243,6 +251,22 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
         // VPS); both here [choice].
         ("ammo_12.7x54_pt", &[(EDGE, 10)]),
         ("ammo_12.7x54_vps", &[(EDGE, 10)]),
+        // --- Ammo of the weapons from 0.29a3 ([`UNRELEASED`]) [choice,
+        // 2026-10-17]: no list of the time has them, and their configs no
+        // faction. Sold by the factions whose configs name the weapons
+        // that fire it, at the lowest rank the rule sells one of them at
+        // (the levels are kept for the table's sake: ammo needs no rank).
+        // The FNC, M4A1, HK416 (Black Market) and MSBS Radon (Scavengers).
+        ("ammo_5.56x45", &[(SCAV, 5), (BM, 5)]),
+        // The MP7 and MP7A1 (Black Market).
+        ("ammo_4.6x30", &[(BM, 5)]),
+        // The FN P90 (Black Market).
+        ("ammo_5.7x28", &[(BM, 5)]),
+        // The PKP "Pecheneg" (Renaissance, rank 10).
+        ("ammo_7.62x54_7n13", &[(REN, 10)]),
+        // 12x70 smallshot: the Vepr-12 (Renaissance) and Saiga-12K (Edge),
+        // rank 7 each.
+        ("ammo_12mm_buck2", &[(REN, 7), (EDGE, 7)]),
         // --- Drugs, the trap, grenades (the four faction pages and
         // `Items` W:9996; PROVEN) ---
         ("bandages", &[(SCAV, 1)]),
@@ -306,6 +330,30 @@ pub const AMMO_PRICES: &[(&str, u32, u32)] = &[
     ("ammo_12.7x55", 150, 75),
     ("ammo_12.7x54_pt", 250, 125),
     ("ammo_12.7x54_vps", 300, 150),
+    // The ammo of the weapons from 0.29a3 ([`UNRELEASED`]; 2026-10-17, by
+    // the same rule, not yet seen by the owner): the game's price is the
+    // patch's, its 0.26g peer's a clip.
+    ("ammo_5.56x45", 60, 30),
+    ("ammo_4.6x30", 70, 35),
+    ("ammo_5.7x28", 70, 35),
+    // The PKP's belt of 100.
+    ("ammo_7.62x54_7n13", 300, 150),
+    // Half is 12.5.
+    ("ammo_12mm_buck2", 25, 10),
+];
+
+/// Items the tables of this module name that come with a game patch not
+/// released yet: the weapons from 0.29a3 (dict ids 2201..=2252). Data
+/// without them is still srp's ([`super::tables::check`] does not ask for
+/// them) and their rows are not used; data with them sells them by the
+/// rows. When the patch is released, its names leave this list, and data
+/// without them is refused again, as for every other item the code names.
+pub const UNRELEASED: &[&str] = &[
+    "ammo_5.56x45",
+    "ammo_4.6x30",
+    "ammo_5.7x28",
+    "ammo_7.62x54_7n13",
+    "ammo_12mm_buck2",
 ];
 
 /// Whether buying ammo needs the seller's rank of [`EXCEPTIONS`]. The
@@ -346,6 +394,14 @@ pub fn shop_cost(item: &Item) -> u32 {
 
 /// The reputation level with its faction that buying an item of
 /// `item_level` needs (the module's rule), within the faction's levels.
+///
+/// [open, the owner's to choose; this is the default] The weapons from
+/// 0.29a3 give the Scavengers and the Black Market guns of item levels 8
+/// to 14 (MSBS Radon, KRISS Vector; Valmet, FNC, M4A1, HK416, MP7, P90),
+/// and their ranks end at 5: the rule sells them all at rank 5, beside
+/// the factions' own level-5 gear, as it does the Bandit balaclava
+/// (level 8, the owner's word of 2026-10-16). The other way would be
+/// [`EXCEPTIONS`] rows, or a scale of their levels onto ranks 0 to 5.
 pub fn seller_level(dictionary: &Dictionary, faction_id: u8, item_level: u8) -> u8 {
     let level = match faction_id {
         faction::SCAVENGERS | faction::BLACK_MARKET => item_level,
@@ -366,14 +422,33 @@ fn top_level(dictionary: &Dictionary, faction_id: u8) -> u8 {
 
 /// Who sells `item` and at which reputation level: `(seller, level)`, by
 /// seller. A shop camouflage by its folder's faction at level 0
-/// ([`is_shop_camo`]); else [`EXCEPTIONS`] first, else the module's rule;
-/// ammo at level 0 ([`AMMO_NEEDS_RANK`]).
+/// ([`is_shop_camo`]); scopes by the game data's ([`sellers_of_in`]); else
+/// [`EXCEPTIONS`] first, else the module's rule; ammo at level 0
+/// ([`AMMO_NEEDS_RANK`]).
 pub fn sellers_of(dictionary: &Dictionary, item: &Item, params: &ItemParams) -> Vec<(u8, u8)> {
+    sellers_of_in(dictionary, ScopeFits::shared(), item, params)
+}
+
+/// [`sellers_of`] with `scopes`: a scope item of a pair with a price is
+/// sold by seller 0 at level 0; no other category-22 item is.
+pub fn sellers_of_in(
+    dictionary: &Dictionary,
+    scopes: &ScopeFits,
+    item: &Item,
+    params: &ItemParams,
+) -> Vec<(u8, u8)> {
     if item.is_premium {
         return Vec::new();
     }
     if is_shop_camo(item, params) {
         return camo_shop(&item.cfg_name).map_or_else(Vec::new, |faction| vec![(faction, 0)]);
+    }
+    if item.category == SCOPE_CATEGORY {
+        return if item.base_cost != 0 && scopes.is_scope(item.dict_id) {
+            vec![(0, 0)]
+        } else {
+            Vec::new()
+        };
     }
     let gear = GEAR.contains(&item.category);
     let supply = SUPPLIES.contains(&item.category) && item.is_stack;
@@ -584,8 +659,18 @@ mod tests {
             })
             .map(|item| item.name.as_str())
             .collect();
-        assert_eq!(priced.len(), AMMO_PRICES.len());
-        for &(name, game, cost) in AMMO_PRICES {
+        // A row of an item the data lacks is of a patch not released.
+        let rows: Vec<&(&str, u32, u32)> = AMMO_PRICES
+            .iter()
+            .filter(|(name, _, _)| dictionary.item_named(name).is_some())
+            .collect();
+        assert!(
+            AMMO_PRICES
+                .iter()
+                .all(|row| rows.contains(&row) || UNRELEASED.contains(&row.0))
+        );
+        assert_eq!(priced.len(), rows.len());
+        for &&(name, game, cost) in &rows {
             assert!(priced.contains(&name), "{name}");
             let item = dictionary.item_named(name).unwrap();
             assert_eq!(item.base_cost, game, "{name}");
@@ -694,9 +779,10 @@ mod tests {
     fn the_exceptions_are_items_of_the_dictionary_sold_as_listed() {
         let dictionary = Dictionary::shared();
         for (index, &(name, listed)) in EXCEPTIONS.iter().enumerate() {
-            let item = dictionary
-                .item_named(name)
-                .unwrap_or_else(|| panic!("no item `{name}`"));
+            let Some(item) = dictionary.item_named(name) else {
+                assert!(UNRELEASED.contains(&name), "no item `{name}`");
+                continue;
+            };
             assert!(item.base_cost > 0 && !item.is_premium, "{name}");
             assert!(
                 GEAR.contains(&item.category) || SUPPLIES.contains(&item.category),
@@ -1201,5 +1287,129 @@ mod tests {
             let dict_id = dictionary.item_named(name).unwrap().dict_id;
             assert!(!sold.contains(&dict_id), "{name}");
         }
+    }
+
+    #[test]
+    fn scope_items_with_variants_are_sold_to_everyone_at_their_cost() {
+        use super::super::game_data;
+        use super::super::scopes::fixtures::{
+            self, AK_74N_PSO_1, BROKEN, COBRA, COBRA_COST, LONE_SCOPE, PSO_1, PSO_1_COST,
+        };
+        let data = fixtures::with_scopes();
+        let dictionary = fixtures::dictionary_of(&data);
+        let fits = fixtures::fits();
+        let sellers = |dict_id: u16| {
+            let item = dictionary.item(dict_id).unwrap();
+            let config = game_data::config(&data, &item.cfg_name).unwrap().unwrap();
+            let params = ItemParams::from_config(dict_id, &config).unwrap();
+            sellers_of_in(&dictionary, fits, item, &params)
+        };
+        // Seller 0, no rank: every player may buy; the dictionary's price.
+        for (dict_id, cost) in [(PSO_1, PSO_1_COST), (COBRA, COBRA_COST)] {
+            assert_eq!(sellers(dict_id), [(0, 0)]);
+            assert_eq!(shop_cost(dictionary.item(dict_id).unwrap()), cost);
+            // Selling back pays a quarter, as the client shows.
+            assert_eq!(
+                sell_price(&dictionary, dict_id, 100, 100),
+                u64::from(cost / 4)
+            );
+        }
+        // Not a scope item no variant names, not a variant, not 0.26g's
+        // own scopes (which have a base_cost: Leupold 25,000, PSO-1
+        // 20,000).
+        let mut unsold = vec![LONE_SCOPE, AK_74N_PSO_1, 69, 304, 362];
+        unsold.extend(BROKEN);
+        for dict_id in unsold {
+            assert!(sellers(dict_id).is_empty(), "{dict_id}");
+        }
+        // The players' data before the patch has no variant: no scope in
+        // the list.
+        assert!(price_list().iter().all(|record| {
+            Dictionary::shared().item(record.dict_id).unwrap().category != SCOPE_CATEGORY
+        }));
+    }
+}
+
+/// The shop with the patch of the weapons from 0.29a3 ([`UNRELEASED`]):
+/// run on its server game data,
+/// `SRP_TEST_NEW_WEAPONS_DATA=<server-game-data.db> cargo test -p survarium
+/// --lib -- --ignored the_weapons_from_0_29a3`.
+#[cfg(test)]
+mod with_the_weapons_from_0_29a3 {
+    use super::super::game_data::GameData;
+    use super::super::{dictionary, item_params, tables};
+    use super::*;
+
+    #[test]
+    #[ignore = "needs the server game data of the patch (SRP_TEST_NEW_WEAPONS_DATA)"]
+    fn the_weapons_from_0_29a3_are_sold_by_their_factions_and_their_ammo_by_the_table() {
+        let path = std::env::var_os("SRP_TEST_NEW_WEAPONS_DATA").expect("the data's path");
+        let data = GameData::open(std::path::Path::new(&path)).unwrap();
+        // srp starts on it.
+        assert_eq!(tables::check(&data), Ok(()));
+        let dictionary = Dictionary::parse(data.file(dictionary::PATH).unwrap()).unwrap();
+        let params = item_params::derive(&data, &dictionary).unwrap();
+        let params_of = |item: &Item| *params.iter().find(|p| p.dict_id == item.dict_id).unwrap();
+        // Every unreleased name is in it.
+        for name in UNRELEASED {
+            assert!(dictionary.item_named(name).is_some(), "{name}");
+        }
+        let new: Vec<&Item> = dictionary
+            .items
+            .iter()
+            .filter(|item| (2201..=2252).contains(&item.dict_id))
+            .collect();
+        assert_eq!(new.len(), 40);
+        let sold = |name: &str| {
+            let item = dictionary.item_named(name).unwrap();
+            sellers_of(&dictionary, item, &params_of(item))
+        };
+        for item in &new {
+            let p = params_of(item);
+            let sellers = sellers_of(&dictionary, item, &p);
+            if p.kind == "ammo" {
+                // The owner's halved price, by the factions of the table,
+                // at no rank.
+                let &(_, game, cost) = AMMO_PRICES
+                    .iter()
+                    .find(|(name, _, _)| *name == item.name)
+                    .unwrap();
+                assert_eq!(item.base_cost, game, "{}", item.name);
+                assert_eq!(shop_cost(item), cost, "{}", item.name);
+                assert!(!sellers.is_empty(), "{}", item.name);
+                assert!(
+                    sellers
+                        .iter()
+                        .all(|&(seller, level)| seller != 0 && level == 0)
+                );
+            } else if item.is_premium {
+                // The premium shop's, in gold (`shop_offers::premium_price_list`).
+                assert!(sellers.is_empty() && item.base_cost > 0, "{}", item.name);
+            } else if item.base_cost > 0 && p.faction != 0 {
+                // The config's faction at the rule's rank.
+                let level = seller_level(&dictionary, p.faction, p.item_level);
+                assert_eq!(sellers, [(p.faction, level)], "{}", item.name);
+                assert_eq!(shop_cost(item), item.base_cost, "{}", item.name);
+            } else {
+                // The stock sights (no cost) and the NeoStead 2000 (no
+                // faction, a bundle weapon in 0.29a3).
+                assert!(sellers.is_empty(), "{}", item.name);
+            }
+        }
+        assert_eq!(sold("ammo_5.56x45"), [(1, 0), (2, 0)]);
+        assert_eq!(sold("ammo_4.6x30"), [(2, 0)]);
+        assert_eq!(sold("ammo_5.7x28"), [(2, 0)]);
+        assert_eq!(sold("ammo_7.62x54_7n13"), [(3, 0)]);
+        assert_eq!(sold("ammo_12mm_buck2"), [(3, 0), (4, 0)]);
+        // The open choice's default: Black Market and Scavenger guns of
+        // levels 10 to 14 at those factions' last rank, 5.
+        assert_eq!(sold("hk416"), [(2, 5)]);
+        assert_eq!(sold("kriss_vector"), [(1, 5)]);
+        // Renaissance and Edge by the rule.
+        assert_eq!(sold("kedr"), [(4, 0)]);
+        assert_eq!(sold("vz58"), [(3, 4)]);
+        assert_eq!(sold("vepr_12"), [(3, 7)]);
+        assert_eq!(sold("pkp_pecheneg"), [(3, 10)]);
+        assert!(sold("neostead_2").is_empty() && sold("eotech_552").is_empty());
     }
 }
