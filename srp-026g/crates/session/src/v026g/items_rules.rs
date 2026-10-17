@@ -423,7 +423,13 @@ pub enum Detached {
 }
 
 /// `46 02 <kit> <upgrade> <host>`: take a cosmetic off one item; any
-/// other item wearing it keeps it.
+/// other item wearing it keeps it. A host of 0 is a client without patch
+/// 30, which names no item (`46 02 <kit> <upgrade>`) and on the answer
+/// takes the upgrade off the first item of its inventory that holds it
+/// (0x275220, find_if 0x277CF0); the server takes it off that same item, the
+/// first of the account's inventory (the order the inventory is sent in).
+/// With the upgrade on several items that may not be the item the window
+/// showed; client and server still agree.
 pub fn detach_upgrade(
     account: &mut Account,
     host_item_id: u32,
@@ -432,6 +438,15 @@ pub fn detach_upgrade(
     if account.item(upgrade_item_id).is_none() {
         return Ok(Detached::Gone);
     }
+    let host_item_id = if host_item_id == 0 {
+        account
+            .inventory
+            .iter()
+            .find(|item| item.upgrades.iter().any(|held| held.id == upgrade_item_id))
+            .map_or(0, |item| item.item_id)
+    } else {
+        host_item_id
+    };
     let host = account
         .item_mut(host_item_id)
         .filter(|host| host.upgrades.iter().any(|held| held.id == upgrade_item_id))

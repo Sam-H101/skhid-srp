@@ -33,6 +33,11 @@ mod ask {
         (0x46, body(2, &[1, upgrade, host]))
     }
 
+    /// `46 02 <kit> <upgrade>`: a client without patch 30 names no host.
+    pub fn detach_stock(upgrade: u32) -> (u8, Vec<u8>) {
+        (0x46, body(2, &[1, upgrade]))
+    }
+
     /// `46 05 <kit> <host> <upgrade> <u64>`.
     pub fn place(host: u32, upgrade: u32, value: u64) -> (u8, Vec<u8>) {
         let mut body = body(5, &[1, host, upgrade]);
@@ -427,6 +432,39 @@ fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
             host_item_id: vests[0]
         })
     );
+    assert_same_items(&mut world, alice);
+    world.assert_clean();
+}
+
+/// A client without patch 30 (every released revision) takes an upgrade off
+/// with `46 02 <kit> <upgrade>`: it is answered, and the upgrade comes off
+/// the first item of the inventory holding it, where the client's own
+/// answer handling takes it off too. Before 2026-10-17 it was refused as
+/// cut short (the owner's "неможливо перемістити приціл").
+#[test]
+fn a_client_without_patch_30_takes_an_upgrade_off_its_first_holder() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let first = give(&mut world, alice, "edge_torso_2", &[]);
+    let second = give(&mut world, alice, "bm_torso_1", &[]);
+    let camo = give(&mut world, alice, "camo_city", &[]);
+    for vest in [first, second] {
+        world.ask(alice, ask::attach(vest, camo, 3));
+    }
+    world.take(alice);
+    world.ask(alice, ask::detach_stock(camo));
+    let decoded = world.take(alice);
+    assert_eq!(denial(&decoded, 0x46), None);
+    assert_eq!(
+        decoded[0],
+        Decoded::Permitted(Permitted::UpgradeDetached {
+            upgrade_item_id: camo,
+            host_item_id: 0
+        })
+    );
+    let wears =
+        |world: &World, vest: u32| !world.account(alice).item(vest).unwrap().upgrades.is_empty();
+    assert!(!wears(&world, first) && wears(&world, second));
     assert_same_items(&mut world, alice);
     world.assert_clean();
 }

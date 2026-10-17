@@ -528,6 +528,47 @@ fn a_scope_is_bought_once_and_put_on_many_weapons() {
     assert!(drop_gone_upgrades_in(&mut account.inventory, &table).is_empty());
 }
 
+/// A client without patch 30 (every released revision, and the owner's test
+/// exe of 2026-10-17: "неможливо перемістити приціл") takes a scope off
+/// with `46 02 <kit> <upgrade>`, no weapon: the server takes it off the
+/// first item of the inventory holding it, as the client does on the
+/// answer. On the SVD that is the bought scope coming off: its record goes,
+/// and the weapon is built from its plain config, with the stock PSO-1.
+#[test]
+fn a_client_without_patch_30_takes_a_scope_off_its_first_holder() {
+    let table = scope_table();
+    let mut account = rich();
+    let svd = give(&mut account, "svd", &[]);
+    let ak = give(&mut account, "ak_74n", &[]);
+    let scope = account.add_item(SCOPE, FULL_CONDITION);
+    let mut client = client_of(&account);
+    for host in [svd, ak] {
+        attach_upgrade_in(&mut account, &table, host, scope, 3).unwrap();
+    }
+    client
+        .receive_all(&wire::after_change(&account, NOW).unwrap())
+        .unwrap();
+
+    // The SVD comes first in the inventory: it loses the scope.
+    assert_eq!(detach_upgrade(&mut account, 0, scope), Ok(Detached::Off));
+    assert!(records(&account, svd).is_empty());
+    assert_eq!(records(&account, ak), [scope_record(scope, AK_VARIANT)]);
+    // The stock client's own answer handling agrees, before the inventory
+    // that follows.
+    takes(
+        &mut client,
+        &lobby::permitted_upgrade_detached(scope, 0),
+        &account,
+    );
+    // Then the AK, and then there is nothing to take off.
+    assert_eq!(detach_upgrade(&mut account, 0, scope), Ok(Detached::Off));
+    assert!(records(&account, ak).is_empty());
+    assert_eq!(
+        detach_upgrade(&mut account, 0, scope),
+        Err(ItemError::Upgrade("the cosmetic is not on that item"))
+    );
+}
+
 #[test]
 fn a_wrong_scope_record_is_taken_off() {
     let table = scope_table();

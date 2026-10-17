@@ -143,10 +143,19 @@ fn inventory_actions() {
             host_item_id: 6
         }
     );
-    // A stock client's `46 02` names no host (patch 30 adds it).
-    let stock = h("46 02 01000000 05000000");
+    // A stock client's `46 02` names no host (patch 30 adds it): host 0,
+    // the first item holding the upgrade. Cut inside the upgrade: short.
     assert_eq!(
-        parse(stock[0], &stock[1..]),
+        read("46 02 01000000 05000000"),
+        M::DetachUpgrade {
+            kit_id: 1,
+            upgrade_item_id: 5,
+            host_item_id: 0
+        }
+    );
+    let short = h("46 02 01000000 0500");
+    assert_eq!(
+        parse(short[0], &short[1..]),
         Err(ParseError::Truncated { id: 0x46 })
     );
     assert_eq!(
