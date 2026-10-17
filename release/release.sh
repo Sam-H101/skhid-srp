@@ -44,6 +44,15 @@
 #      --resources, the file is resources.db.patch_<the release's revision>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
 #      which server code differs between main and the target's tree;
+#      whether main changes what a match computes: a `next` row of
+#      srp-026g/crates/session/src/v026g/simulation_changes.tsv, which a PR
+#      adds (it cannot know its revision): the server takes `next` for its
+#      SRP_MIN_PATCH_REVISION, this release's, so recordings of older games
+#      are refused from the swap on (the player is told why), and the record
+#      writes the number in; with one, the server code must be built (and
+#      also when the target's tree still has one: its server would take
+#      this release's revision for it); with none, a note when the exe's
+#      patches changed since the last tag;
 #   2. takes the release lock, then waits for the go: the owner's word that
 #      players may feel the release from now on (y at its prompt, n stops;
 #      or touch the go file it names under ~/.cache/skhid-release/; --yes
@@ -101,7 +110,8 @@
 #      srp-026g/client-patches/README.md (the time, the exe's sha256 with
 #      and without the server, the ZIP's, what it shipped: the merged PRs
 #      since the tag before), an entry in CHANGELOG-SKHID-026G.md for the
-#      owner to word, and release/patches.tsv as offered; pushed as
+#      owner to word, release/patches.tsv as offered, and <n> in place of
+#      a `next` row of simulation_changes.tsv (step 1); pushed as
 #      release/record-rev<n>, its PR opened and merged as a merge commit
 #      (gh). What gh could not do (the merge, when the token may not) is said
 #      at the end, loudly, and the run ends with 1: players have the
@@ -531,6 +541,22 @@ count_ended_matches() {
 # is said in RECORD_PROBLEMS (the run then ends with 1).
 release_tag() { printf '026g-rev%s' "$1"; }
 record_branch() { printf 'release/record-rev%s' "$1"; }
+# The changes of what a match computes, by revision (a PR adds `next`).
+SIMULATION_CHANGES=srp-026g/crates/session/src/v026g/simulation_changes.tsv
+# The exe's patch files of srp-026g/client-patches changed from <a> to <b>,
+# one a line: not the notes, tests and checks, nor patch_026g.py when only
+# its REVISION line changed (a record's).
+exe_patch_changes() { # <a> <b>
+    local path
+    git -C "$REPO" diff --name-only "$1" "$2" -- srp-026g/client-patches 2>/dev/null | while read -r path; do
+        case ${path##*/} in
+        *.md | *.txt | test_* | check_* | selftest_*) continue ;;
+        patch_026g.py)
+            git -C "$REPO" diff -U0 "$1" "$2" -- "$path" | grep -E '^[-+][^-+]' | grep -qvE '^[-+]REVISION = [0-9]+$' || continue ;;
+        esac
+        printf '%s\n' "${path#srp-026g/client-patches/}"
+    done || true
+}
 RECORD_PROBLEMS=() RECORDING=0
 record_problem() {
     RECORD_PROBLEMS+=("$*")
@@ -601,6 +627,14 @@ record_files() { # <wt> <shipped>
         record_problem "REVISION = $rev could not be written in patch_026g.py"
         return 1
     }
+    # A change of what a match computes: this revision for its `next`.
+    file=$wt/$SIMULATION_CHANGES
+    if [[ -n $SIM_NEXT ]]; then
+        if ! { sed -i "s/^next\t/$rev\t/" "$file" 2>/dev/null && ! grep -q $'^next\t' "$file" && grep -q "^$rev"$'\t' "$file"; }; then
+            record_problem "revision $rev could not be written for \`next\` in $SIMULATION_CHANGES (the next release's server would take its own revision for it)"
+            return 1
+        fi
+    fi
     file=$wt/srp-026g/client-patches/README.md
     if [[ -f $file ]]; then
         ROW=$(readme_row "$shipped") awk '{ line[NR] = $0 }
@@ -675,6 +709,12 @@ record_release() {
             say "the offered-patch list (release/patches.tsv) as the server offers it now."
         else
             say "srp-026g/client-patches/README.md, a changelog entry for the owner to word."
+        fi
+        if [[ -n $SIM_NEXT ]]; then
+            say
+            say "It changes what a match computes ($SIM_NEXT): $rev in place of"
+            say "\`next\` in $SIMULATION_CHANGES; recordings of games before"
+            say "revision $rev are no longer given (the player is told why)."
         fi
         say
         say "Shipped:"
@@ -1045,6 +1085,45 @@ if [[ -n $main_commit ]]; then
     fi
 fi
 
+# Replays: a change of what a match computes (a `next` row of the list,
+# which a PR adds) makes this release's revision the oldest whose
+# recordings are given; its server takes `next` for its
+# SRP_MIN_PATCH_REVISION, and the record writes the number in.
+SIM_NEXT='' sim_last=''
+if [[ -n $main_commit ]]; then
+    if sim=$(git -C "$REPO" show "$main_commit:$SIMULATION_CHANGES" 2>/dev/null); then
+        SIM_NEXT=$(awk -F '\t' '$1 == "next" { print $2 }' <<<"$sim")
+        sim_last=$(awk -F '\t' '$1 ~ /^[0-9]+$/ { n = $1 } END { print n }' <<<"$sim")
+        if [[ -n $SIM_NEXT ]]; then
+            okay "replays: this release changes what a match computes ($SIM_NEXT): recordings of games before revision ${rev:-<n>} are refused from it on (the player is told why); the record writes ${rev:-<n>} for \`next\` in $SIMULATION_CHANGES"
+            if ((target_ok && !build_code)); then
+                problem "replays: $SIMULATION_CHANGES has a \`next\` row, but the server code is not built (--server-code no): the server would go on giving recordings of older games to the new one"
+            fi
+        else
+            okay "replays: no change of what a match computes is marked ($SIMULATION_CHANGES): recordings from revision ${sim_last:-?} on stay watchable"
+            # The running server was built from a tree with `next` (the
+            # release before changed what a match computes; its record
+            # wrote the number on main since): made anew with this
+            # release's SRP_MIN_PATCH_REVISION and not rebuilt, it would
+            # take this revision for `next`.
+            if ((target_ok && !build_code)) &&
+                on_target "cd $D && awk -F '\t' '\$1 == \"next\" { found = 1 } END { exit !found }' ${SIMULATION_CHANGES#srp-026g/}" 2>/dev/null; then
+                problem "replays: the live server was built with a \`next\` row of $SIMULATION_CHANGES, and the server code is not built (--server-code no): made anew with SRP_MIN_PATCH_REVISION=${rev:-<n>}, it would take ${rev:-<n>} for \`next\` and refuse the recordings of the games before it, which stay watchable"
+            fi
+            # The exe's patches changed since the last release: said, in
+            # case a change of the simulation was not marked.
+            if [[ -n $main_rev ]] && since=$(git -C "$REPO" rev-parse -q --verify "refs/tags/$(release_tag "$main_rev")^{commit}"); then
+                exe_changed=$(exe_patch_changes "$since" "$main_commit")
+                if [[ -n $exe_changed ]]; then
+                    say "  note     the exe's patches changed since $(release_tag "$main_rev") ($(tr '\n' ' ' <<<"$exe_changed" | sed 's/ $//')), and no change of what a match computes is marked: if a match plays out otherwise now, stop, and have a PR add a \`next\` row to $SIMULATION_CHANGES first"
+                fi
+            fi
+        fi
+    else
+        problem "no $SIMULATION_CHANGES in origin/$ref (the changes of what a match computes, for the replays)"
+    fi
+fi
+
 if ((${#problems[@]})); then
     say
     say "preflight: ${#problems[@]} problem(s), nothing was done:"
@@ -1066,6 +1145,11 @@ say "  new content: ${resources:-none}"
 say "  /patches will offer:"
 say_offered
 say "  server code: $(if ((build_code)); then say "built before the swap (docker compose build srp26)"; else say "not built"; fi)"
+if [[ -n $SIM_NEXT ]]; then
+    say "  replays: what a match computes changes ($SIM_NEXT): recordings of games before revision $rev are refused from the swap on"
+else
+    say "  replays: what a match computes does not change (recordings from revision ${sim_last:-?} on stay watchable)"
+fi
 scale=""
 ((MINUTE == 60)) || scale=" (a minute here is $MINUTE s)"
 if ((now)); then
@@ -1278,7 +1362,7 @@ if ((DRY_RUN)); then
         say "[dry run] 7. no record (--test: no commit, no tag)"
     else
         say "[dry run] 7. once it went out, the record: git tag -a $(release_tag "$rev") ${main_commit:0:7} (the UTC time, the ZIP's and the server data's sha256) and git push origin refs/tags/$(release_tag "$rev");"
-        say "[dry run]    the commit \"Release revision $rev\" on ${main_commit:0:7} (REVISION = $rev, the README revision table's row, a changelog entry to word, release/patches.tsv as offered), pushed as $(record_branch "$rev"), gh pr create, gh pr merge --merge"
+        say "[dry run]    the commit \"Release revision $rev\" on ${main_commit:0:7} (REVISION = $rev, the README revision table's row, a changelog entry to word, release/patches.tsv as offered$([[ -z $SIM_NEXT ]] || printf ", %s for \`next\` in %s" "$rev" "$SIMULATION_CHANGES")), pushed as $(record_branch "$rev"), gh pr create, gh pr merge --merge"
         say "[dry run]    it would ship (merged PRs): $(shipped_prs "$main_commit" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
     fi
     say

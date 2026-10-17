@@ -79,7 +79,34 @@ pub fn replays_of(settings: Option<ReplaySettings>) -> Replays {
             settings.max_replay_bytes >> 20
         );
     }
-    Replays::new(settings, min_players)
+    // A simulation change not recorded yet (`next`) is this release's own
+    // revision: the one the release set as the server's minimum.
+    let min_patch_revision = std::env::var("SRP_MIN_PATCH_REVISION")
+        .ok()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    let oldest = replays::oldest_replayable_here(min_patch_revision);
+    if settings.is_some() {
+        let pending = replays::simulation_changes(replays::SIMULATION_CHANGES)
+            .ok()
+            .and_then(|changes| changes.last().copied())
+            .filter(|row| row.revision.is_none());
+        if let Some(pending) = pending
+            && min_patch_revision == 0
+        {
+            log::warn!(
+                "Replays: a change of what a match computes is not released yet (`next`: {}), \
+                 and SRP_MIN_PATCH_REVISION is not set: it is not counted (a server of no \
+                 release); a release sets it",
+                pending.what
+            );
+        }
+        log::info!(
+            "Replays: recordings of games of patch revision {oldest} and later are given (the \
+             last change of what a match computes); older ones are refused, said to the player"
+        );
+    }
+    Replays::new(settings, min_players).with_oldest_revision(oldest)
 }
 
 /// Starts the conversion thread, after deleting what is left of a stopped

@@ -1,0 +1,17 @@
+# The patch revisions that changed what a match computes (the simulation),
+# oldest first. A game plays a replay only when every game of its recording
+# was of the last one's revision or later: a recording of older games plays
+# out otherwise in a newer one (session::v026g::replays, read at build time;
+# srp-026g/docs/notes/replay_watch.md section 2).
+#
+# A PR whose change makes a match play out otherwise (an exe patch of the
+# game's rules, what a kit or a respawn is, ...) adds the row
+#     next<TAB><what changed, and its PR>
+# at the end: a PR never knows its revision. The release that ships it is
+# that revision: its server takes `next` for its SRP_MIN_PATCH_REVISION
+# (the release's own, set at its swap), and release/release.sh writes the
+# number in place of `next` in its record. One `next` row at most: a second
+# simulation change before the release adds its words to that row.
+#
+# revision	what changed
+11	the Team Deathmatch end (patch 21) and a battery under the floor picked up (patch 23)

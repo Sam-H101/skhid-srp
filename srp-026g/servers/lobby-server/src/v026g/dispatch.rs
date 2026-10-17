@@ -187,7 +187,10 @@ impl Core<'_> {
             // `43 00`: the daily bonus (`shop`).
             M::QueryDailyBonus => self.daily_bonus(who),
             // No video: the link stays hidden.
-            M::QueryVideoLink { .. } => {
+            M::QueryVideoLink { language } => {
+                if let Some(player) = self.player_mut(addr) {
+                    player.language = Some(language);
+                }
                 self.send(addr, lobby::video_link(false, ""));
             }
 
@@ -435,9 +438,13 @@ impl Core<'_> {
                 ..
             } => self.important(who, &target_name, kind, &text, now),
             M::Friendship(action) => self.friendship(who, &action, now),
-            M::Subscribe { channel_ids, .. } => {
+            M::Subscribe {
+                channel_ids,
+                language,
+            } => {
                 if let Some(player) = self.player_mut(addr) {
                     player.channel_ids = channel_ids;
+                    player.language = Some(language);
                 }
             }
             M::ImportantRead { message_id, answer } => self.important_read(who, message_id, answer),

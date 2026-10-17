@@ -68,6 +68,9 @@ pub(super) struct Player<'a> {
     pub reached: Option<IpAddr>,
     /// The chat channels' ids (`4F`); all 0 until the client subscribes.
     pub channel_ids: [u32; 10],
+    /// The game's language, as `4F` and `45` give it (0 English, 1
+    /// Russian, 2 Ukrainian, 3 German, 4 Polish); `None` before either.
+    pub language: Option<u8>,
     /// When it pressed Play, while it waits.
     pub queued_since: Option<Instant>,
     /// When its join was last said in the general chat, and whether that
@@ -622,6 +625,7 @@ impl<'a> Core<'a> {
             _hold: hold,
             reached: reached_address(from),
             channel_ids: [0; 10],
+            language: None,
             queued_since: None,
             queue_line: None,
             queue_announced: false,
