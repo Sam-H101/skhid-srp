@@ -299,6 +299,32 @@ fn one_cosmetic_is_worn_by_many_items() {
     assert_eq!(decal_on(&account, vests[2]), Some((0, 3)));
 }
 
+/// What a load does to an account (`Account::repair`, with `make_safe` for
+/// each item, and `sync_kits`) keeps a cosmetic worn by many items on each.
+#[test]
+fn a_cosmetic_on_many_items_is_kept_by_the_load() {
+    let mut account = rich();
+    let vests: Vec<u32> = ["edge_torso_2", "bm_torso_1", "edge_torso_2"]
+        .into_iter()
+        .map(|name| give(&mut account, name, &[]))
+        .collect();
+    let camo = account.add_item(dict("camo_city"), FULL_CONDITION);
+    let decal = account.add_item(decal(), FULL_CONDITION);
+    for (index, &vest) in vests.iter().enumerate() {
+        attach_upgrade(&mut account, vest, camo, 3).unwrap();
+        attach_upgrade(&mut account, vest, decal, (index % 2) as u8).unwrap();
+        place_upgrade(&mut account, vest, decal, index as u64 + 1).unwrap();
+    }
+    let worn = account.clone();
+    assert!(!account.repair());
+    assert!(!account.sync_kits());
+    assert_eq!(account, worn);
+    for &vest in &vests {
+        assert_eq!(account.item(vest).unwrap().upgrades.len(), 2);
+    }
+    client_of(&account);
+}
+
 #[test]
 fn a_cosmetic_put_on_another_item_stays_on_the_first() {
     for (cosmetic_dict, cosmetic_slot) in [(dict("camo_city"), 3), (decal(), 0)] {

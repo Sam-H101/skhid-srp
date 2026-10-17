@@ -853,6 +853,30 @@ mod tests {
         assert_eq!(repository.describe(), temp.path().display().to_string());
     }
 
+    /// One cosmetic worn by two items (patch 30): each item's record of it
+    /// comes back, with its own slot and value.
+    #[test]
+    fn a_cosmetic_worn_by_two_items_comes_back_on_both() {
+        let temp = TempDb::new("shared-upgrade");
+        let mut account = Account::new("Alice");
+        let cosmetic = account.inventory[2].item_id;
+        let record = |param, value| Upgrade {
+            id: cosmetic,
+            a: account.inventory[2].dict_id.into(),
+            value,
+            param,
+        };
+        let (first, second) = (record(3, 0), record(0, 7));
+        account.inventory[0].upgrades = vec![first];
+        account.inventory[1].upgrades = vec![second];
+        let mut repository = SqliteGameRepository::open(&temp.path()).unwrap();
+        repository.save(7, &account).unwrap();
+        let loaded = repository.load_all().unwrap();
+        assert_eq!(loaded, [(7, account.clone())]);
+        assert_eq!(loaded[0].1.inventory[0].upgrades, [first]);
+        assert_eq!(loaded[0].1.inventory[1].upgrades, [second]);
+    }
+
     #[test]
     fn the_tables_live_beside_021ds_in_one_file() {
         let temp = TempDb::new("shared");
