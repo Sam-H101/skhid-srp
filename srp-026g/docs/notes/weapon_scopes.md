@@ -45,7 +45,14 @@ in `crates/session/src/v026g/items_rules.rs`.
 
 - **Shop items.** One scope item per optic, category 22, sold by seller 0 at no reputation
   level (a scope is view-only: nothing to unlock), at the item's own `base_cost` from the
-  dictionary, the same number the client shows and sells back for a quarter of. Not sold: 0.26g's
+  dictionary, the same number the client shows and sells back for a quarter of. Seller 0 is the
+  shop's own shared seller: the movie puts a tab for it before the factions' tabs, named by
+  `non_faction_items` (`st_non_faction_items`, "Independent traders"; `InventoryList.fillSellers`),
+  and every record of seller 0 is buyable at any reputation (`GangShop.setupShopItems`:
+  `_unlockedLevel` starts at 0 for every seller, and a seller-0 record goes straight into the
+  buyable list). PROVEN in the ActionScript; the tab with scopes in it not yet seen in a game.
+  Category 22 falls in the movie's fourth item group (`ItemFactory.getCategory`: everything but
+  armour, weapons, ammo and cosmetics), with drugs, traps and grenades. Not sold: 0.26g's
   three scope entries, the variants, any category-22 entry no variant names. Scopes never drop
   and never go into a kit slot (category 22 has no profile slot; data giving it one is refused at
   start).
@@ -59,9 +66,15 @@ in `crates/session/src/v026g/items_rules.rs`.
   }
   ```
 
-  A variant is kept when its own `modifications` holds its `parameters.modification`, its scope
-  is a non-premium category-22 item that is no variant, and each weapon is of a weapon category
-  (8, 13..17). A `(weapon, scope)` pair named twice keeps the lower variant id. Whatever is left
+  A variant is kept when its own `modifications` holds its `parameters.modification`; when that
+  modification puts the variant itself into each weapon's scope as the weapon can take it (a
+  `type` 0 set of `[addons, rifle_scope_dict_id]` on a weapon with a stock scope, a `type` 3 add
+  of `[rifle_scope_dict_id, <variant>]` to `[addons]` on one without a scope but with an `addons`
+  child: an add where a stock scope is would hit the client's duplicate-name assert, a set where
+  none is would show nothing); when its scope is a non-premium category-22 item that is no
+  variant and no weapon's stock scope (0.26g's 69, 304, 362 are never sold or put on); and when
+  each weapon is of a weapon category (8, 13..17). On a weapon with a stock scope the bought one
+  replaces it while the record is on; taken off, the plain config brings the stock one back. A `(weapon, scope)` pair named twice keeps the lower variant id. Whatever is left
   out is written to the log at start with the reason. The pairs live only in the game data, so
   the server and the players' game cannot disagree about them; **game data with no variant has
   no pair: no scope is sold and none goes on a weapon** (the players' data until the release

@@ -135,20 +135,45 @@ impl ScopeFits {
             })?;
             configs.push((item.dict_id, config));
         }
-        Ok(Self::from_configs(dictionary, &configs))
+        let weapon_config = |dict_id: u16| {
+            let item = dictionary.item(dict_id)?;
+            game_data::config(data, &item.cfg_name).ok().flatten()
+        };
+        Ok(Self::from_configs(dictionary, &configs, &weapon_config))
     }
 
     /// The pairs of the category-22 configs given as `(dict id, config)`,
-    /// and why anything was left out.
+    /// with each named weapon's config from `weapon_config`, and why
+    /// anything was left out.
     pub fn from_configs(
         dictionary: &Dictionary,
         configs: &[(u16, ConfigValue)],
+        weapon_config: &dyn Fn(u16) -> Option<ConfigValue>,
     ) -> (Self, Vec<String>) {
         let variants: Vec<u16> = configs
             .iter()
             .filter(|(_, config)| config.get(FIT_KEY).is_some())
             .map(|&(dict_id, _)| dict_id)
             .collect();
+        // What no shop scope may be: a variant, or a scope a weapon's own
+        // config names (0.26g's Leupold 69, PSO-1 304, 1P69 362: the stock
+        // scope comes back when a bought one is taken off, so it is never
+        // sold or put on itself).
+        let mut not_scopes = variants.clone();
+        if !variants.is_empty() {
+            for item in &dictionary.items {
+                if !WEAPON_CATEGORIES.contains(&item.category) {
+                    continue;
+                }
+                let stock = weapon_config(item.dict_id).and_then(|config| {
+                    let addons = config.get("addons")?;
+                    addons.get("rifle_scope_dict_id")?.as_i32()
+                });
+                if let Some(stock) = stock.and_then(|id| u16::try_from(id).ok()) {
+                    not_scopes.push(stock);
+                }
+            }
+        }
         let mut fits = Vec::new();
         let mut left_out = Vec::new();
         for (dict_id, config) in configs {
@@ -158,7 +183,14 @@ impl ScopeFits {
             let name = dictionary
                 .item(*dict_id)
                 .map_or("?", |item| item.name.as_str());
-            match variant_fits(dictionary, &variants, *dict_id, config, block) {
+            match variant_fits(
+                dictionary,
+                &not_scopes,
+                weapon_config,
+                *dict_id,
+                config,
+                block,
+            ) {
                 Ok(found) => fits.extend(found),
                 Err(why) => left_out.push(format!("variant {dict_id} `{name}` left out: {why}")),
             }
@@ -241,14 +273,83 @@ fn named_item(dictionary: &Dictionary, value: &ConfigValue) -> Result<u16, Strin
         .ok_or_else(|| format!("{value:?} is no item of the dictionary"))
 }
 
+/// How a variant's modification puts its scope on a weapon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Puts {
+    /// `type` 0 on `[addons, rifle_scope_dict_id]`: sets it, for a weapon
+    /// with a stock scope (the stock one comes back without the record).
+    Set,
+    /// `type` 3 on `[addons]` with `[rifle_scope_dict_id, <variant>]`: adds
+    /// it, for a weapon with no scope.
+    Add,
+}
+
+fn texts(value: &ConfigValue) -> Vec<&str> {
+    value
+        .children()
+        .into_iter()
+        .filter_map(ConfigValue::as_str)
+        .collect()
+}
+
+/// Which of [`Puts`] the modification row `row` makes with `variant`, if
+/// any of its modifiers puts the variant itself into the weapon's scope.
+fn puts(row: &ConfigValue, variant: u16) -> Option<Puts> {
+    let modifiers = row.get("modifiers")?.children();
+    modifiers.into_iter().find_map(|modifier| {
+        let path = texts(modifier.get("path")?);
+        let value = modifier.get("value")?;
+        match (modifier.get("type")?.as_i32()?, path.as_slice()) {
+            (0, ["addons", "rifle_scope_dict_id"]) => {
+                (value.as_i32() == Some(variant.into())).then_some(Puts::Set)
+            }
+            (3, ["addons"]) => {
+                let pair = value.children();
+                let named = pair.first().and_then(|name| name.as_str());
+                let id = pair.get(1).and_then(|id| id.as_i32());
+                (pair.len() == 2
+                    && named == Some("rifle_scope_dict_id")
+                    && id == Some(variant.into()))
+                .then_some(Puts::Add)
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Why `weapon` (its config) can not take a variant that `puts` so, if it
+/// can not (note §2, PROVEN in local games): a set needs the weapon's own
+/// `rifle_scope_dict_id` (on a missing node it is skipped: no scope); an
+/// add needs an `addons` table with a child (on an empty one nothing is
+/// added) and no `rifle_scope_dict_id` in it (the client asserts on a
+/// duplicate name, 0x3581C0).
+fn refuses(weapon: &ConfigValue, puts: Puts) -> Option<&'static str> {
+    let addons = weapon.get("addons");
+    let stock = addons.and_then(|addons| addons.get("rifle_scope_dict_id"));
+    match puts {
+        Puts::Set if stock.is_none() => Some("it sets a scope the weapon does not have"),
+        Puts::Add if stock.is_some() => {
+            Some("it adds a scope to a weapon that has one (the client asserts)")
+        }
+        Puts::Add if addons.is_none_or(|addons| addons.entries().is_empty()) => {
+            Some("it adds a scope to a weapon with no `addons` child (nothing is added)")
+        }
+        _ => None,
+    }
+}
+
 /// The pairs one variant's `block` gives, or why it gives none. The
 /// variant must be one the client can use: its `parameters.modification`
 /// is a modification of its own config (the client looks the record's
 /// modification up in the table it collects from every item's
-/// `modifications`, 0x2F1750).
+/// `modifications`, 0x2F1750) that puts the variant itself into each
+/// weapon's scope as that weapon can take it ([`refuses`]): attaching
+/// shows the variant in place of a stock scope, and taking it off gives
+/// the stock scope back.
 fn variant_fits(
     dictionary: &Dictionary,
-    variants: &[u16],
+    not_scopes: &[u16],
+    weapon_config: &dyn Fn(u16) -> Option<ConfigValue>,
     variant: u16,
     config: &ConfigValue,
     block: &ConfigValue,
@@ -259,16 +360,18 @@ fn variant_fits(
         .and_then(ConfigValue::as_i32)
         .filter(|&id| id != 0)
         .ok_or("it has no parameters.modification")?;
-    let own = config.get("modifications").is_some_and(|rows| {
+    let row = config.get("modifications").and_then(|rows| {
         rows.children()
             .into_iter()
-            .any(|row| row.get("id").and_then(ConfigValue::as_i32) == Some(modification))
+            .find(|row| row.get("id").and_then(ConfigValue::as_i32) == Some(modification))
     });
-    if !own {
+    let Some(row) = row else {
         return Err(format!(
             "its modification {modification} is not in its own `modifications`"
         ));
-    }
+    };
+    let puts = puts(row, variant)
+        .ok_or("its modification does not set or add `addons.rifle_scope_dict_id` = the variant")?;
     let scope = named_item(dictionary, block.get("scope").ok_or("`scope` is missing")?)?;
     let scope_item = dictionary.item(scope).expect("found by named_item");
     if scope_item.category != SCOPE_CATEGORY {
@@ -277,8 +380,10 @@ fn variant_fits(
             scope_item.category
         ));
     }
-    if scope_item.is_premium || variants.contains(&scope) {
-        return Err(format!("its scope {scope} is a premium item or a variant"));
+    if scope_item.is_premium || not_scopes.contains(&scope) {
+        return Err(format!(
+            "its scope {scope} is a premium item, a variant or a weapon's stock scope"
+        ));
     }
     let weapons = block.get("weapons").ok_or("`weapons` is missing")?;
     let named: Vec<&ConfigValue> = match weapons {
@@ -295,6 +400,10 @@ fn variant_fits(
             let category = dictionary.item(weapon).expect("found").category;
             if !WEAPON_CATEGORIES.contains(&category) {
                 return Err(format!("{weapon} is no weapon (category {category})"));
+            }
+            let config = weapon_config(weapon).ok_or(format!("weapon {weapon} has no config"))?;
+            if let Some(why) = refuses(&config, puts) {
+                return Err(format!("on weapon {weapon}: {why}"));
             }
             Ok(Fit {
                 weapon,
