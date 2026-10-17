@@ -18,7 +18,7 @@
 //!   tick (LIKELY), first half yaw, second pitch; under π each;
 //! - never the wheel's next/previous weapon (bits 25/26: every client reads
 //!   past the inventory, 0x2D8D0A), never a kit choice (0xDE), never the
-//!   unused bits 24, 29, 30, 31.
+//!   suicide (bit 24), never the unused bits 29, 30, 31.
 //!
 //! The script is fixed; the bot runs it again after a pause while the match
 //! lasts. Each input sent is printed with the sum of the turns sent so far,
@@ -58,8 +58,9 @@ pub mod key {
     /// Spot (bit 28): on the key going down, a 3 s cooldown. PROVEN
     /// (0x2D877C).
     pub const SPOT: u32 = 0x1000_0000;
-    /// Bits a bot never sends: the wheel's weapon switch (25, 26) and the
-    /// unused 24, 29, 30, 31.
+    /// Bits a bot never sends: the suicide (24: a hit on the player's own
+    /// head, 0x2D8BC1; client patch 34 sends it for the K key), the wheel's
+    /// weapon switch (25, 26) and the unused 29, 30, 31.
     pub const NEVER: u32 = 0x0100_0000 | 0x0600_0000 | 0xE000_0000;
 }
 

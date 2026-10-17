@@ -72,6 +72,8 @@ release's. The "Result" row is the build of the revision named in it.
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
+| `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
 | `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -1749,6 +1751,49 @@ single-archive and loose-only sets in which different priorities share a
 parent, the two answer alike for every pair. The byte comparison with the
 build of `main` 8511083: 397 bytes differ, the PE checksum and the
 predicate's. **Not run:** a game.
+
+### 34. The commit_suicide key kills one's own player (the next release's revision)
+
+The owner's wish (2026-10-17): a player can kill their own character in a
+match, to respawn and pick another kit quickly. The game has the feature
+but for one line: `commit_suicide` is game action 1Fh with the default key
+K (action table entry 0xA74D20), a key bound to it reaches the input
+handler's event buffer, and the match simulation kills a player whose input
+has bit 24 (`base_player::process_quick_slots`, 0x2D8BC1: a hit on the
+player's own head bone "brain", the attacker the player). The input builder
+(`process_first_person_mode`, 0x241250) never asks for action 1Fh, so no
+input ever had bit 24.
+
+**The patch.** Only in the builds with the late join; `suicide_key_026g.asm`,
+40 bytes at `.srp`+980h (after the pickup code, before the seek code), one
+site: the builder's last action call (spot, `call 0x242460` at 0x242196)
+calls it first. It asks `action_present` for action 1Fh with the same
+arguments and sets bit 24 when the key went down (one input, as spot), then
+goes on to the original call. K while alive in a match: the player dies at
+the input's tick, in every game.
+
+**Why the games agree.** Bit 24 is an ordinary input bit: the player's game
+applies it at once, the server relays it as it relays every input, every
+game applies it through the same code at the same tick. A game without the
+patch cannot send it but plays it from the others, so no minimum revision is
+needed for a match to agree, and the server must not take the bit out (the
+sender has applied it already). What a match computes does not change: no
+row in `simulation_changes.tsv`. The server's bots never send it.
+
+**What it counts.** The game counts a kill whose killer is the victim as a
+death and a suicide, no one's kill (`on_player_killed`, 0x2F4F38); Team
+Deathmatch charges it a ticket; the score weighs a suicide 0; the respawn
+time is a death's. No server rule is added. `../docs/notes/client_patch.md`
+section 3.32 has the proof.
+
+Checked: `selftest_026g.py` check 35 (and check 15's layout of `.srp`'s
+first page); `check_suicide_key_026g.py` runs the original's and the
+build's last action call with the game's own event buffer code on made-up
+handlers: K down sets bit 24 and nothing else, K repeated, released or held
+from before does not, spot answers as in the original, nothing else of the
+handler changes; the original never sets the bit. **Not run in a game**:
+that the hit always kills (a helmet could take some of it), the respawn and
+the kit pick after it.
 
 ### 35. A baked camouflage texture missing from the baker's list is baked again (the next release's revision)
 
