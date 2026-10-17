@@ -260,6 +260,20 @@ Patches:
   iterator first, then the priority (+2B8h) descending, archive reads before
   others, then the archive's path and the file offset (others: the parent
   +158h or the query);
+- a baked camouflage/decal texture that is no longer in the baker's list
+  is baked again instead of stopping the game (patch 35, with the late
+  join, client_patch.md section 3.33). The baker keeps a list of the
+  textures it saved to user_data/streamed_textures (name, CRC of the bytes,
+  size, age, "a load is under way"); a translate query finds the name there
+  and loads the file, check_loaded_baked_texture (0x131B40) compares the
+  loaded bytes' CRC with the list's: equal, the file is used; different,
+  the entry is erased and the query asks to be made again (result_requery:
+  "Texture %s is corrupted!"), which bakes it anew. A second load of that
+  name under way finds no entry and stopped the game with the fatal
+  "Saved baked texture %s not found" (seen live 2026-10-17, Rudnya). The
+  `jnz` at 0x131C1E after the assertion's "ignore" flag test becomes a
+  `jmp`: the function's own path for that flag, `return false`, so that
+  load is made again as the first was;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -452,6 +466,18 @@ GATHER = (GATHER_EVENTS, GATHER_LOCK)
 # write of -1), so a rollback over the death that completed the rule keeps
 # it, and the replay of that death is skipped (match.md section 28).
 TDM_DEATHS = (0x3160F1, bytes.fromhex("0f85e6000000"), b"\x90" * 6)
+
+# camouflage_decal_texture_type_baker_cook::check_loaded_baked_texture
+# 0x131B40 (`ret 0Ch`: the baker, the loaded resource, the path) looks the
+# path up in the baker's list (baker+230h begin, +234h end; 124h a record:
+# the path's buffer_string, +114h CRC, +118h size, +11Ch age, +120h "a load
+# is under way"). Not found: `cmp byte [226091Dh],0` (the assertion's
+# "ignore" flag) / `jnz 131C73h`, else the fatal assertion "Saved baked
+# texture %s not found" at 0x131C58 and `int3` at 0x131C72. 0x131C73 lets
+# the resource go and returns false, which on_baked_texture_loaded
+# (0x12DB40) answers with "Texture %s is corrupted!" and result_requery,
+# as for a CRC that differs. jnz -> jmp: the flag test is kept, unused.
+BAKED_TEXTURE_MISSING = (0x131C1E, bytes.fromhex("7553"), bytes.fromhex("eb53"))
 
 # replay_network_client's "is this place mine" (vtable 0x9FF344, slot +0x54
 # at 0x9FF398) is 0x54E10, `xor al,al` / `ret 4`. The client respawn rule's
@@ -1454,6 +1480,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         sites.append((PREGAME_PROGRESS_VA, PREGAME_PROGRESS_VA + len(PREGAME_PROGRESS[1])))
         patch(data, *TDM_DEATHS)
         sites.append((TDM_DEATHS[0], TDM_DEATHS[0] + len(TDM_DEATHS[1])))
+        patch(data, *BAKED_TEXTURE_MISSING)
+        sites.append((BAKED_TEXTURE_MISSING[0], BAKED_TEXTURE_MISSING[0] + len(BAKED_TEXTURE_MISSING[1])))
         patch(data, *REPLAY_REATTACH_THUNK)
         sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
         # An address: its relocation stays.

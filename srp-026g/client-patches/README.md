@@ -72,6 +72,7 @@ release's. The "Result" row is the build of the revision named in it.
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
+| `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `check_forward_scroll_026g.py` | Runs the original's and the build's forward-effect compile, with patch 28's two hooks, on made-up materials and compares what each sends; runs the third hook against the game's own binding of `scene_time`; loaded as is and rebased (needs Unicorn). With `--rev12=` it compares the build with revision 12 byte by byte |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
@@ -1669,6 +1670,48 @@ single-archive and loose-only sets in which different priorities share a
 parent, the two answer alike for every pair. The byte comparison with the
 build of `main` 8511083: 397 bytes differ, the PE checksum and the
 predicate's. **Not run:** a game.
+
+### 35. A baked camouflage texture missing from the baker's list is baked again (the next release's revision)
+
+A player's game stopped on 2026-10-17 while it loaded Rudnya with the fatal
+assertion "Saved baked texture
+user_data/streamed_textures/edge_researcher_03_legs_s3d.dds not found"
+(check_loaded_baked_texture, 0x131B40; the dump's exe is revision 16). A
+stock 0.26g defect: the code is the original's in every revision.
+
+The camouflage/decal baker draws an item's textures with its camouflage
+and decals once and saves them under user_data/streamed_textures; it keeps
+a list of what it saved (path, CRC of the bytes, size, age, "a load is under
+way"). A translate query that finds the path in the list loads the file;
+check_loaded_baked_texture compares the CRC of the bytes loaded with the
+first record of that path: the same, the file is used; another, the record
+is **erased** and the query is made again (`result_requery`, "Texture %s is
+corrupted!"), which bakes it anew. A record is made when the bake is done,
+before the resources manager has written the file (the save is
+asynchronous), and two characters wearing the same item bake one path twice
+(two records). When more loads of a path are under way than it has records
+and the bytes read are not the ones baked, the load after the last erase
+finds no record and the game stopped. In the dump: no record of
+`edge_researcher_03_legs_s3` (d, n, s), the list six records shorter than it
+had been (as six erases leave it: two of each), and "Texture ..._s3s.dds is corrupted!" logged in the same
+millisecond (`../docs/notes/client_patch.md` section 3.33).
+
+**The patch.** Only in the builds with the late join: the `jnz` at 0x131C1E,
+after the test of the assertion's "ignore" flag, becomes a `jmp` (one byte,
+75h -> EBh) to the function's own end for that flag: `return false`. The
+load is then made again like the one before it: the look-up finds nothing,
+so the texture is baked. Nothing a match computes; a game with it and one
+without play together.
+
+Checked: `selftest_026g.py` check 36; `check_baked_texture_026g.py` runs the
+original's and the build's look-up, push and check on a list where two
+characters baked one texture and three loads read other bytes: the original
+erases two records and stops at the assertion on the third load, the build
+makes all three again and bakes it; a good load and one load of other bytes
+give the original's result in both. Against the build of `main` without it,
+the default build differs in the byte at file 0x12101E and the PE checksum
+and in nothing else (compared byte by byte); `--no-late-join` gives the
+revision 4 exe byte for byte as before. **Not run:** a game.
 
 ## Not ported, not done
 

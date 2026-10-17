@@ -238,6 +238,15 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     get_file_offs, leaves only by `ret 4`, every branch inside lands on an
     instruction, it holds no absolute address and int3 fills the rest.
     check_read_order_026g.py runs it.
+36. the same build: a baked texture no longer in the baker's list is made
+    again (patch 35). check_loaded_baked_texture (0x131B40) has `jmp short
+    0x131c73` at 0x131C1E where the original and the build without the late
+    join have `jnz 0x131c73` after `cmp byte [226091Dh],0` (the not-found
+    assertion's "ignore" flag); in the original the assertion "Saved baked
+    texture %s not found" and `int3` follow, 0x131C73 returns false, and
+    only the list walk reaches that end; no relocation under the two bytes,
+    no branch into them. check_baked_texture_026g.py runs the original's
+    and the build's list on the loads of the crash.
 """
 
 import ctypes
@@ -738,6 +747,48 @@ def test_tdm_deaths(original, image, before):
           f"(constructor, this guard, the end test's four, rule_completed): {[hex(a) for a in users]}")
 
 
+def test_baked_texture_missing(original, image, before):
+    """A baked texture no longer in the baker's list is made again (patch
+    35, client_patch.md section 3.33): in check_loaded_baked_texture
+    (0x131B40), the `jnz` after the not-found assertion's "ignore" flag test
+    is a `jmp` to the function's `return false`; the build without the late
+    join keeps it."""
+    va, old, new = P.BAKED_TEXTURE_MISSING
+    stock = Image(original)
+    start, end = 0x131B40, 0x131ED0
+    original_rows = ndisasm(stock.read(start, end - start), start)
+    original_at = {address: text for address, _, text in original_rows}
+    rows = {address: text for address, _, text in ndisasm(image.read(start, end - start), start)}
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old and image.read(va, len(old)) == new,
+          f"{va:#x}: the original's `{old.hex()}` (jnz short), kept by the build without the late join, "
+          f"`{new.hex()}` (jmp short) in this one")
+    text = stock.read(0x9EE3F4, 33)
+    check(original_at.get(0x131C11) == "jnz 0x131bb3" and original_at.get(0x131C17) == "cmp byte [0x226091d],0x0"
+          and original_at.get(va) == "jnz 0x131c73" and original_at.get(0x131C27) == "push dword 0x9ee3f4"
+          and original_at.get(0x131C58) == "call 0x113450" and original_at.get(0x131C72) == "int3"
+          and original_at.get(0x131C73) == "lea ecx,[esp+0x48]" and original_at.get(0x131C7C) == "xor al,al"
+          and original_at.get(0x131C85) in ("ret 0xc", "ret word 0xc")
+          and text == b"Saved baked texture %s not found\0",
+          "the original: after the list's last record (`jnz 0x131bb3`) the flag test, the assertion "
+          "\"Saved baked texture %s not found\" (0x113450), `int3`; 0x131c73 lets the resource go and "
+          "returns false (`xor al,al` ... `ret 0xc`)")
+    check(rows.get(0x131C17) == "cmp byte [0x226091d],0x0" and rows.get(va) in ("jmp short 0x131c73", "jmp 0x131c73")
+          and all(rows.get(a) == original_at.get(a) for a in (0x131C20, 0x131C73, 0x131C7C, 0x131C85)),
+          f"{va:#x}: `jmp short 0x131c73`, the rest of the function the original's")
+    # The not-found end is reached from the list walk alone, and nothing
+    # else lands on the assertion's code.
+    into = sorted(address for address, _, text in original_rows
+                  if not 0x131C17 <= address < 0x131C73
+                  and branch_target(text) is not None and 0x131C17 <= branch_target(text) < 0x131C73)
+    check(into == [0x131BAB], f"only the empty list's `je 0x131c17` (0x131bab) jumps into the not-found end: "
+          f"{[hex(a) for a in into]}")
+    relocated = [rva for kind, rva in stock.relocations().values() if kind == 3 and rva + 4 > va and rva < va + len(old)]
+    check(not relocated, "no base relocation of the original is under the two bytes")
+    hits = [f"{address:#x}: {text}" for address, _, text in original_rows
+            if branch_target(text) is not None and va + 1 <= branch_target(text) < va + len(old)]
+    check(not hits, "no branch of the function lands inside the two bytes")
+
+
 def test_start_up_folder(original, image, mode):
     """A Documents folder the game may not write to (client_patch.md
     section 3.10): the mount without a root, and no journal by default."""
@@ -1100,7 +1151,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
-        [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)]
+        [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
+        [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))]
 
 
 def pickup_sites():
@@ -2977,6 +3029,7 @@ def test_late_join(original, without, server, source):
     test_shared_upgrades(original, image, before)
     test_kit_change(original, image, before)
     test_read_order(original, image, before)
+    test_baked_texture_missing(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
