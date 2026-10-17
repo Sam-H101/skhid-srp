@@ -7,7 +7,7 @@
 //! | request | done | refused |
 //! |---|---|---|
 //! | `46 01` attach | `83 46 01`, then the inventory and the account | `84 46` `st_cannot_upgrade_item`, then the inventory and the account (the window showed the cosmetic in its slot already) |
-//! | `46 02` detach | `83 46 02`, then the same | the same |
+//! | `46 02` detach | `83 46 02`, then the same (also for a cosmetic that is gone: sold, Flash's `on_item_sold` asks after the sale) | the same |
 //! | `46 05` place a decal | nothing: the client wrote the value itself and has no handler for an answer | `84 46`, then the inventory and the account |
 //! | `46 06` window opened | `83 46 06`, and `83 46 07` again for a change not chosen yet | `84 46` `st_cannot_select_rerolled_modification` |
 //! | `46 07` reroll | `83 46 07` and the money | `84 46`, then `83 46 06`: the window is locked until it is filled again |
@@ -19,7 +19,7 @@
 //! over the client is told with an important message, `#ir[<item>]`.
 
 use session::LockExt;
-use session::v026g::items_rules::{self, ItemError, RerollWindow};
+use session::v026g::items_rules::{self, Detached, ItemError, RerollWindow};
 use session::v026g::{quests, wire};
 use survarium::v026g::lobby::requests::{RepairPayment, id};
 use survarium::v026g::lobby::{self, Crafted};
@@ -64,12 +64,15 @@ impl Core<'_> {
         self.item_changed(who);
     }
 
-    /// `46 02 <kit> <upgrade>`.
-    pub(super) fn detach_upgrade(&mut self, who: &Who, upgrade: u32) {
-        let detached = items_rules::detach_upgrade(&mut who.account.locked(), upgrade);
+    /// `46 02 <kit> <upgrade> <host>` (the host is patch 30's).
+    pub(super) fn detach_upgrade(&mut self, who: &Who, host: u32, upgrade: u32) {
+        let detached = items_rules::detach_upgrade(&mut who.account.locked(), host, upgrade);
         match detached {
-            Ok(_) => {
-                self.send(who.addr, lobby::permitted_upgrade_detached(upgrade));
+            // Gone: Flash's on_item_sold, after the sale's answer (the
+            // cosmetic came off every item with it). It is off: a refusal
+            // would show the player an error for the sale.
+            Ok(Detached::Off | Detached::Gone) => {
+                self.send(who.addr, lobby::permitted_upgrade_detached(upgrade, host));
             }
             Err(error) => self.refuse_item(who, id::INVENTORY, "taking an upgrade off", error),
         }

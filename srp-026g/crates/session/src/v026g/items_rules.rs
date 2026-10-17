@@ -14,9 +14,19 @@
 //! - **Cosmetics.** A camouflage goes into slot 3 and a decal into slot 0
 //!   or 1 of an item whose config has `camo_available` /
 //!   `decal_available` (vests and trousers). The cosmetic stays an item of
-//!   the inventory; one is on one item at a time, and putting it on
-//!   another takes it off the first (the answer's `detach_first`). [srp]
-//!   Any camouflage fits any such item: `items_compatibility` pairs none.
+//!   the inventory. [srp, the owner's rule of 2026-10-16] **One cosmetic
+//!   is worn by any number of items at once**: each item that wears it
+//!   holds a record of it (the upgrade's id, its dict id, its value, its
+//!   slot), so each has its slot and a decal its own placement (`46 05`
+//!   names the item). Putting it on an item leaves it on the others; on
+//!   the same item in another slot it moves (the answer's `detach_first`,
+//!   which patch 30 of `client-patches` makes take it off that item);
+//!   taking it off (`46 02`, which patch 30 makes name the item) takes it
+//!   off that item alone. A cosmetic that goes (sold, used up as a donor)
+//!   comes off every item ([`drop_gone_upgrades`]). Nothing here is of the
+//!   cosmetic's kind: the same holds for any upgrade in any slot.
+//!   [srp] Any camouflage fits any such item: `items_compatibility` pairs
+//!   none.
 //! - **Reroll.** One modification of an item may be changed, any number of
 //!   times (`st_modifier_reroll_description`); the first change picks which
 //!   (the window locks the others, `was_rerolled_before`). A change offers
@@ -264,12 +274,16 @@ pub struct Attached {
     pub upgrade_item_id: u32,
     pub slot: u8,
     pub value: u64,
-    /// The cosmetic was on an item and came off it first.
+    /// The cosmetic was on the host in another slot and came off it
+    /// first (the answer's `detach_first`: patch 30 takes it off the host,
+    /// the stock client off the first item holding it).
     pub detach_first: bool,
 }
 
 /// `46 01 <kit> <host> <upgrade> <slot> <u64 0>`: put a camouflage or a
-/// decal on an item. What was in the slot comes off.
+/// decal on an item. What was in the slot comes off the item; the cosmetic
+/// stays on every other item wearing it. On the item already in that slot
+/// it stays as it is (its value too); in another slot of it, it moves.
 pub fn attach_upgrade(
     account: &mut Account,
     host_item_id: u32,
@@ -299,19 +313,25 @@ pub fn attach_upgrade(
     if kept >= limits::UPGRADES {
         return Err(ItemError::Upgrade("the item holds no more"));
     }
-    let mut detach_first = false;
-    let mut changed_hosts = vec![host_item_id];
-    for item in &mut account.inventory {
-        let before = item.upgrades.len();
-        item.upgrades.retain(|held| held.id != upgrade_item_id);
-        if item.upgrades.len() != before {
-            detach_first = true;
-            changed_hosts.push(item.item_id);
-        }
-    }
     let host = account
         .item_mut(host_item_id)
         .expect("the host was found above");
+    if let Some(held) = host
+        .upgrades
+        .iter()
+        .find(|held| held.id == upgrade_item_id && held.param == slot)
+    {
+        return Ok(Attached {
+            host_item_id,
+            upgrade_item_id,
+            slot,
+            value: held.value,
+            detach_first: false,
+        });
+    }
+    let before = host.upgrades.len();
+    host.upgrades.retain(|held| held.id != upgrade_item_id);
+    let detach_first = host.upgrades.len() != before;
     host.upgrades.retain(|held| held.param != slot);
     host.upgrades.push(Upgrade {
         id: upgrade_item_id,
@@ -319,13 +339,9 @@ pub fn attach_upgrade(
         value: 0,
         param: slot,
     });
-    // Removing the cosmetic changes the old host's appearance too. Refresh
-    // every affected kit once, including alternate kits sharing either host.
-    for kit in &mut account.kits {
-        if changed_hosts.iter().any(|&id| kit.slot_of(id).is_some()) {
-            kit.revision = kit.revision.wrapping_add(1);
-        }
-    }
+    // Only the host shows another cosmetic: every kit wearing it, the
+    // alternate kits sharing it too.
+    bump_kits_wearing(account, host_item_id);
     Ok(Attached {
         host_item_id,
         upgrade_item_id,
@@ -335,23 +351,41 @@ pub fn attach_upgrade(
     })
 }
 
-/// `46 02 <kit> <upgrade>`: take a cosmetic off the item it is on. Returns
-/// that item's id.
-pub fn detach_upgrade(account: &mut Account, upgrade_item_id: u32) -> Result<u32, ItemError> {
+/// What `46 02` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Detached {
+    /// The cosmetic came off the host (the answer is `83 46 02`).
+    Off,
+    /// The cosmetic is no item of the inventory any more: Flash's
+    /// `on_item_sold` sends `46 02` for a worn camouflage after it went
+    /// (sold, used up as a donor), when it came off every item already.
+    /// Nothing changes; it is off (the lobby answers `83 46 02`, which the
+    /// client takes for an item it no longer has without a change).
+    Gone,
+}
+
+/// `46 02 <kit> <upgrade> <host>`: take a cosmetic off one item; any
+/// other item wearing it keeps it.
+pub fn detach_upgrade(
+    account: &mut Account,
+    host_item_id: u32,
+    upgrade_item_id: u32,
+) -> Result<Detached, ItemError> {
+    if account.item(upgrade_item_id).is_none() {
+        return Ok(Detached::Gone);
+    }
     let host = account
-        .inventory
-        .iter_mut()
-        .find(|item| item.upgrades.iter().any(|held| held.id == upgrade_item_id))
-        .ok_or(ItemError::Upgrade("the cosmetic is on no item"))?;
+        .item_mut(host_item_id)
+        .filter(|host| host.upgrades.iter().any(|held| held.id == upgrade_item_id))
+        .ok_or(ItemError::Upgrade("the cosmetic is not on that item"))?;
     host.upgrades.retain(|held| held.id != upgrade_item_id);
-    let host_item_id = host.item_id;
     bump_kits_wearing(account, host_item_id);
-    Ok(host_item_id)
+    Ok(Detached::Off)
 }
 
 /// `46 05 <kit> <host> <upgrade> <u64>`: the decal editor's value for a
 /// cosmetic on an item (the client has written it into its own copy, and
-/// expects no answer).
+/// expects no answer). Each item wearing the cosmetic has its own.
 pub fn place_upgrade(
     account: &mut Account,
     host_item_id: u32,

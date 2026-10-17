@@ -136,11 +136,18 @@ fn inventory_actions() {
         }
     );
     assert_eq!(
-        read("46 02 01000000 05000000"),
+        read("46 02 01000000 05000000 06000000"),
         M::DetachUpgrade {
             kit_id: 1,
-            upgrade_item_id: 5
+            upgrade_item_id: 5,
+            host_item_id: 6
         }
+    );
+    // A stock client's `46 02` names no host (patch 30 adds it).
+    let stock = h("46 02 01000000 05000000");
+    assert_eq!(
+        parse(stock[0], &stock[1..]),
+        Err(ParseError::Truncated { id: 0x46 })
     );
     assert_eq!(
         read("46 03 05000000 23010000"),
