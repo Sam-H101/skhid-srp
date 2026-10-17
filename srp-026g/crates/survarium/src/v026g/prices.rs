@@ -742,8 +742,14 @@ mod tests {
         assert_eq!(sold_by("ammo_5.56x45"), sold_by("ammo_9x19p_7n31"));
         let round = dictionary.item_named("ammo_5.56x45").unwrap();
         let theirs = dictionary.item_named("ammo_9x19p_7n31").unwrap();
-        assert_eq!(price(round.dict_id).unwrap().cost, price(theirs.dict_id).unwrap().cost);
-        assert!(dictionary.compatible(round.dict_id, dictionary.item_named("hk416").unwrap().dict_id));
+        assert_eq!(
+            price(round.dict_id).unwrap().cost,
+            price(theirs.dict_id).unwrap().cost
+        );
+        assert!(dictionary.compatible(
+            round.dict_id,
+            dictionary.item_named("hk416").unwrap().dict_id
+        ));
     }
 
     #[test]
