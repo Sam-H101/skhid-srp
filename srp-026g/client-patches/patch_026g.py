@@ -52,6 +52,12 @@ USAGE (this script never touches the source exe):
     (checked in). The archive reads' order comes from read_order_026g.asm, which
     replaces hdd_manager_sorting_predicate's body in place:
         nasm -f bin read_order_026g.asm -o read_order_026g.bin
+    (checked in). A weapon's upgrade window showing the weapon comes from
+    weapon_preview_026g.asm:
+        nasm -f bin -DCAVE=0xA427E50 -DSTATE=0xA428E00 weapon_preview_026g.asm -o weapon_preview_026g.section.bin
+    (checked in; STATE is 0xE00 of the late join's state page, checked), and its
+    draw from weapon_draw_026g.asm:
+        nasm -f bin -DCAVE=0xA425D20 -DSTATE=0xA428E00 weapon_draw_026g.asm -o weapon_draw_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -251,6 +257,19 @@ Patches:
   death screen (0x233F28), and hides them from a live one once play begins
   (0x23B7FC). The code is
   kit_change_026g.asm at 0xEC0 of `.srp`;
+- a weapon's upgrade window ("Optika", the scope slot) shows the weapon
+  (patch 32, with the late join, client_patch.md section 3.30): the lobby's
+  character shows the kit whose held weapon (slot 7, or 10 without a 7) is
+  the window's item, also through every refresh while the window is open
+  (setup_profile 0x284B10), and the lobby camera looks at the weapon from
+  nearer (start_item_upgrade's camera call 0x265E73; the least distance at
+  0x284081, 0x28428C and 0x284316 is the original's 1.5 again once the
+  camera is back there); the window's close shows the kit chosen in the
+  lobby again (0x265F44); while it shows the weapon, the player is drawn
+  as in the lobby, not for the decal editor (0x284A33: no bind pose, the
+  weapon in its hands). Any other window is the original's. The code is
+  weapon_preview_026g.asm at 0x2E50 of `.srp`, after the late join, and
+  weapon_draw_026g.asm at 0xD20;
 - the order of the archive reads is a strict weak ordering (patch 33, with
   the late join, client_patch.md section 3.31): hdd_manager's sort of the
   pending reads (0x10BE80, std::sort with unguarded loops) used a predicate
@@ -730,6 +749,62 @@ KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pi
 # place, the same entry and convention.
 READ_ORDER_VA, READ_ORDER_SIZE = 0x10BCC0, 0x1A0
 READ_ORDER_SHA256 = "3c49ddd03438f137bbf3ec844d41ed3c4247d6d815595f1d494a515e112d0aa8"
+# A weapon's upgrade window shows the weapon (patch 32, README; client_patch.md
+# section 3.30): weapon_preview_026g.asm at WEAPON_PREVIEW_OFFSET of `.srp`,
+# after the late join's code (which must end before it) and before `.srpd`;
+# its state (three dwords) at WEAPON_PREVIEW_STATE_OFFSET of `.srpd`, after
+# the patches' mount's. Five entries, six sites:
+# - start_item_upgrade's handler (0x29A870, the delegate {lobby ui, 0x29A870}
+#   at 0x281843) calls 0x265DE0 with esi = the lobby's character (lobby
+#   ui+694h, survarium::lobby_character, ctor 0x284730) and edi = the item;
+#   its `call 0x2845C0` (the lobby camera's setter: xmm0 the look-at height,
+#   xmm1 the distance, [esp+4] the side angle, `ret 4`) at 0x265E73 calls
+#   start_cam: when a kit of the account's profile (lobby ui+6A0h) holds the
+#   item as its weapon 1 (kit slot 7) or, without one, its weapon 2 (slot
+#   10), the character shows that kit and the camera gets WEAPON_HEIGHT and
+#   WEAPON_DISTANCE; else the original's values;
+# - exit_item_upgrade's 0x265F10, `call 0x2845C0` at 0x265F44: exit_cam
+#   shows the kit chosen in the lobby (profile+4632h) again after a weapon;
+# - setup_profile 0x284B10 (eax = a profile, the character and the kit on
+#   the stack, `ret 8`; called by the lobby's refresh 0x222A42, the squad
+#   panels' 0x223029 and its own re-call 0x2850C5): its first six bytes
+#   (`push ebp` / `mov ebp,esp` / `and esp,-8`) jump to setup_hook, which,
+#   while a weapon is shown and the character has an upgrade window open
+#   (+D515h, which only the lobby's own character ever has), gives it the
+#   weapon's kit;
+# - the camera tick's least distance (0x283EF0, the float 1.5 at 0xA7AFA4,
+#   `movss xmmN,[0xA7AFA4]` at three sites: the wheel, the step and the last
+#   clamp) is a call of min_step or min_final and three nops: 1.5, or
+#   NEAR_MIN from a weapon's window until the camera is back at 1.5. The
+#   address's three base relocations are disabled;
+# - the lobby character's update (0x2849F0) gives its player the window's
+#   mode at every frame (`mov [ecx+0F49Ch],al` at 0x284A33; the player's
+#   ctor clears it at 0x1F1BFB, nothing else writes it): set, the player is
+#   drawn for the decal editor, its skeleton in the bind pose (mt_draw
+#   0x2474A0 at 0x2476F8: the T-pose) and its held item 10 m under it
+#   (0x24778F), with another transform (insert 0x1F30E2). The six bytes are
+#   a call of weapon_draw_026g.asm's player_mode (WEAPON_DRAW_OFFSET of
+#   `.srp`, in the first page after the forward effect's scrolling) and a
+#   nop: 0 while a weapon is shown (the state's mode), the window's mode
+#   otherwise.
+# The code finds its own address (call/pop), so a rebase changes nothing.
+WEAPON_PREVIEW_OFFSET = 0x2E50
+WEAPON_PREVIEW_VA = SECTION_VA + WEAPON_PREVIEW_OFFSET
+WEAPON_PREVIEW_STATE_OFFSET = 0xE00
+WEAPON_PREVIEW_STATE_SIZE = 12
+WEAPON_PREVIEW_LEAST = 0xA7AFA4
+WEAPON_PREVIEW_HOOKS = (
+    (0x265E73, bytes.fromhex("e848e70100"), 0x00, 0xE8),            # start_item_upgrade's camera: start_cam
+    (0x265F44, bytes.fromhex("e877e60100"), 0x6D, 0xE8),            # exit_item_upgrade's camera: exit_cam
+    (0x284B10, bytes.fromhex("558bec83e4f8"), 0xAD, 0xE9),          # setup_profile: setup_hook
+    (0x284081, bytes.fromhex("f30f100da4afa700"), 0xE6, 0xE8),      # the wheel's least: min_step
+    (0x28428C, bytes.fromhex("f30f100da4afa700"), 0xE6, 0xE8),      # the step's least: min_step
+    (0x284316, bytes.fromhex("f30f1005a4afa700"), 0xFC, 0xE8),      # the last clamp's least: min_final
+)
+WEAPON_PREVIEW_RELOCS = [0x284085, 0x284290, 0x28431A]
+WEAPON_DRAW_OFFSET = 0xD20
+WEAPON_DRAW_VA = SECTION_VA + WEAPON_DRAW_OFFSET
+WEAPON_DRAW_HOOK = (0x284A33, bytes.fromhex("88819cf40000"), 0, 0xE8)   # the player's decal pose: player_mode
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1586,6 +1661,38 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         data[at:at + READ_ORDER_SIZE] = read_order
         if neutralize_relocs(data, [(READ_ORDER_VA, READ_ORDER_VA + READ_ORDER_SIZE)]):
             sys.exit("a base relocation under hdd_manager_sorting_predicate")
+        weapon_preview = open(weapon_preview_bin(), "rb").read()
+        if LATE_JOIN_OFFSET + len(late_join) > WEAPON_PREVIEW_OFFSET \
+                or WEAPON_PREVIEW_VA + len(weapon_preview) > late_join_state_va(late_join):
+            sys.exit("the late join and the weapon preview do not fit before the late join's state page")
+        if MOUNT_STATE_OFFSET + MOUNT_STATE_SIZE > WEAPON_PREVIEW_STATE_OFFSET \
+                or WEAPON_PREVIEW_STATE_OFFSET + WEAPON_PREVIEW_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the weapon preview's state is not between the patches' mount's and the page's end")
+        if weapon_preview_state(weapon_preview) != late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET \
+                or any(weapon_preview[offset] != first for (_, _, offset, _), first
+                       in zip(WEAPON_PREVIEW_HOOKS, (0x60, 0x60, 0x50, 0x50, 0x50, 0x50))):
+            sys.exit(f"weapon_preview_026g.section.bin: its entries or its state are not where patch_026g.py "
+                     f"puts them (assembled with -DCAVE={WEAPON_PREVIEW_VA:#x} "
+                     f"-DSTATE={late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET:#x}?)")
+        for va, expected, offset, opcode in WEAPON_PREVIEW_HOOKS:
+            patch(data, va, expected, hook_bytes(WEAPON_PREVIEW_VA, va, expected, offset, opcode))
+        if sorted(neutralize_relocs(data, [(va, va + len(expected)) for va, expected, _, _ in WEAPON_PREVIEW_HOOKS])) \
+                != WEAPON_PREVIEW_RELOCS:
+            sys.exit("the base relocations under the weapon preview's sites are not where they were read")
+        weapon_draw = open(weapon_draw_bin(), "rb").read()
+        if FORWARD_SCROLL_OFFSET + len(forward_scroll) > WEAPON_DRAW_OFFSET \
+                or WEAPON_DRAW_OFFSET + len(weapon_draw) > STALE_DLL_OFFSET:
+            sys.exit("the weapon preview's draw does not fit between the forward effect's scrolling and the "
+                     "shell_32.dll check")
+        if weapon_draw_state(weapon_draw) != late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET \
+                or weapon_draw[0] != 0x50:
+            sys.exit(f"weapon_draw_026g.section.bin: its entry or its state is not where patch_026g.py puts "
+                     f"them (assembled with -DCAVE={WEAPON_DRAW_VA:#x} "
+                     f"-DSTATE={late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET:#x}?)")
+        va, expected, offset, opcode = WEAPON_DRAW_HOOK
+        patch(data, va, expected, hook_bytes(WEAPON_DRAW_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the weapon preview's draw site")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1630,9 +1737,11 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
+            cave = cave + b"\xCC" * (WEAPON_DRAW_OFFSET - len(cave)) + weapon_draw
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (KIT_CHANGE_OFFSET - len(cave)) + kit_change
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
+            cave = cave + b"\xCC" * (WEAPON_PREVIEW_OFFSET - len(cave)) + weapon_preview
         data = add_section(data, cave)
         if late_join is not None:
             add_state_section(data, late_join_state_va(late_join))
@@ -1665,6 +1774,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "a kit chosen before the match starts is played at once where the player stands, "
                      "the archive reads' order is a strict weak ordering, "
                      f"the ai arena is {AI_ARENA_SIZE >> 20} MiB"
+                     "a weapon's upgrade window shows the weapon"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1719,6 +1829,33 @@ def read_order_bin():
 
 def kit_change_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "kit_change_026g.section.bin")
+
+
+def weapon_preview_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "weapon_preview_026g.section.bin")
+
+
+def weapon_draw_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "weapon_draw_026g.section.bin")
+
+
+def weapon_draw_state(code):
+    """The state address weapon_draw_026g.asm was assembled for: `push eax` /
+    `call $+5` / `pop eax` / `cmp byte [eax+disp32],0`; 0 when it is not so."""
+    if code[:9] != bytes.fromhex("50e80000000058" "80b8") or code[13:14] != b"\x00":
+        return 0
+    return WEAPON_DRAW_VA + 6 + struct.unpack_from("<i", code, 9)[0]
+
+
+def weapon_preview_state(code):
+    """The state address weapon_preview_026g.asm was assembled for: its
+    `state` routine is `call $+5` / `pop eax` / `lea eax,[eax+disp32]` /
+    `ret`; 0 when it is not there exactly once."""
+    head = bytes.fromhex("e80000000058" "8d80")
+    at = code.find(head)
+    if at < 0 or code.find(head, at + 1) >= 0 or code[at + 12:at + 13] != b"\xC3":
+        return 0
+    return WEAPON_PREVIEW_VA + at + 5 + struct.unpack_from("<i", code, at + 8)[0]
 
 
 def late_join_bin():
