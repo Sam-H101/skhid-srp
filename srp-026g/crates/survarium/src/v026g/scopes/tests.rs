@@ -70,3 +70,44 @@ fn a_pair_given_twice_keeps_the_lower_variant() {
     assert_eq!(fits.all(), [fit(2007)]);
     assert_eq!(twice, [fit(2030), fit(2050)]);
 }
+
+/// The lobby movie's proposal adds an `items_compatibility` row for each
+/// weapon and the scope items it takes. srp reads those rows in one place,
+/// `check_play`, and only for items in a kit's ammo slots; no scope can be
+/// in a kit slot, and the start check refuses data that would let one.
+#[test]
+fn compatibility_rows_of_scopes_leave_srp_as_it_was() {
+    use super::super::dictionary::PROFILE_SLOTS;
+    use super::super::tables;
+    let data = fixtures::with_scopes();
+    let dictionary = fixtures::dictionary_of(&data);
+    let rows = fixtures::compatibility_rows();
+    assert!(!rows.is_empty());
+    for (weapon, scope) in rows {
+        assert!(dictionary.compatible(weapon, scope) && dictionary.compatible(scope, weapon));
+    }
+    // The pairs come from the variants alone.
+    assert_eq!(
+        &ScopeFits::derive(&data, &dictionary).unwrap().0,
+        fixtures::fits()
+    );
+    // No scope item or variant goes into any kit slot.
+    let scopes = dictionary
+        .items
+        .iter()
+        .filter(|item| item.category == SCOPE_CATEGORY);
+    for item in scopes {
+        for slot in 0..PROFILE_SLOTS as u8 {
+            assert!(
+                !dictionary.fits(item.dict_id, slot),
+                "{} {slot}",
+                item.dict_id
+            );
+        }
+    }
+    assert_eq!(tables::check(&data), Ok(()));
+    // Data with a slot for scopes stops srp at start.
+    let wrong = fixtures::with_scopes_and_slots(&[(SCOPE_CATEGORY, 8)]);
+    let refused = tables::check(&wrong).unwrap_err();
+    assert!(refused.0.contains("into profile slot 8"), "{refused}");
+}

@@ -46,7 +46,9 @@ in `crates/session/src/v026g/items_rules.rs`.
 - **Shop items.** One scope item per optic, category 22, sold by seller 0 at no reputation
   level (a scope is view-only: nothing to unlock), at the item's own `base_cost` from the
   dictionary, the same number the client shows and sells back for a quarter of. Not sold: 0.26g's
-  three scope entries, the variants, any category-22 entry no variant names. Scopes never drop.
+  three scope entries, the variants, any category-22 entry no variant names. Scopes never drop
+  and never go into a kit slot (category 22 has no profile slot; data giving it one is refused at
+  start).
 - **Pairs from the game data.** The server reads, from every category-22 item's config, a block
   the client does not read:
 
@@ -86,7 +88,14 @@ in `crates/session/src/v026g/items_rules.rs`.
 1. A release patch (`resources.db.patch_<n>`, `release/patches.tsv`) with: the 84 variants
    (dict ids 2001-2084) with their models, materials and textures, each config carrying its
    `srp_scope_fit` block; the weapon configs that get an `addons` placeholder; the twelve scope
-   items (dict ids 2101-2112) in `items_dict` with their `base_cost`.
+   items (dict ids 2101-2112) in `items_dict` with their `base_cost`; and 99
+   `items_compatibility` rows, weapon and scope item (premium copies counted), for the lobby
+   movie to grey out a scope that does not fit. In the game's file `items_compatibility` and
+   `slots_restrictions` are named tables (`compatibility_<n>`, `restriction_<n>`): new rows need
+   names of their own. srp reads compatibility only for items in a kit's ammo slots
+   (`check_play`), where no scope can be: such rows change nothing on the server. A
+   `slots_restrictions` row for category 22 would let a scope into a kit; srp refuses such data at
+   start.
 2. The scope items' configs: a `data` block for the lobby's 3D view and a
    `parameters.modification` of their own that changes nothing a weapon has (a modifier at a path
    no weapon config has is skipped, 0x2F1430), so the client's own copy of a record between

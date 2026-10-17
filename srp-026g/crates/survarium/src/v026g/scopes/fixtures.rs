@@ -203,33 +203,83 @@ fn added() -> Vec<(u16, &'static str, u32, ConfigValue)> {
 }
 
 /// The test data ([`game_data::shared`]) with the scope items and variants
-/// of [`added`] in a new dictionary and their configs, as a patch lays them.
+/// of [`added`] in a new dictionary and their configs, as a patch lays them,
+/// and an `items_compatibility` row for each weapon and the scope items it
+/// takes ([`compatibility_rows`]), as the lobby movie's proposal adds them
+/// (`docs/notes/weapon_scopes.md` §4).
 pub fn with_scopes() -> GameData {
+    with_scopes_and_slots(&[])
+}
+
+/// The weapon and scope item of each `items_compatibility` row the
+/// fixture adds: one for each pair its variants make.
+pub fn compatibility_rows() -> Vec<(u16, u16)> {
+    let dict = |name: &str| Dictionary::shared().item_named(name).unwrap().dict_id;
+    let (ak, ak_premium, svd) = (dict("ak_74n"), dict("ak_74n_premium"), dict("svd"));
+    vec![
+        (ak, PSO_1),
+        (ak_premium, PSO_1),
+        (ak, COBRA),
+        (ak_premium, COBRA),
+        (svd, COBRA),
+    ]
+}
+
+/// [`with_scopes`], and `slots` as `(category, profile slot)` rows of
+/// `slots_restrictions` (a data mistake a test makes).
+pub fn with_scopes_and_slots(slots: &[(u8, u8)]) -> GameData {
     let stock = game_data::shared();
     let mut dictionary_config = ConfigValue::parse(stock.file(dictionary::PATH).unwrap()).unwrap();
     let ConfigValue::Named(root) = &mut dictionary_config else {
         panic!("the dictionary is not a named table");
     };
-    let (_, items) = root
-        .iter_mut()
-        .find(|(name, _)| name == "items_dict")
-        .expect("items_dict");
-    let ConfigValue::Indexed(rows) = items else {
-        panic!("items_dict is not a list");
-    };
     let mut files = Vec::new();
-    for (dict_id, name, cost, config) in added() {
-        let cfg_name = format!("gameplay/items/scopes/{name}.options");
-        rows.push(named(vec![
-            ("cfg_name", text(&cfg_name)),
-            ("is_stack", ConfigValue::Boolean(false)),
-            ("name", text(name)),
-            ("item_category", ConfigValue::Integer(SCOPE_CATEGORY.into())),
-            ("dict_id", ConfigValue::Integer(dict_id.into())),
-            ("base_cost", ConfigValue::Integer(cost as i32)),
-            ("is_premium", ConfigValue::Boolean(false)),
-        ]));
-        files.push((cfg_name, config.to_bytes().unwrap()));
+    for (table, entry) in root.iter_mut() {
+        match (table.as_str(), entry) {
+            ("items_dict", ConfigValue::Indexed(rows)) => {
+                for (dict_id, name, cost, config) in added() {
+                    let cfg_name = format!("gameplay/items/scopes/{name}.options");
+                    rows.push(named(vec![
+                        ("cfg_name", text(&cfg_name)),
+                        ("is_stack", ConfigValue::Boolean(false)),
+                        ("name", text(name)),
+                        ("item_category", ConfigValue::Integer(SCOPE_CATEGORY.into())),
+                        ("dict_id", ConfigValue::Integer(dict_id.into())),
+                        ("base_cost", ConfigValue::Integer(cost as i32)),
+                        ("is_premium", ConfigValue::Boolean(false)),
+                    ]));
+                    files.push((cfg_name, config.to_bytes().unwrap()));
+                }
+            }
+            // Named tables in the game's file: `compatibility_<n>`,
+            // `restriction_<n>`; a patch's rows need names of their own.
+            ("items_compatibility", ConfigValue::Named(rows)) => {
+                for (n, (weapon, scope)) in compatibility_rows().into_iter().enumerate() {
+                    rows.push((
+                        format!("compatibility_scope_{n}"),
+                        named(vec![
+                            ("first_item", ConfigValue::Integer(weapon.into())),
+                            ("second_item", ConfigValue::Integer(scope.into())),
+                        ]),
+                    ));
+                }
+            }
+            ("slots_restrictions", ConfigValue::Named(rows)) => {
+                for (n, &(category, slot)) in slots.iter().enumerate() {
+                    rows.push((
+                        format!("restriction_scope_{n}"),
+                        named(vec![
+                            ("category_id", ConfigValue::Integer(category.into())),
+                            ("profile_slot_id", ConfigValue::Integer(slot.into())),
+                        ]),
+                    ));
+                }
+            }
+            ("items_dict" | "items_compatibility" | "slots_restrictions", _) => {
+                panic!("{table} is not the table the game's file has")
+            }
+            _ => {}
+        }
     }
     files.push((
         dictionary::PATH.to_owned(),

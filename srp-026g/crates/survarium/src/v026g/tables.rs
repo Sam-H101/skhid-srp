@@ -15,7 +15,7 @@ use super::localization;
 use super::maps;
 use super::modifications::{self, Modifications};
 use super::quests::{self, Quests};
-use super::scopes::ScopeFits;
+use super::scopes::{SCOPE_CATEGORY, ScopeFits};
 use super::skills::{self, SkillsTree};
 
 /// The file at `path` of `data`, which a table needs.
@@ -42,6 +42,20 @@ pub fn check(data: &GameData) -> Result<(), GameDataError> {
         Dictionary::parse(needed(data, dictionary::PATH)?),
     )?;
     check_named(data, &dictionary)?;
+    // A scope is only ever an upgrade of a weapon (`super::scopes`): in a kit
+    // slot it would go to a match as an item worn, and its `items_compatibility`
+    // rows with weapons would make it count as ammo (`check_play`).
+    if let Some(&(_, slot)) = dictionary
+        .slot_restrictions
+        .iter()
+        .find(|&&(category, _)| category == SCOPE_CATEGORY)
+    {
+        return Err(GameDataError(format!(
+            "{}: slots_restrictions puts category {SCOPE_CATEGORY} (scopes) into profile slot \
+             {slot}; a scope is only an upgrade of a weapon",
+            dictionary::PATH
+        )));
+    }
     let modifications = parsed(
         modifications::MODIFICATIONS_PATH,
         Modifications::parse(
