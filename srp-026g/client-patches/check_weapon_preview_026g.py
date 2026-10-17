@@ -30,7 +30,10 @@ were called. What must hold:
   and the stack, and with nothing shown changes nothing;
 - the tick's three clamps are the original's (values and flags) while no
   weapon's window was open, and let the distance down to NEAR_MIN from one
-  until the camera is back at 1.5.
+  until the camera is back at 1.5;
+- the character's update gives its player the window's mode (+F49Ch, which
+  draws it for the decal editor: bind pose, the weapon put away) as the
+  original does, and 0 while a weapon is shown, keeping every register.
 Says nothing about the movie or what the game draws.
 """
 import itertools
@@ -54,6 +57,7 @@ GLOBALS = ((0x1F1D9E4, 4), (0x1F1DA26, 2), (0x1F1DA40, 4), (0xA7029C, 0x14))
 UI, CHARACTER, SQUAD, MENU, PROFILE = 0x20000000, 0x20100000, 0x20200000, 0x20300000, 0x20400000
 CAMERA, OWNER, FOCUS, SCENE, ARGS = 0x20500000, 0x20500400, 0x20500800, 0x20500C00, 0x20501000
 STUBS, STACK, STOP = 0x20600000, 0x20708000, 0x20800000
+PLAYER = 0x20900000                            # the lobby's player (+F49Ch: drawn for the decal editor)
 SENTINELS = {UC_X86_REG_EBX: 0x11111111, UC_X86_REG_EBP: 0x22222222, UC_X86_REG_ESI: 0x33333333,
              UC_X86_REG_EDI: 0x44444444}
 
@@ -88,7 +92,7 @@ class Lobby:
         self.emu, self.stubs, pristine = EMULATORS[key]
         CURRENT[key] = self
         emu = self.emu
-        for at in (UI, CHARACTER, SQUAD, MENU, PROFILE, CAMERA, STUBS, STACK - 0x8000, STOP):
+        for at in (UI, CHARACTER, SQUAD, MENU, PROFILE, CAMERA, STUBS, STACK - 0x8000, STOP, PLAYER):
             emu.mem_write(at, bytes(0x10000))
         for at, value in pristine.items():
             emu.mem_write(at, value)
@@ -117,7 +121,7 @@ class Lobby:
                         where = base.IMAGE_BASE + page + (entry & 0xFFF) + delta
                         self.word(where, self.read(where) + delta)
                 at += block
-        for at in (UI, CHARACTER, SQUAD, MENU, PROFILE, CAMERA, STUBS, STACK - 0x8000, STOP):
+        for at in (UI, CHARACTER, SQUAD, MENU, PROFILE, CAMERA, STUBS, STACK - 0x8000, STOP, PLAYER):
             emu.mem_map(at, 0x10000, UC_PROT_ALL)
         names = ("owner_focus", "focus", "unfocus", "scene_begin", "scene_end")
         stubs = {STUBS + 0x10 * i: name for i, name in enumerate(names)}
@@ -442,6 +446,35 @@ def main():
         say(f"from a weapon's window{rebased}: the wheel goes down to {NEAR_MIN}, the step and the last clamp keep "
             f"0.85 and hold at {NEAR_MIN}; after the close the least is {NEAR_MIN} until the camera reaches 1.49, "
             "then 1.5 again")
+
+        # The character's update gives its player the window's mode
+        # (0x284A33, `mov [ecx+0F49Ch],al`); run from there to the next
+        # instruction.
+        for mode in (0, 1):
+            for upgrade in (0, 1):
+                got = []
+                for data in (original, patched):
+                    lobby = Lobby(data, delta, KITS)
+                    state = base.late_join_state_va(late_join) + base.WEAPON_PREVIEW_STATE_OFFSET + delta
+                    if data is patched:
+                        lobby.word(state, mode)
+                    emu = lobby.emu
+                    lobby.emu.mem_write(PLAYER + 0xF49C, b"\x77")
+                    regs = {UC_X86_REG_EAX: 0x12345600 | upgrade, UC_X86_REG_ECX: PLAYER, UC_X86_REG_EBX: CHARACTER,
+                            UC_X86_REG_EDX: 0xD0D0D0D0, UC_X86_REG_ESI: 0x5E5E5E5E, UC_X86_REG_EDI: 0xD1D1D1D1,
+                            UC_X86_REG_EBP: 0xB0B0B0B0}
+                    for register, value in regs.items():
+                        emu.reg_write(register, value)
+                    emu.reg_write(UC_X86_REG_ESP, STACK - 0x100)
+                    emu.emu_start(0x284A33 + delta, 0x284A39 + delta, count=100)
+                    assert emu.reg_read(UC_X86_REG_EIP) == 0x284A39 + delta and \
+                        emu.reg_read(UC_X86_REG_ESP) == STACK - 0x100
+                    assert all(emu.reg_read(r) == v for r, v in regs.items()), "every register kept"
+                    got.append(bytes(emu.mem_read(PLAYER + 0xF49C, 1))[0])
+                expected = 0 if mode else upgrade
+                assert got == [upgrade, expected], (mode, upgrade, got)
+        say(f"the player's decal pose{rebased}: the original gives it the window's mode; the build the same with no "
+            "weapon shown and 0 with one, every register kept")
 
     print(f"patch 32: {checks} checks passed")
 

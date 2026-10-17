@@ -52,7 +52,10 @@ USAGE (this script never touches the source exe):
     (checked in). A weapon's upgrade window showing the weapon comes from
     weapon_preview_026g.asm:
         nasm -f bin -DCAVE=0xA427E50 -DSTATE=0xA428E00 weapon_preview_026g.asm -o weapon_preview_026g.section.bin
-    (checked in; STATE is 0xE00 of the late join's state page, checked). The late-join code is late_join_026g.section.bin, checked in too; it is
+    (checked in; STATE is 0xE00 of the late join's state page, checked), and its
+    draw from weapon_draw_026g.asm:
+        nasm -f bin -DCAVE=0xA425D20 -DSTATE=0xA428E00 weapon_draw_026g.asm -o weapon_draw_026g.section.bin
+    (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
 
@@ -259,8 +262,11 @@ Patches:
   nearer (start_item_upgrade's camera call 0x265E73; the least distance at
   0x284081, 0x28428C and 0x284316 is the original's 1.5 again once the
   camera is back there); the window's close shows the kit chosen in the
-  lobby again (0x265F44). Any other window is the original's. The code is
-  weapon_preview_026g.asm at 0x2E50 of `.srp`, after the late join;
+  lobby again (0x265F44); while it shows the weapon, the player is drawn
+  as in the lobby, not for the decal editor (0x284A33: no bind pose, the
+  weapon in its hands). Any other window is the original's. The code is
+  weapon_preview_026g.asm at 0x2E50 of `.srp`, after the late join, and
+  weapon_draw_026g.asm at 0xD20;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -698,7 +704,17 @@ KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pi
 #   `movss xmmN,[0xA7AFA4]` at three sites: the wheel, the step and the last
 #   clamp) is a call of min_step or min_final and three nops: 1.5, or
 #   NEAR_MIN from a weapon's window until the camera is back at 1.5. The
-#   address's three base relocations are disabled.
+#   address's three base relocations are disabled;
+# - the lobby character's update (0x2849F0) gives its player the window's
+#   mode at every frame (`mov [ecx+0F49Ch],al` at 0x284A33; the player's
+#   ctor clears it at 0x1F1BFB, nothing else writes it): set, the player is
+#   drawn for the decal editor, its skeleton in the bind pose (mt_draw
+#   0x2474A0 at 0x2476F8: the T-pose) and its held item 10 m under it
+#   (0x24778F), with another transform (insert 0x1F30E2). The six bytes are
+#   a call of weapon_draw_026g.asm's player_mode (WEAPON_DRAW_OFFSET of
+#   `.srp`, in the first page after the forward effect's scrolling) and a
+#   nop: 0 while a weapon is shown (the state's mode), the window's mode
+#   otherwise.
 # The code finds its own address (call/pop), so a rebase changes nothing.
 WEAPON_PREVIEW_OFFSET = 0x2E50
 WEAPON_PREVIEW_VA = SECTION_VA + WEAPON_PREVIEW_OFFSET
@@ -714,6 +730,9 @@ WEAPON_PREVIEW_HOOKS = (
     (0x284316, bytes.fromhex("f30f1005a4afa700"), 0xFC, 0xE8),      # the last clamp's least: min_final
 )
 WEAPON_PREVIEW_RELOCS = [0x284085, 0x284290, 0x28431A]
+WEAPON_DRAW_OFFSET = 0xD20
+WEAPON_DRAW_VA = SECTION_VA + WEAPON_DRAW_OFFSET
+WEAPON_DRAW_HOOK = (0x284A33, bytes.fromhex("88819cf40000"), 0, 0xE8)   # the player's decal pose: player_mode
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1574,6 +1593,20 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if sorted(neutralize_relocs(data, [(va, va + len(expected)) for va, expected, _, _ in WEAPON_PREVIEW_HOOKS])) \
                 != WEAPON_PREVIEW_RELOCS:
             sys.exit("the base relocations under the weapon preview's sites are not where they were read")
+        weapon_draw = open(weapon_draw_bin(), "rb").read()
+        if FORWARD_SCROLL_OFFSET + len(forward_scroll) > WEAPON_DRAW_OFFSET \
+                or WEAPON_DRAW_OFFSET + len(weapon_draw) > STALE_DLL_OFFSET:
+            sys.exit("the weapon preview's draw does not fit between the forward effect's scrolling and the "
+                     "shell_32.dll check")
+        if weapon_draw_state(weapon_draw) != late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET \
+                or weapon_draw[0] != 0x50:
+            sys.exit(f"weapon_draw_026g.section.bin: its entry or its state is not where patch_026g.py puts "
+                     f"them (assembled with -DCAVE={WEAPON_DRAW_VA:#x} "
+                     f"-DSTATE={late_join_state_va(late_join) + WEAPON_PREVIEW_STATE_OFFSET:#x}?)")
+        va, expected, offset, opcode = WEAPON_DRAW_HOOK
+        patch(data, va, expected, hook_bytes(WEAPON_DRAW_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the weapon preview's draw site")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1618,6 +1651,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
+            cave = cave + b"\xCC" * (WEAPON_DRAW_OFFSET - len(cave)) + weapon_draw
             cave = cave + b"\xCC" * (STALE_DLL_OFFSET - len(cave)) + stale_dll
             cave = cave + b"\xCC" * (KIT_CHANGE_OFFSET - len(cave)) + kit_change
             cave = cave + b"\xCC" * (LATE_JOIN_OFFSET - len(cave)) + late_join
@@ -1707,6 +1741,18 @@ def kit_change_bin():
 
 def weapon_preview_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "weapon_preview_026g.section.bin")
+
+
+def weapon_draw_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "weapon_draw_026g.section.bin")
+
+
+def weapon_draw_state(code):
+    """The state address weapon_draw_026g.asm was assembled for: `push eax` /
+    `call $+5` / `pop eax` / `cmp byte [eax+disp32],0`; 0 when it is not so."""
+    if code[:9] != bytes.fromhex("50e80000000058" "80b8") or code[13:14] != b"\x00":
+        return 0
+    return WEAPON_DRAW_VA + 6 + struct.unpack_from("<i", code, 9)[0]
 
 
 def weapon_preview_state(code):

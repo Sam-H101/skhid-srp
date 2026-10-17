@@ -1286,6 +1286,7 @@ va	status	ref_021d	name
 0x00246380	inferred-medium	0x00184924	survarium::game_options::input_handler
 0x00246b80	inferred-medium	0x0018679f	survarium::victory_item::taken_from_container
 0x00246d80	inferred-medium	0x00186978	vostok::buffer_vector<vostok::math::float4x4>::resize
+0x002474a0	inferred-medium	0x00186da9	survarium::player::mt_draw
 0x0024a3e0	inferred-high	0x00208510	survarium::weapon_core_show_state_base::on_animation_end_impl
 0x0024a3f0	inferred-medium	0x001f215d	survarium::weapon_core_shotgun_reload_start_substate::is_ready_for_transition
 0x0024a3f0	inferred-medium	0x00228365	survarium::weapon_core_shotgun_reload_one_round_substate::is_ready_for_transition

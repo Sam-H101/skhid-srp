@@ -28,6 +28,8 @@
 ;               or NEAR_MIN from a weapon's window until the camera is
 ;               back at 1.5
 ;   min_final   the same at the tick's last clamp, which ends NEAR_MIN
+; weapon_draw_026g.asm reads the mode too: while it is 1 the player is not
+; drawn for the decal editor (bind pose, weapon put away).
 ; Any other window (armour; a weapon no kit holds, as one only in the
 ; stash, or a weapon 2 behind a weapon 1) does what the original does. The
 ; code finds its own address (call/pop): a rebase changes nothing.

@@ -70,7 +70,8 @@ release's. The "Result" row is the build of the revision named in it.
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
-| `check_weapon_preview_026g.py` | Runs the original's and patch 32's upgrade window start and close (with the lobby camera's own setter), `setup_profile`'s entry and the lobby camera's three distance clamps on a made-up lobby, loaded as is and rebased (needs Unicorn) |
+| `weapon_draw_026g.asm`, `weapon_draw_026g.section.bin` | The source of patch 32's draw (a weapon's window draws the player as the lobby does) and that code assembled for 0xD20 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_weapon_preview_026g.py` | Runs the original's and patch 32's upgrade window start and close (with the lobby camera's own setter), `setup_profile`'s entry, the lobby camera's three distance clamps and the player's decal pose on a made-up lobby, loaded as is and rebased (needs Unicorn) |
 | `check_forward_scroll_026g.py` | Runs the original's and the build's forward-effect compile, with patch 28's two hooks, on made-up materials and compares what each sends; runs the third hook against the game's own binding of `scene_time`; loaded as is and rebased (needs Unicorn). With `--rev12=` it compares the build with revision 12 byte by byte |
 | `selftest_026g.py` | Builds every variant and checks it (sections, disassembly of every hook, checksum, signature, and what the late join adds to the build without it); needs the original exe and nasm |
 | `run_battery_rule.ps1` | Runs the battery rule's handler (patch 9) out of any 0.26g exe on a made-up rule object, in the 32-bit Windows PowerShell: what an exe does with a put that is played again after a rollback. Starts nothing of the game |
@@ -1615,13 +1616,18 @@ kit's weapon 1 (kit slot 7), or its weapon 2 (slot 10) when it has none.
 The movie's `start_item_upgrade(item)` (0x29A870 -> 0x265DE0) aims the
 lobby camera at the character's chest (look-at height 1.3, 0.8 for the
 kit's legs armour, side angle 0.37, distance 1.5, the closest the camera
-allows) and `exit_item_upgrade` (0x29A890 -> 0x265F10) aims it back. None of
-the movie's 112 callbacks shows an item on its own or moves the camera.
+allows) and `exit_item_upgrade` (0x29A890 -> 0x265F10) aims it back. While
+the window is open, the character's update gives its player the window's
+mode (+F49Ch) at every frame, and the player is drawn for the decal
+editor: in its bind pose (a T-pose) with its weapon put 10 m under it.
+None of the movie's 112 callbacks shows an item on its own or moves the
+camera.
 
 **The patch.** Only in the builds with the late join;
 `weapon_preview_026g.asm`, 431 bytes at `.srp`+2E50h (after the late join's
-code, before `.srpd`), its state (three dwords) at 0xE00 of `.srpd`; six
-sites:
+code, before `.srpd`), its state (three dwords) at 0xE00 of `.srpd`, and
+`weapon_draw_026g.asm`, 32 bytes at `.srp`+D20h (after the forward effect's
+scrolling, before the shell_32.dll check); seven sites:
 
 - 0x265E73 (start_item_upgrade's call of the camera's setter 0x2845C0):
   when a kit of the account's profile holds the window's item as its
@@ -1643,7 +1649,11 @@ sites:
   least distance 1.5 at the wheel, the step and the last clamp): a call and
   three nops; the least is 0.6 from a weapon's window until the camera is
   back at 1.49 after the close, 1.5 otherwise. The three base relocations
-  of that address are disabled; the code finds its own address.
+  of that address are disabled; the code finds its own address;
+- 0x284A33 (the character's update, `mov [ecx+0F49Ch],al`: the player's
+  decal pose): a call and a nop; 0 while the window shows its weapon, so
+  the player keeps its lobby idle animation and the weapon in its hands;
+  the window's mode otherwise.
 
 The window's kit change is the 3D view's alone: the kit the lobby plays a
 match with (+4632h) is not touched. No change of `lobby_menu.swf`.
@@ -1656,16 +1666,19 @@ Checked: `selftest_026g.py` check 33 (and the late join's layout of
 `.srp` and its relocation table); `check_weapon_preview_026g.py` runs the
 original's and the build's start and close handlers (with the camera's own
 setter, the decals, the scene and the input stubbed), `setup_profile`'s
-entry and the tick's three clamp blocks on a made-up lobby, as is and
-rebased: for armour, legs armour, a stash weapon, a weapon 2 behind a
+entry, the tick's three clamp blocks and the decal pose's write on a
+made-up lobby, as is and rebased: for armour, legs armour, a stash weapon, a weapon 2 behind a
 weapon 1, a bad item index or kit, the build's camera, character, globals
 and calls are the original's, at the start and the close; for a held
 weapon (in the chosen kit or another, weapon 1 or a lone weapon 2) it
 shows that kit and looks at it, and the close shows the chosen kit; the
-clamps give the original's results and flags in 1,500 cases. The byte
-comparison with the build of `main` 5fba57f: 476 bytes differ, all of
-them the patch's (section 3.30). **Not run:** a game; the camera's two
-values are first guesses for the owner's look.
+clamps give the original's results and flags in 1,500 cases; the decal
+pose is the window's mode as in the original, and 0 while a weapon is
+shown. The byte comparison with the build of `main` 5fba57f: 514 bytes
+differ, all of them the patch's (section 3.30). **Run in a game (2026-10-17):** the first
+build (without the draw): the camera moved in, the character showed the
+weapon's kit, but in a T-pose with no weapon (the decal pose). **Not run:**
+this build; the camera's two values are first guesses.
 
 ## Not ported, not done
 

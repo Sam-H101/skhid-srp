@@ -248,7 +248,12 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     relocations under the three loads are disabled, none other. The code
     calls and leaves only to setup_profile, its body after the six bytes
     and the camera's setter, holds no absolute address and keeps its state
-    where it was assembled for. check_weapon_preview_026g.py runs it.
+    where it was assembled for. The draw: the character's update's write of
+    the player's decal pose (0x284A33, the only write but the player's
+    ctor; its readers are player::mt_draw and player::insert alone; +D515h
+    is read there alone) calls weapon_draw_026g.asm's player_mode, at
+    WEAPON_DRAW_OFFSET of `.srp` (check 15's layout), which reads the same
+    state. check_weapon_preview_026g.py runs it.
 """
 
 import ctypes
@@ -445,6 +450,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.weapon_preview_bin(), "rb").read(),
           f"{os.path.basename(P.weapon_preview_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.WEAPON_DRAW_VA:#x}", f"-DSTATE={state:#x}",
+                        os.path.join(HERE, "weapon_draw_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.weapon_draw_bin(), "rb").read(),
+          f"{os.path.basename(P.weapon_draw_bin())} is current ({len(fresh)} bytes)")
 
 
 def test_pe(original, image, mode):
@@ -1112,7 +1124,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
-        [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS]
+        [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
+        [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))]
 
 
 def pickup_sites():
@@ -2787,6 +2800,43 @@ def test_weapon_preview(original, image, before):
           and not [text for _, _, text in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", text)],
           "the code calls only setup_profile, jumps only to its body after the six bytes and to the camera's "
           "setter, every branch inside it lands on an instruction, and no operand is an absolute address")
+    # The draw.
+    va, old, offset, opcode = P.WEAPON_DRAW_HOOK
+    check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+          and rows(stock, va, len(old)) == ["mov [ecx+0xf49c],al"]
+          and rows(image, va, len(old)) == [f"call {P.WEAPON_DRAW_VA:#x}", "nop"]
+          and rows(stock, 0x2849F8, 6) == ["mov al,[ebx+0xd515]"]
+          and rows(stock, 0x284A20, 0x13) == ["mov ecx,[ebx+0xd2b8]", "test ecx,ecx", "jz 0x284a83",
+                                              "mov edx,0x119190", "test edx,edx", "jz 0x284a83"]
+          and rows(stock, 0x284A39, 0xB) == ["fld dword [ebx+0x14]", "push ecx", "lea esi,[esp+0x14]",
+                                             "fstp dword [esp]"],
+          f"{va:#x}: `mov [ecx+0xf49c],al` (the player's decal pose, al = the character's +D515h read at "
+          f"0x2849F8, ecx its player +D2B8h) in the original and the build without the late join, "
+          f"`call {P.WEAPON_DRAW_VA:#x}` and a nop here; what follows reads no flag before setting it")
+    hits = branches_into(original, va + 1, va + len(old))
+    check(not hits and not [rva for rva in relocations if rva + 4 > va and rva < va + len(old)],
+          f"{va:#x}: no branch or address aims inside the site, no base relocation is under it"
+          + "".join(", " + h for h in hits))
+    pose = [(address, text) for address, _, text in ndisasm(stock.read(P.TEXT_VA, P.TEXT_VSIZE), P.TEXT_VA)
+            if "+0xf49c]" in text]
+    upgrade = [address for address, _, text in ndisasm(stock.read(0x263000, 0x23000), 0x263000)
+               if "+0xd515]" in text]
+    check([a for a, t in pose if t.startswith("mov")] == [0x1F1BFB, 0x284A33]
+          and [a for a, t in pose if t.startswith("cmp")] == [0x1F30E2, 0x2476F8, 0x24778F]
+          and len(pose) == 5 and upgrade == [0x265E0B, 0x265F1D, 0x2849F8],
+          "the decal pose (+F49Ch) is written by the player's ctor (0x1F1BFB, 0) and 0x284A33 alone and read by "
+          "player::insert (0x1F30E2) and player::mt_draw (0x2476F8 the bind pose, 0x24778F the held item) alone; "
+          "the upgrade mode (+D515h) is read at 0x2849F8 alone")
+    draw = open(P.weapon_draw_bin(), "rb").read()
+    listing = ndisasm(draw, P.WEAPON_DRAW_VA)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    starts = {address for address, _, _ in listing}
+    check(image.read(P.WEAPON_DRAW_VA, len(draw)) == draw and P.weapon_draw_state(draw) == state
+          and all(P.WEAPON_DRAW_VA <= t < P.WEAPON_DRAW_VA + len(draw) and t in starts for t in targets)
+          and [text for _, _, text in listing].count("ret") == 2
+          and not [text for _, _, text in listing if re.search(r"call (?:dword )?\[|jmp (?:dword )?\[|\[(?:dword )?0x", text)],
+          f"the draw at {P.WEAPON_DRAW_VA:#x} is weapon_draw_026g.section.bin ({len(draw)} bytes), reads the state "
+          f"at {state:#x}, branches only inside itself, returns at its two ends and holds no absolute address")
 
 
 def test_revision_override(original, default, server):
@@ -2827,6 +2877,7 @@ def test_late_join(original, without, server, source):
     name, rva, vsize, raw, rsize, flags = sections[-2]
     align = lambda value, to: (value + to - 1) // to * to
     weapon_preview = open(P.weapon_preview_bin(), "rb").read()
+    weapon_draw = open(P.weapon_draw_bin(), "rb").read()
     first_page = bytes(without[old_sections[-1][3]:old_sections[-1][3] + old_sections[-1][2]])
     check(len(sections) == 9 and sections[:7] == old_sections[:7], "9 sections; the original's seven are untouched")
     check(name == P.SECTION_NAME and rva == P.SECTION_RVA and flags == P.SECTION_CHARACTERISTICS
@@ -2851,6 +2902,7 @@ def test_late_join(original, without, server, source):
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
+              (P.WEAPON_DRAW_OFFSET, len(weapon_draw), "the weapon preview's draw"),
               (P.STALE_DLL_OFFSET, len(stale_dll), "the shell_32.dll check"),
               (P.KIT_CHANGE_OFFSET, len(kit_change), "the kit change"),
               (P.LATE_JOIN_OFFSET, len(code), "the late-join code"),
@@ -2873,7 +2925,9 @@ def test_late_join(original, without, server, source):
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
           and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
           and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
-          and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.STALE_DLL_OFFSET]) <= {0xCC}
+          and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.WEAPON_DRAW_OFFSET]) <= {0xCC}
+          and body[P.WEAPON_DRAW_OFFSET:P.WEAPON_DRAW_OFFSET + len(weapon_draw)] == weapon_draw
+          and set(body[P.WEAPON_DRAW_OFFSET + len(weapon_draw):P.STALE_DLL_OFFSET]) <= {0xCC}
           and body[P.STALE_DLL_OFFSET:P.STALE_DLL_OFFSET + len(stale_dll)] == stale_dll
           and set(body[P.STALE_DLL_OFFSET + len(stale_dll):P.KIT_CHANGE_OFFSET]) <= {0xCC}
           and body[P.KIT_CHANGE_OFFSET:P.KIT_CHANGE_OFFSET + len(kit_change)] == kit_change
@@ -2885,7 +2939,8 @@ def test_late_join(original, without, server, source):
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
           f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, the seek "
-          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x} "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
+          f"the weapon preview's draw at +{P.WEAPON_DRAW_OFFSET:#x}, "
           f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
           f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the late-join code follows, then int3 padding, "
           f"the weapon preview at +{P.WEAPON_PREVIEW_OFFSET:#x} and int3 padding")
