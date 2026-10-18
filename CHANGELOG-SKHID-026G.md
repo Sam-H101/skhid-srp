@@ -328,3 +328,11 @@ kept and can be put back).
 <!-- Revision 19 (026g-rev19), released 2026-10-17 18:12 UTC. To be worded for players; what it shipped: -->
 
 - TODO: #168 Release of weapon scopes and the 0.29a3 weapons: #153 + #155 + #159 on main
+
+## 18 Oct, 02:10 — TODO: the owner's words (update required)
+
+<!-- Revision 20 (026g-rev20), released 2026-10-18 02:10 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #171 Squads of two: SRP_SQUAD_SIZE, an invite into a full squad is refused
+- TODO: #172 Revert "Squads of two" (#171)
+- TODO: #175 0.26g matches: 8 a side by default, not 10
