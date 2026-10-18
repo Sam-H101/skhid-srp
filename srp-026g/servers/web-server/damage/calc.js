@@ -1081,6 +1081,25 @@ function drawHealing() {
     rows.push([named(nm(d), key), T(`${d.activation_delay_s} s after use, for ${d.activity_s} s`, `через ${d.activation_delay_s} с, ${d.activity_s} с`),
       ...pools.map(cell), (d.remove_affects || []).length ? fixed : dash]);
   }
+  // From empty to full: the wait, then the pool at its speed. Each Larkspur
+  // adds speed and wait alike, so past two the wait outgrows what it saves.
+  if (lark) {
+    const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
+    const cols = [["body"], ["right_leg"], ["pain"]];
+    const timeTo = (p, k) => {
+      const r = row(p), m = mods[p];
+      let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
+      for (let i = 0; m && i < k; i++) { speed = (speed + m.regen_add) * m.regen_mul; wait = (wait + m.timeout_add) * m.timeout_mul; cap = (cap + m.threshold_add) * m.threshold_mul; }
+      return cap >= 1 ? wait + r.health / speed : { stops: r.health * cap };
+    };
+    const table = [0, 1, 2, 3, 4].map(k => cols.map(([p]) => timeTo(p, k)));
+    const best = cols.map((_, c) => Math.min(...table.map(t => typeof t[c] === "number" ? t[c] : Infinity)));
+    const fcell = (v, c) => typeof v === "number" ? (Math.abs(v - best[c]) < 1e-9 ? `<b>${fx(v, 1)} ${sec}</b>` : `${fx(v, 1)} ${sec}`)
+      : T(`stops at ${hp(v.stops)}`, `до ${hp(v.stops)}`);
+    const n = larkspurs();
+    $("fulltime").innerHTML = `<thead><tr><th>${T("From empty to full", "Від нуля до повного")}</th>${[POOLS.body, T("Leg or hand", "Нога чи кисть"), POOLS.pain].map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+      table.map((t, k) => `<tr${k === n ? ' class="me"' : ""}><td>${k ? `${nm(lark)} ×${k}` : T("No Larkspur", "Без Живокосту")}</td>${t.map((v, c) => `<td class="n">${fcell(v, c)}</td>`).join("")}</tr>`).join("") + "</tbody>";
+  }
   const head = ["", T("Starts", "Починає"), POOLS.body, POOLS.head, T("Legs, hands", "Ноги, кисті"), POOLS.pain, T("Broken leg, hand", "Зламана нога, кисть")];
   $("heal").innerHTML = `<thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
     rows.map(r => `<tr><td class="hname">${r[0]}</td>${r.slice(1).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody>";

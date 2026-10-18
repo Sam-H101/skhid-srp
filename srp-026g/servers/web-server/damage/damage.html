@@ -226,6 +226,7 @@ td.n { text-align: right }
 #cmp th + th, #cmp td + td { border-left: 1px solid var(--rule) }
 #cmp td.wname, #heal td.hname { padding-block: 3px }
 #heal td.hname .wico { margin-left: 0 }
+#fulltime tr.me td { background: color-mix(in srgb, var(--accent) 14%, transparent) }
 #heal td.hname:not(:has(img)) { padding-left: 72px }
 /* The weapon picker: a list with the lobby icons (a <select> cannot show them) */
 .wpick { position: relative }
@@ -393,6 +394,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <h2 data-uk="Лікування">Healing</h2>
     <div class="fxrow" id="healpick"></div>
     <div class="tablebox"><table id="heal"></table></div>
+    <div class="tablebox"><table id="fulltime"></table></div>
   </section>
 </div>
-<script src="/damage/calc.js?v=f964dabdc573"></script>
+<script src="/damage/calc.js?v=c0b3aca5ecec"></script>

@@ -27,7 +27,8 @@ number from the game data, the rules as the client's hit code applies them. Buil
   same line. On a wide screen (1700 px and up) it sits between shooter and target.
 - Healing, at the bottom: recovering by itself, the Larkspur (Живокіст) carried and activated,
   the medikit and bandages, side by side; every number from the data. How many Larkspurs (1–4)
-  is chosen there; each adds its own regeneration callback.
+  is chosen there; each adds its own regeneration callback. Under it, the time from empty to full
+  for none and 1–4 Larkspurs (past two, the added wait outgrows what the speed saves).
 - The map's readout sits under it, two lines whatever the state, so the map never moves.
 - Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
