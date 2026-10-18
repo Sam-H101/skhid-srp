@@ -211,7 +211,7 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_MATCH_MIN_PLAYERS` | 4 | The fewest players a match starts with (a squad counts its players, but is one side) |
 | `SRP_MATCH_JOIN_EXTENSION_SECONDS` | 30 | Each press of Play adds this to what is left of the countdown |
 | `SRP_MATCH_MAX_COUNTDOWN_SECONDS` | 120 | No countdown runs longer than this from its start |
-| `SRP_MATCH_TEAM_SIZE` | 10 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
+| `SRP_MATCH_TEAM_SIZE` | 8 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
 | `SRP_BALANCE_PLAYER` | 12 | What a player counts for by being there when the sides are made, in gear levels: with an odd count the side with a player more has this much more, so the stronger players are the side of fewer. 0: only the strengths are made even (`matchmaking.md` §8) |
 | `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
 | `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |

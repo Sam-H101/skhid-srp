@@ -1557,14 +1557,15 @@ fn file_size(bytes: u64) -> String {
     }
 }
 
-/// `SRP_MATCH_TEAM_SIZE`: the most players of one side, 1 to half a match.
+/// `SRP_MATCH_TEAM_SIZE`: the most players of one side, 1 to half a match;
+/// [`session::DEFAULT_TEAM_SIZE`] (8) when unset or bad, as the lobby.
 fn match_team_size() -> usize {
     let half = session::MAX_PLAYERS_PER_MATCH / 2;
     std::env::var("SRP_MATCH_TEAM_SIZE")
         .ok()
         .and_then(|value| value.trim().parse().ok())
         .filter(|team| (1..=half).contains(team))
-        .unwrap_or(half)
+        .unwrap_or(session::DEFAULT_TEAM_SIZE)
 }
 
 /// Whether every game that can press Play plays in the growing queue (the
@@ -2595,7 +2596,7 @@ mod tests {
 
     fn live_growing_rules() -> GrowingRules {
         GrowingRules {
-            team: 10,
+            team: 8,
             min_players: 2,
             gather: 120,
             cutoff: 120,
@@ -2606,10 +2607,10 @@ mod tests {
     fn the_growing_queue_is_told_as_it_is() {
         let en = growing_rules(Lang::En, &live_growing_rules(), false);
         assert!(
-            en.contains("A match starts 120 s after 2 players are waiting, or at once with 20.")
+            en.contains("A match starts 120 s after 2 players are waiting, or at once with 16.")
         );
         assert!(en.contains("JOIN"));
-        assert!(en.contains("until 2 minutes are left, up to 10 a side"));
+        assert!(en.contains("until 2 minutes are left, up to 8 a side"));
         assert!(en.contains("Squads are off"));
         // Nothing of the standard queue's rules is left in it.
         assert!(!en.contains("countdown"));
