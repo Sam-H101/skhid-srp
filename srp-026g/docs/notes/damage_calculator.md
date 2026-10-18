@@ -12,15 +12,16 @@ number from the game data, the rules as the client's hit code applies them. Buil
   game's own localization.
 - Less text: one line per rule, players know the game. No intro, no sources paragraph; the
   rules section is the formula only.
-- Shooter: weapon, ammo, distance 0–150 m (all fights), weapon bonuses always shown, one
+- Shooter: weapon (a list with the lobby icons, by level in each class), ammo, distance 0–150 m (all fights), weapon bonuses always shown, one
   button per grade (Damage +1% … +5%), no defects (negative bonuses).
 - Target: the HUD doll and the equipment cards (both aim), armour bonuses, Onyx (four slot
   tiles, passive or active), the Anesthetic, the pain already taken. Under the doll: the hit
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
+  Armour bonuses always shown, for the item on the part being hit only.
 - A closed helmet (or an exo suit) takes the slots its model covers: their cards are locked.
 - Map: top-down renders, two clicks for the distance; the distance slider moves the target
   along the same line.
-- Compare table: every weapon, sortable by any column, column separators.
+- Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
 - Not modelled: cover a bullet passes through, ricochets, explosions, anomalies.
 

@@ -131,19 +131,22 @@ const RULES = (() => {
       state.wmods[state.weapon] = state.wmods[state.weapon] || {};
       if (!modControls(wbox, w, state.wmods[state.weapon], update)) wbox.append(el("span", { class: "note", text: T("This weapon takes no damage bonuses.", "Ця зброя не має бонусів пошкодження.") }));
       else wbox.append(el("span", { class: "note", text: T("An item holds at most 3 modifications. Bonuses on one stat add up before they apply.", "Предмет має щонайбільше 3 модифікації. Бонуси на одну характеристику додаються.") }));
+      // The items on the part being hit: their bonuses are the ones that count.
       const abox = document.getElementById("amods"); abox.innerHTML = "";
       state.amods = state.amods || {};
-      let any = false;
+      const part = PARTS[state.part].toLowerCase();
+      let covering = 0;
       for (const [slot, label] of SLOTS) {
         const key = state.armour[slot]; if (!key) continue;
         const item = DATA.armour[key];
-        if (!item.mod_types.mod.length) continue;
+        if (!((item.hit_params[state.part] || {}).ranged > 0)) continue;
+        covering++;
         state.amods[key] = state.amods[key] || {};
         abox.append(el("span", { class: "lbl", text: `${label}: ${nm(item)}` }));
-        any = modControls(abox, item, state.amods[key], update) || any;
+        if (!modControls(abox, item, state.amods[key], update))
+          abox.append(el("span", { class: "note", text: T("This item takes no armour bonuses.", "Цей предмет не має бонусів броні.") }));
       }
-      if (!any) abox.append(el("span", { class: "note", text: T("Nothing worn takes armour bonuses.", "Ніщо вдягнене не має бонусів броні.") }));
-      else abox.append(el("span", { class: "note", text: T("Armour bonuses raise every part the item already covers. They never add new coverage.", "Бонуси броні підсилюють усі частини, які предмет уже захищає. Нового захисту не додають.") }));
+      if (!covering) abox.append(el("span", { class: "note", text: T(`Nothing worn covers the ${part}.`, `Ніщо вдягнене не захищає: ${part}.`) }));
     },
     targetEffects(state) {
       const fx = state.fx || {};

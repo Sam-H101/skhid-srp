@@ -207,6 +207,26 @@ th { font: 700 .72rem var(--font-display); letter-spacing: .1em; text-transform:
 th[data-k] { cursor: pointer } th[data-k]:hover { color: var(--ink) }
 td.n { text-align: right }
 #cmp th + th, #cmp td + td { border-left: 1px solid var(--rule) }
+#cmp td.wname { padding-block: 3px }
+/* The weapon picker: a list with the lobby icons (a <select> cannot show them) */
+.wpick { position: relative }
+.wpick-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 35px; padding: 3px 8px; font: inherit; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 2px; cursor: pointer; text-align: left }
+.wpick-btn .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.wpick-btn::after { content: "▾"; color: var(--ink-3); font-size: .8rem }
+.wpick img { width: 54px; height: 26px; object-fit: contain; flex: none }
+.wpick-pop { position: absolute; z-index: 20; left: 0; top: calc(100% + 2px); width: min(max(100%, 360px), calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--rule); box-shadow: 0 8px 28px rgba(0, 0, 0, .28) }
+.wpick-search { display: block; width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 0; border-bottom: 1px solid var(--rule); padding: 7px 10px }
+.wpick-search:focus-visible { outline: none }
+.wpick-list { max-height: 440px; overflow-y: auto; padding-bottom: 4px }
+.wpick-group { font: 700 .72rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); padding: 9px 10px 3px }
+.wpick-opt { display: flex; align-items: center; gap: 10px; padding: 2px 10px; cursor: pointer }
+.wpick-opt .n { flex: 1; min-width: 0 }
+.wpick-opt small { font: .75rem var(--font-data); color: var(--ink-3) }
+.wpick-opt.active { background: color-mix(in srgb, var(--accent) 16%, transparent) }
+.wpick-opt[aria-selected=true] .n { font-weight: 700 }
+.wico { width: 54px; height: 26px; object-fit: contain; vertical-align: middle; margin-right: 8px }
 tr.me td { background: color-mix(in srgb, var(--accent) 14%, transparent) }
 tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, var(--ink) 6%, transparent) }
 .tag { display: inline-block; font: 700 .66rem var(--font-display); letter-spacing: .08em; text-transform: uppercase;
@@ -264,7 +284,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <section class="side" id="shooter" aria-labelledby="h-shooter">
       <header><h2 id="h-shooter" data-uk="Стрілець">Shooter</h2><span class="role" data-uk="стріляє">fires</span></header>
       <div class="row">
-        <div class="field"><label for="weapon" data-uk="Зброя">Weapon</label><select id="weapon"></select></div>
+        <div class="field"><label for="wpick-btn" data-uk="Зброя">Weapon</label><select id="weapon" hidden></select><div class="wpick" id="wpick"></div></div>
         <div class="field"><label for="ammo" data-uk="Набій">Ammo</label><select id="ammo"></select></div>
       </div>
       <div class="wcard"><img id="wicon" alt=""><img id="aicon" alt=""></div>
@@ -298,7 +318,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
         <input type="range" id="pain" min="0" max="99" step="1" value="0">
         <div class="note" data-uk="Біль, який ціль уже має від попередніх влучань. Спадає до нуля по 10 за секунду, коли 8 с немає влучань.">Pain the target already carries from earlier hits. It drains back to none at 10 a second once 8 s pass without a hit.</div>
       </div>
-      <details class="more" id="amods-box"><summary data-uk="Бонуси броні">Armour bonuses</summary><div class="mods" id="amods"></div></details>
+      <div class="more" id="amods-box"><h3 class="sub" data-uk="Бонуси броні">Armour bonuses</h3><div class="mods" id="amods"></div></div>
       <details class="more" id="tfx-box" open><summary data-uk="Артефакти й препарати">Artefacts &amp; drugs</summary><div class="mods" id="tfx"></div></details>
     </section>
   </div>

@@ -321,19 +321,22 @@ const RULES = (() => {
       state.wmods[state.weapon] = state.wmods[state.weapon] || {};
       if (!modControls(wbox, w, state.wmods[state.weapon], update)) wbox.append(el("span", { class: "note", text: T("This weapon takes no damage bonuses.", "Ця зброя не має бонусів пошкодження.") }));
       else wbox.append(el("span", { class: "note", text: T("An item holds at most 3 modifications. Bonuses on one stat add up before they apply.", "Предмет має щонайбільше 3 модифікації. Бонуси на одну характеристику додаються.") }));
+      // The items on the part being hit: their bonuses are the ones that count.
       const abox = document.getElementById("amods"); abox.innerHTML = "";
       state.amods = state.amods || {};
-      let any = false;
+      const part = PARTS[state.part].toLowerCase();
+      let covering = 0;
       for (const [slot, label] of SLOTS) {
         const key = state.armour[slot]; if (!key) continue;
         const item = DATA.armour[key];
-        if (!item.mod_types.mod.length) continue;
+        if (!((item.hit_params[state.part] || {}).ranged > 0)) continue;
+        covering++;
         state.amods[key] = state.amods[key] || {};
         abox.append(el("span", { class: "lbl", text: `${label}: ${nm(item)}` }));
-        any = modControls(abox, item, state.amods[key], update) || any;
+        if (!modControls(abox, item, state.amods[key], update))
+          abox.append(el("span", { class: "note", text: T("This item takes no armour bonuses.", "Цей предмет не має бонусів броні.") }));
       }
-      if (!any) abox.append(el("span", { class: "note", text: T("Nothing worn takes armour bonuses.", "Ніщо вдягнене не має бонусів броні.") }));
-      else abox.append(el("span", { class: "note", text: T("Armour bonuses raise every part the item already covers. They never add new coverage.", "Бонуси броні підсилюють усі частини, які предмет уже захищає. Нового захисту не додають.") }));
+      if (!covering) abox.append(el("span", { class: "note", text: T(`Nothing worn covers the ${part}.`, `Ніщо вдягнене не захищає: ${part}.`) }));
     },
     targetEffects(state) {
       const fx = state.fx || {};
@@ -442,16 +445,100 @@ const ammoFor = w => (DATA.compat && DATA.compat[w] && DATA.compat[w].length) ? 
 const defaultAmmo = w => (DATA.default_ammo && DATA.default_ammo[w]) || ammoFor(w)[0];
 
 // ---------- shooter ----------
+// Each class's weapons by level, then name.
+function weaponGroups() {
+  return CLASSES.map(([label, types]) => [label, Object.entries(DATA.weapons).filter(([, w]) => types.includes(w.type))
+    .sort((a, b) => (a[1].item_level || 0) - (b[1].item_level || 0) || nm(a[1]).localeCompare(nm(b[1])))]);
+}
+const premium = w => w.premium ? T(" (premium)", " (преміум)") : "";
 function fillWeapons() {
   const s = $("weapon"); s.innerHTML = "";
-  for (const [label, types] of CLASSES) {
+  for (const [label, items] of weaponGroups()) {
     const g = el("optgroup", { label });
-    Object.entries(DATA.weapons).filter(([, w]) => types.includes(w.type))
-      .sort((a, b) => nm(a[1]).localeCompare(nm(b[1])))
-      .forEach(([k, w]) => g.append(el("option", { value: k, text: nm(w) + (w.premium ? T(" (premium)", " (преміум)") : "") })));
+    items.forEach(([k, w]) => g.append(el("option", { value: k, text: nm(w) + premium(w) })));
     s.append(g);
   }
   s.value = state.weapon;
+  buildWeaponPicker();
+}
+// The picker the page shows: the hidden <select> above keeps the value and
+// gets a "change" when one is picked, as if it had been used.
+function buildWeaponPicker() {
+  const host = $("wpick"); host.innerHTML = "";
+  const icon = k => { const src = DATA.icons && DATA.icons[k]; const img = el("img", { alt: "" }); if (src) img.src = src; return img; };
+  const btn = el("button", { type: "button", class: "wpick-btn", id: "wpick-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
+  const search = el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": "wpick-list", "aria-expanded": "true",
+    autocomplete: "off", placeholder: T("Search…", "Пошук…"), "aria-label": T("Search weapons", "Пошук зброї") });
+  const list = el("div", { class: "wpick-list", role: "listbox", id: "wpick-list" });
+  const pop = el("div", { class: "wpick-pop", hidden: "" }, search, list);
+  host.append(btn, pop);
+  const opts = [];
+  for (const [label, items] of weaponGroups()) {
+    const group = el("div", { class: "wpick-group", text: label });
+    list.append(group);
+    for (const [k, w] of items) {
+      const o = el("div", { class: "wpick-opt", role: "option", id: "wpick-" + k, "aria-selected": "false" },
+        icon(k), el("span", { class: "n", text: nm(w) + premium(w) }), el("small", { text: T(`lvl ${w.item_level || 0}`, `рів. ${w.item_level || 0}`) }));
+      o.addEventListener("mousedown", e => e.preventDefault());
+      o.addEventListener("click", () => choose(k));
+      list.append(o);
+      opts.push({ o, group, k, text: [nm(w), w.name].map(t => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")).join(" ") });
+    }
+  }
+  let active = null;
+  // Letters and digits only: "hk416" finds H&K 416A5, "ak74" the AK-74s.
+  const bare = t => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const visible = () => opts.filter(x => !x.o.hidden);
+  const activate = x => {
+    if (active) active.o.classList.remove("active");
+    active = x || null;
+    if (!active) { search.removeAttribute("aria-activedescendant"); return; }
+    active.o.classList.add("active");
+    search.setAttribute("aria-activedescendant", active.o.id);
+    active.o.scrollIntoView({ block: "nearest" });
+  };
+  const filter = () => {
+    const q = bare(search.value);
+    for (const x of opts) x.o.hidden = !!q && !x.text.includes(q);
+    list.querySelectorAll(".wpick-group").forEach(g => { g.hidden = !opts.some(x => x.group === g && !x.o.hidden); });
+    activate(visible().find(x => x.k === state.weapon) || visible()[0]);
+  };
+  const open = () => {
+    pop.hidden = false; btn.setAttribute("aria-expanded", "true");
+    search.value = ""; filter(); search.focus();
+  };
+  const close = refocus => {
+    pop.hidden = true; btn.setAttribute("aria-expanded", "false");
+    if (refocus) btn.focus();
+  };
+  function choose(k) {
+    close(true);
+    if (k === state.weapon) return;
+    const s = $("weapon"); s.value = k;
+    s.dispatchEvent(new Event("change"));
+  }
+  btn.addEventListener("click", () => pop.hidden ? open() : close(true));
+  btn.addEventListener("keydown", e => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); } });
+  search.addEventListener("input", filter);
+  search.addEventListener("keydown", e => {
+    const v = visible(), i = v.indexOf(active);
+    if (e.key === "ArrowDown") { e.preventDefault(); activate(v[Math.min(v.length - 1, i + 1)]); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); activate(v[Math.max(0, i - 1)]); }
+    else if (e.key === "Enter") { e.preventDefault(); if (active) choose(active.k); }
+    else if (e.key === "Escape") { e.preventDefault(); close(true); }
+    else if (e.key === "Tab") close(false);
+  });
+  document.addEventListener("mousedown", e => { if (!pop.hidden && !host.contains(e.target)) close(false); });
+}
+// The picker's button shows the weapon in use.
+function paintWeaponPicker() {
+  const btn = $("wpick-btn"), w = DATA.weapons[state.weapon];
+  if (!btn || !w) return;
+  btn.innerHTML = "";
+  const src = DATA.icons && DATA.icons[state.weapon];
+  if (src) btn.append(el("img", { src, alt: "" }));
+  btn.append(el("span", { class: "n", text: nm(w) + premium(w) }));
+  document.querySelectorAll("#wpick-list .wpick-opt").forEach(o => o.setAttribute("aria-selected", String(o.id === "wpick-" + state.weapon)));
 }
 function fillAmmo() {
   const s = $("ammo"); s.innerHTML = "";
@@ -622,9 +709,10 @@ function update() {
   const sigMap = JSON.stringify([state.map, state.mapA, state.mapB]);
   if (sigMap !== mapSig) { mapSig = sigMap; const d = mapDistance(); if (d != null) state.dist = Math.max(0, d); }
   save();
-  const sig = state.weapon + "|" + SLOTS.map(([s]) => state.armour[s]).join(",");
+  const sig = state.weapon + "|" + state.part + "|" + SLOTS.map(([s]) => state.armour[s]).join(",");
   if (sig !== modSig && RULES.renderMods) { modSig = sig; RULES.renderMods(state, update); }
   $("weapon").value = state.weapon;
+  paintWeaponPicker();
   fillAmmo();
   $("dist").value = state.dist;
   $("distout").textContent = state.dist + " " + M;
@@ -862,11 +950,16 @@ function drawCompare(target) {
   const th = (k, l) => `<th data-k="${k}">${l}${K === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`;
   let h = `<thead><tr>${th("name", T("Weapon", "Зброя"))}${th("level", T("Level", "Рівень"))}${th("ammo", T("Ammo", "Набій"))}${th("pen", T("Pen. here", "Бронеб. тут"))}${th("dmg", T("Damage / hit", "Пошк. / влуч."))}${th("shots", T("Hits to kill", "Влучань до смерті"))}${th("rpm", T("RPM", "Темп"))}${th("ttk", T("Time to kill", "Час до смерті"))}</tr></thead><tbody>`;
   for (const r of rows) {
-    h += `<tr class="click${r.key === state.weapon ? " me" : ""}" data-w="${r.key}" data-a="${r.ak}"><td>${nm(r.w)}</td><td class="n">${r.w.item_level ?? "—"}</td><td>${nm(DATA.ammo[r.ak])}</td>
+    h += `<tr class="click${r.key === state.weapon ? " me" : ""}" data-w="${r.key}" data-a="${r.ak}"><td class="wname"><img class="wico" alt="" data-icon="${r.key}">${nm(r.w)}</td><td class="n">${r.w.item_level ?? "—"}</td><td>${nm(DATA.ammo[r.ak])}</td>
       <td class="n">${hp(r.b.P)}</td><td class="n">${hp(r.f.v)}</td><td class="n"><b>${isFinite(r.sim.shots) ? r.sim.shots : "∞"}</b></td>
       <td class="n">${r.w.rounds_per_minute || "—"}</td><td class="n">${isFinite(r.t) ? fx(r.t, 2) + T(" s", " с") : "—"}</td></tr>`;
   }
   const t = $("cmp"); t.innerHTML = h + "</tbody>";
+  // The lobby icons, by reference: not copied into the table's markup.
+  t.querySelectorAll("img.wico").forEach(img => {
+    const src = DATA.icons && DATA.icons[img.dataset.icon];
+    if (src) img.src = src; else img.remove();
+  });
   t.querySelectorAll("th[data-k]").forEach(c => c.addEventListener("click", () => {
     state.sort = { k: c.dataset.k, dir: state.sort.k === c.dataset.k ? -state.sort.dir : 1 }; update();
   }));
