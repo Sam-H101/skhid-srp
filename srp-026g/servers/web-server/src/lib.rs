@@ -25,7 +25,9 @@
 //!   It exists only when `SRP_ADMIN_TOKEN` and `SRP_ADMIN_PATH` (a hard to
 //!   guess name, served at `/<name>`) are set, and only for the addresses in
 //!   `SRP_ADMIN_IPS` (default: this machine). Anyone else gets the same
-//!   "not found" as for a page that does not exist.
+//!   "not found" as for a page that does not exist. It also resets a
+//!   forgotten password, on its Password tab or by a script's one POST
+//!   ([`password_reset`]).
 //!
 //! It listens on `SRP_WEB_BIND:SRP_WEB_PORT`, by default 127.0.0.1:8088: the
 //! page is plain HTTP, so a public host puts HTTPS in front of it (the
@@ -39,6 +41,7 @@
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
 mod launcher;
+mod password_reset;
 mod patches;
 mod stats;
 mod v026g;
@@ -214,6 +217,15 @@ struct AdminView {
     g26: bool,
     /// The operator's text that stands (0.26g, after the token only).
     admin_text: Option<(String, String)>,
+    /// The password tab: the account to confirm, or the user name typed.
+    reset: password_reset::ResetView,
+}
+
+/// Why the admin token was not taken.
+enum TokenRefused {
+    /// Too many wrong ones lately ([`MAX_TOKEN_FAILURES`]).
+    Locked,
+    Wrong,
 }
 
 /// Frees a download slot when the transfer ends, however it ends.
@@ -955,12 +967,17 @@ impl Web {
     }
 
     fn admin(&self, request: &Request, peer: &str) -> Response {
+        // A script's reset (curl from the owner's server): a line of text
+        // back, not the page.
+        if request.field("tab") == password_reset::DIRECT_TAB {
+            return self.admin_reset_direct(request, peer);
+        }
         let lang = request.lang;
         // The tab the form was on says what to do: Enter in any field
         // submits the form, whichever button that presses.
         let g26 = self.game.is_some();
         let tab = match request.field("tab") {
-            tab @ ("money" | "ban" | "unban" | "bans" | "maint" | "signups") => tab,
+            tab @ ("money" | "ban" | "unban" | "bans" | "maint" | "signups" | "password") => tab,
             tab @ ("account" | "item" | "text") if g26 => tab,
             _ => "money",
         };
@@ -972,21 +989,26 @@ impl Web {
             };
             page(lang, Form::Admin(view), &message)
         };
-        if self.token_locked() {
-            return refused(lang.tr(
-                "Too many wrong tokens; wait a minute.",
-                "Забагато хибних токенів; зачекайте хвилину.",
-            ));
+        match self.check_token(request, peer) {
+            Ok(()) => {}
+            Err(TokenRefused::Locked) => {
+                return refused(lang.tr(
+                    "Too many wrong tokens; wait a minute.",
+                    "Забагато хибних токенів; зачекайте хвилину.",
+                ));
+            }
+            Err(TokenRefused::Wrong) => {
+                return refused(lang.tr("Wrong token.", "Неправильний токен."));
+            }
         }
         let given = request.field("token");
-        let right = self.token.as_deref().unwrap_or_default();
-        if !same(given.as_bytes(), right.as_bytes()) {
-            self.token_failed();
-            log::warn!("Admin with a wrong token from {peer}");
-            return refused(lang.tr("Wrong token.", "Неправильний токен."));
-        }
-        *locked(&self.token_failures) = (0, None);
+        let mut reset = password_reset::ResetView::default();
         let message = match tab {
+            "password" => {
+                let (message, view) = self.admin_reset_password(request, peer);
+                reset = view;
+                message
+            }
             "ban" => self.admin_ban(request, peer),
             "unban" => self.admin_unban(request, peer),
             "bans" => String::new(),
@@ -1006,8 +1028,26 @@ impl Web {
             registrations_open: self.store.registrations_open(),
             g26,
             admin_text: self.game.as_ref().and_then(|game| game.lobby.admin_text()),
+            reset,
         };
         page(lang, Form::Admin(view), &message)
+    }
+
+    /// The admin token of `request`, checked: a wrong one counts towards
+    /// the lockout, a right one clears it.
+    fn check_token(&self, request: &Request, peer: &str) -> Result<(), TokenRefused> {
+        if self.token_locked() {
+            return Err(TokenRefused::Locked);
+        }
+        let given = request.field("token");
+        let right = self.token.as_deref().unwrap_or_default();
+        if right.is_empty() || !same(given.as_bytes(), right.as_bytes()) {
+            self.token_failed();
+            log::warn!("Admin with a wrong token from {peer}");
+            return Err(TokenRefused::Wrong);
+        }
+        *locked(&self.token_failures) = (0, None);
+        Ok(())
     }
 
     fn admin_money(&self, request: &Request, peer: &str) -> String {
@@ -1546,7 +1586,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     }
 }
 
-const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
+const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text,#tab-password:checked~.p-password{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
 
 /// A file's size as the download button shows it.
 fn file_size(bytes: u64) -> String {
@@ -2042,11 +2082,13 @@ fn admin_form(lang: Lang, view: &AdminView) -> String {
     } else {
         (String::new(), String::new())
     };
+    let password_tab = tab("password", lang.tr("Password", "Пароль"));
+    let password_panel = password_reset::panel(lang, view);
     format!(
         "<h1>{}</h1><form method=post action=\"\" autocomplete=off>\
          <input type=hidden name=lang value={code}>\
          <label for=t>{}</label><input id=t name=token type=password required value=\"{}\">\
-         <div class=tabs>{}{}{}{}{}{}{extra_tabs}\
+         <div class=tabs>{}{}{}{}{}{}{extra_tabs}{password_tab}\
          <div class=\"panel p-money\">\
          <label for=u>{}</label><input id=u name=user maxlength=99>\
          <label for=s>{}</label><input id=s name=silver placeholder=+10000>\
@@ -2070,7 +2112,7 @@ fn admin_form(lang: Lang, view: &AdminView) -> String {
          <label for=m>{}</label><input id=m name=minutes inputmode=numeric placeholder=30>\
          <small>{}</small><br>\
          <button>{}</button> <button name=cancel value=1 class=quiet>{}</button></div>\
-         {extra_panels}</div></form>",
+         {extra_panels}{password_panel}</div></form>",
         lang.tr("Admin", "Адміністратор"),
         lang.tr("Token", "Токен"),
         escape(&view.token),
@@ -2527,6 +2569,189 @@ mod tests {
             "t",
         );
         assert!(locked.body.contains("wait a minute"));
+    }
+
+    fn password_hash(web: &Web, id: u32) -> Option<String> {
+        web.store
+            .account(id)
+            .unwrap()
+            .locked()
+            .password_hash
+            .clone()
+    }
+
+    #[test]
+    fn the_admin_resets_a_password_once_the_account_is_confirmed() {
+        let web = web(Some("tok"));
+        let id = web.store.sign_in("Forgetful@x.test", b"old").unwrap();
+        web.store.signed_in_from(id, "203.0.113.9".parse().unwrap());
+        let session = web.store.create_session(id);
+        let act = |fields: &[(&str, &str)]| {
+            let mut all = vec![("token", "tok"), ("tab", "password")];
+            all.extend_from_slice(fields);
+            web.admin(&post("/hidden", &all), "t").body
+        };
+
+        // The user name in any case: the account to confirm, nothing changed.
+        let shown = act(&[("reset_user", "FORGETFUL@x.test")]);
+        assert!(shown.contains("Check the account below"), "{shown}");
+        assert!(shown.contains("<td>forgetful@x.test</td>"), "{shown}");
+        assert!(shown.contains("<td>Forgetful</td>"), "{shown}");
+        assert!(shown.contains("203.0.113.9"), "{shown}");
+        assert!(shown.contains(" UTC</td>"), "{shown}");
+        assert!(shown.contains("yes, 1: its game is signed out"), "{shown}");
+        assert!(
+            shown.contains(&format!(
+                "name=reset_id value={id}>Reset the password of forgetful@x.test"
+            )),
+            "{shown}"
+        );
+        assert!(shown.contains("value=password id=tab-password checked"));
+        assert!(password_hash(&web, id).is_some());
+        assert!(!web.store.has_ended(session));
+
+        // The character name is not a user name.
+        let by_name = act(&[("reset_user", "Forgetful")]);
+        assert!(by_name.contains("No account signs in with that user name"));
+        assert!(!by_name.contains("name=reset_id"));
+        // A confirm for another account changes nothing.
+        let other = web.store.sign_in("other", b"pw").unwrap();
+        let mismatch = act(&[
+            ("reset_user", "forgetful@x.test"),
+            ("reset_id", &other.to_string()),
+        ]);
+        assert!(mismatch.contains("now means another account"), "{mismatch}");
+        assert!(password_hash(&web, id).is_some());
+        assert!(password_hash(&web, other).is_some());
+
+        let done = act(&[
+            ("reset_user", "forgetful@x.test"),
+            ("reset_id", &id.to_string()),
+        ]);
+        assert!(
+            done.contains("The password of forgetful@x.test is cleared; 1 session(s) ended"),
+            "{done}"
+        );
+        assert!(!done.contains("name=reset_id"));
+        assert_eq!(password_hash(&web, id), None);
+        assert!(web.store.has_ended(session));
+        // The next sign-in sets the new password; the old one is refused.
+        assert_eq!(web.store.sign_in("forgetful@x.test", b"new"), Ok(id));
+        assert_eq!(
+            web.store.sign_in("forgetful@x.test", b"old"),
+            Err(session::SignInError::WrongPassword)
+        );
+        assert!(password_hash(&web, other).is_some());
+
+        // Without the right token, nothing is looked up or changed.
+        let refused = web.admin(
+            &post(
+                "/hidden",
+                &[
+                    ("token", "bad"),
+                    ("tab", "password"),
+                    ("reset_user", "other"),
+                    ("reset_id", &other.to_string()),
+                ],
+            ),
+            "t",
+        );
+        assert!(refused.body.contains("Wrong token"));
+        assert!(!refused.body.contains("name=reset_id"));
+        assert!(password_hash(&web, other).is_some());
+    }
+
+    #[test]
+    fn a_script_resets_a_password_with_one_post() {
+        let web = web(Some("tok"));
+        let id = web.store.sign_in("Forgetful", b"old").unwrap();
+        let session = web.store.create_session(id);
+        let send = |client: &str, fields: &[(&str, &str)]| {
+            let mut request = post("/hidden", fields);
+            request.client = client.parse().ok();
+            web.route(&request, "t")
+        };
+        let reset = |fields: &[(&str, &str)]| send("127.0.0.1", fields);
+
+        // An address not in SRP_ADMIN_IPS: the plain "not found".
+        let elsewhere = send(
+            "203.0.113.5",
+            &[
+                ("token", "tok"),
+                ("tab", "reset_password"),
+                ("login", "forgetful"),
+            ],
+        );
+        assert_eq!(elsewhere.status, "404 Not Found");
+        assert!(password_hash(&web, id).is_some());
+        // No token, or a wrong one.
+        let none = reset(&[("tab", "reset_password"), ("login", "forgetful")]);
+        assert_eq!(
+            (none.status, none.body.as_str()),
+            ("403 Forbidden", "wrong token\n")
+        );
+        let wrong = reset(&[
+            ("token", "bad"),
+            ("tab", "reset_password"),
+            ("login", "forgetful"),
+        ]);
+        assert_eq!(wrong.status, "403 Forbidden");
+        assert!(password_hash(&web, id).is_some());
+        assert!(!web.store.has_ended(session));
+        // No login, an unknown one, a character name.
+        let empty = reset(&[("token", "tok"), ("tab", "reset_password"), ("login", " ")]);
+        assert_eq!(
+            (empty.status, empty.body.as_str()),
+            ("400 Bad Request", "no login\n")
+        );
+        let unknown = reset(&[
+            ("token", "tok"),
+            ("tab", "reset_password"),
+            ("login", "nobody"),
+        ]);
+        assert_eq!(
+            (unknown.status, unknown.body.as_str()),
+            ("404 Not Found", "no such login\n")
+        );
+        assert!(matches!(unknown.content_type, ContentType::Text));
+
+        // At once, no confirm step; in any case.
+        let done = reset(&[
+            ("token", "tok"),
+            ("tab", "reset_password"),
+            ("login", " FORGETFUL "),
+        ]);
+        assert_eq!(
+            (done.status, done.body.clone()),
+            ("200 OK", format!("ok forgetful {id}\n"))
+        );
+        assert!(matches!(done.content_type, ContentType::Text));
+        assert_eq!(password_hash(&web, id), None);
+        assert!(web.store.has_ended(session));
+        assert_eq!(web.store.sign_in("forgetful", b"new"), Ok(id));
+        assert_eq!(
+            web.store.sign_in("forgetful", b"old"),
+            Err(session::SignInError::WrongPassword)
+        );
+
+        // Wrong tokens lock it as they lock the page.
+        for _ in 0..MAX_TOKEN_FAILURES {
+            reset(&[
+                ("token", "bad"),
+                ("tab", "reset_password"),
+                ("login", "forgetful"),
+            ]);
+        }
+        let locked = reset(&[
+            ("token", "tok"),
+            ("tab", "reset_password"),
+            ("login", "forgetful"),
+        ]);
+        assert_eq!(
+            (locked.status, locked.body.as_str()),
+            ("429 Too Many Requests", "locked: too many wrong tokens\n")
+        );
+        assert!(password_hash(&web, id).is_some());
     }
 
     #[test]

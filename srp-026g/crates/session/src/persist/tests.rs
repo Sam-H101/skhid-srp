@@ -157,6 +157,51 @@ fn accounts_and_passwords_survive_a_restart() {
     assert_eq!(store.sign_in("third", b"test-password-3"), Ok(3));
 }
 
+/// The admin's password reset is in the database at once (srp may stop
+/// before the saver's next pass), and the password the next sign-in sets
+/// is kept too.
+#[test]
+fn a_reset_password_stays_reset_across_a_restart() {
+    let dir = TempDir::new("reset-password");
+    let open = || {
+        let repository = SqliteRepository::open(&dir.db()).unwrap();
+        SessionStore::with_repository(GATHER, Box::new(repository)).unwrap()
+    };
+    let store = open();
+    let id = store.sign_in("Forgetful", b"test-password-1").unwrap();
+    let kept = store.sign_in("kept", b"test-password-2").unwrap();
+    store.flush();
+    assert_eq!(store.reset_password(id), Some(0));
+    // No flush: the reset wrote it.
+    drop(store);
+
+    let connection = Connection::open(dir.db()).unwrap();
+    let rows: Vec<(String, Option<String>)> = connection
+        .prepare("SELECT login, password_hash FROM accounts ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(connection);
+    assert_eq!(rows[0], ("forgetful".to_owned(), None));
+    assert!(rows[1].1.is_some());
+
+    let store = open();
+    assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+    assert_eq!(store.sign_in("forgetful", b"test-password-3"), Ok(id));
+    assert_eq!(store.sign_in("kept", b"test-password-2"), Ok(kept));
+    store.flush();
+    drop(store);
+
+    let store = open();
+    assert_eq!(store.sign_in("Forgetful", b"test-password-3"), Ok(id));
+    assert_eq!(
+        store.sign_in("forgetful", b"test-password-1"),
+        Err(SignInError::WrongPassword)
+    );
+}
+
 #[test]
 fn only_changed_accounts_are_written_again() {
     let repository = MemoryRepository::default();

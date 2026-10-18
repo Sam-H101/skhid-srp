@@ -93,6 +93,8 @@ impl AccountRecord {
             notices,
             ban,
             last_ip,
+            // Not kept: only the admin's password reset shows it.
+            last_sign_in: _,
         } = account;
         Self {
             id: *id,
@@ -123,6 +125,7 @@ impl AccountRecord {
             notices: self.notices,
             ban: self.ban,
             last_ip: self.last_ip,
+            last_sign_in: None,
         }
     }
 
