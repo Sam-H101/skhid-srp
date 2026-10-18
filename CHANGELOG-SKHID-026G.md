@@ -414,3 +414,13 @@ kept and can be put back).
 - TODO: #171 Squads of two: SRP_SQUAD_SIZE, an invite into a full squad is refused
 - TODO: #172 Revert "Squads of two" (#171)
 - TODO: #175 0.26g matches: 8 a side by default, not 10
+
+## 18 Oct, 21:55 — TODO: the owner's words (update required)
+
+<!-- Revision 22 (026g-rev22), released 2026-10-18 21:55 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #184 Changelog: game update 21
+- TODO: #185 Shop: stop selling the Russian and Belarusian flags and coats of arms, the USSR flag and the red star
+- TODO: #187 Admin page: reset a forgotten password while srp runs
+- TODO: #186 Site: damage calculator tab (/damage), English and Ukrainian
+- TODO: #189 Password reset: close the sign-in race, write only the account, report errors
