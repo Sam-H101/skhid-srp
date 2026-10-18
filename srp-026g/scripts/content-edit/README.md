@@ -17,6 +17,7 @@ dbgrab server-game-data.db get gameplay/items/ live/      # tools/re-kit/common/
 dbgrab resources.db.patch_19 get collimator_glowing_dot_ x/ && cp x/*.material live/
 dbgrab resources.db.patch_20 get localization/ live/
 python3 -I content_edit.py weapon-balance-1.json live/ folder/
+cp lobby_menu.swf folder/flash_movies/                     # weapon balance 1: the movie with the ninth card row
 release/build-patch folder/ <revision>                    # resources.db.patch_<revision>
 ```
 
@@ -48,5 +49,13 @@ weapon / kills the same players get with their other weapons.
 | `stamina_regenation_speed_modifier` -> `stamina_regeneration_speed_modifier` in every item config and in the modifications' paths (5 modifications, 1 defect) | the exe reads only the correct spelling (name table 0x928448 entry 3); the items' stamina-regeneration modifications and defect did nothing |
 | the three glowing-dot materials of the sights ported from 0.51c5 (`material_instances/weapons/loc/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_green`): `constant_transparency` 1 -> 0.3 | 0.51c5's value: the round-12 material merge of the scope port dropped it because its kind differed (float in 0.51c5, int 1 in the template), so every ported red-dot and ring reticle (Aimpoint, Cobra, Docter, EOTech, DeltaPoint) glowed 3.3 times brighter than in 0.51c5; the 0.29a3 stock sights are unchanged |
 
+| a magazine line on every weapon card (83): `ui_properties` line 134 "Magazine" (a new text in the six localization tables), a `props_list` entry after the rate of fire with the weapon's `magazine_capacity` | the card did not say how many rounds a magazine holds; it draws eight comparable lines and every weapon had eight, so the patch also carries the lobby movie with a ninth row (`srp-026g/docs/notes/items.md` §7) |
+
 The lobby card shows text kept in each config (`ui_desc/props_list`), not the
 values: the list changes that text with each value (`set_prop`).
+
+The movie (`flash_movies/lobby_menu.swf`, 40,009,816 bytes, sha256 `b4c1a4b7…4fe7`) is patch 20's
+(sha256 `f21eac03…e117`) with two tags changed and every other tag byte-identical: sprite 1538
+(`SrvItemCompareHintG`) places a ninth row `diff_9` (sprite 1537, depth 33, 22.6 px under `diff_8`),
+and `survarium.controls.ItemCompare`'s constructor, re-imported as FFDec p-code, adds
+`getChildByName("diff_9")` to its rows when there is one.

@@ -829,8 +829,10 @@ mod tests {
     /// listed weapon's `parameters` value and the lobby card's text of it
     /// (`ui_desc.props_list`: prop 1 damage x100, 3 armour piercing x100, 4
     /// rate of fire) change as listed, and nothing else; the SVD's magazine
-    /// (no card line) holds 5 rounds, still an int, and its description says
-    /// so in every language; the items' misspelt
+    /// holds 5 rounds, still an int, and its description says so in every
+    /// language; every weapon card has a magazine line (prop 134, a new line
+    /// of `ui_properties` named in every language) after its rate of fire;
+    /// the items' misspelt
     /// `stamina_regenation_speed_modifier` is spelt as the exe reads it, with
     /// its value, in every item config and in the modifications' paths. srp
     /// reads only the magazine (the bots' guns); the game computes the rest,
@@ -898,6 +900,7 @@ mod tests {
         let after = live_data(&[env_path("SRP_TEST_PATCH_WEAPON_BALANCE_1")]);
         let dictionary = Dictionary::parse(after.file(dictionary::PATH).unwrap()).unwrap();
         let mut renamed = 0;
+        let mut magazines = 0;
         let mut seen = std::collections::BTreeSet::new();
         for item in &dictionary.items {
             let path = item.cfg_name.as_str();
@@ -945,6 +948,42 @@ mod tests {
                     assert_eq!(got.entries().len(), value.entries().len(), "{path}");
                     continue;
                 }
+                // A weapon card gets a magazine line (prop 134) after its
+                // rate of fire, with the magazine the weapon has now.
+                let magazine = new
+                    .get("parameters")
+                    .and_then(|p| p.get("magazine_capacity"))
+                    .and_then(ConfigValue::as_f32);
+                let lines = value.get("props_list").map(ConfigValue::children);
+                let rate = lines.as_ref().and_then(|lines| {
+                    lines
+                        .iter()
+                        .position(|p| p.i32_at("prop_id").ok() == Some(4))
+                });
+                if key == "ui_desc"
+                    && let (Some(magazine), Some(rate)) = (magazine, rate)
+                {
+                    let mut entries = value.entries().to_vec();
+                    for (k, v) in &mut entries {
+                        if k == "props_list" {
+                            let mut lines: Vec<ConfigValue> =
+                                v.children().into_iter().cloned().collect();
+                            lines.insert(
+                                rate + 1,
+                                ConfigValue::Named(vec![
+                                    (
+                                        "prop_value".into(),
+                                        ConfigValue::String(format!("{magazine}")),
+                                    ),
+                                    ("prop_id".into(), ConfigValue::Integer(134)),
+                                ]),
+                            );
+                            *v = ConfigValue::Indexed(lines);
+                        }
+                    }
+                    value = ConfigValue::Named(entries);
+                    magazines += 1;
+                }
                 if key == "ui_desc" && !mine.is_empty() {
                     let props = new.req("ui_desc").unwrap().req("props_list").unwrap();
                     text = Some(props.clone());
@@ -966,6 +1005,7 @@ mod tests {
                 if let Some(props) = text {
                     // The card's other lines are the live ones.
                     let old_props = value.req("props_list").unwrap().children();
+                    assert_eq!(old_props.len(), props.children().len(), "{path}");
                     for (o, n) in old_props.iter().zip(props.children()) {
                         let id = o.i32_at("prop_id").unwrap();
                         if !mine.iter().any(|change| prop(change.1) == Some(id)) {
@@ -978,6 +1018,39 @@ mod tests {
             }
         }
         assert!(renamed > 200, "{renamed} items had the misspelt key");
+        assert_eq!(magazines, 83, "weapon cards with a magazine line");
+        // The card lines' table has the magazine line: the bullets-in-pack
+        // line's keys (comparable, more is better), its own id, name and top.
+        let lines = |data: &GameData| {
+            let file = data
+                .file("gameplay/static_game_parameters.options")
+                .unwrap();
+            let config = ConfigValue::parse(file).unwrap();
+            config.req("ui_properties").unwrap().clone()
+        };
+        let (old_lines, new_lines) = (lines(&before), lines(&after));
+        let (old_lines, new_lines) = (old_lines.children(), new_lines.children());
+        assert_eq!(new_lines.len(), old_lines.len() + 1);
+        assert!(old_lines.iter().zip(&new_lines).all(|(o, n)| o == n));
+        let like = old_lines
+            .iter()
+            .find(|line| line.i32_at("prop_id").ok() == Some(16))
+            .unwrap();
+        let want: Vec<(String, ConfigValue)> = like
+            .entries()
+            .iter()
+            .map(|(k, v)| {
+                let v = match k.as_str() {
+                    "prop_id" => ConfigValue::Integer(134),
+                    "prop_name" => ConfigValue::String("st_inv_magazine_size".into()),
+                    "min_value" => ConfigValue::String("0".into()),
+                    "max_value" => ConfigValue::String("100".into()),
+                    _ => v.clone(),
+                };
+                (k.clone(), v)
+            })
+            .collect();
+        assert_eq!(new_lines.last().unwrap().entries(), want.as_slice());
         // The modifications and the defect that change it name the key as
         // the exe reads it.
         let walk = |config: &ConfigValue| -> Vec<String> {
@@ -1033,13 +1106,19 @@ mod tests {
                     .map(std::path::PathBuf::from),
             )
             .collect();
-        for (language, from, to) in [
-            ("english", "supply: 10 rounds", "supply: 5 rounds"),
-            ("german", "r 10 Patronen", "r 5 Patronen"),
-            ("polish", "w 10-nabojowy", "w 5-nabojowy"),
-            ("russian", " 10 ", " 5 "),
-            ("original", " 10 ", " 5 "),
-            ("ukrainian", " 10 ", " 5 "),
+        // The card's magazine line is named in each language.
+        for (language, from, to, label) in [
+            (
+                "english",
+                "supply: 10 rounds",
+                "supply: 5 rounds",
+                "Magazine",
+            ),
+            ("german", "r 10 Patronen", "r 5 Patronen", "Magazin"),
+            ("polish", "w 10-nabojowy", "w 5-nabojowy", "Magazynek"),
+            ("russian", " 10 ", " 5 ", "Магазин"),
+            ("original", " 10 ", " 5 ", "Магазин"),
+            ("ukrainian", " 10 ", " 5 ", "Магазин"),
         ] {
             let path = format!("localization/{language}/localization");
             let old = live.iter().rev().find_map(|db| read_in(db, &path)).unwrap();
@@ -1047,7 +1126,13 @@ mod tests {
             let old = ConfigValue::parse(&old).unwrap();
             let new = ConfigValue::parse(&new).unwrap();
             let (old, new) = (old.req("strings").unwrap(), new.req("strings").unwrap());
-            assert_eq!(old.entries().len(), new.entries().len(), "{path}");
+            assert_eq!(old.entries().len() + 1, new.entries().len(), "{path}");
+            let label = encoding_rs::WINDOWS_1251.decode(label.as_bytes()).0;
+            assert_eq!(
+                new.get("st_inv_magazine_size"),
+                Some(&ConfigValue::String(label.into_owned())),
+                "{path}"
+            );
             for (key, value) in old.entries() {
                 let got = new.get(key).unwrap_or_else(|| panic!("{path} {key}"));
                 if key == "st_svd_description" {

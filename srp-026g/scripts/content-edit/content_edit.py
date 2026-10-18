@@ -29,6 +29,14 @@ Edits (edits.json):
   "replace_string": [{"files", "from", "to"}]          every string value equal to `from`, appended
   "edit_text":      [{"file", "path", "from", "to"}]   in one text (UTF-8, as the localization tables
                                                        keep it), its one `from` becomes `to`
+  "add_entry":      [{"files", "list", "after", "like", "values", "only_if"}]
+                    a new entry of the indexed table `list` (a lobby card's `ui_desc/props_list`, the
+                    card lines' `ui_properties`) after the entry whose keys match `after`, made like
+                    the entry matching `like` with `values` set; a value "{a/b}" is that number of
+                    the same file; files without `only_if`, the table or those entries are left alone
+  "add_key":        [{"file", "table", "key", "text"}] a new text of a localization table
+New records and arrays are appended (arrays at 8-byte boundaries, as the files keep them); a table
+that grows gets a new array and the old one stays, unreferenced.
 
 Every edited file is read back with an independent walk: only the intended values, names and order
 may differ from the live file (the check prints each difference).
@@ -186,6 +194,107 @@ def edit_text(buf, path, frm, to):
     REC.pack_into(buf, off, append(buf, new + b'\0'), i, c, t, len(new) + 1)
 
 
+def append_array(buf, recs):
+    """24-byte records appended at an 8-byte boundary, as the game's files keep their arrays."""
+    buf.extend(bytes(-len(buf) % 8))
+    return append(buf, b''.join(recs))
+
+
+def child(buf, table_off, name):
+    for c in children(buf, table_off):
+        if name_at(buf, rec(buf, c)[1]) == name.encode():
+            return c
+    return None
+
+
+def value_of(buf, off):
+    d, _, _, t, cnt = rec(buf, off)
+    if t == T_STR:
+        return bytes(buf[d:d + cnt - 1]).decode()
+    return as_number(t, d & 0xffffffff) if t != T_BOOL else d & 1
+
+
+def matches(buf, entry, want):
+    for k, v in want.items():
+        c = child(buf, entry, k)
+        if c is None or value_of(buf, c) != v:
+            return False
+    return True
+
+
+def filled(buf, text):
+    """`{a/b}` in a value: that number of the same file, as the game's cards write numbers."""
+    if not (isinstance(text, str) and text.startswith('{') and text.endswith('}')):
+        return text
+    v = value_of(buf, find(buf, text[1:-1]))
+    return str(int(v)) if v == int(v) else '%g' % v
+
+
+def add_entry(buf, path, after, like, values):
+    """A new entry of the indexed table `path` after the one matching `after`: the entry matching
+    `like` copied (its keys, types and order), the keys of `values` set. Its records and the table's
+    new array are appended; the old array stays, unreferenced. Returns the new entry's index, or None
+    when the file has no such table or entry."""
+    try:
+        lst = find(buf, path)
+    except KeyError:
+        return None
+    kids = children(buf, lst)
+    at = [i for i, e in enumerate(kids) if matches(buf, e, after)]
+    model = [e for e in kids if matches(buf, e, like)]
+    if not at or not model:
+        return None
+    assert len(at) == 1 and len(model) == 1, (path, after, like)
+    names = {name_at(buf, rec(buf, c)[1]).decode(): c for c in children(buf, model[0])}
+    assert set(values) <= set(names), ('keys the model entry lacks', set(values) - set(names))
+    recs = []
+    for c in children(buf, model[0]):
+        d, i, crc, t, cnt = rec(buf, c)
+        name = name_at(buf, i).decode()
+        if name in values:
+            v = filled(buf, values[name])
+            if t == T_STR:
+                v = v.encode()
+                d, cnt = append(buf, v + b'\0'), len(v) + 1
+            elif t == T_INT:
+                d = (d & ~0xffffffff) | (int(v) & 0xffffffff)
+            elif t == T_FLOAT:
+                d = (d & ~0xffffffff) | struct.unpack('<I', struct.pack('<f', v))[0]
+            else:
+                d = (d & ~0xffffffff) | (1 if v else 0)
+        recs.append(REC.pack(d, i, crc, t, cnt))
+    d, i, crc, t, cnt = rec(buf, model[0])
+    entry = REC.pack(append_array(buf, recs), i, crc, t, cnt)
+    old = [bytes(buf[c:c + 24]) for c in kids]
+    new = old[:at[0] + 1] + [entry] + old[at[0] + 1:]
+    d, i, crc, t, cnt = rec(buf, lst)
+    REC.pack_into(buf, lst, append_array(buf, new), i, crc, t, cnt + 1)
+    return at[0] + 1
+
+
+def add_key(buf, table, key, text):
+    """A new text `key` of the named table `table`, in its place by name CRC."""
+    toff = find(buf, table)
+    kids = [bytes(buf[c:c + 24]) for c in children(buf, toff)]
+    crc = zlib.crc32(key.encode()) & 0xffffffff
+    assert all(REC.unpack(r)[2] != crc for r in kids), (table, key, 'its CRC is taken')
+    name = append(buf, key.encode() + b'\0')
+    t = text.encode()
+    new = sorted(kids + [REC.pack(append(buf, t + b'\0'), name, crc, T_STR, len(t) + 1)],
+                 key=lambda r: REC.unpack(r)[2])
+    d, i, c, ty, cnt = rec(buf, toff)
+    REC.pack_into(buf, toff, append_array(buf, new), i, c, ty, cnt + 1)
+
+
+def shifted(path, lst, at):
+    """A path of the file before an entry was put at `at` of the table `lst`, after it."""
+    head = lst + '['
+    if not path.startswith(head):
+        return path
+    k, rest = path[len(head):].split(']', 1)
+    return '%s%d]%s' % (head, int(k) + (int(k) >= at), rest)
+
+
 def set_prop(buf, prop_id, frm, to):
     """The lobby card's text of a stat: `ui_desc/props_list` entry `prop_id` (1 damage x100, 3 armour
     piercing x100, 4 rate of fire, ...), its `prop_value` string; the card shows this text, it does not
@@ -261,6 +370,31 @@ def main():
                 bufs[p] = b
                 n += k
         print('string %s -> %s: %d values' % (e['from'], e['to'], n))
+    shifts, added, grown = {}, {}, {}
+    for e in edits.get('add_entry', []):
+        n = 0
+        for p in sorted(fnmatch.filter(files, e['files'])):
+            b = bytearray(open(files[p], 'rb').read()) if p not in bufs else bufs[p]
+            if e.get('only_if'):
+                try:
+                    find(b, e['only_if'])
+                except KeyError:
+                    continue
+            at = add_entry(b, e['list'], e['after'], e['like'], e['values'])
+            if at is None:
+                continue
+            bufs[p] = b
+            n += 1
+            lst = '/' + e['list']
+            shifts.setdefault(p, []).append((lst, at))
+            allowed[p] = {shifted(q, lst, at) for q in allowed.get(p, ())}
+            added.setdefault(p, []).append('%s[%d]' % (lst, at))
+            grown.setdefault(p, set()).add(lst)
+        print('entry %s after %s: %d files' % (e['list'], e['after'], n))
+    for e in edits.get('add_key', []):
+        add_key(buf(e['file']), e['table'], e['key'], e['text'])
+        added.setdefault(e['file'], []).append('/%s/%s' % (e['table'], e['key']))
+        grown.setdefault(e['file'], set()).add('/' + e['table'])
 
     # read back: compare every value with the live file, by path
     renames = [('/%s/%s' % (e['table'], e['from']), '/%s/%s' % (e['table'], e['to']), e['from'], e['to'])
@@ -273,12 +407,16 @@ def main():
         for ro, rn, _, _ in renames:
             if ro in old and rn in new and rn not in old:
                 old[rn] = old.pop(ro)
+        for lst, at in shifts.get(p, ()):
+            old = {shifted(q, lst, at): v for q, v in old.items()}
         for q in sorted(set(old) | set(new)):
             o, n = old.get(q), new.get(q)
             if o == n:
                 continue
             ok = (q in allowed.get(p, ()) and o and n and n[0] in (o[0], T_FLOAT)) or \
-                (o and n and o[0] == n[0] == T_STR and (o[1], n[1]) in strings)
+                (o and n and o[0] == n[0] == T_STR and (o[1], n[1]) in strings) or \
+                (o is None and any(q == a or q.startswith(a + '/') for a in added.get(p, ()))) or \
+                (q in grown.get(p, ()) and o and n and o[0] == n[0] and n[1] == o[1] + 1)
             bad += not ok
             print('%s%s %s: %s -> %s' % ('' if ok else 'UNEXPECTED ', p, q, show(o), show(n)))
     print('%d files edited, %d unexpected differences' % (len(bufs), bad))
