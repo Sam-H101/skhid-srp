@@ -172,21 +172,14 @@ const RULES = (() => {
         return b;
       };
       const row = (label, ...kids) => box.append(el("div", { class: "field" }, el("span", { class: "lbl", text: label }), el("div", { class: "fxrow" }, ...kids)));
-      // Four artefact slots, shared: click the n-th tile to carry n of that
-      // artefact, the last lit one again to drop it; the other gives way when
-      // both would not fit.
-      const SLOTS_MAX = 4, rows = {};
-      const paint = key => rows[key] && rows[key].forEach((s, j) => s.setAttribute("aria-pressed", String(j < (state.fx[key] || 0))));
-      const slotTiles = (key, art, icon) => rows[key] = [1, 2, 3, 4].map(i => tile(icon, `${nm(art)} ×${i}`, i <= (state.fx[key] || 0),
-        () => {
-          state.fx[key] = (state.fx[key] || 0) === i ? i - 1 : i;
-          const other = key === "onyx" ? "larkspur" : "onyx";
-          if ((state.fx[other] || 0) + state.fx[key] > SLOTS_MAX) { state.fx[other] = SLOTS_MAX - state.fx[key]; paint(other); }
-          paint(key);
-          update();
-        }));
       if (ART.onyx) {
-        const slots = slotTiles("onyx", ART.onyx, "artefact_onyx");
+        // Four artefact slots: click the n-th to carry n, the last lit one again to drop it.
+        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= (state.fx.onyx || 0),
+          () => {
+            state.fx.onyx = (state.fx.onyx || 0) === i ? i - 1 : i;
+            slots.forEach((s, j) => s.setAttribute("aria-pressed", String(j < state.fx.onyx)));
+            update();
+          }));
         const mode = state.fx.onyxMode || "passive";
         const chip = (k, text) => {
           const c = el("button", { type: "button", class: "chip", text, "aria-pressed": String(mode === k) });
@@ -201,8 +194,6 @@ const RULES = (() => {
           chip("passive", `${T("passive", "пасивний")} ×${ART.onyx.passive.damage_mul}`),
           chip("active", `${T("active", "активний")} ×${ART.onyx.active.damage_mul}, ${ART.onyx.active.duration_s} ${T("s", "с")}`)));
       }
-      // The Larkspur changes no hit: its count is the healing table's.
-      if (ART.lifebone) row(nm(ART.lifebone), ...slotTiles("larkspur", ART.lifebone, "artefact_lifebone"));
       const shielding = Object.entries(DATA.drugs || {}).filter(([, d]) => d.damage_protection.some(p => p.hit_type === "ranged"));
       if (shielding.length) {
         state.fx.drugs = state.fx.drugs || {};

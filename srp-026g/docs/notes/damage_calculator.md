@@ -17,8 +17,8 @@ number from the game data, the rules as the client's hit code applies them. Buil
   bonuses). A weapon with presets (premium) has those, fixed, as the lobby lists them; damage
   and rate of fire change the numbers.
 - Target: the HUD doll and the equipment cards (both aim), armour bonuses, Onyx (four slot
-  tiles, passive or active), the Larkspur (four tiles; the healing table follows the count, the
-  two sharing the four artefact slots), the Anesthetic, the pain already taken. Under the doll: the hit
+  tiles, passive or active), the Anesthetic, the pain already taken. The Larkspur changes no hit:
+  its four tiles are in the healing section, for the recovery it gives. Under the doll: the hit
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
   Armour bonuses always shown, for the item on the part being hit only.
 - A closed helmet (or an exo suit) takes the slots its model covers: their cards are locked.
@@ -26,7 +26,9 @@ number from the game data, the rules as the client's hit code applies them. Buil
   window's height; two clicks for the distance; the distance slider moves the target along the
   same line. On a wide screen (1700 px and up) it sits between shooter and target.
 - Healing, at the bottom: recovering by itself, the Larkspur (Живокіст) carried and activated,
-  the medikit and bandages, side by side; every number from the data.
+  the medikit and bandages, side by side; every number from the data. How many Larkspurs (1–4)
+  is chosen there; each adds its own regeneration callback.
+- The map's readout sits under it, two lines whatever the state, so the map never moves.
 - Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
 - The formula says how one bullet through several hit boxes counts (each pool its largest

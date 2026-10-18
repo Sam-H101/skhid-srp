@@ -624,6 +624,24 @@ function drawExplain() {
   ]).filter(x => x !== null).join("\n");
 }
 
+// How many Larkspurs the healing table counts (its own tiles), 1 to 4.
+const larkspurs = () => clamp(state.larkspur || 1, 1, 4);
+function fillHealPick() {
+  const lark = DATA.artefacts && DATA.artefacts.lifebone, host = $("healpick");
+  if (!lark) { host.hidden = true; return; }
+  const src = DATA.icons && DATA.icons.artefact_lifebone;
+  const tiles = [1, 2, 3, 4].map(i => {
+    const b = el("button", { type: "button", class: "fxtile", title: `${nm(lark)} ×${i}`, "aria-label": `${nm(lark)} ×${i}`, "aria-pressed": String(i <= larkspurs()) },
+      src ? el("img", { src, alt: "" }) : el("span", { text: `×${i}` }));
+    b.addEventListener("click", () => {
+      state.larkspur = i; save();
+      tiles.forEach((t, j) => t.setAttribute("aria-pressed", String(j < i)));
+      drawHealing();
+    });
+    return b;
+  });
+  host.append(el("span", { class: "lbl", text: nm(lark) }), ...tiles);
+}
 // Healing compared: recovering by itself, the Larkspur carried and activated,
 // the medikit and bandages, every number from the data.
 function drawHealing() {
@@ -651,8 +669,7 @@ function drawHealing() {
   const lark = DATA.artefacts && DATA.artefacts.lifebone;
   if (lark) {
     const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
-    // As many as the target carries (Artefacts & drugs), one when it carries none.
-    const n = clamp((state.fx || {}).larkspur || 1, 1, 4);
+    const n = larkspurs();
     const carried = pools.map(([p]) => regen(p, mods[p], n));
     rows.push([named(`${nm(lark)}${n > 1 ? ` ×${n}` : ""}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
     const cures = (lark.active.remove_affects || []).length;
@@ -730,18 +747,19 @@ function drawMapOver(b) {
   }
   g.innerHTML = h;
   const read = $("mapread");
-  const rings = T(`Orange ring: full damage to ${b.r0.toFixed(0)} m; dashed ring: minimum from ${b.r1.toFixed(0)} m.`,
-    `Помаранчеве коло: повне пошкодження до ${b.r0.toFixed(0)} м; пунктирне: мінімум від ${b.r1.toFixed(0)} м.`);
+  // Under the map, two lines whatever the state: what to do or what was
+  // measured, then the rings' legend. The map never moves.
+  let line;
   if (state.mapA && state.mapB) {
     const [x1, z1] = state.mapA, [x2, z2] = state.mapB;
     const flat = Math.hypot(x2 - x1, z2 - z1);
     const dh = groundAt(m, x2, z2) - groundAt(m, x1, z1);
     const slant = Math.hypot(flat, dh), sign = dh >= 0 ? "+" : "−";
-    read.innerHTML = T(`Shooter → target: <b>${slant.toFixed(1)} m</b> (${flat.toFixed(1)} m across, ${sign}${Math.abs(dh).toFixed(1)} m height). ${rings} Click again to start over.`,
-      `Стрілець → ціль: <b>${slant.toFixed(1)} м</b> (${flat.toFixed(1)} м по горизонталі, ${sign}${Math.abs(dh).toFixed(1)} м по висоті). ${rings} Клікніть ще раз, щоб почати знову.`);
-  } else if (state.mapA) read.innerHTML = T("Now click the target. ", "Тепер клікніть ціль. ") + rings;
-  else read.textContent = T("Click where the shooter stands, then where the target is. The distance goes straight into the calculator.",
-    "Клікніть, де стоїть стрілець, потім — де ціль. Дистанція одразу піде в калькулятор.");
+    line = T(`<b>${slant.toFixed(1)} m</b> (${flat.toFixed(1)} across, ${sign}${Math.abs(dh).toFixed(1)} height). Click again to start over.`,
+      `<b>${slant.toFixed(1)} м</b> (${flat.toFixed(1)} по горизонталі, ${sign}${Math.abs(dh).toFixed(1)} по висоті). Клікніть ще раз, щоб почати знову.`);
+  } else line = state.mapA ? T("Now click the target.", "Тепер клікніть ціль.") : T("Click the shooter, then the target.", "Клікніть стрільця, потім ціль.");
+  read.innerHTML = line + "<br>" + T(`Orange ring: full damage to ${b.r0.toFixed(0)} m; dashed: minimum from ${b.r1.toFixed(0)} m.`,
+    `Помаранчеве коло: повне пошкодження до ${b.r0.toFixed(0)} м; пунктирне: мінімум від ${b.r1.toFixed(0)} м.`);
 }
 // Move the target along the shooter's line until the slant distance is `dist`.
 function slideMapTarget(dist) {
@@ -770,7 +788,7 @@ if (LANG === "uk") {
   document.querySelectorAll("[data-uk]").forEach(n => { n.textContent = n.dataset.uk; });
   document.querySelectorAll("[data-uk-label]").forEach(n => n.setAttribute("aria-label", n.dataset.ukLabel));
 }
-fillWeapons(); fillArmour(); drawDoll(); fillMaps();
+fillWeapons(); fillArmour(); drawDoll(); fillMaps(); fillHealPick();
 if (DATA.stamp) $("source").textContent = T(DATA.stamp, DATA.stamp_uk || DATA.stamp);
 $("dollprev").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) - 1; update(); });
 $("dollnext").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) + 1; update(); });
