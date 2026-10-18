@@ -12,4 +12,6 @@ if errorlevel 1 exit /b 1
 cl /nologo /c /GS- /Zl /Fogame_crash_proxy.obj "%~dp0game_crash_proxy.cpp"
 if errorlevel 1 exit /b 1
 lld-link /dll /machine:x86 /nodefaultlib /entry:DllMain@12 /out:d3d11.dll /def:"%~dp0game_crash_proxy.def" game_crash_proxy.obj kernel32.lib user32.lib
+cl /nologo /MT /D_WIN32_WINNT=0x0600 /Feui_probe.exe "%~dp0ui_probe.cpp" /link user32.lib gdi32.lib
+if errorlevel 1 exit /b 1
 popd

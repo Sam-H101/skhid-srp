@@ -62,7 +62,7 @@ def zip_blocked(exe, cwd, fallback, env):
     writer (concurrent mode) while the empty dump file already exists, so its
     name is known: a folder in the place of the temporary ZIP blocks it."""
     before, zips = set(exe.glob("*.dmp")), set(exe.glob("*.zip"))
-    process = subprocess.Popen(["wine", str(exe / "crash_probe.exe"), "concurrent", "Z:" + str(fallback)],
+    process = subprocess.Popen(["wine", str(exe / "crash_probe.exe"), "concurrent", "Z:" + str(fallback), "-localization=english"],
                                cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     blocker = None
     deadline = time.monotonic() + 30
@@ -123,7 +123,7 @@ def main():
             try:
                 result = subprocess.run(
                     ["wine", str(exe / "crash_probe.exe"),
-                     "silent" if mode == "fallback" else mode, "Z:" + str(fallback)],
+                     "silent" if mode == "fallback" else mode, "Z:" + str(fallback), "-localization=english"],
                     cwd=cwd, env=run_env, capture_output=True, timeout=45,
                 )
             finally:

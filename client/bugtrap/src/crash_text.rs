@@ -1,0 +1,122 @@
+// Crash-dialog copy and language selection, independent of Win32 and allocation.
+use crate::notice_text::{Language, command_language};
+
+pub struct Text {
+    pub title: &'static str,
+    pub intro: &'static str,
+    pub saved: &'static str,
+    pub partial: &'static str,
+    pub failed: &'static str,
+    pub error: &'static str,
+    pub file: &'static str,
+    pub folder: &'static str,
+    pub instructions: &'static str,
+    pub no_file: &'static str,
+    pub discord: &'static str,
+    pub close: &'static str,
+    pub browser_failed: &'static str,
+    pub manual: &'static str,
+}
+
+/// Prefer the game's language; otherwise use Windows' UI language (including
+/// regional variants). Unsupported languages fall back to English.
+pub fn language(command_line: &[u16], windows_language: u16) -> Language {
+    command_language(command_line).unwrap_or(match windows_language & 0x03ff {
+        0x19 => Language::Russian,
+        0x22 => Language::Ukrainian,
+        0x07 => Language::German,
+        0x15 => Language::Polish,
+        _ => Language::English,
+    })
+}
+
+pub fn text(language: Language) -> &'static Text {
+    match language {
+        Language::English => &ENGLISH,
+        Language::Russian => &RUSSIAN,
+        Language::Ukrainian => &UKRAINIAN,
+        Language::German => &GERMAN,
+        Language::Polish => &POLISH,
+    }
+}
+
+const ENGLISH: Text = Text {
+    title: "Survarium — crash report",
+    intro: "The game has crashed.",
+    saved: "Crash dump saved:",
+    partial: "A crash report was saved, but could not be fully verified.",
+    failed: "Could not save a crash dump beside the game or in the temporary folder.",
+    error: "Windows error",
+    file: "File:",
+    folder: "Folder:",
+    instructions: "Find this file in the folder shown above and send it to #bugreports in Discord.\r\nClick “Open Discord” below to open our server. Nothing is uploaded automatically.",
+    no_file: "Click “Open Discord” below and describe what happened in #bugreports. No crash report was saved.",
+    discord: "Open Discord",
+    close: "Close",
+    browser_failed: "Could not open your browser.",
+    manual: "Open discord.gg/Pxa4prXfwu yourself and send the file, if saved, to #bugreports. Describe what happened.",
+};
+const RUSSIAN: Text = Text {
+    title: "Survarium — отчёт о сбое",
+    intro: "В игре произошёл сбой.",
+    saved: "Отчёт о сбое сохранён:",
+    partial: "Отчёт о сбое сохранён, но его не удалось полностью проверить.",
+    failed: "Не удалось сохранить отчёт о сбое ни в папке игры, ни во временной папке.",
+    error: "Ошибка Windows",
+    file: "Файл:",
+    folder: "Папка:",
+    instructions: "Найдите этот файл в указанной выше папке и отправьте его в канал #bugreports в Discord.\r\nНажмите «Открыть Discord» внизу, чтобы перейти на наш сервер. Файл не отправляется автоматически.",
+    no_file: "Нажмите «Открыть Discord» внизу и опишите, что произошло, в канале #bugreports. Отчёт о сбое не сохранён.",
+    discord: "Открыть Discord",
+    close: "Закрыть",
+    browser_failed: "Не удалось открыть браузер.",
+    manual: "Откройте discord.gg/Pxa4prXfwu вручную и отправьте файл, если он сохранён, в канал #bugreports. Опишите, что произошло.",
+};
+const UKRAINIAN: Text = Text {
+    title: "Survarium — звіт про збій",
+    intro: "У грі стався збій.",
+    saved: "Звіт про збій збережено:",
+    partial: "Звіт про збій збережено, але його не вдалося повністю перевірити.",
+    failed: "Не вдалося зберегти звіт про збій ані в папці гри, ані в тимчасовій папці.",
+    error: "Помилка Windows",
+    file: "Файл:",
+    folder: "Папка:",
+    instructions: "Знайдіть цей файл у вказаній вище папці та надішліть його в канал #bugreports у Discord.\r\nНатисніть «Відкрити Discord» внизу, щоб перейти на наш сервер. Файл не надсилається автоматично.",
+    no_file: "Натисніть «Відкрити Discord» внизу та опишіть, що сталося, у каналі #bugreports. Звіт про збій не збережено.",
+    discord: "Відкрити Discord",
+    close: "Закрити",
+    browser_failed: "Не вдалося відкрити браузер.",
+    manual: "Відкрийте discord.gg/Pxa4prXfwu вручну та надішліть файл, якщо його збережено, у канал #bugreports. Опишіть, що сталося.",
+};
+const GERMAN: Text = Text {
+    title: "Survarium — Absturzbericht",
+    intro: "Das Spiel ist abgestürzt.",
+    saved: "Absturzbericht gespeichert:",
+    partial: "Ein Absturzbericht wurde gespeichert, konnte aber nicht vollständig geprüft werden.",
+    failed: "Der Absturzbericht konnte weder im Spielordner noch im temporären Ordner gespeichert werden.",
+    error: "Windows-Fehler",
+    file: "Datei:",
+    folder: "Ordner:",
+    instructions: "Suche diese Datei im oben angegebenen Ordner und sende sie an #bugreports in Discord.\r\nKlicke unten auf „Discord öffnen“, um unseren Server zu öffnen. Es wird nichts automatisch hochgeladen.",
+    no_file: "Klicke unten auf „Discord öffnen“ und beschreibe in #bugreports, was passiert ist. Es wurde kein Absturzbericht gespeichert.",
+    discord: "Discord öffnen",
+    close: "Schließen",
+    browser_failed: "Der Browser konnte nicht geöffnet werden.",
+    manual: "Öffne discord.gg/Pxa4prXfwu selbst und sende die Datei, falls gespeichert, an #bugreports. Beschreibe, was passiert ist.",
+};
+const POLISH: Text = Text {
+    title: "Survarium — raport o awarii",
+    intro: "Gra uległa awarii.",
+    saved: "Raport o awarii został zapisany:",
+    partial: "Raport o awarii został zapisany, ale nie udało się go w pełni zweryfikować.",
+    failed: "Nie udało się zapisać raportu o awarii ani w folderze gry, ani w folderze tymczasowym.",
+    error: "Błąd systemu Windows",
+    file: "Plik:",
+    folder: "Folder:",
+    instructions: "Znajdź ten plik we wskazanym powyżej folderze i wyślij go na kanał #bugreports na Discordzie.\r\nKliknij „Otwórz Discord” poniżej, aby przejść na nasz serwer. Plik nie jest wysyłany automatycznie.",
+    no_file: "Kliknij „Otwórz Discord” poniżej i opisz na kanale #bugreports, co się stało. Raport o awarii nie został zapisany.",
+    discord: "Otwórz Discord",
+    close: "Zamknij",
+    browser_failed: "Nie udało się otworzyć przeglądarki.",
+    manual: "Otwórz samodzielnie discord.gg/Pxa4prXfwu i wyślij plik, jeśli został zapisany, na kanał #bugreports. Opisz, co się stało.",
+};

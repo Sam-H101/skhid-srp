@@ -1,14 +1,15 @@
-use crate::text::Wide;
+use crate::{crash_text, text::Wide};
 use core::{fmt::Write, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::*,
+    Globalization::GetUserDefaultUILanguage,
     Graphics::Gdi::*,
-    System::SystemServices::*,
+    System::{Environment::GetCommandLineW, SystemServices::*},
     UI::{Controls::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
 };
 
 // Original BugTrap icon and white message panel above a system-color footer.
-// Submit Bug opens SRP Discord in the browser; it never uploads the report.
+// Open Discord opens SRP Discord in the browser; it never uploads the report.
 // ICO payloads start two bytes past a DWORD boundary. Add two leading bytes
 // so CreateIconFromResourceEx receives DWORD-aligned resource bits.
 #[repr(C, align(4))]
@@ -50,7 +51,7 @@ unsafe fn bug_icon(small: bool) -> HICON {
 
 #[repr(C, align(4))]
 struct Template {
-    data: [u16; 512],
+    data: [u16; 1024],
     n: usize,
 }
 struct DialogData {
@@ -61,7 +62,7 @@ struct DialogData {
     folder: *const u16,
     filename: *const u16,
     have_dump: bool,
-    zipped: bool,
+    text: &'static crash_text::Text,
 }
 
 impl Template {
@@ -102,6 +103,8 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
     match msg {
         WM_INITDIALOG => {
             let data = &mut *(lp as *mut DialogData);
+            // This DLL is Win32-only: the dialog's user slot is a LONG.
+            SetWindowLongW(window, DWL_USER as i32, lp as i32);
             // Use the same compact TrueType face for every control. Explicit
             // smoothing avoids Wine's jagged small-font rendering.
             let base = SendMessageW(window, WM_GETFONT, 0, 0) as HFONT;
@@ -129,17 +132,6 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                     ShowWindow(GetDlgItem(window, id), SW_HIDE);
                 }
             }
-            SetDlgItemTextW(
-                window,
-                1036,
-                if data.zipped {
-                    windows_sys::w!("Use Submit Bug to open SRP Discord and upload this .zip file.")
-                } else if data.have_dump {
-                    windows_sys::w!("Use Submit Bug to open SRP Discord and attach this file.")
-                } else {
-                    windows_sys::w!("Use Submit Bug to open SRP Discord.")
-                },
-            );
             data.icon = bug_icon(false);
             data.small_icon = bug_icon(true);
             if !data.icon.is_null() {
@@ -197,17 +189,19 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                 OffsetRect(&mut rect, 1, 1);
             }
             let mut size: SIZE = core::mem::zeroed();
-            let mut advances = [0; 10];
+            let mut label = Wide::<64>::new();
+            label.len = GetWindowTextW(item.hwndItem, label.buf.as_mut_ptr(), 64) as usize;
+            let mut advances = [0; 64];
             GetTextExtentExPointW(
                 item.hDC,
-                windows_sys::w!("Submit Bug"),
-                10,
+                label.ptr(),
+                label.len as i32,
                 0,
                 null_mut(),
                 advances.as_mut_ptr(),
                 &mut size,
             );
-            for i in (1..advances.len()).rev() {
+            for i in (1..label.len).rev() {
                 advances[i] -= advances[i - 1];
             }
             SetTextAlign(item.hDC, TA_LEFT | TA_TOP | TA_NOUPDATECP);
@@ -217,8 +211,8 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                 rect.top + (rect.bottom - rect.top - size.cy) / 2,
                 ETO_CLIPPED,
                 &rect,
-                windows_sys::w!("Submit Bug"),
-                10,
+                label.ptr(),
+                label.len as u32,
                 advances.as_ptr(),
             );
             if item.itemState & ODS_FOCUS != 0 && item.itemState & ODS_NOFOCUSRECT == 0 {
@@ -239,12 +233,19 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
                 SW_SHOWNORMAL,
             );
             if result as isize <= 32 {
+                let data = &*(GetWindowLongW(window, DWL_USER as i32) as *const DialogData);
+                let mut message = Wide::<512>::new();
+                let mut title = Wide::<128>::new();
+                let _ = write!(
+                    message,
+                    "{}\r\n\r\n{}",
+                    data.text.browser_failed, data.text.manual
+                );
+                let _ = write!(title, "{}", data.text.title);
                 MessageBoxW(
                     window,
-                    windows_sys::w!(
-                        "Could not open your browser. Visit discord.gg/Pxa4prXfwu to report the crash."
-                    ),
-                    windows_sys::w!("SRP Discord"),
+                    message.ptr(),
+                    title.ptr(),
                     MB_OK | MB_ICONINFORMATION,
                 );
             }
@@ -261,7 +262,19 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
         _ => 0,
     }
 }
-pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, zipped: bool) {
+pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
+    let line = GetCommandLineW();
+    let mut len = 0;
+    while len < 32767 && *line.add(len) != 0 {
+        len += 1;
+    }
+    let language = crash_text::language(
+        core::slice::from_raw_parts(line, len),
+        GetUserDefaultUILanguage(),
+    );
+    let text = crash_text::text(language);
+    let mut title = Wide::<128>::new();
+    let _ = write!(title, "{}", text.title);
     let mut message = Wide::<34000>::new();
     let split = path.buf[..path.len]
         .iter()
@@ -269,21 +282,27 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, z
         .map_or(0, |i| i + 1);
     let mut folder = Wide::<32768>::new();
     let _ = folder.wide(&path.buf[..split]);
-    if saved {
-        let _ = write!(message, "Crash dump saved:");
-    } else if partial {
-        let _ = write!(
-            message,
-            "A dump was saved, but could not be fully verified (Windows error {error}):\r\n"
-        );
-    } else {
-        let _ = write!(
-            message,
-            "Could not save a crash dump beside the executable or in the temporary folder (Windows error {error})."
-        );
+    let _ = write!(
+        message,
+        "{}",
+        if saved {
+            text.saved
+        } else if partial {
+            text.partial
+        } else {
+            text.failed
+        }
+    );
+    if !saved {
+        let _ = write!(message, "\r\n({} {error})", text.error);
     }
+    let instructions = if saved || partial {
+        text.instructions
+    } else {
+        text.no_file
+    };
     let mut t = Template {
-        data: [0; 512],
+        data: [0; 1024],
         n: 0,
     };
     t.dword(
@@ -299,18 +318,18 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, z
     t.word(12);
     t.word(0);
     t.word(0);
-    t.word(330);
-    t.word(118);
+    t.word(380);
+    t.word(166);
     t.word(0);
     t.word(0);
-    t.text("Vostok Engine");
+    t.text(text.title);
     // Match IDD_SIMPLE_DLG in the original BugTrap.rc. The white panel is
     // taller to fit our persistent dump location and local-reporting text.
     t.word(8);
     t.text("Tahoma");
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        [0, 0, 330, 77],
+        [0, 0, 380, 132],
         1039,
         0x82,
         "",
@@ -324,73 +343,73 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, z
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
-        [35, 7, 288, 8],
+        [35, 7, 338, 18],
         1030,
         0x82,
-        "A crash has been detected by BugTrap",
+        text.intro,
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
-        [35, 19, 288, 18],
+        [35, 27, 338, 26],
         1031,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        [35, 38, 24, 8],
+        [35, 58, 38, 8],
         1037,
         0x82,
-        "File:",
+        text.file,
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX | SS_ENDELLIPSIS,
-        [59, 38, 264, 8],
+        [75, 58, 298, 8],
         1034,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        [35, 48, 24, 8],
+        [35, 70, 38, 8],
         1038,
         0x82,
-        "Folder:",
+        text.folder,
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX | SS_PATHELLIPSIS,
-        [59, 48, 264, 8],
+        [75, 70, 298, 8],
         1035,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
-        [35, 62, 288, 8],
+        [35, 86, 338, 38],
         1036,
         0x82,
-        "",
+        instructions,
     );
     t.control(
         WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
-        [0, 76, 330, 1],
+        [0, 131, 380, 1],
         1033,
         0x82,
         "",
     );
     t.control(
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_DEFPUSHBUTTON | BS_CENTER | BS_VCENTER) as u32,
-        [271, 97, 52, 14],
+        [303, 143, 70, 16],
         IDCANCEL as u16,
         0x80,
-        "Close",
+        text.close,
     );
     t.control(
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
-        [7, 97, 52, 14],
+        [7, 143, 86, 16],
         1013,
         0x80,
-        "Submit Bug",
+        text.discord,
     );
     let mut data = DialogData {
         message: message.ptr(),
@@ -400,7 +419,7 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, z
         folder: folder.ptr(),
         filename: path.buf.as_ptr().add(split),
         have_dump: saved || partial,
-        zipped,
+        text,
     };
     let result = DialogBoxIndirectParamW(
         null_mut(),
@@ -422,10 +441,11 @@ pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32, z
             let _ = write!(message, "\r\n");
             let _ = message.wide(&path.buf[..path.len]);
         }
+        let _ = write!(message, "\r\n\r\n{}", text.manual);
         MessageBoxW(
             null_mut(),
             message.ptr(),
-            windows_sys::w!("Vostok Engine"),
+            title.ptr(),
             MB_OK | MB_ICONERROR | MB_TASKMODAL,
         );
     }

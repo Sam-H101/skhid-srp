@@ -72,13 +72,15 @@ pub fn notice(language: Language) -> &'static Notice {
     }
 }
 
-fn starts_with(text: &[u16], prefix: &[u8]) -> bool {
-    text.len() >= prefix.len() && text.iter().zip(prefix).all(|(&c, &p)| c == p as u16)
-}
-
 /// The language the game was started in: the value of `-localization=` on
 /// its command line (the launcher and the start scripts give it), else English.
 pub fn language(command_line: &[u16]) -> Language {
+    command_language(command_line).unwrap_or(Language::English)
+}
+
+/// Match a complete argument, never a substring of an exe path or a longer
+/// language name. Accept the launcher's unquoted and Windows' quoted forms.
+pub fn command_language(command_line: &[u16]) -> Option<Language> {
     const KEY: &[u8] = b"-localization=";
     const NAMES: [(&[u8], Language); 5] = [
         (b"english", Language::English),
@@ -87,16 +89,41 @@ pub fn language(command_line: &[u16]) -> Language {
         (b"german", Language::German),
         (b"polish", Language::Polish),
     ];
-    for start in 0..command_line.len() {
-        if starts_with(&command_line[start..], KEY) {
-            let value = &command_line[start + KEY.len()..];
-            return NAMES
-                .iter()
-                .find(|(name, _)| starts_with(value, name))
-                .map_or(Language::English, |&(_, language)| language);
+    let mut at = 0;
+    let mut executable = true;
+    while at < command_line.len() {
+        while at < command_line.len() && matches!(command_line[at], 9 | 32) {
+            at += 1;
+        }
+        let start = at;
+        let mut quoted = false;
+        while at < command_line.len() {
+            let c = command_line[at];
+            if c == b'"' as u16 {
+                quoted = !quoted;
+            } else if !quoted && matches!(c, 9 | 32) {
+                break;
+            }
+            at += 1;
+        }
+        if executable {
+            executable = false;
+            continue;
+        }
+        let mut token = command_line[start..at]
+            .iter()
+            .copied()
+            .filter(|&c| c != b'"' as u16);
+        if KEY.iter().all(|&c| token.next() == Some(c as u16)) {
+            return NAMES.iter().find_map(|&(name, language)| {
+                token
+                    .clone()
+                    .eq(name.iter().map(|&c| c as u16))
+                    .then_some(language)
+            });
         }
     }
-    Language::English
+    None
 }
 
 /// The launcher, the updater and the service load this DLL too, from the same

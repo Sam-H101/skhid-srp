@@ -14,19 +14,31 @@ folder; the dialog shows the filename and folder in separate labeled fields,
 or a failure message. Long folders use middle ellipsis. It uses static text
 without selection or scrollbars. The layout follows the original C++
 `IDD_SIMPLE_DLG`: an explicit 8-point Tahoma font with smoothing, white message panel, thin divider,
-and gray footer with Submit Bug and Close buttons. The panel is taller to fit
+and gray footer with Open Discord and Close buttons. The panel is taller to fit
 the dump details; the original Mail and More controls are omitted. The original
 green beetle icon (`vostok/sources/BugTrap/res/Bug.ico`) is embedded in the DLL
-and used in both the message panel and the “Vostok Engine” window title.
-Both button labels are centered horizontally and vertically. Submit Bug uses
+and used in both the message panel and the localized Survarium window title.
+Both button labels are centered horizontally and vertically. Open Discord uses
 the same measured character advances for painting, avoiding the caption offset
 seen under Wine.
 
-Submit Bug opens [SRP Discord](https://discord.gg/Pxa4prXfwu) in the default
-browser, only when clicked. The dialog stays open so the player can attach the
-saved file manually: “Use Submit Bug to open SRP Discord and upload this .zip
-file.”, or, when the dump could not be zipped, “… and attach this file.” A
-browser-launch failure displays the invite address.
+Open Discord opens [SRP Discord](https://discord.gg/Pxa4prXfwu) in the default
+browser, only when clicked. The dialog tells the player to find the named file
+in the displayed folder and send it to **#bugreports**. This applies to both a
+ZIP and a raw dump kept after compression failed. If saving failed, it asks
+them to describe the crash in that channel instead. A browser-launch failure
+shows the invite address and manual instructions.
+
+The whole dialog (title, status, file/folder labels, instructions, buttons and
+errors) is localized in English, Russian, Ukrainian, German and Polish. It
+uses the game's `-localization=` argument when supported, otherwise the Windows
+UI language; unsupported Windows languages fall back to English. The dialog
+and its buttons have room for the translated text. The startup notice below
+continues to use the game language, or English when no supported option is given.
+
+Dialog screenshots from Wine (client area): [English](crash-dialog.png),
+[Russian](crash-dialog-ru.png), [Polish](crash-dialog-pl.png).
+
 Nothing is uploaded automatically. Email/upload entry points fail with
 `ERROR_NOT_SUPPORTED`, and legacy support destinations are discarded. The DLL
 imports `kernel32.dll`, `user32.dll`, `gdi32.dll` and `shell32.dll` (for the browser
@@ -214,11 +226,28 @@ python3 tests/check_abi.py target/i686-pc-windows-msvc/release/BugTrap.dll
 WINEPREFIX=/path/to/test-prefix python3 tests/check_dumps.py target/i686-pc-windows-msvc/release
 rustc --edition 2024 --test src/arithmetic.rs -o target/arithmetic-test
 ./target/arithmetic-test
-rustc --edition 2024 --test src/notice_text.rs -o target/notice-text-test
-./target/notice-text-test
+rustc --edition 2024 --test tests/text_tests.rs -o target/text-tests
+./target/text-tests
 rustc --edition 2024 -O --test src/zip.rs -o target/zip-test
 ./target/zip-test   # SRP_ZIP_SAMPLE=<a dump> zips that file instead
 ```
+
+The text tests cover game-language precedence, Windows language fallback,
+quoted arguments and exact argument matching, as well as the startup notice.
+For the dialog itself, `tests/build.cmd` also builds `ui_probe.exe`. On Linux
+it can be built with `i686-w64-mingw32-g++ -static -O2 tests/ui_probe.cpp
+-o target/i686-pc-windows-msvc/release/ui_probe.exe -luser32 -lgdi32` (with the
+MinGW runtime libraries on the linker's search path). Run under Wine/Xvfb:
+
+```sh
+WINEPREFIX=/path/to/test-prefix python3 tests/check_localization.py target/i686-pc-windows-msvc/release
+```
+
+This checks all five languages on real Win32 dialogs: ZIP, raw-dump fallback,
+partial report, failed save, failed browser launch and failed dialog creation,
+plus Windows-language fallback. It measures text against control bounds, checks translated labels
+and buttons, and intercepts the browser call so no browser or network is used.
+An optional second argument saves dialog screenshots as BMPs for inspection.
 
 The ZIP tests round-trip empty, tiny, zero, repetitive, random and dump-like
 inputs across block and read boundaries, check the CRC-32, the code-length
