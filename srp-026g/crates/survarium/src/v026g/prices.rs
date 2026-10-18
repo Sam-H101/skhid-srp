@@ -85,6 +85,10 @@
 //!   faction (VSS, SR-3M, the SOCOM 16), artefacts (as 0.21d), vouchers,
 //!   decals and the drop camouflages (the wiki lists decals at ranks; not
 //!   applied);
+//! - not sold at all, neither for silver nor for gold ([`NOT_SOLD`]): the
+//!   Russian and Belarusian flags and coats of arms, the flag of the USSR
+//!   and the red star [the owner's choice, 2026-10-18]. srp does not touch
+//!   copies an account already owns (the owner removes them by hand);
 //! - scopes: only the scope items the game data has variants for
 //!   ([`super::scopes`]), at their `base_cost`, by seller 0 at no rank
 //!   [srp: a scope is view-only, so nothing to unlock]. 0.26g's own three
@@ -393,6 +397,42 @@ pub const OWNER_PRICES: &[(&str, u32, u32)] = &[
     ("ppsh", 0, 1000),
 ];
 
+/// Items no shop sells, whatever the rules above or the gold list
+/// (`shop_offers::premium_price_list`) say: `(item name, why)`. The
+/// owner's choice of 2026-10-18: no Russian or Belarusian flag or coat of
+/// arms is sold, nor the flag of the USSR or the red star. All six are
+/// premium decals (`prm_decl`, 300 gold, seller 0), drop nowhere
+/// (`drop_weight` 0) and are in no bundle, so they are listed nowhere and a
+/// buy of one (`47 00`, silver or gold) is refused as not sold. Selling an
+/// owned one back and wearing it are as for any decal: srp takes no copy
+/// away (the owner removes them by hand).
+///
+/// Reviewed 2026-10-18 against stock 0.26g with patches 12..=20: the
+/// decals whose name names Russia or Belarus in any of the six
+/// localizations, checked against their icons (the Russian tricolour and
+/// eagle, the red-green flag and the state emblem of Belarus), and the two
+/// Soviet ones by the owner's word. The coat of arms of Lithuania (the
+/// Vytis, `decals_5_7`) stays on sale, the owner's word too.
+pub const NOT_SOLD: &[(&str, &str)] = &[
+    // dict 266, char_decal_4_1: "Flag of USSR" / "Флаг СССР".
+    ("decals_4_1", "the flag of the USSR"),
+    // dict 267, char_decal_4_2: "Flag of Russia" / "Флаг России".
+    ("decals_4_2", "the flag of Russia"),
+    // dict 269, char_decal_4_4: "Flag of Belarus" / "Флаг Беларуси".
+    ("decals_4_4", "the flag of Belarus"),
+    // dict 282, char_decal_5_1: "Red star" / "Красная звезда".
+    ("decals_5_1", "the red star (Soviet)"),
+    // dict 283, char_decal_5_2: "Coat of arms of Russia" / "Герб России".
+    ("decals_5_2", "the coat of arms of Russia"),
+    // dict 285, char_decal_5_4: "Coat of arms of Belarus" / "Герб Беларуси".
+    ("decals_5_4", "the coat of arms of Belarus"),
+];
+
+/// Whether `item` is one of [`NOT_SOLD`].
+pub fn is_not_sold(item: &Item) -> bool {
+    NOT_SOLD.iter().any(|&(name, _)| name == item.name)
+}
+
 /// What the shop takes for a step of `item`: [`AMMO_PRICES`] for ammo,
 /// [`OWNER_PRICES`] for what is there, else the game's `base_cost`.
 pub fn shop_cost(item: &Item) -> u32 {
@@ -448,7 +488,7 @@ pub fn sellers_of_in(
     item: &Item,
     params: &ItemParams,
 ) -> Vec<(u8, u8)> {
-    if item.is_premium {
+    if item.is_premium || is_not_sold(item) {
         return Vec::new();
     }
     if is_shop_camo(item, params) {
@@ -1040,6 +1080,51 @@ mod tests {
         assert!(!sold("camo_black_leather_01") && !sold("camo_khaki_fabric_03"));
         assert!(!sold("camo_new_year"));
         assert_eq!(buy_cost(214, 1), None);
+    }
+
+    /// [`NOT_SOLD`]: the six decals, as reviewed (2026-10-18), have no
+    /// seller even as a non-premium copy, and selling one back still pays.
+    #[test]
+    fn the_excluded_flags_and_emblems_are_not_sold() {
+        let dictionary = Dictionary::shared();
+        let reviewed: Vec<(u16, &str)> = NOT_SOLD
+            .iter()
+            .map(|&(name, _)| {
+                let item = dictionary.item_named(name).unwrap();
+                (item.dict_id, item.cfg_name.as_str())
+            })
+            .collect();
+        assert_eq!(
+            reviewed,
+            [
+                (266, "gameplay/items/upgrades/decals/char_decal_4_1.options"),
+                (267, "gameplay/items/upgrades/decals/char_decal_4_2.options"),
+                (269, "gameplay/items/upgrades/decals/char_decal_4_4.options"),
+                (282, "gameplay/items/upgrades/decals/char_decal_5_1.options"),
+                (283, "gameplay/items/upgrades/decals/char_decal_5_2.options"),
+                (285, "gameplay/items/upgrades/decals/char_decal_5_4.options"),
+            ]
+        );
+        for &(dict_id, _) in &reviewed {
+            let item = dictionary.item(dict_id).unwrap();
+            let params = item_params(dict_id).unwrap();
+            assert!(item.is_premium && item.base_cost == 300 && params.kind == "prm_decl");
+            assert!(is_not_sold(item));
+            assert!(sellers(dict_id).is_empty() && buy_cost(dict_id, 1).is_none());
+            // Were it no premium item, still no seller.
+            let silver = Item {
+                is_premium: false,
+                ..item.clone()
+            };
+            assert_eq!(sellers_of(dictionary, &silver, params), []);
+            // An owned one sells back for a quarter of its 300 gold.
+            assert_eq!(sell_price(dictionary, dict_id, 100, 100), 7_500);
+        }
+        // The other flags and coats of arms are not in it, the coat of arms
+        // of Lithuania (the Vytis) included.
+        for name in ["decals_4_3", "decals_5_7"] {
+            assert!(!is_not_sold(dictionary.item_named(name).unwrap()), "{name}");
+        }
     }
 
     #[test]
