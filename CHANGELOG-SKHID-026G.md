@@ -336,3 +336,11 @@ kept and can be put back).
 - TODO: #171 Squads of two: SRP_SQUAD_SIZE, an invite into a full squad is refused
 - TODO: #172 Revert "Squads of two" (#171)
 - TODO: #175 0.26g matches: 8 a side by default, not 10
+
+## 18 Oct, 14:43 — TODO: the owner's words (update required)
+
+<!-- Revision 21 (026g-rev21), released 2026-10-18 14:43 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #164 Crash reporter zips its dump (SRP-crash-…-N.zip)
+- TODO: #177 BugTrap: automatically localize crash reporting instructions
+- TODO: #182 Weapon balance 1: calibre-correct piercing, over-performer cuts, beginner rifles, SVD 5 rounds, magazine line on the card, stamina-bonus and sight-glow fixes
