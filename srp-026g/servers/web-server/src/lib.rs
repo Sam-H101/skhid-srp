@@ -38,6 +38,7 @@
 //! [`run_026g`] the 0.26g one ([`v026g`]: the 0.26g accounts, the lobby told
 //! of every change, `-server=`). `srp` starts the 0.26g one.
 
+mod damage;
 mod launcher;
 mod patches;
 mod stats;
@@ -630,9 +631,17 @@ impl Web {
             self.resource(&mut stream, &request, &file);
             return;
         }
+        if self.game.is_some() && matches!(request.method.as_str(), "GET" | "HEAD") {
+            if let Some((content_type, bytes)) = damage::file(&request.path) {
+                damage::send(&mut stream, request.method == "HEAD", content_type, bytes);
+                return;
+            }
+        }
         let response = self.route(&request, &peer);
         let policy = if self.game.is_some() && launcher::serves(&request.path) {
             launcher::policy()
+        } else if self.game.is_some() && request.path == damage::PATH {
+            damage::POLICY
         } else {
             POLICY
         };
@@ -888,6 +897,7 @@ impl Web {
                     "/api/stats" => return stats::response(&self.store, game),
                     "/patches" => return patches::response(&game.patches),
                     "/api/client-files" => return launcher::client_files(),
+                    damage::PATH => return damage_page(request.lang),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(
                             launcher::language(path, request.lang),
@@ -1486,20 +1496,37 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
     page_as(lang, form, message, test, other_url)
 }
 
-/// `page` with what the settings say given to it.
-fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<&str>) -> Response {
-    let notice = if message.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=note>{}</p>", escape(message))
-    };
+/// The calculator: its page under the site's header.
+fn damage_page(lang: Lang) -> Response {
+    let connect = CONNECT.get();
+    let test = connect.is_some_and(|connect| connect.test_server);
+    let other_url = connect.and_then(|connect| connect.other_url.as_deref());
+    let (header, test_notice) = site_header(lang, true, test, other_url, true);
+    damage::page(
+        lang,
+        &format!(
+            "<div class=site><style>{}</style>{header}{test_notice}</div>",
+            damage::HEADER_STYLE
+        ),
+    )
+}
+
+/// Every page's header (the 0.26g site's or the 0.21d's), and what a test
+/// server says under it. `damage`: the calculator is the page shown.
+fn site_header(
+    lang: Lang,
+    v026g: bool,
+    test: bool,
+    other_url: Option<&str>,
+    damage: bool,
+) -> (String, String) {
     let code = lang.code();
     let (other, other_name) = match lang {
         Lang::En => ("uk", "Українська"),
         Lang::Uk => ("en", "English"),
     };
-    let version = if form.is_026g() { "0.26g" } else { "0.21d" };
-    let other_version = if form.is_026g() { "0.21d" } else { "0.26g" };
+    let version = if v026g { "0.26g" } else { "0.21d" };
+    let other_version = if v026g { "0.21d" } else { "0.26g" };
     // A test server names the other server in its notice, as the players'.
     let (other_link, badge, test_notice) = if test {
         (
@@ -1514,6 +1541,37 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
             String::new(),
         )
     };
+    // The calculator is the 0.26g game's.
+    let damage_link = if v026g {
+        format!(
+            "<a href=\"{}?lang={code}\"{}>{}</a>",
+            damage::PATH,
+            if damage { " aria-current=page" } else { "" },
+            lang.tr("Damage calculator", "Калькулятор шкоди"),
+        )
+    } else {
+        String::new()
+    };
+    let header = format!(
+        "<header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
+         <span class=tag>{}</span>\
+         <nav><a href=\"/?lang={code}\">{}</a>{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
+        page_tag(lang, version, test),
+        lang.tr("Home", "Головна"),
+    );
+    (header, test_notice)
+}
+
+/// `page` with what the settings say given to it.
+fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<&str>) -> Response {
+    let notice = if message.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=note>{}</p>", escape(message))
+    };
+    let code = lang.code();
+    let version = if form.is_026g() { "0.26g" } else { "0.21d" };
+    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, false);
     let body = match form {
         Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
@@ -1533,14 +1591,10 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
             "<!doctype html><html lang={code}><meta charset=utf-8>\
              <meta name=viewport content=\"width=device-width,initial-scale=1\">\
              <title>{}</title><style>{STYLE}</style>\
-             <header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
-             <span class=tag>{}</span>\
-             <nav><a href=\"/?lang={code}\">{}</a>{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>\
+             {header}\
              <main>{test_notice}{notice}{body}</main>\
              <footer>{}</footer></html>",
             escape(&page_title(lang, version, test)),
-            page_tag(lang, version, test),
-            lang.tr("Home", "Головна"),
             escape(&disclaimer),
         ),
     }
@@ -2672,6 +2726,13 @@ mod tests {
         // A server that is not one links the other version as before.
         let live = page_as(Lang::En, Form::None26, "", false, url).body;
         assert!(live.contains(" <a href=\"https://skhid.link/?lang=en\">Survarium 0.21d</a>"));
+    }
+
+    #[test]
+    fn the_damage_calculator_is_the_026g_sites_only() {
+        let web = web(None);
+        assert_eq!(web.route(&get("/damage"), "t").status, "404 Not Found");
+        assert!(!web.route(&get("/"), "t").body.contains("/damage"));
     }
 
     #[test]

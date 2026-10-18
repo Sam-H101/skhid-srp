@@ -1,0 +1,352 @@
+<title>Survarium Damage Calculator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Sans+Narrow:wght@400;700&family=PT+Sans:ital,wght@0,400;0,700;1,400&family=PT+Mono&display=swap">
+<style>
+/*__FONT__*/
+/* Layout: a range card. Shooter and target face each other across a ruler; the
+   hit is traced underneath like a ballistics log, stage by stage. */
+:root {
+  --bg: #e9e6dc;          /* field-manual paper */
+  --panel: #f5f3ec;
+  --ink: #1f2420;
+  --ink-2: #4d544c;
+  --ink-3: #7b8277;
+  --rule: #c9c5b6;
+  --accent: #b4501f;      /* range-flag orange */
+  --accent-ink: #fff8f0;
+  --olive: #5a6b3a;
+  --good: #3f6d3a;
+  --warn: #a8741a;
+  --bad: #a3322a;
+  --pool-body: #7a5a2e;
+  --pool-pain: #b4501f;
+  --pool-head: #3d5f7a;
+  --pool-limb: #6b6b4a;
+  --doll: #d5d1c3;
+  --doll-hi: #b4501f;
+  --doll-cover: #9aa58a;
+  --hud-bg: #24272a;      /* the HUD's own dark ground, both themes */
+  --hud-ink: #bccbcb;     /* lobby text colour */
+  --hud-line: #4a5156;
+  --hud-sel: #ffffff;
+  --mod-good: #87a816;
+  --mod-bad: #960f0e;
+  --font-display: "PT Sans Narrow", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --font-body: "PT Sans", "Segoe UI", Roboto, sans-serif;
+  --font-data: "PT Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #171a17; --panel: #1f231f; --ink: #e6e4da; --ink-2: #b4b6a8; --ink-3: #868a7e;
+  --rule: #353a33; --accent: #e07a43; --accent-ink: #1a0f08; --olive: #9fb27a;
+  --good: #7fb36f; --warn: #d9a441; --bad: #e0675c;
+  --pool-body: #c49a5c; --pool-pain: #e07a43; --pool-head: #7fa7c6; --pool-limb: #a9a97c;
+  --doll: #343a33; --doll-hi: #e07a43; --doll-cover: #59654c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #171a17; --panel: #1f231f; --ink: #e6e4da; --ink-2: #b4b6a8; --ink-3: #868a7e;
+  --rule: #353a33; --accent: #e07a43; --accent-ink: #1a0f08; --olive: #9fb27a;
+  --good: #7fb36f; --warn: #d9a441; --bad: #e0675c;
+  --pool-body: #c49a5c; --pool-pain: #e07a43; --pool-head: #7fa7c6; --pool-limb: #a9a97c;
+  --doll: #343a33; --doll-hi: #e07a43; --doll-cover: #59654c; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 48px }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 22px }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 700; text-wrap: balance; margin: 0; letter-spacing: .01em }
+h1 { font-size: 2.1rem; line-height: 1.05 }
+h2 { font-size: 1.35rem; text-transform: uppercase; letter-spacing: .06em }
+h3 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-2) }
+.lede { color: var(--ink-2); max-width: 70ch; margin: 6px 0 0 }
+.num, td.n, .mono { font-family: var(--font-data); font-variant-numeric: tabular-nums }
+header.top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between;
+  border-bottom: 2px solid var(--ink); padding-bottom: 12px }
+.stamp { font-family: var(--font-data); font-size: .78rem; color: var(--ink-3); text-align: right }
+
+.duel { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); gap: 0 }
+.vs { display: flex; align-items: center; justify-content: center; position: relative }
+.vs::before { content: ""; position: absolute; inset: 0 50%; border-left: 1px dashed var(--rule) }
+.vs span { position: relative; background: var(--bg); font: 700 .8rem var(--font-display); letter-spacing: .12em;
+  color: var(--ink-3); padding: 6px 0; writing-mode: vertical-rl }
+@media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr) } .vs { height: 34px }
+  .vs::before { inset: 50% 0; border-left: 0; border-top: 1px dashed var(--rule) } .vs span { writing-mode: horizontal-tb; padding: 0 10px } }
+
+.side { background: var(--panel); border: 1px solid var(--rule); padding: 16px; display: grid; gap: 14px; align-content: start; min-width: 0 }
+.side > header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  border-bottom: 1px solid var(--rule); padding-bottom: 8px }
+.side > header .role { font: 700 .72rem var(--font-display); letter-spacing: .14em; text-transform: uppercase;
+  background: var(--ink); color: var(--panel); padding: 2px 7px }
+.field { display: grid; gap: 4px; min-width: 0 }
+.field > label, .lbl { font: 700 .74rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3) }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end }
+.row > .field { flex: 1 1 160px }
+select, input[type=number] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--rule);
+  border-radius: 2px; padding: 6px 8px; width: 100%; min-width: 0 }
+select:focus-visible, input:focus-visible, button:focus-visible, .part:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+input[type=range] { width: 100%; accent-color: var(--accent) }
+.statline { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: .82rem; color: var(--ink-2) }
+.statline b { font-family: var(--font-data); font-weight: 400; color: var(--ink) }
+.chips { display: flex; flex-wrap: wrap; gap: 6px }
+.chip { font: .8rem var(--font-body); border: 1px solid var(--rule); background: var(--bg); color: var(--ink-2);
+  padding: 3px 9px; border-radius: 999px; cursor: pointer }
+.chip[aria-pressed=true] { background: var(--ink); color: var(--panel); border-color: var(--ink) }
+details.more > summary { cursor: pointer; font: 700 .78rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2) }
+details.more[open] > summary { margin-bottom: 8px }
+h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2) }
+.mods { display: grid; gap: 6px }
+.mods .modrow { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 6px }
+.note { font-size: .8rem; color: var(--ink-3) }
+/* Modification rows, as the lobby draws them */
+.fxrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px }
+.fxrow .chips { margin-left: 8px }
+.fxtile { width: 86px; height: 46px; padding: 2px; border: 1px solid var(--rule); background: var(--bg); cursor: pointer; opacity: .4; display: grid; place-items: center; font: .78rem var(--font-body); color: var(--ink-2) }
+.fxtile img { width: 100%; height: 100%; object-fit: contain; display: block }
+.fxtile:hover { opacity: .75 }
+.fxtile[aria-pressed=true] { opacity: 1; border-color: var(--accent); background: var(--panel) }
+.fxtile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.gamemods { background: var(--hud-bg); padding: 8px 12px; display: grid; gap: 4px; font: 700 14px/1.2 "Carlito", Calibri, var(--font-body); color: var(--hud-ink); text-shadow: 0 1px 4px #000 }
+.gmrow { display: grid; grid-template-columns: 31px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 31px }
+.gico { width: 31px; height: 31px; object-fit: contain; display: block }
+.gtext small { font-weight: 400; color: var(--ink-3); text-shadow: none }
+.gv.good { color: var(--mod-good) } .gv.bad { color: var(--mod-bad) }
+.gsteps { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; margin-left: 4px }
+.gstep { font: inherit; text-shadow: inherit; min-width: 44px; min-height: 26px; padding: 2px 6px; cursor: pointer;
+  background: transparent; color: var(--hud-ink); border: 1px solid var(--hud-line); opacity: .7 }
+.gstep:hover { opacity: 1 }
+.gstep[aria-pressed=true] { color: var(--mod-good); border-color: var(--mod-good); background: rgba(135, 168, 22, .14); opacity: 1 }
+
+/* Range ruler */
+.ruler { display: grid; gap: 4px }
+.ruler .scale { position: relative; height: 18px; border-top: 1px solid var(--ink-3) }
+.ruler .scale i { position: absolute; top: 0; height: 6px; border-left: 1px solid var(--ink-3); font: .66rem var(--font-data);
+  color: var(--ink-3); font-style: normal; padding-left: 2px; padding-top: 4px }
+.ruler .band { position: absolute; top: -4px; height: 4px; background: var(--accent); opacity: .85 }
+.distline { display: flex; align-items: baseline; justify-content: space-between; gap: 8px }
+.distline output { font: 1.4rem var(--font-data); color: var(--accent) }
+
+/* Target: doll + armour */
+.target-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 14px; align-items: start }
+@media (max-width: 520px) { .target-grid { grid-template-columns: minmax(0, 1fr) } .doll { max-width: 240px; margin: 0 auto } }
+.hudplate { background: var(--hud-bg); padding: 10px 8px 8px; display: grid; gap: 6px }
+#dollsvg { display: flex; gap: 2px }
+#dollsvg figure { margin: 0; flex: 1 1 0; min-width: 0; display: grid; gap: 2px }
+#dollsvg figcaption, .dollstep { text-align: center; font: 700 .7rem "Carlito", var(--font-display); letter-spacing: .12em; text-transform: uppercase; color: var(--hud-ink) }
+.doll svg { width: 100%; height: auto; display: block }
+.zones .part { fill: transparent; stroke: none; cursor: pointer; outline: none }
+.zones .part:hover { fill: rgba(255, 255, 255, .16) }
+.zones .part.sel { fill: rgba(255, 255, 255, .28); stroke: var(--hud-sel); stroke-width: 1.4px; vector-effect: non-scaling-stroke }
+.zones .part:focus-visible { stroke: var(--hud-sel); stroke-width: 1.4px; vector-effect: non-scaling-stroke }
+.dollstep { display: flex; align-items: center; justify-content: center; gap: 8px; letter-spacing: .06em }
+.dollstep b { color: #fff; font-family: var(--font-data) }
+.dollstep button { font: 700 .9rem var(--font-data); width: 26px; height: 22px; border: 1px solid var(--hud-line); background: transparent; color: var(--hud-ink); cursor: pointer; border-radius: 2px }
+.dollstep button:disabled { opacity: .35; cursor: default }
+.doll .cap { text-align: center; font: 700 .9rem var(--font-display); letter-spacing: .04em; margin-top: 6px }
+.armour { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px }
+.slot { display: grid; gap: 4px; padding: 8px; border: 1px solid var(--rule); background: var(--bg); min-width: 0; position: relative }
+.slot.hit { border-color: var(--accent) }
+.slot.miss { opacity: .8 }
+.slot.taken { opacity: .6; background: transparent; border-style: dashed }
+.slot .aim { display: grid; gap: 4px; cursor: pointer; margin: -8px -8px 0; padding: 8px 8px 0 }
+.slot .aim:hover .art img { transform: scale(1.06) }
+.slot .aim:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.slot .art img { transition: transform .12s }
+.slot .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px }
+.slot .lbl { font-size: .68rem }
+.slot .v { font: .8rem var(--font-data); color: var(--ink-2) }
+.slot.hit .v { color: var(--accent) }
+.slot .art { height: 72px; display: flex; align-items: center; justify-content: center }
+.slot .art img { max-height: 72px; max-width: 100%; object-fit: contain }
+.slot .art .empty { font: .78rem var(--font-body); color: var(--ink-3) }
+.slot select { font-size: .82rem; padding: 4px 6px }
+.wcard { display: flex; gap: 12px; align-items: center; min-height: 64px }
+.wcard img { height: 64px; width: auto; max-width: 48%; object-fit: contain }
+.wcard img#aicon { height: 46px }
+
+/* Result */
+.result { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px }
+@media (max-width: 900px) { .result { grid-template-columns: minmax(0, 1fr) } }
+.verdict { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--ink); background: var(--panel) }
+.verdict > div { padding: 12px 14px; border-right: 1px solid var(--rule); min-width: 0 }
+.verdict > div:last-child { border-right: 0 }
+.verdict .big { font: 2.3rem/1 var(--font-data); margin-top: 4px }
+.verdict .big small { font-size: .9rem; color: var(--ink-3) }
+.verdict .sub { font-size: .8rem; color: var(--ink-2); margin-top: 4px }
+@media (max-width: 520px) { .verdict { grid-template-columns: minmax(0, 1fr) } .verdict > div { border-right: 0; border-bottom: 1px solid var(--rule) } }
+.trace { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--ink); display: grid }
+.trace li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 0 8px 14px; position: relative;
+  border-bottom: 1px dotted var(--rule) }
+.trace li::before { content: ""; position: absolute; left: -6px; top: 14px; width: 10px; height: 10px; background: var(--bg); border: 2px solid var(--ink); border-radius: 50% }
+.trace li.hot::before { background: var(--accent); border-color: var(--accent) }
+.trace .what { font-weight: 700 }
+.trace .vals { font: .86rem var(--font-data); text-align: right; white-space: nowrap }
+.trace .why { grid-column: 1 / -1; font-size: .84rem; color: var(--ink-2) }
+.trace .why code, .explain code { font: .82rem var(--font-data); background: var(--bg); padding: 0 3px }
+.pools { display: grid; gap: 8px }
+.pool { display: grid; grid-template-columns: 74px minmax(0, 1fr) 96px; gap: 8px; align-items: center; font-size: .85rem }
+.pool .bar { height: 14px; background: var(--bg); border: 1px solid var(--rule); position: relative; overflow: hidden }
+.pool .bar span { position: absolute; inset: 0 auto 0 0; background: currentColor; opacity: .9 }
+.pool .bar em { position: absolute; inset: 0 auto 0 0; background: repeating-linear-gradient(135deg, currentColor 0 3px, transparent 3px 6px); opacity: .55 }
+.pool .t { font: .8rem var(--font-data); text-align: right }
+.pool .name { font: 700 .78rem var(--font-display); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2) }
+.events { margin: 0; padding-left: 18px; font-size: .86rem; color: var(--ink-2) }
+
+.tablebox { overflow-x: auto; border: 1px solid var(--rule); background: var(--panel) }
+table { border-collapse: collapse; width: 100%; font-size: .86rem }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--rule); text-align: left; white-space: nowrap }
+th { font: 700 .72rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); background: var(--bg); position: sticky; top: 0 }
+th[data-k] { cursor: pointer } th[data-k]:hover { color: var(--ink) }
+td.n { text-align: right }
+#cmp th + th, #cmp td + td { border-left: 1px solid var(--rule) }
+tr.me td { background: color-mix(in srgb, var(--accent) 14%, transparent) }
+tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, var(--ink) 6%, transparent) }
+.tag { display: inline-block; font: 700 .66rem var(--font-display); letter-spacing: .08em; text-transform: uppercase;
+  border: 1px solid currentColor; padding: 0 5px; border-radius: 2px }
+.tag.kill { color: var(--bad) } .tag.cripple { color: var(--warn) } .tag.ok { color: var(--good) }
+
+.chart svg { width: 100%; height: auto; display: block; overflow: visible }
+.chart .grid line { stroke: var(--rule); stroke-width: 1 }
+.chart .axis text { fill: var(--ink-3); font: 10px var(--font-data) }
+.chart .lineA { fill: none; stroke: var(--ink-3); stroke-width: 2; stroke-dasharray: 5 4 }
+.chart .lineB { fill: none; stroke: var(--accent); stroke-width: 2 }
+.chart .zone { fill: var(--accent); opacity: .07 }
+.chart .cursor { stroke: var(--ink); stroke-width: 1 }
+.chart .dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2 }
+.chart .dotA { fill: var(--ink-3); stroke: var(--panel); stroke-width: 2 }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .8rem; color: var(--ink-2) }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--accent); vertical-align: middle; margin-right: 6px }
+.legend i.a { border-top: 2px dashed var(--ink-3) }
+.legend b { font-weight: inherit }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--panel); font: .76rem var(--font-data);
+  padding: 5px 8px; border-radius: 2px; white-space: nowrap; transform: translate(-50%, -110%) }
+.chart { position: relative }
+
+.mapsec { display: grid; gap: 10px }
+.maphead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 10px }
+.maptools { align-items: end }
+.maptools .field { flex: 0 1 260px }
+.mapview { overflow: auto; max-height: min(82vh, 900px); border: 1px solid var(--rule); background: var(--hud-bg); position: relative }
+.mapview svg { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation }
+.mapview .ring { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke }
+.mapview .ring.full { stroke: var(--accent); }
+.mapview .ring.min { stroke: #fff; stroke-dasharray: 8 6; opacity: .8 }
+.mapview .shotline { stroke: #fff; stroke-width: 3; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 2px #000) }
+.mapview .pt { stroke: #000; stroke-width: 2; vector-effect: non-scaling-stroke }
+.mapview .pt.a { fill: var(--accent) } .mapview .pt.b { fill: #fff }
+.mapview text { font: 700 34px "Carlito", var(--font-display); fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 6px; stroke-linejoin: round }
+.mapread b { font-family: var(--font-data) }
+.formula { margin: 0; padding: 12px 14px; font: .88rem/1.7 var(--font-data); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); overflow-x: auto; white-space: pre }
+.explain { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 14px 26px }
+.explain section { min-width: 0 }
+.explain h3 { color: var(--ink); margin-bottom: 4px }
+.explain p { margin: 0 0 8px; max-width: 65ch; color: var(--ink-2); font-size: .92rem }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1 data-uk="Калькулятор шкоди Survarium">Survarium Damage Calculator</h1>
+    </div>
+    <div class="stamp"><span id="source">client 0.26g</span> · build 2777<br><span data-uk="здоров'я ×100 (тіло 100, голова 40)">health shown ×100 (body 100, head 40)</span></div>
+  </header>
+
+  <div class="duel">
+    <section class="side" id="shooter" aria-labelledby="h-shooter">
+      <header><h2 id="h-shooter" data-uk="Стрілець">Shooter</h2><span class="role" data-uk="стріляє">fires</span></header>
+      <div class="row">
+        <div class="field"><label for="weapon" data-uk="Зброя">Weapon</label><select id="weapon"></select></div>
+        <div class="field"><label for="ammo" data-uk="Набій">Ammo</label><select id="ammo"></select></div>
+      </div>
+      <div class="wcard"><img id="wicon" alt=""><img id="aicon" alt=""></div>
+      <div class="statline" id="wstats"></div>
+      <div class="ruler">
+        <div class="distline"><label class="lbl" for="dist" data-uk="Дистанція до цілі">Distance to target</label><output id="distout" class="num">20 m</output></div>
+        <input type="range" id="dist" min="0" max="150" step="1" value="20">
+        <div class="scale" id="scale"></div>
+        <div class="note" id="falloffnote"></div>
+      </div>
+      <div class="more" id="wmods-box"><h3 class="sub" data-uk="Бонуси зброї">Weapon bonuses</h3><div class="mods" id="wmods"></div></div>
+    </section>
+
+    <div class="vs" aria-hidden="true"><span data-uk="— — ВЛУЧАННЯ — →">— — HIT — →</span></div>
+
+    <section class="side" id="target" aria-labelledby="h-target">
+      <header><h2 id="h-target" data-uk="Ціль">Target</h2><span class="role" data-uk="отримує влучання">takes the hit</span></header>
+      <div class="target-grid">
+        <div class="doll">
+          <div class="hudplate">
+            <div id="dollsvg"></div>
+            <div class="dollstep"><button type="button" id="dollprev" aria-label="Previous shot" data-uk-label="Попередній постріл">‹</button><span id="dollshot"></span><button type="button" id="dollnext" aria-label="Next shot" data-uk-label="Наступний постріл">›</button></div>
+          </div>
+          <div class="cap" id="partname">Chest</div>
+        </div>
+        <div class="armour" id="armour"></div>
+      </div>
+      <div class="ruler">
+        <div class="distline"><label class="lbl" for="pain" data-uk="Поточний біль">Current pain</label><output id="painout" class="num">none</output></div>
+        <input type="range" id="pain" min="0" max="99" step="1" value="0">
+        <div class="note" data-uk="Біль, який ціль уже має від попередніх влучань. Спадає до нуля по 10 за секунду, коли 8 с немає влучань.">Pain the target already carries from earlier hits. It drains back to none at 10 a second once 8 s pass without a hit.</div>
+      </div>
+      <details class="more" id="amods-box"><summary data-uk="Бонуси броні">Armour bonuses</summary><div class="mods" id="amods"></div></details>
+      <details class="more" id="tfx-box" open><summary data-uk="Артефакти й препарати">Artefacts &amp; drugs</summary><div class="mods" id="tfx"></div></details>
+    </section>
+  </div>
+
+  <section class="mapsec" aria-labelledby="h-map">
+    <div class="maphead">
+      <h2 id="h-map" data-uk="Виміряти на мапі">Measure on a map</h2>
+      <div class="row maptools">
+        <div class="field"><label for="mapsel" data-uk="Мапа">Map</label><select id="mapsel"></select></div>
+        <button type="button" class="chip" id="mapclear" data-uk="Очистити точки">Clear points</button>
+      </div>
+    </div>
+    <p class="note" style="margin:0" id="mapread">Click where the shooter stands, then where the target is. The distance goes straight into the calculator.</p>
+    <div class="mapview" id="mapview"></div>
+  </section>
+
+  <section class="result" aria-labelledby="h-result">
+    <div style="display:grid;gap:14px;min-width:0">
+      <h2 id="h-result" data-uk="Результат">Result</h2>
+      <div class="verdict" id="verdict"></div>
+      <ol class="trace" id="trace"></ol>
+    </div>
+    <div style="display:grid;gap:14px;align-content:start;min-width:0">
+      <h2 data-uk="Здоров'я">Health</h2>
+      <p class="note" style="margin:0 0 8px" data-uk="Скільки перший постріл знімає з кожного пулу здоров'я цілі. Тіло, голова чи біль на 0 вбивають; ноги й кисті — ніколи. Нижче: що стається на якому пострілі.">What the first shot takes from each of the target's health pools. Body, head or pain at 0 kills; legs and hands never do. Below: what happens on which shot.</p>
+      <div class="pools" id="pools"></div>
+      <ul class="events" id="events"></ul>
+      <h3 data-uk="Пошкодження за дистанцією">Damage over distance</h3>
+      <div class="legend"><span><i class="a"></i><b data-uk="куля до броні">bullet before armour</b></span><span><i></i><b data-uk="після цієї броні">after this armour</b></span></div>
+      <div class="chart" id="chart"></div>
+    </div>
+  </section>
+
+  <section style="display:grid;gap:10px">
+    <h2 data-uk="Кожна частина тіла, цей постріл">Every body part, this shot</h2>
+    <div class="tablebox"><table id="parts"></table></div>
+  </section>
+
+  <section style="display:grid;gap:10px">
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2 data-uk="Уся зброя проти цієї цілі">Every weapon against this target</h2>
+      <div class="chips" id="cmpmode"></div>
+    </div>
+    <p class="note" style="margin:0" data-uk="Та сама дистанція, частина тіла, броня й ефекти цілі. Кожна зброя бере свій найкращий набій для цієї цілі, якщо не вибрано «стандартний набій». Клікніть рядок, щоб узяти цю зброю.">Same distance, body part, armour and target effects. Each gun uses its best ammo for this target unless you pick "default ammo". Click a row to load that gun.</p>
+    <div class="tablebox" style="max-height:560px"><table id="cmp"></table></div>
+  </section>
+
+  <section style="display:grid;gap:12px">
+    <h2 data-uk="Формула">Formula</h2>
+    <pre class="formula" id="explain"></pre>
+  </section>
+</div>
+
+<script id="calc-data" type="application/json">/*__DATA__*/</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("calc-data").textContent);
+/*__ENGINE__*/
+/*__RULES__*/
+/*__UI__*/
+</script>
