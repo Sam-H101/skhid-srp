@@ -20,3 +20,7 @@ session = { workspace = true }
 vostok = { workspace = true }
 survarium = { workspace = true }
 udp-transport = { workspace = true }
+
+[dev-dependencies]
+# Sessions without a sign-in, for the tests (`SessionStore::create_session`).
+session = { workspace = true, features = ["test-support"] }

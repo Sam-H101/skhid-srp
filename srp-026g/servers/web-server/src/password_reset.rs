@@ -11,14 +11,16 @@
 //!   server, whose address is in `SRP_ADMIN_IPS`). No confirm step; one line
 //!   of text back: `ok <login> <account id>` (200), `no such login` (404),
 //!   `no login` (400), `wrong token` (403), `locked: too many wrong tokens`
-//!   (429), `error: …` (500). An address not in the list, or a page without
-//!   a token, gets the plain "not found" as for every admin request.
+//!   (429), `pending <login> <account id>` (202: cleared, the saver writes it
+//!   within seconds), `error: …` (500: cleared in memory, not written). An
+//!   address not in the list, or a page without a token, gets the plain "not
+//!   found" as for every admin request.
 
 use std::net::IpAddr;
 
-use session::LockExt;
+use session::{LockExt, PasswordReset, ResetWrite};
 
-use super::{ContentType, Lang, Request, Response, TokenRefused, Web, escape};
+use super::{ContentType, Lang, Request, Response, TokenRefused, Web, clock_utc, escape};
 
 /// The tab a script names for the reset without the confirm step.
 pub(crate) const DIRECT_TAB: &str = "reset_password";
@@ -40,51 +42,37 @@ struct Found {
     name: String,
     last_ip: Option<IpAddr>,
     last_sign_in: Option<u64>,
-    /// Its games signed in now: the reset signs them out.
-    sessions: usize,
-}
-
-/// How a reset went.
-enum Reset {
-    Done {
-        login: String,
-        id: u32,
-        ended: usize,
-    },
-    NoSuchLogin,
-    /// The account was found, then could not be had (never: accounts are
-    /// not deleted).
-    Gone,
+    /// A game of it has a lobby or chat connection open: the reset signs it
+    /// out.
+    online: bool,
 }
 
 impl Web {
-    /// The account that signs in as `typed`, by its user name only, in any
-    /// case (`persist::user_name_key`, as the `accounts` table's `NOCASE`).
-    fn reset_target(&self, typed: &str) -> Option<u32> {
-        self.store.account_id_by_name(typed)
-    }
-
-    /// Clear the password of `account_id`, logged.
-    fn reset(&self, account_id: u32, peer: &str) -> Reset {
-        let Some(login) = self
-            .store
-            .account(account_id)
-            .map(|account| account.locked().login.clone())
-        else {
-            return Reset::Gone;
-        };
-        let Some(ended) = self.store.reset_password(account_id) else {
-            return Reset::Gone;
-        };
-        log::warn!(
-            "Admin from {peer}: reset the password of {login} (account {account_id:#x}); \
-             {ended} session(s) ended; its next sign-in sets the new one"
-        );
-        Reset::Done {
+    /// Clear the password of `account_id`, logged. `None` for an unknown
+    /// account.
+    fn reset(&self, account_id: u32, peer: &str) -> Option<PasswordReset> {
+        let reset = self.store.reset_password(account_id)?;
+        let PasswordReset {
             login,
-            id: account_id,
-            ended,
+            sessions_ended,
+            written,
+        } = &reset;
+        match written {
+            ResetWrite::Written => log::warn!(
+                "Admin from {peer}: reset the password of {login} (account {account_id:#x}); \
+                 {sessions_ended} session(s) ended; its next sign-in sets the new one"
+            ),
+            ResetWrite::Pending => log::warn!(
+                "Admin from {peer}: reset the password of {login} (account {account_id:#x}); \
+                 {sessions_ended} session(s) ended; the saver writes it (the database was busy)"
+            ),
+            ResetWrite::Failed(error) => log::error!(
+                "Admin from {peer}: reset the password of {login} (account {account_id:#x}) \
+                 in memory, {sessions_ended} session(s) ended, but it was not written: \
+                 {error}; the saver retries"
+            ),
         }
+        Some(reset)
     }
 
     /// The account as the confirm step shows it.
@@ -111,7 +99,7 @@ impl Web {
             name,
             last_ip,
             last_sign_in,
-            sessions: self.store.live_sessions(account_id),
+            online: self.store.is_online(account_id),
         })
     }
 
@@ -129,6 +117,12 @@ impl Web {
             typed: typed.to_owned(),
             found: None,
         };
+        let no_such = || {
+            lang.tr(
+                "No account signs in with that user name (character names are not looked up).",
+                "Жоден акаунт не входить з таким ім'ям (імена персонажів не шукаються).",
+            )
+        };
         if typed.is_empty() {
             let message = lang.tr(
                 "Type the user name the player signs in with.",
@@ -136,12 +130,10 @@ impl Web {
             );
             return (message, view);
         }
-        let Some(account_id) = self.reset_target(typed) else {
-            let message = lang.tr(
-                "No account signs in with that user name (character names are not looked up).",
-                "Жоден акаунт не входить з таким ім'ям (імена персонажів не шукаються).",
-            );
-            return (message, view);
+        // By the user name only, in any case (`persist::user_name_key`, as
+        // the `accounts` table's `NOCASE`).
+        let Some(account_id) = self.store.account_id_by_name(typed) else {
+            return (no_such(), view);
         };
         let confirmed = request.field("reset_id");
         if confirmed.is_empty() {
@@ -160,29 +152,52 @@ impl Web {
             );
             return (message, view);
         }
-        match self.reset(account_id, peer) {
-            Reset::Done { login, ended, .. } => {
-                view.typed.clear();
-                let message = lang.tr(
-                    &format!(
-                        "The password of {login} is cleared; {ended} session(s) ended. \
-                         Their next sign-in, with any password, sets the new one."
-                    ),
-                    &format!(
-                        "Пароль {login} скинуто; завершено сесій: {ended}. \
-                         Наступний вхід, з будь-яким паролем, встановить новий."
-                    ),
-                );
-                (message, view)
-            }
-            Reset::NoSuchLogin | Reset::Gone => (
-                lang.tr(
-                    "The account could not be had: nothing was changed.",
-                    "Акаунт недоступний: нічого не змінено.",
+        let Some(reset) = self.reset(account_id, peer) else {
+            return (no_such(), view);
+        };
+        let PasswordReset {
+            login,
+            sessions_ended: ended,
+            written,
+        } = reset;
+        view.typed.clear();
+        let message = match written {
+            ResetWrite::Written => lang.tr(
+                &format!(
+                    "The password of {login} is cleared; {ended} session(s) ended. \
+                     Their next sign-in, with any password, sets the new one."
                 ),
-                view,
+                &format!(
+                    "Пароль {login} скинуто; завершено сесій: {ended}. \
+                     Наступний вхід, з будь-яким паролем, встановить новий."
+                ),
             ),
-        }
+            ResetWrite::Pending => lang.tr(
+                &format!(
+                    "The password of {login} is cleared; {ended} session(s) ended. The \
+                     database was busy: srp's saver writes it within seconds. Their next \
+                     sign-in, with any password, sets the new one."
+                ),
+                &format!(
+                    "Пароль {login} скинуто; завершено сесій: {ended}. База була зайнята: \
+                     srp запише його за кілька секунд. Наступний вхід, з будь-яким паролем, \
+                     встановить новий."
+                ),
+            ),
+            ResetWrite::Failed(error) => lang.tr(
+                &format!(
+                    "Error: the password of {login} is cleared and {ended} session(s) ended, \
+                     but only in memory: the database was not written ({error}). srp retries \
+                     the write; check its log before the player signs in."
+                ),
+                &format!(
+                    "Помилка: пароль {login} скинуто і завершено сесій: {ended}, але лише в \
+                     пам'яті: базу не записано ({error}). srp повторить запис; перевірте його \
+                     журнал, перш ніж гравець увійде."
+                ),
+            ),
+        };
+        (message, view)
     }
 
     /// A script's reset: at once, no confirm step, one line back.
@@ -206,16 +221,25 @@ impl Web {
         if typed.is_empty() {
             return answer("400 Bad Request", "no login".into());
         }
-        let outcome = match self.reset_target(typed) {
-            Some(account_id) => self.reset(account_id, peer),
-            None => Reset::NoSuchLogin,
+        let Some((account_id, reset)) = self
+            .store
+            .account_id_by_name(typed)
+            .and_then(|account_id| Some((account_id, self.reset(account_id, peer)?)))
+        else {
+            return answer("404 Not Found", "no such login".into());
         };
-        match outcome {
-            Reset::Done { login, id, .. } => answer("200 OK", format!("ok {login} {id}")),
-            Reset::NoSuchLogin => answer("404 Not Found", "no such login".into()),
-            Reset::Gone => answer(
+        match reset.written {
+            ResetWrite::Written => answer("200 OK", format!("ok {} {account_id}", reset.login)),
+            ResetWrite::Pending => answer(
+                "202 Accepted",
+                format!("pending {} {account_id}", reset.login),
+            ),
+            ResetWrite::Failed(error) => answer(
                 "500 Internal Server Error",
-                "error: the account could not be had; nothing was changed".into(),
+                format!(
+                    "error: {} {account_id} cleared in memory, not written: {error}",
+                    reset.login
+                ),
             ),
         }
     }
@@ -227,19 +251,19 @@ pub(crate) fn panel(lang: Lang, view: &super::AdminView) -> String {
     let confirm = match &reset.found {
         Some(found) if !view.token.is_empty() => {
             let last_sign_in = match found.last_sign_in {
-                Some(at) => format!("{} UTC", date_time_utc(at)),
+                Some(at) => format!("{} {} UTC", date_utc(at), clock_utc(at)),
                 None => lang.tr("not since srp started", "не відколи srp запущено"),
             };
             let last_ip = found
                 .last_ip
                 .map_or_else(|| lang.tr("unknown", "невідома"), |ip| ip.to_string());
-            let sessions = if found.sessions == 0 {
-                lang.tr("no", "ні")
-            } else {
+            let online = if found.online {
                 lang.tr(
-                    &format!("yes, {}: its game is signed out", found.sessions),
-                    &format!("так, {}: гру буде виведено з акаунта", found.sessions),
+                    "yes: its game is signed out",
+                    "так: гру буде виведено з акаунта",
                 )
+            } else {
+                lang.tr("no", "ні")
             };
             format!(
                 "<table>\
@@ -263,7 +287,7 @@ pub(crate) fn panel(lang: Lang, view: &super::AdminView) -> String {
                 lang.tr("Last address", "Остання адреса"),
                 escape(&last_ip),
                 lang.tr("Signed in now", "Зараз у грі"),
-                escape(&sessions),
+                escape(&online),
                 found.id,
                 escape(&lang.tr(
                     &format!("Reset the password of {}", found.login),
@@ -296,15 +320,10 @@ pub(crate) fn panel(lang: Lang, view: &super::AdminView) -> String {
     )
 }
 
-/// `YYYY-MM-DD HH:MM` (UTC) of a Unix time.
-fn date_time_utc(at: u64) -> String {
+/// `YYYY-MM-DD` (UTC) of a Unix time; [`clock_utc`] is its time of day.
+fn date_utc(at: u64) -> String {
     let (year, month, day) = civil_from_days(at / 86_400);
-    let seconds = at % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
-        seconds / 3600,
-        seconds / 60 % 60
-    )
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// The date of a day counted from 1970-01-01 (the proleptic Gregorian
@@ -328,9 +347,13 @@ mod tests {
 
     #[test]
     fn dates_are_utc_calendar_dates() {
-        assert_eq!(date_time_utc(0), "1970-01-01 00:00");
-        assert_eq!(date_time_utc(951_782_400), "2000-02-29 00:00");
+        assert_eq!(date_utc(0), "1970-01-01");
+        assert_eq!(date_utc(951_782_400), "2000-02-29");
         // 2026-10-18 12:34 UTC.
-        assert_eq!(date_time_utc(1_792_326_840), "2026-10-18 12:34");
+        let at = 1_792_326_840;
+        assert_eq!(
+            (date_utc(at), clock_utc(at)),
+            ("2026-10-18".into(), "12:34".into())
+        );
     }
 }

@@ -2646,6 +2646,11 @@ mod tests {
             web.admin(&post("/hidden", &all), "t").body
         };
 
+        // A session with no lobby or chat connection open is not "signed in now".
+        let idle = act(&[("reset_user", "forgetful@x.test")]);
+        assert!(idle.contains("Signed in now</th><td>no</td>"), "{idle}");
+        let held = web.store.hold(session).unwrap();
+
         // The user name in any case: the account to confirm, nothing changed.
         let shown = act(&[("reset_user", "FORGETFUL@x.test")]);
         assert!(shown.contains("Check the account below"), "{shown}");
@@ -2653,7 +2658,7 @@ mod tests {
         assert!(shown.contains("<td>Forgetful</td>"), "{shown}");
         assert!(shown.contains("203.0.113.9"), "{shown}");
         assert!(shown.contains(" UTC</td>"), "{shown}");
-        assert!(shown.contains("yes, 1: its game is signed out"), "{shown}");
+        assert!(shown.contains("yes: its game is signed out"), "{shown}");
         assert!(
             shown.contains(&format!(
                 "name=reset_id value={id}>Reset the password of forgetful@x.test"
@@ -2689,6 +2694,7 @@ mod tests {
         assert!(!done.contains("name=reset_id"));
         assert_eq!(password_hash(&web, id), None);
         assert!(web.store.has_ended(session));
+        drop(held);
         // The next sign-in sets the new password; the old one is refused.
         assert_eq!(web.store.sign_in("forgetful@x.test", b"new"), Ok(id));
         assert_eq!(
@@ -2713,6 +2719,58 @@ mod tests {
         assert!(refused.body.contains("Wrong token"));
         assert!(!refused.body.contains("name=reset_id"));
         assert!(password_hash(&web, other).is_some());
+    }
+
+    #[test]
+    fn a_reset_the_database_refused_is_an_error_not_a_success() {
+        let mut web = web(Some("tok"));
+        let repository = session::persist::MemoryRepository::default();
+        web.store = Arc::new(
+            SessionStore::with_repository(Duration::from_secs(30), Box::new(repository.clone()))
+                .unwrap(),
+        );
+        let id = web.store.sign_in("forgetful", b"old").unwrap();
+        web.store.flush();
+        // The database refuses every account write from now on.
+        repository.fail_account_saves(true);
+        let direct = web.admin(
+            &post(
+                "/hidden",
+                &[
+                    ("token", "tok"),
+                    ("tab", "reset_password"),
+                    ("login", "forgetful"),
+                ],
+            ),
+            "t",
+        );
+        assert_eq!(direct.status, "500 Internal Server Error");
+        assert!(
+            direct.body.starts_with(&format!(
+                "error: forgetful {id} cleared in memory, not written: account {id}: disk full"
+            )),
+            "{}",
+            direct.body
+        );
+        let page = web.admin(
+            &post(
+                "/hidden",
+                &[
+                    ("token", "tok"),
+                    ("tab", "password"),
+                    ("reset_user", "forgetful"),
+                    ("reset_id", &id.to_string()),
+                ],
+            ),
+            "t",
+        );
+        assert!(
+            page.body
+                .contains("Error: the password of forgetful is cleared"),
+            "{}",
+            page.body
+        );
+        assert!(!page.body.contains("Their next sign-in"));
     }
 
     #[test]

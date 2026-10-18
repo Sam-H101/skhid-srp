@@ -109,7 +109,8 @@ impl World {
                 "127.0.0.1".parse().unwrap(),
                 Instant::now(),
             )
-            .unwrap();
+            .unwrap()
+            .account_id();
         self.accounts.get_or_create(id, name);
         id
     }
