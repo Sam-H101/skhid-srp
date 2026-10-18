@@ -14,6 +14,13 @@ no exe or content change, `REVISION` unchanged, no `simulation_changes` row.
   it as the new one (`adopt_password`); from then on only that one is taken.
   Whoever signs in first takes the account, so reset when the player is
   ready to sign in. If the player finds it taken, reset again.
+- **First sign-in wins, kept (owner's decision, 2026-10-18, on the review
+  of #187):** a client that still remembers the old password (its SHA-1
+  digest) and signs in first after the reset sets that one again, as
+  anyone signing in first would; the same as the manual `UPDATE … SET
+  password_hash = NULL` did. Not changed: no one-time code or other claim
+  step. So reset only when the player is ready to sign in right away, and
+  tell them to do so at once.
 - **Effect at once, in this order** (`SessionStore::reset_password`):
   1. The hash is cleared and the account's password epoch moves on, under
      its lock. A sign-in checked against the old password is refused even
