@@ -828,11 +828,13 @@ mod tests {
     /// patch at `SRP_TEST_PATCH_WEAPON_BALANCE_1` over the live data): each
     /// listed weapon's `parameters` value and the lobby card's text of it
     /// (`ui_desc.props_list`: prop 1 damage x100, 3 armour piercing x100, 4
-    /// rate of fire) change as listed, and nothing else; the items'
-    /// misspelt `stamina_regenation_speed_modifier` is spelt as the exe reads
-    /// it, with its value, in every item config and in the modifications'
-    /// paths. srp reads none of these: the game computes them, and the
-    /// server data carries the files.
+    /// rate of fire) change as listed, and nothing else; the SVD's magazine
+    /// (no card line) holds 5 rounds, still an int, and its description says
+    /// so in every language; the items' misspelt
+    /// `stamina_regenation_speed_modifier` is spelt as the exe reads it, with
+    /// its value, in every item config and in the modifications' paths. srp
+    /// reads only the magazine (the bots' guns); the game computes the rest,
+    /// and the server data carries the files.
     #[test]
     #[ignore = "needs 0.26g's resources.db, skhid's patches and the weapon balance 1 patch"]
     fn weapon_balance_1_changes_only_its_values() {
@@ -877,11 +879,13 @@ mod tests {
             ("mosin_nagant", "bullet_damage", 1.0, 1.1),
             ("mosin_nagant", "bullet_pierce", 0.35, 0.40),
             ("toz_122", "bullet_damage", 1.1, 1.2),
+            ("svd", "magazine_capacity", 10.0, 5.0),
         ];
         let prop = |key: &str| match key {
-            "bullet_damage" => 1,
-            "bullet_pierce" => 3,
-            _ => 4,
+            "bullet_damage" => Some(1),
+            "bullet_pierce" => Some(3),
+            "rounds_per_minute" => Some(4),
+            _ => None,
         };
         let shown = |key: &str, value: f32| {
             if key == "rounds_per_minute" {
@@ -944,11 +948,11 @@ mod tests {
                 if key == "ui_desc" && !mine.is_empty() {
                     let props = new.req("ui_desc").unwrap().req("props_list").unwrap();
                     text = Some(props.clone());
-                    for change in &mine {
+                    for change in mine.iter().filter(|change| prop(change.1).is_some()) {
                         let entry = props
                             .children()
                             .into_iter()
-                            .find(|p| p.i32_at("prop_id").unwrap() == prop(change.1))
+                            .find(|p| Some(p.i32_at("prop_id").unwrap()) == prop(change.1))
                             .unwrap();
                         assert_eq!(
                             entry.str_at("prop_value").unwrap(),
@@ -964,7 +968,7 @@ mod tests {
                     let old_props = value.req("props_list").unwrap().children();
                     for (o, n) in old_props.iter().zip(props.children()) {
                         let id = o.i32_at("prop_id").unwrap();
-                        if !mine.iter().any(|change| prop(change.1) == id) {
+                        if !mine.iter().any(|change| prop(change.1) == Some(id)) {
                             assert_eq!(*o, n, "{path} prop {id}");
                         }
                     }
@@ -998,5 +1002,64 @@ mod tests {
             .map(|s| if s == OLD { NEW.into() } else { s.clone() })
             .collect();
         assert_eq!(fixed, new);
+        // The SVD's magazine stays an int, as the bots' guns read it.
+        let svd = ConfigValue::parse(
+            after
+                .file("gameplay/items/weapons/wpn_svd.options")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            svd.req("parameters").unwrap().get("magazine_capacity"),
+            Some(&ConfigValue::Integer(5))
+        );
+        // Its description, in each language, says 5 rounds where it said 10;
+        // every other text is the live one. The server data has no texts:
+        // they are read in the patches (the live one is the newest patch's).
+        // The texts are UTF-8 and the reader decodes Windows-1251, so the
+        // words found are ASCII ones (the text compares the same either way).
+        let read_in = |archive: &std::path::Path, path: &str| {
+            let file = std::io::BufReader::new(std::fs::File::open(archive).unwrap());
+            resources_db::Archive::new(file)
+                .unwrap()
+                .read(path)
+                .unwrap()
+        };
+        let live: Vec<std::path::PathBuf> = std::iter::once(env_path("SRP_TEST_RESOURCES_DB"))
+            .chain(
+                std::env::var("SRP_TEST_SKHID_PATCHES")
+                    .unwrap()
+                    .split_whitespace()
+                    .map(std::path::PathBuf::from),
+            )
+            .collect();
+        for (language, from, to) in [
+            ("english", "supply: 10 rounds", "supply: 5 rounds"),
+            ("german", "r 10 Patronen", "r 5 Patronen"),
+            ("polish", "w 10-nabojowy", "w 5-nabojowy"),
+            ("russian", " 10 ", " 5 "),
+            ("original", " 10 ", " 5 "),
+            ("ukrainian", " 10 ", " 5 "),
+        ] {
+            let path = format!("localization/{language}/localization");
+            let old = live.iter().rev().find_map(|db| read_in(db, &path)).unwrap();
+            let new = read_in(&env_path("SRP_TEST_PATCH_WEAPON_BALANCE_1"), &path).unwrap();
+            let old = ConfigValue::parse(&old).unwrap();
+            let new = ConfigValue::parse(&new).unwrap();
+            let (old, new) = (old.req("strings").unwrap(), new.req("strings").unwrap());
+            assert_eq!(old.entries().len(), new.entries().len(), "{path}");
+            for (key, value) in old.entries() {
+                let got = new.get(key).unwrap_or_else(|| panic!("{path} {key}"));
+                if key == "st_svd_description" {
+                    let ConfigValue::String(text) = value else {
+                        panic!("{path} {key}")
+                    };
+                    assert_eq!(text.matches(from).count(), 1, "{path}");
+                    assert_eq!(got, &ConfigValue::String(text.replace(from, to)), "{path}");
+                } else {
+                    assert_eq!(got, value, "{path} {key}");
+                }
+            }
+        }
     }
 }

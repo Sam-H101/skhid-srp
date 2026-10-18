@@ -15,6 +15,7 @@ on other data.
 # other files (materials) come from the newest offered patch that has them
 dbgrab server-game-data.db get gameplay/items/ live/      # tools/re-kit/common/dbgrab
 dbgrab resources.db.patch_19 get collimator_glowing_dot_ x/ && cp x/*.material live/
+dbgrab resources.db.patch_20 get localization/ live/
 python3 -I content_edit.py weapon-balance-1.json live/ folder/
 release/build-patch folder/ <revision>                    # resources.db.patch_<revision>
 ```
@@ -22,7 +23,8 @@ release/build-patch folder/ <revision>                    # resources.db.patch_<
 Then build the server data with it (`srp-game-data build`, or `release/release.sh`
 with the patch) and run `weapon_balance_1_changes_only_its_values`
 (`crates/survarium/src/v026g/maps.rs`, ignored: it needs `SRP_TEST_RESOURCES_DB`,
-`SRP_TEST_SKHID_PATCHES` and `SRP_TEST_PATCH_WEAPON_BALANCE_1`).
+`SRP_TEST_SKHID_PATCHES` and `SRP_TEST_PATCH_WEAPON_BALANCE_1`). The server game data
+carries no localization tables: the test reads the texts in the patches themselves.
 
 ## weapon-balance-1.json (2026-10-18)
 
@@ -42,6 +44,7 @@ weapon / kills the same players get with their other weapons.
 | AS Val, 9A-91, VSS, VSK-94 (and premiums) damage 0.55 -> 0.50 | the same 9x39 numbers as the SR-3M |
 | PP-2000 750 -> 680 rounds a minute | kill index 1.22 |
 | Mosin damage 1.0 -> 1.1, piercing 0.35 -> 0.40; TOZ-122 damage 1.1 -> 1.2 | the two beginner rifles played weakest (kill index 0.54, 0.66) |
+| SVD magazine 10 -> 5 rounds, and its description in the six localization tables ("10 rounds" -> "5 rounds") | a mild cut for a rifle on the watch list: its rate of fire and damage stay, half the shots between reloads (the Mosin, same ammunition, holds 5); the card has no magazine line; srp's bots read the value from the data |
 | `stamina_regenation_speed_modifier` -> `stamina_regeneration_speed_modifier` in every item config and in the modifications' paths (5 modifications, 1 defect) | the exe reads only the correct spelling (name table 0x928448 entry 3); the items' stamina-regeneration modifications and defect did nothing |
 | the three glowing-dot materials of the sights ported from 0.51c5 (`material_instances/weapons/loc/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_green`): `constant_transparency` 1 -> 0.3 | 0.51c5's value: the round-12 material merge of the scope port dropped it because its kind differed (float in 0.51c5, int 1 in the template), so every ported red-dot and ring reticle (Aimpoint, Cobra, Docter, EOTech, DeltaPoint) glowed 3.3 times brighter than in 0.51c5; the 0.29a3 stock sights are unchanged |
 

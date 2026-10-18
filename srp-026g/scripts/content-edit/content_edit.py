@@ -27,6 +27,8 @@ Edits (edits.json):
   "set_prop":       [{"file", "prop_id", "from", "to"}] the lobby card's text of a stat (ui_desc/props_list:
                                                        1 damage x100, 3 armour piercing x100, 4 rate of fire)
   "replace_string": [{"files", "from", "to"}]          every string value equal to `from`, appended
+  "edit_text":      [{"file", "path", "from", "to"}]   in one text (UTF-8, as the localization tables
+                                                       keep it), its one `from` becomes `to`
 
 Every edited file is read back with an independent walk: only the intended values, names and order
 may differ from the live file (the check prints each difference).
@@ -164,9 +166,24 @@ def replace_string(buf, frm, to):
         if t == T_STR and bytes(buf[d:d + cnt - 1]) == frm.encode():
             if noff is None:
                 noff = append(buf, to.encode() + b'\0')
-            REC.pack_into(buf, off, noff, i, c, t, len(to) + 1)
+            REC.pack_into(buf, off, noff, i, c, t, len(to.encode()) + 1)
             n += 1
     return n
+
+
+def edit_text(buf, path, frm, to):
+    """A text (a description in a localization table): its one `frm` becomes `to`, the new text
+    appended. A text without `frm`, or with it twice, is refused."""
+    off = find(buf, path)
+    d, i, c, t, cnt = rec(buf, off)
+    if t != T_STR:
+        raise ValueError('%s is not a text' % path)
+    old = bytes(buf[d:d + cnt - 1])
+    if old.count(frm.encode()) != 1:
+        raise ValueError('%s has %r %d times, not once: the base is not the live data'
+                         % (path, frm, old.count(frm.encode())))
+    new = old.replace(frm.encode(), to.encode())
+    REC.pack_into(buf, off, append(buf, new + b'\0'), i, c, t, len(new) + 1)
 
 
 def set_prop(buf, prop_id, frm, to):
@@ -185,7 +202,7 @@ def set_prop(buf, prop_id, frm, to):
         if old != frm:
             raise ValueError('prop %d says %r, not %r: the base is not the live data' % (prop_id, old, frm))
         noff = append(buf, to.encode() + bytes(1))
-        REC.pack_into(buf, off, noff, i2, c, t, len(to) + 1)
+        REC.pack_into(buf, off, noff, i2, c, t, len(to.encode()) + 1)
         return '/ui_desc/props_list[%d]/prop_value' % i
     raise KeyError('prop %d' % prop_id)
 
@@ -224,6 +241,9 @@ def main():
     for e in edits.get('set_prop', []):
         q = set_prop(buf(e['file']), e['prop_id'], e['from'], e['to'])
         allowed.setdefault(e['file'], set()).add(q)
+    for e in edits.get('edit_text', []):
+        edit_text(buf(e['file']), e['path'], e['from'], e['to'])
+        allowed.setdefault(e['file'], set()).add('/' + e['path'])
     for e in edits.get('rename_key', []):
         n = 0
         for p in sorted(fnmatch.filter(files, e['files'])):

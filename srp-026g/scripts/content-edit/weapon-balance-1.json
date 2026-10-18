@@ -36,6 +36,7 @@
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "path": "parameters/bullet_damage", "from": 1, "to": 1.1, "as_float": true},
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "path": "parameters/bullet_pierce", "from": 0.35, "to": 0.4},
   {"file": "gameplay/items/weapons/wpn_toz_122.options", "path": "parameters/bullet_damage", "from": 1.1, "to": 1.2},
+  {"file": "gameplay/items/weapons/wpn_svd.options", "path": "parameters/magazine_capacity", "from": 10, "to": 5},
   {"file": "material_instances/weapons/loc/collimator_glowing_dot_red.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true},
   {"file": "material_instances/weapons/loc2/collimator_glowing_dot_red.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true},
   {"file": "material_instances/weapons/loc2/collimator_glowing_dot_green.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true}
@@ -76,6 +77,14 @@
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "prop_id": 1, "from": "100", "to": "110"},
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "prop_id": 3, "from": "35", "to": "40"},
   {"file": "gameplay/items/weapons/wpn_toz_122.options", "prop_id": 1, "from": "110", "to": "120"}
+ ],
+ "edit_text": [
+  {"file": "localization/english/localization", "path": "strings/st_svd_description", "from": "supply: 10 rounds", "to": "supply: 5 rounds"},
+  {"file": "localization/german/localization", "path": "strings/st_svd_description", "from": "für 10 Patronen", "to": "für 5 Patronen"},
+  {"file": "localization/polish/localization", "path": "strings/st_svd_description", "from": "w 10-nabojowy", "to": "w 5-nabojowy"},
+  {"file": "localization/russian/localization", "path": "strings/st_svd_description", "from": "на 10 патронов", "to": "на 5 патронов"},
+  {"file": "localization/original/localization", "path": "strings/st_svd_description", "from": "на 10 патронов", "to": "на 5 патронов"},
+  {"file": "localization/ukrainian/localization", "path": "strings/st_svd_description", "from": "на 10 набоїв", "to": "на 5 набоїв"}
  ],
  "rename_key": [
   {"files": "gameplay/items/*", "table": "parameters", "from": "stamina_regenation_speed_modifier", "to": "stamina_regeneration_speed_modifier"}
