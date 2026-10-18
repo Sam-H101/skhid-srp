@@ -858,3 +858,137 @@ fn a_patch_list_string_is_always_escaped() {
         r#"{"patch_1":{"sha256":"a\"b\\c\u000a","urls":["http://x/y","http://x/\""]}}"#
     );
 }
+
+#[test]
+fn the_damage_calculator_is_a_026g_page_under_the_sites_header() {
+    let world = world();
+    let home = world.web.route(&get("/"), "t").body;
+    assert!(home.contains(
+        "<nav><a href=\"/?lang=en\">Home</a><a href=\"/damage?lang=en\">Damage calculator</a>"
+    ));
+    let page = world.web.route(&get("/damage"), "t");
+    assert_eq!(page.status, "200 OK");
+    assert!(
+        page.body
+            .starts_with("<!doctype html>\n<html lang=\"en\">\n")
+    );
+    assert!(
+        page.body
+            .contains("<a class=brand href=\"/?lang=en\">СХІД</a>")
+    );
+    assert!(
+        page.body
+            .contains("<a href=\"/damage?lang=en\" aria-current=page>Damage calculator</a>")
+    );
+    assert!(
+        page.body
+            .contains("<a class=lang href=\"?lang=uk\">Українська</a>")
+    );
+    assert!(!page.body.contains("{{LANG}}") && !page.body.contains("<!--SITE-HEADER-->"));
+    // Nothing inline runs and nothing is fetched from elsewhere.
+    assert!(!page.body.contains("<script>") && !page.body.contains("https://"));
+    let mut uk = get("/damage");
+    uk.lang = Lang::Uk;
+    let uk = world.web.route(&uk, "t").body;
+    assert!(uk.starts_with("<!doctype html>\n<html lang=\"uk\">\n"));
+    assert!(uk.contains(" aria-current=page>Калькулятор шкоди</a>"));
+}
+
+#[test]
+fn every_file_the_calculator_names_is_served_to_be_kept() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+    let world = world();
+    // What the page and its script ask for: /damage/... before a ?v=.
+    fn named(text: &str) -> Vec<String> {
+        text.match_indices("/damage/")
+            .filter_map(|(at, _)| text[at..].split_once("?v="))
+            .map(|(path, _)| path.to_owned())
+            .filter(|path| !path.contains(['"', ' ', '<', '\n']))
+            .collect()
+    }
+    let page = world.web.route(&get("/damage"), "t").body;
+    let mut wanted = named(&page);
+    let (script_type, script) = crate::damage::file("/damage/calc.js").unwrap();
+    assert_eq!(script_type, "text/javascript; charset=utf-8");
+    wanted.extend(named(std::str::from_utf8(script).unwrap()));
+    for (ending, count) in [(".js", 1), (".woff2", 7), (".webp", 10)] {
+        assert_eq!(
+            wanted.iter().filter(|path| path.ends_with(ending)).count(),
+            count,
+            "{ending}"
+        );
+    }
+    for path in &wanted {
+        let (content_type, bytes) = crate::damage::file(path).unwrap_or_else(|| panic!("{path}"));
+        assert!(!bytes.is_empty(), "{path}");
+        let expected = match path.rsplit('.').next() {
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("woff2") => "font/woff2",
+            _ => "image/webp",
+        };
+        assert_eq!(content_type, expected, "{path}");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let asks = [
+        "GET /damage/calc.js?v=0 HTTP/1.0",
+        "HEAD /damage/maps/level_01.webp HTTP/1.0",
+        "GET /damage?lang=uk HTTP/1.0",
+        "GET /damage/missing.js HTTP/1.0",
+    ];
+    let server = std::thread::spawn(move || {
+        for _ in asks {
+            let (stream, _) = listener.accept().unwrap();
+            world.web.serve(stream);
+        }
+    });
+    let answers: Vec<Vec<u8>> = asks
+        .iter()
+        .map(|ask| {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client
+                .write_all(format!("{ask}\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut got = Vec::new();
+            client.read_to_end(&mut got).unwrap();
+            got
+        })
+        .collect();
+    server.join().unwrap();
+    let head = |answer: &[u8]| {
+        let at = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        (
+            String::from_utf8(answer[..at].to_vec()).unwrap(),
+            answer.len() - at,
+        )
+    };
+    let (script_head, script_len) = head(&answers[0]);
+    assert!(
+        script_head
+            .starts_with("HTTP/1.0 200 OK\r\nContent-Type: text/javascript; charset=utf-8\r\n")
+    );
+    assert!(script_head.contains("\r\nCache-Control: public, max-age=31536000, immutable\r\n"));
+    assert!(script_head.contains(&format!("\r\nContent-Length: {}\r\n", script.len())));
+    assert_eq!(script_len, script.len());
+    let (map_head, map_len) = head(&answers[1]);
+    assert!(map_head.contains("\r\nContent-Type: image/webp\r\n"));
+    assert_eq!(map_len, 0, "a HEAD gets no body");
+    let (page_head, _) = head(&answers[2]);
+    assert!(page_head.contains("\r\nCache-Control: no-store\r\n"));
+    assert!(page_head.contains(&format!(
+        "\r\nContent-Security-Policy: {}\r\n",
+        crate::damage::POLICY
+    )));
+    assert!(String::from_utf8_lossy(&answers[2]).contains("<html lang=\"uk\">"));
+    assert!(
+        head(&answers[3])
+            .0
+            .starts_with("HTTP/1.0 404 Not Found\r\n")
+    );
+}
