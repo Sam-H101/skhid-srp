@@ -11,8 +11,10 @@ on other data.
 ## Making the patch
 
 ```bash
-# the live files: the server game data the live server runs on holds them
+# the live files: the server game data the live server runs on holds the gameplay files;
+# other files (materials) come from the newest offered patch that has them
 dbgrab server-game-data.db get gameplay/items/ live/      # tools/re-kit/common/dbgrab
+dbgrab resources.db.patch_19 get collimator_glowing_dot_ x/ && cp x/*.material live/
 python3 -I content_edit.py weapon-balance-1.json live/ folder/
 release/build-patch folder/ <revision>                    # resources.db.patch_<revision>
 ```
@@ -41,6 +43,8 @@ weapon / kills the same players get with their other weapons.
 | PP-2000 750 -> 680 rounds a minute | kill index 1.22 |
 | Mosin damage 1.0 -> 1.1, piercing 0.35 -> 0.40; TOZ-122 damage 1.1 -> 1.2 | the two beginner rifles played weakest (kill index 0.54, 0.66) |
 | `stamina_regenation_speed_modifier` -> `stamina_regeneration_speed_modifier` in every item config and in the modifications' paths (5 modifications, 1 defect) | the exe reads only the correct spelling (name table 0x928448 entry 3); the items' stamina-regeneration modifications and defect did nothing |
+
+| the three glowing-dot materials of the sights ported from 0.51c5 (`material_instances/weapons/loc/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_red`, `loc2/collimator_glowing_dot_green`): `constant_transparency` 1 -> 0.3 | 0.51c5's value: the round-12 material merge of the scope port dropped it because its kind differed (float in 0.51c5, int 1 in the template), so every ported red-dot and ring reticle (Aimpoint, Cobra, Docter, EOTech, DeltaPoint) glowed 3.3 times brighter than in 0.51c5; the 0.29a3 stock sights are unchanged |
 
 The lobby card shows text kept in each config (`ui_desc/props_list`), not the
 values: the list changes that text with each value (`set_prop`).

@@ -1,5 +1,5 @@
 {
- "_about": "Weapon balance, release 1 (2026-10-18). Ported 0.29a3 weapons' armour piercing on the 0.26g scale by calibre; rate of fire and damage of the measured over-performers; Mosin and TOZ-122 up; item stamina-regeneration key spelt as the exe reads it. Values scored on the recorded live kills since revision 19.",
+ "_about": "Weapon balance, release 1 (2026-10-18). Ported 0.29a3 weapons' armour piercing on the 0.26g scale by calibre; rate of fire and damage of the measured over-performers; Mosin and TOZ-122 up; item stamina-regeneration key spelt as the exe reads it. Values scored on the recorded live kills since revision 19; the red-dot sights ported from 0.51c5 glow as in 0.51c5 (constant_transparency 0.3, the round-12 merge had kept 1).",
  "set": [
   {"file": "gameplay/items/weapons/wpn_kriss_vector.options", "path": "parameters/bullet_pierce", "from": 0.45, "to": 0.25},
   {"file": "gameplay/items/weapons/wpn_kriss_vector.options", "path": "parameters/bullet_damage", "from": 0.45, "to": 0.42},
@@ -35,7 +35,10 @@
   {"file": "gameplay/items/weapons/wpn_pp2000.options", "path": "parameters/rounds_per_minute", "from": 750, "to": 680},
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "path": "parameters/bullet_damage", "from": 1, "to": 1.1, "as_float": true},
   {"file": "gameplay/items/weapons/wpn_mosin_nagant.options", "path": "parameters/bullet_pierce", "from": 0.35, "to": 0.4},
-  {"file": "gameplay/items/weapons/wpn_toz_122.options", "path": "parameters/bullet_damage", "from": 1.1, "to": 1.2}
+  {"file": "gameplay/items/weapons/wpn_toz_122.options", "path": "parameters/bullet_damage", "from": 1.1, "to": 1.2},
+  {"file": "material_instances/weapons/loc/collimator_glowing_dot_red.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true},
+  {"file": "material_instances/weapons/loc2/collimator_glowing_dot_red.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true},
+  {"file": "material_instances/weapons/loc2/collimator_glowing_dot_green.material", "path": "material/forward/effect/constant_transparency/value", "from": 1, "to": 0.3, "as_float": true}
  ],
  "set_prop": [
   {"file": "gameplay/items/weapons/wpn_kriss_vector.options", "prop_id": 3, "from": "45", "to": "25"},
