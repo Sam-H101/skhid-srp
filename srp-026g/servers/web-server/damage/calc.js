@@ -362,15 +362,21 @@ const RULES = (() => {
         return b;
       };
       const row = (label, ...kids) => box.append(el("div", { class: "field" }, el("span", { class: "lbl", text: label }), el("div", { class: "fxrow" }, ...kids)));
+      // Four artefact slots, shared: click the n-th tile to carry n of that
+      // artefact, the last lit one again to drop it; the other gives way when
+      // both would not fit.
+      const SLOTS_MAX = 4, rows = {};
+      const paint = key => rows[key] && rows[key].forEach((s, j) => s.setAttribute("aria-pressed", String(j < (state.fx[key] || 0))));
+      const slotTiles = (key, art, icon) => rows[key] = [1, 2, 3, 4].map(i => tile(icon, `${nm(art)} ×${i}`, i <= (state.fx[key] || 0),
+        () => {
+          state.fx[key] = (state.fx[key] || 0) === i ? i - 1 : i;
+          const other = key === "onyx" ? "larkspur" : "onyx";
+          if ((state.fx[other] || 0) + state.fx[key] > SLOTS_MAX) { state.fx[other] = SLOTS_MAX - state.fx[key]; paint(other); }
+          paint(key);
+          update();
+        }));
       if (ART.onyx) {
-        // Four artefact slots: click the n-th to carry n, the last lit one again to drop it.
-        const n = state.fx.onyx || 0;
-        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= n,
-          () => {
-            state.fx.onyx = (state.fx.onyx || 0) === i ? i - 1 : i;
-            slots.forEach((s, j) => s.setAttribute("aria-pressed", String(j < state.fx.onyx)));
-            update();
-          }));
+        const slots = slotTiles("onyx", ART.onyx, "artefact_onyx");
         const mode = state.fx.onyxMode || "passive";
         const chip = (k, text) => {
           const c = el("button", { type: "button", class: "chip", text, "aria-pressed": String(mode === k) });
@@ -385,6 +391,8 @@ const RULES = (() => {
           chip("passive", `${T("passive", "пасивний")} ×${ART.onyx.passive.damage_mul}`),
           chip("active", `${T("active", "активний")} ×${ART.onyx.active.damage_mul}, ${ART.onyx.active.duration_s} ${T("s", "с")}`)));
       }
+      // The Larkspur changes no hit: its count is the healing table's.
+      if (ART.lifebone) row(nm(ART.lifebone), ...slotTiles("larkspur", ART.lifebone, "artefact_lifebone"));
       const shielding = Object.entries(DATA.drugs || {}).filter(([, d]) => d.damage_protection.some(p => p.hit_type === "ranged"));
       if (shielding.length) {
         state.fx.drugs = state.fx.drugs || {};
@@ -793,6 +801,7 @@ function update() {
   drawPools(target, sim);
   drawChart(w, a, target);
   drawExplain();
+  drawHealing();
   // The two big tables simulate every part and every gun: draw them a frame
   // later so a click paints first, once for several quick clicks.
   later = () => { drawParts(target); drawCompare(target); };
@@ -1021,10 +1030,11 @@ function drawHealing() {
   const pools = [["body"], ["head"], ["right_leg", "right_hand"], ["pain"]];
   const perS = T("/s", "/с"), sec = T("s", "с"), dash = "—";
   const full = T("full", "повністю"), fixed = T("fixed", "лікує");
-  const regen = (name, mod) => {
+  const regen = (name, mod, count = 0) => {
     const r = row(name);
     let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
-    if (mod) {  // the Larkspur's callback, 0x312590: add, then multiply
+    // One Larkspur callback (0x312590) per Larkspur carried: add, then multiply.
+    for (let i = 0; mod && i < count; i++) {
       speed = (speed + mod.regen_add) * mod.regen_mul;
       wait = (wait + mod.timeout_add) * mod.timeout_mul;
       cap = (cap + mod.threshold_add) * mod.threshold_mul;
@@ -1040,8 +1050,10 @@ function drawHealing() {
   const lark = DATA.artefacts && DATA.artefacts.lifebone;
   if (lark) {
     const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
-    const carried = pools.map(([p]) => regen(p, mods[p]));
-    rows.push([named(`${nm(lark)}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    // As many as the target carries (Artefacts & drugs), one when it carries none.
+    const n = clamp((state.fx || {}).larkspur || 1, 1, 4);
+    const carried = pools.map(([p]) => regen(p, mods[p], n));
+    rows.push([named(`${nm(lark)}${n > 1 ? ` ×${n}` : ""}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
     const cures = (lark.active.remove_affects || []).length;
     rows.push([named(`${nm(lark)}, ${T("activated", "активований")}`, "artefact_lifebone"), T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
   }
@@ -1157,7 +1169,7 @@ if (LANG === "uk") {
   document.querySelectorAll("[data-uk]").forEach(n => { n.textContent = n.dataset.uk; });
   document.querySelectorAll("[data-uk-label]").forEach(n => n.setAttribute("aria-label", n.dataset.ukLabel));
 }
-fillWeapons(); fillArmour(); drawDoll(); fillMaps(); drawHealing();
+fillWeapons(); fillArmour(); drawDoll(); fillMaps();
 if (DATA.stamp) $("source").textContent = T(DATA.stamp, DATA.stamp_uk || DATA.stamp);
 $("dollprev").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) - 1; update(); });
 $("dollnext").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) + 1; update(); });

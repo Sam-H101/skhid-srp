@@ -396,6 +396,7 @@ function update() {
   drawPools(target, sim);
   drawChart(w, a, target);
   drawExplain();
+  drawHealing();
   // The two big tables simulate every part and every gun: draw them a frame
   // later so a click paints first, once for several quick clicks.
   later = () => { drawParts(target); drawCompare(target); };
@@ -624,10 +625,11 @@ function drawHealing() {
   const pools = [["body"], ["head"], ["right_leg", "right_hand"], ["pain"]];
   const perS = T("/s", "/с"), sec = T("s", "с"), dash = "—";
   const full = T("full", "повністю"), fixed = T("fixed", "лікує");
-  const regen = (name, mod) => {
+  const regen = (name, mod, count = 0) => {
     const r = row(name);
     let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
-    if (mod) {  // the Larkspur's callback, 0x312590: add, then multiply
+    // One Larkspur callback (0x312590) per Larkspur carried: add, then multiply.
+    for (let i = 0; mod && i < count; i++) {
       speed = (speed + mod.regen_add) * mod.regen_mul;
       wait = (wait + mod.timeout_add) * mod.timeout_mul;
       cap = (cap + mod.threshold_add) * mod.threshold_mul;
@@ -643,8 +645,10 @@ function drawHealing() {
   const lark = DATA.artefacts && DATA.artefacts.lifebone;
   if (lark) {
     const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
-    const carried = pools.map(([p]) => regen(p, mods[p]));
-    rows.push([named(`${nm(lark)}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    // As many as the target carries (Artefacts & drugs), one when it carries none.
+    const n = clamp((state.fx || {}).larkspur || 1, 1, 4);
+    const carried = pools.map(([p]) => regen(p, mods[p], n));
+    rows.push([named(`${nm(lark)}${n > 1 ? ` ×${n}` : ""}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
     const cures = (lark.active.remove_affects || []).length;
     rows.push([named(`${nm(lark)}, ${T("activated", "активований")}`, "artefact_lifebone"), T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
   }
@@ -760,7 +764,7 @@ if (LANG === "uk") {
   document.querySelectorAll("[data-uk]").forEach(n => { n.textContent = n.dataset.uk; });
   document.querySelectorAll("[data-uk-label]").forEach(n => n.setAttribute("aria-label", n.dataset.ukLabel));
 }
-fillWeapons(); fillArmour(); drawDoll(); fillMaps(); drawHealing();
+fillWeapons(); fillArmour(); drawDoll(); fillMaps();
 if (DATA.stamp) $("source").textContent = T(DATA.stamp, DATA.stamp_uk || DATA.stamp);
 $("dollprev").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) - 1; update(); });
 $("dollnext").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) + 1; update(); });

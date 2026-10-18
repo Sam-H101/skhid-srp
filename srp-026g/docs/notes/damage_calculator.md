@@ -17,7 +17,8 @@ number from the game data, the rules as the client's hit code applies them. Buil
   bonuses). A weapon with presets (premium) has those, fixed, as the lobby lists them; damage
   and rate of fire change the numbers.
 - Target: the HUD doll and the equipment cards (both aim), armour bonuses, Onyx (four slot
-  tiles, passive or active), the Anesthetic, the pain already taken. Under the doll: the hit
+  tiles, passive or active), the Larkspur (four tiles; the healing table follows the count, the
+  two sharing the four artefact slots), the Anesthetic, the pain already taken. Under the doll: the hit
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
   Armour bonuses always shown, for the item on the part being hit only.
 - A closed helmet (or an exo suit) takes the slots its model covers: their cards are locked.
