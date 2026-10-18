@@ -68,51 +68,57 @@ function fillWeapons() {
   s.value = state.weapon;
   buildWeaponPicker();
 }
-// The picker the page shows: the hidden <select> above keeps the value and
-// gets a "change" when one is picked, as if it had been used.
-function buildWeaponPicker() {
-  const host = $("wpick"); host.innerHTML = "";
+// A list with the lobby icons in place of a <select>, which cannot show them.
+// The hidden select keeps the value and gets a "change" when one is picked,
+// as if it had been used. groups: [[label or null, [[key, text, note]]]].
+function makePicker(name, select, groups, searchable) {
+  const host = $(name); host.innerHTML = "";
   const icon = k => { const src = DATA.icons && DATA.icons[k]; const img = el("img", { alt: "" }); if (src) img.src = src; return img; };
-  const btn = el("button", { type: "button", class: "wpick-btn", id: "wpick-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
-  const search = el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": "wpick-list", "aria-expanded": "true",
-    autocomplete: "off", placeholder: T("Search…", "Пошук…"), "aria-label": T("Search weapons", "Пошук зброї") });
-  const list = el("div", { class: "wpick-list", role: "listbox", id: "wpick-list" });
+  const btn = el("button", { type: "button", class: "wpick-btn", id: name + "-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
+  const list = el("div", { class: "wpick-list", role: "listbox", id: name + "-list", tabindex: "-1" });
+  const search = searchable ? el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": name + "-list", "aria-expanded": "true",
+    autocomplete: "off", placeholder: T("Search…", "Пошук…"), "aria-label": T("Search", "Пошук") }) : null;
   const pop = el("div", { class: "wpick-pop", hidden: "" }, search, list);
   host.append(btn, pop);
+  // Letters and digits only: "hk416" finds H&K 416A5, "ak74" the AK-74s.
+  const bare = t => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   const opts = [];
-  for (const [label, items] of weaponGroups()) {
-    const group = el("div", { class: "wpick-group", text: label });
-    list.append(group);
-    for (const [k, w] of items) {
-      const o = el("div", { class: "wpick-opt", role: "option", id: "wpick-" + k, "aria-selected": "false" },
-        icon(k), el("span", { class: "n", text: nm(w) + premium(w) }), el("small", { text: T(`lvl ${w.item_level || 0}`, `рів. ${w.item_level || 0}`) }));
+  let active = null;
+  const keys = search || list;
+  const activate = (x, scroll = true) => {
+    if (active) active.o.classList.remove("active");
+    active = x || null;
+    if (!active) { keys.removeAttribute("aria-activedescendant"); return; }
+    active.o.classList.add("active");
+    keys.setAttribute("aria-activedescendant", active.o.id);
+    if (scroll) active.o.scrollIntoView({ block: "nearest" });
+  };
+  for (const [label, items] of groups) {
+    const group = label ? el("div", { class: "wpick-group", text: label }) : null;
+    if (group) list.append(group);
+    for (const [k, text, note, also] of items) {
+      const o = el("div", { class: "wpick-opt", role: "option", id: `${name}-${k}`, "aria-selected": "false" },
+        icon(k), el("span", { class: "n", text }), note ? el("small", { text: note }) : null);
+      const x = { o, group, k, text: [text, also || ""].map(bare).join(" ") };
+      // The row under the pointer is the one Enter takes, as the arrows' is.
+      o.addEventListener("mousemove", () => { if (active !== x) activate(x, false); });
       o.addEventListener("mousedown", e => e.preventDefault());
       o.addEventListener("click", () => choose(k));
       list.append(o);
-      opts.push({ o, group, k, text: [nm(w), w.name].map(t => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")).join(" ") });
+      opts.push(x);
     }
   }
-  let active = null;
-  // Letters and digits only: "hk416" finds H&K 416A5, "ak74" the AK-74s.
-  const bare = t => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
   const visible = () => opts.filter(x => !x.o.hidden);
-  const activate = x => {
-    if (active) active.o.classList.remove("active");
-    active = x || null;
-    if (!active) { search.removeAttribute("aria-activedescendant"); return; }
-    active.o.classList.add("active");
-    search.setAttribute("aria-activedescendant", active.o.id);
-    active.o.scrollIntoView({ block: "nearest" });
-  };
   const filter = () => {
-    const q = bare(search.value);
+    const q = search ? bare(search.value) : "";
     for (const x of opts) x.o.hidden = !!q && !x.text.includes(q);
     list.querySelectorAll(".wpick-group").forEach(g => { g.hidden = !opts.some(x => x.group === g && !x.o.hidden); });
-    activate(visible().find(x => x.k === state.weapon) || visible()[0]);
+    activate(visible().find(x => x.k === select.value) || visible()[0]);
   };
   const open = () => {
     pop.hidden = false; btn.setAttribute("aria-expanded", "true");
-    search.value = ""; filter(); search.focus();
+    if (search) search.value = "";
+    filter(); keys.focus();
   };
   const close = refocus => {
     pop.hidden = true; btn.setAttribute("aria-expanded", "false");
@@ -120,38 +126,54 @@ function buildWeaponPicker() {
   };
   function choose(k) {
     close(true);
-    if (k === state.weapon) return;
-    const s = $("weapon"); s.value = k;
-    s.dispatchEvent(new Event("change"));
+    if (k === select.value) return;
+    select.value = k;
+    select.dispatchEvent(new Event("change"));
   }
   btn.addEventListener("click", () => pop.hidden ? open() : close(true));
   btn.addEventListener("keydown", e => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); open(); } });
-  search.addEventListener("input", filter);
-  search.addEventListener("keydown", e => {
+  if (search) search.addEventListener("input", filter);
+  keys.addEventListener("keydown", e => {
     const v = visible(), i = v.indexOf(active);
     if (e.key === "ArrowDown") { e.preventDefault(); activate(v[Math.min(v.length - 1, i + 1)]); }
     else if (e.key === "ArrowUp") { e.preventDefault(); activate(v[Math.max(0, i - 1)]); }
-    else if (e.key === "Enter") { e.preventDefault(); if (active) choose(active.k); }
+    else if (e.key === "Enter" || (!search && e.key === " ")) { e.preventDefault(); if (active) choose(active.k); }
     else if (e.key === "Escape") { e.preventDefault(); close(true); }
     else if (e.key === "Tab") close(false);
   });
   document.addEventListener("mousedown", e => { if (!pop.hidden && !host.contains(e.target)) close(false); });
+  // The button shows the one in use.
+  return {
+    paint(k, text) {
+      btn.innerHTML = "";
+      const src = DATA.icons && DATA.icons[k];
+      if (src) btn.append(el("img", { src, alt: "" }));
+      btn.append(el("span", { class: "n", text }));
+      for (const x of opts) x.o.setAttribute("aria-selected", String(x.k === k));
+    },
+  };
 }
-// The picker's button shows the weapon in use.
+let weaponPicker = null, ammoPicker = null, ammoPickerFor = null;
+function buildWeaponPicker() {
+  weaponPicker = makePicker("wpick", $("weapon"), weaponGroups().map(([label, items]) =>
+    [label, items.map(([k, w]) => [k, nm(w) + premium(w), T(`lvl ${w.item_level || 0}`, `рів. ${w.item_level || 0}`), w.name])]), true);
+}
 function paintWeaponPicker() {
-  const btn = $("wpick-btn"), w = DATA.weapons[state.weapon];
-  if (!btn || !w) return;
-  btn.innerHTML = "";
-  const src = DATA.icons && DATA.icons[state.weapon];
-  if (src) btn.append(el("img", { src, alt: "" }));
-  btn.append(el("span", { class: "n", text: nm(w) + premium(w) }));
-  document.querySelectorAll("#wpick-list .wpick-opt").forEach(o => o.setAttribute("aria-selected", String(o.id === "wpick-" + state.weapon)));
+  const w = DATA.weapons[state.weapon];
+  if (weaponPicker && w) weaponPicker.paint(state.weapon, nm(w) + premium(w));
 }
 function fillAmmo() {
-  const s = $("ammo"); s.innerHTML = "";
-  for (const k of ammoFor(state.weapon)) s.append(el("option", { value: k, text: nm(DATA.ammo[k]) }));
+  const s = $("ammo");
+  if (ammoPickerFor !== state.weapon) {
+    // The weapon's ammo, in its own list.
+    s.innerHTML = "";
+    for (const k of ammoFor(state.weapon)) s.append(el("option", { value: k, text: nm(DATA.ammo[k]) }));
+    ammoPicker = makePicker("apick", s, [[null, ammoFor(state.weapon).map(k => [k, nm(DATA.ammo[k]), "", DATA.ammo[k].name])]], false);
+    ammoPickerFor = state.weapon;
+  }
   if (!ammoFor(state.weapon).includes(state.ammo)) state.ammo = defaultAmmo(state.weapon);
   s.value = state.ammo;
+  ammoPicker.paint(state.ammo, nm(DATA.ammo[state.ammo]));
 }
 
 // The weapon's numbers after its bonuses. Bonuses come from DATA.weapon_mods
