@@ -96,7 +96,7 @@ def map_name_uk(key):
 data["maps"] = {key: {"name": m["name"], "name_uk": map_name_uk(key),
                       "image": ("/damage/maps/" if site else "maps/") + m["image"], "size": m["image_size_px"],
                       "mpp": m["metres_per_pixel"], "p2w": m["pixel_to_world_affine"], "w2p": m["world_to_pixel_affine"],
-                      "bounds": m["world_bounds"],
+                      "bounds": m["world_bounds"], "play": m.get("play_area_px"),
                       "elevation": {k: m["elevation"][k] for k in ("grid", "cell_m", "heights")} if m.get("elevation") else None}
                 for key, m in maps.items()}
 if icons_dir:

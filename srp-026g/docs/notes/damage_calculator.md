@@ -21,8 +21,11 @@ number from the game data, the rules as the client's hit code applies them. Buil
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
   Armour bonuses always shown, for the item on the part being hit only.
 - A closed helmet (or an exo suit) takes the slots its model covers: their cards are locked.
-- Map: top-down renders, two clicks for the distance; the distance slider moves the target
-  along the same line.
+- Map: top-down renders cropped to the play area (the native minimap's), at most 75% of the
+  window's height; two clicks for the distance; the distance slider moves the target along the
+  same line. On a wide screen (1700 px and up) it sits between shooter and target.
+- Healing, at the bottom: recovering by itself, the Larkspur (Живокіст) carried and activated,
+  the medikit and bandages, side by side; every number from the data.
 - Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
 - Not modelled: cover a bullet passes through, ricochets, explosions, anomalies.

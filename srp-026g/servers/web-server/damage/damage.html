@@ -72,12 +72,19 @@ header.top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; j
   border-bottom: 2px solid var(--ink); padding-bottom: 12px }
 .stamp { font-family: var(--font-data); font-size: .78rem; color: var(--ink-3); text-align: right }
 
-.duel { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); gap: 0 }
+.duel { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); gap: 0;
+  grid-template-areas: "shooter vs target" "map map map" }
+#shooter { grid-area: shooter } .vs { grid-area: vs } #target { grid-area: target } .duel > .mapsec { grid-area: map; margin-top: 22px }
 .vs { display: flex; align-items: center; justify-content: center; position: relative }
 .vs::before { content: ""; position: absolute; inset: 0 50%; border-left: 1px dashed var(--rule) }
 .vs span { position: relative; background: var(--bg); font: 700 .8rem var(--font-display); letter-spacing: .12em;
   color: var(--ink-3); padding: 6px 0; writing-mode: vertical-rl }
-@media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr) } .vs { height: 34px }
+/* A wide screen: the map between shooter and target, a little narrower than they are */
+@media (min-width: 1700px) { .wrap { max-width: 1840px }
+  .duel { grid-template-columns: minmax(0, 1fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "shooter map target"; column-gap: 22px }
+  .vs { display: none } .duel > .mapsec { margin-top: 0; align-content: start }
+  .duel > .mapsec .maphead { display: grid; justify-content: stretch } }
+@media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr); grid-template-areas: "shooter" "vs" "target" "map" } .vs { height: 34px }
   .vs::before { inset: 50% 0; border-left: 0; border-top: 1px dashed var(--rule) } .vs span { writing-mode: horizontal-tb; padding: 0 10px } }
 
 .side { background: var(--panel); border: 1px solid var(--rule); padding: 16px; display: grid; gap: 14px; align-content: start; min-width: 0 }
@@ -262,8 +269,8 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
 .maphead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 10px }
 .maptools { align-items: end }
 .maptools .field { flex: 0 1 260px }
-.mapview { overflow: auto; max-height: min(82vh, 900px); border: 1px solid var(--rule); background: var(--hud-bg); position: relative }
-.mapview svg { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation }
+.mapview { border: 1px solid var(--rule); background: var(--hud-bg); position: relative }
+.mapview svg { display: block; margin: 0 auto; max-width: 100%; height: auto; cursor: crosshair; touch-action: manipulation }
 .mapview .ring { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke }
 .mapview .ring.full { stroke: var(--accent); }
 .mapview .ring.min { stroke: #fff; stroke-dasharray: 8 6; opacity: .8 }
@@ -329,19 +336,20 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
       <div class="more" id="amods-box"><h3 class="sub" data-uk="Бонуси броні">Armour bonuses</h3><div class="mods" id="amods"></div></div>
       <details class="more" id="tfx-box" open><summary data-uk="Артефакти й препарати">Artefacts &amp; drugs</summary><div class="mods" id="tfx"></div></details>
     </section>
+
+    <section class="mapsec" aria-labelledby="h-map">
+      <div class="maphead">
+        <h2 id="h-map" data-uk="Виміряти на мапі">Measure on a map</h2>
+        <div class="row maptools">
+          <div class="field"><label for="mapsel" data-uk="Мапа">Map</label><select id="mapsel"></select></div>
+          <button type="button" class="chip" id="mapclear" data-uk="Очистити точки">Clear points</button>
+        </div>
+      </div>
+      <p class="note" style="margin:0" id="mapread">Click where the shooter stands, then where the target is. The distance goes straight into the calculator.</p>
+      <div class="mapview" id="mapview"></div>
+    </section>
   </div>
 
-  <section class="mapsec" aria-labelledby="h-map">
-    <div class="maphead">
-      <h2 id="h-map" data-uk="Виміряти на мапі">Measure on a map</h2>
-      <div class="row maptools">
-        <div class="field"><label for="mapsel" data-uk="Мапа">Map</label><select id="mapsel"></select></div>
-        <button type="button" class="chip" id="mapclear" data-uk="Очистити точки">Clear points</button>
-      </div>
-    </div>
-    <p class="note" style="margin:0" id="mapread">Click where the shooter stands, then where the target is. The distance goes straight into the calculator.</p>
-    <div class="mapview" id="mapview"></div>
-  </section>
 
   <section class="result" aria-labelledby="h-result">
     <div style="display:grid;gap:14px;min-width:0">
@@ -375,5 +383,10 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <h2 data-uk="Формула">Formula</h2>
     <pre class="formula" id="explain"></pre>
   </section>
+
+  <section style="display:grid;gap:10px">
+    <h2 data-uk="Лікування">Healing</h2>
+    <div class="tablebox"><table id="heal"></table></div>
+  </section>
 </div>
-<script src="/damage/calc.js?v=9a99cc49e36a"></script>
+<script src="/damage/calc.js?v=683dd9938da8"></script>

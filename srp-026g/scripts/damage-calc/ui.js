@@ -617,6 +617,50 @@ function drawExplain() {
   ]).filter(Boolean).join("\n");
 }
 
+// Healing compared: recovering by itself, the Larkspur carried and activated,
+// the medikit and bandages, every number from the data.
+function drawHealing() {
+  const row = n => DATA.body.find(r => r.name === n);
+  const pools = [["body"], ["head"], ["right_leg", "right_hand"], ["pain"]];
+  const perS = T("/s", "/с"), sec = T("s", "с"), dash = "—";
+  const full = T("full", "повністю"), fixed = T("fixed", "лікує");
+  const regen = (name, mod) => {
+    const r = row(name);
+    let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
+    if (mod) {  // the Larkspur's callback, 0x312590: add, then multiply
+      speed = (speed + mod.regen_add) * mod.regen_mul;
+      wait = (wait + mod.timeout_add) * mod.timeout_mul;
+      cap = (cap + mod.threshold_add) * mod.threshold_mul;
+    }
+    return { cell: `${hp(speed)}${perS} → ${cap >= 1 ? full : hp(r.health * cap)}`, wait };
+  };
+  const rows = [];
+  const own = pools.map(([p]) => regen(p));
+  rows.push([T("By itself", "Само собою"), T(`${own[0].wait} s without hits`, `${own[0].wait} с без влучань`), ...own.map(x => x.cell),
+    T(`ends after ${own[0].wait} s without hits`, `минає за ${own[0].wait} с без влучань`)]);
+  const lark = DATA.artefacts && DATA.artefacts.lifebone;
+  if (lark) {
+    const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
+    const carried = pools.map(([p]) => regen(p, mods[p]));
+    rows.push([`${nm(lark)}, ${T("carried", "у слоті")}`, T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    const cures = (lark.active.remove_affects || []).length;
+    rows.push([`${nm(lark)}, ${T("activated", "активований")}`, T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
+  }
+  for (const key of ["medkit", "bandages"]) {
+    const d = DATA.drugs && DATA.drugs[key]; if (!d) continue;
+    const heal = d.heal_per_s || {};
+    const cell = ([p]) => {
+      const gain = (heal[p] || 0) * d.activity_s;
+      return gain <= 0 ? dash : gain >= row(p).health ? full : `+${hp(gain)}`;
+    };
+    rows.push([nm(d), T(`${d.activation_delay_s} s after use, for ${d.activity_s} s`, `через ${d.activation_delay_s} с, ${d.activity_s} с`),
+      ...pools.map(cell), (d.remove_affects || []).length ? fixed : dash]);
+  }
+  const head = ["", T("Starts", "Починає"), POOLS.body, POOLS.head, T("Legs, hands", "Ноги, кисті"), POOLS.pain, T("Broken leg, hand", "Зламана нога, кисть")];
+  $("heal").innerHTML = `<thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr><td><b>${r[0]}</b></td>${r.slice(1).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody>";
+}
+
 // ---------- map ----------
 // Top-down renders on the in-game minimap's square: pixel <-> world metres is
 // one affine per map (image right = +x, up = +z). Heights are a 64x64 grid of
@@ -642,12 +686,14 @@ function fillMaps() {
 }
 function drawMapBase() {
   const m = DATA.maps[state.map];
-  $("mapview").innerHTML = `<svg viewBox="0 0 ${m.size[0]} ${m.size[1]}" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
+  // The play area (the native minimap's part of the render), not the whole square.
+  const [vx, vy, vw, vh] = m.play || [0, 0, m.size[0], m.size[1]];
+  $("mapview").innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" style="width:min(100%, calc(75vh * ${vw / vh}))" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
     <image href="${m.image}" width="${m.size[0]}" height="${m.size[1]}"/><g id="mapover"></g></svg>`;
   const svg = $("mapview").querySelector("svg");
   svg.addEventListener("click", ev => {
     const r = svg.getBoundingClientRect();
-    const px = (ev.clientX - r.left) / r.width * m.size[0], py = (ev.clientY - r.top) / r.height * m.size[1];
+    const px = vx + (ev.clientX - r.left) / r.width * vw, py = vy + (ev.clientY - r.top) / r.height * vh;
     const [x, z] = affine(m.p2w, px, py);
     if (!state.mapA || state.mapB) { state.mapA = [x, z]; state.mapB = null; }
     else state.mapB = [x, z];
@@ -712,7 +758,7 @@ if (LANG === "uk") {
   document.querySelectorAll("[data-uk]").forEach(n => { n.textContent = n.dataset.uk; });
   document.querySelectorAll("[data-uk-label]").forEach(n => n.setAttribute("aria-label", n.dataset.ukLabel));
 }
-fillWeapons(); fillArmour(); drawDoll(); fillMaps();
+fillWeapons(); fillArmour(); drawDoll(); fillMaps(); drawHealing();
 if (DATA.stamp) $("source").textContent = T(DATA.stamp, DATA.stamp_uk || DATA.stamp);
 $("dollprev").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) - 1; update(); });
 $("dollnext").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) + 1; update(); });

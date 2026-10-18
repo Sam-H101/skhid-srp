@@ -208,9 +208,10 @@ default_ammo = {w: s[0] for w, s in compat.items()}
 
 # Artefacts: their data blocks as they are. Onyx is the one that changes a
 # hit (0x312bf0); Spring and Lifebone only touch movement and regeneration.
-ARTEFACT_NAMES = {"onyx": "Onyx", "spring": "Spring", "lifebone": "Lifebone"}
-# Nor Ukrainian ones: these are the names the game's own pickup hints use.
-ARTEFACT_NAMES_UK = {"onyx": "Онікс", "spring": "Пружина"}
+# The names the game's own pickup hints use (st_<artefact>_pickup_hint):
+# the Lifebone config is the Larkspur, Живокіст.
+ARTEFACT_NAMES = {"onyx": "Onyx", "spring": "Spring", "lifebone": "Larkspur"}
+ARTEFACT_NAMES_UK = {"onyx": "Онікс", "spring": "Пружина", "lifebone": "Живокіст"}
 artefacts = {}
 for file in files("gameplay__items__artefacts__"):
     cfg = load(file)
