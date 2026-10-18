@@ -20,3 +20,9 @@ thiserror = { workspace = true }
 [dev-dependencies]
 # A map the game data adds (`survarium::v026g::maps::fixtures`).
 survarium = { workspace = true, features = ["fixtures"] }
+
+[features]
+# `create_session` without a sign-in, for other crates' tests (their
+# dev-dependency turns it on); a server makes sessions only from a sign-in
+# (`create_signed_in_session`).
+test-support = []

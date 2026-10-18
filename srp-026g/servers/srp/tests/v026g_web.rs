@@ -413,6 +413,91 @@ fn the_operators_text_and_a_ban_reach_the_026g_lobby() {
     stack.stop();
 }
 
+/// The admin's password reset while srp runs: from the page (after its
+/// confirm step) and from a script's one POST. The game signed in with the
+/// account is signed out, nobody else's; the next sign-in, with any
+/// password, sets the new one, and the old one is refused from then on.
+#[test]
+fn a_password_reset_signs_the_game_out_and_the_next_sign_in_sets_it() {
+    let (stack, web) = start("reset");
+    let mut alice = Game::signed_in(&stack, "WebForgetful", "old-password-1");
+    let mut bob = Game::signed_in(&stack, "WebBob", "bob-password-1");
+    alice.forget();
+    bob.forget();
+    let alice_id = stack.store.account_id_by_name("webforgetful").unwrap();
+
+    let shown = admin(web, &[("tab", "password"), ("reset_user", "WEBFORGETFUL")]);
+    assert!(
+        shown.contains("Reset the password of webforgetful"),
+        "{shown}"
+    );
+    assert!(shown.contains("yes: its game is signed out"), "{shown}");
+    let done = admin(
+        web,
+        &[
+            ("tab", "password"),
+            ("reset_user", "WebForgetful"),
+            ("reset_id", &alice_id.to_string()),
+        ],
+    );
+    assert!(
+        done.contains("The password of webforgetful is cleared; 1 session(s) ended"),
+        "{done}"
+    );
+    alice.until("the sign-out", |game| {
+        game.has(|message| matches!(message, Decoded::SignedOut)) && game.lobby.disconnected
+    });
+    let counts = bob.lobby.online.len();
+    bob.until("the online counts", |game| game.lobby.online.len() > counts);
+    assert!(!bob.lobby.disconnected);
+
+    // Any password is taken, then it alone.
+    let again = Game::signed_in(&stack, "WebForgetful", "new-password-2");
+    let refused = sign_in(stack.login_addr, "WebForgetful", "old-password-1");
+    let wrong = sign_in(stack.login_addr, "WebBob", "not-bobs-password");
+    assert_eq!(refused.len(), 1, "{refused:02X?}");
+    assert_eq!(refused, wrong);
+
+    // A script: one POST, one line back.
+    let answer = admin(web, &[("tab", "reset_password"), ("login", "webbob")]);
+    let bob_id = stack.store.account_id_by_name("webbob").unwrap();
+    assert!(answer.starts_with("HTTP/1.0 200 OK\r\n"), "{answer}");
+    assert!(answer.contains("Content-Type: text/plain"), "{answer}");
+    assert!(
+        answer.ends_with(&format!("\r\n\r\nok webbob {bob_id}\n")),
+        "{answer}"
+    );
+    bob.until("the sign-out", |game| {
+        game.has(|message| matches!(message, Decoded::SignedOut)) && game.lobby.disconnected
+    });
+    let unknown = admin(web, &[("tab", "reset_password"), ("login", "nobody")]);
+    assert!(
+        unknown.starts_with("HTTP/1.0 404 Not Found\r\n"),
+        "{unknown}"
+    );
+    assert!(unknown.ends_with("\r\n\r\nno such login\n"), "{unknown}");
+    let refused = post(
+        web,
+        ADMIN,
+        &[
+            ("token", "wrong"),
+            ("tab", "reset_password"),
+            ("login", "webforgetful"),
+        ],
+    );
+    assert!(
+        refused.starts_with("HTTP/1.0 403 Forbidden\r\n"),
+        "{refused}"
+    );
+    let bob_again = Game::signed_in(&stack, "WebBob", "bob-password-2");
+
+    alice.assert_clean();
+    bob.assert_clean();
+    again.assert_clean();
+    bob_again.assert_clean();
+    stack.stop();
+}
+
 /// What the players' updater asks after the Skhid files: `GET
 /// /patches`, with no token, from the same page. It lists the patches the
 /// server's game data was made of (the test data: 0.26g's archive with

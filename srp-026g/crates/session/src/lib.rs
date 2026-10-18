@@ -39,10 +39,10 @@ mod squads;
 pub mod v026g;
 pub use bans::{Ban, IpBan, Net};
 pub use matchmaking::{
-    DEFAULT_GATHER_WINDOW, FormedMatch, Level, LevelRules, MAX_PLAYERS_PER_MATCH, Matchmaking,
-    Player, QueuePool, QueueState, QueuedGroup, STRENGTH_SCALE, Seat, fill_from_env,
-    gather_window_from_env, growing_start_rules_from_env, leveled_start_rules_from_env,
-    quiet_from_env,
+    DEFAULT_GATHER_WINDOW, DEFAULT_TEAM_SIZE, FormedMatch, Level, LevelRules,
+    MAX_PLAYERS_PER_MATCH, Matchmaking, Player, QueuePool, QueueState, QueuedGroup, STRENGTH_SCALE,
+    Seat, fill_from_env, gather_window_from_env, growing_start_rules_from_env,
+    leveled_start_rules_from_env, quiet_from_env,
 };
 use persist::{AccountRecord, AccountRepository, PersistError, StoredSession};
 pub use reports::{MatchReport, Reports};
@@ -148,7 +148,68 @@ pub struct Account {
     pub ban: Option<Ban>,
     /// Where it last signed in from: what banning its address bans.
     pub last_ip: Option<IpAddr>,
+    /// When it last signed in (Unix seconds), since srp started: not kept,
+    /// so `None` after a restart until its next sign-in. The admin's
+    /// password reset shows it.
+    pub last_sign_in: Option<u64>,
+    /// Counts the admin's password resets since srp started: a sign-in
+    /// checked against the password before a reset makes no session after
+    /// it ([`SignedIn`]). Not kept: it only orders what happens while srp
+    /// runs.
+    pub password_epoch: u64,
 }
+
+/// A sign-in that passed: the account, and which of its passwords it was
+/// checked against. A session is made from it only while that password
+/// stands ([`SessionStore::create_signed_in_session`]): a reset by the admin
+/// between the check and the session refuses the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignedIn {
+    account_id: u32,
+    password_epoch: u64,
+}
+
+impl SignedIn {
+    /// The account it signed in. Only the store makes a `SignedIn`.
+    pub fn account_id(&self) -> u32 {
+        self.account_id
+    }
+}
+
+/// What the admin's password reset did ([`SessionStore::reset_password`]).
+#[derive(Debug)]
+pub struct PasswordReset {
+    /// The user name the account signs in with.
+    pub login: String,
+    /// The sessions it ended now (not those that had ended before and are
+    /// kept only for a match result).
+    pub sessions_ended: usize,
+    /// Whether the cleared password and the ended sessions' rows are in the
+    /// database.
+    pub written: ResetWrite,
+}
+
+/// How the password reset's write went ([`PasswordReset::written`]). In
+/// every case the password is cleared and the sessions ended in memory.
+#[derive(Debug)]
+pub enum ResetWrite {
+    /// In the database now.
+    Written,
+    /// The saver was writing (it holds the database for its whole pass) for
+    /// longer than the reset waits ([`RESET_WRITE_WAIT`]): the saver, woken,
+    /// writes it on its next pass, within seconds.
+    Pending,
+    /// The database refused it; the saver retries.
+    Failed(PersistError),
+}
+
+/// How long the password reset waits for the database while the saver is
+/// writing: the admin's request should not hang on a long pass.
+pub const RESET_WRITE_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(2)
+};
 
 impl Account {
     /// A new account: one profile in the game's test loadout.
@@ -166,6 +227,8 @@ impl Account {
             notices: Vec::new(),
             ban: None,
             last_ip: None,
+            last_sign_in: None,
+            password_epoch: 0,
         }
     }
 
@@ -263,8 +326,9 @@ struct Persistence {
     dirty: Mutex<HashSet<u32>>,
     /// Sessions made since the last pass: written on it.
     new_sessions: Mutex<HashSet<u32>>,
-    /// Sessions ended since the last pass: their rows go on it.
-    ended_sessions: Mutex<HashSet<u32>>,
+    /// Sessions ended whose rows are still to go, with their accounts: on
+    /// the next pass, or with the account's password reset.
+    ended_sessions: Mutex<HashMap<u32, u32>>,
     /// Wakes the saver before its interval is up.
     wake: Condvar,
 }
@@ -311,6 +375,24 @@ pub struct SessionStore {
     /// Whether a new user name may register. Existing accounts sign in
     /// either way.
     registrations_open: AtomicBool,
+    /// Run once when the next sign-in reaches this point: a test's reset in
+    /// between.
+    #[cfg(test)]
+    test_hook: Mutex<Option<(HookPoint, TestHook)>>,
+}
+
+/// What a test runs at a [`HookPoint`].
+#[cfg(test)]
+type TestHook = Box<dyn FnOnce() + Send>;
+
+/// Where a test's hook runs ([`SessionStore::hook`]).
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HookPoint {
+    /// After a sign-in's password check, before it is taken.
+    PasswordChecked,
+    /// After a sign-in's session is in, before its epoch is checked.
+    SessionInserted,
 }
 
 impl SessionStore {
@@ -359,6 +441,8 @@ impl SessionStore {
             limits: limits::Limits::default(),
             maintenance_at: Mutex::new(None),
             registrations_open: AtomicBool::new(true),
+            #[cfg(test)]
+            test_hook: Mutex::new(None),
         }
     }
 
@@ -414,7 +498,7 @@ impl SessionStore {
                 if !accounts.contains_key(&stored.account_id)
                     || age > SESSION_RESTORE_LIMIT.as_secs()
                 {
-                    dropped.push(stored.session_id);
+                    dropped.push((stored.session_id, stored.account_id));
                     continue;
                 }
                 sessions.insert(
@@ -438,11 +522,11 @@ impl SessionStore {
             dropped.len()
         );
         // A row that can't go now goes on the saver's first pass.
-        let mut ended_sessions = HashSet::new();
-        for session_id in dropped {
+        let mut ended_sessions = HashMap::new();
+        for (session_id, account_id) in dropped {
             if let Err(error) = repository.delete_session(session_id) {
                 log::warn!("Session {session_id:#x} not deleted: {error}; retrying");
-                ended_sessions.insert(session_id);
+                ended_sessions.insert(session_id, account_id);
             }
         }
 
@@ -506,19 +590,21 @@ impl SessionStore {
         now: Instant,
     ) -> Result<u32, SignInError> {
         self.authenticate(user_name, password, None, now)
+            .map(|signed_in| signed_in.account_id)
     }
 
     /// [`Self::sign_in`] from `ip`, as the login server hears it: the
     /// address may ask so often, and register so many accounts
     /// ([`limits`]), and wrong passwords lock the name out for that address
-    /// only, so nobody can lock another player out.
+    /// only, so nobody can lock another player out. The login server makes
+    /// its session with [`Self::create_signed_in_session`].
     pub fn sign_in_from(
         &self,
         user_name: &str,
         password: &[u8],
         ip: IpAddr,
         now: Instant,
-    ) -> Result<u32, SignInError> {
+    ) -> Result<SignedIn, SignInError> {
         self.authenticate(user_name, password, Some(ip), now)
     }
 
@@ -533,7 +619,7 @@ impl SessionStore {
         digest: &[u8],
         ip: IpAddr,
         now: Instant,
-    ) -> Result<u32, SignInError> {
+    ) -> Result<SignedIn, SignInError> {
         if !password::is_sha1_digest(digest) {
             return Err(SignInError::WrongPassword);
         }
@@ -552,7 +638,7 @@ impl SessionStore {
         password: &[u8],
         ip: Option<IpAddr>,
         now: Instant,
-    ) -> Result<u32, SignInError> {
+    ) -> Result<SignedIn, SignInError> {
         let key = persist::user_name_key(user_name).ok_or(SignInError::InvalidUserName)?;
         // Wrong passwords count per name and address: a guesser locks out
         // only itself.
@@ -591,29 +677,48 @@ impl SessionStore {
                 }
                 let hash = password::hash(password).ok_or(SignInError::WrongPassword)?;
                 let (account_id, created) = self.find_or_create(&key, user_name.trim(), Some(hash));
-                if created {
+                if let Some(password_epoch) = created {
                     if let Some(ip) = ip {
                         self.limits.registered(ip, now);
                     }
                     log::info!("Registered new account {}", user_name.trim());
-                    return Ok(account_id);
+                    return Ok(SignedIn {
+                        account_id,
+                        password_epoch,
+                    });
                 }
                 // Registered by another sign-in meanwhile: check against it.
                 account_id
             }
         };
         let account = self.account(account_id).ok_or(SignInError::WrongPassword)?;
-        let stored = account.locked().password_hash.clone();
-        let accepted = match stored {
-            Some(stored) => password::verify(&stored, password),
-            None => self.adopt_password(&account, password),
+        // The password and which one it is, together: the check is made
+        // with no lock held, and the admin may reset it meanwhile.
+        let (stored, password_epoch) = {
+            let account = account.locked();
+            (account.password_hash.clone(), account.password_epoch)
         };
-        if accepted {
+        let checked = match stored {
+            Some(stored) => password::verify(&stored, password),
+            None => self.adopt_password(&account, password, password_epoch),
+        };
+        #[cfg(test)]
+        self.hook(HookPoint::PasswordChecked);
+        // Reset while it was checked: the password checked is gone. Refused
+        // without counting as a wrong one (it may well have been right, and
+        // the reset forgot the failures).
+        if account.locked().password_epoch != password_epoch {
+            return Err(SignInError::WrongPassword);
+        }
+        if checked {
             self.failures.locked().remove(&failure_key);
             if account.locked().ban_at(unix_now()).is_some() {
                 return Err(SignInError::Banned);
             }
-            Ok(account_id)
+            Ok(SignedIn {
+                account_id,
+                password_epoch,
+            })
         } else {
             let mut failures = self.failures.locked();
             if failures.len() >= 100_000 {
@@ -632,12 +737,21 @@ impl SessionStore {
     }
 
     /// An account without a password takes `password`; `false` if another
-    /// sign-in set a different one meanwhile.
-    fn adopt_password(&self, account: &Mutex<Account>, password: &[u8]) -> bool {
+    /// sign-in set a different one meanwhile, or the admin reset it again
+    /// (its epoch is no longer `password_epoch`).
+    fn adopt_password(
+        &self,
+        account: &Mutex<Account>,
+        password: &[u8],
+        password_epoch: u64,
+    ) -> bool {
         let Some(new_hash) = password::hash(password) else {
             return false;
         };
         let mut locked = account.locked();
+        if locked.password_epoch != password_epoch {
+            return false;
+        }
         if let Some(stored) = locked.password_hash.clone() {
             drop(locked);
             return password::verify(&stored, password);
@@ -673,7 +787,10 @@ impl SessionStore {
         self.find_or_create(&key, user_name.trim(), None).0
     }
 
-    /// The account of `key`, made if there is none: `(id, made)`. Ids are
+    /// The account of `key`, made if there is none: its id, and the password
+    /// epoch it was made with if it was made here (read from the account as
+    /// built, before anyone else can reach it, so a reset right after it is
+    /// not taken for the password it was made with). Ids are
     /// handed out in order. Other players see the display name, so a user
     /// name with an `@` shows only its part before it; with nothing there,
     /// the name falls back to a unique value derived from the id.
@@ -682,10 +799,10 @@ impl SessionStore {
         key: &str,
         user_name: &str,
         password_hash: Option<String>,
-    ) -> (u32, bool) {
+    ) -> (u32, Option<u64>) {
         let mut logins = self.logins.locked();
         if let Some(&account_id) = logins.get(key) {
-            return (account_id, false);
+            return (account_id, None);
         }
         let account_id = self.next_account_id.fetch_add(1, Ordering::Relaxed);
         let shown = user_name.split('@').next().unwrap_or_default();
@@ -697,6 +814,7 @@ impl SessionStore {
         let mut account = Account::new(account_id, name);
         account.login = key.to_owned();
         account.password_hash = password_hash;
+        let password_epoch = account.password_epoch;
         self.accounts
             .locked()
             .insert(account_id, Arc::new(Mutex::new(account)));
@@ -704,7 +822,7 @@ impl SessionStore {
         drop(logins);
         self.mark_dirty(account_id);
         self.save_soon();
-        (account_id, true)
+        (account_id, Some(password_epoch))
     }
 
     /// The account changed: the saver writes it on its next pass. Never
@@ -850,14 +968,17 @@ impl SessionStore {
         // Taken after the writes: a session that ended meanwhile loses the
         // row just written in this pass, not the next.
         let ended = std::mem::take(&mut *persistence.ended_sessions.locked());
-        for session_id in ended {
+        for (session_id, account_id) in ended {
             match writer.repository.delete_session(session_id) {
                 Ok(()) => {
                     writer.sessions.remove(&session_id);
                 }
                 Err(error) => {
                     log::error!("Session {session_id:#x} not deleted: {error}; retrying");
-                    persistence.ended_sessions.locked().insert(session_id);
+                    persistence
+                        .ended_sessions
+                        .locked()
+                        .insert(session_id, account_id);
                 }
             }
         }
@@ -873,11 +994,14 @@ impl SessionStore {
     }
 
     /// The saver deletes the rows of these sessions, ended just now, soon.
-    fn sessions_ended(&self, session_ids: &[u32]) {
+    fn sessions_ended(&self, ended: &[(u32, u32)]) {
         if let Some(persistence) = &self.persistence
-            && !session_ids.is_empty()
+            && !ended.is_empty()
         {
-            persistence.ended_sessions.locked().extend(session_ids);
+            persistence
+                .ended_sessions
+                .locked()
+                .extend(ended.iter().copied());
             persistence.wake.notify_one();
         }
     }
@@ -959,49 +1083,115 @@ impl SessionStore {
         rows
     }
 
-    /// Allocate a fresh `session_id` bound to `account_id`. The saver keeps
-    /// it soon.
+    /// A session bound to `account_id` without a sign-in: tests (and other
+    /// crates' tests, with the `test-support` feature) only. A real
+    /// sign-in's session is [`Self::create_signed_in_session`]. The saver
+    /// keeps it soon.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_session(&self, account_id: u32) -> u32 {
         self.create_session_with_revision(account_id, 0)
     }
 
-    /// Keep the advertised patch revision with this sign-in, including restarts.
+    /// [`Self::create_session`] with the advertised patch revision, kept
+    /// with the session across restarts.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_session_with_revision(&self, account_id: u32, client_revision: u8) -> u32 {
-        // A sign-in is a new game: a squad the account is in is one of the
-        // game before, which quit or crashed without leaving it (Alt+F4 says
-        // nothing), and a place in the queue is that game's too.
+        self.new_session(account_id, client_revision, || true)
+            .expect("a session that is not checked always stands")
+    }
+
+    /// The session of a sign-in, with the patch revision it advertised
+    /// (kept across restarts), unless the admin reset the password it was
+    /// checked against since: then `None`, and nothing is left of it. The
+    /// epoch is checked once the session is in: a reset moves the epoch on
+    /// before it ends the account's sessions, so either the reset ends this
+    /// one or this sees the new epoch.
+    pub fn create_signed_in_session(
+        &self,
+        signed_in: SignedIn,
+        client_revision: u8,
+    ) -> Option<u32> {
+        self.new_session(signed_in.account_id, client_revision, || {
+            self.account(signed_in.account_id)
+                .is_some_and(|account| account.locked().password_epoch == signed_in.password_epoch)
+        })
+    }
+
+    /// Put a session in, then keep it only if `stands`. One refused is
+    /// taken out again before it touched anything else: it is not saved,
+    /// and the account keeps its squad and its place in the queue. One
+    /// kept is a new game: a squad the account is in is one of the game
+    /// before, which quit or crashed without leaving it (Alt+F4 says
+    /// nothing), and a place in the queue is that game's too.
+    fn new_session(
+        &self,
+        account_id: u32,
+        client_revision: u8,
+        stands: impl Fn() -> bool,
+    ) -> Option<u32> {
+        let session_id = {
+            let mut sessions = self.sessions.locked();
+            let session_id = loop {
+                let session_id = random_session_id();
+                if !sessions.contains_key(&session_id) {
+                    break session_id;
+                }
+            };
+            sessions.insert(
+                session_id,
+                Session {
+                    account_id,
+                    client_revision,
+                    last_seen: Instant::now(),
+                    connections: 0,
+                    gone: false,
+                    ended: false,
+                    sockets: Vec::new(),
+                },
+            );
+            session_id
+        };
+        #[cfg(test)]
+        self.hook(HookPoint::SessionInserted);
+        if !stands() {
+            // Nobody was told its id. A reset may have ended it meanwhile;
+            // its row (none was written) is deleted, which is no error.
+            self.sessions.locked().remove(&session_id);
+            return None;
+        }
         self.leave_squad(account_id, "it signed in again");
         let before: Vec<u32> = self
             .sessions
             .locked()
             .iter()
-            .filter(|(_, session)| session.account_id == account_id && !session.ended)
-            .map(|(session_id, _)| *session_id)
+            .filter(|(other, session)| {
+                **other != session_id && session.account_id == account_id && !session.ended
+            })
+            .map(|(other, _)| *other)
             .collect();
-        for session_id in before {
-            self.matchmaking.leave_queue(session_id);
+        for other in before {
+            self.matchmaking.leave_queue(other);
         }
-        let mut sessions = self.sessions.locked();
-        let session_id = loop {
-            let session_id = random_session_id();
-            if !sessions.contains_key(&session_id) {
-                break session_id;
+        self.sessions_made(&[session_id]);
+        Some(session_id)
+    }
+
+    /// Run the test's hook if it waits for `point`.
+    #[cfg(test)]
+    fn hook(&self, point: HookPoint) {
+        let hook = {
+            let mut hook = self.test_hook.locked();
+            match hook.take() {
+                Some((at, run)) if at == point => Some(run),
+                other => {
+                    *hook = other;
+                    None
+                }
             }
         };
-        sessions.insert(
-            session_id,
-            Session {
-                account_id,
-                client_revision,
-                last_seen: Instant::now(),
-                connections: 0,
-                gone: false,
-                ended: false,
-                sockets: Vec::new(),
-            },
-        );
-        self.sessions_made(&[session_id]);
-        session_id
+        if let Some(run) = hook {
+            run();
+        }
     }
 
     /// Revision advertised at login; absent for unknown or ended sessions.
@@ -1075,7 +1265,7 @@ impl SessionStore {
             }
             _ => return false,
         };
-        self.sessions_ended(&[session_id]);
+        self.sessions_ended(&[(session_id, account_id)]);
         self.matchmaking.leave_queue(session_id);
         if !self.plays_on_elsewhere(account_id, session_id, Instant::now()) {
             self.leave_squad(account_id, "its session ended (signed out)");
@@ -1161,14 +1351,17 @@ impl SessionStore {
                 && !busy.contains(session_id)
             {
                 session.ended = true;
-                ended.push(*session_id);
+                ended.push((*session_id, session.account_id));
             }
         }
         // Not in a match and not held: nothing needs them any more.
-        sessions.retain(|session_id, _| !ended.contains(session_id));
+        sessions.retain(|session_id, _| !ended.iter().any(|(id, _)| id == session_id));
         drop(sessions);
         self.sessions_ended(&ended);
         ended
+            .into_iter()
+            .map(|(session_id, _)| session_id)
+            .collect()
     }
 
     /// The players online: accounts with a lobby or chat connection open on
@@ -1289,6 +1482,7 @@ impl SessionStore {
     pub fn signed_in_from(&self, account_id: u32, ip: IpAddr) {
         if let Some(account) = self.account(account_id) {
             let mut account = account.locked();
+            account.last_sign_in = Some(unix_now());
             if account.last_ip == Some(ip.to_canonical()) {
                 return;
             }
@@ -1327,7 +1521,55 @@ impl SessionStore {
         self.flush();
         // What it won in a match it was playing is not paid out.
         self.match_results.locked().remove(&account_id);
-        self.kick(|session| session.account_id == account_id)
+        self.kick(|session| session.account_id == account_id).len()
+    }
+
+    /// Clear an account's password, as the admin's password reset does: its
+    /// next sign-in, with any password, sets the new one
+    /// ([`Self::adopt_password`]). In this order:
+    ///
+    /// 1. The password is cleared and its epoch moves on, under the
+    ///    account's lock: a sign-in checked against the old password is
+    ///    refused from now on, even one whose check was under way
+    ///    ([`Self::create_signed_in_session`]).
+    /// 2. Its wrong passwords are forgotten, and so are the password checks
+    ///    of the address it last signed in from ([`limits`]), so the player
+    ///    is neither locked out nor refused for asking too often. An
+    ///    address can be given a fresh minute this way only by the admin.
+    /// 3. Its sessions end now, as a ban ends them, so nobody signed in with
+    ///    the old password plays on.
+    /// 4. The account and the ended sessions' rows are written at once, on
+    ///    this thread, and only they: a restart can't bring back the old
+    ///    password or a session of it. If the saver is writing longer than
+    ///    [`RESET_WRITE_WAIT`], the saver writes them instead ([`ResetWrite`]).
+    ///
+    /// `None` for an unknown account.
+    pub fn reset_password(&self, account_id: u32) -> Option<PasswordReset> {
+        let account = self.account(account_id)?;
+        let (login, last_ip) = {
+            let mut account = account.locked();
+            account.password_hash = None;
+            account.password_epoch += 1;
+            (account.login.clone(), account.last_ip)
+        };
+        drop(account);
+        self.mark_dirty(account_id);
+        // A key is the user name, or the user name and an address
+        // (`authenticate`).
+        let with_address = format!("{login}\n");
+        self.failures
+            .locked()
+            .retain(|key, _| *key != login && !key.starts_with(&with_address));
+        if let Some(ip) = last_ip {
+            self.limits.forget_attempts(ip);
+        }
+        let ended = self.kick(|session| session.account_id == account_id);
+        let written = self.write_now(account_id, &ended);
+        Some(PasswordReset {
+            login,
+            sessions_ended: ended.len(),
+            written,
+        })
     }
 
     /// Lift an account's ban. `false` if it had none.
@@ -1370,6 +1612,7 @@ impl SessionStore {
             })
             .collect();
         self.kick(|session| covered.contains(&session.account_id))
+            .len()
     }
 
     /// Lift the ban of exactly this address or range. `false` if none.
@@ -1421,8 +1664,9 @@ impl SessionStore {
     }
 
     /// End the sessions `which` picks and shut their connections. Returns
-    /// how many there were.
-    fn kick(&self, which: impl Fn(&Session) -> bool) -> usize {
+    /// those that ended now: not those that had ended before and are kept
+    /// only for a match result.
+    fn kick(&self, which: impl Fn(&Session) -> bool) -> Vec<u32> {
         let picked: Vec<u32> = self
             .sessions
             .locked()
@@ -1430,8 +1674,11 @@ impl SessionStore {
             .filter(|(_, session)| which(session))
             .map(|(session_id, _)| *session_id)
             .collect();
-        for &session_id in &picked {
-            self.end_session(session_id);
+        let mut ended = Vec::new();
+        for session_id in picked {
+            if self.end_session(session_id) {
+                ended.push(session_id);
+            }
             self.matchmaking.leave_queue(session_id);
             if let Some(session) = self.sessions.locked().get(&session_id) {
                 for (_, socket) in &session.sockets {
@@ -1439,7 +1686,84 @@ impl SessionStore {
                 }
             }
         }
-        picked.len()
+        ended
+    }
+
+    /// Write one account and delete the rows of `ended` sessions and of its
+    /// other ended sessions whose rows are still to go, now, on
+    /// the caller's thread (the admin's request): what the password reset
+    /// must have on disk before it says so. That is one account's
+    /// transaction and a few deletes, done in SQLite on this thread. The
+    /// saver holds the writer for its whole pass, so the writer is waited
+    /// for [`RESET_WRITE_WAIT`] at most; past that the write is left to the
+    /// saver (the account is marked, the sessions are in `ended_sessions`)
+    /// and woken. What fails stays for the saver to retry; the first error
+    /// is returned.
+    fn write_now(&self, account_id: u32, ended: &[u32]) -> ResetWrite {
+        let Some(persistence) = &self.persistence else {
+            return ResetWrite::Written;
+        };
+        let Some(account) = self.account(account_id) else {
+            return ResetWrite::Written;
+        };
+        let deadline = Instant::now() + RESET_WRITE_WAIT;
+        let mut writer = loop {
+            match persistence.writer.try_lock() {
+                Ok(writer) => break writer,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    persistence.dirty.locked().insert(account_id);
+                    self.save_soon();
+                    return ResetWrite::Pending;
+                }
+            }
+        };
+        let record = AccountRecord::of(&account.locked());
+        let mut result = match writer.repository.save_account(&record) {
+            Ok(()) => {
+                writer.saved.insert(account_id, record);
+                Ok(())
+            }
+            Err(error) => {
+                persistence.dirty.locked().insert(account_id);
+                Err(error)
+            }
+        };
+        // Those ended now, and any of the account's that ended before and
+        // whose rows are still to go: a restart must bring back none.
+        let mut rows: Vec<u32> = persistence
+            .ended_sessions
+            .locked()
+            .iter()
+            .filter(|(_, owner)| **owner == account_id)
+            .map(|(session_id, _)| *session_id)
+            .collect();
+        for session_id in ended {
+            if !rows.contains(session_id) {
+                rows.push(*session_id);
+            }
+        }
+        for session_id in rows {
+            match writer.repository.delete_session(session_id) {
+                Ok(()) => {
+                    writer.sessions.remove(&session_id);
+                    persistence.ended_sessions.locked().remove(&session_id);
+                }
+                // Still in `ended_sessions`, where `end_session` put it.
+                Err(error) => {
+                    if result.is_ok() {
+                        result = Err(error);
+                    }
+                }
+            }
+        }
+        match result {
+            Ok(()) => ResetWrite::Written,
+            Err(error) => ResetWrite::Failed(error),
+        }
     }
 
     /// Take new accounts, or stop taking them: those who have one sign in
@@ -1704,6 +2028,173 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_password_is_set_by_the_next_sign_in_and_ends_the_sessions() {
+        let store = SessionStore::new();
+        let from: IpAddr = "203.0.113.4".parse().unwrap();
+        let start = Instant::now();
+        let signed_in = store
+            .sign_in_from("Forgetful", b"old-password", from, start)
+            .unwrap();
+        let id = signed_in.account_id;
+        store.signed_in_from(id, from);
+        assert!(store.account(id).unwrap().locked().last_sign_in.is_some());
+        let session = store.create_signed_in_session(signed_in, 0).unwrap();
+        let held = store.hold(session).unwrap();
+        // Signed out earlier, kept while a connection holds it: the reset
+        // does not count it as ended now.
+        let earlier = store.create_session(id);
+        let earlier_held = store.hold(earlier).unwrap();
+        assert!(store.end_session(earlier));
+        let other = store.sign_in("bystander", b"pw").unwrap();
+        let other_session = store.create_session(other);
+        // The player tried the passwords they remembered and is locked out.
+        for _ in 0..MAX_FAILED_SIGN_INS {
+            let _ = store.sign_in_from("forgetful", b"guess", from, start);
+        }
+        assert_eq!(
+            store.sign_in_from("forgetful", b"old-password", from, start),
+            Err(SignInError::TooManyAttempts)
+        );
+
+        let reset = store.reset_password(id).unwrap();
+        assert_eq!(reset.login, "forgetful");
+        assert_eq!(reset.sessions_ended, 1);
+        assert!(
+            matches!(reset.written, crate::ResetWrite::Written),
+            "{:?}",
+            reset.written
+        );
+        assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+        assert!(store.has_ended(session));
+        assert!(store.hold(session).is_none());
+        assert!(!store.has_ended(other_session));
+        drop((held, earlier_held));
+        // Not locked out any more; any password is taken, then it alone.
+        let again = store
+            .sign_in_from("FORGETFUL", b"new-password", from, start)
+            .unwrap();
+        assert_eq!(again.account_id, id);
+        assert!(store.create_signed_in_session(again, 0).is_some());
+        assert_eq!(
+            store.sign_in_from("forgetful", b"old-password", from, start),
+            Err(SignInError::WrongPassword)
+        );
+        assert_eq!(store.sign_in("forgetful", b"new-password"), Ok(id));
+        assert_eq!(store.sign_in("bystander", b"pw"), Ok(other));
+
+        // An unknown account: nothing to reset.
+        assert!(store.reset_password(id + 1000).is_none());
+    }
+
+    /// A player who asked too often from their address (the per-address
+    /// limit, not the per-name lockout) is let in again by the reset.
+    #[test]
+    fn a_reset_forgets_the_password_checks_of_the_last_address() {
+        let mut store = SessionStore::new();
+        store.limits = limits::Limits::new(3, 3);
+        let from: IpAddr = "203.0.113.4".parse().unwrap();
+        let start = Instant::now();
+        let id = store
+            .sign_in_from("forgetful", b"old-password", from, start)
+            .unwrap()
+            .account_id;
+        store.signed_in_from(id, from);
+        // Another name from that address uses its other two checks.
+        assert!(store.sign_in_from("sibling", b"pw", from, start).is_ok());
+        assert!(
+            store
+                .sign_in_from("sibling", b"guess", from, start)
+                .is_err()
+        );
+        assert_eq!(
+            store.sign_in_from("forgetful", b"anything", from, start),
+            Err(SignInError::TooManyFromAddress)
+        );
+        store.reset_password(id).unwrap();
+        assert_eq!(
+            store
+                .sign_in_from("forgetful", b"new-password", from, start)
+                .map(|signed_in| signed_in.account_id),
+            Ok(id)
+        );
+    }
+
+    /// The race of a sign-in with the old password and the reset, at each
+    /// point where it matters, made to happen deterministically.
+    #[test]
+    fn a_sign_in_checked_against_the_old_password_makes_no_session_after_a_reset() {
+        let store = Arc::new(SessionStore::new());
+        let from: IpAddr = "203.0.113.4".parse().unwrap();
+        let now = Instant::now();
+        let id = store.sign_in("victim", b"old-password").unwrap();
+        let hook = |point: HookPoint| {
+            let resetter = store.clone();
+            *store.test_hook.locked() = Some((
+                point,
+                Box::new(move || {
+                    resetter.reset_password(id).unwrap();
+                }),
+            ));
+        };
+
+        // 1. The reset comes while the old password is being checked: the
+        //    check passes on the old hash, and is refused after it, without
+        //    counting as a wrong password.
+        hook(HookPoint::PasswordChecked);
+        assert_eq!(
+            store.sign_in_from("victim", b"old-password", from, now),
+            Err(SignInError::WrongPassword)
+        );
+        assert!(store.test_hook.locked().is_none(), "the hook ran");
+        assert!(store.failures.locked().is_empty());
+        // It did not take the cleared password either.
+        assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+
+        // 2. The reset comes after the check, before the session: no
+        //    session is made, and nothing is left of it.
+        let stale = store
+            .sign_in_from("victim", b"new-password", from, now)
+            .unwrap();
+        store.reset_password(id).unwrap();
+        let sessions = store.session_count();
+        assert_eq!(store.create_signed_in_session(stale, 0), None);
+        assert_eq!(store.session_count(), sessions);
+
+        // 3. The reset comes once the session is in, before its check: the
+        //    session is taken out again.
+        let racing = store
+            .sign_in_from("victim", b"newer-password", from, now)
+            .unwrap();
+        hook(HookPoint::SessionInserted);
+        assert_eq!(store.create_signed_in_session(racing, 0), None);
+        assert!(store.test_hook.locked().is_none(), "the hook ran");
+        assert_eq!(store.session_count(), sessions);
+
+        // A refused session leaves the account's squad and queue alone: the
+        // player who signed in after the reset keeps them.
+        let stale = store
+            .sign_in_from("victim", b"newest-password", from, now)
+            .unwrap();
+        store.reset_password(id).unwrap();
+        let player = store
+            .sign_in_from("victim", b"the-real-one", from, now)
+            .unwrap();
+        let session = store.create_signed_in_session(player, 0).unwrap();
+        let mate = store.get_or_create_account(ip(127, 0, 0, 1), "mate");
+        store.create_session(mate);
+        store.squads().invite_accepted(id, mate);
+        store.squads().add(id, mate).unwrap();
+        assert_eq!(store.create_signed_in_session(stale, 0), None);
+        assert!(store.squads().of(id).is_some());
+        assert!(!store.has_ended(session));
+
+        // A new account reset before its first session: refused too.
+        let newcomer = store.sign_in_from("newcomer", b"pw", from, now).unwrap();
+        store.reset_password(newcomer.account_id).unwrap();
+        assert_eq!(store.create_signed_in_session(newcomer, 0), None);
+    }
+
+    #[test]
     fn a_digest_registers_and_signs_in_as_a_password_does() {
         const DIGEST: &[u8] = b"da39a3ee5e6b4b0d3255bfef95601890afd80709";
         const OTHER: &[u8] = b"356a192b7913b04c54574d18c28d46e6395428ab";
@@ -1712,9 +2203,12 @@ mod tests {
         let now = Instant::now();
         let id = store
             .sign_in_with_digest_from("stepan", DIGEST, from, now)
-            .unwrap();
+            .unwrap()
+            .account_id;
         assert_eq!(
-            store.sign_in_with_digest_from("Stepan", DIGEST, from, now),
+            store
+                .sign_in_with_digest_from("Stepan", DIGEST, from, now)
+                .map(|signed_in| signed_in.account_id),
             Ok(id)
         );
         assert_eq!(

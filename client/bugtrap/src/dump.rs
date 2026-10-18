@@ -283,8 +283,14 @@ unsafe extern "system" fn worker(parameter: *mut c_void) -> u32 {
             error = ERROR_PROC_NOT_FOUND;
         }
     }
-    // Publish only after save() has flushed/closed its file (or all attempts
-    // failed). Contending crashes need not wait for callbacks or a modal dialog.
+    // Zip the dump only now that it is flushed and closed: on any failure, or
+    // a crash or exit while zipping, the dump stays and the dialog names it.
+    if request.saved || partial {
+        let _ = crate::archive::zip(&mut path);
+    }
+    // Publish only after save() has flushed/closed its file and it is zipped
+    // (or all attempts failed). Contending crashes need not wait for callbacks
+    // or a modal dialog.
     if request.crash {
         PHASE.store(CRASH_CLOSED, Ordering::Release);
     }

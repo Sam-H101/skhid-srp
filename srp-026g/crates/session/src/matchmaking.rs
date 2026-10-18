@@ -45,6 +45,11 @@ use crate::matchmaking_policy::{self as policy, Team, Worth};
 
 /// `player_profile[20]` in the client's `match_options`.
 pub const MAX_PLAYERS_PER_MATCH: usize = 20;
+/// The most players of a side when `SRP_MATCH_TEAM_SIZE` is unset: 8 a side,
+/// the owner's word for the release of 2026-10-18 ("8vs8 not 10vs10"), as
+/// the wiki's "two teams of up to 8 players" (February 2015;
+/// `progression_sources.md` §9). The client's roster allows 10 a side.
+pub const DEFAULT_TEAM_SIZE: usize = 8;
 /// The first match id handed out.
 const FIRST_MATCH_ID: u32 = 0x123;
 /// With this many waiting (5 v 5), a match starts once nobody has joined the

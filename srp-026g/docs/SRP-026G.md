@@ -211,7 +211,7 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_MATCH_MIN_PLAYERS` | 4 | The fewest players a match starts with (a squad counts its players, but is one side) |
 | `SRP_MATCH_JOIN_EXTENSION_SECONDS` | 30 | Each press of Play adds this to what is left of the countdown |
 | `SRP_MATCH_MAX_COUNTDOWN_SECONDS` | 120 | No countdown runs longer than this from its start |
-| `SRP_MATCH_TEAM_SIZE` | 10 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
+| `SRP_MATCH_TEAM_SIZE` | 8 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
 | `SRP_BALANCE_PLAYER` | 12 | What a player counts for by being there when the sides are made, in gear levels: with an odd count the side with a player more has this much more, so the stronger players are the side of fewer. 0: only the strengths are made even (`matchmaking.md` §8) |
 | `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
 | `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |
@@ -426,7 +426,15 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   units of a stack; an id the dictionary lacks is refused, since the client
   crashes on one); text (two lines, 63 bytes each, shown to everyone in the
   lobby and to who signs in, until cleared: `0xA5` / `0xA6`); ban, unban,
-  bans; maintenance; signups.
+  bans; maintenance; signups; password (since 2026-10-18).
+- Password reset (`notes/password-reset.md`, the owner's decision of
+  2026-10-18): by the user name the player signs in with, in any case, never
+  the character name. The page shows the account it matched first, then
+  resets; a script resets with one POST (`tab=reset_password`, `login=`,
+  the token) and gets one line back (`ok <login> <id>`, `no such login`,
+  …). The password is cleared and written at once, the account's sessions
+  end (its game is signed out), and its next sign-in, with any password,
+  sets the new one. srp keeps running; no SQL by hand.
 - Every change is written and the player's open game is told
   (`Inbox::account_changed`: inventory, account, money, level and skills,
   reputations, quests; then the services message for the premium time).

@@ -157,6 +157,140 @@ fn accounts_and_passwords_survive_a_restart() {
     assert_eq!(store.sign_in("third", b"test-password-3"), Ok(3));
 }
 
+/// The admin's password reset is in the database at once (srp may stop
+/// before the saver's next pass), and the password the next sign-in sets
+/// is kept too.
+#[test]
+fn a_reset_password_stays_reset_across_a_restart() {
+    let dir = TempDir::new("reset-password");
+    let open = || {
+        let repository = SqliteRepository::open(&dir.db()).unwrap();
+        SessionStore::with_repository(GATHER, Box::new(repository)).unwrap()
+    };
+    let store = open();
+    let id = store.sign_in("Forgetful", b"test-password-1").unwrap();
+    let kept = store.sign_in("kept", b"test-password-2").unwrap();
+    let session = store.create_session(id);
+    let kept_session = store.create_session(kept);
+    // Signed out before the reset; its row is still to go.
+    let earlier = store.create_session(id);
+    store.flush();
+    assert!(store.end_session(earlier));
+    let reset = store.reset_password(id).unwrap();
+    assert_eq!(reset.sessions_ended, 1);
+    assert!(
+        matches!(reset.written, crate::ResetWrite::Written),
+        "{:?}",
+        reset.written
+    );
+    // No flush: the reset wrote it, and deleted its session's row.
+    let sessions = SqliteRepository::open(&dir.db())
+        .unwrap()
+        .load_sessions()
+        .unwrap();
+    let sessions: Vec<u32> = sessions.iter().map(|stored| stored.session_id).collect();
+    assert_eq!(sessions, [kept_session]);
+    assert!(!sessions.contains(&session) && !sessions.contains(&earlier));
+    drop(store);
+
+    let connection = Connection::open(dir.db()).unwrap();
+    let rows: Vec<(String, Option<String>)> = connection
+        .prepare("SELECT login, password_hash FROM accounts ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(connection);
+    assert_eq!(rows[0], ("forgetful".to_owned(), None));
+    assert!(rows[1].1.is_some());
+
+    let store = open();
+    assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+    assert_eq!(store.sign_in("forgetful", b"test-password-3"), Ok(id));
+    assert_eq!(store.sign_in("kept", b"test-password-2"), Ok(kept));
+    store.flush();
+    drop(store);
+
+    let store = open();
+    assert_eq!(store.sign_in("Forgetful", b"test-password-3"), Ok(id));
+    assert_eq!(
+        store.sign_in("forgetful", b"test-password-1"),
+        Err(SignInError::WrongPassword)
+    );
+}
+
+/// The reset writes only its own account, and says so when the write
+/// fails; the saver writes it later.
+#[test]
+fn a_reset_that_is_not_written_says_so_and_is_written_later() {
+    let repository = MemoryRepository::default();
+    let store = SessionStore::with_repository(GATHER, Box::new(repository.clone())).unwrap();
+    let id = store.sign_in("forgetful", b"test-password-1").unwrap();
+    let other = store.sign_in("other", b"test-password-2").unwrap();
+    store.flush();
+    let saves = repository.saves();
+    // Another account changed meanwhile: not the reset's to write.
+    store.account(other).unwrap().locked().game.rating = 7;
+    store.mark_dirty(other);
+
+    repository.fail_account_saves(true);
+    let reset = store.reset_password(id).unwrap();
+    assert!(
+        matches!(&reset.written, crate::ResetWrite::Failed(PersistError::BadRow(account, _)) if *account == id),
+        "{:?}",
+        reset.written
+    );
+    assert!(repository.get(id).unwrap().password_hash.is_some());
+    assert!(store.is_dirty(id));
+    // Cleared in memory all the same: the next sign-in sets a password.
+    assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+    assert_eq!(store.sign_in("forgetful", b"test-password-3"), Ok(id));
+
+    repository.fail_account_saves(false);
+    let reset = store.reset_password(id).unwrap();
+    assert!(
+        matches!(reset.written, crate::ResetWrite::Written),
+        "{:?}",
+        reset.written
+    );
+    assert_eq!(repository.get(id).unwrap().password_hash, None);
+    assert_eq!(repository.saves(), saves + 1, "only its own account");
+    assert!(store.is_dirty(other));
+}
+
+/// While the saver holds the database longer than the reset waits, the
+/// reset does not hang: it says the write is pending, and the saver's next
+/// pass writes the account and deletes the ended session's row.
+#[test]
+fn a_reset_while_the_saver_writes_is_left_to_the_saver() {
+    let repository = MemoryRepository::default();
+    let store = SessionStore::with_repository(GATHER, Box::new(repository.clone())).unwrap();
+    let id = store.sign_in("forgetful", b"test-password-1").unwrap();
+    let session = store.create_session(id);
+    store.flush();
+    assert!(repository.session(session).is_some());
+
+    let reset = {
+        // The saver's pass, as long as it takes.
+        let _pass = store.persistence.as_ref().unwrap().writer.locked();
+        let started = Instant::now();
+        let reset = store.reset_password(id).unwrap();
+        assert!(started.elapsed() >= crate::RESET_WRITE_WAIT);
+        reset
+    };
+    assert!(
+        matches!(reset.written, crate::ResetWrite::Pending),
+        "{:?}",
+        reset.written
+    );
+    assert_eq!(reset.sessions_ended, 1);
+    assert!(repository.get(id).unwrap().password_hash.is_some());
+    store.flush();
+    assert_eq!(repository.get(id).unwrap().password_hash, None);
+    assert!(repository.session(session).is_none());
+}
+
 #[test]
 fn only_changed_accounts_are_written_again() {
     let repository = MemoryRepository::default();

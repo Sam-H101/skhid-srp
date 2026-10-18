@@ -37,7 +37,9 @@ given), LIKELY or GUESS.
 | [client_patch.md](client_patch.md) | Porting the srp client patch, the function map |
 | [replay_sur.md](replay_sur.md) | The client's own replay file (`.sur`, `-match_replay`): its layout, and `srp-recording-to-sur`, which makes one from a match recording |
 | [replay_watch.md](replay_watch.md) | "Watch replay" from the lobby's History, the server side: conversion at match end, the lobby's `R1` answers and `9E` link, the download tokens, `/replays/<token>`, what is and is not reachable over HTTP |
+| [password-reset.md](password-reset.md) | The admin's password reset while srp runs: the page's Password tab (confirm step), a script's one POST and its answers, the curl from the jump host, the owner's rule (2026-10-18) |
 | [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
+| [damage_calculator.md](damage_calculator.md) | The site's damage calculator (`/damage`): the owner's rules for it, the data it is built from, how it is served and kept up to date |
 | [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
 
@@ -131,7 +133,7 @@ Every setting has a default; none is needed on a dev PC.
   later (`matchmaking.md` §9).
   `SRP_SQUADS` (default on; `off`: no squads), `SRP_SQUADS_OFF_TEXT`
   (`social.md` §9.4).
-- `SRP_MATCH_TEAM_SIZE` (default 10), `SRP_MATCH_SEARCH_STEP_SECONDS`
+- `SRP_MATCH_TEAM_SIZE` (default 8), `SRP_MATCH_SEARCH_STEP_SECONDS`
   (default 4): the sides of a match and how fast a waiting player's range
   of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 2), `SRP_MONEY_RATE` (percent; unset:

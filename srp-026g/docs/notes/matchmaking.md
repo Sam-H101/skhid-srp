@@ -86,8 +86,8 @@ replaced for 0.26g on 2026-10-13 by a minimum of 4 players, at the owner's word:
 
 **The queue's rules (since 2026-10-13, 0.26g; the owner's, from the prod data of 2026-10-12):**
 
-1. 20 players (a full match, 10 a side): it starts at once.
-2. 10 to 19: it starts when nobody has pressed Play for 30 s.
+1. 16 players (a full match, 8 a side; `SRP_MATCH_TEAM_SIZE` times 2): it starts at once.
+2. 10 to 15: it starts when nobody has pressed Play for 30 s.
 3. 4 to 9: a countdown of 60 s starts when the queue gets its 4th player;
    each time somebody presses Play, 30 s are added to what is left of it.
 4. No countdown runs longer than 2 minutes from its start (rules 2 and 3).
@@ -95,27 +95,29 @@ replaced for 0.26g on 2026-10-13 by a minimum of 4 players, at the owner's word:
    no match. If the queue drops under 4, the countdown is cancelled and
    starts anew with the 4th.
 
-Squads: a squad's players count toward the 4 and toward the 20, but a squad
+Squads: a squad's players count toward the 4 and toward the 16, but a squad
 is **one side** (one party) and is never split: a squad of 4 alone waits for
 somebody who is not of it; a squad of 3 and one player start after the
 countdown, 3 against 1. `SRP_MATCH_MIN_PLAYERS` (4),
 `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30), `SRP_MATCH_MAX_COUNTDOWN_SECONDS`
 (120), `SRP_MATCH_GATHER_SECONDS` (60, the countdown's start),
 `SRP_MATCH_FILL_PLAYERS` (10), `SRP_MATCH_QUIET_SECONDS` (30),
-`SRP_MATCH_TEAM_SIZE` (10) set the numbers. The levels' range widening
+`SRP_MATCH_TEAM_SIZE` (8) set the numbers. The levels' range widening
 (§1) is unchanged and the conditions are counted over the players in range.
 
 **Why (prod 0.26g, 16:32 to 21:32 UTC on 2026-10-12):** 75 players pressed
 Play 313 times, 50 matches were made (24 of them with 2 or 3 players), the
 queue never held 10. The roster of 20 is the client's (`player_profile[20]`,
 PROVEN); matches above 9 players have not been run live yet, nor the 10 a
-side the roster allows (the old default was 8 a side, 16).
+side the roster allows (the old default was 8 a side, 16). On 2026-10-18 the
+owner set it back to 8 a side for the release ("make in release matches
+8vs8 not 10vs10").
 
 What else is new:
 
 | Rule | Tag |
 |---|---|
-| A match is two sides of at most `SRP_MATCH_TEAM_SIZE` players (10 since 2026-10-13, 8 before; 1..=10) | 10: the client's roster of 20 (PROVEN); the wiki of Feb 2015 says "up to 8" |
+| A match is two sides of at most `SRP_MATCH_TEAM_SIZE` players (8; 10 from 2026-10-13 to 2026-10-18, 8 before; 1..=10) | 8: the owner's word of 2026-10-18 and the wiki of Feb 2015 ("up to 8"); at most 10: the client's roster of 20 (PROVEN) |
 | A squad stays on one side; the sides are at most a player apart when the squads allow it, and among those splits they count as alike as can be (§8; until 2026-10-13: even in players, then in the sum of levels) | choice |
 | **A squad is one party, and a match needs two parties**: two players alone, or a squad and at least one player who is not of it (alone, or of another squad). The gather window starts with the second party | the owner's rule, 2026-10-12 |
 | A squad is looked for by its highest member | LIKELY (as the kits of one account are) |
@@ -575,7 +577,7 @@ describes that solver, which still chooses who plays a new match (§9.1).
 This policy applies only to the patched `GrowingRoster` pool (draft PR #22's
 protocol). Standard clients and arranged clan matches retain their existing
 placement rules. The team capacity is the standard queue's setting
-(`SRP_MATCH_TEAM_SIZE`, default 10). Departed players
+(`SRP_MATCH_TEAM_SIZE`, default 8). Departed players
 remain in population counts and level sums for now;
 reconnection expiry and replacement of departed slots are separate work.
 
@@ -652,9 +654,9 @@ When no running match can accept a batch, a new match can start at 1v1:
 `SRP_GROWING_GATHER_SECONDS` configures this window independently of the
 standard queue (default 120). `SRP_GROWING_POPULATION_EXPONENT` configures
 `p` (default 1; finite positive values up to 8). Invalid values fall back
-to defaults. `SRP_MATCH_TEAM_SIZE` sets capacity (default ten per team, which
-is also the most the experimental descriptor limit allows; set 5, 6 or 7 to
-compare smaller matches). The end cutoff stays fixed at
+to defaults. `SRP_MATCH_TEAM_SIZE` sets capacity (default eight per team;
+at most ten, which the experimental descriptor limit allows; set 5, 6 or 7
+to compare smaller matches). The end cutoff stays fixed at
 120 seconds. Tests configure gathering and exponent directly without
 changing process-global environment variables.
 

@@ -7,14 +7,19 @@ compile_error!(
 );
 
 mod api;
+mod archive;
 mod arithmetic;
+mod crash_text;
 mod dump;
 mod modules;
+mod logs;
 mod notice;
 mod notice_text;
 mod runtime;
+mod sanitize;
 mod text;
 mod ui;
+mod zip;
 
 use core::{
     ffi::c_void,

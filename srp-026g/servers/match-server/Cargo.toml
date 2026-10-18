@@ -24,3 +24,7 @@ vostok = { workspace = true }
 # The replay conversion thread runs at nice 19 (`v026g::replay`).
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+# Sessions without a sign-in, for the tests (`SessionStore::create_session`).
+session = { workspace = true, features = ["test-support"] }

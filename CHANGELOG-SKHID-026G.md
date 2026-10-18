@@ -9,6 +9,84 @@ release that made it what it is now.
 
 ---
 
+## 18 Oct, 14:43 — Game update 21: weapon balance, magazine on the weapon card, crash reports as ZIPs (update required)
+
+Start `Skhid.bat`: the launcher updates the game (`survarium_skhid.exe`
+revision 21, a new `bugtrap.dll`) and downloads the new game content,
+`resources.db.patch_21`, one file of 44 MB (43,910,935 bytes, sha256
+`0db1c4bcb6f3257d56db8da93e9b918878de39d140ef6eb3bb2e75ce785a0de3`). A game
+older than revision 21 can no longer sign in. Replays recorded by games older
+than revision 21 can no longer be watched: this update changes what a match
+computes, and the game says so when you try.
+
+The values were chosen from the matches played since update 19 (about 10,000
+kills by guns): each victim's real armour, the killer's ammunition and the
+distance, through the game's own damage rule (damage × (1 − (armour − armour
+penetration)), never below 0; both damage and penetration fall to 60 % between
+a weapon's two damage distances). The weapon card shows damage and armour
+penetration ×100.
+
+- **Armour penetration of the weapons from 0.29, on this game's scale.** They
+  came with this game's damage but 0.29's penetration, which is on another
+  scale for each calibre (`bullet_pierce`):
+  - 5.56 mm, too high: HK416 0.45 → 0.34; M4A1 and MSBS Radon 0.42 → 0.32;
+    FN FNC 0.40 → 0.30, and its damage 0.45 → 0.50 so it plays where it played.
+  - 4.6 mm and 5.7 mm, too high: MP7, MP7A1, MP7A1 "Legend" 0.55 → 0.30, and
+    their damage 0.35 → 0.40; FN P90 0.55 → 0.30.
+  - .45 ACP: KRISS Vector 0.45 → 0.25, and its damage 0.45 → 0.42 (its
+    players got 1.22 times the kills with it that they got with their other
+    weapons).
+  - 7.62×54R: PKP "Pecheneg" 0.60 → 0.45.
+  - 7.62×39, too low: vz. 58, Valmet, SOK-94 0.30 → 0.40, the AKM's.
+  - 9×18, too low: PP-91 "Kedr", AEK-919K 0.10 → 0.20, the Kiparis's.
+
+  Armour penetration also decides what a bullet goes through, so these
+  weapons now go through walls as their calibre does.
+- **Weapons that won too often** (how many kills a weapon gets against what
+  the same players get with their other weapons):
+  - SR-2M "Veresk": rate of fire 900 → 800 (`rounds_per_minute`; 1.33 times
+    its players' other weapons, the most accurate automatic).
+  - SR-3M "Vikhr" and its premium copy: rate of fire 900 → 800, damage
+    0.55 → 0.45 (the fastest-killing automatic).
+  - AS Val, 9A-91, VSS "Vintorez", VSK-94 and their premium copies: damage
+    0.55 → 0.50 (the same 9×39 as the SR-3M).
+  - PP-2000: rate of fire 750 → 680 (1.22 times).
+  - SVD: magazine 10 → 5 rounds (`magazine_capacity`); damage and rate of fire
+    as they were. Its description says 5 rounds in every language.
+- **The beginner rifles,** which played weakest (0.54 and 0.66 times their
+  players' other weapons): Mosin-Nagant damage 1.0 → 1.1 and armour penetration
+  0.35 → 0.40; TOZ-122 damage 1.1 → 1.2.
+- **Shop:** the Mosin-Nagant and the PPSh-41 (the starting kit's two weapons,
+  which the game prices at 0) are sold at every faction from rank 0 for
+  1,000 silver. New accounts still get both.
+- **Stamina regeneration bonuses now work.** Every item config and the
+  modifications named the bonus `stamina_regenation_speed_modifier`; the game
+  reads only `stamina_regeneration_speed_modifier`, so the items' stamina
+  regeneration bonuses, the five stamina regeneration modifications and the
+  defect did nothing. Renamed in 216 item configs and the 6 modifications.
+- **Red-dot and ring sights less bright.** The sights from 0.51 (Aimpoint
+  CompM4, Cobra EKP-8, Docter, EOTech 552, Leupold DeltaPoint) glowed 3.3 times
+  as bright as in 0.51: their three glowing-dot materials lost 0.51's
+  `constant_transparency` 0.3 in the port and had 1. Back to 0.3. The 0.29
+  stock sights are as they were.
+- **Magazine on the weapon card.** Every weapon's card (83) has a line
+  "Magazine" / "Магазин" / "Magazin" / "Magazynek" after the rate of fire,
+  with the rounds the weapon's magazine holds, compared like the other lines.
+  It is line 134 of the card lines (`gameplay/static_game_parameters.options`,
+  `st_inv_magazine_size`), and the lobby movie's card has a ninth row for it
+  (`lobby_menu.swf`: sprite 1538 `diff_9`, `ItemCompare`'s constructor).
+- **Every changed value's line on the weapon card** shows the new value.
+- **Crash reports:**
+  - The crash reporter zips the dump itself (`SRP-crash-…-N.zip`, beside the
+    game or in the Windows temporary folder; the `.dmp` is kept when zipping
+    fails) and puts the newest game, launcher and updater logs of the last
+    48 hours in it (`logs/`, with `logs/collection.txt` saying what was taken).
+  - Lines of those logs that carry a password, the account digest, a token, a
+    key, a cookie or a command line are taken out of the copies in the ZIP
+    (the files on disk are not changed). The dump itself is not filtered.
+  - The crash window is in the language of Windows (English, Ukrainian,
+    Russian, Polish, German) and says where to send the file (#bugreports).
+
 ## 16 Oct, 08:27 — Game update 12: Duty exoskeleton, bandit balaclava (update required)
 
 Start `Skhid.bat`: the launcher updates the game and then downloads the new
@@ -328,3 +406,21 @@ kept and can be put back).
 <!-- Revision 19 (026g-rev19), released 2026-10-17 18:12 UTC. To be worded for players; what it shipped: -->
 
 - TODO: #168 Release of weapon scopes and the 0.29a3 weapons: #153 + #155 + #159 on main
+
+## 18 Oct, 02:10 — TODO: the owner's words (update required)
+
+<!-- Revision 20 (026g-rev20), released 2026-10-18 02:10 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #171 Squads of two: SRP_SQUAD_SIZE, an invite into a full squad is refused
+- TODO: #172 Revert "Squads of two" (#171)
+- TODO: #175 0.26g matches: 8 a side by default, not 10
+
+## 18 Oct, 21:55 — TODO: the owner's words (update required)
+
+<!-- Revision 22 (026g-rev22), released 2026-10-18 21:55 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #184 Changelog: game update 21
+- TODO: #185 Shop: stop selling the Russian and Belarusian flags and coats of arms, the USSR flag and the red star
+- TODO: #187 Admin page: reset a forgotten password while srp runs
+- TODO: #186 Site: damage calculator tab (/damage), English and Ukrainian
+- TODO: #189 Password reset: close the sign-in race, write only the account, report errors

@@ -72,31 +72,16 @@ pub fn notice(language: Language) -> &'static Notice {
     }
 }
 
-fn starts_with(text: &[u16], prefix: &[u8]) -> bool {
-    text.len() >= prefix.len() && text.iter().zip(prefix).all(|(&c, &p)| c == p as u16)
-}
-
-/// The language the game was started in: the value of `-localization=` on
-/// its command line (the launcher and the start scripts give it), else English.
-pub fn language(command_line: &[u16]) -> Language {
-    const KEY: &[u8] = b"-localization=";
-    const NAMES: [(&[u8], Language); 5] = [
-        (b"english", Language::English),
-        (b"russian", Language::Russian),
-        (b"ukrainian", Language::Ukrainian),
-        (b"german", Language::German),
-        (b"polish", Language::Polish),
-    ];
-    for start in 0..command_line.len() {
-        if starts_with(&command_line[start..], KEY) {
-            let value = &command_line[start + KEY.len()..];
-            return NAMES
-                .iter()
-                .find(|(name, _)| starts_with(value, name))
-                .map_or(Language::English, |&(_, language)| language);
-        }
+/// Automatically use the Windows user's UI language for every BugTrap dialog.
+/// Ignore regional variants; unsupported languages fall back to English.
+pub fn language(windows_language: u16) -> Language {
+    match windows_language & 0x03ff {
+        0x19 => Language::Russian,
+        0x22 => Language::Ukrainian,
+        0x07 => Language::German,
+        0x15 => Language::Polish,
+        _ => Language::English,
     }
-    Language::English
 }
 
 /// The launcher, the updater and the service load this DLL too, from the same
@@ -126,34 +111,19 @@ mod tests {
     }
 
     #[test]
-    fn the_language_is_the_one_the_game_was_started_in() {
-        for (line, expected) in [
-            (
-                r#""C:\game\survarium_skhid.exe" -localization=ukrainian -mt_allocator=768"#,
-                Language::Ukrainian,
-            ),
-            (
-                "survarium_skhid.exe  -localization=russian",
-                Language::Russian,
-            ),
-            (
-                "survarium_skhid.exe -localization=german -server=a:1",
-                Language::German,
-            ),
-            ("survarium_skhid.exe -localization=polish", Language::Polish),
-            (
-                "survarium_skhid.exe -localization=english",
-                Language::English,
-            ),
-            (
-                "survarium_skhid.exe -localization=klingon",
-                Language::English,
-            ),
-            ("survarium_skhid.exe -localization=", Language::English),
-            ("survarium_skhid.exe", Language::English),
-            ("", Language::English),
+    fn automatically_uses_the_windows_ui_language() {
+        for (windows, expected) in [
+            (0x0419, Language::Russian),
+            (0x0415, Language::Polish),
+            (0x0422, Language::Ukrainian),
+            (0x0407, Language::German),
+            (0x0807, Language::German),
+            (0x0409, Language::English),
+            (0x0809, Language::English),
+            (0x040c, Language::English),
+            (0, Language::English),
         ] {
-            assert_eq!(language(&wide(line)), expected, "{line}");
+            assert_eq!(language(windows), expected, "{windows:04x}");
         }
     }
 
