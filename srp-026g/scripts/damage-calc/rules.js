@@ -52,8 +52,10 @@ const RULES = (() => {
   // Modifications (item_config_cook 0x2f1750): values on one path are summed,
   // then applied once: "mul" as v*max(0,1+sum), "add" as v+sum.
   const MODS = DATA.mods || {};
-  // Defects are left out: the page only adds bonuses.
-  const idsOf = (item, pick = {}) => [...item.mod_types.default, ...Object.values(pick.mod || {}).filter(Boolean)];
+  // Defects are left out: the page only adds bonuses. An item with presets
+  // (premium weapons) has those and nothing else.
+  const idsOf = (item, pick = {}) => item.mod_types.default.length ? [...item.mod_types.default]
+    : Object.values(pick.mod || {}).filter(Boolean);
   function sums(ids) {
     const out = {};
     for (const id of ids) for (const e of MODS[id].effects) {
@@ -83,8 +85,9 @@ const RULES = (() => {
     for (const id of kinds.default) {
       const m = MODS[id], prop = m.props[0] || {};
       panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "gtext" },
-        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }), el("small", { text: T(" built in", " вбудовано") }))));
+        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }))));
     }
+    if (kinds.default.length) { host.append(panel); return true; }
     for (const t of kinds.mod) {
       const options = Object.keys(MODS).filter(id => MODS[id].kind === "mod" && MODS[id].type === t)
         .sort((a, b) => MODS[a].effects[0].value - MODS[b].effects[0].value);
@@ -130,6 +133,7 @@ const RULES = (() => {
       const w = DATA.weapons[state.weapon];
       state.wmods[state.weapon] = state.wmods[state.weapon] || {};
       if (!modControls(wbox, w, state.wmods[state.weapon], update)) wbox.append(el("span", { class: "note", text: T("This weapon takes no damage bonuses.", "Ця зброя не має бонусів пошкодження.") }));
+      else if (w.mod_types.default.length) wbox.append(el("span", { class: "note", text: T("Come with the weapon; cannot be changed.", "Ідуть зі зброєю; змінити не можна.") }));
       else wbox.append(el("span", { class: "note", text: T("An item holds at most 3 modifications. Bonuses on one stat add up before they apply.", "Предмет має щонайбільше 3 модифікації. Бонуси на одну характеристику додаються.") }));
       // The items on the part being hit: their bonuses are the ones that count.
       const abox = document.getElementById("amods"); abox.innerHTML = "";

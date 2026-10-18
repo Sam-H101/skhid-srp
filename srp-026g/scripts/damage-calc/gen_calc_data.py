@@ -249,13 +249,17 @@ for file in files("gameplay__items__drugs__"):
         "remove_affects": [[p["body_part"], p["affect"]] for p in rows(d.get("remove_affects") or [])],
     }
 
-# Modifications and defects that change a gunshot: weapon damage, pierce and
-# ranges, and gunshot armour. item_config_cook (0x2f1750) sums the values on
+# Modifications and defects that change a gunshot or how fast they come:
+# weapon damage, pierce, ranges and rate of fire, and gunshot armour. item_config_cook (0x2f1750) sums the values on
 # one path, then applies them once: type 1 adds, type 2 multiplies by
 # max(0, 1 + sum); a path the item lacks is skipped. A modification's type is
 # the position of the 1 in its type_mask; an item's mask char j is type j+1.
 RELEVANT = ("parameters/bullet_damage", "parameters/bullet_pierce", "parameters/min_damage_distance",
-            "parameters/max_damage_distance")
+            "parameters/max_damage_distance", "parameters/rounds_per_minute")
+# A weapon's presets (premium weapons) are shown whatever they change, as the
+# lobby lists them; only the relevant ones change the numbers. Armour keeps
+# the relevant ones only (its presets are silver and wear).
+presets = {str(d) for item in weapons.values() for d in item["default_modifications"]}
 ui_props = {}
 for q in rows(load("gameplay__static_game_parameters.options.json").get("ui_properties", [])):
     ui_props[q["prop_id"]] = {"label": text(q.get("prop_name", "")), "label_uk": text_uk(q.get("prop_name", "")), "mod_type": q.get("mod_type", 2),
@@ -270,7 +274,7 @@ for kind, table in (("mod", mods_cfg["modifications"]), ("defect", mods_cfg["def
             ranged_armour = path.startswith("hit_params/") and path.endswith("/ranged/armor")
             if path in RELEVANT or ranged_armour:
                 effects.append({"path": path, "op": "add" if e["type"] == 1 else "mul", "value": r(e["value"])})
-        if effects:
+        if effects or str(m["id"]) in presets:
             desc = m.get("ui_desc", {})
             mods[str(m["id"])] = {
                 "kind": kind, "type": m["type_mask"].index("1"), "effects": effects,
@@ -281,17 +285,20 @@ for kind, table in (("mod", mods_cfg["modifications"]), ("defect", mods_cfg["def
             }
 
 
-def item_mods(params, default):
-    """The relevant modification types an item may carry, and its defaults."""
+def item_mods(params, default, shown):
+    """The relevant modification types an item may carry, and its defaults
+    (`shown`: every preset, else the relevant ones)."""
     allowed = params.get("available_modifications_mask", "")
     defects = params.get("available_defects_mask", "")
     out = {"mod": [], "defect": []}
     for mid, m in mods.items():
+        if not m["effects"]:
+            continue
         mask = allowed if m["kind"] == "mod" else defects
         j = m["type"] - 1
         if 0 <= j < len(mask) and mask[j] == "1" and m["type"] not in out[m["kind"]]:
             out[m["kind"]].append(m["type"])
-    out["default"] = [str(d) for d in default if str(d) in mods]
+    out["default"] = [str(d) for d in default if str(d) in mods and (shown or mods[str(d)]["effects"])]
     return out
 
 
@@ -300,7 +307,7 @@ for table in (weapons, armour):
         item["mod_types"] = item_mods(
             {"available_modifications_mask": item.pop("available_modifications_mask"),
              "available_defects_mask": item.pop("available_defects_mask")},
-            item["default_modifications"])
+            item["default_modifications"], table is weapons)
 
 # Map names (st_<level>_name), for the map picker.
 level_names = {k.removeprefix("st_").removesuffix("_name"): {"en": v.strip(), "uk": text_uk(k)}

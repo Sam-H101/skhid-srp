@@ -13,7 +13,9 @@ number from the game data, the rules as the client's hit code applies them. Buil
 - Less text: one line per rule, players know the game. No intro, no sources paragraph; the
   rules section is the formula only.
 - Shooter: weapon (a list with the lobby icons, by level in each class), ammo, distance 0–150 m (all fights), weapon bonuses always shown, one
-  button per grade (Damage +1% … +5%), no defects (negative bonuses).
+  button per grade (Damage, Distance, Rate of fire, Armor penetration), no defects (negative
+  bonuses). A weapon with presets (premium) has those, fixed, as the lobby lists them; damage
+  and rate of fire change the numbers.
 - Target: the HUD doll and the equipment cards (both aim), armour bonuses, Onyx (four slot
   tiles, passive or active), the Anesthetic, the pain already taken. Under the doll: the hit
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
