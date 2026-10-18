@@ -685,6 +685,40 @@ mod tests {
         assert_eq!(account, before);
     }
 
+    /// `prices::NOT_SOLD` (2026-10-18): the Russian and Belarusian flags
+    /// and coats of arms, the flag of the USSR and the red star are bought
+    /// neither for gold nor for silver.
+    #[test]
+    fn the_excluded_flags_and_emblems_are_not_bought() {
+        let mut account = rich(10_000);
+        account.generic_money = 1_000_000;
+        let before = account.clone();
+        let names = [
+            "decals_4_1",
+            "decals_4_2",
+            "decals_4_4",
+            "decals_5_1",
+            "decals_5_2",
+            "decals_5_4",
+        ];
+        for name in names {
+            let decal = dict(name);
+            assert!(!sells(decal), "{name}");
+            assert_eq!(
+                buy_item(&mut account, decal, 1, INVENTORY_SLOT, 1, NOW),
+                Err(ActionError::NotSold)
+            );
+            assert_eq!(
+                rules::buy(&mut account, decal, 1, 0, INVENTORY_SLOT, 1, NOW),
+                Err(ActionError::NotSold)
+            );
+        }
+        assert_eq!(account, before);
+        // The flag of Ukraine is, for 300 gold.
+        assert!(buy_item(&mut account, dict("decals_4_3"), 1, INVENTORY_SLOT, 1, NOW).is_ok());
+        assert_eq!(account.premium_money, 9_700);
+    }
+
     #[test]
     fn the_premium_voucher_is_used_up() {
         let mut account = rich(0);

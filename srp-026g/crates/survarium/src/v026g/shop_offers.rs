@@ -48,7 +48,10 @@
 //! PROVEN for the window. [choice] srp lists every premium item with a
 //! price that no bundle holds, at its `base_cost` in gold, under seller 0
 //! (sold to everyone): [`premium_price_list`]. The items of a bundle are
-//! sold by their bundle.
+//! sold by their bundle. The items of [`prices::NOT_SOLD`] (the Russian and
+//! Belarusian flags and coats of arms, the flag of the USSR and the red
+//! star; the owner's choice of 2026-10-18)
+//! are sold neither way.
 
 use super::dictionary::Dictionary;
 use super::lobby::{ShopRecord, ShopRecordItem};
@@ -242,6 +245,7 @@ pub fn premium_price_list() -> &'static [PriceItem] {
             .items
             .iter()
             .filter(|item| item.is_premium && item.base_cost > 0)
+            .filter(|item| !prices::is_not_sold(item))
             .filter(|item| !bundled.contains(&item.dict_id))
             .map(|item| PriceItem {
                 cost: item.base_cost,
@@ -316,6 +320,49 @@ mod tests {
         assert!(whole.windows(2).all(|pair| {
             (pair[0].dict_id, pair[0].faction_id) < (pair[1].dict_id, pair[1].faction_id)
         }));
+    }
+
+    /// `prices::NOT_SOLD` (2026-10-18): the gold list is every premium item
+    /// with a price that no bundle holds but those six, and neither list
+    /// the lobby is sent has them.
+    #[test]
+    fn the_gold_list_leaves_out_what_is_not_sold() {
+        let dictionary = Dictionary::shared();
+        let excluded: Vec<u16> = prices::NOT_SOLD
+            .iter()
+            .map(|&(name, _)| dictionary.item_named(name).unwrap().dict_id)
+            .collect();
+        assert_eq!(excluded.len(), 6);
+        for &dict_id in &excluded {
+            assert_eq!(premium_price(dict_id), None);
+            assert!(price_list().iter().all(|price| price.dict_id != dict_id));
+        }
+        let bundled: Vec<u16> = BUNDLES
+            .iter()
+            .flat_map(|bundle| bundle.contents(dictionary))
+            .map(|(dict_id, _, _)| dict_id)
+            .collect();
+        let gold: Vec<u16> = dictionary
+            .items
+            .iter()
+            .filter(|item| item.is_premium && item.base_cost > 0)
+            .map(|item| item.dict_id)
+            .filter(|dict_id| !bundled.contains(dict_id))
+            .collect();
+        let listed: Vec<u16> = premium_price_list().iter().map(|p| p.dict_id).collect();
+        assert_eq!(listed.len(), gold.len() - excluded.len());
+        let kept: Vec<u16> = gold
+            .into_iter()
+            .filter(|dict_id| !excluded.contains(dict_id))
+            .collect();
+        assert_eq!(listed, kept);
+        // The other 77 premium flags and coats of arms stay at 300 gold.
+        let decals = premium_price_list()
+            .iter()
+            .filter(|price| dictionary.item(price.dict_id).unwrap().category == 26)
+            .inspect(|price| assert_eq!(price.cost, 300))
+            .count();
+        assert_eq!(decals, 83 - 6);
     }
 
     #[test]

@@ -163,6 +163,11 @@ pub fn named_items() -> Vec<Named> {
             .iter()
             .map(|&(name, _, _)| ("prices::OWNER_PRICES", name)),
     );
+    named.extend(
+        super::prices::NOT_SOLD
+            .iter()
+            .map(|&(name, _)| ("prices::NOT_SOLD", name)),
+    );
     for bundle in &super::shop_offers::BUNDLES {
         named.extend(
             bundle

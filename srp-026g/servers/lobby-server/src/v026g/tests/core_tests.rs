@@ -2593,6 +2593,82 @@ fn a_bundle_and_a_premium_item_are_bought_for_gold() {
     world.assert_clean();
 }
 
+/// The owner's choice of 2026-10-18 (`prices::NOT_SOLD`): the Russian and
+/// Belarusian flags and coats of arms, the flag of the USSR and the red
+/// star are in no price record the lobby is
+/// sent and a buy of one is refused, for gold as for silver; one already
+/// owned is still sold back. The other flags are sold as before.
+#[test]
+fn the_excluded_flags_and_emblems_are_not_sold() {
+    let mut world = World::new(Duration::from_secs(60));
+    let alice = world.connect("Alice");
+    let decoded = world.take(alice);
+    let dictionary = Dictionary::shared();
+    let id = |name: &str| dictionary.item_named(name).unwrap().dict_id;
+    let excluded = [
+        "decals_4_1",
+        "decals_4_2",
+        "decals_4_4",
+        "decals_5_1",
+        "decals_5_2",
+        "decals_5_4",
+    ]
+    .map(id);
+    let sent: Vec<u16> = decoded
+        .iter()
+        .find_map(|message| match message {
+            Decoded::Prices(prices) => Some(prices.iter().map(|price| price.dict_id).collect()),
+            _ => None,
+        })
+        .expect("the prices");
+    assert!(excluded.iter().all(|dict_id| !sent.contains(dict_id)));
+    // The flag of Ukraine and the coat of arms of Lithuania still are.
+    assert!(sent.contains(&id("decals_4_3")) && sent.contains(&id("decals_5_7")));
+
+    world.change(alice, |account| {
+        account.premium_money = 10_000;
+        account.generic_money = 1_000_000;
+    });
+    let before = world.account(alice).clone();
+    for dict_id in excluded {
+        world.ask(alice, request::buy(dict_id, 1, 0, INVENTORY_SLOT, 1));
+        assert_eq!(
+            denial(&world.take(alice), 0x47).as_deref(),
+            Some("st_cannot_buy_item"),
+            "dict {dict_id}"
+        );
+    }
+    assert_eq!(*world.account(alice), before);
+    // Another flag: 300 gold.
+    world.ask(
+        alice,
+        request::buy(id("decals_4_3"), 1, 0, INVENTORY_SLOT, 1),
+    );
+    let decoded = world.take(alice);
+    assert!(matches!(
+        &decoded[0],
+        Decoded::Permitted(Permitted::Bought(bought)) if bought[0].dict_id == id("decals_4_3")
+    ));
+    assert_eq!(world.account(alice).premium_money, 9_700);
+
+    // One owned from before is sold back like any decal.
+    let mut item_id = 0;
+    world.change(alice, |account| {
+        item_id = account.add_item(id("decals_4_2"), FULL_CONDITION)
+    });
+    world.take(alice);
+    let silver = world.account(alice).generic_money;
+    world.ask(alice, request::sell(item_id, 1));
+    let decoded = world.take(alice);
+    assert!(matches!(
+        decoded[0],
+        Decoded::Permitted(Permitted::Sold { item_id: sold, amount: 1 }) if sold == item_id
+    ));
+    assert!(world.account(alice).item(item_id).is_none());
+    assert!(world.account(alice).generic_money > silver);
+    world.assert_clean();
+}
+
 #[test]
 fn the_premium_voucher_is_used_from_the_inventory() {
     let mut world = World::new(Duration::from_secs(60));

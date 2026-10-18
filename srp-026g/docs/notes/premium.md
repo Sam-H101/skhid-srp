@@ -31,6 +31,13 @@ Record 0xD0 bytes, reader of the UI 0x227F60. PROVEN:
 
 **Premium items one by one** [srp]: a 0x95 record cannot be a single item, so every premium item with a price that no bundle holds (vouchers, premium camouflages and decals, the AK-74N) is in the price list 0x8A under seller 0 at its gold `base_cost`; `47 00` for one takes gold. The lobby's shop list takes any category from 0x8A and its buy dialog pays gold for a premium item (`MessageAsk`: `_money_type = isPremium`). PROVEN for the window.
 
+**Not sold: the Russian and Belarusian flags and coats of arms, the flag of the USSR and the red star** (the owner's decision, 2026-10-18; `prices.rs` `NOT_SOLD`):
+- `decals_4_1` (dict 266) Flag of USSR, `decals_4_2` (267) Flag of Russia, `decals_4_4` (269) Flag of Belarus, `decals_5_1` (282) Red star, `decals_5_2` (283) Coat of arms of Russia, `decals_5_4` (285) Coat of arms of Belarus: premium decals, 300 gold each until then.
+- In no price record (0x8A), silver or gold; a `47 00` for one is refused (`st_cannot_buy_item`).
+- The Russian and Belarusian ones: found by name in all six localizations of stock 0.26g with patches 12..=20 and checked against their icons; nothing else names Russia or Belarus. The two Soviet ones: the owner's word. The coat of arms of Lithuania (`decals_5_7`, the Vytis) stays on sale, the owner's word too.
+- They drop nowhere (`drop_weight` 0) and are in no bundle.
+- srp leaves owned copies alone: they are still worn and sold back like any decal. The owner removes them from accounts by hand (`g26_items` rows by `dict_id`, and the `upgrades` entries of other items that name them).
+
 **The third kit is not premium's in srp** (the owner's choice, 2026-10-17): every account uses all three kits, premium or not, and no kit is sent with the client's premium state 2 (`Account::kit_usable`; lobby.md §2.5). The client locks a kit only by that state (`ProfileSelector.setupProfiles`, `LobbyMenu.onProfileContextMenu`: the buy-premium box opens for a state-2 tab), not by the account's premium. The original game's third kit was premium's (PN 0.26g, `progression_sources.md`). Premium's other benefits are unchanged. OPEN: the client's premium windows (`MessagePremium`, `MessagePremiumDiscount`) still list `st_premium_bonus_profile` ("Профиль экипировки", an equipment profile) among premium's bonuses; that text is the game's localization in `resources.db`, which a server change does not reach.
 
 **Gold has no real-money source in srp**: level rewards (a new account starts with none since 2026-10-12), the tutorial's notes (100 in all), the daily bonus (50 a week), drops, the operator's web page.
