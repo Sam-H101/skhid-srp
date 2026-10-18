@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the original and patch 31's respawn rule tick (0x316820), the
-client's view of a kit change (0x2678E0) and the hud's update of the local
-player's state (0x23B7B3) and the kits' pick (0x233F28) on made-up
-objects.
+client's view of a kit change (0x2678E0), the hud's update of the local
+player's state (0x23B7B3), the kits' pick (0x233F28) and the input world's
+mouse move through the game world's input handler (0x3B9F0A, 0x25D0E0) on
+made-up objects.
 
     python check_kit_change_026g.py <original survarium.exe>
 
@@ -29,9 +30,14 @@ The view keeps the warmup's camera and input before play and gives the
 player's in play, by the state the network client set the camera for. The
 hud shows the kits to a player who becomes alive before play, keeps them
 shown (and its cursor) after a pick before play, and hides them from a live
-one in play. The original does none of it: it never changes a
-kit of a live player, its view always gives the player camera, and its hud
-only hides the kits at a respawn and shows them at a death. Says nothing
+one in play. While the kits are shown before play (the player's input
+handler in the warmup mode) a mouse move moves the hud's cursor and goes on
+to the player's input handler, which turns the warmup camera; with the kits
+shown in any other mode (the death screen), or the cursor shown without
+them, the cursor takes it, as in the original. The original does none of
+it: it never changes a kit of a live player, its view always gives the
+player camera, its hud only hides the kits at a respawn and shows them at a
+death, and its cursor takes every move while it is shown. Says nothing
 about what the real initialize, physics, cameras and hud movie do.
 """
 import struct
@@ -591,6 +597,96 @@ def check_pick(data, patched):
     return checks
 
 
+# A mouse move: the input world's loop over its handlers (0x3B9F0A, esi =
+# the mouse: +4, +8, +0Ch the move, +2Ch the input world; ecx = the
+# handlers' vector, its first dword their first, ebp their end) to its end (0x3B9F34), with the game world's
+# input handler (its vtable 0x9FC588, on_mouse_move 0x25D0E0) and then the
+# player's (priority 7 before 10).
+MOVE_FROM, MOVE_TO = 0x3B9F0A, 0x3B9F34
+LOOK_WORLD = HEAP + 0x30000                        # the game world; its input handler at +1F8h
+LOOK_HANDLER = LOOK_WORLD + 0x1F8
+MOUSE, LIST, PLAYER_INPUT, INPUT_WORLD, HANDLERS = (HEAP + 0x38000 + i * 0x100 for i in range(5))
+GVT, CURSOR_POS, PIVT = HEAP + 0x38800, HEAP + 0x38900, HEAP + 0x38A00
+SET_CURSOR, GET_CURSOR, PLAYER_MOVE = STUB + 0x80, STUB + 0x90, STUB + 0xA0
+
+
+class Look(Emu):
+    def __init__(self, data, cursor, kits, mode):
+        super().__init__(data)
+        self.word(LOOK_WORLD, GVT)
+        self.word(GVT + 0x30, SET_CURSOR)
+        self.word(LOOK_HANDLER, 0x9FC588)
+        self.word(LOOK_HANDLER + 0x4B70, CURSOR_POS)
+        self.word(CURSOR_POS, CURSOR_POS + 0x10)
+        self.word(CURSOR_POS + 0x10, GET_CURSOR)
+        self.byte(LOOK_WORLD + 0x1FC + 0x2DC, cursor)
+        self.byte(LOOK_WORLD + 0x1FC + 0x2DF, kits)
+        if mode is not None:
+            self.word(LOOK_WORLD + 0x4D58, PLAYER_INPUT)
+            self.word(PLAYER_INPUT + 0x358, mode)
+        self.word(PLAYER_INPUT, PIVT)
+        self.word(PIVT + 0xC, PLAYER_MOVE)
+        self.word(LIST, LOOK_HANDLER)
+        self.word(LIST + 4, PLAYER_INPUT)
+        self.word(HANDLERS, LIST)
+        for at, value in ((MOUSE + 4, 7), (MOUSE + 8, -3), (MOUSE + 0xC, 0), (MOUSE + 0x2C, INPUT_WORLD)):
+            self.word(at, value)
+
+    def stub(self, emu, address, size, _):
+        sp, this = emu.reg_read(UC_X86_REG_ESP), emu.reg_read(UC_X86_REG_ECX)
+        if address == GET_CURSOR:                  # the cursor's position into (&x, &y)
+            assert this == CURSOR_POS
+            self.word(self.read(sp + 4), 300)
+            self.word(self.read(sp + 8), 200)
+            self.returns(0, 8)
+        elif address == SET_CURSOR:                # the hud's cursor to (x, y, 0)
+            assert this == LOOK_WORLD
+            self.calls.append(("cursor", self.read(sp + 4), self.read(sp + 8), self.read(sp + 12)))
+            self.returns(0, 12)
+        elif address == PLAYER_MOVE:               # the player's on_mouse_move(world, x, y, z)
+            assert this == PLAYER_INPUT
+            self.calls.append(("player", self.read(sp + 4), self.read(sp + 8), self.read(sp + 12) & 0xFFFFFFFF,
+                               self.read(sp + 16)))
+            self.returns(1, 16)
+
+    def run(self):
+        emu = self.emu
+        emu.reg_write(UC_X86_REG_ESP, STACK)
+        emu.reg_write(UC_X86_REG_ESI, MOUSE)
+        emu.reg_write(UC_X86_REG_ECX, HANDLERS)
+        emu.reg_write(UC_X86_REG_EBP, LIST + 8)
+        emu.reg_write(UC_X86_REG_EBX, 0x12345678)
+        emu.emu_start(MOVE_FROM, MOVE_TO, count=1000)
+        assert emu.reg_read(UC_X86_REG_EIP) == MOVE_TO and emu.reg_read(UC_X86_REG_ESP) == STACK
+        assert (emu.reg_read(UC_X86_REG_ESI), emu.reg_read(UC_X86_REG_EBP), emu.reg_read(UC_X86_REG_EBX)) \
+            == (MOUSE, LIST + 8, 0x12345678)
+        return self.calls
+
+
+def look_cases():
+    """(name, the hud's cursor shown, the kits shown, the player's input
+    handler's mode or None for none, the original's, the build's)."""
+    cursor = [("cursor", 300, 200, 0)]
+    turns = cursor + [("player", INPUT_WORLD, 7, 0xFFFFFFFD, 0)]
+    yield "no cursor, before play", 0, 0, 3, turns, turns
+    yield "no cursor, in play", 0, 0, 0, turns, turns
+    yield "the kits shown before play", 1, 1, 3, cursor, turns
+    yield "the kits shown on the death screen (first person)", 1, 1, 0, cursor, cursor
+    yield "the kits shown on the death screen (third person)", 1, 1, 2, cursor, cursor
+    yield "the kits shown, the input off", 1, 1, 4, cursor, cursor
+    yield "the kits shown, no player input handler", 1, 1, None, cursor, cursor
+    yield "a cursor without the kits before play (a replay's)", 1, 0, 3, cursor, cursor
+
+
+def check_look(data, patched):
+    checks = 0
+    for name, shown, kits, mode, original, build in look_cases():
+        look = Look(data, shown, kits, mode)
+        assert look.run() == (build if patched else original), (patched, name, look.calls)
+        checks += 1
+    return checks
+
+
 def death_cases():
     """(name, the relayed choices as (time, kit), the kit of the respawn,
     the next kit after it): a dead player in play, due to respawn at R."""
@@ -637,16 +733,18 @@ def main():
     for data, is_patched in ((original, False), (patched, True)):
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
-        checks += check_death(data, is_patched)
+        checks += check_death(data, is_patched) + check_look(data, is_patched)
     # A build that does not look at the statistics, or at the state, or at
     # the end of the places, or that gives the spawn no protection when none
     # is left (which leaves the new kit's damage model as it was), fails; so
-    # does one whose view always gives the warmup.
+    # does one whose view always gives the warmup, and one whose cursor lets
+    # a move go on in any mode.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
                             (bytes.fromhex("48d1e8750d"), bytes.fromhex("48d1e8eb00"), check_boundary),
                             (bytes.fromhex("3b865c84010073ee"), bytes.fromhex("3b865c8401009090"), check_tick),
                             (bytes.fromhex("29e8770489e8f7d0"), bytes.fromhex("29e8770431c09090"), check_tick),
-                            (bytes.fromhex("83be601c1f000375"), bytes.fromhex("83be601c1f0003eb"), check_view)):
+                            (bytes.fromhex("83be601c1f000375"), bytes.fromhex("83be601c1f0003eb"), check_view),
+                            (bytes.fromhex("83b85803000003750c"), bytes.fromhex("83b858030000039090"), check_look)):
         broken = bytearray(patched)
         at = broken.rfind(old)                     # in `.srp`, the last section with bytes
         assert at > base.Headers(broken).sections(broken)[-2][3]
@@ -657,7 +755,7 @@ def main():
             checks += 1
         else:
             sys.exit(f"a broken build ({new.hex()}) passed")
-    print(f"patch 31: {checks} runs as expected (the original, the build and five broken builds)")
+    print(f"patch 31: {checks} runs as expected (the original, the build and six broken builds)")
 
 
 if __name__ == "__main__":

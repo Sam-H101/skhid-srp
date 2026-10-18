@@ -27,6 +27,9 @@ README patch 31, `client_patch.md` section 3.29; the server: `TimelimitRule::bef
 - **HUD:** the kit selector shows at spawn before the start and stays open after a pick, the
   cursor where it was (another pick switches again); it hides at the start. It is shown for a
   live player exactly while the camera is the pre-start one.
+- **Camera while the selector is open (before the start):** the mouse turns the warmup camera
+  (the wheel zooms it) as in the stock game, and the same move moves the cursor; clicks are the
+  selector's. On the death screen the cursor alone takes the mouse, as before.
 - **Death screen (in play):** the selector also stays open after a pick, the cursor where it
   was, and can be clicked again until the respawn; each pick is the next life's kit, the last
   one wins; it hides at the respawn as before. A pick for the respawn's own tick is the life

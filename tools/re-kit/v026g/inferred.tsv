@@ -1040,6 +1040,7 @@ va	status	ref_021d	name
 0x001f3bd0	inferred-high	0x00157a52	survarium::player::is_first_view
 0x001f3c70	inferred-medium	0x00157ab8	survarium::player::generate_hit_event
 0x001f56e0	inferred-medium	0x001652ab	survarium::net_stats::add_text_cell
+0x001f63d0	inferred-medium		survarium::game_world::input_priority
 0x001f6520	inferred-medium	0x00159fec	survarium::booby_trap_set_cook::new_derived_resource
 0x001f6580	inferred-medium	0x0015a034	survarium::booby_trap_cook::new_derived_resource
 0x001f65d0	inferred-medium	0x001f3a3c	survarium::hud_game_effect_emitter::destroy
@@ -1495,6 +1496,9 @@ va	status	ref_021d	name
 0x0025a730	inferred-medium	0x00192a9e	survarium::particle_game_effect_emitter_cook::on_particle_system_loaded
 0x0025b170	inferred-medium	0x00192ece	survarium::hud_game_effect_emitter_cook::delete_resource
 0x0025b1c0	inferred-medium	0x00192ef5	survarium::sound_game_effect_emitter_cook::on_sound_emitters_loaded
+0x0025cd00	inferred-medium		survarium::game_world::on_keyboard_action
+0x0025cf60	inferred-medium		survarium::game_world::on_mouse_key_action
+0x0025d0e0	inferred-medium		survarium::game_world::on_mouse_move
 0x0025dd10	inferred-medium	0x00194968	survarium::grenade_set_cook::new_derived_resource
 0x0025e800	inferred-medium	0x00194fc4	survarium::artefact_cook::query_for_derived_resources
 0x0025ea90	inferred-medium	0x001951d3	survarium::artefact<survarium::artefact_spring_core>::~artefact<survarium::artefact_spring_core>
