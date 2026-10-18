@@ -671,7 +671,7 @@ function drawHealing() {
     const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
     const n = larkspurs();
     const carried = pools.map(([p]) => regen(p, mods[p], n));
-    rows.push([named(`${nm(lark)}${n > 1 ? ` ×${n}` : ""}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    rows.push([named(`${nm(lark)} ×${n}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
     const cures = (lark.active.remove_affects || []).length;
     rows.push([named(`${nm(lark)}, ${T("activated", "активований")}`, "artefact_lifebone"), T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
   }
