@@ -79,9 +79,9 @@ header.top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; j
 .vs::before { content: ""; position: absolute; inset: 0 50%; border-left: 1px dashed var(--rule) }
 .vs span { position: relative; background: var(--bg); font: 700 .8rem var(--font-display); letter-spacing: .12em;
   color: var(--ink-3); padding: 6px 0; writing-mode: vertical-rl }
-/* A wide screen: the map between shooter and target, a little narrower than they are */
+/* A wide screen: the map between shooter and target */
 @media (min-width: 1700px) { .wrap { max-width: 1840px }
-  .duel { grid-template-columns: minmax(0, 1fr) minmax(0, .85fr) minmax(0, 1fr); grid-template-areas: "shooter map target"; column-gap: 22px }
+  .duel { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-areas: "shooter map target"; column-gap: 22px }
   .vs { display: none } .duel > .mapsec { margin-top: 0; align-content: start }
   .duel > .mapsec .maphead { display: grid; justify-content: stretch } }
 @media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr); grid-template-areas: "shooter" "vs" "target" "map" } .vs { height: 34px }
@@ -120,12 +120,13 @@ h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: 
 .fxtile:hover { opacity: .75 }
 .fxtile[aria-pressed=true] { opacity: 1; border-color: var(--accent); background: var(--panel) }
 .fxtile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
-.gamemods { background: var(--hud-bg); padding: 8px 12px; display: grid; gap: 4px; font: 700 14px/1.2 "Carlito", Calibri, var(--font-body); color: var(--hud-ink); text-shadow: 0 1px 4px #000 }
-.gmrow { display: grid; grid-template-columns: 31px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 31px }
+.gamemods { background: var(--hud-bg); padding: 8px 12px; display: grid; grid-template-columns: 31px max-content minmax(0, 1fr); align-items: center; gap: 4px 10px; font: 700 14px/1.2 "Carlito", Calibri, var(--font-body); color: var(--hud-ink); text-shadow: 0 1px 4px #000 }
+.gmrow { display: contents }
+.gmrow > * { min-height: 31px; display: flex; align-items: center }
+.gmrow > .gico { display: block }
 .gico { width: 31px; height: 31px; object-fit: contain; display: block }
-.gtext small { font-weight: 400; color: var(--ink-3); text-shadow: none }
 .gv.good { color: var(--mod-good) } .gv.bad { color: var(--mod-bad) }
-.gsteps { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; margin-left: 4px }
+.gsteps { flex-wrap: wrap; gap: 4px }
 .gstep { font: inherit; text-shadow: inherit; min-width: 44px; min-height: 26px; padding: 2px 6px; cursor: pointer;
   background: transparent; color: var(--hud-ink); border: 1px solid var(--hud-line); opacity: .7 }
 .gstep:hover { opacity: 1 }
@@ -222,7 +223,9 @@ th { font: 700 .72rem var(--font-display); letter-spacing: .1em; text-transform:
 th[data-k] { cursor: pointer } th[data-k]:hover { color: var(--ink) }
 td.n { text-align: right }
 #cmp th + th, #cmp td + td { border-left: 1px solid var(--rule) }
-#cmp td.wname { padding-block: 3px }
+#cmp td.wname, #heal td.hname { padding-block: 3px }
+#heal td.hname .wico { margin-left: 0 }
+#heal td.hname:not(:has(img)) { padding-left: 72px }
 /* The weapon picker: a list with the lobby icons (a <select> cannot show them) */
 .wpick { position: relative }
 .wpick-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 35px; padding: 3px 8px; font: inherit; color: var(--ink);
@@ -389,4 +392,4 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <div class="tablebox"><table id="heal"></table></div>
   </section>
 </div>
-<script src="/damage/calc.js?v=683dd9938da8"></script>
+<script src="/damage/calc.js?v=520425f7ceb6"></script>

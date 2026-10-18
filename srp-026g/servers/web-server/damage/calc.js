@@ -274,8 +274,8 @@ const RULES = (() => {
     const panel = el("div", { class: "gamemods" });
     for (const id of kinds.default) {
       const m = MODS[id], prop = m.props[0] || {};
-      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "gtext" },
-        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }))));
+      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "glabel", text: `${label(prop)}:` }),
+        el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) })));
     }
     if (kinds.default.length) { host.append(panel); return true; }
     for (const t of kinds.mod) {
@@ -292,7 +292,7 @@ const RULES = (() => {
         steps.append(b);
       }
       paint();
-      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "gtext" }, `${label(prop)}: `, steps)));
+      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "glabel", text: `${label(prop)}:` }), steps));
     }
     host.append(panel);
     return true;
@@ -1033,15 +1033,17 @@ function drawHealing() {
   };
   const rows = [];
   const own = pools.map(([p]) => regen(p));
-  rows.push([T("By itself", "Само собою"), T(`${own[0].wait} s without hits`, `${own[0].wait} с без влучань`), ...own.map(x => x.cell),
+  // A row's name with its item's lobby icon.
+  const named = (text, key) => { const src = key && DATA.icons && DATA.icons[key]; return (src ? `<img class="wico" alt="" src="${src}">` : "") + `<b>${text}</b>`; };
+  rows.push([named(T("By itself", "Само собою")), T(`${own[0].wait} s without hits`, `${own[0].wait} с без влучань`), ...own.map(x => x.cell),
     T(`ends after ${own[0].wait} s without hits`, `минає за ${own[0].wait} с без влучань`)]);
   const lark = DATA.artefacts && DATA.artefacts.lifebone;
   if (lark) {
     const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
     const carried = pools.map(([p]) => regen(p, mods[p]));
-    rows.push([`${nm(lark)}, ${T("carried", "у слоті")}`, T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    rows.push([named(`${nm(lark)}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
     const cures = (lark.active.remove_affects || []).length;
-    rows.push([`${nm(lark)}, ${T("activated", "активований")}`, T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
+    rows.push([named(`${nm(lark)}, ${T("activated", "активований")}`, "artefact_lifebone"), T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
   }
   for (const key of ["medkit", "bandages"]) {
     const d = DATA.drugs && DATA.drugs[key]; if (!d) continue;
@@ -1050,12 +1052,12 @@ function drawHealing() {
       const gain = (heal[p] || 0) * d.activity_s;
       return gain <= 0 ? dash : gain >= row(p).health ? full : `+${hp(gain)}`;
     };
-    rows.push([nm(d), T(`${d.activation_delay_s} s after use, for ${d.activity_s} s`, `через ${d.activation_delay_s} с, ${d.activity_s} с`),
+    rows.push([named(nm(d), key), T(`${d.activation_delay_s} s after use, for ${d.activity_s} s`, `через ${d.activation_delay_s} с, ${d.activity_s} с`),
       ...pools.map(cell), (d.remove_affects || []).length ? fixed : dash]);
   }
   const head = ["", T("Starts", "Починає"), POOLS.body, POOLS.head, T("Legs, hands", "Ноги, кисті"), POOLS.pain, T("Broken leg, hand", "Зламана нога, кисть")];
   $("heal").innerHTML = `<thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
-    rows.map(r => `<tr><td><b>${r[0]}</b></td>${r.slice(1).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody>";
+    rows.map(r => `<tr><td class="hname">${r[0]}</td>${r.slice(1).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody>";
 }
 
 // ---------- map ----------
@@ -1085,7 +1087,7 @@ function drawMapBase() {
   const m = DATA.maps[state.map];
   // The play area (the native minimap's part of the render), not the whole square.
   const [vx, vy, vw, vh] = m.play || [0, 0, m.size[0], m.size[1]];
-  $("mapview").innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" style="width:min(100%, calc(75vh * ${vw / vh}))" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
+  $("mapview").innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" style="width:min(100%, calc(90vh * ${vw / vh}))" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
     <image href="${m.image}" width="${m.size[0]}" height="${m.size[1]}"/><g id="mapover"></g></svg>`;
   const svg = $("mapview").querySelector("svg");
   svg.addEventListener("click", ev => {

@@ -17,6 +17,20 @@ pub(crate) const PATH: &str = "/damage";
 pub(crate) const POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; \
     script-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'self'";
 
+/// Where the fonts are, which every page of the site uses (both servers).
+pub(crate) const FONTS: &str = "/damage/fonts/";
+
+/// The page's `@font-face` rules (the fonts' addresses with their hashes),
+/// for the site's other pages.
+pub(crate) fn font_faces() -> &'static str {
+    static FACES: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FACES.get_or_init(|| {
+        PAGE.lines()
+            .filter(|line| line.starts_with("@font-face"))
+            .collect()
+    })
+}
+
 /// The page, with `{{LANG}}` and `<!--SITE-HEADER-->` to fill.
 const PAGE: &str = include_str!("../damage/damage.html");
 

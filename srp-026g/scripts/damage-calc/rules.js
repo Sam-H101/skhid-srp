@@ -84,8 +84,8 @@ const RULES = (() => {
     const panel = el("div", { class: "gamemods" });
     for (const id of kinds.default) {
       const m = MODS[id], prop = m.props[0] || {};
-      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "gtext" },
-        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }))));
+      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "glabel", text: `${label(prop)}:` }),
+        el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) })));
     }
     if (kinds.default.length) { host.append(panel); return true; }
     for (const t of kinds.mod) {
@@ -102,7 +102,7 @@ const RULES = (() => {
         steps.append(b);
       }
       paint();
-      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "gtext" }, `${label(prop)}: `, steps)));
+      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "glabel", text: `${label(prop)}:` }), steps));
     }
     host.append(panel);
     return true;
