@@ -426,7 +426,15 @@ read by the 0.21d browser server and by the compose file's caddy, not by the
   units of a stack; an id the dictionary lacks is refused, since the client
   crashes on one); text (two lines, 63 bytes each, shown to everyone in the
   lobby and to who signs in, until cleared: `0xA5` / `0xA6`); ban, unban,
-  bans; maintenance; signups.
+  bans; maintenance; signups; password (since 2026-10-18).
+- Password reset (`notes/password-reset.md`, the owner's decision of
+  2026-10-18): by the user name the player signs in with, in any case, never
+  the character name. The page shows the account it matched first, then
+  resets; a script resets with one POST (`tab=reset_password`, `login=`,
+  the token) and gets one line back (`ok <login> <id>`, `no such login`,
+  …). The password is cleared and written at once, the account's sessions
+  end (its game is signed out), and its next sign-in, with any password,
+  sets the new one. srp keeps running; no SQL by hand.
 - Every change is written and the player's open game is told
   (`Inbox::account_changed`: inventory, account, money, level and skills,
   reputations, quests; then the services message for the premium time).

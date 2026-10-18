@@ -148,6 +148,10 @@ pub struct Account {
     pub ban: Option<Ban>,
     /// Where it last signed in from: what banning its address bans.
     pub last_ip: Option<IpAddr>,
+    /// When it last signed in (Unix seconds), since srp started: not kept,
+    /// so `None` after a restart until its next sign-in. The admin's
+    /// password reset shows it.
+    pub last_sign_in: Option<u64>,
 }
 
 impl Account {
@@ -166,6 +170,7 @@ impl Account {
             notices: Vec::new(),
             ban: None,
             last_ip: None,
+            last_sign_in: None,
         }
     }
 
@@ -1205,6 +1210,15 @@ impl SessionStore {
         accounts.len()
     }
 
+    /// The account's sessions that have not ended: games signed in with it.
+    pub fn live_sessions(&self, account_id: u32) -> usize {
+        self.sessions
+            .locked()
+            .values()
+            .filter(|session| session.account_id == account_id && !session.ended)
+            .count()
+    }
+
     /// Whether the account has a lobby or chat connection open.
     pub fn is_online(&self, account_id: u32) -> bool {
         self.sessions.locked().values().any(|session| {
@@ -1289,6 +1303,7 @@ impl SessionStore {
     pub fn signed_in_from(&self, account_id: u32, ip: IpAddr) {
         if let Some(account) = self.account(account_id) {
             let mut account = account.locked();
+            account.last_sign_in = Some(unix_now());
             if account.last_ip == Some(ip.to_canonical()) {
                 return;
             }
@@ -1328,6 +1343,31 @@ impl SessionStore {
         // What it won in a match it was playing is not paid out.
         self.match_results.locked().remove(&account_id);
         self.kick(|session| session.account_id == account_id)
+    }
+
+    /// Clear an account's password, as the admin's password reset does: its
+    /// next sign-in, with any password, sets the new one
+    /// ([`Self::adopt_password`]). Written at once; its wrong passwords are
+    /// forgotten, so the player is not locked out; and its sessions end now,
+    /// as a ban ends them, so nobody signed in with the old password plays
+    /// on. Returns how many sessions ended; `None` for an unknown account.
+    pub fn reset_password(&self, account_id: u32) -> Option<usize> {
+        let account = self.account(account_id)?;
+        let login = {
+            let mut account = account.locked();
+            account.password_hash = None;
+            account.login.clone()
+        };
+        drop(account);
+        self.mark_dirty(account_id);
+        self.flush();
+        // A key is the user name, or the user name and an address
+        // (`authenticate`).
+        let with_address = format!("{login}\n");
+        self.failures
+            .locked()
+            .retain(|key, _| *key != login && !key.starts_with(&with_address));
+        Some(self.kick(|session| session.account_id == account_id))
     }
 
     /// Lift an account's ban. `false` if it had none.
@@ -1701,6 +1741,51 @@ mod tests {
             },
         );
         assert_eq!(store.sign_in("cheater", b"pw"), Ok(id));
+    }
+
+    #[test]
+    fn a_reset_password_is_set_by_the_next_sign_in_and_ends_the_sessions() {
+        let store = SessionStore::new();
+        let from: IpAddr = "203.0.113.4".parse().unwrap();
+        let start = Instant::now();
+        let id = store
+            .sign_in_from("Forgetful", b"old-password", from, start)
+            .unwrap();
+        store.signed_in_from(id, from);
+        assert!(store.account(id).unwrap().locked().last_sign_in.is_some());
+        let session = store.create_session(id);
+        let held = store.hold(session).unwrap();
+        let other = store.sign_in("bystander", b"pw").unwrap();
+        let other_session = store.create_session(other);
+        // The player tried the passwords they remembered and is locked out.
+        for _ in 0..MAX_FAILED_SIGN_INS {
+            let _ = store.sign_in_from("forgetful", b"guess", from, start);
+        }
+        assert_eq!(
+            store.sign_in_from("forgetful", b"old-password", from, start),
+            Err(SignInError::TooManyAttempts)
+        );
+
+        assert_eq!(store.reset_password(id), Some(1));
+        assert_eq!(store.account(id).unwrap().locked().password_hash, None);
+        assert!(store.has_ended(session));
+        assert!(store.hold(session).is_none());
+        assert!(!store.has_ended(other_session));
+        drop(held);
+        // Not locked out any more; any password is taken, then it alone.
+        assert_eq!(
+            store.sign_in_from("FORGETFUL", b"new-password", from, start),
+            Ok(id)
+        );
+        assert_eq!(
+            store.sign_in_from("forgetful", b"old-password", from, start),
+            Err(SignInError::WrongPassword)
+        );
+        assert_eq!(store.sign_in("forgetful", b"new-password"), Ok(id));
+        assert_eq!(store.sign_in("bystander", b"pw"), Ok(other));
+
+        // An unknown account: nothing to reset.
+        assert_eq!(store.reset_password(id + 1000), None);
     }
 
     #[test]
