@@ -823,4 +823,180 @@ mod tests {
             }
         }
     }
+
+    /// Weapon balance 1 (`scripts/content-edit/weapon-balance-1.json`, the
+    /// patch at `SRP_TEST_PATCH_WEAPON_BALANCE_1` over the live data): each
+    /// listed weapon's `parameters` value and the lobby card's text of it
+    /// (`ui_desc.props_list`: prop 1 damage x100, 3 armour piercing x100, 4
+    /// rate of fire) change as listed, and nothing else; the items'
+    /// misspelt `stamina_regenation_speed_modifier` is spelt as the exe reads
+    /// it, with its value, in every item config and in the modifications'
+    /// paths. srp reads none of these: the game computes them, and the
+    /// server data carries the files.
+    #[test]
+    #[ignore = "needs 0.26g's resources.db, skhid's patches and the weapon balance 1 patch"]
+    fn weapon_balance_1_changes_only_its_values() {
+        use super::super::dictionary::{self, Dictionary};
+        const OLD: &str = "stamina_regenation_speed_modifier";
+        const NEW: &str = "stamina_regeneration_speed_modifier";
+        // (weapon, key, live, new); the card's text is the value x100, or
+        // the rate of fire itself.
+        let changes: &[(&str, &str, f32, f32)] = &[
+            ("kriss_vector", "bullet_pierce", 0.45, 0.25),
+            ("kriss_vector", "bullet_damage", 0.45, 0.42),
+            ("fn_p90", "bullet_pierce", 0.55, 0.30),
+            ("mp7", "bullet_pierce", 0.55, 0.30),
+            ("mp7", "bullet_damage", 0.35, 0.40),
+            ("mp7_silencer", "bullet_pierce", 0.55, 0.30),
+            ("mp7_silencer", "bullet_damage", 0.35, 0.40),
+            ("mp7_silencer_special", "bullet_pierce", 0.55, 0.30),
+            ("mp7_silencer_special", "bullet_damage", 0.35, 0.40),
+            ("hk416", "bullet_pierce", 0.45, 0.34),
+            ("m4a1", "bullet_pierce", 0.42, 0.32),
+            ("msbs_carbine", "bullet_pierce", 0.42, 0.32),
+            ("fn_fnc", "bullet_pierce", 0.40, 0.30),
+            ("fn_fnc", "bullet_damage", 0.45, 0.50),
+            ("pkp_pecheneg", "bullet_pierce", 0.60, 0.45),
+            ("vz58", "bullet_pierce", 0.30, 0.40),
+            ("valmet", "bullet_pierce", 0.30, 0.40),
+            ("soc_vepr", "bullet_pierce", 0.30, 0.40),
+            ("kedr", "bullet_pierce", 0.10, 0.20),
+            ("aek_919k", "bullet_pierce", 0.10, 0.20),
+            ("sr2m", "rounds_per_minute", 900.0, 800.0),
+            ("sr3m", "rounds_per_minute", 900.0, 800.0),
+            ("sr3m", "bullet_damage", 0.55, 0.45),
+            ("sr3m_premium", "rounds_per_minute", 900.0, 800.0),
+            ("sr3m_premium", "bullet_damage", 0.55, 0.45),
+            ("val", "bullet_damage", 0.55, 0.50),
+            ("a9_91", "bullet_damage", 0.55, 0.50),
+            ("vss", "bullet_damage", 0.55, 0.50),
+            ("vss_premium", "bullet_damage", 0.55, 0.50),
+            ("vsk_94", "bullet_damage", 0.55, 0.50),
+            ("vsk_94_premium", "bullet_damage", 0.55, 0.50),
+            ("pp2000", "rounds_per_minute", 750.0, 680.0),
+            ("mosin_nagant", "bullet_damage", 1.0, 1.1),
+            ("mosin_nagant", "bullet_pierce", 0.35, 0.40),
+            ("toz_122", "bullet_damage", 1.1, 1.2),
+        ];
+        let prop = |key: &str| match key {
+            "bullet_damage" => 1,
+            "bullet_pierce" => 3,
+            _ => 4,
+        };
+        let shown = |key: &str, value: f32| {
+            if key == "rounds_per_minute" {
+                format!("{value}")
+            } else {
+                format!("{}", (value * 100.0).round())
+            }
+        };
+        let before = live_data(&[]);
+        let after = live_data(&[env_path("SRP_TEST_PATCH_WEAPON_BALANCE_1")]);
+        let dictionary = Dictionary::parse(after.file(dictionary::PATH).unwrap()).unwrap();
+        let mut renamed = 0;
+        let mut seen = std::collections::BTreeSet::new();
+        for item in &dictionary.items {
+            let path = item.cfg_name.as_str();
+            if !path.starts_with("gameplay/items/") || !seen.insert(path) {
+                continue;
+            }
+            let (Some(old), Some(new)) = (before.file(path), after.file(path)) else {
+                continue;
+            };
+            let old = ConfigValue::parse(old).unwrap();
+            let new = ConfigValue::parse(new).unwrap();
+            let name = path.rsplit('/').next().unwrap();
+            let weapon = name
+                .strip_prefix("wpn_")
+                .and_then(|n| n.strip_suffix(".options"));
+            let mine: Vec<_> = changes
+                .iter()
+                .filter(|change| Some(change.0) == weapon)
+                .collect();
+            for (key, value) in old.entries() {
+                let mut value = value.clone();
+                let mut text = None;
+                if key == "parameters" {
+                    let mut entries = value.entries().to_vec();
+                    for (k, v) in &mut entries {
+                        if k == OLD {
+                            *k = NEW.into();
+                            renamed += 1;
+                        }
+                        if let Some(change) = mine.iter().find(|change| change.1 == k.as_str()) {
+                            assert_eq!(v.as_f32(), Some(change.2), "{path} {k}");
+                            *v = ConfigValue::Float(change.3);
+                        }
+                    }
+                    value = ConfigValue::Named(entries);
+                    let got = new.req("parameters").unwrap();
+                    for (k, v) in value.entries() {
+                        let want = mine.iter().find(|change| change.1 == k.as_str());
+                        let have = got.get(k).unwrap_or_else(|| panic!("{path} {k}"));
+                        match want {
+                            Some(change) => assert_eq!(have.as_f32(), Some(change.3), "{path} {k}"),
+                            None => assert_eq!(have, v, "{path} {k}"),
+                        }
+                    }
+                    assert_eq!(got.entries().len(), value.entries().len(), "{path}");
+                    continue;
+                }
+                if key == "ui_desc" && !mine.is_empty() {
+                    let props = new.req("ui_desc").unwrap().req("props_list").unwrap();
+                    text = Some(props.clone());
+                    for change in &mine {
+                        let entry = props
+                            .children()
+                            .into_iter()
+                            .find(|p| p.i32_at("prop_id").unwrap() == prop(change.1))
+                            .unwrap();
+                        assert_eq!(
+                            entry.str_at("prop_value").unwrap(),
+                            shown(change.1, change.3),
+                            "{path} {}",
+                            change.1
+                        );
+                    }
+                }
+                let got = new.get(key).unwrap_or_else(|| panic!("{path} {key}"));
+                if let Some(props) = text {
+                    // The card's other lines are the live ones.
+                    let old_props = value.req("props_list").unwrap().children();
+                    for (o, n) in old_props.iter().zip(props.children()) {
+                        let id = o.i32_at("prop_id").unwrap();
+                        if !mine.iter().any(|change| prop(change.1) == id) {
+                            assert_eq!(*o, n, "{path} prop {id}");
+                        }
+                    }
+                } else {
+                    assert_eq!(got, &value, "{path} {key}");
+                }
+            }
+        }
+        assert!(renamed > 200, "{renamed} items had the misspelt key");
+        // The modifications and the defect that change it name the key as
+        // the exe reads it.
+        let walk = |config: &ConfigValue| -> Vec<String> {
+            fn strings(value: &ConfigValue, out: &mut Vec<String>) {
+                match value {
+                    ConfigValue::String(s) => out.push(s.clone()),
+                    _ => value.children().into_iter().for_each(|c| strings(c, out)),
+                }
+            }
+            let mut out = Vec::new();
+            strings(config, &mut out);
+            out
+        };
+        let path = "gameplay/items/modifications/modifications.options";
+        let old = walk(&ConfigValue::parse(before.file(path).unwrap()).unwrap());
+        let new = walk(&ConfigValue::parse(after.file(path).unwrap()).unwrap());
+        assert_eq!(old.iter().filter(|s| *s == OLD).count(), 6);
+        assert_eq!(new.iter().filter(|s| *s == OLD).count(), 0);
+        assert_eq!(new.iter().filter(|s| *s == NEW).count(), 6);
+        let fixed: Vec<String> = old
+            .iter()
+            .map(|s| if s == OLD { NEW.into() } else { s.clone() })
+            .collect();
+        assert_eq!(fixed, new);
+    }
 }

@@ -16,3 +16,4 @@
 # revision	what changed
 11	the Team Deathmatch end (patch 21) and a battery under the floor picked up (patch 23)
 17	patch 31: a kit chosen before the start is played at once where the player stands (#150)
+next	weapon balance 1: weapon damage, armour piercing and rate of fire values, and item stamina-regeneration bonuses that now apply (resources.db patch)
