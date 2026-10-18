@@ -746,17 +746,24 @@ function drawTrace(b, sim) {
   if (b.pellets > 1) li(T(`× ${b.pellets} pellets`, `× ${b.pellets} дробин`), "", T("Each pellet is its own bullet: when several land, their damage adds up.", "Кожна дробина — окрема куля: коли влучає кілька, пошкодження додається."));
 }
 
+// Under the doll: the pool the hit part feeds and pain, after the shot the
+// stepper shows, with what that shot took and when the pool kills or breaks.
 function drawPools(target, sim) {
   const box = $("pools"); box.innerHTML = "";
-  const show = Object.keys(target.max).filter(p => p !== "infection");
-  for (const p of show) {
-    const max = target.max[p], one = sim.firstShot[p] || 0, from = sim.history[0][p];
-    const left = Math.max(0, from - one);
-    const row = el("div", { class: "pool", style: `color:${poolColor(p)}` },
-      el("span", { class: "name", text: POOLS[p] }),
-      el("div", { class: "bar", html: `<span style="width:${left / max * 100}%"></span><em style="left:${left / max * 100}%;width:${one / max * 100}%"></em>` }),
-      el("span", { class: "t num", style: "color:var(--ink)", text: from < max ? (one > 0 ? T(`−${hp(one)} of ${hp(from)} left`, `−${hp(one)} із ${hp(from)} залишку`) : T(`${hp(from)} left`, `лишилось ${hp(from)}`)) : one > 0 ? `−${hp(one)} / ${hp(max)}` : `${hp(max)}` }));
-    box.append(row);
+  const routes = (target.rows[state.part].routes || {}).ranged || {};
+  const own = Object.keys(routes).find(p => p !== "pain" && p in target.max);
+  const n = clamp(state.dollShot || 1, 1, sim.history.length - 1);
+  const before = sim.history[n - 1], after = sim.history[n];
+  for (const p of [own, "pain"].filter(Boolean)) {
+    const max = target.max[p], left = after[p], lost = Math.max(0, before[p] - left);
+    const zero = sim.events.find(e => e.pool === p && e.threshold === 0);
+    const kills = zero && zero.affects.includes(0);
+    const tag = zero && n >= zero.shot ? el("span", { class: "tag " + (kills ? "kill" : "cripple"),
+      text: `${kills ? T("kills", "вбиває") : T("breaks", "ламає")} @${zero.shot}` }) : null;
+    box.append(el("div", { class: "dpool", style: `color:${poolColor(p)}` },
+      el("span", { class: "name" }, POOLS[p], tag),
+      el("span", { class: "t", html: `${hp(left)}<small> / ${hp(max)}</small>${lost > 0 ? ` <small>−${hp(lost)}</small>` : ""}` }),
+      el("div", { class: "bar", html: `<span style="width:${left / max * 100}%"></span><em style="left:${left / max * 100}%;width:${lost / max * 100}%"></em>` })));
   }
   const ev = $("events"); ev.innerHTML = "";
   for (const e of sim.events) {

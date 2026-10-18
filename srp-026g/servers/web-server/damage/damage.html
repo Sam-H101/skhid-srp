@@ -197,6 +197,15 @@ h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: 
 .pool .bar em { position: absolute; inset: 0 auto 0 0; background: repeating-linear-gradient(135deg, currentColor 0 3px, transparent 3px 6px); opacity: .55 }
 .pool .t { font: .8rem var(--font-data); text-align: right }
 .pool .name { font: 700 .78rem var(--font-display); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2) }
+.dollpools { display: grid; gap: 8px; margin-top: 10px }
+.dpool { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 6px; align-items: baseline }
+.dpool .name { font: 700 .78rem var(--font-display); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2) }
+.dpool .t { font: .8rem var(--font-data); color: var(--ink) }
+.dpool .t small { color: var(--ink-3) }
+.dpool .bar { grid-column: 1 / -1; height: 12px; background: var(--bg); border: 1px solid var(--rule); position: relative; overflow: hidden }
+.dpool .bar span { position: absolute; inset: 0 auto 0 0; background: currentColor; opacity: .9 }
+.dpool .bar em { position: absolute; inset: 0 auto 0 0; background: repeating-linear-gradient(135deg, currentColor 0 3px, transparent 3px 6px); opacity: .55 }
+.dpool .tag { margin-left: 6px }
 .events { margin: 0; padding-left: 18px; font-size: .86rem; color: var(--ink-2) }
 
 .tablebox { overflow-x: auto; border: 1px solid var(--rule); background: var(--panel) }
@@ -288,6 +297,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
             <div class="dollstep"><button type="button" id="dollprev" aria-label="Previous shot" data-uk-label="Попередній постріл">‹</button><span id="dollshot"></span><button type="button" id="dollnext" aria-label="Next shot" data-uk-label="Наступний постріл">›</button></div>
           </div>
           <div class="cap" id="partname">Chest</div>
+          <div class="dollpools" id="pools"></div>
         </div>
         <div class="armour" id="armour"></div>
       </div>
@@ -318,12 +328,9 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
       <h2 id="h-result" data-uk="Результат">Result</h2>
       <div class="verdict" id="verdict"></div>
       <ol class="trace" id="trace"></ol>
+      <ul class="events" id="events"></ul>
     </div>
     <div style="display:grid;gap:14px;align-content:start;min-width:0">
-      <h2 data-uk="Здоров'я">Health</h2>
-      <p class="note" style="margin:0 0 8px" data-uk="Скільки перший постріл знімає з кожного пулу здоров'я цілі. Тіло, голова чи біль на 0 вбивають; ноги й кисті — ніколи. Нижче: що стається на якому пострілі.">What the first shot takes from each of the target's health pools. Body, head or pain at 0 kills; legs and hands never do. Below: what happens on which shot.</p>
-      <div class="pools" id="pools"></div>
-      <ul class="events" id="events"></ul>
       <h3 data-uk="Пошкодження за дистанцією">Damage over distance</h3>
       <div class="legend"><span><i class="a"></i><b data-uk="куля до броні">bullet before armour</b></span><span><i></i><b data-uk="після цієї броні">after this armour</b></span></div>
       <div class="chart" id="chart"></div>
@@ -349,4 +356,4 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <pre class="formula" id="explain"></pre>
   </section>
 </div>
-<script src="/damage/calc.js?v=42bfc1841873"></script>
+<script src="/damage/calc.js?v=645262fc7842"></script>
