@@ -61,7 +61,7 @@
 //!   store is made); and the 0.26g queue's own: `SRP_MATCH_MIN_PLAYERS`
 //!   (default 4), `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30),
 //!   `SRP_MATCH_MAX_COUNTDOWN_SECONDS` (120);
-//! - `SRP_MATCH_TEAM_SIZE` (default 10, 1 to 10): the most players of a
+//! - `SRP_MATCH_TEAM_SIZE` (default 8, 1 to 10): the most players of a
 //!   side; a match has two sides;
 //! - `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
 //!   `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a
@@ -172,9 +172,8 @@ pub use patch_check::{check_min_patch_revision, min_patch_revision_from_env};
 pub use play::{
     LiveView, MatchHost, MatchPlayer, MatchSetup, MatchTicket, OpenMatch, match_profile,
 };
-/// `SRP_MATCH_TEAM_SIZE` when unset: "two teams of up to 8 players" (the
-/// wiki of February 2015; `progression_sources.md` §9).
-const DEFAULT_TEAM_SIZE: usize = 10;
+/// `SRP_MATCH_TEAM_SIZE` when unset: 8 ([`session::DEFAULT_TEAM_SIZE`]).
+const DEFAULT_TEAM_SIZE: usize = session::DEFAULT_TEAM_SIZE;
 /// The most a side can be: the client's roster has 20 places.
 const MAX_TEAM_SIZE: usize = session::MAX_PLAYERS_PER_MATCH / 2;
 /// `SRP_MATCH_SEARCH_STEP_SECONDS` when unset. [choice] The step is not in
