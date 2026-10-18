@@ -9,6 +9,7 @@ compile_error!(
 mod api;
 mod archive;
 mod arithmetic;
+mod crash_text;
 mod dump;
 mod modules;
 mod notice;

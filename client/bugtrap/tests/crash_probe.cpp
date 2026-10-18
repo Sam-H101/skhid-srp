@@ -177,9 +177,11 @@ static BOOL CALLBACK CloseDialog(HWND window, LPARAM)
     if (process != GetCurrentProcessId() || !GetDlgItem(window, IDC_INTRO2))
         return TRUE;
     WCHAR text[33000];
-    GetDlgItemTextW(window, IDC_INTRO2, text, 33000);
-    if (!wcsstr(text, expectFailure ? L"Could not save a crash dump" : L"Crash dump saved:"))
+    // Dialog text follows Windows' UI language, independently of the game.
+    if (!GetDlgItemTextW(window, IDC_INTRO2, text, 33000))
         return TRUE;
+    if (!!IsWindowVisible(GetDlgItem(window, 1034)) == !!expectFailure)
+        ExitProcess(99);
     if (!IsWindowEnabled(GetDlgItem(window, IDC_SUBMIT_BUG)))
         ExitProcess(92);
     if (testDiscord) {

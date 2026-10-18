@@ -17,11 +17,9 @@ use core::{
 };
 use windows_sys::Win32::{
     Foundation::*,
+    Globalization::GetUserDefaultUILanguage,
     Storage::FileSystem::*,
-    System::{
-        Environment::GetCommandLineW, LibraryLoader::GetModuleFileNameW,
-        Threading::GetCurrentProcessId,
-    },
+    System::{LibraryLoader::GetModuleFileNameW, Threading::GetCurrentProcessId},
     UI::{Shell::*, WindowsAndMessaging::*},
 };
 
@@ -107,9 +105,7 @@ pub unsafe fn check_once() {
     if error == 0 {
         return;
     }
-    let line = GetCommandLineW();
-    let line = core::slice::from_raw_parts(line, length(line, 32767));
-    let text = notice(language(line));
+    let text = notice(language(GetUserDefaultUILanguage()));
     let mut message = Wide::<4096>::new();
     let _ = write!(message, "{}", text.before_folder);
     let _ = message.wide(&folder.buf[..folder.len]);
