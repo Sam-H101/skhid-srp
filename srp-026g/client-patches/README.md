@@ -1903,9 +1903,35 @@ The latter uses the report's byte counts with a synthetic block layout, since
 the real blocks are absent from the dump. `selftest_026g.py` checks exact mutation
 ranges and relocation safety. An isolated Wine/DXVK Mamayev Kurgan rain load
 without either memory option rendered and produced verified server checkpoints;
-the log reports 512 MiB managed and 256 MiB unmanaged. The diagnostic client
-bypasses disabled network-statistics counters because its direct connection
-omits the lobby profile. A same-process repeated-map reproduction remains open.
+the log reports 512 MiB managed and 256 MiB unmanaged.
+
+Native 20-player comparisons on the same map found two budget failures:
+
+| Startup settings | Retail defaults | Patched defaults |
+| --- | --- | --- |
+| Both memory options absent, no diagnostic cap | 3/3 failed with `not enough memory for arena [global mt allocator]` | 3/3 loaded and produced verified checkpoints |
+| `-mt_allocator=768 -max_resources_size=422`, resource floor absent | 1/3 failed at `0x1068F7`, the reported managed-arena timeout site | 5/5 loaded and produced verified checkpoints |
+
+The constrained failure requested 57,082,932 bytes for
+`resources/projects/v021d_level_06/vegetation/suh_middle.veg`, with
+134,967,552 allocated out of 295,043,072 managed bytes. It reproduces the
+reported failure mechanism, not the exact sky-texture query or player history.
+The native maximum-resource option clamps to at least the configured resource
+floor, so the patched trials have 512 MiB managed instead of 281.375 MiB.
+One uncapped retail run raised an access violation while reporting the
+multithreaded-arena exhaustion; its log and dump comment preserve that failure.
+
+The comparison exes differ only in the four bytes of the two default immediates.
+Both use the existing 4 MiB AI arena patch and bypass disabled network-statistics
+counters because the diagnostic direct connection omits the lobby profile.
+They use the local ported-map resource archive and camera instrumentation, not
+the player's unknown installation. The resource floor is a startup request;
+the submitted pool size alone cannot establish the launch arguments.
+
+With the smaller pool and one player, ten fresh-process loads and ten calls to
+the native resource reload routine did not reproduce the failure. Memory use
+settled after the second reload. That stress test does not exercise full
+lobby-to-match transitions. The exact reported intermittent crash remains open.
 
 ## Not ported, not done
 
