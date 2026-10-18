@@ -495,13 +495,14 @@ fn handle_sign_in(store: Arc<SessionStore>, tls: &SslContext, mut stream: TcpStr
         }
     };
     let account_id = signed_in.account_id;
-    store.signed_in_from(account_id, peer.ip());
-    // None: the admin reset the password while it was checked.
+    // None: the admin reset the password while it was checked. Only a
+    // sign-in that got its session is where the account last signed in.
     let Some(session_id) = store.create_signed_in_session(signed_in, 0) else {
         log::warn!("Sign-in of {user_name} refused: its password was reset meanwhile");
         let _ = ssl_stream.write_all(&[INVALID_USER_NAME_OR_PASSWORD]);
         return;
     };
+    store.signed_in_from(account_id, peer.ip());
     log::info!("Sign-in: account={account_id:#x} session={session_id:#x}");
 
     let mut buffer = vec![];

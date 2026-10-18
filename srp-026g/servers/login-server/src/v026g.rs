@@ -628,13 +628,14 @@ fn handle_sign_in(
             }
         };
     let account_id = signed_in.account_id;
-    store.signed_in_from(account_id, peer.ip());
-    // None: the admin reset the password while it was checked.
+    // None: the admin reset the password while it was checked. Only a
+    // sign-in that got its session is where the account last signed in.
     let Some(session_id) = store.create_signed_in_session(signed_in, sign_in.patch_revision) else {
         log::warn!("Sign-in of {user_name} refused: its password was reset meanwhile");
         let _ = ssl_stream.write_all(&[INVALID_USER_NAME_OR_PASSWORD]);
         return;
     };
+    store.signed_in_from(account_id, peer.ip());
     let (lobby_ip, lobby_port) = lobby.address_for(peer.ip(), reached);
     log::info!(
         "Sign-in: account={account_id:#x} session={session_id:#x}, \

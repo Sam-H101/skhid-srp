@@ -2667,72 +2667,18 @@ mod tests {
         assert!(password_hash(&web, other).is_some());
     }
 
-    /// Accounts in memory, but a cleared password is never written: the
-    /// database refusing the reset.
-    #[derive(Clone, Default)]
-    struct RefusesResets(session::persist::MemoryRepository);
-
-    impl session::persist::AccountRepository for RefusesResets {
-        fn load_all(&mut self) -> Result<session::persist::Loaded, session::persist::PersistError> {
-            self.0.load_all()
-        }
-        fn save_account(
-            &mut self,
-            record: &session::persist::AccountRecord,
-        ) -> Result<(), session::persist::PersistError> {
-            if record.password_hash.is_none() {
-                return Err(session::persist::PersistError::BadRow(
-                    record.id,
-                    "disk full".into(),
-                ));
-            }
-            self.0.save_account(record)
-        }
-        fn next_account_id(&mut self) -> Result<u32, session::persist::PersistError> {
-            self.0.next_account_id()
-        }
-        fn load_sessions(
-            &mut self,
-        ) -> Result<Vec<session::persist::StoredSession>, session::persist::PersistError> {
-            self.0.load_sessions()
-        }
-        fn save_session(
-            &mut self,
-            stored: &session::persist::StoredSession,
-        ) -> Result<(), session::persist::PersistError> {
-            self.0.save_session(stored)
-        }
-        fn delete_session(&mut self, id: u32) -> Result<(), session::persist::PersistError> {
-            self.0.delete_session(id)
-        }
-        fn load_ip_bans(&mut self) -> Result<Vec<session::IpBan>, session::persist::PersistError> {
-            self.0.load_ip_bans()
-        }
-        fn save_ip_ban(
-            &mut self,
-            ban: &session::IpBan,
-        ) -> Result<(), session::persist::PersistError> {
-            self.0.save_ip_ban(ban)
-        }
-        fn delete_ip_ban(&mut self, net: &Net) -> Result<(), session::persist::PersistError> {
-            self.0.delete_ip_ban(net)
-        }
-        fn describe(&self) -> String {
-            "refuses resets".into()
-        }
-    }
-
     #[test]
     fn a_reset_the_database_refused_is_an_error_not_a_success() {
         let mut web = web(Some("tok"));
+        let repository = session::persist::MemoryRepository::default();
         web.store = Arc::new(
-            SessionStore::with_repository(
-                Duration::from_secs(30),
-                Box::new(RefusesResets::default()),
-            )
-            .unwrap(),
+            SessionStore::with_repository(Duration::from_secs(30), Box::new(repository.clone()))
+                .unwrap(),
         );
         let id = web.store.sign_in("forgetful", b"old").unwrap();
+        web.store.flush();
+        // The database refuses every account write from now on.
+        repository.fail_account_saves(true);
         let direct = web.admin(
             &post(
                 "/hidden",

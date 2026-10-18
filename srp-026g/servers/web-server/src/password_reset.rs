@@ -11,13 +11,14 @@
 //!   server, whose address is in `SRP_ADMIN_IPS`). No confirm step; one line
 //!   of text back: `ok <login> <account id>` (200), `no such login` (404),
 //!   `no login` (400), `wrong token` (403), `locked: too many wrong tokens`
-//!   (429), `error: …` (500: cleared in memory, not written). An address not
-//!   in the list, or a page without a token, gets the plain "not found" as
-//!   for every admin request.
+//!   (429), `pending <login> <account id>` (202: cleared, the saver writes it
+//!   within seconds), `error: …` (500: cleared in memory, not written). An
+//!   address not in the list, or a page without a token, gets the plain "not
+//!   found" as for every admin request.
 
 use std::net::IpAddr;
 
-use session::{LockExt, PasswordReset};
+use session::{LockExt, PasswordReset, ResetWrite};
 
 use super::{ContentType, Lang, Request, Response, TokenRefused, Web, clock_utc, escape};
 
@@ -57,11 +58,15 @@ impl Web {
             written,
         } = &reset;
         match written {
-            Ok(()) => log::warn!(
+            ResetWrite::Written => log::warn!(
                 "Admin from {peer}: reset the password of {login} (account {account_id:#x}); \
                  {sessions_ended} session(s) ended; its next sign-in sets the new one"
             ),
-            Err(error) => log::error!(
+            ResetWrite::Pending => log::warn!(
+                "Admin from {peer}: reset the password of {login} (account {account_id:#x}); \
+                 {sessions_ended} session(s) ended; the saver writes it (the database was busy)"
+            ),
+            ResetWrite::Failed(error) => log::error!(
                 "Admin from {peer}: reset the password of {login} (account {account_id:#x}) \
                  in memory, {sessions_ended} session(s) ended, but it was not written: \
                  {error}; the saver retries"
@@ -157,7 +162,7 @@ impl Web {
         } = reset;
         view.typed.clear();
         let message = match written {
-            Ok(()) => lang.tr(
+            ResetWrite::Written => lang.tr(
                 &format!(
                     "The password of {login} is cleared; {ended} session(s) ended. \
                      Their next sign-in, with any password, sets the new one."
@@ -167,7 +172,19 @@ impl Web {
                      Наступний вхід, з будь-яким паролем, встановить новий."
                 ),
             ),
-            Err(error) => lang.tr(
+            ResetWrite::Pending => lang.tr(
+                &format!(
+                    "The password of {login} is cleared; {ended} session(s) ended. The \
+                     database was busy: srp's saver writes it within seconds. Their next \
+                     sign-in, with any password, sets the new one."
+                ),
+                &format!(
+                    "Пароль {login} скинуто; завершено сесій: {ended}. База була зайнята: \
+                     srp запише його за кілька секунд. Наступний вхід, з будь-яким паролем, \
+                     встановить новий."
+                ),
+            ),
+            ResetWrite::Failed(error) => lang.tr(
                 &format!(
                     "Error: the password of {login} is cleared and {ended} session(s) ended, \
                      but only in memory: the database was not written ({error}). srp retries \
@@ -212,8 +229,12 @@ impl Web {
             return answer("404 Not Found", "no such login".into());
         };
         match reset.written {
-            Ok(()) => answer("200 OK", format!("ok {} {account_id}", reset.login)),
-            Err(error) => answer(
+            ResetWrite::Written => answer("200 OK", format!("ok {} {account_id}", reset.login)),
+            ResetWrite::Pending => answer(
+                "202 Accepted",
+                format!("pending {} {account_id}", reset.login),
+            ),
+            ResetWrite::Failed(error) => answer(
                 "500 Internal Server Error",
                 format!(
                     "error: {} {account_id} cleared in memory, not written: {error}",

@@ -25,11 +25,21 @@ no exe or content change, `REVISION` unchanged, no `simulation_changes` row.
   1. The hash is cleared and the account's password epoch moves on, under
      its lock. A sign-in checked against the old password is refused even
      when its check (argon2, which takes a while with no lock held) was
-     under way: the sign-in re-checks the epoch after the check, and the
-     login server makes the session with `create_signed_in_session`, which
-     checks it before and after the session is in (the reset moves the
-     epoch before it ends the sessions, so either it ends that session or
-     the session sees the new epoch).
+     under way:
+     - the sign-in re-checks the epoch after the check; refused there, it
+       does not count as a wrong password (it may have been right);
+     - the login server makes the session only with
+       `create_signed_in_session` (the bare `create_session` is for tests,
+       behind session's `test-support` feature), which puts the session
+       in and then checks the epoch: the reset moves the epoch before it
+       ends the sessions, so either it ends that session or the check sees
+       the new epoch. A refused session is taken out before it touched
+       anything: not saved, and the account keeps its squad and its place
+       in the queue (those of a player who signed in after the reset);
+     - only then does the login server record the sign-in (last address,
+       last sign-in time): a refused one leaves the account as it was;
+     - a new account's sign-in carries the epoch it was made with, so a
+       reset right after the registration refuses its session too.
   2. The account's wrong-password lockout is forgotten, and so are the
      password checks of the address it last signed in from
      (`SRP_SIGN_INS_PER_MINUTE`), so the player is refused neither as
@@ -44,10 +54,16 @@ no exe or content change, `REVISION` unchanged, no `simulation_changes` row.
   4. Written at once, on the admin request's thread: this account and the
      ended sessions' rows, nothing else (not the saver's whole pass), so a
      restart brings back neither the old password nor a session of it.
-     (Two writes, not one transaction.) If the database refuses, the page
-     says "Error: … only in memory" and the script gets `500 error: …`:
-     the password is cleared and the sessions ended in memory all the
-     same, and the saver retries the write; check the log.
+     (Two writes, not one transaction; one account's SQLite transaction
+     and a few deletes on that thread.) The saver holds the database for
+     its whole pass, so the reset waits for it 2 s at most
+     (`RESET_WRITE_WAIT`); past that it leaves the write to the saver,
+     wakes it, and says so: the page "The database was busy: srp's saver
+     writes it within seconds", the script `202 pending <login> <id>`. If
+     the database refuses, the page says "Error: … only in memory" and the
+     script gets `500 error: …`: the password is cleared and the sessions
+     ended in memory all the same, and the saver retries the write; check
+     the log.
 - **Who:** the admin only: the admin page's token, path and address list
   (`SRP_ADMIN_TOKEN`, `SRP_ADMIN_PATH`, `SRP_ADMIN_IPS`), the same as every
   admin action. The token travels in the form, never in a cookie, so there
@@ -61,11 +77,11 @@ no exe or content change, `REVISION` unchanged, no `simulation_changes` row.
   hex as the logs write it, last sign-in, last address, whether a game of
   it has a lobby or chat connection open now) and a "Reset the password of
   <login>" button. That button resets only if the user name still means the
-  account shown. Answers: the reset done (sessions ended), the reset done in
-  memory only (the database refused), no account with that user name, or
-  the account changed. The last sign-in is kept in memory only (no schema
-  change): after a restart it reads "not since srp started" until the next
-  sign-in.
+  account shown. Answers: the reset done (sessions ended), the reset left to
+  the saver (the database was busy), the reset done in memory only (the
+  database refused), no account with that user name, or the account
+  changed. The last sign-in is kept in memory only (no schema change):
+  after a restart it reads "not since srp started" until the next sign-in.
 - **A script (one POST, no confirm step):** `tab=reset_password` and
   `login=<user name>` with the token, as release.sh sends its maintenance.
   One line of text back:
@@ -73,6 +89,7 @@ no exe or content change, `REVISION` unchanged, no `simulation_changes` row.
   | Answer | HTTP |
   |---|---|
   | `ok <login> <account id>` | 200 |
+  | `pending <login> <account id>` (cleared; the saver writes it) | 202 |
   | `no such login` | 404 |
   | `no login` | 400 |
   | `wrong token` (none or wrong) | 403 |
