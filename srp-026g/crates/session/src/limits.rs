@@ -55,6 +55,12 @@ impl Limits {
         self.attempts.take(ip, now)
     }
 
+    /// Forget the password checks of `ip` (its /64 for IPv6): the admin
+    /// reset the password of the account last signed in from there.
+    pub fn forget_attempts(&self, ip: IpAddr) {
+        self.attempts.events.locked().remove(&bucket(ip));
+    }
+
     /// Whether `ip` may register another account now (without counting it).
     pub fn may_register(&self, ip: IpAddr, now: Instant) -> bool {
         self.registrations.has_room(ip, now)

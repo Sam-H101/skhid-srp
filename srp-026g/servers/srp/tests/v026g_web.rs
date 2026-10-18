@@ -431,7 +431,7 @@ fn a_password_reset_signs_the_game_out_and_the_next_sign_in_sets_it() {
         shown.contains("Reset the password of webforgetful"),
         "{shown}"
     );
-    assert!(shown.contains("yes, 1: its game is signed out"), "{shown}");
+    assert!(shown.contains("yes: its game is signed out"), "{shown}");
     let done = admin(
         web,
         &[

@@ -93,8 +93,10 @@ impl AccountRecord {
             notices,
             ban,
             last_ip,
-            // Not kept: only the admin's password reset shows it.
+            // Not kept: only the admin's password reset shows the first,
+            // and the second orders sign-ins against resets while srp runs.
             last_sign_in: _,
+            password_epoch: _,
         } = account;
         Self {
             id: *id,
@@ -126,6 +128,7 @@ impl AccountRecord {
             ban: self.ban,
             last_ip: self.last_ip,
             last_sign_in: None,
+            password_epoch: 0,
         }
     }
 
