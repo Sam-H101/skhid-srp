@@ -1910,7 +1910,7 @@ Native 20-player comparisons on the same map found two budget failures:
 | Startup settings | Retail defaults | Patched defaults |
 | --- | --- | --- |
 | Both memory options absent, no diagnostic cap | 3/3 failed with `not enough memory for arena [global mt allocator]` | 3/3 loaded and produced verified checkpoints |
-| `-mt_allocator=768 -max_resources_size=422`, resource floor absent | 1/3 failed at `0x1068F7`, the reported managed-arena timeout site | 5/5 loaded and produced verified checkpoints |
+| `-mt_allocator=768 -max_resources_size=422`, resource floor absent | 1/10 failed at `0x1068F7`, the reported managed-arena timeout site | 10/10 loaded and produced verified checkpoints |
 
 The constrained failure requested 57,082,932 bytes for
 `resources/projects/v021d_level_06/vegetation/suh_middle.veg`, with
@@ -1926,7 +1926,14 @@ Both use the existing 4 MiB AI arena patch and bypass disabled network-statistic
 counters because the diagnostic direct connection omits the lobby profile.
 They use the local ported-map resource archive and camera instrumentation, not
 the player's unknown installation. The resource floor is a startup request;
-the submitted pool size alone cannot establish the launch arguments.
+the submitted pool size alone cannot establish the launch arguments. The native
+single-region fallback at `0xE8891` through `0xE8BF3` can replace requested
+256/512 MiB pools with smaller pools when address space is fragmented. The
+instruction test supplies one synthetic 443,154,432-byte available region:
+the native calculation and allocation calls produce 147,718,144 unmanaged and
+295,436,288 managed bytes, exactly the reported managed size, despite a 768 MiB
+request. This behavior is unchanged by the default patch; the test does not
+establish that the player's address space had this layout.
 
 With the smaller pool and one player, ten fresh-process loads and ten calls to
 the native resource reload routine did not reproduce the failure. Memory use

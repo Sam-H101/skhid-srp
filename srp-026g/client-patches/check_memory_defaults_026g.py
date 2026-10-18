@@ -130,6 +130,48 @@ def fragmented_allocation(data, size):
     return uc.reg_read(UC_X86_REG_EAX)
 
 
+def single_region_fallback(data):
+    """Native fallback can shrink requested pools below the resource floor.
+
+    Begin after virtual-address enumeration with one available region. Execute
+    the native ratio, integer conversion, alignment, and allocation branches;
+    stub only VirtualAlloc success. This is a synthetic address-space layout,
+    not one recovered from the submitted dump.
+    """
+    m = Machine(data)
+    uc = m.uc
+    frame, region = STACK + 0x200, STATE + 0x100
+    small, large = STATE + 0x200, STATE + 0x220
+    for address, value in (
+        (small, 256 * MIB), (large, 512 * MIB),
+        (region, 443154432), (region + 8, 0x80000000),
+        (frame + 8, region + 16), (frame - 0x24, region),
+        (frame - 8, 768 * MIB), (frame - 0x68, 65536),
+        (0x87015C, STOP + 0x100),
+    ):
+        m.word(address, value)
+    for register, value in (
+        (UC_X86_REG_EBP, frame), (UC_X86_REG_ESP, STACK),
+        (UC_X86_REG_ESI, small), (UC_X86_REG_EDI, large),
+        (UC_X86_REG_EBX, region), (UC_X86_REG_EAX, region + 16),
+    ):
+        uc.reg_write(register, value)
+    allocations = []
+
+    def visit(uc, address, _size, _context):
+        if address == STOP + 0x100:
+            sp = uc.reg_read(UC_X86_REG_ESP)
+            base, size = m.read(sp + 4), m.read(sp + 8)
+            assert (m.read(sp + 12), m.read(sp + 16)) == (0x3000, 4)
+            allocations.append((base, size))
+            m.returned(base, 16)
+
+    uc.hook_add(UC_HOOK_CODE, visit)
+    m.run(0xE8891, 0xE8BF3)
+    assert allocations == [(0x80000000, 147718144), (0x88CE0000, 295436288)]
+    return m.read(small), m.read(large)
+
+
 def main():
     original = Path(sys.argv[1]).read_bytes()
     built, _ = patch.build(original, 'section', Path(patch.default_bin('section')).read_bytes(),
@@ -143,7 +185,8 @@ def main():
     assert budgets(built, 512, None) == (512 * MIB, 768 * MIB)
     assert fragmented_allocation(original, 295436288) == 0
     assert fragmented_allocation(built, 512 * MIB) != 0
-    print('PASS: native defaults, independent/explicit/invalid option paths, and representative fragmentation fixture')
+    assert single_region_fallback(original) == single_region_fallback(built) == (147718144, 295436288)
+    print('PASS: native defaults, independent/explicit/invalid option paths, fragmentation fixture, and address-space fallback limitation')
 
 
 if __name__ == '__main__':
