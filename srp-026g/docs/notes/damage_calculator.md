@@ -17,14 +17,23 @@ number from the game data, the rules as the client's hit code applies them. Buil
   bonuses). A weapon with presets (premium) has those, fixed, as the lobby lists them; damage
   and rate of fire change the numbers.
 - Target: the HUD doll and the equipment cards (both aim), armour bonuses, Onyx (four slot
-  tiles, passive or active), the Anesthetic, the pain already taken. Under the doll: the hit
+  tiles, passive or active), the Anesthetic, the pain already taken. The Larkspur changes no hit:
+  its four tiles are in the healing section, for the recovery it gives. Under the doll: the hit
   part's pool and pain only, after the stepper's shot, tagged when each kills or breaks.
   Armour bonuses always shown, for the item on the part being hit only.
 - A closed helmet (or an exo suit) takes the slots its model covers: their cards are locked.
-- Map: top-down renders, two clicks for the distance; the distance slider moves the target
-  along the same line.
+- Map: top-down renders cropped to the play area (the native minimap's), at most 75% of the
+  window's height; two clicks for the distance; the distance slider moves the target along the
+  same line. On a wide screen (1700 px and up) it sits between shooter and target.
+- Healing, at the bottom: recovering by itself, the Larkspur (Живокіст) carried and activated,
+  the medikit and bandages, side by side; every number from the data. How many Larkspurs (1–4)
+  is chosen there; each adds its own regeneration callback. Under it, the time from empty to full
+  for none and 1–4 Larkspurs (past two, the added wait outgrows what the speed saves).
+- The map's readout sits under it, two lines whatever the state, so the map never moves.
 - Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
+- The formula says how one bullet through several hit boxes counts (each pool its largest
+  share). The calculator itself shows one box per shot.
 - Not modelled: cover a bullet passes through, ricochets, explosions, anomalies.
 
 ## Serving

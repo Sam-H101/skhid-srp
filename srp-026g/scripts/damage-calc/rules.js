@@ -84,8 +84,8 @@ const RULES = (() => {
     const panel = el("div", { class: "gamemods" });
     for (const id of kinds.default) {
       const m = MODS[id], prop = m.props[0] || {};
-      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "gtext" },
-        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }))));
+      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "glabel", text: `${label(prop)}:` }),
+        el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) })));
     }
     if (kinds.default.length) { host.append(panel); return true; }
     for (const t of kinds.mod) {
@@ -102,7 +102,7 @@ const RULES = (() => {
         steps.append(b);
       }
       paint();
-      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "gtext" }, `${label(prop)}: `, steps)));
+      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "glabel", text: `${label(prop)}:` }), steps));
     }
     host.append(panel);
     return true;
@@ -174,8 +174,7 @@ const RULES = (() => {
       const row = (label, ...kids) => box.append(el("div", { class: "field" }, el("span", { class: "lbl", text: label }), el("div", { class: "fxrow" }, ...kids)));
       if (ART.onyx) {
         // Four artefact slots: click the n-th to carry n, the last lit one again to drop it.
-        const n = state.fx.onyx || 0;
-        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= n,
+        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= (state.fx.onyx || 0),
           () => {
             state.fx.onyx = (state.fx.onyx || 0) === i ? i - 1 : i;
             slots.forEach((s, j) => s.setAttribute("aria-pressed", String(j < state.fx.onyx)));
