@@ -227,19 +227,22 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     its state changes in a tick first played, and keeps it at network
     client+1F1C60h), byte for byte. The code calls and leaves only to what
     it names, stores nothing but on its stack; no relocation under a site
-    and nothing aims inside one. Its look around before the start
-    (warmup_look_026g.asm at WARMUP_LOOK_OFFSET, check 15's layout): the
-    game world's input handler's on_mouse_move (0x25D0E0, its vtable
-    0x9FC588's +0Ch, priority 7) calls warmup_look and two nops where it
-    compared the hud's cursor (`cmp byte [esi+2E0h],0`, then `setne al`);
-    the player's input handler (vtable 0xA04048) has priority 10 and its
-    on_mouse_move at +0Ch; the input world gives a move to its handlers by
-    priority, lowest first, until one answers 1; the warmup camera
-    (0x1F8190) sets the player's handler's mode (+358h) to 3, which its
-    end of the frame (0x241170) turns into the warmup mode (0x242200);
-    show_cursor (0x23A930) keeps the cursor at hud+2DCh and
-    0x2383B0 the kits at hud+2DFh; the code holds no address, calls and
-    stores nothing. check_kit_change_026g.py runs it.
+    and nothing aims inside one. Its camera before the start
+    (warmup_look_026g.asm at WARMUP_LOOK_OFFSET and warmup_limits_026g.asm
+    at WARMUP_LIMITS_OFFSET, check 15's layout): the game world's input
+    handler's on_mouse_move (0x25D0E0, its vtable 0x9FC588's +0Ch,
+    priority 7) jumps to warmup_look with five nops where it began, and
+    process_warmup_mode's store of the pitch (0x24225E) calls
+    warmup_limits with three nops; the player's input handler (vtable
+    0xA04048) has priority 10; the input world gives a move to its
+    handlers by priority, lowest first, until one answers 1, its mouse and
+    the buttons held where the code reads them; the lobby camera's turn
+    (buttons 52h), wheel step and limits (1.5, 4.6, +-60 degrees) as the
+    code has them; the warmup camera (0x1F8190) sets mode 3, the warmup
+    mode stores the distance and the pitch with no limit; the hud's
+    cursor and kits flags; the code holds no address and calls only the
+    game world's vtable+30h, +3Ch and the end of a drag; its state is in
+    the late join's page. check_kit_change_026g.py runs it.
 33. the same build: a weapon's upgrade window shows the weapon (patch 32,
     weapon_preview_026g.asm at WEAPON_PREVIEW_OFFSET of `.srp`, after the
     late join's code, its state at WEAPON_PREVIEW_STATE_OFFSET of `.srpd`).
@@ -479,13 +482,17 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.kit_change_bin(), "rb").read(),
           f"{os.path.basename(P.kit_change_bin())} is current ({len(fresh)} bytes)")
-    with tempfile.TemporaryDirectory() as tmp:
-        out = os.path.join(tmp, "out.bin")
-        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.WARMUP_LOOK_VA:#x}",
-                        os.path.join(HERE, "warmup_look_026g.asm"), "-o", out], check=True, timeout=60)
-        fresh = open(out, "rb").read()
-    check(fresh == open(P.warmup_look_bin(), "rb").read(),
-          f"{os.path.basename(P.warmup_look_bin())} is current ({len(fresh)} bytes)")
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.WARMUP_LOOK_STATE_OFFSET
+    for source, defines, path in (
+            ("warmup_look_026g.asm", [f"-DCAVE={P.WARMUP_LOOK_VA:#x}", f"-DSTATE={state:#x}",
+                                      f"-DLIMITS={P.WARMUP_LIMITS_VA:#x}"], P.warmup_look_bin()),
+            ("warmup_limits_026g.asm", [f"-DCAVE={P.WARMUP_LIMITS_VA:#x}"], P.warmup_limits_bin())):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out.bin")
+            subprocess.run([tool("nasm"), "-f", "bin", *defines, os.path.join(HERE, source), "-o", out],
+                           check=True, timeout=60)
+            fresh = open(out, "rb").read()
+        check(fresh == open(path, "rb").read(), f"{os.path.basename(path)} is current ({len(fresh)} bytes)")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SUICIDE_KEY_VA:#x}",
@@ -1275,7 +1282,7 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
-        [(P.WARMUP_LOOK_HOOK[0], len(P.WARMUP_LOOK_HOOK[1]))] + \
+        [(P.WARMUP_LOOK_HOOK[0], len(P.WARMUP_LOOK_HOOK[1])), (P.WARMUP_LIMITS_HOOK[0], len(P.WARMUP_LIMITS_HOOK[1]))] + \
         [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
         [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))] + \
         [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))] + \
@@ -2687,72 +2694,135 @@ def test_kit_change(original, image, before):
 
 
 def test_warmup_look(original, image, before):
-    """Check 32, the look around before the start (WARMUP_LOOK_*)."""
+    """Check 32, the warmup camera before the start (WARMUP_LOOK_*,
+    WARMUP_LIMITS_*)."""
     stock = Image(original)
     texts = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
     slot = lambda vt, at: struct.unpack("<I", stock.read(vt + at, 4))[0]
-    va, old, offset, opcode = P.WARMUP_LOOK_HOOK
-    new = P.hook_bytes(P.WARMUP_LOOK_VA, va, old, offset, opcode)
+    floats = lambda va: struct.unpack("<f", stock.read(va, 4))[0]
+    sites = []
+    for (va, old, offset, opcode), base, original_texts, built in (
+            (P.WARMUP_LOOK_HOOK, P.WARMUP_LOOK_VA, ["push ebx", "push esi", "mov esi,ecx", "mov ecx,[esi+0x4b70]"],
+             [f"jmp {P.WARMUP_LOOK_VA:#x}"] + ["nop"] * 5),
+            (P.WARMUP_LIMITS_HOOK, P.WARMUP_LIMITS_VA, ["movss dword [esi+0x350],xmm0"],
+             [f"call {P.WARMUP_LIMITS_VA + P.WARMUP_LIMITS_ENTRY_OFFSET:#x}"] + ["nop"] * 3)):
+        new = P.hook_bytes(base, va, old, offset, opcode)
+        check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new
+              and texts(stock, va, len(old)) == original_texts and texts(image, va, len(old)) == built,
+              f"{va:#x}: `{' / '.join(original_texts)}` in the original and the build without the late join, "
+              f"`{built[0]}` and {len(built) - 1} nops here")
+        sites.append((va, old))
     move = texts(stock, 0x25D0E0, 0x25D128 - 0x25D0E0)
-    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new
-          and texts(image, va, len(old)) == [f"call {P.WARMUP_LOOK_VA:#x}", "nop", "nop"]
-          and move[:3] == ["push ebx", "push esi", "mov esi,ecx"] and "mov ecx,[esi+0x4b70]" in move
-          and "lea ecx,[esi-0x1f8]" in move and "mov eax,[eax+0x30]" in move
-          and move[-6:] == ["cmp byte [esi+0x2e0],0x0", "pop edi", "pop esi", "setnz al", "pop ebx", "ret 0x10"],
-          f"{va:#x}: the game world's on_mouse_move (0x25D0E0) puts the hud's cursor where the mouse is (game "
-          "world vtable+30h) and answers `cmp byte [esi+2E0h],0` / `setne al` in the original and the build "
-          f"without the late join; here `call {P.WARMUP_LOOK_VA:#x}` and two nops before the same `setne al`")
+    check("mov edx,[eax]" in move and "lea ecx,[esi-0x1f8]" in move and "mov eax,[eax+0x30]" in move
+          and move[-6:] == ["cmp byte [esi+0x2e0],0x0", "pop edi", "pop esi", "setnz al", "pop ebx", "ret 0x10"]
+          and stock.read(0x25D0EA, 2) == bytes.fromhex("8b01"),
+          "the game world's on_mouse_move (0x25D0E0) takes the system's cursor ([esi+4B70h] vtable+0), puts the "
+          "hud's pointer there (game world vtable+30h) and answers whether the cursor is shown (hud+2DCh), "
+          "`ret 10h`; 0x25D0EA, where warmup_look goes on, begins an instruction")
     check(slot(0x9FC588, 0xC) == 0x25D0E0 and slot(0x9FC588, 0x10) == 0x1F63D0
           and stock.read(0x1F63D0, 6) == bytes.fromhex("b807000000c3")
           and slot(0xA04048, 0xC) == 0x240200 and slot(0xA04048, 0x10) == 0x283BB0
           and stock.read(0x283BB0, 6) == bytes.fromhex("b80a000000c3")
           and stock.read(0x1F683B, 10) == bytes.fromhex("c785f801000088c59f00")
-          and stock.read(0x1F6821, 6) == bytes.fromhex("8db5fc010000"),
+          and stock.read(0x1F6821, 6) == bytes.fromhex("8db5fc010000")
+          and slot(0x9FC4F4, 0x30) == 0x25D160 and slot(0x9FC4F4, 0x3C) == 0x25D130
+          and "mov [ebx],eax" in texts(stock, 0x25D160, 0x30) and "lea ebx,[edi+0x8c]" in texts(stock, 0x25D160, 0x30)
+          and "call 0x29a680" in texts(stock, 0x25D130, 0x28) and "mov edx,[eax+0x30]" in texts(stock, 0x25D130, 0x28),
           "the game world's input handler (+1F8h, vtable 0x9FC588; the hud at +1FCh) has on_mouse_move 0x25D0E0 "
-          "and priority 7, the player's input handler (vtable 0xA04048) on_mouse_move 0x240200 and priority 10")
+          "and priority 7, the player's input handler (vtable 0xA04048) on_mouse_move 0x240200 and priority 10; "
+          "the game world's vtable+30h (0x25D160) keeps the hud's pointer at +8Ch, +90h and moves it, its +3Ch "
+          "(0x25D130) puts the system's cursor (0x29A680) and the pointer (+30h) at a place")
     dispatch = texts(stock, 0x3B9F10, 0x3B9F34 - 0x3B9F10)
     order = texts(stock, 0x3B8023, 0x3B804A - 0x3B8023)
+    buttons = texts(stock, 0x3B9610, 0x3B9620)
     check(dispatch[:4] == ["mov edx,[esi+0xc]", "mov ecx,[edi]", "mov eax,[ecx]", "mov eax,[eax+0xc]"]
           and dispatch[-6:] == ["call eax", "test al,al", "jnz 0x3b9f34", "add edi,byte +0x4", "cmp edi,ebp",
                                 "jnz 0x3b9f10"]
+          and "mov edx,[esi+0x8]" in dispatch and "mov edx,[esi+0x4]" in dispatch
+          and "mov edx,[esi+0x2c]" in dispatch
           and "mov eax,[edx+0x10]" in order and "cmp eax,ebp" in order and "jnl 0x3b8048" in order
-          and stock.read(0x3B7E1F, 5) == bytes.fromhex("e8ec010000"),
-          "the input world gives a mouse move to its handlers in their order (vtable+0Ch) until one answers 1 "
-          "(0x3B9F10); add_handler (0x3B7D60) inserts a handler by its priority (vtable+10h), lowest first "
-          "(0x3B8010)")
+          and stock.read(0x3B7E1F, 5) == bytes.fromhex("e8ec010000")
+          and slot(0xA252D4, 0x28) == 0x3B7FB0 and stock.read(0x3B7FB0, 4) == bytes.fromhex("8b4128c3")
+          and slot(0xA25518, 0) == 0x94370 and stock.read(0x94370, 4) == bytes.fromhex("8d4104c3")
+          and buttons[:3] == ["mov byte [ecx+0xc],0x0", "cmp byte [eax+0xc],0x0", "jz 0x3b961e"]
+          and stock.read(0x3B961A, 4) == bytes.fromhex("80490c01"),
+          "the input world gives a mouse move (the mouse's +4, +8, +0Ch; +2Ch the world) to its handlers in their "
+          "order (vtable+0Ch) until one answers 1 (0x3B9F10); add_handler (0x3B7D60) inserts a handler by its "
+          "priority (vtable+10h), lowest first (0x3B8010); the world's mouse is its +28h (vtable+28h, 0x3B7FB0), "
+          "its state its +4 (vtable+0, 0x94370), the buttons held at +10h, the left one bit 0 (0x3B9610)")
+    lobby = texts(stock, 0x283D30, 0x283EAA - 0x283D30)
+    check(slot(0xA09EB4, 0xC) == 0x283D30 and slot(0xA09EB4, 0x10) == 0x283BB0
+          and stock.read(0x21E9A0, 6) == bytes.fromhex("b864000000c3") and slot(0x9FFEB8, 0x10) == 0x21E9A0
+          and "mov edx,[eax+0x28]" in lobby and "test byte [eax+0xc],0x52" in lobby
+          and "mulss xmm0,dword [dword 0x91a8f0]" in lobby and "call 0x29a680" in lobby
+          and lobby[-1] == "ret 0x10" and floats(0x91A8F0) == struct.unpack("<f", struct.pack("<f", 0.001))[0],
+          "the lobby camera's on_mouse_move (0x283D30, vtable 0xA09EB4, priority 10, before the lobby menu's "
+          "100) moves its distance by 0.001 a unit of the wheel and turns while a button of 52h is held (the "
+          "mouse's state +0Ch), putting the system's cursor back at the drag's end (0x29A680)")
+    tick = texts(stock, 0x283EF0, 0x284340 - 0x283EF0)
+    check("movss xmm1,dword [dword 0xa7afa4]" in tick and "movss xmm2,dword [dword 0xa2db0c]" in tick
+          and "movss xmm0,dword [dword 0xa2db08]" in tick and "movss xmm0,dword [dword 0x9c56c0]" in tick
+          and [round(floats(va), 6) for va in (0xA7AFA4, 0xA2DB0C, 0xA2DB08, 0x9C56C0)]
+          == [1.5, 4.6, -1.047198, 1.047198],
+          "the lobby camera's tick (0x283EF0) keeps its distance within 1.5 and 4.6 and its pitch within "
+          "+-1.047198 (60 degrees)")
     warmup = texts(stock, 0x1F8190, 0x1F81C7 - 0x1F8190)
     frame = texts(stock, 0x241170, 0x2411F9 - 0x241170)
+    step = texts(stock, 0x242200, 0x2422A6 - 0x242200)
     show = texts(stock, 0x23A930, 0x23A9C8 - 0x23A930)
     kits = texts(stock, 0x2383B0, 0x23845B - 0x2383B0)
+    after = step[step.index("movss dword [esi+0x350],xmm0") + 1:]
     check(warmup[0] == "mov eax,[edx+0x4d58]" and "mov esi,0x3" in warmup and "mov [eax+0x358],esi" in warmup
           and "mov eax,[esi+0x358]" in frame and "cmp eax,byte +0x3" in frame and "call 0x242200" in frame
+          and step[:3] == ["push ecx", "movss xmm0,dword [esi+0x348]", "addss xmm0,dword [esi+0x354]"]
+          and step.count("movss dword [esi+0x354],xmm0") == 1 and step.count("movss dword [esi+0x350],xmm0") == 1
+          and after[:3] == ["xorps xmm0,xmm0", "movss dword [esp+0x4],xmm0", "mov eax,[esp+0x4]"]
+          and "mov edx,[esp+0xc]" in after and not [t for t in after if "xmm1" in t] and after[-1] == "ret"
+          and "mov edx,0x8f" in texts(stock, 0xF65A0, 0x50)
           and "cmp [edi+0x2dc],bl" in show and "mov [edi+0x2dc],bl" in show
           and "mov [edi+0x2df],bl" in kits and stock.read(0x23845A, 6) == bytes.fromhex("53e8d0240000"),
           "the warmup camera (0x1F8190) sets the player's input handler (game world+4D58h) to mode 3 (+358h), "
-          "which its end of the frame (0x241170) plays as the warmup mode (0x242200); show_cursor (0x23A930) "
+          "which its end of the frame (0x241170) plays as the warmup mode (0x242200): the distance (+354h) plus "
+          "the wheel (+348h), stored once, then the pitch (+350h), both with no limit; eax and edx are written "
+          "after the pitch's store before they are read (0xF65A0 too), xmm1 not used; show_cursor (0x23A930) "
           "keeps the cursor at hud+2DCh, the kits' show or hide (0x2383B0) the kits at hud+2DFh and the cursor "
           "with them")
-    code = open(P.warmup_look_bin(), "rb").read()
-    listing = ndisasm(code, P.WARMUP_LOOK_VA)
-    inside = lambda target: P.WARMUP_LOOK_VA <= target < P.WARMUP_LOOK_VA + len(code)
-    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
-    starts = {address for address, _, _ in listing}
-    check(image.read(P.WARMUP_LOOK_VA, len(code)) == code and all(inside(t) and t in starts for t in targets)
-          and [text for _, _, text in listing if text.startswith(("call", "mov ["))] == []
-          and [text for _, _, text in listing if text.startswith("ret")] == ["ret", "ret"]
-          and not [t for _, _, t in listing if re.search(r"\[(?:dword |byte )?0x", t)],
-          f"the code at {P.WARMUP_LOOK_VA:#x} is warmup_look_026g.section.bin ({len(code)} bytes): every branch "
-          "lands on one of its instructions, it calls nothing, stores nothing, holds no address and returns")
-    # The site's own bytes are not branches (its `e0 02` is no loopne): the
-    # function's instructions are read from their starts below.
-    hits = [h for h in aimed_inside(original, va, len(old), 0x80) if not va <= h < va + len(old)]
-    spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
-    branches = [address for address, _, text in ndisasm(stock.read(0x25D0E0, 0x48), 0x25D0E0)
-                if (target := branch_target(text)) is not None and va < target < va + len(old)]
-    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
-    check(len(hits) == len(spelled) and not branches and not under,
-          "nothing aims inside the site and no base relocation is under it"
-          + "".join(f", {h:#x}" for h in hits + branches + under))
+    look = open(P.warmup_look_bin(), "rb").read()
+    limits = open(P.warmup_limits_bin(), "rb").read()
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.WARMUP_LOOK_STATE_OFFSET
+    for code, base, calls, leaves, rets, name in (
+            (look, P.WARMUP_LOOK_VA, ["call [eax+0x30]", f"call {P.WARMUP_LIMITS_VA:#x}"], [0x25D0EA], ["ret 0x10"],
+             "warmup_look"),
+            (limits, P.WARMUP_LIMITS_VA, ["call [eax+0x3c]"], [], ["ret", "ret"], "warmup_limits")):
+        listing = ndisasm(code, base)
+        inside = lambda target: base <= target < base + len(code)
+        starts = {address for address, _, _ in listing}
+        targets = [t for _, _, text in listing if (t := branch_target(text)) is not None and not text.startswith("call")]
+        made = [text for address, _, text in listing if text.startswith("call")
+                and not (branch_target(text) == address + 5 and text.startswith("call 0x"))]
+        check(image.read(base, len(code)) == code
+              and all(t in starts for t in targets if inside(t)) and [t for t in targets if not inside(t)] == leaves
+              and made == calls and [text for _, _, text in listing if text.startswith("ret")] == rets
+              and not [t for _, _, t in listing if re.search(r"\[(?:dword |byte )?0x", t)],
+              f"the code at {base:#x} is {name}'s .bin ({len(code)} bytes): its branches land on its instructions"
+              + (f" or leave to {', '.join(hex(t) for t in leaves)}" if leaves else "")
+              + f", it calls {', '.join(calls)} alone and holds no address")
+    check(P.warmup_look_state(look) == state and P.warmup_look_calls(look) == [P.WARMUP_LIMITS_VA]
+          and P.WEAPON_PREVIEW_STATE_OFFSET + P.WEAPON_PREVIEW_STATE_SIZE <= P.WARMUP_LOOK_STATE_OFFSET
+          and P.WARMUP_LOOK_STATE_OFFSET + P.WARMUP_LOOK_STATE_SIZE <= P.LATE_JOIN_STATE_SIZE,
+          f"warmup_look keeps its state at {state:#x} (the late join's page +{P.WARMUP_LOOK_STATE_OFFSET:#x}, after "
+          "the weapon preview's) and calls the end of a drag at warmup_limits' start")
+    found = []
+    for va, old in sites:
+        hits = [h for h in aimed_inside(original, va, len(old), 0x80) if not va <= h < va + len(old)]
+        spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
+        found += hits[:len(hits) - len(spelled)]
+        found += [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    for lo, hi in ((0x25D0E0, 0x25D128), (0x242200, 0x2422A6)):
+        found += [address for address, _, text in ndisasm(stock.read(lo, hi - lo), lo)
+                  if (target := branch_target(text)) is not None and any(va < target < va + len(old) for va, old in sites)]
+    check(not found, "nothing aims inside the two sites and no base relocation is under them"
+          + "".join(f", {h:#x}" for h in found))
 
 
 def test_suicide_key(original, image, before):
@@ -3216,6 +3286,7 @@ def test_late_join(original, without, server, source):
     forward_scroll = open(P.forward_scroll_bin(), "rb").read()
     kit_change = open(P.kit_change_bin(), "rb").read()
     warmup_look = open(P.warmup_look_bin(), "rb").read()
+    warmup_limits = open(P.warmup_limits_bin(), "rb").read()
     suicide_key = open(P.suicide_key_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
@@ -3227,6 +3298,7 @@ def test_late_join(original, without, server, source):
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SUICIDE_KEY_OFFSET, len(suicide_key), "the suicide key"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
+              (P.WARMUP_LIMITS_OFFSET, len(warmup_limits), "the warmup camera's limits"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
               (P.WEAPON_DRAW_OFFSET, len(weapon_draw), "the weapon preview's draw"),
               (P.WARMUP_LOOK_OFFSET, len(warmup_look), "the warmup look"),
@@ -3252,7 +3324,9 @@ def test_late_join(original, without, server, source):
           and body[P.SUICIDE_KEY_OFFSET:P.SUICIDE_KEY_OFFSET + len(suicide_key)] == suicide_key
           and set(body[P.SUICIDE_KEY_OFFSET + len(suicide_key):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
-          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
+          and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.WARMUP_LIMITS_OFFSET]) <= {0xCC}
+          and body[P.WARMUP_LIMITS_OFFSET:P.WARMUP_LIMITS_OFFSET + len(warmup_limits)] == warmup_limits
+          and set(body[P.WARMUP_LIMITS_OFFSET + len(warmup_limits):P.FORWARD_SCROLL_OFFSET]) <= {0xCC}
           and body[P.FORWARD_SCROLL_OFFSET:P.FORWARD_SCROLL_OFFSET + len(forward_scroll)] == forward_scroll
           and set(body[P.FORWARD_SCROLL_OFFSET + len(forward_scroll):P.WEAPON_DRAW_OFFSET]) <= {0xCC}
           and body[P.WEAPON_DRAW_OFFSET:P.WEAPON_DRAW_OFFSET + len(weapon_draw)] == weapon_draw
@@ -3271,7 +3345,7 @@ def test_late_join(original, without, server, source):
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
           f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, "
           f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the seek "
-          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
+          f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the warmup camera's limits at +{P.WARMUP_LIMITS_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
           f"the weapon preview's draw at +{P.WEAPON_DRAW_OFFSET:#x}, the warmup look at +{P.WARMUP_LOOK_OFFSET:#x}, "
           f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
           f"and the kit change at +{P.KIT_CHANGE_OFFSET:#x}, the late-join code follows, then int3 padding, "

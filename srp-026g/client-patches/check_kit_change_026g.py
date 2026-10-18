@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the original and patch 31's respawn rule tick (0x316820), the
 client's view of a kit change (0x2678E0), the hud's update of the local
-player's state (0x23B7B3), the kits' pick (0x233F28) and the input world's
-mouse move through the game world's input handler (0x3B9F0A, 0x25D0E0) on
-made-up objects.
+player's state (0x23B7B3), the kits' pick (0x233F28), the input world's
+mouse moves through the game world's input handler (0x3B9F0A, 0x25D0E0)
+and the warmup mode's step (0x242200) on made-up objects.
 
     python check_kit_change_026g.py <original survarium.exe>
 
@@ -31,14 +31,22 @@ player's in play, by the state the network client set the camera for. The
 hud shows the kits to a player who becomes alive before play, keeps them
 shown (and its cursor) after a pick before play, and hides them from a live
 one in play. While the kits are shown before play (the player's input
-handler in the warmup mode) a mouse move moves the hud's cursor and goes on
-to the player's input handler, which turns the warmup camera; with the kits
-shown in any other mode (the death screen), or the cursor shown without
-them, the cursor takes it, as in the original. The original does none of
+handler in the warmup mode), mouse moves through the input world's loop in
+order: a move without a button is the cursor's; a left press that moves
+little is the cursor's (a click); past that, or with the lobby's buttons
+at once, a drag takes the hud's pointer off the screen and gives the moves
+(and the wheel) to the player's input handler, which turns the warmup
+camera; the first move after it puts the cursor back where the drag began;
+the wheel alone goes on to the player's handler without the frame's turn.
+With the kits shown in any other mode (the death screen), the cursor shown
+without them, or no player's handler, the cursor takes every move, as in
+the original. The warmup mode keeps the pitch within +-60 degrees and the
+distance within 1.5 and 4.6, the lobby camera's. The original does none of
 it: it never changes a kit of a live player, its view always gives the
 player camera, its hud only hides the kits at a respawn and shows them at a
-death, and its cursor takes every move while it is shown. Says nothing
-about what the real initialize, physics, cameras and hud movie do.
+death, its cursor takes every move while it is shown, and its warmup camera
+has no limits. Says nothing about what the real initialize, physics,
+cameras and hud movie do.
 """
 import struct
 import sys
@@ -598,23 +606,27 @@ def check_pick(data, patched):
 
 
 # A mouse move: the input world's loop over its handlers (0x3B9F0A, esi =
-# the mouse: +4, +8, +0Ch the move, +2Ch the input world; ecx = the
-# handlers' vector, its first dword their first, ebp their end) to its end (0x3B9F34), with the game world's
+# the mouse: +4, +8, +0Ch the move, +10h the buttons held, +2Ch the input
+# world, whose +28h is the mouse; ecx = the handlers' vector, its first dword
+# their first, ebp their end) to its end (0x3B9F34), with the game world's
 # input handler (its vtable 0x9FC588, on_mouse_move 0x25D0E0) and then the
-# player's (priority 7 before 10).
+# player's (priority 7 before 10). A run is a series of moves in one game,
+# the patch's state kept between them.
 MOVE_FROM, MOVE_TO = 0x3B9F0A, 0x3B9F34
 LOOK_WORLD = HEAP + 0x30000                        # the game world; its input handler at +1F8h
 LOOK_HANDLER = LOOK_WORLD + 0x1F8
-MOUSE, LIST, PLAYER_INPUT, INPUT_WORLD, HANDLERS = (HEAP + 0x38000 + i * 0x100 for i in range(5))
-GVT, CURSOR_POS, PIVT = HEAP + 0x38800, HEAP + 0x38900, HEAP + 0x38A00
-SET_CURSOR, GET_CURSOR, PLAYER_MOVE = STUB + 0x80, STUB + 0x90, STUB + 0xA0
+MOUSE, LIST, PLAYER_INPUT, INPUT_WORLD, HANDLERS = (HEAP + 0x38000 + i * 0x400 for i in range(5))
+GVT, CURSOR_POS, PIVT = HEAP + 0x39800, HEAP + 0x39900, HEAP + 0x39A00
+SET_POINTER, GET_CURSOR, PLAYER_MOVE, PUT_CURSOR = STUB + 0x80, STUB + 0x90, STUB + 0xA0, STUB + 0xB0
+LEFT, RIGHT = 1, 2
 
 
 class Look(Emu):
-    def __init__(self, data, cursor, kits, mode):
+    def __init__(self, data, kits=1, mode=3, cursor=1):
         super().__init__(data)
         self.word(LOOK_WORLD, GVT)
-        self.word(GVT + 0x30, SET_CURSOR)
+        self.word(GVT + 0x30, SET_POINTER)
+        self.word(GVT + 0x3C, PUT_CURSOR)
         self.word(LOOK_HANDLER, 0x9FC588)
         self.word(LOOK_HANDLER + 0x4B70, CURSOR_POS)
         self.word(CURSOR_POS, CURSOR_POS + 0x10)
@@ -629,34 +641,53 @@ class Look(Emu):
         self.word(LIST, LOOK_HANDLER)
         self.word(LIST + 4, PLAYER_INPUT)
         self.word(HANDLERS, LIST)
-        for at, value in ((MOUSE + 4, 7), (MOUSE + 8, -3), (MOUSE + 0xC, 0), (MOUSE + 0x2C, INPUT_WORLD)):
-            self.word(at, value)
+        self.word(MOUSE + 0x2C, INPUT_WORLD)
+        self.word(INPUT_WORLD + 0x28, MOUSE)
+        self.system = [300, 200]                   # the system's cursor
 
     def stub(self, emu, address, size, _):
         sp, this = emu.reg_read(UC_X86_REG_ESP), emu.reg_read(UC_X86_REG_ECX)
-        if address == GET_CURSOR:                  # the cursor's position into (&x, &y)
+        signed = lambda at: struct.unpack("<i", emu.mem_read(at, 4))[0]
+        if address == GET_CURSOR:                  # the system's cursor into (&x, &y)
             assert this == CURSOR_POS
-            self.word(self.read(sp + 4), 300)
-            self.word(self.read(sp + 8), 200)
+            self.word(self.read(sp + 4), self.system[0])
+            self.word(self.read(sp + 8), self.system[1])
             self.returns(0, 8)
-        elif address == SET_CURSOR:                # the hud's cursor to (x, y, 0)
+        elif address == SET_POINTER:               # the hud's pointer to (x, y, wheel), as 0x25D160
             assert this == LOOK_WORLD
-            self.calls.append(("cursor", self.read(sp + 4), self.read(sp + 8), self.read(sp + 12)))
+            x, y, z = signed(sp + 4), signed(sp + 8), signed(sp + 12)
+            self.word(LOOK_WORLD + 0x8C, x)
+            self.word(LOOK_WORLD + 0x90, y)
+            self.calls.append(("pointer", x, y, z))
             self.returns(0, 12)
+        elif address == PUT_CURSOR:                # the system's cursor and the pointer to (x, y), as 0x25D130
+            assert this == LOOK_WORLD
+            x, y = signed(sp + 4), signed(sp + 8)
+            self.system = [x, y]
+            self.word(LOOK_WORLD + 0x8C, x)
+            self.word(LOOK_WORLD + 0x90, y)
+            self.calls.append(("cursor back", x, y))
+            self.returns(0, 8)
         elif address == PLAYER_MOVE:               # the player's on_mouse_move(world, x, y, z)
-            assert this == PLAYER_INPUT
-            self.calls.append(("player", self.read(sp + 4), self.read(sp + 8), self.read(sp + 12) & 0xFFFFFFFF,
-                               self.read(sp + 16)))
+            assert this == PLAYER_INPUT and self.read(sp + 4) == INPUT_WORLD
+            self.calls.append(("player", signed(sp + 8), signed(sp + 12), signed(sp + 16)))
             self.returns(1, 16)
 
-    def run(self):
+    def move(self, buttons, x, y, z=0):
+        """One frame's move with these buttons held; the system's cursor
+        follows the mouse unless a drag holds the pointer."""
+        self.system = [self.system[0] + x, self.system[1] + y]
+        for at, value in ((MOUSE + 4, x), (MOUSE + 8, y), (MOUSE + 0xC, z)):
+            self.word(at, value)
+        self.byte(MOUSE + 0x10, buttons)
+        self.calls = []
         emu = self.emu
         emu.reg_write(UC_X86_REG_ESP, STACK)
         emu.reg_write(UC_X86_REG_ESI, MOUSE)
         emu.reg_write(UC_X86_REG_ECX, HANDLERS)
         emu.reg_write(UC_X86_REG_EBP, LIST + 8)
         emu.reg_write(UC_X86_REG_EBX, 0x12345678)
-        emu.emu_start(MOVE_FROM, MOVE_TO, count=1000)
+        emu.emu_start(MOVE_FROM, MOVE_TO, count=2000)
         assert emu.reg_read(UC_X86_REG_EIP) == MOVE_TO and emu.reg_read(UC_X86_REG_ESP) == STACK
         assert (emu.reg_read(UC_X86_REG_ESI), emu.reg_read(UC_X86_REG_EBP), emu.reg_read(UC_X86_REG_EBX)) \
             == (MOUSE, LIST + 8, 0x12345678)
@@ -664,25 +695,111 @@ class Look(Emu):
 
 
 def look_cases():
-    """(name, the hud's cursor shown, the kits shown, the player's input
-    handler's mode or None for none, the original's, the build's)."""
-    cursor = [("cursor", 300, 200, 0)]
-    turns = cursor + [("player", INPUT_WORLD, 7, 0xFFFFFFFD, 0)]
-    yield "no cursor, before play", 0, 0, 3, turns, turns
-    yield "no cursor, in play", 0, 0, 0, turns, turns
-    yield "the kits shown before play", 1, 1, 3, cursor, turns
-    yield "the kits shown on the death screen (first person)", 1, 1, 0, cursor, cursor
-    yield "the kits shown on the death screen (third person)", 1, 1, 2, cursor, cursor
-    yield "the kits shown, the input off", 1, 1, 4, cursor, cursor
-    yield "the kits shown, no player input handler", 1, 1, None, cursor, cursor
-    yield "a cursor without the kits before play (a replay's)", 1, 0, 3, cursor, cursor
+    """(name, the kits shown, the player's input handler's mode or None for
+    none, the cursor shown, [(buttons, x, y, wheel, the original's calls, the
+    build's)]): moves in one game, in order."""
+    def cursor(x, y):                              # the original gives the pointer no wheel (`push 0`)
+        return [("pointer", x, y, 0)]
+
+    def player(x, y, z=0):
+        return [("player", x, y, z)]
+    away = [("pointer", -128, -128, 0)]
+    yield "moves", 1, 3, 1, [
+        (0, 5, 0, 0, cursor(305, 200), cursor(305, 200)),
+        (0, 3, 4, 0, cursor(308, 204), cursor(308, 204))]
+    yield "a click on a kit, the hand moving a little", 1, 3, 1, [
+        (LEFT, 2, 1, 0, cursor(302, 201), cursor(302, 201)),
+        (LEFT, 1, -2, 0, cursor(303, 199), cursor(303, 199)),
+        (0, 0, 1, 0, cursor(303, 200), cursor(303, 200)),
+        (LEFT, 4, 4, 0, cursor(307, 204), cursor(307, 204))]   # a new press counts from 0
+    yield "a left drag", 1, 3, 1, [
+        (0, 10, 0, 0, cursor(310, 200), cursor(310, 200)),
+        (LEFT, 5, 0, 0, cursor(315, 200), cursor(315, 200)),
+        (LEFT, 6, 0, 0, cursor(321, 200), away + player(6, 0)),
+        (LEFT, 10, -4, 0, cursor(331, 196), player(10, -4)),
+        (LEFT, -3, 2, 120, cursor(328, 198), player(-3, 2, 120)),
+        (0, 1, 0, 0, cursor(329, 198), [("cursor back", 315, 200)] + cursor(315, 200)),
+        (0, 2, 2, 0, cursor(331, 200), cursor(317, 202))]
+    yield "a right drag (the lobby's button)", 1, 3, 1, [
+        (RIGHT, 3, 0, 0, cursor(303, 200), away + player(3, 0)),
+        (RIGHT, 1, 1, 0, cursor(304, 201), player(1, 1)),
+        (0, 1, 0, 0, cursor(305, 201), [("cursor back", 300, 200)] + cursor(300, 200))]
+    yield "the wheel", 1, 3, 1, [
+        (0, 0, 0, 120, cursor(300, 200), player(0, 0, 120)),
+        (0, 4, 2, -120, cursor(304, 202), player(0, 0, -120)),
+        (0, 1, 0, 0, cursor(305, 202), cursor(305, 202))]
+    for mode, what in ((0, "first person"), (2, "third person"), (4, "the input off")):
+        yield f"the death screen ({what}): a left drag", 1, mode, 1, [
+            (LEFT, 10, 0, 0, cursor(310, 200), cursor(310, 200)),
+            (LEFT, 10, 0, 120, cursor(320, 200), cursor(320, 200)),
+            (0, 1, 0, 0, cursor(321, 200), cursor(321, 200))]
+    yield "a cursor without the kits before play (a replay's): a drag", 0, 3, 1, [
+        (LEFT, 10, 0, 0, cursor(310, 200), cursor(310, 200)),
+        (RIGHT, 10, 0, 0, cursor(320, 200), cursor(320, 200)),
+        (0, 0, 0, 120, cursor(320, 200), cursor(320, 200))]
+    yield "no player input handler", 1, None, 1, [
+        (LEFT, 10, 0, 0, cursor(310, 200), cursor(310, 200)),
+        (0, 0, 0, 120, cursor(310, 200), cursor(310, 200))]
+    yield "no cursor, no kits, before play", 0, 3, 0, [
+        (0, 5, 0, 0, cursor(305, 200) + player(5, 0), cursor(305, 200) + player(5, 0)),
+        (LEFT, 5, 0, 120, cursor(310, 200) + player(5, 0, 120), cursor(310, 200) + player(5, 0, 120))]
 
 
 def check_look(data, patched):
     checks = 0
-    for name, shown, kits, mode, original, build in look_cases():
-        look = Look(data, shown, kits, mode)
-        assert look.run() == (build if patched else original), (patched, name, look.calls)
+    for name, kits, mode, shown, moves in look_cases():
+        look = Look(data, kits, mode, shown)
+        if shown:                                  # the system's cursor starts where the pointer is
+            look.word(LOOK_WORLD + 0x8C, 300)
+            look.word(LOOK_WORLD + 0x90, 200)
+        for i, (buttons, x, y, z, original, build) in enumerate(moves):
+            calls = look.move(buttons, x, y, z)
+            assert calls == (build if patched else original), (patched, name, i, calls)
+            checks += 1
+    return checks
+
+
+# The warmup mode's step (process_warmup_mode 0x242200, esi = the player's
+# input handler, to its `ret`): the wheel of the frame (+348h) into the
+# distance (+354h), the turn (+338h, two halves; 0: none) into the yaw and
+# pitch (+34Ch, +350h).
+WARMUP_MODE = 0x242200
+
+
+def warmup_step(data, pitch, distance, wheel):
+    emu = Emu(data)
+    for at, value in ((PLAYER_INPUT + 0x348, wheel), (PLAYER_INPUT + 0x34C, 0.25), (PLAYER_INPUT + 0x350, pitch),
+                      (PLAYER_INPUT + 0x354, distance)):
+        emu.emu.mem_write(at, struct.pack("<f", value))
+    emu.word(PLAYER_INPUT + 0x338, 0)
+    emu.word(STACK, STOP)
+    emu.emu.reg_write(UC_X86_REG_ESP, STACK)
+    emu.emu.reg_write(UC_X86_REG_ESI, PLAYER_INPUT)
+    emu.emu.reg_write(UC_X86_REG_EDI, 0x12345678)
+    emu.emu.emu_start(WARMUP_MODE, STOP, count=2000)
+    assert emu.emu.reg_read(UC_X86_REG_ESP) == STACK + 4
+    assert (emu.emu.reg_read(UC_X86_REG_ESI), emu.emu.reg_read(UC_X86_REG_EDI)) == (PLAYER_INPUT, 0x12345678)
+    yaw, pitch, distance = struct.unpack("<3f", emu.emu.mem_read(PLAYER_INPUT + 0x34C, 12))
+    return round(yaw, 4), round(pitch, 4), round(distance, 4)
+
+
+def limits_cases():
+    """(name, pitch, distance, the wheel of the frame, the original's (yaw,
+    pitch, distance), the build's)."""
+    yield "the spawn's distance", 0.0, 1.0, 0.0, (0.25, 0.0, 1.0), (0.25, 0.0, 1.5)
+    yield "within the limits", 0.5, 2.0, 0.12, (0.25, 0.5, 2.12), (0.25, 0.5, 2.12)
+    yield "nearer than the nearest", -0.5, 1.6, -0.36, (0.25, -0.5, 1.24), (0.25, -0.5, 1.5)
+    yield "further than the farthest", 0.0, 4.5, 0.36, (0.25, 0.0, 4.86), (0.25, 0.0, 4.6)
+    yield "a negative distance", 0.0, 0.1, -0.36, (0.25, 0.0, -0.26), (0.25, 0.0, 1.5)
+    yield "looked up past 60 degrees", 1.5, 2.0, 0.0, (0.25, 1.5, 2.0), (0.25, 1.0472, 2.0)
+    yield "looked down past 60 degrees", -3.0, 2.0, 0.0, (0.25, -3.0, 2.0), (0.25, -1.0472, 2.0)
+
+
+def check_limits(data, patched):
+    checks = 0
+    for name, pitch, distance, wheel, original, build in limits_cases():
+        got = warmup_step(data, pitch, distance, wheel)
+        assert got == (build if patched else original), (patched, name, got)
         checks += 1
     return checks
 
@@ -733,18 +850,21 @@ def main():
     for data, is_patched in ((original, False), (patched, True)):
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
-        checks += check_death(data, is_patched) + check_look(data, is_patched)
+        checks += check_death(data, is_patched) + check_look(data, is_patched) + check_limits(data, is_patched)
     # A build that does not look at the statistics, or at the state, or at
     # the end of the places, or that gives the spawn no protection when none
     # is left (which leaves the new kit's damage model as it was), fails; so
-    # does one whose view always gives the warmup, and one whose cursor lets
-    # a move go on in any mode.
+    # does one whose view always gives the warmup, one whose mouse moves
+    # drag in any mode, one that drags at the first move of a click, and one
+    # with no nearest distance.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
                             (bytes.fromhex("48d1e8750d"), bytes.fromhex("48d1e8eb00"), check_boundary),
                             (bytes.fromhex("3b865c84010073ee"), bytes.fromhex("3b865c8401009090"), check_tick),
                             (bytes.fromhex("29e8770489e8f7d0"), bytes.fromhex("29e8770431c09090"), check_tick),
                             (bytes.fromhex("83be601c1f000375"), bytes.fromhex("83be601c1f0003eb"), check_view),
-                            (bytes.fromhex("83b85803000003750c"), bytes.fromhex("83b858030000039090"), check_look)):
+                            (bytes.fromhex("83b858030000037416"), bytes.fromhex("83b85803000003eb16"), check_look),
+                            (bytes.fromhex("890b83f90876b4"), bytes.fromhex("890b83f908eb00"), check_look),
+                            (bytes.fromhex("39d00f4cc2"), bytes.fromhex("39d0909090"), check_limits)):
         broken = bytearray(patched)
         at = broken.rfind(old)                     # in `.srp`, the last section with bytes
         assert at > base.Headers(broken).sections(broken)[-2][3]
@@ -755,7 +875,7 @@ def main():
             checks += 1
         else:
             sys.exit(f"a broken build ({new.hex()}) passed")
-    print(f"patch 31: {checks} runs as expected (the original, the build and six broken builds)")
+    print(f"patch 31: {checks} runs as expected (the original, the build and eight broken builds)")
 
 
 if __name__ == "__main__":

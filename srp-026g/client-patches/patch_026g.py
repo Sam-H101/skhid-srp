@@ -58,9 +58,12 @@ USAGE (this script never touches the source exe):
     (checked in; STATE is 0xE00 of the late join's state page, checked), and its
     draw from weapon_draw_026g.asm:
         nasm -f bin -DCAVE=0xA425D20 -DSTATE=0xA428E00 weapon_draw_026g.asm -o weapon_draw_026g.section.bin
-    (checked in). The mouse turning the warmup camera while the kits are shown
-    before the start comes from warmup_look_026g.asm:
-        nasm -f bin -DCAVE=0xA425D40 warmup_look_026g.asm -o warmup_look_026g.section.bin
+    (checked in). The warmup camera turned by a drag and moved by the wheel while
+    the kits are shown before the start comes from warmup_look_026g.asm and
+    warmup_limits_026g.asm:
+        nasm -f bin -DCAVE=0xA425D40 -DSTATE=0xA428E20 -DLIMITS=0xA425A98 warmup_look_026g.asm -o warmup_look_026g.section.bin
+        nasm -f bin -DCAVE=0xA425A98 warmup_limits_026g.asm -o warmup_limits_026g.section.bin
+    (checked in; STATE is 0xE20 of the late join's state page, checked)
     (checked in). The commit_suicide key comes from suicide_key_026g.asm:
         nasm -f bin -DCAVE=0xA425980 suicide_key_026g.asm -o suicide_key_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
@@ -260,10 +263,13 @@ Patches:
   begins (0x26794D); the hud shows the kits to a player who becomes alive
   then (0x23B7DA), keeps them and the cursor after a pick, also on the
   death screen (0x233F28), and hides them from a live one once play begins
-  (0x23B7FC); while they are shown before play the mouse still turns the
-  warmup camera (0x25D118: the game world's input handler lets the move go
-  on to the player's). The code is kit_change_026g.asm at 0xEC0 of `.srp`
-  and warmup_look_026g.asm at 0xD40;
+  (0x23B7FC); while they are shown before play a drag (the left button,
+  past a click's few moves, or the lobby's buttons) turns the warmup camera
+  and the wheel moves it nearer or further, as the lobby's character view
+  (0x25D0E0, the game world's input handler's mouse move), within the
+  lobby's limits (0x24225E). The code is kit_change_026g.asm at 0xEC0 of
+  `.srp`, warmup_look_026g.asm at 0xD40 and warmup_limits_026g.asm at
+  0xA98;
 - a weapon's upgrade window ("Optika", the scope slot) shows the weapon
   (patch 32, with the late join, client_patch.md section 3.30): the lobby's
   character shows the kit whose held weapon (slot 7, or 10 without a 7) is
@@ -750,25 +756,40 @@ KIT_CHANGE_HOOKS = (
     (0x23B7FC, bytes.fromhex("8d85d0000000"), 0x108, 0xE8),         # every update: ui_start
 )
 KIT_PICK = (0x233F28, bytes.fromhex("6a008bc3e87f440000"), b"\x90" * 9)   # a pick: the kits stay
-# The same patch's look around before the start: warmup_look_026g.asm at
+# The same patch's camera before the start: warmup_look_026g.asm at
 # WARMUP_LOOK_OFFSET of `.srp` (after the weapon preview's draw, before the
-# shell_32.dll check), one entry. The input world gives a mouse move to its
-# handlers in their priority's order until one answers 1 (0x3B9F10): the
-# game world's (game world+1F8h, priority 7) before the player's input
-# handler (game world+4D58h, priority 10, whose warmup mode turns the warmup
-# camera, 0x242200). The game world's on_mouse_move (0x25D0E0) moves the
-# hud's cursor and answers whether the cursor is shown: `cmp byte
-# [esi+2E0h],0` (hud+2DCh; the hud is the handler's +4) at 0x25D118, then
-# `setne al`. The kits show the cursor (0x2383B0 -> 0x23A930), so with
-# them shown before the start the cursor took every move and the camera
-# stood still. The seven bytes are a call of warmup_look and two nops: it
-# sets ZF (the move goes on) while the player's handler is in the warmup
-# mode (+358h = 3, set by the warmup camera 0x1F8190 alone: before play)
-# and the kits are shown (hud+2DFh), and is the original's compare
-# otherwise. No base relocation under the site.
+# shell_32.dll check) and warmup_limits_026g.asm at WARMUP_LIMITS_OFFSET
+# (after the seek code, before the forward effect's scrolling); a state of
+# 12 bytes at WARMUP_LOOK_STATE_OFFSET of the late join's state page (after
+# the weapon preview's). The input world gives a mouse move to its handlers
+# in their priority's order until one answers 1 (0x3B9F10): the game world's
+# (game world+1F8h, priority 7) before the player's input handler (game
+# world+4D58h, priority 10), whose warmup mode turns the warmup camera and
+# moves it by the wheel (0x240200, 0x242200). The game world's
+# on_mouse_move (0x25D0E0) moves the hud's cursor and answers whether the
+# cursor is shown; the kits show it (0x2383B0 -> 0x23A930), so with them
+# shown before the start the cursor took every move and the camera stood
+# still. Its first four instructions (ten bytes) are a jump to warmup_look
+# and five nops: while the kits are shown and the player's handler is in the
+# warmup mode (+358h = 3, set by the warmup camera 0x1F8190 alone: before
+# play), a move with a button held is a drag as the lobby camera's
+# (0x283D30: its buttons 2, 5 and 7 at once; the left one past CLICK of
+# moves, a click before), which goes on to the player's handler with the
+# hud's pointer kept off the screen, put back at the drag's end; a move of
+# the wheel goes on to it alone; any other move is the cursor's. process_
+# warmup_mode's store of the pitch (`movss [esi+350h],xmm0` at 0x24225E,
+# eight bytes) is a call of warmup_limits and three nops: the pitch within
+# the lobby camera's +-60 degrees, the distance within its 1.5 and 4.6
+# (0x283EF0). No base relocation under either site.
 WARMUP_LOOK_OFFSET = 0xD40
 WARMUP_LOOK_VA = SECTION_VA + WARMUP_LOOK_OFFSET
-WARMUP_LOOK_HOOK = (0x25D118, bytes.fromhex("80bee002000000"), 0, 0xE8)   # the cursor's answer: warmup_look
+WARMUP_LOOK_HOOK = (0x25D0E0, bytes.fromhex("5356" "8bf1" "8b8e704b0000"), 0, 0xE9)   # on_mouse_move: warmup_look
+WARMUP_LOOK_STATE_OFFSET = 0xE20
+WARMUP_LOOK_STATE_SIZE = 12
+WARMUP_LIMITS_OFFSET = 0xA98
+WARMUP_LIMITS_VA = SECTION_VA + WARMUP_LIMITS_OFFSET
+WARMUP_DRAG_END_OFFSET, WARMUP_LIMITS_ENTRY_OFFSET = 0, 0x20       # the .asm's two entries
+WARMUP_LIMITS_HOOK = (0x24225E, bytes.fromhex("f30f118650030000"), WARMUP_LIMITS_ENTRY_OFFSET, 0xE8)   # the pitch's store
 
 # The order of the archive reads (patch 33, README; client_patch.md section
 # 3.31). vostok::resources::hdd_manager_sorting_predicate::operator()
@@ -1706,13 +1727,28 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if neutralize_relocs(data, [(KIT_PICK[0], KIT_PICK[0] + len(KIT_PICK[1]))]):
             sys.exit("a base relocation under the hiding of the kits after a pick")
         warmup_look = open(warmup_look_bin(), "rb").read()
-        # It begins with the compare it replaces, `cmp byte [esi+2E0h],0`.
-        if warmup_look[:7] != WARMUP_LOOK_HOOK[1]:
-            sys.exit("warmup_look_026g.section.bin: its entry is not the cursor's compare")
-        va, expected, offset, opcode = WARMUP_LOOK_HOOK
-        patch(data, va, expected, hook_bytes(WARMUP_LOOK_VA, va, expected, offset, opcode))
-        if neutralize_relocs(data, [(va, va + len(expected))]):
-            sys.exit("a base relocation under the cursor's answer to a mouse move")
+        warmup_limits = open(warmup_limits_bin(), "rb").read()
+        # warmup_look begins `cmp byte [ecx+2E3h],0` and keeps its state where
+        # the late join's page has room for it; it calls warmup_limits'
+        # drag_end, which begins `mov ecx,[ebx]`; warmup_limits begins
+        # `movd eax,xmm0`.
+        if warmup_look[:7] != bytes.fromhex("80b9e302000000") \
+                or warmup_look_state(warmup_look) != late_join_state_va(late_join) + WARMUP_LOOK_STATE_OFFSET \
+                or warmup_look_calls(warmup_look) != [WARMUP_LIMITS_VA + WARMUP_DRAG_END_OFFSET] \
+                or warmup_limits[WARMUP_DRAG_END_OFFSET:WARMUP_DRAG_END_OFFSET + 2] != bytes.fromhex("8b0b") \
+                or warmup_limits[WARMUP_LIMITS_ENTRY_OFFSET:WARMUP_LIMITS_ENTRY_OFFSET + 4] != bytes.fromhex("660f7ec0"):
+            sys.exit(f"warmup_look_026g.section.bin or warmup_limits_026g.section.bin: their entries or the state "
+                     f"are not where patch_026g.py puts them (assembled with -DCAVE={WARMUP_LOOK_VA:#x} "
+                     f"-DSTATE={late_join_state_va(late_join) + WARMUP_LOOK_STATE_OFFSET:#x} "
+                     f"-DLIMITS={WARMUP_LIMITS_VA:#x} and -DCAVE={WARMUP_LIMITS_VA:#x}?)")
+        if WEAPON_PREVIEW_STATE_OFFSET + WEAPON_PREVIEW_STATE_SIZE > WARMUP_LOOK_STATE_OFFSET \
+                or WARMUP_LOOK_STATE_OFFSET + WARMUP_LOOK_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the warmup look's state is not between the weapon preview's and the page's end")
+        for (va, expected, offset, opcode), base in ((WARMUP_LOOK_HOOK, WARMUP_LOOK_VA),
+                                                     (WARMUP_LIMITS_HOOK, WARMUP_LIMITS_VA)):
+            patch(data, va, expected, hook_bytes(base, va, expected, offset, opcode))
+            if neutralize_relocs(data, [(va, va + len(expected))]):
+                sys.exit(f"{va:#x}: a base relocation under a hook of the warmup camera")
         read_order = open(read_order_bin(), "rb").read()
         at = file_offset(READ_ORDER_VA)
         if len(read_order) != READ_ORDER_SIZE:
@@ -1775,11 +1811,12 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             patch(data, va, expected, hook_bytes(FORWARD_SCROLL_VA, va, expected, offset, opcode))
             if neutralize_relocs(data, [(va, va + len(expected))]):
                 sys.exit(f"{va:#x}: a base relocation under a hook of the forward effect's scrolling")
-        if SEEK_CLEAR_OFFSET + len(seek_clear) > FORWARD_SCROLL_OFFSET \
+        if SEEK_CLEAR_OFFSET + len(seek_clear) > WARMUP_LIMITS_OFFSET \
+                or WARMUP_LIMITS_OFFSET + len(warmup_limits) > FORWARD_SCROLL_OFFSET \
                 or FORWARD_SCROLL_OFFSET + len(forward_scroll) > STALE_DLL_OFFSET \
                 or STALE_DLL_OFFSET + len(stale_dll) > LATE_JOIN_OFFSET:
-            sys.exit("the seek code, the forward effect's scrolling and the shell_32.dll check do not fit "
-                     "before the late join")
+            sys.exit("the seek code, the warmup camera's limits, the forward effect's scrolling and the "
+                     "shell_32.dll check do not fit before the late join")
         if len(cave) > MOUNT_PATCHES_OFFSET or MOUNT_PATCHES_OFFSET + len(mount_patches) > PICKUP_OFFSET:
             sys.exit("the upload code (and the default server) and the patches' mount do not fit before the pickup code")
         if MOUNT_STATE_OFFSET + MOUNT_STATE_SIZE > LATE_JOIN_STATE_SIZE:
@@ -1811,6 +1848,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SUICIDE_KEY_OFFSET - len(cave)) + suicide_key
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
+            cave = cave + b"\xCC" * (WARMUP_LIMITS_OFFSET - len(cave)) + warmup_limits
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
             cave = cave + b"\xCC" * (WEAPON_DRAW_OFFSET - len(cave)) + weapon_draw
             cave = cave + b"\xCC" * (WARMUP_LOOK_OFFSET - len(cave)) + warmup_look
@@ -1848,7 +1886,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the lobby's link starts the updater for a replay link and opens nothing else, "
                      "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
                      "a kit chosen before the match starts is played at once where the player stands, "
-                     "the mouse turns the warmup camera while the kits are shown, "
+                     "a drag turns the warmup camera and the wheel moves it while the kits are shown, "
                      "the archive reads' order is a strict weak ordering, "
                      f"the ai arena is {AI_ARENA_SIZE >> 20} MiB, "
                      "a weapon's upgrade window shows the weapon, "
@@ -1913,6 +1951,30 @@ def kit_change_bin():
 
 def warmup_look_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_look_026g.section.bin")
+
+
+def warmup_limits_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_limits_026g.section.bin")
+
+
+def warmup_look_state(code):
+    """The state address warmup_look_026g.asm was assembled for: its one
+    `call $+5` / `pop ebx` / `add ebx,imm32`; 0 when it is not there once."""
+    find = bytes.fromhex("e800000000" "5b" "81c3")
+    at = code.find(find)
+    if at < 0 or code.find(find, at + 1) >= 0:
+        return 0
+    return (WARMUP_LOOK_VA + at + 5 + struct.unpack_from("<i", code, at + 8)[0]) & 0xFFFFFFFF
+
+
+def warmup_look_calls(code):
+    """The target of warmup_look_026g.asm's call at the end of a drag:
+    `call rel32` / `xor eax,eax` / `cmp [edi+0Ch],eax`, once; [] when not."""
+    find = bytes.fromhex("31c039470c")
+    at = code.find(find)
+    if at < 5 or code.find(find, at + 1) >= 0 or code[at - 5] != 0xE8:
+        return []
+    return [(WARMUP_LOOK_VA + at + struct.unpack_from("<i", code, at - 4)[0]) & 0xFFFFFFFF]
 
 
 def weapon_preview_bin():
