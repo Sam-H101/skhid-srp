@@ -165,8 +165,15 @@ pub struct Account {
 /// between the check and the session refuses the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignedIn {
-    pub account_id: u32,
+    account_id: u32,
     password_epoch: u64,
+}
+
+impl SignedIn {
+    /// The account it signed in. Only the store makes a `SignedIn`.
+    pub fn account_id(&self) -> u32 {
+        self.account_id
+    }
 }
 
 /// What the admin's password reset did ([`SessionStore::reset_password`]).
@@ -319,8 +326,9 @@ struct Persistence {
     dirty: Mutex<HashSet<u32>>,
     /// Sessions made since the last pass: written on it.
     new_sessions: Mutex<HashSet<u32>>,
-    /// Sessions ended since the last pass: their rows go on it.
-    ended_sessions: Mutex<HashSet<u32>>,
+    /// Sessions ended whose rows are still to go, with their accounts: on
+    /// the next pass, or with the account's password reset.
+    ended_sessions: Mutex<HashMap<u32, u32>>,
     /// Wakes the saver before its interval is up.
     wake: Condvar,
 }
@@ -490,7 +498,7 @@ impl SessionStore {
                 if !accounts.contains_key(&stored.account_id)
                     || age > SESSION_RESTORE_LIMIT.as_secs()
                 {
-                    dropped.push(stored.session_id);
+                    dropped.push((stored.session_id, stored.account_id));
                     continue;
                 }
                 sessions.insert(
@@ -514,11 +522,11 @@ impl SessionStore {
             dropped.len()
         );
         // A row that can't go now goes on the saver's first pass.
-        let mut ended_sessions = HashSet::new();
-        for session_id in dropped {
+        let mut ended_sessions = HashMap::new();
+        for (session_id, account_id) in dropped {
             if let Err(error) = repository.delete_session(session_id) {
                 log::warn!("Session {session_id:#x} not deleted: {error}; retrying");
-                ended_sessions.insert(session_id);
+                ended_sessions.insert(session_id, account_id);
             }
         }
 
@@ -960,14 +968,17 @@ impl SessionStore {
         // Taken after the writes: a session that ended meanwhile loses the
         // row just written in this pass, not the next.
         let ended = std::mem::take(&mut *persistence.ended_sessions.locked());
-        for session_id in ended {
+        for (session_id, account_id) in ended {
             match writer.repository.delete_session(session_id) {
                 Ok(()) => {
                     writer.sessions.remove(&session_id);
                 }
                 Err(error) => {
                     log::error!("Session {session_id:#x} not deleted: {error}; retrying");
-                    persistence.ended_sessions.locked().insert(session_id);
+                    persistence
+                        .ended_sessions
+                        .locked()
+                        .insert(session_id, account_id);
                 }
             }
         }
@@ -983,11 +994,14 @@ impl SessionStore {
     }
 
     /// The saver deletes the rows of these sessions, ended just now, soon.
-    fn sessions_ended(&self, session_ids: &[u32]) {
+    fn sessions_ended(&self, ended: &[(u32, u32)]) {
         if let Some(persistence) = &self.persistence
-            && !session_ids.is_empty()
+            && !ended.is_empty()
         {
-            persistence.ended_sessions.locked().extend(session_ids);
+            persistence
+                .ended_sessions
+                .locked()
+                .extend(ended.iter().copied());
             persistence.wake.notify_one();
         }
     }
@@ -1251,7 +1265,7 @@ impl SessionStore {
             }
             _ => return false,
         };
-        self.sessions_ended(&[session_id]);
+        self.sessions_ended(&[(session_id, account_id)]);
         self.matchmaking.leave_queue(session_id);
         if !self.plays_on_elsewhere(account_id, session_id, Instant::now()) {
             self.leave_squad(account_id, "its session ended (signed out)");
@@ -1337,14 +1351,17 @@ impl SessionStore {
                 && !busy.contains(session_id)
             {
                 session.ended = true;
-                ended.push(*session_id);
+                ended.push((*session_id, session.account_id));
             }
         }
         // Not in a match and not held: nothing needs them any more.
-        sessions.retain(|session_id, _| !ended.contains(session_id));
+        sessions.retain(|session_id, _| !ended.iter().any(|(id, _)| id == session_id));
         drop(sessions);
         self.sessions_ended(&ended);
         ended
+            .into_iter()
+            .map(|(session_id, _)| session_id)
+            .collect()
     }
 
     /// The players online: accounts with a lobby or chat connection open on
@@ -1672,7 +1689,8 @@ impl SessionStore {
         ended
     }
 
-    /// Write one account and delete the rows of `ended` sessions, now, on
+    /// Write one account and delete the rows of `ended` sessions and of its
+    /// other ended sessions whose rows are still to go, now, on
     /// the caller's thread (the admin's request): what the password reset
     /// must have on disk before it says so. That is one account's
     /// transaction and a few deletes, done in SQLite on this thread. The
@@ -1714,7 +1732,21 @@ impl SessionStore {
                 Err(error)
             }
         };
-        for &session_id in ended {
+        // Those ended now, and any of the account's that ended before and
+        // whose rows are still to go: a restart must bring back none.
+        let mut rows: Vec<u32> = persistence
+            .ended_sessions
+            .locked()
+            .iter()
+            .filter(|(_, owner)| **owner == account_id)
+            .map(|(session_id, _)| *session_id)
+            .collect();
+        for session_id in ended {
+            if !rows.contains(session_id) {
+                rows.push(*session_id);
+            }
+        }
+        for session_id in rows {
             match writer.repository.delete_session(session_id) {
                 Ok(()) => {
                     writer.sessions.remove(&session_id);

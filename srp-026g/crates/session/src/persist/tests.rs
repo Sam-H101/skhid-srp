@@ -172,7 +172,10 @@ fn a_reset_password_stays_reset_across_a_restart() {
     let kept = store.sign_in("kept", b"test-password-2").unwrap();
     let session = store.create_session(id);
     let kept_session = store.create_session(kept);
+    // Signed out before the reset; its row is still to go.
+    let earlier = store.create_session(id);
     store.flush();
+    assert!(store.end_session(earlier));
     let reset = store.reset_password(id).unwrap();
     assert_eq!(reset.sessions_ended, 1);
     assert!(
@@ -187,7 +190,7 @@ fn a_reset_password_stays_reset_across_a_restart() {
         .unwrap();
     let sessions: Vec<u32> = sessions.iter().map(|stored| stored.session_id).collect();
     assert_eq!(sessions, [kept_session]);
-    assert!(!sessions.contains(&session));
+    assert!(!sessions.contains(&session) && !sessions.contains(&earlier));
     drop(store);
 
     let connection = Connection::open(dir.db()).unwrap();

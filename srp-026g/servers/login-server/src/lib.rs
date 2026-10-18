@@ -494,7 +494,7 @@ fn handle_sign_in(store: Arc<SessionStore>, tls: &SslContext, mut stream: TcpStr
             return;
         }
     };
-    let account_id = signed_in.account_id;
+    let account_id = signed_in.account_id();
     // None: the admin reset the password while it was checked. Only a
     // sign-in that got its session is where the account last signed in.
     let Some(session_id) = store.create_signed_in_session(signed_in, 0) else {

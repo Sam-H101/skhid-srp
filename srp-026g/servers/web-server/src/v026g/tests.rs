@@ -110,7 +110,7 @@ impl World {
                 Instant::now(),
             )
             .unwrap()
-            .account_id;
+            .account_id();
         self.accounts.get_or_create(id, name);
         id
     }
