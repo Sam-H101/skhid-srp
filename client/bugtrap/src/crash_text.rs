@@ -1,5 +1,5 @@
-// Crash-dialog copy and language selection, independent of Win32 and allocation.
-use crate::notice_text::{Language, command_language};
+// Crash-dialog copy, independent of Win32 and allocation.
+use crate::notice_text::Language;
 
 pub struct Text {
     pub title: &'static str,
@@ -16,18 +16,6 @@ pub struct Text {
     pub close: &'static str,
     pub browser_failed: &'static str,
     pub manual: &'static str,
-}
-
-/// Prefer the game's language; otherwise use Windows' UI language (including
-/// regional variants). Unsupported languages fall back to English.
-pub fn language(command_line: &[u16], windows_language: u16) -> Language {
-    command_language(command_line).unwrap_or(match windows_language & 0x03ff {
-        0x19 => Language::Russian,
-        0x22 => Language::Ukrainian,
-        0x07 => Language::German,
-        0x15 => Language::Polish,
-        _ => Language::English,
-    })
 }
 
 pub fn text(language: Language) -> &'static Text {

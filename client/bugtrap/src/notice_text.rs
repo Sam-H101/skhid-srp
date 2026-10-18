@@ -72,58 +72,16 @@ pub fn notice(language: Language) -> &'static Notice {
     }
 }
 
-/// The language the game was started in: the value of `-localization=` on
-/// its command line (the launcher and the start scripts give it), else English.
-pub fn language(command_line: &[u16]) -> Language {
-    command_language(command_line).unwrap_or(Language::English)
-}
-
-/// Match a complete argument, never a substring of an exe path or a longer
-/// language name. Accept the launcher's unquoted and Windows' quoted forms.
-pub fn command_language(command_line: &[u16]) -> Option<Language> {
-    const KEY: &[u8] = b"-localization=";
-    const NAMES: [(&[u8], Language); 5] = [
-        (b"english", Language::English),
-        (b"russian", Language::Russian),
-        (b"ukrainian", Language::Ukrainian),
-        (b"german", Language::German),
-        (b"polish", Language::Polish),
-    ];
-    let mut at = 0;
-    let mut executable = true;
-    while at < command_line.len() {
-        while at < command_line.len() && matches!(command_line[at], 9 | 32) {
-            at += 1;
-        }
-        let start = at;
-        let mut quoted = false;
-        while at < command_line.len() {
-            let c = command_line[at];
-            if c == b'"' as u16 {
-                quoted = !quoted;
-            } else if !quoted && matches!(c, 9 | 32) {
-                break;
-            }
-            at += 1;
-        }
-        if executable {
-            executable = false;
-            continue;
-        }
-        let mut token = command_line[start..at]
-            .iter()
-            .copied()
-            .filter(|&c| c != b'"' as u16);
-        if KEY.iter().all(|&c| token.next() == Some(c as u16)) {
-            return NAMES.iter().find_map(|&(name, language)| {
-                token
-                    .clone()
-                    .eq(name.iter().map(|&c| c as u16))
-                    .then_some(language)
-            });
-        }
+/// Automatically use the Windows user's UI language for every BugTrap dialog.
+/// Ignore regional variants; unsupported languages fall back to English.
+pub fn language(windows_language: u16) -> Language {
+    match windows_language & 0x03ff {
+        0x19 => Language::Russian,
+        0x22 => Language::Ukrainian,
+        0x07 => Language::German,
+        0x15 => Language::Polish,
+        _ => Language::English,
     }
-    None
 }
 
 /// The launcher, the updater and the service load this DLL too, from the same
@@ -153,34 +111,19 @@ mod tests {
     }
 
     #[test]
-    fn the_language_is_the_one_the_game_was_started_in() {
-        for (line, expected) in [
-            (
-                r#""C:\game\survarium_skhid.exe" -localization=ukrainian -mt_allocator=768"#,
-                Language::Ukrainian,
-            ),
-            (
-                "survarium_skhid.exe  -localization=russian",
-                Language::Russian,
-            ),
-            (
-                "survarium_skhid.exe -localization=german -server=a:1",
-                Language::German,
-            ),
-            ("survarium_skhid.exe -localization=polish", Language::Polish),
-            (
-                "survarium_skhid.exe -localization=english",
-                Language::English,
-            ),
-            (
-                "survarium_skhid.exe -localization=klingon",
-                Language::English,
-            ),
-            ("survarium_skhid.exe -localization=", Language::English),
-            ("survarium_skhid.exe", Language::English),
-            ("", Language::English),
+    fn automatically_uses_the_windows_ui_language() {
+        for (windows, expected) in [
+            (0x0419, Language::Russian),
+            (0x0415, Language::Polish),
+            (0x0422, Language::Ukrainian),
+            (0x0407, Language::German),
+            (0x0807, Language::German),
+            (0x0409, Language::English),
+            (0x0809, Language::English),
+            (0x040c, Language::English),
+            (0, Language::English),
         ] {
-            assert_eq!(language(&wide(line)), expected, "{line}");
+            assert_eq!(language(windows), expected, "{windows:04x}");
         }
     }
 

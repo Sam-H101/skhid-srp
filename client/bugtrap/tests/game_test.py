@@ -128,7 +128,7 @@ def main():
     print(content)
     assert result.returncode == 0, "Controller failed; see game-test.log"
     assert "DISCORD_BUTTON=1" in content and "CRASH_DIALOG_CLOSED" in content
-    assert "Crash dump saved:" in content
+    assert "CRASH_DIALOG " in content  # The status text follows Windows' UI language.
     dumps = set(game.glob("SRP-crash-*.zip")) - set(before)
     assert len(dumps) == 1, dumps
     assert set(game.glob("SRP-crash-*.dmp")) == dumps_before, "the zipped dump was kept"

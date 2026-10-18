@@ -31,13 +31,14 @@ shows the invite address and manual instructions.
 
 The whole dialog (title, status, file/folder labels, instructions, buttons and
 errors) is localized in English, Russian, Ukrainian, German and Polish. It
-uses the game's `-localization=` argument when supported, otherwise the Windows
-UI language; unsupported Windows languages fall back to English. The dialog
-and its buttons have room for the translated text. The startup notice below
-continues to use the game language, or English when no supported option is given.
+automatically uses the Windows user's UI language, including regional variants;
+unsupported languages fall back to English. The game's `-localization=` option
+does not override this. The startup notice uses the same automatic selection.
+The dialog and its buttons have room for the translated text.
 
 Dialog screenshots from Wine (client area): [English](crash-dialog.png),
-[Russian](crash-dialog-ru.png), [Polish](crash-dialog-pl.png).
+[Russian](crash-dialog-ru.png), [Polish](crash-dialog-pl.png),
+[Ukrainian](crash-dialog-uk.png).
 
 Nothing is uploaded automatically. Email/upload entry points fail with
 `ERROR_NOT_SUPPORTED`, and legacy support destinations are discarded. The DLL
@@ -57,8 +58,8 @@ When the game names itself (`BT_SetAppName`, once, early in its start, on its
 main thread), the DLL makes that folder if it is missing, as the game does,
 and makes a file `skhid-write-test-<process id>.tmp` in it that is gone when
 its handle closes. If either is refused, one message box says so before the
-game goes on, in the language the game was started in (`-localization=`;
-English, Russian, Ukrainian, German, Polish; English without the option):
+game goes on, in the Windows user’s UI language (automatically;
+English, Russian, Ukrainian, German, Polish; English for unsupported languages):
 
 > **Survarium cannot save its files**
 >
@@ -232,8 +233,8 @@ rustc --edition 2024 -O --test src/zip.rs -o target/zip-test
 ./target/zip-test   # SRP_ZIP_SAMPLE=<a dump> zips that file instead
 ```
 
-The text tests cover game-language precedence, Windows language fallback,
-quoted arguments and exact argument matching, as well as the startup notice.
+The text tests cover automatic Windows UI language selection, regional variants,
+English fallback and the startup notice.
 For the dialog itself, `tests/build.cmd` also builds `ui_probe.exe`. On Linux
 it can be built with `i686-w64-mingw32-g++ -static -O2 tests/ui_probe.cpp
 -o target/i686-pc-windows-msvc/release/ui_probe.exe -luser32 -lgdi32` (with the
@@ -245,7 +246,8 @@ WINEPREFIX=/path/to/test-prefix python3 tests/check_localization.py target/i686-
 
 This checks all five languages on real Win32 dialogs: ZIP, raw-dump fallback,
 partial report, failed save, failed browser launch and failed dialog creation,
-plus Windows-language fallback. It measures text against control bounds, checks translated labels
+plus automatic locale selection with absent or conflicting game-language options.
+It measures text against control bounds, checks translated labels
 and buttons, and intercepts the browser call so no browser or network is used.
 An optional second argument saves dialog screenshots as BMPs for inspection.
 

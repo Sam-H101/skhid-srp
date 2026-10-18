@@ -1,10 +1,10 @@
-use crate::{crash_text, text::Wide};
+use crate::{crash_text, notice_text::language, text::Wide};
 use core::{fmt::Write, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::*,
     Globalization::GetUserDefaultUILanguage,
     Graphics::Gdi::*,
-    System::{Environment::GetCommandLineW, SystemServices::*},
+    System::SystemServices::*,
     UI::{Controls::*, Shell::ShellExecuteW, WindowsAndMessaging::*},
 };
 
@@ -263,16 +263,7 @@ unsafe extern "system" fn dialog(window: HWND, msg: u32, wp: usize, lp: isize) -
     }
 }
 pub unsafe fn show(path: &Wide<32768>, saved: bool, partial: bool, error: u32) {
-    let line = GetCommandLineW();
-    let mut len = 0;
-    while len < 32767 && *line.add(len) != 0 {
-        len += 1;
-    }
-    let language = crash_text::language(
-        core::slice::from_raw_parts(line, len),
-        GetUserDefaultUILanguage(),
-    );
-    let text = crash_text::text(language);
+    let text = crash_text::text(language(GetUserDefaultUILanguage()));
     let mut title = Wide::<128>::new();
     let _ = write!(title, "{}", text.title);
     let mut message = Wide::<34000>::new();

@@ -35,13 +35,13 @@ def main():
         root = Path(temporary)
         for filename in ("BugTrap.dll", "ui_probe.exe"):
             shutil.copy2(build / filename, root / filename)
-        cases = [(language, state, "0409", [f"-localization={language}"])
+        cases = [(language, state, LANGUAGES[language][0], ["-localization=english"])
                  for language in LANGUAGES
                  for state in options.states]
         # No game option: Windows' UI language, including German regional variant.
         cases += [(language, "success", text[0], []) for language, text in LANGUAGES.items()]
         cases += [("english", "success", "040c", []),
-                  ("english", "success", "0419", ["-localization=english"])]
+                  ("english", "success", "0409", ["-localization=russian"])]
         for language, state, windows, args in cases:
             before = set(root.glob("SRP-crash-*"))
             env = os.environ.copy()
@@ -84,7 +84,7 @@ def main():
             if state == "browser-failure":
                 assert controls[-1].startswith(browser_error), controls
                 assert "discord.gg/Pxa4prXfwu" in controls[-1] and "#bugreports" in controls[-1]
-            print(f"PASS {language}: {state}, {'game language' if args else 'Windows language'}", flush=True)
+            print(f"PASS {language}: {state}, {'automatic despite game option' if args else 'automatic without game option'}", flush=True)
 
 
 if __name__ == "__main__":
