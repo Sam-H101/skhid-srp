@@ -241,3 +241,25 @@ read. That is a Flash change and more reading, not part of this.
 Not yet seen in a running game: the stash with one camouflage on several
 items, the upgrade window's drop on each, and a match showing each item's
 camouflage.
+
+## 7. The lines of an item's card (2026-10-18)
+
+The lobby's item hover card shows text the data keeps, not values it
+computes (read in the exe and patch 20's `lobby_menu.swf`):
+
+| what | PROVEN at |
+|---|---|
+| an item's lines are its `ui_desc/props_list` entries `{prop_id, prop_value}` (a string, the card's text), sent to the movie in file order, all of them | 0x286F87..0x2871AD |
+| what a line is: `gameplay/static_game_parameters.options` `ui_properties`, one entry an id (57 in 0.26g, ids 1-24 and 101-133); `prop_id`, `min_value`, `max_value` read always, `prop_icon`, `prop_name` (a localization key), `description`, `postfix`, `comparable`, `direction`, `mod_type` when there | 0x2211E0..0x22174E |
+| the movie keeps them in a dictionary by `prop_id` (`PropertiesDescriptor`); an unknown id is a stack trace and an empty line | `getPropertyDescription` |
+| the card (`InventoryItemHint`, sprite 1547) draws the `comparable` lines in its `itemCompare` (`SrvItemCompareHintG`, sprite 1538, a dynamic `ItemCompare`): one row each (`diff_1`..`diff_8`, sprite 1537, 22.6 px apart) in `props_list` order, and stops at the last row | `ItemCompare.updateData` |
+| the card's height follows `itemCompare.height` | `ItemInfoRenderer.set data` |
+
+Every 0.26g weapon has eight comparable lines (damage, armour piercing,
+aiming time, stopping power, dispersion, distance, rate of fire, weight),
+so a ninth needs a ninth row. Weapon balance 1 adds the magazine: line 134
+(`st_inv_magazine_size`, the bullets-in-pack line's keys, 0 to 100), a
+`props_list` entry after the rate of fire of each of the 83 weapon cards
+(the weapon's `magazine_capacity`), and in the movie a `diff_9` row in
+sprite 1538 and `ItemCompare`'s constructor adding `getChildByName("diff_9")`
+to its rows when there is one (`scripts/content-edit/README.md`).

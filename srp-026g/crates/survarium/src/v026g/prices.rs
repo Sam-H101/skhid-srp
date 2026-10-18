@@ -75,8 +75,11 @@
 //! - the factions' own camouflages ([`is_shop_camo`]): the faction whose
 //!   folder the config is in ([`CAMO_SHOPS`]), at level 0, for `base_cost`
 //!   [the owner's choice, 2026-10-17];
-//! - not listed: anything with `base_cost` 0 (the starting weapons and
-//!   their ammo, artefacts, money, the New Year 2015 camouflage), premium
+//! - the starting Mosin carbine and PPSh-41, which the game prices at 0:
+//!   seller 0 and level 0 at the owner's 1,000 each ([`OWNER_PRICES`]) [the
+//!   owner's choice, 2026-10-18; new accounts still get both];
+//! - not listed: anything else with `base_cost` 0 (their ammo is listed at
+//!   no cost, see [`sellers_of_in`]; artefacts, money, the New Year 2015 camouflage), premium
 //!   items (their cost is gold; they belong to the premium shop, 0x95, or
 //!   are sold one by one for gold, `shop_offers`), the other weapons with no
 //!   faction (VSS, SR-3M, the SOCOM 16), artefacts (as 0.21d), vouchers,
@@ -373,6 +376,10 @@ pub const AMMO_NEEDS_RANK: bool = false;
 /// `base_cost`, srp's price)`.
 ///
 /// - The PP-19-01 Vityaz: 25,000 (2026-10-17), where the game says 12,000.
+/// - The Mosin carbine and the PPSh-41: 1,000 each (2026-10-18), sold to
+///   everyone at no rank; the game prices neither (`base_cost` 0: they were
+///   only the starting weapons, which every new account still gets). Selling
+///   one back pays a quarter of the game's 0.
 ///
 /// As with [`AMMO_PRICES`], the shop shows this price (the price record's
 /// cost), while what the client shows for an owned item, what selling pays
@@ -380,7 +387,11 @@ pub const AMMO_NEEDS_RANK: bool = false;
 /// most 3,000 for the Vityaz, server and client alike) and a repair
 /// ([`repair_cost`]) stay the game's: selling back never pays more than the
 /// game's quarter.
-pub const OWNER_PRICES: &[(&str, u32, u32)] = &[("vityaz", 12000, 25000)];
+pub const OWNER_PRICES: &[(&str, u32, u32)] = &[
+    ("vityaz", 12000, 25000),
+    ("mosin_nagant", 0, 1000),
+    ("ppsh", 0, 1000),
+];
 
 /// What the shop takes for a step of `item`: [`AMMO_PRICES`] for ammo,
 /// [`OWNER_PRICES`] for what is there, else the game's `base_cost`.
@@ -459,8 +470,15 @@ pub fn sellers_of_in(
         // `GangShop.setupShopItems`), and for a price of 0 it allows up to
         // `MAX_FREE_ITEMS_COUNT` (1000) units (`AmmoShareElement.updateStorage`).
         // Without the record the ammo window's storage field is locked (seen
-        // in the first live session, 2026-10-12). Free weapons are not listed.
-        return if supply { vec![(0, 0)] } else { Vec::new() };
+        // in the first live session, 2026-10-12). A free weapon is listed only
+        // at an owner's price ([`OWNER_PRICES`]: the starting Mosin and
+        // PPSh-41), by seller 0 at no rank.
+        let owners = OWNER_PRICES.iter().any(|(name, _, _)| *name == item.name);
+        return if supply || (gear && owners) {
+            vec![(0, 0)]
+        } else {
+            Vec::new()
+        };
     }
     let exception = EXCEPTIONS.iter().find(|(name, _)| *name == item.name);
     match exception {
@@ -993,8 +1011,9 @@ mod tests {
     fn what_is_not_sold() {
         let dictionary = Dictionary::shared();
         let sold = |name: &str| price(dictionary.item_named(name).unwrap().dict_id).is_some();
-        // Free: the starting weapons and their ammo.
-        assert!(!sold("tt_33") && !sold("ppsh") && !sold("mosin_nagant"));
+        // Free: the starting pistol. The starting Mosin and PPSh-41 are sold
+        // at the owner's price (`the_starting_rifle_and_smg_are_sold_to_everyone`).
+        assert!(!sold("tt_33"));
         // Their ammo is listed, for nothing.
         assert_eq!(
             price(dictionary.item_named("ammo_7.62x25").unwrap().dict_id).map(|r| r.cost),
@@ -1040,6 +1059,30 @@ mod tests {
         assert_eq!(repair_cost(dictionary, 3, 100), 0);
         assert_eq!(repair_cost(dictionary, 7, 0), 0);
     }
+
+    /// The owner's choice (2026-10-18): the starting Mosin carbine and PPSh-41,
+    /// which the game prices at 0, are sold to everyone at no rank for 1,000;
+    /// selling one back pays the game's quarter of 0; the TT-33 stays unsold.
+    #[test]
+    fn the_starting_rifle_and_smg_are_sold_to_everyone() {
+        let dictionary = Dictionary::shared();
+        for (dict_id, name) in STARTERS_SOLD {
+            let item = dictionary.item_named(name).unwrap();
+            assert_eq!((item.dict_id, item.base_cost), (dict_id, 0), "{name}");
+            let records: Vec<_> = price_list()
+                .iter()
+                .filter(|record| record.dict_id == dict_id)
+                .map(|record| (record.faction_id, record.level, record.cost))
+                .collect();
+            assert_eq!(records, [(0, 0, 1000)], "{name}");
+            assert_eq!(buy_cost(dict_id, 1), Some(1000), "{name}");
+            assert_eq!(sell_price(dictionary, dict_id, 100, 100), 0, "{name}");
+        }
+        assert!(price(dictionary.item_named("tt_33").unwrap().dict_id).is_none());
+    }
+
+    /// The starting weapons the shop sells (2026-10-18), by `dict_id`.
+    const STARTERS_SOLD: [(u16, &str); 2] = [(106, "ppsh"), (107, "mosin_nagant")];
 
     /// The owner's choice (2026-10-17) for what no rule sold: the faction
     /// camouflages and two weapons with no faction.
@@ -1224,8 +1267,8 @@ mod tests {
     /// The live server's game data (`SRP_GAME_DATA`: stock 0.26g with
     /// skhid's patches 12, 14 and 17, revision 17's `server-game-data.db`,
     /// sha256 `83d4593a…`): the rules add exactly the ten items of
-    /// [`NEWLY_SOLD`] to the 189 the shop sold before, at those sellers and
-    /// prices, and nothing else.
+    /// [`NEWLY_SOLD`] and the two of [`STARTERS_SOLD`] to the 189 the shop
+    /// sold before, at those sellers and prices, and nothing else.
     #[test]
     #[ignore = "needs the live server's game data (SRP_GAME_DATA)"]
     fn the_live_data_sells_the_ten_items_and_nothing_else_new() {
@@ -1244,10 +1287,11 @@ mod tests {
             expected_newly_sold()
         );
         // The items sold, against those of the rules before (189 items,
-        // the unbuyable-items report of 2026-10-17): the ten more.
+        // the unbuyable-items report of 2026-10-17): the ten more, and the
+        // starting Mosin and PPSh-41 (2026-10-18).
         let mut sold: Vec<u16> = list.iter().map(|record| record.dict_id).collect();
         sold.dedup();
-        assert_eq!(sold.len(), 189 + NEWLY_SOLD.len());
+        assert_eq!(sold.len(), 189 + NEWLY_SOLD.len() + STARTERS_SOLD.len());
         let param = |dict_id: u16| {
             &params[params
                 .binary_search_by_key(&dict_id, |r| r.dict_id)
@@ -1271,6 +1315,7 @@ mod tests {
             let mut names: Vec<(u16, &str)> = NEWLY_SOLD
                 .iter()
                 .map(|&(name, dict_id, ..)| (dict_id, name))
+                .chain(STARTERS_SOLD)
                 .collect();
             names.sort_unstable();
             names.into_iter().map(|(_, name)| name).collect::<Vec<_>>()
