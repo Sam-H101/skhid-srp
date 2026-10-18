@@ -29,6 +29,8 @@ number from the game data, the rules as the client's hit code applies them. Buil
   the medikit and bandages, side by side; every number from the data.
 - Compare table: every weapon with its icon, sortable by any column, column separators.
 - The calculator keeps its own look; only the site's header sits above it.
+- The formula says how one bullet through several hit boxes counts (each pool its largest
+  share). The calculator itself shows one box per shot.
 - Not modelled: cover a bullet passes through, ricochets, explosions, anomalies.
 
 ## Serving

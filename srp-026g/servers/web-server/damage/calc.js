@@ -1013,6 +1013,9 @@ function drawExplain() {
     "пул  −= hit       груди, спина → тіло · голова, обличчя → голова · нога · кисть",
     `біль −= hit × k   k = 1 груди, голова, руки · 0.9 ноги · 0.8 кисті, стопи${pk ? ` · ×${pk.damage_protection[0].hit_coeff} ${nm(pk)}` : ""}`,
     "смерть, коли тіло, голова або біль доходить до 0",
+    "",
+    "одна куля крізь кілька зон (дві кисті й груди): кожна зона рахується зі своєю бронею,",
+    "а кожен пул бере від цієї кулі найбільше, не суму: біль від кистей 40 і 40, від грудей 35 → −40, не −115",
   ] : [
     "D, P  = weapon × ammo, lowered between near and far range",
     onyx ? `D, P ×= ${onyx.passive.damage_mul} per ${nm(onyx)} (${onyx.active.damage_mul} active)` : null,
@@ -1020,7 +1023,10 @@ function drawExplain() {
     "pool −= hit       chest, back → body · head, face → head · leg · hand",
     `pain −= hit × k   k = 1 chest, head, arms · 0.9 legs · 0.8 hands, feet${pk ? ` · ×${pk.damage_protection[0].hit_coeff} ${nm(pk)}` : ""}`,
     "dead when body, head or pain reaches 0",
-  ]).filter(Boolean).join("\n");
+    "",
+    "one bullet through several boxes (both hands and the chest): each box counts with its own armour,",
+    "and each pool takes that bullet's largest share, not the sum: pain 40 and 40 from the hands, 35 from the chest → −40, not −115",
+  ]).filter(x => x !== null).join("\n");
 }
 
 // Healing compared: recovering by itself, the Larkspur carried and activated,
