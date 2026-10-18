@@ -1874,6 +1874,39 @@ checksum and in nothing else (compared byte by byte); `--no-late-join`,
 `--cave=hash-mismatch` and `--cert-only` give the same exes as before.
 **Not run:** a game.
 
+### 37. Memory defaults match the launcher
+
+When memory options are absent, the full client now defaults to a 768 MiB
+multithreaded arena and a 768 MiB resource-memory floor, matching the existing
+launcher and play scripts. Retail defaults were 376 MiB and 336 MiB respectively.
+Explicit options retain their original behavior. The resource floor covers both
+managed and unmanaged pools; the ordinary 2:1 split gives 512 MiB managed.
+
+The 2026-10-18 map-loading report stopped while allocating 22,369,685 bytes for
+`resources/textures/sky/cgskies_cloud.dds`. The dump reports 173,033,088 bytes
+allocated out of 295,436,288 managed bytes. Native allocation requires one
+contiguous block and does not compact the arena, so total free space alone does
+not guarantee success. That pool is below the launcher's usual managed budget.
+The reporter does not know the player's launch method, and the dump lacks the
+heap and logs. This change closes the low-default launch path; it is not proof
+that every cause of the reported intermittent failure has been eliminated.
+
+Only two numeric immediates change: the default-only increment at 0xE100F
+(16 MiB plus 752 MiB), and the resource floor at 0xE9985 (768 MiB before native
+unit conversion). No allocator, eviction, timeout, texture, or simulation code
+changes. Certificate-only and legacy builds without the late join retain the
+retail defaults. No release revision is assigned here.
+
+Validation: `check_memory_defaults_026g.py` executes the native default and
+explicit/invalid option branches and a representative fragmented allocation.
+The latter uses the report's byte counts with a synthetic block layout, since
+the real blocks are absent from the dump. `selftest_026g.py` checks exact mutation
+ranges and relocation safety. An isolated Wine/DXVK Mamayev Kurgan rain load
+without either memory option rendered and produced verified server checkpoints;
+the log reports 512 MiB managed and 256 MiB unmanaged. The diagnostic client
+bypasses disabled network-statistics counters because its direct connection
+omits the lobby profile. A same-process repeated-map reproduction remains open.
+
 ## Not ported, not done
 
 - The 0.21d mode 3 battery patch is not needed: 0.26g serializes the

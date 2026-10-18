@@ -894,6 +894,20 @@ def test_ai_arena(original, image, before):
     check(not hits, "no branch of the initializer lands inside the instruction")
 
 
+def test_memory_defaults(original, image, before):
+    stock = Image(original)
+    for va, old, new in P.MEMORY_DEFAULTS:
+        check(stock.read(va, len(old)) == old and before.read(va, len(old)) == old
+              and image.read(va, len(new)) == new,
+              f"{va:#x}: only the full build uses the launcher's 768 MiB default")
+        relocated = [rva for kind, rva in stock.relocations().values()
+                     if kind == 3 and rva + 4 > va and rva < va + len(old)]
+        check(not relocated, f"{va:#x}: no relocation under the numeric default")
+    for va, length in ((0xE0FF0, 31), (0xE1015, 20), (0xE9956, 47), (0xE998A, 15)):
+        check(image.read(va, length) == stock.read(va, length),
+              f"{va:#x}: option parsing, explicit-value branch and units remain unchanged")
+
+
 def test_start_up_folder(original, image, mode):
     """A Documents folder the game may not write to (client_patch.md
     section 3.10): the mount without a root, and no journal by default."""
@@ -1259,6 +1273,7 @@ def late_join_sites():
         [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
         [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))] + \
         [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))] + \
+        [(va, len(old)) for va, old, _ in P.MEMORY_DEFAULTS] + \
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
         [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))]
 
@@ -3331,6 +3346,7 @@ def test_late_join(original, without, server, source):
     test_read_order(original, image, before)
     test_baked_texture_missing(original, image, before)
     test_ai_arena(original, image, before)
+    test_memory_defaults(original, image, before)
     test_weapon_preview(original, image, before)
     test_suicide_key(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)

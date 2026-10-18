@@ -310,6 +310,10 @@ Patches:
   it: a 20-player match with three kits each (one player object per kit)
   ran out of it and stopped the game with "not enough memory for arena
   [ai]" (seen live 2026-10-17). The immediate becomes 400000h;
+- the default multithreaded arena and resource-memory floor are both 768
+  MiB, matching the launcher (patch 37, with the late join). Only the two
+  default-only immediates change; explicit numeric options keep their native
+  branches. See README section 37 for the crash evidence and its limits;
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -528,6 +532,20 @@ BAKED_TEXTURE_MISSING = (0x131C1E, bytes.fromhex("7553"), bytes.fromhex("eb53"))
 AI_ARENA_VA = 0x1E8CCB
 AI_ARENA_SIZE = 0x400000
 AI_ARENA = (AI_ARENA_VA, bytes.fromhex("c744241800000400"), bytes.fromhex("c744241800004000"))
+
+# Match the shipped launcher's budgets when command-line keys are absent.
+# mt_allocator starts at 16 MiB, then adds 360 MiB on the default branch;
+# an explicit value instead takes the unchanged `shl esi,20` branch.
+# minimum_resources_memory_size defaults to 336 MiB before the native u64
+# multiplication by MiB. Its explicit numeric path jumps over this immediate.
+# Both values are numbers, not addresses; neither has a base relocation.
+MEMORY_DEFAULT_MIB = 768
+MEMORY_DEFAULTS = (
+    (0xE100F, bytes.fromhex("81c600008016"),
+     b"\x81\xc6" + struct.pack("<I", (MEMORY_DEFAULT_MIB - 16) << 20)),
+    (0xE9985, bytes.fromhex("b850010000"),
+     b"\xb8" + struct.pack("<I", MEMORY_DEFAULT_MIB)),
+)
 
 # replay_network_client's "is this place mine" (vtable 0x9FF344, slot +0x54
 # at 0x9FF398) is 0x54E10, `xor al,al` / `ret 4`. The client respawn rule's
@@ -1611,6 +1629,9 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         sites.append((BAKED_TEXTURE_MISSING[0], BAKED_TEXTURE_MISSING[0] + len(BAKED_TEXTURE_MISSING[1])))
         patch(data, *AI_ARENA)
         sites.append((AI_ARENA_VA, AI_ARENA_VA + len(AI_ARENA[1])))
+        for site in MEMORY_DEFAULTS:
+            patch(data, *site)
+            sites.append((site[0], site[0] + len(site[1])))
         patch(data, *REPLAY_REATTACH_THUNK)
         sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
         # An address: its relocation stays.
