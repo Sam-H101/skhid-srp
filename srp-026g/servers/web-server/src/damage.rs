@@ -106,17 +106,21 @@ pub(crate) fn page(lang: Lang, header: &str) -> Response {
     }
 }
 
-/// The site's header as the calculator shows it: the site stylesheet's rules
-/// for it (`crate::STYLE`), under `.site`, so neither page's rules reach the
-/// other's. The calculator's own `.tag` is undone for the header's line.
-pub(crate) const HEADER_STYLE: &str = ".site{font:16px/1.55 system-ui,'Segoe UI',sans-serif;color:#e3e3e0;\
+/// The site's header as the calculator and the maps show it: the site
+/// stylesheet's rules for it (`crate::STYLE`), under `.site`, so neither
+/// page's rules reach the other's, in the page's own tokens (both pages
+/// name them so). The calculator's own `.tag` is undone for the header's line.
+pub(crate) const HEADER_STYLE: &str = ".site{font:15px/1.55 var(--font-body);color:var(--ink);\
 margin:-20px calc(-1*max(16px,env(safe-area-inset-right,0px))) 22px calc(-1*max(16px,env(safe-area-inset-left,0px)))}\
-.site header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}\
-.site .brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}\
-.site .tag{display:block;font:400 .7rem/1.55 system-ui,'Segoe UI',sans-serif;letter-spacing:.12em;text-transform:none;border:0;padding:0;border-radius:0;color:#8a8f94;flex:1;min-width:12rem}\
-.site nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}\
-.site nav a:hover,.site nav a[aria-current]{color:#d4a017}\
-.site .lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}\
+.site header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.4rem;padding:.75rem max(16px,env(safe-area-inset-left,0px));background:var(--bg);border-bottom:2px solid var(--ink)}\
+.site .brand{font:700 1.5rem var(--font-display);letter-spacing:.24em;color:var(--accent);text-decoration:none}\
+.site .tag{display:block;font:400 .72rem/1.55 var(--font-data);letter-spacing:0;text-transform:none;border:0;padding:0;border-radius:0;background:none;color:var(--ink-3);flex:1;min-width:12rem}\
+.site nav{display:flex;flex-wrap:wrap;align-items:center;row-gap:.3rem}\
+.site nav a{font:700 .85rem var(--font-display);text-transform:uppercase;letter-spacing:.1em;color:var(--ink-2);text-decoration:none;padding:0 .8rem;line-height:1.1}\
+.site nav a+a{border-left:2px solid var(--ink-3)}.site nav a:first-child{padding-left:0}\
+.site nav a:hover{color:var(--ink)}.site nav a[aria-current]{color:var(--accent)}\
+.site .lang{font:.8rem var(--font-body);color:var(--ink-2);text-decoration:none;border:1px solid var(--rule);background:var(--bg);padding:.15rem .7rem;border-radius:999px}\
+.site .lang:hover{border-color:var(--ink-3);color:var(--ink)}\
 .site .badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}\
-.site .note.test{max-width:1240px;margin:1rem auto 0;font-size:1rem;color:#e3e3e0;background:#1d2125;border-left:3px solid #d64531;padding:.7rem .9rem;border-radius:2px}\
-.site a{color:#d4a017}";
+.site .note.test{max-width:1240px;margin:1rem auto 0;font-size:1rem;color:var(--ink-2);background:var(--bg);border-left:3px solid #d64531;padding:.7rem .9rem;border-radius:2px}\
+.site a{color:var(--accent)}";

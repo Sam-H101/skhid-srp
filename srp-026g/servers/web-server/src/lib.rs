@@ -1610,20 +1610,18 @@ fn site_header(
             },
         )
     };
+    let home_link = tab("/", &lang.tr("Home", "Головна"));
     let damage_link = if v026g {
-        tab(
-            damage::PATH,
-            &lang.tr("Damage calculator", "Калькулятор шкоди"),
-        ) + &tab(maps::PATH, &lang.tr("Maps", "Мапи"))
+        tab(damage::PATH, &lang.tr("Calculator", "Калькулятор"))
+            + &tab(maps::PATH, &lang.tr("Maps", "Мапи"))
     } else {
         String::new()
     };
     let header = format!(
         "<header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
          <span class=tag>{}</span>\
-         <nav><a href=\"/?lang={code}\">{}</a>{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
+         <nav>{home_link}{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
         page_tag(lang, version, test),
-        lang.tr("Home", "Головна"),
     );
     (header, test_notice)
 }
@@ -1637,7 +1635,12 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     };
     let code = lang.code();
     let version = if form.is_026g() { "0.26g" } else { "0.21d" };
-    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, "");
+    let current = if matches!(form, Form::Home(_)) {
+        "/"
+    } else {
+        ""
+    };
+    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, current);
     let body = match form {
         Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
@@ -1668,16 +1671,18 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
 }
 
 /// The site's look: the damage calculator's (paper and ink, PT Sans, PT Sans
-/// Narrow headings, PT Mono numbers), light or dark as the system is. The
-/// header keeps its own dark band on every page, the calculator's included.
+/// Narrow headings, PT Mono numbers), light or dark as the system is, the
+/// header too: on every page, the calculator's and the maps' included
+/// ([`damage::HEADER_STYLE`]).
 const STYLE: &str = ":root{--bg:#e9e6dc;--panel:#f5f3ec;--ink:#1f2420;--ink-2:#4d544c;--ink-3:#7b8277;--rule:#c9c5b6;--accent:#b4501f;--accent-ink:#fff8f0;--bad:#a3322a;--code:#ece8dc;\
 --display:'PT Sans Narrow','Arial Narrow',sans-serif;--body:'PT Sans','Segoe UI',Roboto,sans-serif;--data:'PT Mono',ui-monospace,Consolas,monospace}\
 @media (prefers-color-scheme:dark){:root{--bg:#171a17;--panel:#1f231f;--ink:#e6e4da;--ink-2:#b4b6a8;--ink-3:#868a7e;--rule:#353a33;--accent:#e07a43;--accent-ink:#1a0f08;--bad:#e0675c;--code:#151815;color-scheme:dark}}\
 *{box-sizing:border-box}body{font:15px/1.55 var(--body);background:var(--bg);color:var(--ink);margin:0;min-height:100vh}\
-header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008;font-family:system-ui,'Segoe UI',sans-serif}\
-.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}\
-nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}\
-.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}\
+header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.4rem;padding:.75rem 16px;background:var(--bg);border-bottom:2px solid var(--ink)}\
+.brand{font:700 1.5rem var(--display);letter-spacing:.24em;color:var(--accent);text-decoration:none}.tag{font:.72rem var(--data);color:var(--ink-3);flex:1;min-width:12rem}\
+nav{display:flex;flex-wrap:wrap;align-items:center;row-gap:.3rem}nav a{font:700 .85rem var(--display);text-transform:uppercase;letter-spacing:.1em;color:var(--ink-2);text-decoration:none;padding:0 .8rem;line-height:1.1}\
+nav a+a{border-left:2px solid var(--ink-3)}nav a:first-child{padding-left:0}nav a:hover{color:var(--ink)}nav a[aria-current]{color:var(--accent)}\
+.lang{font:.8rem var(--body);color:var(--ink-2);text-decoration:none;border:1px solid var(--rule);background:var(--bg);padding:.15rem .7rem;border-radius:999px}.lang:hover{border-color:var(--ink-3);color:var(--ink)}\
 main{max-width:46rem;margin:22px auto;padding:0 16px;display:grid;gap:22px}a{color:var(--accent)}\
 h1,h2,h3{font-family:var(--display);font-weight:700;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--ink)}h1{font-size:1.35rem}h2{font-size:1.15rem}\
 .card{background:var(--panel);border:1px solid var(--rule);padding:16px;display:grid;gap:12px;align-content:start;min-width:0}\

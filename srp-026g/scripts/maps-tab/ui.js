@@ -63,50 +63,59 @@
     return same.length > 1 && m.stations.length ? `${N(m.name)} · ${T("chargers", "зарядки")}` : N(m.name);
   };
 
-  // The HUD minimap's icons (MAPS.hud), white ones tinted by team: filters
-  // that multiply white into a colour, with the HUD's dark outline.
-  const TINTS = { t0: "#3b82f6", t1: "#e5484d", tx: "#9aa0a6", none: "#ffffff" };
-  const defs = svgEl("svg", { width: 0, height: 0, "aria-hidden": "true", style: "position:absolute" }, svgEl("defs", {},
-    ...Object.entries(TINTS).map(([id, hex]) => {
-      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
-      return svgEl("filter", { id: "tint-" + id, "color-interpolation-filters": "sRGB", primitiveUnits: "objectBoundingBox", x: "-30%", y: "-30%", width: "160%", height: "160%" },
-        svgEl("feColorMatrix", { type: "matrix", values: `${r} 0 0 0 0 0 ${g} 0 0 0 0 0 ${b} 0 0 0 0 0 1 0` }),
-        svgEl("feDropShadow", { dx: 0, dy: 0, stdDeviation: 0.06, "flood-color": "#000", "flood-opacity": 0.9 }));
-    })));
-  // A grey icon (the HUD's crate) painted in a colour by its own lightness.
-  for (const [id, hex] of Object.entries(TINTS)) {
-    const [r, g, b] = [1, 3, 5].map(i => (parseInt(hex.slice(i, i + 2), 16) / 255) * 1.9);
-    const row = c => `${0.3 * c} ${0.59 * c} ${0.11 * c} 0 0`;
-    defs.firstChild.append(svgEl("filter", { id: "paint-" + id, "color-interpolation-filters": "sRGB", primitiveUnits: "objectBoundingBox", x: "-30%", y: "-30%", width: "160%", height: "160%" },
-      svgEl("feColorMatrix", { type: "matrix", values: `${row(r)} ${row(g)} ${row(b)} 0 0 0 1 0` }),
-      svgEl("feDropShadow", { dx: 0, dy: 0, stdDeviation: 0.06, "flood-color": "#000", "flood-opacity": 0.9 })));
-  }
+  // The HUD minimap's icons (MAPS.hud). A team's icon is painted in its
+  // colour by the icon's own lightness, measured by the build, solid, with
+  // the HUD's dark outline. Others keep their colours and get the outline.
+  const TEAM = { t0: "#3b82f6", t1: "#e5484d", tx: "#9aa0a6" };
+  const defs = svgEl("svg", { width: 0, height: 0, "aria-hidden": "true", style: "position:absolute" }, svgEl("defs"));
   document.body.append(defs);
+  const filter = (id, values) => {
+    if (!document.getElementById(id))
+      defs.firstChild.append(svgEl("filter", { id, "color-interpolation-filters": "sRGB", primitiveUnits: "objectBoundingBox", x: "-30%", y: "-30%", width: "160%", height: "160%" },
+        ...(values ? [svgEl("feColorMatrix", { type: "matrix", values })] : []),
+        svgEl("feDropShadow", { dx: 0, dy: 0, stdDeviation: 0.06, "flood-color": "#000", "flood-opacity": 0.9 })));
+    return `url(#${id})`;
+  };
+  const outline = () => filter("outline");
+  // Colour x (0.7 + 0.3 x lightness / the icon's own): its faces are the
+  // colour itself, its shading at most 30% darker, so every team icon reads
+  // as the same blue or red.
+  const paint = (name, tint) => {
+    const i = MAPS.hud[name], [r, g, b] = [1, 3, 5].map(k => parseInt(TEAM[tint].slice(k, k + 2), 16) / 255);
+    const row = c => { const k = (0.3 * c) / i.light; return `${0.3 * k} ${0.59 * k} ${0.11 * k} 0 ${0.7 * c}`; };
+    return filter(`paint-${name}-${tint}`, `${row(r)} ${row(g)} ${row(b)} 0 0 0 ${1 / i.opaque} 0`);
+  };
   const tintOf = t => (t === 0 ? "t0" : t === 1 ? "t1" : "tx");
-  // One icon at (x, y), `px` screen pixels high, its anchor on the point.
-  function hud(name, x, y, px, u, tint = "none", rotate = 0, how = "tint") {
+  // One icon centred on (x, y), `px` screen pixels high: painted in a team's
+  // colour when `tint` is given.
+  function hud(name, x, y, px, u, tint = null, rotate = 0) {
     const i = MAPS.hud[name], k = (px * u) / i.h;
-    const attrs = { href: i.src, x: x - i.ax * k, y: y - i.ay * k, width: i.w * k, height: i.h * k, filter: `url(#${how}-${tint})` };
+    const attrs = { href: i.src, x: x - i.ax * k, y: y - i.ay * k, width: i.w * k, height: i.h * k, filter: tint ? paint(name, tint) : outline() };
     if (rotate) attrs.transform = `rotate(${rotate} ${x} ${y})`;
     return svgEl("image", attrs);
   }
-  // A battery: the HUD has none worth enlarging (its carrier glyph is 11x9
-  // pixels), so one drawn in its style: yellow, dark outline, a bolt.
+  // The battery (the game's electrobox): the game has no flat icon of it,
+  // only a photo-like 96x64 one and an 11x9 glyph, so it is drawn after the
+  // real thing, flat as the HUD's icons are: a metal box with its handle,
+  // its screen and the yellow hazard sign.
   function battery(x, y, px, u) {
-    const k = (px * u) / 12;
-    return svgEl("g", { transform: `translate(${x} ${y}) scale(${k})` },
-      svgEl("rect", { x: -9, y: -6, width: 16, height: 12, rx: 2.2, fill: "#f2c94c", stroke: "#15171a", "stroke-width": 1.6 }),
-      svgEl("rect", { x: 7, y: -2.6, width: 2.6, height: 5.2, rx: 0.8, fill: "#15171a" }),
-      svgEl("path", { d: "M0.8 -4.2 L-3.6 0.9 L-0.6 0.9 L-1.6 4.4 L2.9 -0.8 L-0.1 -0.8 Z", fill: "#15171a" }));
+    const k = (px * u) / 16;
+    return svgEl("g", { transform: `translate(${x} ${y}) scale(${k})`, filter: outline() },
+      svgEl("path", { d: "M-9 -3.5 H-12 V3.5 H-9", fill: "none", stroke: "#15171a", "stroke-width": 1.5, "stroke-linejoin": "round" }),
+      svgEl("rect", { x: -9, y: -7, width: 21, height: 14, rx: 1.4, fill: "#cfd3cc", stroke: "#15171a", "stroke-width": 1.4 }),
+      svgEl("path", { d: "M-9 -4.4 H12", stroke: "#15171a", "stroke-width": 1 }),
+      svgEl("rect", { x: -6.6, y: -2, width: 5, height: 4, fill: "#3c4a48", stroke: "#15171a", "stroke-width": 0.8 }),
+      svgEl("path", { d: "M5.5 -2.8 L9.4 4.2 H1.6 Z", fill: "#f2c94c", stroke: "#15171a", "stroke-width": 0.9, "stroke-linejoin": "round" }),
+      svgEl("circle", { cx: 5.5, cy: 1.8, r: 0.9, fill: "#15171a" }));
   }
   // Legend swatches, drawn as the markers are.
   const swatch = key => {
     const s = svgEl("svg", { viewBox: "-11 -11 22 22", "aria-hidden": "true" });
     if (key === "respawn") s.append(hud("player", -5, 1, 15, 1, "t0"), hud("player", 6, 1, 15, 1, "t1"));
-    if (key === "spawners") s.append(battery(0, 0, 13, 1));
+    if (key === "spawners") s.append(battery(0, 0, 14, 1));
     if (key === "stations") s.append(hud("charger", 0, 0, 22, 1));
     if (key === "containers") s.append(hud("base", -5, 2, 17, 1, "t0"), hud("base", 6, 2, 17, 1, "t1"));
-    if (key === "resupply") s.append(hud("resupply", -4, -1, 18, 1, "t0", 0, "paint"), hud("resupply", 5, 1, 18, 1, "t1", 0, "paint"));
+    if (key === "resupply") s.append(hud("resupply", -4, -1, 18, 1, "t0"), hud("resupply", 5, 1, 18, 1, "t1"));
     return s;
   };
 
@@ -183,11 +192,11 @@
       }
     }
     if (state.on.resupply) for (const [x, z, , t] of mo.resupply)
-      kids.push(svgEl("g", { class: "mk" }, hud("resupply", x, -z, 30, u, tintOf(t), 0, "paint"), tip(`${T("Ammo stash", "Поповнення амуніції")}, ${teamName(t)}`)));
+      kids.push(svgEl("g", { class: "mk" }, hud("resupply", x, -z, 30, u, tintOf(t)), tip(`${T("Ammo stash", "Поповнення амуніції")}, ${teamName(t)}`)));
     if (state.on.containers) for (const [x, z, , t] of mo.containers)
       kids.push(svgEl("g", { class: "mk" }, hud("base", x, -z, 24, u, tintOf(t)), tip(`${T("Container", "Контейнер")}, ${teamName(t)}`)));
     if (state.on.spawners) for (const [x, z] of mo.spawners)
-      kids.push(svgEl("g", { class: "mk", filter: "url(#tint-none)" }, battery(x, -z, 13, u), tip(T("Battery spawn", "Поява батареї"))));
+      kids.push(svgEl("g", { class: "mk" }, battery(x, -z, 16, u), tip(T("Battery spawn", "Поява батареї"))));
     if (state.on.stations) for (const [x, z] of mo.stations)
       kids.push(svgEl("g", { class: "mk" }, hud("charger", x, -z, 32, u), tip(T("Charger", "Зарядка"))));
     for (const [x, z, , kinds] of m.artefacts) {
@@ -195,7 +204,7 @@
       shown.forEach((k, i) => {
         const s = 24 * u, dx = (i - (shown.length - 1) / 2) * s * 0.9;
         kids.push(svgEl("g", { class: "mk" },
-          svgEl("image", { href: MAPS.artefacts[k].icon, x: x + dx - s / 2, y: -z - s / 2, width: s, height: s, filter: "url(#tint-none)" }),
+          svgEl("image", { href: MAPS.artefacts[k].icon, x: x + dx - s / 2, y: -z - s / 2, width: s, height: s, filter: outline() }),
           tip(kinds.map(k => N(MAPS.artefacts[k].name)).join(", "))));
       });
     }

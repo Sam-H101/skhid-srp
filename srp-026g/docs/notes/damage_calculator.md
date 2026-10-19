@@ -1,6 +1,6 @@
 # Damage calculator (`/damage`)
 
-The 0.26g site's tab "Damage calculator" / "Калькулятор шкоди": shooter against target, every
+The 0.26g site's tab "Calculator" / "Калькулятор": shooter against target, every
 number from the game data, the rules as the client's hit code applies them. Built by
 `srp-026g/scripts/damage-calc/` (its README), served by `servers/web-server/src/damage.rs`.
 

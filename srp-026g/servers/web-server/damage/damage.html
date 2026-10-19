@@ -2,7 +2,7 @@
 <html lang="{{LANG}}">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Survarium Damage Calculator</title>
+<title>Damage calculator</title>
 <style>
 
 @font-face { font-family: "PT Sans"; font-weight: 400; font-style: normal; font-display: swap; src: url("/damage/fonts/pt-sans-regular.woff2?v=19379b36559b") format("woff2"); }
@@ -58,7 +58,7 @@
   --doll: #343a33; --doll-hi: #e07a43; --doll-cover: #59654c; color-scheme: dark }
 
 * { box-sizing: border-box }
-body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 48px }
 .wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 22px }
@@ -296,7 +296,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
 <div class="wrap">
   <header class="top">
     <div>
-      <h1 data-uk="Калькулятор шкоди Survarium">Survarium Damage Calculator</h1>
+      <h1 data-uk="Калькулятор шкоди">Damage calculator</h1>
     </div>
     <div class="stamp"><span id="source">client 0.26g</span> · build 2777<br><span data-uk="здоров'я ×100 (тіло 100, голова 40)">health shown ×100 (body 100, head 40)</span></div>
   </header>

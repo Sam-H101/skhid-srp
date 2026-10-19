@@ -56,7 +56,7 @@ What comes from where:
 | maps, modes, names | `maps_dict` ids whose `gameplay/game_modes/` config is mode 2, 3 or 4 and whose project exists (the server's rule, `crates/survarium/src/v026g/maps.rs`); names from the localization |
 | respawn points, battery spawns, chargers, containers | the project's `server_objects`, shown only where the mode's `rules` read them (88 gather, 89 timed with chargers); a container where its collision zone is (its own position can be a pivot far off: level_04, level_06 and four more) |
 | ammo stashes | `client_objects`: each `resupply_zone`'s collision zone, by team |
-| marker icons | `hud.swf` `Minimap._icons` (`PlayerBlue`, `Base`, `SpawnIcon`, `ResupplyIcon`), as SVG (FFDec); the battery is drawn in their style (the HUD has only an 11x9 glyph) |
+| marker icons | `hud.swf` `Minimap._icons` (`PlayerBlue`, `Base`, `SpawnIcon`, `ResupplyIcon`), as SVG (FFDec), with each one's lightness and opacity so the page paints them in one blue and one red; the battery (the game's electrobox) is drawn flat after the real one, as the game has no flat icon of it (only a 96x64 photo-like one and an 11x9 glyph) |
 | spawn facing | the respawn point's rotation: yaw = y, or pi - y when x and z are pi; forward (-sin yaw, cos yaw) in x/z (on every map the points face the enemy's side) |
 | artefact spawns | `client_objects`: each `artefact_container`'s collision zone, its artefacts from the `generic_anomaly_core` that lists it; names from `st_<artefact>_pickup_hint` |
 | minimap and its frame | `flash_movies/hud.swf`, `survarium.controls.Minimap` (`_minimapProps`, `_levels`) by the project's `project_name`, as the HUD picks it (exported with FFDec) |

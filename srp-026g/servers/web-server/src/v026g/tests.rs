@@ -865,7 +865,7 @@ fn the_damage_calculator_is_a_026g_page_under_the_sites_header() {
     let world = world();
     let home = world.web.route(&get("/"), "t").body;
     assert!(home.contains(
-        "<nav><a href=\"/?lang=en\">Home</a><a href=\"/damage?lang=en\">Damage calculator</a>\
+        "<nav><a href=\"/?lang=en\" aria-current=page>Home</a><a href=\"/damage?lang=en\">Calculator</a>\
          <a href=\"/maps?lang=en\">Maps</a>"
     ));
     let page = world.web.route(&get("/damage"), "t");
@@ -880,8 +880,9 @@ fn the_damage_calculator_is_a_026g_page_under_the_sites_header() {
     );
     assert!(
         page.body
-            .contains("<a href=\"/damage?lang=en\" aria-current=page>Damage calculator</a>")
+            .contains("<a href=\"/damage?lang=en\" aria-current=page>Calculator</a>")
     );
+    assert!(page.body.contains("<nav><a href=\"/?lang=en\">Home</a>"));
     assert!(
         page.body
             .contains("<a class=lang href=\"?lang=uk\">Українська</a>")
@@ -893,7 +894,7 @@ fn the_damage_calculator_is_a_026g_page_under_the_sites_header() {
     uk.lang = Lang::Uk;
     let uk = world.web.route(&uk, "t").body;
     assert!(uk.starts_with("<!doctype html>\n<html lang=\"uk\">\n"));
-    assert!(uk.contains(" aria-current=page>Калькулятор шкоди</a>"));
+    assert!(uk.contains(" aria-current=page>Калькулятор</a>"));
 }
 
 #[test]
@@ -1010,7 +1011,7 @@ fn the_maps_are_a_026g_page_under_the_sites_header() {
     );
     assert!(
         page.body
-            .contains("<a href=\"/damage?lang=en\">Damage calculator</a>")
+            .contains("<a href=\"/damage?lang=en\">Calculator</a>")
     );
     assert!(!page.body.contains("{{LANG}}") && !page.body.contains("<!--SITE-HEADER-->"));
     assert!(!page.body.contains("<script>") && !page.body.contains("https://"));

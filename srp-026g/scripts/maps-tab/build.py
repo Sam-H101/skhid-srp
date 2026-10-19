@@ -147,12 +147,32 @@ def hud_minimaps(args, raw, work):
     return out
 
 
-# The HUD minimap's own icons (Minimap._icons): the class of each, frame 1.
+# The HUD minimap's own icons (Minimap._icons), frame 1 of each class.
 HUD_ICONS = {"player": "PlayerBlue", "base": "Base", "charger": "SpawnIcon", "resupply": "ResupplyIcon"}
 
 
+def lightness(svg):
+    """The icon's bitmaps: how light its faces are (the 75th percentile of
+    the visible pixels' lightness) and how opaque it is at most, so the page
+    can paint each in a team's colour alike (the Base's arrow is grey, the
+    crate half transparent)."""
+    import base64
+    import io
+    import numpy as np
+    pixels = []
+    for data in re.findall(r"base64,([A-Za-z0-9+/=]+)", svg):
+        im = np.asarray(Image.open(io.BytesIO(base64.b64decode(data))).convert("RGBA"), dtype=float) / 255
+        pixels.append(im.reshape(-1, 4))
+    if not pixels:
+        return 1.0, 1.0
+    px = np.concatenate(pixels)
+    seen = px[px[:, 3] > 0.05]
+    light = 0.3 * seen[:, 0] + 0.59 * seen[:, 1] + 0.11 * seen[:, 2]
+    return round(float(np.percentile(light, 75)), 3), round(float(seen[:, 3].max()), 3)
+
+
 def hud_icons(args, raw, work, out):
-    """{name: {src, w, h, ax, ay}}: each icon as an SVG file and its anchor."""
+    """{name: {src, w, h, ax, ay}}: each icon as an SVG file and its centre."""
     swf = raw / "flash_movies__hud.swf"
     target = work / "sprites"
     subprocess.run(["java", "-jar", args.ffdec, "-format", "sprite:svg", "-selectclass", ",".join(HUD_ICONS.values()),
@@ -167,10 +187,13 @@ def hud_icons(args, raw, work, out):
         svg = re.sub(r'\s(ffdec:\w+)="[^"]*"', "", path.read_text())
         width = float(re.search(r'<svg[^>]*\swidth="([\d.]+)', svg).group(1))
         height = float(re.search(r'<svg[^>]*\sheight="([\d.]+)', svg).group(1))
-        ax, ay = map(float, re.search(r'<g transform="matrix\(1\.0, 0\.0, 0\.0, 1\.0, (-?[\d.]+), (-?[\d.]+)\)"', svg).groups())
+        # Centred on the point (the symbols' own origins differ: the battery's
+        # is its corner).
+        ax, ay = width / 2, height / 2
         (out / "icons" / f"hud_{name}.svg").write_text(svg)
+        light, opaque = lightness(svg)
         icons[name] = {"src": f"{SITE}/icons/hud_{name}.svg?v={version(svg.encode())}",
-                       "w": width, "h": height, "ax": ax, "ay": ay}
+                       "w": width, "h": height, "ax": ax, "ay": ay, "light": light, "opaque": opaque}
     return icons
 
 
