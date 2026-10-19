@@ -1826,18 +1826,39 @@ package
             return null;
         }
 
-        // Enter in the list: the room chosen is joined. Not while the
-        // keyboard is in another text field (the chat); the PIN's is ours.
+        // In the list: Enter joins the room chosen, Up and Down choose the
+        // one above or below (scrolled into view). Not while something is
+        // typed in another text field (a chat message); the PIN's is ours.
         private function onKey(e:KeyboardEvent):void
         {
             try
             {
-                if (e.keyCode != 13 || !_shown || _view != "list")
+                if (!_shown || _view != "list" || (e.keyCode != 13 && e.keyCode != 38 && e.keyCode != 40))
                     return;
                 var focus:TextField = stage != null ? stage.focus as TextField : null;
-                if (focus != null && focus != _joinPin)
+                if (focus != null && focus != _joinPin && focus.text.length > 0)
                     return;
-                joinRoom(chosenRoom());
+                if (e.keyCode == 13)
+                {
+                    joinRoom(chosenRoom());
+                    return;
+                }
+                var at:int = -1;
+                for (var i:int = 0; i < _rooms.length; i++)
+                    if (_rooms[i].key == _selKey)
+                        at = i;
+                var next:int = Math.max(0, Math.min(_rooms.length - 1, at + (e.keyCode == 40 ? 1 : -1)));
+                if (_rooms.length == 0 || next == at)
+                    return;
+                _selKey = _rooms[next].key;
+                // Its row (42 high) in the scrolled box's view.
+                var top:Number = next * 42;
+                if (top < _scrollPx)
+                    _scrollPx = top;
+                else if (top + 42 > _scrollPx + _scrollViewH)
+                    _scrollPx = top + 42 - _scrollViewH;
+                clickSound();
+                render();
             }
             catch (err:Error)
             {
