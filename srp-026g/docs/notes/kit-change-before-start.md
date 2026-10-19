@@ -35,14 +35,16 @@ README patch 31, `client_patch.md` section 3.29; the server: `TimelimitRule::bef
     than that, the lobby camera's buttons (right, 5th, 7th) at once; the cursor stays where
     the drag began (it is off the screen during the drag, so a drag that began on a kit picks
     nothing) and is back there at the release;
+  - the camera starts in front of the player, level, looking at them, not at their back,
+    which a wall is often behind (the owner, 2026-10-19);
   - the wheel moves the camera nearer (forward) or further, 0.12 a notch as the lobby's;
   - the camera keeps the lobby camera's limits: distance 1.5 to 4.6, pitch within 60 degrees
     up or down (so it starts at 1.5, the stock warmup's 1.0 being nearer than the lobby's);
   - on the death screen the cursor alone takes the mouse, as before;
   - a button pressed while the cursor is shown (a drag, a pick on the death screen) and still
-    held when the cursor goes (the start, the respawn) does nothing until it is let go: no
+    held when the cursor goes (the start, the respawn) does nothing, held or let go: no
     shot and no aim without a press of its own (the owner, 2026-10-19: "players will shoot
-    immediately once match starts").
+    immediately once match starts"; "when mouse is released one shot still happens").
 - **Death screen (in play):** the selector also stays open after a pick, the cursor where it
   was, and can be clicked again until the respawn; each pick is the next life's kit, the last
   one wins; it hides at the respawn as before. A pick for the respawn's own tick is the life

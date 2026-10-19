@@ -798,18 +798,30 @@ WARMUP_LIMITS_HOOK = (0x24225E, bytes.fromhex("f30f118650030000"), WARMUP_LIMITS
 # until one answers 1 (0x3B9D90): kind 0 and 2 when it goes down, 1 when it
 # is let go, 2 at every frame it stays held; the game world's
 # on_mouse_key_action (0x25CF60) takes them while the cursor is shown, the
-# player's input handler keeps the kind as the action's state (0x23FF50) and
-# a state 2 is a held action (0x242460): a drag of the warmup camera still
-# held at the start fired the weapon at the next frame. Its first five
-# instructions (ten bytes) are a jump to warmup_keys and five nops: a button
-# pressed while the cursor is shown is marked, and while the cursor is not
-# shown a marked button's kind 2 is taken there and its release unmarks it
-# (and goes on, as before). No base relocation under the site.
+# player's input handler queues each kind with the action (0x23FF50) and its
+# play step takes the weapon's action at any kind (0x242460): a drag of the
+# warmup camera still held at the start fired the weapon at the next frame
+# and again at its release. Its first five instructions (ten bytes) are a
+# jump to warmup_keys and five nops: a button pressed while the cursor is
+# shown is marked, and while the cursor is not shown a marked button's kind
+# 2 and its release are taken there, the release unmarking it. No base
+# relocation under the site.
 WARMUP_KEYS_OFFSET = 0x9A8
 WARMUP_KEYS_VA = SECTION_VA + WARMUP_KEYS_OFFSET
 WARMUP_KEYS_HOOK = (0x25CF60, bytes.fromhex("5556" "8bf1" "8b4c240c" "8b01"), 0, 0xE9)   # on_mouse_key_action: warmup_keys
 WARMUP_KEYS_STATE_OFFSET = 0xE30
 WARMUP_KEYS_STATE_SIZE = 4
+# And the warmup camera starts in front of the player, not behind (a wall is
+# often there): warmup_face_026g.asm at WARMUP_FACE_OFFSET of `.srp` (after
+# the shared upgrades' code, before the pickup code). switch_to_warmup_camera
+# (0x1F8190) stores the mode, 3, with `mov [eax+358h],esi` at 0x1F81C1 (six
+# bytes), after it put cl, 1 when the camera changes, at +35Ch: a call of
+# warmup_face and a nop, which stores the mode and, at a change, the yaw pi
+# and the pitch 0 (+34Ch, +350h; 0x2422B0 turns the player's matrix by
+# them, a yaw of 0 behind the back). No base relocation under the site.
+WARMUP_FACE_OFFSET = 0x7C0
+WARMUP_FACE_VA = SECTION_VA + WARMUP_FACE_OFFSET
+WARMUP_FACE_HOOK = (0x1F81C1, bytes.fromhex("89b058030000"), 0, 0xE8)   # switch_to_warmup_camera's mode
 
 # The order of the archive reads (patch 33, README; client_patch.md section
 # 3.31). vostok::resources::hdd_manager_sorting_predicate::operator()
@@ -1766,10 +1778,9 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             sys.exit("the warmup look's state is not between the weapon preview's and the page's end")
         warmup_keys = open(warmup_keys_bin(), "rb").read()
         # warmup_keys begins `mov eax,[esp+8]` and ends with the ten bytes it
-        # replaced, the jump back and `pop edx; mov al,1; ret 0Ch`.
+        # replaced and the jump back.
         tail = WARMUP_KEYS_HOOK[1] + b"\xE9" + struct.pack(
-            "<i", WARMUP_KEYS_HOOK[0] + len(WARMUP_KEYS_HOOK[1]) - (WARMUP_KEYS_VA + len(warmup_keys) - 6)) \
-            + bytes.fromhex("5ab001c20c00")
+            "<i", WARMUP_KEYS_HOOK[0] + len(WARMUP_KEYS_HOOK[1]) - (WARMUP_KEYS_VA + len(warmup_keys)))
         if warmup_keys[:4] != bytes.fromhex("8b442408") or not warmup_keys.endswith(tail) \
                 or warmup_keys_state(warmup_keys) != late_join_state_va(late_join) + WARMUP_KEYS_STATE_OFFSET:
             sys.exit(f"warmup_keys_026g.section.bin: its entry, its end or its state are not where patch_026g.py "
@@ -1778,9 +1789,14 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if WARMUP_LOOK_STATE_OFFSET + WARMUP_LOOK_STATE_SIZE > WARMUP_KEYS_STATE_OFFSET \
                 or WARMUP_KEYS_STATE_OFFSET + WARMUP_KEYS_STATE_SIZE > LATE_JOIN_STATE_SIZE:
             sys.exit("the warmup keys' state is not between the warmup look's and the page's end")
+        warmup_face = open(warmup_face_bin(), "rb").read()
+        # warmup_face begins with the six bytes it replaced and ends `ret`.
+        if not warmup_face.startswith(WARMUP_FACE_HOOK[1]) or warmup_face[-1:] != b"\xC3":
+            sys.exit("warmup_face_026g.section.bin: it does not begin with the mode's store or end with ret")
         for (va, expected, offset, opcode), base in ((WARMUP_LOOK_HOOK, WARMUP_LOOK_VA),
                                                      (WARMUP_LIMITS_HOOK, WARMUP_LIMITS_VA),
-                                                     (WARMUP_KEYS_HOOK, WARMUP_KEYS_VA)):
+                                                     (WARMUP_KEYS_HOOK, WARMUP_KEYS_VA),
+                                                     (WARMUP_FACE_HOOK, WARMUP_FACE_VA)):
             patch(data, va, expected, hook_bytes(base, va, expected, offset, opcode))
             if neutralize_relocs(data, [(va, va + len(expected))]):
                 sys.exit(f"{va:#x}: a base relocation under a hook of the warmup camera")
@@ -1869,6 +1885,9 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if MOUNT_PATCHES_OFFSET + len(mount_patches) > SHARED_UPGRADES_OFFSET \
                 or SHARED_UPGRADES_OFFSET + len(shared_upgrades) > PICKUP_OFFSET:
             sys.exit("the patches' mount, the shared upgrades' code and the pickup code do not fit")
+        if SHARED_UPGRADES_OFFSET + len(shared_upgrades) > WARMUP_FACE_OFFSET \
+                or WARMUP_FACE_OFFSET + len(warmup_face) > PICKUP_OFFSET:
+            sys.exit("the shared upgrades' code, the warmup camera's start and the pickup code do not fit")
         if any(shared_upgrades[at:at + len(first)] != first for at, first in SHARED_UPGRADES_ENTRIES.items()):
             sys.exit("shared_upgrades_026g.section.bin: its entries are not where patch_026g.py calls them")
         for va, expected, offset, opcode in SHARED_UPGRADES_HOOKS:
@@ -1881,6 +1900,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (REPLAY_LINK_OFFSET - len(cave)) + replay_link
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (SHARED_UPGRADES_OFFSET - len(cave)) + shared_upgrades
+            cave = cave + b"\xCC" * (WARMUP_FACE_OFFSET - len(cave)) + warmup_face
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SUICIDE_KEY_OFFSET - len(cave)) + suicide_key
             cave = cave + b"\xCC" * (WARMUP_KEYS_OFFSET - len(cave)) + warmup_keys
@@ -1924,6 +1944,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "an upgrade taken off names the item it comes off (46 02, 83 46 02, detach_first), "
                      "a kit chosen before the match starts is played at once where the player stands, "
                      "a drag turns the warmup camera and the wheel moves it while the kits are shown, "
+                     "the warmup camera starts in front, "
                      "the archive reads' order is a strict weak ordering, "
                      f"the ai arena is {AI_ARENA_SIZE >> 20} MiB, "
                      "a weapon's upgrade window shows the weapon, "
@@ -1992,6 +2013,10 @@ def warmup_look_bin():
 
 def warmup_limits_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_limits_026g.section.bin")
+
+
+def warmup_face_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_face_026g.section.bin")
 
 
 def warmup_keys_bin():
