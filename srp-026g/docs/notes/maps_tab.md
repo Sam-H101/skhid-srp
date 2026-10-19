@@ -12,7 +12,10 @@ served by `servers/web-server/src/maps.rs`.
   - battery containers;
   - ammo stashes (the teams' resupply zones);
   - artefact spawns.
-- The markers are the game's own HUD minimap icons (hud.swf `Minimap._icons`), tinted by team.
+- The markers are the game's own HUD minimap icons (hud.swf `Minimap._icons`), tinted by team; the ammo stash is
+  the crate icon painted in the team's colour, with no disc. The battery is drawn in their style (the HUD's glyph is
+  too small to enlarge). Artefacts are their lobby icons alone, no circle.
+- Containers and stashes stand where their collision zone is, never at the object's pivot.
 - Each kind is toggled on its own; one toggle per artefact.
 - The map underneath is either the top-down render ("From above") or the game's minimap. Nothing else.
 - Data-driven, per release, never stale:

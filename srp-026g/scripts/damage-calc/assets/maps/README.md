@@ -129,6 +129,8 @@ Always use `python3 -I`.
     PATCHES=$(for n in 12 14 17 19 20 21 22; do printf ' --patch %s' <patches>/resources.db.patch_$n; done)
     for k in level_09 v011e_level_03 v011e_level_04; do python3 -I extract_level.py $DBGRAB $DB $k/day_2 $W/lv/$k $PATCHES; done
     # their raw client_projects (day_2/3/4 as the patches give them) go to $W/db like the stock ones
+    # (extract_level.py before 2026-10-19 lost every surface whose name ends in "_", e.g. level_08's moss
+    # and ground cover, level_03's terrain_all; all 13 maps were re-rendered with the fix)
     # 4. render + shade + check + webp (~1 min per map)
     python3 -I build_all.py $W <scratch>/maps --hud-images <scratch>/ex/hud/images --rerender
     # 5. checks against the native minimaps, then maps.json

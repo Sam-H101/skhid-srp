@@ -148,46 +148,27 @@ def hud_minimaps(args, raw, work):
 
 
 # The HUD minimap's own icons (Minimap._icons): the class of each, frame 1.
-# The battery is the "Artifact" glyph a carrier's icon wears.
-HUD_ICONS = {"player": "PlayerBlue", "base": "Base",
-             "charger": "SpawnIcon", "resupply": "ResupplyIcon"}
-CARRY = "PlayerCarry"
+HUD_ICONS = {"player": "PlayerBlue", "base": "Base", "charger": "SpawnIcon", "resupply": "ResupplyIcon"}
 
 
 def hud_icons(args, raw, work, out):
     """{name: {src, w, h, ax, ay}}: each icon as an SVG file and its anchor."""
     swf = raw / "flash_movies__hud.swf"
     target = work / "sprites"
-    classes = ",".join([*HUD_ICONS.values(), CARRY])
-    subprocess.run(["java", "-jar", args.ffdec, "-format", "sprite:svg", "-selectclass", classes,
+    subprocess.run(["java", "-jar", args.ffdec, "-format", "sprite:svg", "-selectclass", ",".join(HUD_ICONS.values()),
                     "-export", "sprite", str(target), str(swf)], check=True, capture_output=True)
     frame = lambda cls: next((d / "1.svg" for d in target.iterdir() if d.name.endswith(f"_{cls}_{cls}")), None)
     found = {name: frame(cls) for name, cls in HUD_ICONS.items()}
-    carry = frame(CARRY)
-    if not all(found.values()) or not carry:
+    if not all(found.values()):
         die("hud.swf: a minimap icon is missing (" + ", ".join(c for n, c in HUD_ICONS.items() if not found[n]) + ")")
-    svgs = {name: path.read_text() for name, path in found.items()}
-    # The carrier's battery: its "Artifact" use alone, at the origin.
-    text = carry.read_text()
-    use = re.search(r'<use [^>]*ffdec:characterName="Artifact"[^>]*/>', text)
-    if not use:
-        die(f"hud.swf: {CARRY} has no Artifact glyph")
-    w, h = (float(re.search(rf'{k}="([\d.]+)"', use.group(0)).group(1)) for k in ("width", "height"))
-    glyph = re.sub(r'transform="[^"]*"', 'transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)"', use.group(0), count=1)
-    defs = re.search(r"<defs>.*</defs>", text, re.S).group(0)
-    svgs["battery"] = (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
-                       f'xmlns:ffdec="https://www.free-decompiler.com/flash" width="{w}px" height="{h}px">'
-                       f'<g transform="matrix(1.0, 0.0, 0.0, 1.0, {w / 2}, {h / 2})">'
-                       f'<g transform="matrix(1.0, 0.0, 0.0, 1.0, {-w / 2}, {-h / 2})">{glyph}</g></g>{defs}</svg>')
     icons = {}
     (out / "icons").mkdir(parents=True, exist_ok=True)
-    for name, svg in svgs.items():
-        svg = re.sub(r'\s(ffdec:\w+)="[^"]*"', "", svg)
+    for name, path in found.items():
+        svg = re.sub(r'\s(ffdec:\w+)="[^"]*"', "", path.read_text())
         width = float(re.search(r'<svg[^>]*\swidth="([\d.]+)', svg).group(1))
         height = float(re.search(r'<svg[^>]*\sheight="([\d.]+)', svg).group(1))
         ax, ay = map(float, re.search(r'<g transform="matrix\(1\.0, 0\.0, 0\.0, 1\.0, (-?[\d.]+), (-?[\d.]+)\)"', svg).groups())
-        path = out / "icons" / f"hud_{name}.svg"
-        path.write_text(svg)
+        (out / "icons" / f"hud_{name}.svg").write_text(svg)
         icons[name] = {"src": f"{SITE}/icons/hud_{name}.svg?v={version(svg.encode())}",
                        "w": width, "h": height, "ax": ax, "ay": ay}
     return icons
@@ -258,16 +239,18 @@ def objects(project, artefact_keys):
             zones = [by_name[c["name"]] for c in o.get("collision_geometries") or [] if c.get("name") in by_name]
             if kinds:
                 artefacts.append(xzy(zones[0] if zones else o) + [kinds])
-    resupply = []
-    for o in client:
-        if o.get("game_object_type") == "resupply_zone":
-            zones = [by_name[c["name"]] for c in o.get("collision_geometries") or [] if c.get("name") in by_name]
-            resupply.append(xzy(zones[0] if zones else o) + [o.get("team", -1)])
+    # A team's container and its stash are where their collision zone is:
+    # the object's own position can be a pivot far away (level_04's two
+    # containers both stand at one team's side by it).
+    def zone_of(o):
+        zones = [by_name[c["name"]] for c in o.get("collision_geometries") or [] if c.get("name") in by_name]
+        return zones[0] if zones else o
+    resupply = [xzy(zone_of(o)) + [o.get("team", -1)] for o in client if o.get("game_object_type") == "resupply_zone"]
     return {
         "respawn": sorted(xzy(o) + [o.get("team", -1), heading(o)] for o in so.get("respawn_points") or []),
         "spawners": [xzy(o) for o in spawners],
         "stations": stations,
-        "containers": sorted(xzy(o) + [o.get("team", -1)] for o in so.get("victory_items_containers") or []),
+        "containers": sorted(xzy(zone_of(o)) + [o.get("team", -1)] for o in so.get("victory_items_containers") or []),
         "resupply": sorted(resupply),
         "artefacts": sorted(artefacts),
     }
