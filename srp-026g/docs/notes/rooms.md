@@ -57,6 +57,8 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Cod
 - **Maintenance:** within 30 min of one, no vote or match starts and no room is made; a room
   not playing is disbanded at once, one playing after its match (code 9 to its members and
   queue).
+- **Joining from the list:** the Join button, a double-click on a room, or Enter with one chosen
+  (Queue for a full room; the PIN typed first for a private one).
 - **Window:** Rooms replaces Map in the top bar ("rooms" in every language; its own icon; locked with Clan and
   Ranking while the lobby loads); the window fills the Character + Inventory area, the
   inventory's header and close button; × and Esc hide it; opening another lobby window hides

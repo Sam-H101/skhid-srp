@@ -8,6 +8,7 @@ package
     import flash.display.Shape;
     import flash.display.Sprite;
     import flash.events.Event;
+    import flash.events.KeyboardEvent;
     import flash.events.MouseEvent;
     import flash.events.TimerEvent;
     import flash.external.ExternalInterface;
@@ -744,6 +745,12 @@ package
         {
             _shown = value;
             visible = value;
+            // Enter in the list joins the room chosen (once on the stage).
+            if (value && !_keys && stage != null)
+            {
+                _keys = true;
+                stage.addEventListener(KeyboardEvent.KEY_DOWN, onKey, false, 0, false);
+            }
             // The top menu's tab follows: chosen while the window is open.
             if (_top != null)
             {
@@ -1617,6 +1624,10 @@ package
         // The list, after the design: the table of the rooms on the left, the
         // room chosen on the right with its map's render and JOIN.
         private var _selKey:int = 0;
+        // The last row pressed, and when: a second press on it soon joins.
+        private var _rowKey:int = 0;
+        private var _rowAt:int = 0;
+        private var _keys:Boolean = false;
         private static const SIDE_W:Number = 330;
 
         private function renderList():void
@@ -1693,9 +1704,7 @@ package
                     var shown:DisplayObject = (control.parent as Sprite).mask;
                     if (shown != null && !shown.hitTestPoint(e.stageX, e.stageY, false))
                         return;
-                    clickSound();
-                    _selKey = int(control.name);
-                    render();
+                    pickRow(int(control.name));
                 });
             }
             scrollDone(_rooms.length * 42);
@@ -1788,9 +1797,51 @@ package
 
         private function onRow(e:Event):void
         {
+            pickRow(int(e.currentTarget.name));
+        }
+
+        // A row pressed: chosen; pressed again within 450 ms, joined (as
+        // Join, Queue for a full room).
+        private function pickRow(key:int):void
+        {
             clickSound();
-            _selKey = int(e.currentTarget.name);
+            var now:int = getTimer();
+            if (key == _rowKey && now - _rowAt < 450)
+            {
+                _rowAt = 0;
+                joinRoom(chosenRoom());
+                return;
+            }
+            _rowKey = key;
+            _rowAt = now;
+            _selKey = key;
             render();
+        }
+
+        private function chosenRoom():Object
+        {
+            for (var i:int = 0; i < _rooms.length; i++)
+                if (_rooms[i].key == _selKey)
+                    return _rooms[i];
+            return null;
+        }
+
+        // Enter in the list: the room chosen is joined. Not while the
+        // keyboard is in another text field (the chat); the PIN's is ours.
+        private function onKey(e:KeyboardEvent):void
+        {
+            try
+            {
+                if (e.keyCode != 13 || !_shown || _view != "list")
+                    return;
+                var focus:TextField = stage != null ? stage.focus as TextField : null;
+                if (focus != null && focus != _joinPin)
+                    return;
+                joinRoom(chosenRoom());
+            }
+            catch (err:Error)
+            {
+            }
         }
 
         // A level of 0 is any level.
@@ -2541,6 +2592,17 @@ package
             if (room == null || _steps.length > 0)
                 return;
             busy(e);
+            joinRoom(room);
+        }
+
+        // Join (or Queue for a full room) as the button does; the PIN typed
+        // goes first.
+        private function joinRoom(room:Object):void
+        {
+            if (room == null || _steps.length > 0)
+                return;
+            _busyAt = getTimer();
+            _stepsAt = _busyAt;
             // A full room: wait in its queue (the server joins one a place
             // has freed for meanwhile).
             var start:int = room.players >= room.size * 2 ? QUEUE : JOIN;
