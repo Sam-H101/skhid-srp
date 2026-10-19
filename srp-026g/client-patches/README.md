@@ -518,6 +518,29 @@ python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/
 
 Tests: `python -m unittest test_buy_modified`. Not in a release yet.
 
+## Buy and Sell in the craft window
+
+`craft_menu_026g.py`: right-click on an item in the craft window's list
+("Upgrade") gives Buy and Sell only (the rules: `docs/notes/craft-menu.md`).
+The window locks the inventory list (`lockControls(true)`), and
+`InventoryList.showContextMenu` ended at once on a locked list. Its read of
+the lock, `this._inventoryLocked`, becomes `SrpCraftMenu.locked(this._inventoryLocked,
+this, activeItem)`: five instructions after the `getproperty`, no jump added.
+While a `MessageCraftItem` is on the lobby, the helper shows its own menu
+(Buy, Sell, by the list's own rules) and returns true, so the method ends;
+otherwise it returns the lock as it was. Buy goes as the item card's (the
+dictionary id, the shop's price, the shop's seller); Sell through the list's
+public `sellItem`.
+
+The input is the movie of Buy on owned items (`45452c50…`); the build is
+deterministic (`4cc4e785…` with FFDec 25.1.3):
+
+```sh
+python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+Tests: `python -m unittest test_craft_menu`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
