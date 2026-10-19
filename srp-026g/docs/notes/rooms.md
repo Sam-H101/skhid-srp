@@ -32,9 +32,6 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   played puts it into the same match as a late join (15 s or "Join match") as a new place,
   fresh (new index, zero stats), never its old one; only an account's latest place in a match
   counts (results, rewards, ratings, quests, map plays), the place it left for nothing.
-  It comes back once a match: after a second leave it waits in the room for the next match
-  (at most 2 places of one player, so a leaver can't use up the match's 20). Known: the
-  in-match Tab list shows its left place too, until the Tab-list patch.
 - **Before each match:** once the minimum of players who can play is in, a 15 s vote on 3
   cards (map + weather + mode; 25 s after a match: players come back from results first);
   votes may change; most votes wins, a tie or none drawn at random. Then the owner's wait,
