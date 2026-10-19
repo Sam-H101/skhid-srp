@@ -72,6 +72,12 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   (Up and Down choose the room above or below)
   (Queue for a full room; the PIN typed first for a private one).
 - **Chat:** stays over the Rooms window.
+- **In a room it shows** (the owner's of 2026-10-19: players did not know they were in one):
+  the top bar's Rooms tab, label and icon, is yellow while the player is in a room; the
+  Play button reads "Leave room" (in the case of the game's own Play label) in red and takes
+  the player out of the room, except when its row says it plays the room's match while it
+  is in the lobby (its game started anew): then it is Play, back to its seat. The switch to
+  a lower max level ("Switch room") is yellow.
 - **Window:** Rooms replaces Map in the top bar ("rooms" in every language; its own icon; locked with Clan and
   Ranking while the lobby loads); the window fills the Character + Inventory area, the
   inventory's header and close button; × and Esc hide it; opening another lobby window hides
