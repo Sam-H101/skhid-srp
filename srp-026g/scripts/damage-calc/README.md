@@ -38,6 +38,7 @@ python -I gen_calc_data.py json calc-data.json
 java -jar ffdec-cli.jar -export image lobby_images swf/flash_movies__lobby_menu.swf
 python -I assets/tools/build_icons.py json lobby_images icons --webp
 python -I assets/maps/tools/build_all.py ...   # top-down renders -> maps/<key>.webp (see assets/maps/README.md)
+# first the Maps tab (srp-026g/scripts/maps-tab/README.md): the calculator takes its maps' names and minimaps
 python -I build_page.py --site calc-data.json ../../servers/web-server/damage icons/icons maps 22   # the website's copy
 python -I build_page.py calc-data.json damage-calc.html icons/icons 22                            # one standalone file
 ```
