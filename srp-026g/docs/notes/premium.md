@@ -40,7 +40,7 @@ Record 0xD0 bytes, reader of the UI 0x227F60. PROVEN:
 
 **The third kit is not premium's in srp** (the owner's choice, 2026-10-17): every account uses all three kits, premium or not, and no kit is sent with the client's premium state 2 (`Account::kit_usable`; lobby.md §2.5). The client locks a kit only by that state (`ProfileSelector.setupProfiles`, `LobbyMenu.onProfileContextMenu`: the buy-premium box opens for a state-2 tab), not by the account's premium. The original game's third kit was premium's (PN 0.26g, `progression_sources.md`). Premium's other benefits are unchanged. OPEN: the client's premium windows (`MessagePremium`, `MessagePremiumDiscount`) still list `st_premium_bonus_profile` ("Профиль экипировки", an equipment profile) among premium's bonuses; that text is the game's localization in `resources.db`, which a server change does not reach.
 
-**Gold has no real-money source in srp**: level rewards (a new account starts with none since 2026-10-12), the tutorial's notes (100 in all), the daily bonus (50 a week), drops, the operator's web page.
+**Gold has no real-money source in srp**: level rewards, a new account's 500 (`no-tutorial.md`), the daily bonus (50 a week), drops, the operator's web page.
 
 ## 2. Buying: requests and answers
 
@@ -121,7 +121,7 @@ PROVEN: the state becomes `state_choose_faction` when the account has no quest f
 
 ## 7. The level notice: important message type 14 (corrects social.md §1.4)
 
-0x226B5B: the text is four bracketed numbers, read in this order by 0x227120: **`[skill_level][reward_type][reward_id][reward_amount]`** (PROVEN). The lobby shows "Level N achieved" with `reward_amount` of money and one skill point; `reward_id` 0 is silver, else gold (`MessagePlayerRank`). `reward_type` is read by nothing of that window; srp sends the same number as `reward_id` (GUESS). srp sends one for each level a match, a claimed premium half or the tutorial reached. Other types: 1 and 4 were sent already; 5 shows nothing; 6 (item repaired) is the items work's; 13 (referral) has no rule in srp.
+0x226B5B: the text is four bracketed numbers, read in this order by 0x227120: **`[skill_level][reward_type][reward_id][reward_amount]`** (PROVEN). The lobby shows "Level N achieved" with `reward_amount` of money and one skill point; `reward_id` 0 is silver, else gold (`MessagePlayerRank`). `reward_type` is read by nothing of that window; srp sends the same number as `reward_id` (GUESS). srp sends one for each level a match or a claimed premium half reached. Other types: 1 and 4 were sent already; 5 shows nothing; 6 (item repaired) is the items work's; 13 (referral) has no rule in srp.
 
 ## 8. Settings
 

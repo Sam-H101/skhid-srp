@@ -155,7 +155,7 @@ srp does not start, and its log (a line `srp: ...`) says why, when:
   file unlike its table) or not made by `srp-game-data build`: the line
   says how to make it;
 - the data lacks an item the code names (the starter kit, the shop's
-  tables, the bundles, the vouchers, the tutorial's weapons and awards):
+  tables, the bundles, the vouchers, the starting ammo and the tutorial's awards):
   `... lacks what srp's code names: loadouts::STARTER tt_33, ...`;
 - `SRP_MIN_PATCH_REVISION` is under its newest patch (above);
 - `srp.db` names an item, a modification or a quest the data lacks: `srp:

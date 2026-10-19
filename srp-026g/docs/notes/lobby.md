@@ -452,7 +452,7 @@ The sign-in `need_shop_items` flag still means "no shop array yet" (lc+0x1EE5F4 
 9. `87` own account (profiles + items + level/exp).
 10. `8C` level + skills.
 11. `92` quests (n = 0).
-12. `9C` squad limits, `9D` tutorial (show = 0), `9F` online stats (see the social notes for the maintenance semantics).
+12. `9C` squad limits, `9D` tutorial (show = 1, every step done: no tutorial), `9F` online stats (see the social notes for the maintenance semantics).
 13. `85 00` client state 0.
 
 ---
