@@ -28,10 +28,23 @@ const JOINER_EXTRA_TIME: Duration = Duration::from_secs(30);
 /// reservation, or not again after it left) is let go, and the rest of its
 /// group is admitted without it.
 const JOINER_ABSENT: Duration = Duration::from_secs(20);
+/// A game in the match that has not installed a newcomer's place this long
+/// after it was asked to is let go (it comes again with the whole roster),
+/// not the newcomer: live, 2026-10-19, one game kept a newcomer waiting
+/// until it timed out, and then the match took nobody. Games a few seconds
+/// apart are usual (`games_that_install_a_place_seconds_apart_…`).
+const INSTALL_GRACE: Duration = Duration::from_secs(15);
+/// A game still loading is waited for this long at most, by a match taking
+/// joiners and by a joiner whose place its roster lacks; a game loads in 2
+/// to 10 s. Past it, it is left behind (`Peer::left_behind`): loaded later
+/// without a place taken meanwhile, it is let go to come again.
+const LOADING_GRACE: Duration = Duration::from_secs(20);
 
 pub(super) struct LoadingProfile {
     proposal: Proposal,
     sent: Instant,
+    /// When it was first sent ([`INSTALL_GRACE`]).
+    since: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,13 +198,56 @@ impl Game {
             && self.ending.is_none()
             && self.finished_at.is_none()
             && self.live() > 0
-            && self.admissions.iter().flatten().all(Admission::entered)
+            // One pending reservation at a time; a newcomer that failed by
+            // itself is settled (its place is installed on, as one whose
+            // player left), and closes nothing. A place no game could
+            // install closes the match to joiners: none after it can be.
+            && self
+                .admissions
+                .iter()
+                .flatten()
+                .all(|a| a.entered() || (a.failed() && !a.install_stopped()))
             && self
                 .peers
                 .iter()
                 .flatten()
-                .filter(|p| p.stage != Stage::Gone)
+                .filter(|p| p.stage != Stage::Gone && !p.left_behind)
                 .all(|p| p.resources_loaded && p.installed_roster == self.players())
+    }
+
+    /// Whether the place at `index` waits for `peer` to enter: a game in
+    /// the match without the place yet. A game that has it from its static
+    /// info waits for nobody, loaded or not (live, 2026-10-19: a game that
+    /// connected again and never loaded kept a newcomer out); one left
+    /// behind is not waited for.
+    fn waits_for(peer: &Peer, index: usize) -> bool {
+        peer.stage != Stage::Gone && !peer.left_behind && peer.installed_roster <= index
+    }
+
+    /// The game at `index` has loaded. Left behind without a place taken
+    /// since its static info, it is let go: it would start from a world
+    /// with a player it has not installed. It comes again with the whole
+    /// roster. `true`: it was let go.
+    pub(super) fn loaded_behind(&mut self, index: usize, now: Instant) -> bool {
+        let Some(peer) = self.peers[index].as_mut() else {
+            return false;
+        };
+        let behind = std::mem::replace(&mut peer.left_behind, false);
+        let missing = peer.installed_roster < self.formed.places.len()
+            && !self.admissions[peer.installed_roster]
+                .as_ref()
+                .is_some_and(Admission::install_stopped);
+        if !behind || !missing {
+            return false;
+        }
+        log::warn!(
+            "Match {:#x}: player {index} loaded without the places taken since it connected; it \
+             is let go, to come again with the whole roster",
+            self.id
+        );
+        peer.transport.disconnect(now);
+        self.leave(index, now);
+        true
     }
 
     /// Until when a late joiner is taken: the time limit less
@@ -251,12 +307,11 @@ impl Game {
         };
         admission.entered()
             || (matches!(admission.phase, AdmissionPhase::CatchingUp { .. })
-                && self
+                && !self
                     .peers
                     .iter()
                     .flatten()
-                    .filter(|p| p.stage != Stage::Gone)
-                    .all(|p| p.resources_loaded && p.installed_roster > index))
+                    .any(|p| Self::waits_for(p, index)))
     }
 
     pub(super) fn after_preparation(&self, index: usize, time: u32) -> bool {
@@ -371,6 +426,7 @@ impl Game {
             return;
         }
         let count = self.players();
+        self.drop_slow_games(count, now);
         for peer in self.peers.iter_mut().flatten() {
             if peer.stage == Stage::Gone || !peer.resources_loaded || peer.installed_roster >= count
             {
@@ -401,6 +457,7 @@ impl Game {
                         place: place as u8,
                     },
                     sent: now,
+                    since: now,
                 });
             }
             let pending = peer.preparing.as_mut().unwrap();
@@ -433,12 +490,11 @@ impl Game {
             let ready = self.peers[index]
                 .as_ref()
                 .is_some_and(|p| p.resources_loaded && p.stage != Stage::Gone)
-                && self
+                && !self
                     .peers
                     .iter()
                     .flatten()
-                    .filter(|p| p.stage != Stage::Gone)
-                    .all(|p| p.resources_loaded && p.installed_roster > index);
+                    .any(|p| Self::waits_for(p, index));
             let connected = self.peers[index]
                 .as_ref()
                 .is_some_and(|p| p.stage != Stage::Gone);
@@ -537,6 +593,79 @@ impl Game {
                 peer.transport.disconnect(now);
                 self.leave(index, now);
             }
+        }
+    }
+
+    /// A newcomer's place waits for no game longer than it must: a game
+    /// still loading whose roster lacks it is left behind after
+    /// [`LOADING_GRACE`]; a game in the match that has not installed it
+    /// [`INSTALL_GRACE`] after it was asked to is let go (it comes again
+    /// with the whole roster). The newcomer is not to blame for either. Only
+    /// while the newcomer's own game has loaded and waits: a place whose
+    /// game is away waits for nobody, and is let go by itself
+    /// ([`JOINER_ABSENT`]).
+    fn drop_slow_games(&mut self, count: usize, now: Instant) {
+        let waiting: Vec<bool> = (0..count)
+            .map(|place| {
+                self.admissions[place]
+                    .as_ref()
+                    .is_some_and(|a| !a.entered() && !a.failed())
+                    && self.peers[place]
+                        .as_ref()
+                        .is_some_and(|p| p.stage != Stage::Gone && p.resources_loaded)
+            })
+            .collect();
+        let mut slow = Vec::new();
+        for (index, peer) in self.peers.iter_mut().enumerate() {
+            let Some(peer) = peer.as_mut() else {
+                continue;
+            };
+            if peer.stage == Stage::Gone {
+                continue;
+            }
+            // Loading this long, it holds no joiner back: neither a place
+            // taken nor one waiting (live, 2026-10-19: a game that signed in
+            // again every minute and never loaded closed the match to
+            // joiners for most of each minute).
+            if !peer.resources_loaded {
+                if !peer.left_behind
+                    && peer
+                        .loading_since
+                        .is_some_and(|since| now.saturating_duration_since(since) >= LOADING_GRACE)
+                {
+                    peer.left_behind = true;
+                    log::warn!(
+                        "Match {:#x}: player {index} is still loading after {} s; joiners do \
+                         not wait for it",
+                        self.id,
+                        LOADING_GRACE.as_secs()
+                    );
+                }
+                continue;
+            }
+            if peer.installed_roster >= count || !waiting[peer.installed_roster] {
+                continue;
+            }
+            let place = peer.installed_roster;
+            if peer
+                .preparing
+                .as_ref()
+                .is_some_and(|p| now.saturating_duration_since(p.since) >= INSTALL_GRACE)
+            {
+                slow.push((index, place));
+            }
+        }
+        for (index, place) in slow {
+            log::warn!(
+                "Match {:#x}: player {index} has not installed new place {place} in {} s; it is \
+                 let go, to come again with the whole roster",
+                self.id,
+                INSTALL_GRACE.as_secs()
+            );
+            if let Some(peer) = self.peers[index].as_mut() {
+                peer.transport.disconnect(now);
+            }
+            self.leave(index, now);
         }
     }
 

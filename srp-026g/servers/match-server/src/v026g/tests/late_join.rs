@@ -326,24 +326,31 @@ fn snapshot_delivery_is_not_enough_the_newcomer_must_demonstrate_catchup() {
     bench.assert_no_faults();
 }
 
+/// A game in the match that does not install a newcomer's place is let go
+/// after `INSTALL_GRACE` (15 s), not the newcomer: it comes again with the
+/// whole roster. Until 2026-10-19 the newcomer timed out after 60 s.
 #[test]
-fn a_resource_timeout_frees_the_newcomer_without_reloading_existing_players() {
+fn a_game_that_does_not_install_a_place_is_let_go_and_the_newcomer_enters() {
     let mut bench = running();
     bench.clients[1].auto_prepare = false;
     let place = reserve(&mut bench);
     bench.clients[place].connect();
     assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
     bench.clients[place].ready();
-    bench.run_long(61_000);
-    assert!(bench.clients[place].disconnected);
-    assert!(bench.registry.seat(session_of(place)).is_none());
-    assert_eq!(&bench.stages()[..2], "LL");
-    assert_eq!(bench.clients[0].model.syncs, 1);
-    assert_eq!(bench.clients[1].model.syncs, 1);
+    bench.run_long(14_000);
+    assert!(!bench.clients[1].disconnected);
     assert!(!bench.clients[0].entered().contains(&(place as u8)));
+    assert!(bench.until(10_000, |b| b.clients[0].entered().contains(&(place as u8))));
+    assert!(bench.clients[1].disconnected);
+    assert!(!bench.clients[place].disconnected);
+    assert_eq!(bench.clients[0].model.syncs, 1);
+    assert_eq!(bench.game().resyncs(0), 0);
     bench.assert_no_faults();
 }
 
+/// Its replacement has the newcomer's place from its static info: the
+/// newcomer goes in from the other game's world without waiting for it, and
+/// the old connection's acknowledgement changes nothing.
 #[test]
 fn readiness_from_an_old_connection_cannot_ready_its_replacement() {
     let mut bench = running();
@@ -365,11 +372,11 @@ fn readiness_from_an_old_connection_cannot_ready_its_replacement() {
     .encode()
     .unwrap();
     bench.clients[1].send(id::LEAVE, &ack, true);
-    bench.run(2_000);
-    assert!(bench.clients[place].snapshots().is_empty());
+    assert!(bench.until(8_000, |b| b.clients[0].entered().contains(&(place as u8))));
     assert_eq!(bench.clients[0].model.syncs, 1);
     bench.clients[1].ready();
     assert!(bench.until(10_000, |b| b.stages() == "LLL"));
+    assert!(bench.clients[1].prepares.is_empty());
     bench.assert_no_faults();
 }
 
@@ -1233,6 +1240,103 @@ fn a_player_that_left_by_its_own_word_comes_again_as_a_new_place() {
         assert_eq!(mask & (1 << 1), 0);
         assert_ne!(mask & (1 << 2), 0);
     }
+    assert_eq!(bench.game().resyncs(0), 0);
+    bench.assert_no_faults();
+}
+
+/// Live, 2026-10-19 (room 2168, match 0x43f058c5): a newcomer that failed
+/// (here: its game never came) kept every later joiner out until the end of
+/// the match, 10 minutes with players waiting in the room.
+#[test]
+fn a_late_joiner_that_failed_does_not_close_the_match_to_joiners() {
+    let mut bench = running();
+    let place = reserve(&mut bench);
+    bench.run(100);
+    assert!(!bench.game().admitting());
+    // Its game never connects: let go after 20 s.
+    bench.run_long(21_000);
+    assert!(bench.registry.seat(session_of(place)).is_none());
+    assert!(!bench.clients[0].entered().contains(&(place as u8)));
+    assert!(
+        bench.until(2_000, |b| b.game().admitting()),
+        "the match takes no joiner after one failed"
+    );
+    // And the next one gets in.
+    let next = reserve(&mut bench);
+    bench.join(next);
+    assert!(bench.until(2_000, |b| b.clients[0].entered().contains(&(next as u8))));
+    bench.assert_no_faults();
+}
+
+/// Live, 2026-10-19 (match 0x43f058c5): a player's game crashed, and the
+/// account signed in again every minute or so; each new game connected and
+/// never loaded. A newcomer let in while it was away (bigrus, place 11) then
+/// waited for that game, which never came, and timed out after 60 s.
+#[test]
+fn a_game_that_connects_again_and_never_loads_does_not_keep_a_newcomer_out() {
+    const NEW_SESSION: u32 = 0x2001;
+    let mut bench = running_three();
+    bench.clients[1].drop_link();
+    assert!(bench.until(5_000, |b| b.clients[0].left().contains(&1)));
+    assert!(bench.until(2_000, |b| b.game().admitting()));
+    let place = reserve(&mut bench);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    // Player 1's account signs in again: its new game connects, never loads.
+    assert!(
+        bench
+            .registry
+            .reseat(bench.match_id, 101, NEW_SESSION)
+            .is_some()
+    );
+    let roster = bench.clients.len();
+    bench.clients[1] = Client::growing(NEW_SESSION, roster, MAP_BATTERIES);
+    bench.addrs[1].set_port(43_001);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
+    bench.clients[place].ready();
+    assert!(
+        bench.until(15_000, |b| b.clients[0].entered().contains(&(place as u8))),
+        "the newcomer waited for a game that is not playing: {}",
+        bench.stages()
+    );
+    assert!(!bench.clients[place].disconnected);
+    bench.assert_no_faults();
+}
+
+/// A game that loads past `LOADING_GRACE` (20 s) closes the match to joiners
+/// no longer; a joiner taken meanwhile goes in without it, and when it
+/// loads without the joiner's place it is let go, to come again with the
+/// whole roster (it would start from a world with a player it lacks).
+#[test]
+fn a_game_still_loading_after_twenty_seconds_holds_no_joiner_back() {
+    const NEW_SESSION: u32 = 0x2001;
+    let mut bench = running_three();
+    bench.clients[1].drop_link();
+    assert!(bench.until(5_000, |b| b.clients[0].left().contains(&1)));
+    assert!(
+        bench
+            .registry
+            .reseat(bench.match_id, 101, NEW_SESSION)
+            .is_some()
+    );
+    bench.clients[1] = Client::growing(NEW_SESSION, 3, MAP_BATTERIES);
+    bench.addrs[1].set_port(43_001);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
+    // Loading: no joiner is taken for now.
+    bench.run(1_000);
+    assert!(!bench.game().admitting());
+    bench.run_long(20_000);
+    assert!(bench.until(1_000, |b| b.game().admitting()));
+    let place = reserve(&mut bench);
+    bench.join(place);
+    assert!(bench.until(2_000, |b| b.clients[0].entered().contains(&(place as u8))));
+    // It loads at last, without the joiner's place: let go.
+    bench.clients[1].ready();
+    assert!(bench.until(2_000, |b| b.clients[1].disconnected));
+    assert!(bench.clients[1].model.options.is_some());
+    assert_eq!(bench.clients[0].model.syncs, 1);
     assert_eq!(bench.game().resyncs(0), 0);
     bench.assert_no_faults();
 }

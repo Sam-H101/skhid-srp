@@ -621,6 +621,13 @@ struct Peer {
     resources_loaded: bool,
     installed_roster: usize,
     preparing: Option<LoadingProfile>,
+    /// Since when it loads (its static info sent), until it has loaded.
+    loading_since: Option<Instant>,
+    /// It loaded past `late_join::LOADING_GRACE` while a newcomer's place
+    /// was missing from its roster: newcomers no longer wait for it, and if
+    /// it loads without that place it is let go, to come again with the
+    /// whole roster (`late_join`).
+    left_behind: bool,
     /// When it was last asked for an upload and has not given one since:
     /// the only time its upload is taken, but for the initial world.
     asked: Option<Instant>,
@@ -1215,6 +1222,8 @@ impl Game {
             resources_loaded: false,
             installed_roster: 0,
             preparing: None,
+            loading_since: None,
+            left_behind: false,
             asked: None,
             asked_clock: None,
             unanswered_since: None,
@@ -1368,15 +1377,20 @@ impl Game {
                 {
                     send(peer, &info);
                     peer.installed_roster = self.formed.places.len();
+                    peer.loading_since = Some(now);
                     peer.stage = Stage::Loading;
                 }
             }
             ClientMessage::Ready => {
                 if peer.stage == Stage::Loading {
                     peer.resources_loaded = true;
+                    peer.loading_since = None;
                     // The client set its own generation to 0xFF with it.
                     peer.generation = Generation::AT_READY;
                     log::info!("Match {:#x}: player {index} has loaded", self.id);
+                    if self.loaded_behind(index, now) {
+                        return;
+                    }
                     if self.returns(index) {
                         self.enter_early(index, now);
                     }
@@ -2591,8 +2605,8 @@ impl Game {
         // A bad line is not taken through new generations for ever: the
         // redos of this resync are capped, and so are its generations
         // whatever made them.
-        let exhausted = peer.replay_redos >= REPLAY_REDONE
-            || peer.resync_generations >= RESYNC_GENERATIONS_MAX;
+        let exhausted =
+            peer.replay_redos >= REPLAY_REDONE || peer.resync_generations >= RESYNC_GENERATIONS_MAX;
         if (lost || overdue) && !exhausted {
             let why = if lost {
                 "a roster change of its replay was lost".to_owned()
@@ -2669,8 +2683,7 @@ impl Game {
             }
             let gate_since = *peer.gate_since.get_or_insert(now);
             let waited = now.saturating_duration_since(gate_since);
-            let edge = clock + 2 * RESYNC_GATE_EVERY.as_millis() as u32
-                >= snapshot.time + max_age;
+            let edge = clock + 2 * RESYNC_GATE_EVERY.as_millis() as u32 >= snapshot.time + max_age;
             if given_up || stuck || waited >= RESYNC_GATE_MAX || edge {
                 log::warn!(
                     "Match {id:#x}: player {index}'s world of {} ms goes without {missing} \
@@ -5745,9 +5758,12 @@ fn prune_gate(peer: &mut Peer) {
 /// many were forgotten.
 fn clear_gate(peer: &mut Peer, upto: Option<u32>, now: Instant) -> usize {
     let mut forgotten = 0;
-    for entry in peer.sync_pending.drain(..).chain(peer.sync_relays.drain(..)) {
-        if upto.is_none_or(|time| entry.tick <= time)
-            && !peer.transport.is_delivered(entry.serial)
+    for entry in peer
+        .sync_pending
+        .drain(..)
+        .chain(peer.sync_relays.drain(..))
+    {
+        if upto.is_none_or(|time| entry.tick <= time) && !peer.transport.is_delivered(entry.serial)
         {
             peer.transport.forget(entry.serial, now);
             forgotten += 1;
@@ -6085,7 +6101,9 @@ impl Game {
 
     /// Syncs of the client's resync done again for its replay.
     pub fn replay_redos(&self, index: usize) -> u32 {
-        self.peers[index].as_ref().map_or(0, |peer| peer.replay_redos)
+        self.peers[index]
+            .as_ref()
+            .map_or(0, |peer| peer.replay_redos)
     }
 
     /// As if the client's resync had been done again for its replay
@@ -6441,7 +6459,10 @@ mod tests {
         assert_eq!(way, 600);
         assert_eq!(resync_world_max_age(way), RESYNC_WORLD_MIN_AGE_MS);
         // A line beyond reason counts as RESYNC_TRIP_MAX_MS.
-        assert_eq!(age_limit_way(&trips(&[9_000; 4]), 9_000), RESYNC_TRIP_MAX_MS / 2);
+        assert_eq!(
+            age_limit_way(&trips(&[9_000; 4]), 9_000),
+            RESYNC_TRIP_MAX_MS / 2
+        );
         // No samples yet: the last round trip.
         assert_eq!(age_limit_way(&VecDeque::new(), 640), 320);
     }
