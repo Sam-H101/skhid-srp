@@ -10,8 +10,8 @@
 //! The match itself is the match server's: the lobby hands it the roster
 //! through [`MatchHost`] and sends each player where the ticket says
 //! (0x82). A running room match takes a late joiner on the side with fewer
-//! players, then the one that counts for less (`rooms`,
-//! `policy::place_weaker`) until its end.
+//! players, then the side it played on before, then the one that counts
+//! for less (`rooms`, `policy::place_joiner`) until its end.
 //!
 //! Each minute of a match being played the log has what its sides count for
 //! and the chance that gives team 0 ([`Core::log_predictions`]): what the
@@ -417,7 +417,7 @@ impl Core<'_> {
     }
 
     /// The sides of a running match as they are now, and the rule a late
-    /// joiner is put into it by ([`policy::place_weaker`]): sides of at
+    /// joiner is put into it by ([`policy::place_joiner`]): sides of at
     /// most `capacity` each (the caller's, a room's size), and no more
     /// places than the match has left (places are never used twice).
     pub(super) fn late_rule(

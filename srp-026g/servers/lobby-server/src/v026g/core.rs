@@ -225,11 +225,6 @@ pub(super) struct Core<'a> {
     /// When a member who came while its room's match is played goes into
     /// it (`rooms::LATE_JOIN_WAIT` after it came, or at once on its ask).
     pub room_join_at: HashMap<u32, Instant>,
-    /// The side each player of a room's match was seated on in it, by
-    /// account: the match and the team. One who comes back into that match
-    /// goes to it when the sides have as many players (`rooms`, the
-    /// owner's of 2026-10-19).
-    pub room_teams: HashMap<u32, (u32, u8)>,
 }
 
 impl<'a> Core<'a> {
@@ -279,7 +274,6 @@ impl<'a> Core<'a> {
             room_launching: HashMap::new(),
             room_codes: HashMap::new(),
             room_join_at: HashMap::new(),
-            room_teams: HashMap::new(),
         }
     }
 

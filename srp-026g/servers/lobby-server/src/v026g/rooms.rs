@@ -25,8 +25,8 @@
 //!   its ask) if the match admits players (from its countdown until
 //!   `LOAD_MARGIN` is left), on the side with fewer players in it; of two
 //!   alike in that, the side it played on in that match before, then the
-//!   one that counts for less (`matchmaking_policy::place_weaker`); otherwise it waits for the next
-//!   match.
+//!   one that counts for less (`matchmaking_policy::place_joiner`);
+//!   otherwise it waits for the next match.
 //! - **After.** The match over, its players are in the lobby again and in
 //!   the room, whose next vote and wait begin.
 //! - **Play.** Play with nothing else chosen puts the player into an open
@@ -764,7 +764,6 @@ impl Core<'_> {
     /// The room's match is over.
     pub(super) fn room_match_over(&mut self, match_id: u32) {
         self.room_launching.remove(&match_id);
-        self.room_teams.retain(|_, (id, _)| *id != match_id);
         if let Some(key) = self.rooms.match_over(match_id) {
             log::info!("Room {key}: its match {match_id:#x} is over; back in the room");
             // A maintenance is near: the match was played out, and the room
@@ -1055,12 +1054,6 @@ impl Core<'_> {
         }
         // `launch` made the match (it is in `matches` from here on).
         self.rooms.started(key, match_id, map_id, &seated, now);
-        for (team, side) in teams.iter().enumerate() {
-            for player in side {
-                self.room_teams
-                    .insert(player.account_id, (match_id, team as u8));
-            }
-        }
         // The match started without who could not play it: out of the room,
         // told why (they may come back with a kit that can).
         for (member, fit) in unfit {
@@ -1135,13 +1128,21 @@ impl Core<'_> {
         };
         // One who played this match before (left it, or its game was gone
         // for good) goes back to its side when the sides have as many
-        // players.
+        // players: the side of its latest place in the roster, which keeps
+        // every place, given up or not.
         let previous = self
-            .room_teams
-            .get(&account_id)
-            .filter(|(id, _)| *id == match_id)
-            .map(|&(_, team)| team);
-        let Some(placement) = policy::place_weaker(sides, worth, previous, &rule) else {
+            .store
+            .matchmaking()
+            .formed_match(match_id)
+            .and_then(|formed| {
+                formed
+                    .seats
+                    .iter()
+                    .rev()
+                    .find(|seat| seat.player.account_id == account_id)
+                    .map(|seat| seat.team)
+            });
+        let Some(placement) = policy::place_joiner(sides, worth, previous, &rule) else {
             return;
         };
         let team = placement.assignments.first().map_or(0, |(_, team)| *team);
@@ -1177,7 +1178,6 @@ impl Core<'_> {
             rule.lead,
         );
         self.rooms.seated_late(key, account_id);
-        self.room_teams.insert(account_id, (match_id, team));
         log::info!(
             "Room {key}: {} went into its match {ticket:#x} late, team {team}",
             self.name_of(account_id).unwrap_or_default()
