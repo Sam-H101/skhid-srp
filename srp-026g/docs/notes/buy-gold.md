@@ -13,7 +13,8 @@ website, instead it should just open gold trading menu").
   button, which asked "Online store will open in a browser window. Continue?" and now opens the
   exchange at once. The top bar's gold and silver boxes already opened it (`exchange_026g.py`).
 - **Over the dialog it came from:** the exchange shows at once, over any window still open (the
-  premium window, for one); that window waits under it and is back when the exchange closes.
+  premium window, for one); that window stays visible under it, as under its own dialogs, and is
+  active again when the exchange closes.
   The player presses Buy (or Repair, …) again: the dialog does not retry by itself.
 - **The amount:** the exchange opens as from the top bar; it is not filled with the gold missing.
 - **Texts:** unchanged. "Get Gold" fits buying gold with silver.

@@ -438,8 +438,9 @@ showed it; the bodies of all ten (`ItemCard`, `StatusPanel`, `MessageAsk`,
 `MessagePremiumDiscount`, `MessagePremiumProfile`, `MessageRepair`,
 `MessageRerollItem`) and the premium window's gold button
 (`MessagePremium.onPremiumMoneyAddClick`, which asked first) become
-`SrpBuyGold.open()`. It shows the exchange with `showMessage`'s third argument
-set, so it opens over a dialog still open instead of waiting behind it. The
+`SrpBuyGold.open()`. It shows the exchange with `showMessage`'s third
+and fifth arguments set, so it opens over a window still open instead of
+waiting behind it, and that window stays visible under it. The
 build refuses a movie where one of them is missing or does not lead to the
 store, and checks that no method pushes `go_to_store` afterwards. The exe and
 the server do not change.
@@ -452,7 +453,7 @@ new `resources.db.patch_<n>`, as for the rooms:
 python buy_gold_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
 ```
 
-The build is deterministic (sha256 `3515f001…` with FFDec 25.1.3). Tests:
+The build is deterministic (sha256 `b7cf70a8…` with FFDec 25.1.3). Tests:
 `python -m unittest test_buy_gold`. Not in a release yet.
 
 ## What each patch does

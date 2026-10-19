@@ -43,7 +43,8 @@ class BuyGoldTests(unittest.TestCase):
 
     def test_the_exchange_opens_over_the_dialog_on_the_buy_side(self):
         source = (HERE / 'buy_gold' / 'SrpBuyGold.as').read_text(encoding='utf-8')
-        self.assertIn('Message.showMessage("exchange", {"label": "", "srpBuyGold": true}, true);', source)
+        self.assertIn('Message.showMessage("exchange", {"label": "", "srpBuyGold": true}, true, 0, true);',
+                      source)
 
 
 if __name__ == '__main__':

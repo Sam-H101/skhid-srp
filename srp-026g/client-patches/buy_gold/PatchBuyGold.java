@@ -150,9 +150,13 @@ public class PatchBuyGold {
             if (saved.getAbcList().get(home).getABC().findClassByName("SrpBuyGold") < 0)
                 throw new IOException("Missing SrpBuyGold");
             Set<MethodBody> changed = new HashSet<>(targets.keySet());
-            for (int i = 0; i < blocks; i++)
-                verify(swf.getAbcList().get(i).getABC(), saved.getAbcList().get(i).getABC(),
-                       originals.get(i), changed);
+            for (int i = 0; i < blocks; i++) {
+                ABC abc = saved.getAbcList().get(i).getABC();
+                verify(swf.getAbcList().get(i).getABC(), abc, originals.get(i), changed);
+                for (MethodBody body : abc.bodies)
+                    if (pushes(abc, body, "go_to_store"))
+                        throw new IOException("The saved movie still opens the store in block " + i);
+            }
         }
         System.out.println("Buy gold compiled; " + targets.size() + " ways to the store open the exchange");
     }
