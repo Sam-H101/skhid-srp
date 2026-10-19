@@ -2507,6 +2507,10 @@ va	name	location	role	basis
 0x002daf60	survarium::base_player::serialize	stack+4	writer	inferred
 0x002db490	survarium::base_player::deserialize	ECX	player	inferred
 0x002db490	survarium::base_player::deserialize	stack+4	reader	inferred
+0x002dc0b0	survarium::base_player::set_spotted	ECX	this player's spottable interface (player+11Ch)	observed
+0x002dc0b0	survarium::base_player::set_spotted	entry ESP+4	the spotter (base_player)	observed
+0x002dc0c0	survarium::base_player::can_be_spotted_by	ECX	this player's spottable interface (player+11Ch)	observed
+0x002dc0c0	survarium::base_player::can_be_spotted_by	entry ESP+4	the spotter (base_player)	observed
 0x002df0d0	survarium::weapon_core::weapon_core	stack+4	whole weapon receiver	inferred
 0x002df0d0	survarium::weapon_core::weapon_core	stack+8	configuration	inferred
 0x002df0d0	survarium::weapon_core::weapon_core	stack+12	additional construction input saved in recoil state; exact meaning unknown	inferred
@@ -2672,6 +2676,9 @@ va	name	location	role	basis
 0x002fff10		EFLAGS&0x400		auto
 0x002fff10		entry ESP+4		auto
 0x00300710		entry ESP+4		auto
+0x00301c40	survarium::victory_item_core::set_spotted	ECX	the battery's spottable interface (item+54h)	observed
+0x00301c40	survarium::victory_item_core::set_spotted	entry ESP+4	the spotter (base_player)	observed
+0x00301ca0	survarium::victory_item_core::can_be_spotted_by	ECX	the battery's spottable interface (item+54h)	observed
 0x00303da0	survarium::grenade_core::serialize	ECX	grenade_secondary_receiver_full_object_plus_0x10	inferred
 0x00303da0	survarium::grenade_core::serialize	stack+4	writer	inferred
 0x00303f80	survarium::grenade_core::deserialize	ECX	grenade_secondary_receiver_full_object_plus_0x10	inferred
@@ -2956,6 +2963,11 @@ va	name	location	role	basis
 0x0032ff70	survarium::transition_helper::deserialize	EAX	reader	inferred
 0x003312f0	survarium::dispersion_calculator::serialize	stack+4	dispersion	inferred
 0x003312f0	survarium::dispersion_calculator::serialize	EAX	writer	inferred
+0x00334ac0	survarium::victory_item_event_manager::on_event	ESI	the manager (shared statistics+2760h)	observed
+0x00334ac0	survarium::victory_item_event_manager::on_event	EAX	the victory item	observed
+0x00334ac0	survarium::victory_item_event_manager::on_event	entry ESP+4	the player's place (byte)	observed
+0x00334ac0	survarium::victory_item_event_manager::on_event	entry ESP+8	the player's kit (byte)	observed
+0x00334ac0	survarium::victory_item_event_manager::on_event	entry ESP+12	the event (4: spotted)	observed
 0x00334dc0	survarium::victory_item_event_manager::serialize	stack+4	victory item event manager	inferred
 0x00334dc0	survarium::victory_item_event_manager::serialize	EDI	writer	inferred
 0x00334fb0	survarium::victory_item_event_manager::deserialize	stack+4	victory item event manager	inferred
