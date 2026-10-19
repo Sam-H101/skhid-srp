@@ -378,7 +378,9 @@ gold. The window has:
 - **Receive**, the same way;
 - the rate under them, Pay first: "100 Silver = 1 Gold" or "1 Gold = 100 Silver";
 - "Not enough silver" / "Not enough gold" in red, with the Exchange button
-  greyed out, when the Pay amount is more than the balance.
+  greyed out, when the Pay amount is more than the balance (since the
+  exchange update below, a typed amount becomes the most the balance pays
+  for; the note is left for the amount the window opens or swaps with).
 
 Typing in either field updates the other. Silver goes by whole gold: a silver
 amount that is not a multiple of the rate is evened out when the field is
@@ -455,6 +457,31 @@ python buy_gold_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/f
 
 The build is deterministic (sha256 `b7cf70a8…` with FFDec 25.1.3). Tests:
 `python -m unittest test_buy_gold`. Not in a release yet.
+
+## Exchange window updates
+
+`exchange_update_026g.py` brings a change of `exchange/SrpExchange.as` to a
+live lobby movie, which has the window already: FFDec compiles the class anew
+over the one in the movie (`exchange/ReplaceExchange.java`). Only the window's
+ABC block changes; every method of every other class and every other
+script's initializer, found by name (the block's bodies may be renumbered),
+is checked byte for byte, and every constant they may point at keeps its
+index and value. A method defined twice in the source is refused (FFDec keeps
+the last).
+
+The first such change (2026-10-20): an amount more than the Pay balance pays
+for becomes, as it is typed, the most it does, in the field typed in. Buying
+gold with 5,500 silver: 10,000 in Pay becomes 5,500, 100 in Receive becomes
+55. Selling gold works the same way with the gold balance. Silver is still
+whole gold: with 5,550 silver, anything over 5,500 becomes 5,500.
+
+```sh
+python exchange_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+The input is the movie with Get Gold (`b7cf70a8…`); the build is
+deterministic (`f900cc8b…` with FFDec 25.1.3). Tests:
+`python -m unittest test_exchange_update`. Not in a release yet.
 
 ## What each patch does
 
