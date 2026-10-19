@@ -558,7 +558,7 @@ impl<'a> Core<'a> {
             .or(still_in_match)
             .filter(|id| self.matches.contains_key(id));
 
-        let game = self.accounts.sign_up(account_id, &login_name);
+        let (game, made) = self.accounts.sign_up(account_id, &login_name);
         let unix = quests::now();
         // A test bot (`SRP_BOT_ACCOUNTS`) starts no run of bonus days.
         let bot = self.accounts.is_bot(account_id);
@@ -574,6 +574,9 @@ impl<'a> Core<'a> {
                 bonus::visit(&mut game, unix, &mut self.rng);
             }
             let notices = quests::refresh(&mut game, unix, &mut self.rng);
+            // A new account's first quests are part of its start: in its
+            // quest window, no message for each (no window at sign-up).
+            let notices = if made { Vec::new() } else { notices };
             (game.name.clone(), notices)
         };
         self.accounts.mark_dirty(account_id);

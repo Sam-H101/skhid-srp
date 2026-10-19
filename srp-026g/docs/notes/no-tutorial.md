@@ -11,7 +11,8 @@ The owner's of 2026-10-19. Code: `session::v026g::tutorial`; the client's side: 
 - **A new account starts with** (its first 0.26g sign-in, `GameAccounts::sign_up`, once,
   before its client hears of it: no window, no notice): 10 000 silver and 500 gold, the
   steps' 250 experience (the game's `unique_awards.options`), and 1000 rounds each of
-  7.62x25 (TT-33, PPSh-41) and 7.62x54R (Mosin) on its starting stacks.
+  7.62x25 (TT-33, PPSh-41) and 7.62x54R (Mosin) on its starting stacks, and the Scavengers as
+  its quest faction (the tutorial ended in the faction's choice; never neutral).
 - **New player** (the first match's drop table): no more experience than an account starts
   with.
 - **Accounts made before:** keep what they have and get no tutorial; steps they had not done

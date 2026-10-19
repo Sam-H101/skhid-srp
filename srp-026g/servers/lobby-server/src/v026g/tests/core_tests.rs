@@ -2991,6 +2991,8 @@ fn a_new_account_has_no_tutorial_and_what_it_paid() {
     let account = world.account(alice);
     assert_eq!((account.generic_money, account.premium_money), (10_000, 500));
     assert_eq!(account.exp_total, 250);
+    // The Scavengers' quests, never neutral.
+    assert_eq!(account.quest_faction, 1);
     for (name, rounds) in session::v026g::tutorial::SIGNUP_AMMO {
         let dict_id = Dictionary::shared().item_named(name).unwrap().dict_id;
         let owned: u32 = account

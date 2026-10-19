@@ -73,6 +73,9 @@ pub const AWARDS: [&str; 4] = [
     name::GAME_WORLD_TUTORIAL,
 ];
 
+/// The faction a new account takes quests from: the Scavengers.
+pub const SIGNUP_FACTION: u8 = survarium::prices::faction::SCAVENGERS;
+
 /// What a new account's balance is: silver and gold.
 pub const SIGNUP_SILVER: u32 = 10_000;
 pub const SIGNUP_GOLD: u32 = 500;
@@ -93,8 +96,12 @@ pub fn experience() -> u32 {
 
 /// A new account's start, before its client first hears of it: its
 /// balance ([`SIGNUP_SILVER`], [`SIGNUP_GOLD`]), the steps' experience,
-/// and the ammo ([`SIGNUP_AMMO`]) onto the stacks it owns.
+/// the ammo ([`SIGNUP_AMMO`]) onto the stacks it owns, and the Scavengers'
+/// quests (the tutorial ended in the faction's choice; the owner's of
+/// 2026-10-19: Scavengers, never neutral).
 pub fn signup_grant(account: &mut Account) {
+    super::quests::choose_faction(account, SIGNUP_FACTION)
+        .expect("every faction is open to a new account");
     account.generic_money = account.generic_money.max(SIGNUP_SILVER);
     account.premium_money = account.premium_money.max(SIGNUP_GOLD);
     // Short of a level: nothing more to pay.
@@ -152,6 +159,7 @@ mod tests {
         );
         assert_eq!(account.exp_total, 250);
         assert_eq!(account.level(), 0);
+        assert_eq!(account.quest_faction, SIGNUP_FACTION);
         assert_eq!(account.extras.tutorial_flags, ALL_DONE);
         let dictionary = Dictionary::shared();
         for (name, rounds) in SIGNUP_AMMO {

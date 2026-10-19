@@ -293,14 +293,15 @@ impl GameAccounts {
 
     /// The account with this id; at its first 0.26g sign-in it is made, as
     /// [`Self::get_or_create`] makes it, and given what the tutorial it no
-    /// longer has paid ([`tutorial::signup_grant`]).
-    pub fn sign_up(&self, account_id: u32, name: &str) -> Arc<Mutex<Account>> {
+    /// longer has paid ([`tutorial::signup_grant`]). Whether it was made
+    /// now.
+    pub fn sign_up(&self, account_id: u32, name: &str) -> (Arc<Mutex<Account>>, bool) {
         let made = !self.accounts.locked().contains_key(&account_id);
         let account = self.get_or_create(account_id, name);
         if made {
             tutorial::signup_grant(&mut account.locked());
         }
-        account
+        (account, made)
     }
 
     /// How many accounts have 0.26g state.
