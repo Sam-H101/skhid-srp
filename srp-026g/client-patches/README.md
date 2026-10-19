@@ -1941,6 +1941,72 @@ checksum and in nothing else (compared byte by byte); `--no-late-join`,
 `--cave=hash-mismatch` and `--cert-only` give the same exes as before.
 **Not run:** a game.
 
+### 37. Memory defaults match the launcher
+
+When memory options are absent, the full client now defaults to a 768 MiB
+multithreaded arena and a 768 MiB resource-memory floor, matching the existing
+launcher and play scripts. Retail defaults were 376 MiB and 336 MiB respectively.
+Explicit options retain their original behavior. The resource floor covers both
+managed and unmanaged pools; the ordinary 2:1 split gives 512 MiB managed.
+
+The 2026-10-18 map-loading report stopped while allocating 22,369,685 bytes for
+`resources/textures/sky/cgskies_cloud.dds`. The dump reports 173,033,088 bytes
+allocated out of 295,436,288 managed bytes. Native allocation requires one
+contiguous block and does not compact the arena, so total free space alone does
+not guarantee success. That pool is below the launcher's usual managed budget.
+The reporter does not know the player's launch method, and the dump lacks the
+heap and logs. This change closes the low-default launch path; it is not proof
+that every cause of the reported intermittent failure has been eliminated.
+
+Only two numeric immediates change: the default-only increment at 0xE100F
+(16 MiB plus 752 MiB), and the resource floor at 0xE9985 (768 MiB before native
+unit conversion). No allocator, eviction, timeout, texture, or simulation code
+changes. Certificate-only and legacy builds without the late join retain the
+retail defaults. No release revision is assigned here.
+
+Validation: `check_memory_defaults_026g.py` executes the native default and
+explicit/invalid option branches and a representative fragmented allocation.
+The latter uses the report's byte counts with a synthetic block layout, since
+the real blocks are absent from the dump. `selftest_026g.py` checks exact mutation
+ranges and relocation safety. An isolated Wine/DXVK Mamayev Kurgan rain load
+without either memory option rendered and produced verified server checkpoints;
+the log reports 512 MiB managed and 256 MiB unmanaged.
+
+Native 20-player comparisons on the same map found two budget failures:
+
+| Startup settings | Retail defaults | Patched defaults |
+| --- | --- | --- |
+| Both memory options absent, no diagnostic cap | 3/3 failed with `not enough memory for arena [global mt allocator]` | 3/3 loaded and produced verified checkpoints |
+| `-mt_allocator=768 -max_resources_size=422`, resource floor absent | 1/10 failed at `0x1068F7`, the reported managed-arena timeout site | 10/10 loaded and produced verified checkpoints |
+
+The constrained failure requested 57,082,932 bytes for
+`resources/projects/v021d_level_06/vegetation/suh_middle.veg`, with
+134,967,552 allocated out of 295,043,072 managed bytes. It reproduces the
+reported failure mechanism, not the exact sky-texture query or player history.
+The native maximum-resource option clamps to at least the configured resource
+floor, so the patched trials have 512 MiB managed instead of 281.375 MiB.
+One uncapped retail run raised an access violation while reporting the
+multithreaded-arena exhaustion; its log and dump comment preserve that failure.
+
+The comparison exes differ only in the four bytes of the two default immediates.
+Both use the existing 4 MiB AI arena patch and bypass disabled network-statistics
+counters because the diagnostic direct connection omits the lobby profile.
+They use the local ported-map resource archive and camera instrumentation, not
+the player's unknown installation. The resource floor is a startup request;
+the submitted pool size alone cannot establish the launch arguments. The native
+single-region fallback at `0xE8891` through `0xE8BF3` can replace requested
+256/512 MiB pools with smaller pools when address space is fragmented. The
+instruction test supplies one synthetic 443,154,432-byte available region:
+the native calculation and allocation calls produce 147,718,144 unmanaged and
+295,436,288 managed bytes, exactly the reported managed size, despite a 768 MiB
+request. This behavior is unchanged by the default patch; the test does not
+establish that the player's address space had this layout.
+
+With the smaller pool and one player, ten fresh-process loads and ten calls to
+the native resource reload routine did not reproduce the failure. Memory use
+settled after the second reload. That stress test does not exercise full
+lobby-to-match transitions. The exact reported intermittent crash remains open.
+
 ## Not ported, not done
 
 - The 0.21d mode 3 battery patch is not needed: 0.26g serializes the

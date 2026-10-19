@@ -625,7 +625,6 @@ va	status	ref_021d	name
 0x001064c0	inferred-medium	0x000c93e0	vostok::resources::game_resources_manager::try_reallocate_queue
 0x001065d0	inferred-medium	0x000c944b	vostok::resources::game_resources_manager::on_resource_freed_callback
 0x00106660	inferred-medium	0x000c94b7	vostok::resources::game_resources_manager::out_of_memory_callback
-0x001066f0	inferred-medium	0x000c958d	vostok::resources::game_resources_manager::tick_memory_type
 0x00106a70	inferred-high	0x000c9752	slwait
 0x00107070	inferred-medium	0x000c9bdb	pt3realloc
 0x001085a0	inferred-medium	0x000cab8c	vostok::resources::query_result::associate_created_resource_with_fat_or_name_registry

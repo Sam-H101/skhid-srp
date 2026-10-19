@@ -200,6 +200,8 @@ va	status	ref_021d	name
 0x000f70e0	reviewed	0x000be9b4	vostok::memory::writer::seek
 0x000f8480	reviewed	0x000bf5af	vostok::resources::resources_manager::add_fs_task
 0x000fef60	reviewed	0x000cc531	vostok::render::renderer_cook::destroy_resource
+0x001066f0	reviewed	0x000c958d	vostok::resources::game_resources_manager::tick_memory_type
+0x0010a240	observed		vostok::memory::managed_allocator_base::allocate
 0x001104b0	reviewed	0x000d01b6	vostok::network::network_world::set_on_dispatch_callbacks
 0x00110620	reviewed	0x000d02c0	vostok::network::network_world::network_world
 0x00110970	reviewed	0x000d04d7	vostok::network::network_world::initialize
