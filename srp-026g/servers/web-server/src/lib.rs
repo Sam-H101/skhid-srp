@@ -42,6 +42,7 @@
 
 mod damage;
 mod launcher;
+mod maps;
 mod password_reset;
 mod patches;
 mod stats;
@@ -116,7 +117,8 @@ const MAX_TOKEN_FAILURES: u32 = 5;
 const TOKEN_LOCKOUT: Duration = Duration::from_secs(60);
 /// The `Content-Security-Policy` of every page but the launcher's
 /// ([`launcher::policy`]).
-const POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'";
+const POLICY: &str =
+    "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; form-action 'self'";
 
 /// The page's languages: Ukrainian and English only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -643,8 +645,13 @@ impl Web {
             self.resource(&mut stream, &request, &file);
             return;
         }
-        if self.game.is_some() && matches!(request.method.as_str(), "GET" | "HEAD") {
-            if let Some((content_type, bytes)) = damage::file(&request.path) {
+        // The calculator's and the Maps tab's files on the 0.26g site; the
+        // calculator's fonts, which every page uses, on both.
+        let site_file = self.game.is_some() || request.path.starts_with(damage::FONTS);
+        if site_file && matches!(request.method.as_str(), "GET" | "HEAD") {
+            let file = damage::file(&request.path)
+                .or_else(|| self.game.as_ref().and_then(|_| maps::file(&request.path)));
+            if let Some((content_type, bytes)) = file {
                 damage::send(&mut stream, request.method == "HEAD", content_type, bytes);
                 return;
             }
@@ -654,6 +661,8 @@ impl Web {
             launcher::policy()
         } else if self.game.is_some() && request.path == damage::PATH {
             damage::POLICY
+        } else if self.game.is_some() && request.path == maps::PATH {
+            maps::POLICY
         } else {
             POLICY
         };
@@ -910,6 +919,7 @@ impl Web {
                     "/patches" => return patches::response(&game.patches),
                     "/api/client-files" => return launcher::client_files(),
                     damage::PATH => return damage_page(request.lang),
+                    maps::PATH => return maps_page(request.lang),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(
                             launcher::language(path, request.lang),
@@ -1538,27 +1548,35 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
 
 /// The calculator: its page under the site's header.
 fn damage_page(lang: Lang) -> Response {
+    damage::page(lang, &tool_header(lang, damage::PATH))
+}
+
+/// The Maps tab: its page under the site's header.
+fn maps_page(lang: Lang) -> Response {
+    maps::page(lang, &tool_header(lang, maps::PATH))
+}
+
+/// The site's header over a page of its own look (the calculator's, the
+/// Maps tab's), `path` the page shown.
+fn tool_header(lang: Lang, path: &str) -> String {
     let connect = CONNECT.get();
     let test = connect.is_some_and(|connect| connect.test_server);
     let other_url = connect.and_then(|connect| connect.other_url.as_deref());
-    let (header, test_notice) = site_header(lang, true, test, other_url, true);
-    damage::page(
-        lang,
-        &format!(
-            "<div class=site><style>{}</style>{header}{test_notice}</div>",
-            damage::HEADER_STYLE
-        ),
+    let (header, test_notice) = site_header(lang, true, test, other_url, path);
+    format!(
+        "<div class=site><style>{}</style>{header}{test_notice}</div>",
+        damage::HEADER_STYLE
     )
 }
 
 /// Every page's header (the 0.26g site's or the 0.21d's), and what a test
-/// server says under it. `damage`: the calculator is the page shown.
+/// server says under it. `current`: the path of the tab shown, if one is.
 fn site_header(
     lang: Lang,
     v026g: bool,
     test: bool,
     other_url: Option<&str>,
-    damage: bool,
+    current: &str,
 ) -> (String, String) {
     let code = lang.code();
     let (other, other_name) = match lang {
@@ -1581,23 +1599,29 @@ fn site_header(
             String::new(),
         )
     };
-    // The calculator is the 0.26g game's.
-    let damage_link = if v026g {
+    // The calculator and the maps are the 0.26g game's.
+    let tab = |path: &str, name: &str| {
         format!(
-            "<a href=\"{}?lang={code}\"{}>{}</a>",
-            damage::PATH,
-            if damage { " aria-current=page" } else { "" },
-            lang.tr("Damage calculator", "Калькулятор шкоди"),
+            "<a href=\"{path}?lang={code}\"{}>{name}</a>",
+            if current == path {
+                " aria-current=page"
+            } else {
+                ""
+            },
         )
+    };
+    let home_link = tab("/", &lang.tr("Home", "Головна"));
+    let damage_link = if v026g {
+        tab(damage::PATH, &lang.tr("Calculator", "Калькулятор"))
+            + &tab(maps::PATH, &lang.tr("Maps", "Мапи"))
     } else {
         String::new()
     };
     let header = format!(
         "<header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
          <span class=tag>{}</span>\
-         <nav><a href=\"/?lang={code}\">{}</a>{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
+         <nav>{home_link}{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
         page_tag(lang, version, test),
-        lang.tr("Home", "Головна"),
     );
     (header, test_notice)
 }
@@ -1611,7 +1635,12 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     };
     let code = lang.code();
     let version = if form.is_026g() { "0.26g" } else { "0.21d" };
-    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, false);
+    let current = if matches!(form, Form::Home(_)) {
+        "/"
+    } else {
+        ""
+    };
+    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, current);
     let body = match form {
         Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
@@ -1630,17 +1659,56 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
         body: format!(
             "<!doctype html><html lang={code}><meta charset=utf-8>\
              <meta name=viewport content=\"width=device-width,initial-scale=1\">\
-             <title>{}</title><style>{STYLE}</style>\
+             <title>{}</title><style>{}{STYLE}</style>\
              {header}\
              <main>{test_notice}{notice}{body}</main>\
              <footer>{}</footer></html>",
             escape(&page_title(lang, version, test)),
+            damage::font_faces(),
             escape(&disclaimer),
         ),
     }
 }
 
-const STYLE: &str = ":root{color-scheme:dark}*{box-sizing:border-box}body{font:16px/1.55 system-ui,'Segoe UI',sans-serif;background:radial-gradient(circle at 50% -10%,#232a2e,#101214 60%) fixed;color:#e3e3e0;margin:0;min-height:100vh}header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008}.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}main{max-width:34rem;margin:2rem auto;padding:0 1rem}a{color:#d4a017}h1{font-size:1.3rem;text-transform:uppercase;letter-spacing:.08em;margin:.2rem 0 .8rem}h2{font-size:1rem;text-transform:uppercase;letter-spacing:.08em;color:#d4a017}.card{background:#171a1dcc;border:1px solid #2a2f34;border-top:2px solid #d4a017;border-radius:3px;padding:1rem 1.3rem;margin-bottom:1.2rem}ol{padding-left:1.3rem}.rules{padding-left:1.1rem}.opts{font-size:.85rem;color:#b4b8bb;padding-left:1.1rem}li{margin:.7rem 0}pre,code{background:#0b0c0d;border:1px solid #2a2f34;border-radius:2px;color:#e8c766;font:.85rem Consolas,monospace}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}li>p{margin:.4rem 0}.card .note{margin:1rem 0 0}.stats{display:flex;gap:2rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid #2a2f34}.stats div{display:flex;flex-direction:column}.stats b{font-size:1.6rem;color:#d4a017;line-height:1.1}.stats span{font-size:.75rem;color:#8a8f94;text-transform:uppercase;letter-spacing:.08em}code{padding:.1rem .3rem;word-break:break-all}label{display:block;margin:.9rem 0 .25rem;font-size:.85rem;color:#b4b8bb}input{width:100%;padding:.55rem .6rem;background:#0f1113;color:inherit;border:1px solid #3a3f44;border-radius:2px;font:inherit}input:focus{outline:0;border-color:#d4a017;box-shadow:0 0 0 2px #d4a01740}button,.button{display:inline-block;margin-top:1.2rem;padding:.65rem 1.5rem;background:#d4a017;color:#101214;border:0;border-radius:2px;font:700 .9rem system-ui,sans-serif;text-transform:uppercase;letter-spacing:.08em;text-decoration:none;cursor:pointer}button:hover,.button:hover{background:#e8b52a}.note{background:#1d2125;border-left:3px solid #d4a017;padding:.7rem .9rem;border-radius:2px}.note.test{border-left-color:#d64531;margin-bottom:1.2rem}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:#8a8f94}label.check{display:flex;gap:.5rem;align-items:center;font-size:.85rem}label.check input{width:auto}.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid #2a2f34;border-bottom:0;border-radius:3px 3px 0 0;cursor:pointer;font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:#b4b8bb;background:#0f1113}.tabs>input:checked+label{color:#101214;background:#d4a017;border-color:#d4a017}.tabs>input:focus-visible+label{outline:2px solid #e8c766}.panel{display:none;border:1px solid #2a2f34;border-top:2px solid #d4a017;padding:.2rem 1rem 1rem;background:#171a1dcc}#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text,#tab-password:checked~.p-password{display:block}button.quiet{background:0;color:#d4a017;border:1px solid #d4a01766}button.quiet:hover{background:#d4a01722}table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #2a2f34;vertical-align:top;word-break:break-word}th{color:#8a8f94;font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;color:#d4a017;font-size:.8rem;text-transform:uppercase;letter-spacing:.08em}footer{max-width:34rem;margin:2rem auto;padding:1rem;border-top:1px solid #2a2f34;font-size:.75rem;color:#6d7378}";
+/// The site's look: the damage calculator's (paper and ink, PT Sans, PT Sans
+/// Narrow headings, PT Mono numbers), light or dark as the system is, the
+/// header too: on every page, the calculator's and the maps' included
+/// ([`damage::HEADER_STYLE`]).
+const STYLE: &str = ":root{--bg:#e9e6dc;--panel:#f5f3ec;--ink:#1f2420;--ink-2:#4d544c;--ink-3:#7b8277;--rule:#c9c5b6;--accent:#b4501f;--accent-ink:#fff8f0;--bad:#a3322a;--code:#ece8dc;\
+--display:'PT Sans Narrow','Arial Narrow',sans-serif;--body:'PT Sans','Segoe UI',Roboto,sans-serif;--data:'PT Mono',ui-monospace,Consolas,monospace}\
+@media (prefers-color-scheme:dark){:root{--bg:#171a17;--panel:#1f231f;--ink:#e6e4da;--ink-2:#b4b6a8;--ink-3:#868a7e;--rule:#353a33;--accent:#e07a43;--accent-ink:#1a0f08;--bad:#e0675c;--code:#151815;color-scheme:dark}}\
+*{box-sizing:border-box}body{font:15px/1.55 var(--body);background:var(--bg);color:var(--ink);margin:0;min-height:100vh}\
+header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.4rem;padding:.75rem 16px;background:var(--bg);border-bottom:2px solid var(--ink)}\
+.brand{font:700 1.5rem var(--display);letter-spacing:.24em;color:var(--accent);text-decoration:none}.tag{font:.72rem var(--data);color:var(--ink-3);flex:1;min-width:12rem}\
+nav{display:flex;flex-wrap:wrap;align-items:center;row-gap:.3rem}nav a{font:700 .85rem var(--display);text-transform:uppercase;letter-spacing:.1em;color:var(--ink-2);text-decoration:none;padding:0 .8rem;line-height:1.1}\
+nav a+a{border-left:2px solid var(--ink-3)}nav a:first-child{padding-left:0}nav a:hover{color:var(--ink)}nav a[aria-current]{color:var(--accent)}\
+.lang{font:.8rem var(--body);color:var(--ink-2);text-decoration:none;border:1px solid var(--rule);background:var(--bg);padding:.15rem .7rem;border-radius:999px}.lang:hover{border-color:var(--ink-3);color:var(--ink)}\
+main{max-width:46rem;margin:22px auto;padding:0 16px;display:grid;gap:22px}a{color:var(--accent)}\
+h1,h2,h3{font-family:var(--display);font-weight:700;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--ink)}h1{font-size:1.35rem}h2{font-size:1.15rem}\
+.card{background:var(--panel);border:1px solid var(--rule);padding:16px;display:grid;gap:12px;align-content:start;min-width:0}\
+.card>h1:first-child,.card>h2:first-child{border-bottom:1px solid var(--rule);padding-bottom:8px}.card p{margin:0}\
+ol{padding-left:1.3rem;margin:0}.rules{padding-left:1.1rem;margin:0}.opts{font-size:.85rem;color:var(--ink-2);padding-left:1.1rem}li{margin:.6rem 0}li>p{margin:.4rem 0}\
+pre,code{background:var(--code);border:1px solid var(--rule);border-radius:2px;color:var(--ink);font:.85rem var(--data)}pre{padding:.6rem .8rem;margin:.4rem 0;white-space:pre-wrap;word-break:break-all}code{padding:.05rem .3rem;word-break:break-all}\
+.dl{display:flex;flex-direction:column;align-items:flex-start;gap:.5rem;margin:.6rem 0}.dl .button{margin:0}.hash{display:block;max-width:100%;font-size:.78rem;padding:.35rem .5rem}\
+.card .note{margin:.2rem 0 0}.stats{display:flex;gap:2rem;padding-top:10px;border-top:1px solid var(--rule)}.stats div{display:flex;flex-direction:column}\
+.stats b{font:400 1.9rem/1.1 var(--data);color:var(--accent)}.stats span{font:700 .72rem var(--display);color:var(--ink-3);text-transform:uppercase;letter-spacing:.1em}\
+label{display:block;margin:.9rem 0 .25rem;font:700 .74rem var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}\
+input{width:100%;padding:.5rem .6rem;background:var(--bg);color:inherit;border:1px solid var(--rule);border-radius:2px;font:inherit}\
+input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}\
+button,.button{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:var(--accent);color:var(--accent-ink);border:0;border-radius:2px;font:700 .9rem var(--display);text-transform:uppercase;letter-spacing:.1em;text-decoration:none;cursor:pointer}\
+button:hover,.button:hover{filter:brightness(1.08)}.note{background:var(--bg);border-left:3px solid var(--accent);padding:.7rem .9rem;border-radius:2px;color:var(--ink-2)}\
+.note.test{border-left-color:var(--bad)}.badge{background:#d64531;color:#fff;font:700 .75rem system-ui,sans-serif;letter-spacing:.14em;padding:.2rem .55rem;border-radius:2px}small{color:var(--ink-3)}\
+label.check{display:flex;gap:.5rem;align-items:center;font:inherit;font-size:.85rem;letter-spacing:0;text-transform:none;color:var(--ink-2)}label.check input{width:auto}\
+.tabs{margin-top:1.2rem}.tabs>input{position:absolute;opacity:0;pointer-events:none}\
+.tabs>label{display:inline-block;margin:0 .25rem 0 0;padding:.45rem .9rem;border:1px solid var(--rule);border-bottom:0;border-radius:2px 2px 0 0;cursor:pointer;color:var(--ink-2);background:var(--bg)}\
+.tabs>input:checked+label{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}.tabs>input:focus-visible+label{outline:2px solid var(--accent)}\
+.panel{display:none;border:1px solid var(--rule);border-top:2px solid var(--accent);padding:.2rem 1rem 1rem;background:var(--panel)}\
+#tab-money:checked~.p-money,#tab-ban:checked~.p-ban,#tab-unban:checked~.p-unban,#tab-bans:checked~.p-bans,#tab-maint:checked~.p-maint,#tab-signups:checked~.p-signups,#tab-account:checked~.p-account,#tab-item:checked~.p-item,#tab-text:checked~.p-text,#tab-password:checked~.p-password{display:block}\
+button.quiet{background:0;color:var(--accent);border:1px solid var(--accent)}button.quiet:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}\
+table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:.35rem .4rem;border-bottom:1px solid var(--rule);vertical-align:top;word-break:break-word}\
+th{font:700 .72rem var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}\
+details{margin-top:.6rem}summary{cursor:pointer;font:700 .78rem var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}\
+footer{max-width:46rem;margin:2rem auto;padding:1rem 16px;border-top:1px solid var(--rule);font-size:.75rem;color:var(--ink-3)}";
 
 /// A file's size as the download button shows it.
 fn file_size(bytes: u64) -> String {
@@ -3015,7 +3083,18 @@ mod tests {
     fn the_damage_calculator_is_the_026g_sites_only() {
         let web = web(None);
         assert_eq!(web.route(&get("/damage"), "t").status, "404 Not Found");
-        assert!(!web.route(&get("/"), "t").body.contains("/damage"));
+        let home = web.route(&get("/"), "t").body;
+        assert!(!home.contains("href=\"/damage"));
+        // The site's fonts are the calculator's, served on both servers.
+        assert!(home.contains("src: url(\"/damage/fonts/pt-sans-regular.woff2?v="));
+        assert!(crate::damage::file("/damage/fonts/pt-sans-regular.woff2").is_some());
+    }
+
+    #[test]
+    fn the_maps_are_the_026g_sites_only() {
+        let web = web(None);
+        assert_eq!(web.route(&get("/maps"), "t").status, "404 Not Found");
+        assert!(!web.route(&get("/"), "t").body.contains("href=\"/maps"));
     }
 
     #[test]

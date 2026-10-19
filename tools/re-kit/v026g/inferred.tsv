@@ -625,7 +625,6 @@ va	status	ref_021d	name
 0x001064c0	inferred-medium	0x000c93e0	vostok::resources::game_resources_manager::try_reallocate_queue
 0x001065d0	inferred-medium	0x000c944b	vostok::resources::game_resources_manager::on_resource_freed_callback
 0x00106660	inferred-medium	0x000c94b7	vostok::resources::game_resources_manager::out_of_memory_callback
-0x001066f0	inferred-medium	0x000c958d	vostok::resources::game_resources_manager::tick_memory_type
 0x00106a70	inferred-high	0x000c9752	slwait
 0x00107070	inferred-medium	0x000c9bdb	pt3realloc
 0x001085a0	inferred-medium	0x000cab8c	vostok::resources::query_result::associate_created_resource_with_fat_or_name_registry
@@ -1040,6 +1039,7 @@ va	status	ref_021d	name
 0x001f3bd0	inferred-high	0x00157a52	survarium::player::is_first_view
 0x001f3c70	inferred-medium	0x00157ab8	survarium::player::generate_hit_event
 0x001f56e0	inferred-medium	0x001652ab	survarium::net_stats::add_text_cell
+0x001f63d0	inferred-medium		survarium::game_world::input_priority
 0x001f6520	inferred-medium	0x00159fec	survarium::booby_trap_set_cook::new_derived_resource
 0x001f6580	inferred-medium	0x0015a034	survarium::booby_trap_cook::new_derived_resource
 0x001f65d0	inferred-medium	0x001f3a3c	survarium::hud_game_effect_emitter::destroy
@@ -1495,6 +1495,9 @@ va	status	ref_021d	name
 0x0025a730	inferred-medium	0x00192a9e	survarium::particle_game_effect_emitter_cook::on_particle_system_loaded
 0x0025b170	inferred-medium	0x00192ece	survarium::hud_game_effect_emitter_cook::delete_resource
 0x0025b1c0	inferred-medium	0x00192ef5	survarium::sound_game_effect_emitter_cook::on_sound_emitters_loaded
+0x0025cd00	inferred-medium		survarium::game_world::on_keyboard_action
+0x0025cf60	inferred-medium		survarium::game_world::on_mouse_key_action
+0x0025d0e0	inferred-medium		survarium::game_world::on_mouse_move
 0x0025dd10	inferred-medium	0x00194968	survarium::grenade_set_cook::new_derived_resource
 0x0025e800	inferred-medium	0x00194fc4	survarium::artefact_cook::query_for_derived_resources
 0x0025ea90	inferred-medium	0x001951d3	survarium::artefact<survarium::artefact_spring_core>::~artefact<survarium::artefact_spring_core>

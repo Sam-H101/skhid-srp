@@ -46,10 +46,28 @@ PORTED = {
 }
 
 
+# Live maps a released skhid patch added, with their own minimap in the
+# patch-22 hud.swf (Minimap _minimapProps / _levels by project_name): London
+# (patch 14) and the 0.11e ports (patch 22, modes 2 and 4 only). Their inputs
+# are extracted with extract_level.py --patch, their raw client_projects (as
+# the game overlays them) put in WORK_DIR/db like the stock ones.
+PATCHED = {
+    'level_09': dict(size=140, posX=0, posY=-5, bitmap='971_Map_09_Map_09.png', area='alpha:0.4', name='London', origin='London, patch 14',
+                     name_key='st_level_09_name', modes=(2, 3, 4), map_ids={181: 2, 182: 3, 183: 4}),
+    'v011e_level_03': dict(size=100, posX=14.23, posY=-42.196, bitmap='985_minimap_bv11.png', area='line', origin='0.11e port, patch 22',
+                           name='Vostok Radar Station (v0.11)', name_key='st_level_13_name', modes=(2, 4),
+                           map_ids={208: 2, 209: 4}),
+    'v011e_level_04': dict(size=140, posX=23.302, posY=43.049, bitmap='984_minimap_zv11e.png', area='line', origin='0.11e port, patch 22',
+                           name='Chemical Plant (v0.11)', name_key='st_level_12_name', modes=(2, 4),
+                           map_ids={206: 2, 207: 4}),
+}
+
+
 def project_files(work, key):
     if key in PORTED:
         return [PACK / 'projects' / key / f'day_{n}' / 'client_project' for n in (2, 4)]
-    return [work / 'db' / f'projects__{key}__day_{n}__client_project' for n in (2, 3, 4)]
+    modes = PATCHED[key]['modes'] if key in PATCHED else (2, 3, 4)
+    return [work / 'db' / f'projects__{key}__day_{n}__client_project' for n in modes]
 
 
 def run(*args):
@@ -65,7 +83,7 @@ def main():
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     rd = a.work / 'out'
-    for key, m in {**NATIVE, **PORTED}.items():
+    for key, m in {**NATIVE, **PORTED, **PATCHED}.items():
         if a.only and key not in a.only:
             continue
         size = m['size']; ppm = TARGET / (2 * size)
@@ -73,7 +91,7 @@ def main():
             print(run(HERE / 'render_topdown.py', a.work / 'lv' / key, key, size, m['posX'], m['posY'], ppm, rd), flush=True)
         png = rd / f'{key}.png'
         native = a.hud_images / m['bitmap'] if m['bitmap'] else 'none'
-        print(run(HERE / 'shade.py', rd, key, native, png, '--ppm', ppm), flush=True)
+        print(run(HERE / 'shade.py', rd, key, native, png, '--ppm', ppm, '--area', m.get('area', 'alpha')), flush=True)
         projects = project_files(a.work, key)
         print(run(HERE / 'check_overlay.py', png, key, size, m['posX'], m['posY'], a.out / f'check_{key}.png',
                   *projects, f'--height={rd / (key + "-height.npy")}'), flush=True)

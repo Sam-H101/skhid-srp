@@ -34,6 +34,7 @@ release's. The "Result" row is the build of the revision named in it.
 | Revision 20 | Released 2026-10-18 02:10 UTC (tag `026g-rev20`, `main` a5ffe98). Shipped: #171 Squads of two: SRP_SQUAD_SIZE, an invite into a full squad is refused; #172 Revert "Squads of two" (#171); #175 0.26g matches: 8 a side by default, not 10. Without a server sha256 `6932dc7716c47b1cf4b6848768001de3ce7d10c113be14411b0ed878aeea504f`, with `--server=skhid.link:1234` `c064bbd72d137492992f3afe4a6872f9895d07d7056d9a15ddd3ad925b7743cc`. The ZIP: 6861910 bytes, sha256 `bca1f8b57fcf367e4bec9877b10e8b5fd50a1397193073405144c455ba74d7b6`; the server data: sha256 `40af0a1106207a47acf04577fe40c399af04dc911bccfbe7abb63e3e3aa7495c`. Its content: `resources.db.patch_20` (464470411 bytes, sha256 `7830ce1f175ea69c0e5fe34dbd3a47dfd6d606f102ff451422cf71471c723cc1`) |
 | Revision 21 | Released 2026-10-18 14:43 UTC (tag `026g-rev21`, `main` 37bb872). Shipped: #164 Crash reporter zips its dump (SRP-crash-…-N.zip); #177 BugTrap: automatically localize crash reporting instructions; #182 Weapon balance 1: calibre-correct piercing, over-performer cuts, beginner rifles, SVD 5 rounds, magazine line on the card, stamina-bonus and sight-glow fixes. Without a server sha256 `c2a77b24eab7663902c2ee4ca82398b80d7ac894b777d37a60dae39a50bdb9b5`, with `--server=skhid.link:1234` `48dc9a2b73570a442200761f0cc4e1bda8a6e11fef253028c11d8521260bbcb8`. The ZIP: 6881533 bytes, sha256 `073e3b7c24ffc237613baba058fef79f6f461c695d6f1da4b99f104388cfce39`; the server data: sha256 `bb43a6f64da4ecfea32af05ca2736a240a1e7d887f0ff371aa29943f73938ec7`. No content patch of its own |
 | Revision 22 | Released 2026-10-18 21:55 UTC (tag `026g-rev22`, `main` b4e7cea). Shipped: #184 Changelog: game update 21; #185 Shop: stop selling the Russian and Belarusian flags and coats of arms, the USSR flag and the red star; #187 Admin page: reset a forgotten password while srp runs; #186 Site: damage calculator tab (/damage), English and Ukrainian; #189 Password reset: close the sign-in race, write only the account, report errors. Without a server sha256 `6d082912ea51f6098b51c0ceba06341c2f4b6efd463e1e9ad3f275b0819987ef`, with `--server=skhid.link:1234` `f9e9dbeb45eed7a690d0e8f228c864beef4098546dbd60196546c609ed2462c6`. The ZIP: 6881533 bytes, sha256 `81d40f91c49f93487ba7df702e2a53f7af36df422a5633727005b6f822c9e399`; the server data: sha256 `c5615e24624e4cb146fceaefc9925fa20987fee0c5cf6333764cc8a094233dda`. Its content: `resources.db.patch_22` (845094613 bytes, sha256 `8d89d7a472d3659f370822212874aa237edb2257c8a3640d70c21c6fda0c65a5`) |
+| Revision 23 | Released 2026-10-19 10:52 UTC (tag `026g-rev23`, `main` 2145a91). Shipped: #191 Site in the calculator's look; calculator: healing table, play-area map, aligned bonuses; #192 Damage calculator: armour picker by icon and level, item protection by its bonuses; #193 Website: Maps tab (spawns, batteries, chargers, containers, artefacts); #194 Reroll offers three on items of few types; backpacks may roll health regeneration; #188 Patch 31: before the start a drag turns the camera and the wheel moves it, as in the lobby; #180 Match native game memory defaults to launcher budgets; #178 Fix launcher crash when an install starts with stale status information; #196 Shop: sell the STK2 Novice's knit cap to everyone; #197 Site: Maps tab and calculator built with revision 23's patch. Without a server sha256 `bccb7d7b905112cbcf2cbe156a44774520b34a8de6370fe752b51c5281edb9a2`, with `--server=skhid.link:1234` `d4154dbefef865457f7c363b823995e009c419ec1b7c895ae8eb85811714186e`. The ZIP: 6881868 bytes, sha256 `a946f4442433d59c09ca41b311907ab13de1d2c64442c42a0b01325204608e38`; the server data: sha256 `fdee2965e1a16ae26a27ddb7ee414af65a44676ae43048861716b482b7fe4d89`. Its content: `resources.db.patch_23` (55877739 bytes, sha256 `f504ed4ceba7642df009dede3405236a4774f728c500f736f5a4921fe33141b0`) |
 | Revision 4 | Revision 3 with patch 10 (a start with a Documents folder the game may not write to). **In the players' download since 2026-10-13 15:36 UTC.** Made as the download is, it differs from the revision 3 exe (`ac947abd…6d7b`; without a server `eedc5b5c…cf0d`) in the four bytes at file 0x35F0B, two bytes of an address at file 0x8410C8, the revision byte and the PE checksum, and in nothing else (compared byte by byte). The built exe was started in both situations of patch 10, not past the sign-in screen, before the release; the first sign-in with revision 4 on the players' server was logged three minutes after it. It plays together with revision 3 |
 | Revision 3 | Revision 3 is revision 2 with patch 9 (the battery rule). **It was the players' download from 2026-10-13 12:22 to 15:36 UTC** (the rows below are the downloads so far): it and the revision 2 exe differ in the 13 bytes of patch 9, the revision byte and the PE checksum, and in nothing else (compared byte by byte). Its rule was run outside the game (`run_battery_rule.ps1`). Eight sign-ins with revision 3 were logged in those hours; whether one of them played a match to a team's last battery was not looked at. A game of revision 3 or later and an older one part at a team's last battery (patch 9) |
 | The players' download | `Survarium-0.26g-srp-files.zip` of skhid.link (and 026g.skhid.link), since 2026-10-13 15:36 UTC: 6 793 103 bytes, sha256 `29b2ac002a1787c1352d021065f18a87ea5caa66fb16298c8e603a5347416bb4`, 23 files, made by `make_client_026g.py --pack-zip --server=skhid.link:1234 --localization=english` of `main` dbd70f0 with `--bugtrap=` naming the build of `client/bugtrap` that had been run in the game (that DLL does not build to the same bytes twice). It differs from the download before in two files: the game exe (sha256 `ae3ddf43f38eecb9e5080b10aa6b8397ce5dbed0f133b381461c82cb17329f25`, patch revision 4: patch 10) and `bugtrap.dll` (39 936 bytes, sha256 `9e3295c1312854c455c474e1dbd457b0a792b5ae406ff0b55d3b19b4f2fc4353`: the start-up notice of `client/bugtrap/README.md`); the other 21 files are byte for byte the same. Built twice: the same ZIP. Checked after the replacement: `/api/client-files` and `/download` of both names give this sha256. No restart: nothing on the server changed |
@@ -74,11 +75,14 @@ release's. The "Result" row is the build of the revision named in it.
 | `shared_upgrades_026g.asm`, `shared_upgrades_026g.section.bin` | The source of patch 30's code (one upgrade on several items: taking it off names the item) and that code assembled for 0x700 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_look_026g.asm`, `warmup_look_026g.section.bin` | The source of patch 31's camera before the start (while the kits are shown, a drag turns the warmup camera and the wheel moves it, as the lobby's character view) and that code assembled for 0xD40 of `.srp`, its state at 0xE20 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_keys_026g.asm`, `warmup_keys_026g.section.bin` | The same patch's buttons: one held from before the start (a drag of its camera) is not the player's until it is let go, and that code assembled for 0x9A8 of `.srp`, its state at 0xE30 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_limits_026g.asm`, `warmup_limits_026g.section.bin` | The same camera's end of a drag and its limits (the lobby camera's: distance 1.5 to 4.6, pitch within 60 degrees) and that code assembled for 0xA98 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
-| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
+| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves and the mouse's buttons through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
 | `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `weapon_draw_026g.asm`, `weapon_draw_026g.section.bin` | The source of patch 32's draw (a weapon's window draws the player as the lobby does) and that code assembled for 0xD20 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -1549,7 +1553,9 @@ each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
 319 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
-join), four sites, and nine nops at a fifth:
+join), four sites, nine nops at a fifth, and `warmup_look_026g.asm` and
+`warmup_limits_026g.asm` at a sixth and a seventh (the camera before the
+start, below):
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
@@ -1584,6 +1590,56 @@ join), four sites, and nine nops at a fifth:
   cursor where it is, for another pick, before the start and on the death
   screen alike, until the player becomes alive (in play they are then
   hidden as before).
+- The camera before the start (2026-10-18, the owner: "once we added the
+  ability to switch kits at start up, it is no longer possible to move the
+  camera around"; of the first fix, which let every move turn it: "it
+  should rotate when the left button is pressed, just like in the lobby",
+  "and scrolling for putting the camera further, just like in the lobby").
+  The kits show the hud's cursor, and the game world's input handler, which
+  gets a mouse move before the player's input handler (priority 7 before
+  10), moves the cursor and keeps the move while the cursor is shown
+  (0x25D0E0), so the warmup camera, which the player's handler turns and
+  moves by the wheel, stood still. The first ten bytes of 0x25D0E0 jump to
+  `warmup_look_026g.asm` (184 bytes at `.srp`+D40h, after the weapon
+  preview's draw; 12 bytes of state at `.srpd`+E20h). While the kits are
+  shown and the player's handler is in the warmup mode (3, before play), as
+  the lobby's character view (`lobby_camera`, 0x283D30):
+  - plain moves are the cursor's; a left press that moves no more than 8
+    units (|x| + |y|) is a click, the selector's;
+  - past that, and at once with the lobby camera's own buttons (right, 5th,
+    7th), it is a drag: the moves go to the player's handler and turn the
+    camera, the cursor stays (the hud's pointer off the screen meanwhile,
+    so a drag begun on a kit picks nothing) and is put back where it was at
+    the first move after the release, as the lobby does;
+  - the wheel goes on to the player's handler alone (no turn): nearer
+    forward, further back, 0.12 a notch, the lobby's step.
+  `warmup_limits_026g.asm` (101 bytes at `.srp`+A98h, after the seek code)
+  has the end of a drag and, called from the warmup mode's store of the
+  pitch (0x24225E, eight bytes), the lobby camera's limits: the pitch within
+  60 degrees, the distance within 1.5 and 4.6 (the stock warmup had none,
+  and starts at 1.0: it now starts at 1.5). On the death screen the cursor
+  takes every move as before. The warmup mode gives the player's input no
+  turn: nothing a match computes changes, and a game with it and one
+  without play together.
+  A button held from before the start is not the player's until it is let
+  go (the owner, 2026-10-19: "players will shoot immediately once match
+  starts"). The input world tells its handlers of a button still held at
+  every frame (kind 2, 0x3B9D90); the game world's input handler takes the
+  mouse's keys while the cursor is shown (0x25CF60), and the player's handler
+  queues every kind it is told, which the play step takes as the weapon's
+  action whatever the kind (0x23FF50, 0x242460): a drag still held when the
+  kits went at the start fired the weapon at the next frame and once more at
+  its release (and aimed with the right button; a pick held through a
+  respawn did the same).
+  The first ten bytes of 0x25CF60 jump to `warmup_keys_026g.asm` (88 bytes
+  at `.srp`+9A8h, after the suicide key, up to the seek code; the buttons
+  marked in a dword at `.srpd`+E30h): a button that goes down while the
+  cursor is shown is marked; while the cursor is not shown a marked button's
+  kind 2 and its release are taken there, and the release unmarks it. The
+  owner, on the first writing, which gave the release on: "when mouse is
+  released one shot still happens". The player's input only misses the held
+  states and the release of a press it never had: nothing a match computes
+  changes.
 
 **Order.** In a tick of a build with the late join the respawn rule runs
 first (tick list 0, its key from the core's counter), then the places, which
@@ -1625,7 +1681,19 @@ first person and free to move during the countdown; with the view's fix
 (d8acf39): the camera and the movement lock right, a click on a kit reset
 the cursor; 3417c05 (two games): a switch before the start in place with
 the warmup's camera, the cursor kept, re-picks, re-picks on the death
-screen, the start's release. **Not run in a game: this build**, which adds
+screen, the start's release. The camera before the start (check 32's two
+sites, the lobby camera's buttons, step and limits;
+`check_kit_change_026g.py`'s mouse moves through the input world's loop
+and the warmup mode's step: plain moves, a click with a little movement, a
+left drag, a right drag, the wheel, the wheel in a drag, the death screen,
+a replay's cursor, no local player; the mouse's buttons through the
+input world's loop and the game world's handler: a left or right drag held
+into the start, a pick held through a respawn, a click let go before the
+start, a press in play; nine broken builds fail it): its
+first form, every move turning the camera, was run by the owner on
+2026-10-18 ("not very good, it should rotate when the left button is
+pressed"); **the drag, the wheel and the limits are not run in a game**.
+**Not run in a game: this build**, which adds
 the end of the places and the protection when none is left (a switch of a
 place of the match plays as in 3417c05; with no protection left the new kit
 is not invulnerable in either, and in the tick its protection ends it now
@@ -1873,6 +1941,72 @@ and without `--revision=`) differs in the byte at file 0x1D80D1 and the PE
 checksum and in nothing else (compared byte by byte); `--no-late-join`,
 `--cave=hash-mismatch` and `--cert-only` give the same exes as before.
 **Not run:** a game.
+
+### 37. Memory defaults match the launcher
+
+When memory options are absent, the full client now defaults to a 768 MiB
+multithreaded arena and a 768 MiB resource-memory floor, matching the existing
+launcher and play scripts. Retail defaults were 376 MiB and 336 MiB respectively.
+Explicit options retain their original behavior. The resource floor covers both
+managed and unmanaged pools; the ordinary 2:1 split gives 512 MiB managed.
+
+The 2026-10-18 map-loading report stopped while allocating 22,369,685 bytes for
+`resources/textures/sky/cgskies_cloud.dds`. The dump reports 173,033,088 bytes
+allocated out of 295,436,288 managed bytes. Native allocation requires one
+contiguous block and does not compact the arena, so total free space alone does
+not guarantee success. That pool is below the launcher's usual managed budget.
+The reporter does not know the player's launch method, and the dump lacks the
+heap and logs. This change closes the low-default launch path; it is not proof
+that every cause of the reported intermittent failure has been eliminated.
+
+Only two numeric immediates change: the default-only increment at 0xE100F
+(16 MiB plus 752 MiB), and the resource floor at 0xE9985 (768 MiB before native
+unit conversion). No allocator, eviction, timeout, texture, or simulation code
+changes. Certificate-only and legacy builds without the late join retain the
+retail defaults. No release revision is assigned here.
+
+Validation: `check_memory_defaults_026g.py` executes the native default and
+explicit/invalid option branches and a representative fragmented allocation.
+The latter uses the report's byte counts with a synthetic block layout, since
+the real blocks are absent from the dump. `selftest_026g.py` checks exact mutation
+ranges and relocation safety. An isolated Wine/DXVK Mamayev Kurgan rain load
+without either memory option rendered and produced verified server checkpoints;
+the log reports 512 MiB managed and 256 MiB unmanaged.
+
+Native 20-player comparisons on the same map found two budget failures:
+
+| Startup settings | Retail defaults | Patched defaults |
+| --- | --- | --- |
+| Both memory options absent, no diagnostic cap | 3/3 failed with `not enough memory for arena [global mt allocator]` | 3/3 loaded and produced verified checkpoints |
+| `-mt_allocator=768 -max_resources_size=422`, resource floor absent | 1/10 failed at `0x1068F7`, the reported managed-arena timeout site | 10/10 loaded and produced verified checkpoints |
+
+The constrained failure requested 57,082,932 bytes for
+`resources/projects/v021d_level_06/vegetation/suh_middle.veg`, with
+134,967,552 allocated out of 295,043,072 managed bytes. It reproduces the
+reported failure mechanism, not the exact sky-texture query or player history.
+The native maximum-resource option clamps to at least the configured resource
+floor, so the patched trials have 512 MiB managed instead of 281.375 MiB.
+One uncapped retail run raised an access violation while reporting the
+multithreaded-arena exhaustion; its log and dump comment preserve that failure.
+
+The comparison exes differ only in the four bytes of the two default immediates.
+Both use the existing 4 MiB AI arena patch and bypass disabled network-statistics
+counters because the diagnostic direct connection omits the lobby profile.
+They use the local ported-map resource archive and camera instrumentation, not
+the player's unknown installation. The resource floor is a startup request;
+the submitted pool size alone cannot establish the launch arguments. The native
+single-region fallback at `0xE8891` through `0xE8BF3` can replace requested
+256/512 MiB pools with smaller pools when address space is fragmented. The
+instruction test supplies one synthetic 443,154,432-byte available region:
+the native calculation and allocation calls produce 147,718,144 unmanaged and
+295,436,288 managed bytes, exactly the reported managed size, despite a 768 MiB
+request. This behavior is unchanged by the default patch; the test does not
+establish that the player's address space had this layout.
+
+With the smaller pool and one player, ten fresh-process loads and ten calls to
+the native resource reload routine did not reproduce the failure. Memory use
+settled after the second reload. That stress test does not exercise full
+lobby-to-match transitions. The exact reported intermittent crash remains open.
 
 ## Not ported, not done
 

@@ -84,8 +84,8 @@ const RULES = (() => {
     const panel = el("div", { class: "gamemods" });
     for (const id of kinds.default) {
       const m = MODS[id], prop = m.props[0] || {};
-      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "gtext" },
-        `${label(prop)}: `, el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) }))));
+      panel.append(el("div", { class: "gmrow fixed" }, icon(m), el("span", { class: "glabel", text: `${label(prop)}:` }),
+        el("span", { class: good(prop, prop.value) ? "gv good" : "gv bad", text: propText(prop, prop.value) })));
     }
     if (kinds.default.length) { host.append(panel); return true; }
     for (const t of kinds.mod) {
@@ -102,10 +102,27 @@ const RULES = (() => {
         steps.append(b);
       }
       paint();
-      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "gtext" }, `${label(prop)}: `, steps)));
+      panel.append(el("div", { class: "gmrow" }, icon(m0), el("span", { class: "glabel", text: `${label(prop)}:` }), steps));
     }
     host.append(panel);
     return true;
+  }
+
+  // Covered parts in the doll's order, a left and right of the same armour
+  // as one ("Arms 50").
+  const PAIRS = [["right_forearm", "left_forearm", ["Arms", "Руки"]], ["right_arm", "left_arm", ["Hands", "Кисті"]],
+    ["right_hip", "left_hip", ["Legs", "Ноги"]], ["right_foot", "left_foot", ["Feet", "Стопи"]]];
+  const partsName = parts => parts.length > 1 ? T(...PAIRS.find(([r]) => r === parts[0])[2]) : PARTS[parts[0]];
+  function protParts(cover) {
+    const v = p => (cover[p] || {}).ranged || 0;
+    const out = [];
+    for (const p of Object.keys(PARTS)) {
+      if (!(v(p) > 0) || out.some(([ps]) => ps.includes(p))) continue;
+      const pair = PAIRS.find(([r, l]) => r === p || l === p);
+      const twin = pair && (pair[0] === p ? pair[1] : pair[0]);
+      out.push([twin && v(twin) === v(p) ? [pair[0], pair[1]] : [p], v(p)]);
+    }
+    return out;
   }
 
   return {
@@ -146,8 +163,19 @@ const RULES = (() => {
         if (!((item.hit_params[state.part] || {}).ranged > 0)) continue;
         covering++;
         state.amods[key] = state.amods[key] || {};
-        abox.append(el("span", { class: "lbl", text: `${label}: ${nm(item)}` }));
-        if (!modControls(abox, item, state.amods[key], update))
+        // The item and its gunshot armour on each part it covers, after the
+        // bonuses picked below: the part being hit in bold.
+        const prot = el("div", { class: "aprot", id: "aprot-" + slot });
+        const paintProt = () => {
+          const cover = this.itemArmour(item, state.amods[key]);
+          prot.replaceChildren(...protParts(cover).map(([parts, v]) =>
+            el("span", { class: parts.includes(state.part) ? "here" : "" }, `${partsName(parts)} `, el("b", { text: hp(v) }))));
+        };
+        paintProt();
+        const src = DATA.icons && DATA.icons[key];
+        abox.append(el("div", { class: "aitem" }, src ? el("img", { src, alt: "" }) : null,
+          el("div", {}, el("span", { class: "lbl", text: `${label}: ${nm(item)}` }), prot)));
+        if (!modControls(abox, item, state.amods[key], () => { paintProt(); update(); }))
           abox.append(el("span", { class: "note", text: T("This item takes no armour bonuses.", "Цей предмет не має бонусів броні.") }));
       }
       if (!covering) abox.append(el("span", { class: "note", text: T(`Nothing worn covers the ${part}.`, `Ніщо вдягнене не захищає: ${part}.`) }));
@@ -174,8 +202,7 @@ const RULES = (() => {
       const row = (label, ...kids) => box.append(el("div", { class: "field" }, el("span", { class: "lbl", text: label }), el("div", { class: "fxrow" }, ...kids)));
       if (ART.onyx) {
         // Four artefact slots: click the n-th to carry n, the last lit one again to drop it.
-        const n = state.fx.onyx || 0;
-        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= n,
+        const slots = [1, 2, 3, 4].map(i => tile("artefact_onyx", `${nm(ART.onyx)} ×${i}`, i <= (state.fx.onyx || 0),
           () => {
             state.fx.onyx = (state.fx.onyx || 0) === i ? i - 1 : i;
             slots.forEach((s, j) => s.setAttribute("aria-pressed", String(j < state.fx.onyx)));

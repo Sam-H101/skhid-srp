@@ -424,3 +424,17 @@ kept and can be put back).
 - TODO: #187 Admin page: reset a forgotten password while srp runs
 - TODO: #186 Site: damage calculator tab (/damage), English and Ukrainian
 - TODO: #189 Password reset: close the sign-in race, write only the account, report errors
+
+## 19 Oct, 10:52 — TODO: the owner's words (update required)
+
+<!-- Revision 23 (026g-rev23), released 2026-10-19 10:52 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #191 Site in the calculator's look; calculator: healing table, play-area map, aligned bonuses
+- TODO: #192 Damage calculator: armour picker by icon and level, item protection by its bonuses
+- TODO: #193 Website: Maps tab (spawns, batteries, chargers, containers, artefacts)
+- TODO: #194 Reroll offers three on items of few types; backpacks may roll health regeneration
+- TODO: #188 Patch 31: before the start a drag turns the camera and the wheel moves it, as in the lobby
+- TODO: #180 Match native game memory defaults to launcher budgets
+- TODO: #178 Fix launcher crash when an install starts with stale status information
+- TODO: #196 Shop: sell the STK2 Novice's knit cap to everyone
+- TODO: #197 Site: Maps tab and calculator built with revision 23's patch

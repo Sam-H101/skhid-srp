@@ -73,7 +73,8 @@ function fillWeapons() {
 // as if it had been used. groups: [[label or null, [[key, text, note]]]].
 function makePicker(name, select, groups, searchable) {
   const host = $(name); host.innerHTML = "";
-  const icon = k => { const src = DATA.icons && DATA.icons[k]; const img = el("img", { alt: "" }); if (src) img.src = src; return img; };
+  // No icon (an empty slot's "none"): an empty space, not a broken image.
+  const icon = k => { const src = DATA.icons && DATA.icons[k]; return src ? el("img", { alt: "", src }) : el("span", { class: "noimg" }); };
   const btn = el("button", { type: "button", class: "wpick-btn", id: name + "-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
   const list = el("div", { class: "wpick-list", role: "listbox", id: name + "-list", tabindex: "-1" });
   const search = searchable ? el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": name + "-list", "aria-expanded": "true",
@@ -117,6 +118,10 @@ function makePicker(name, select, groups, searchable) {
   };
   const open = () => {
     pop.hidden = false; btn.setAttribute("aria-expanded", "true");
+    // A list wider than its button, under one near the right edge, opens leftwards.
+    pop.style.left = "";
+    const over = pop.getBoundingClientRect().right - (document.documentElement.clientWidth - 16);
+    if (over > 0) pop.style.left = -over + "px";
     if (search) search.value = "";
     filter(); keys.focus();
   };
@@ -213,22 +218,34 @@ function takenBy(slot) {
   }
   return null;
 }
+// A slot's items as the weapons are: by level, then name, with their icons.
+const slotItems = slot => Object.entries(DATA.armour).filter(([, a]) => a.slot === slot)
+  .sort((a, b) => (a[1].item_level || 0) - (b[1].item_level || 0) || nm(a[1]).localeCompare(nm(b[1])));
+const NONE = T("— none —", "— нічого —");
+const slotPickers = {};
+function paintSlotPicker(slot) {
+  const key = state.armour[slot] || "";
+  slotPickers[slot].paint(key, key ? nm(DATA.armour[key]) + premium(DATA.armour[key]) : NONE);
+}
 function fillArmour() {
   const box = $("armour"); box.innerHTML = "";
   for (const [slot, label] of SLOTS) {
-    const items = Object.entries(DATA.armour).filter(([, a]) => a.slot === slot)
-      .sort((a, b) => a[1].armor - b[1].armor || nm(a[1]).localeCompare(nm(b[1])));
-    const sel = el("select", { id: "slot-" + slot, "aria-label": label });
-    sel.append(el("option", { value: "", text: T("— none —", "— нічого —") }));
-    for (const [k, a] of items) sel.append(el("option", { value: k, text: `${nm(a)}${a.premium ? T(" (premium)", " (преміум)") : ""} · ${hp(a.armor)}` }));
+    const items = slotItems(slot);
+    const sel = el("select", { id: "slot-" + slot, "aria-label": label, hidden: "" });
+    sel.append(el("option", { value: "", text: NONE }));
+    for (const [k, a] of items) sel.append(el("option", { value: k, text: nm(a) + premium(a) }));
     sel.value = state.armour[slot] || "";
+    const pick = el("div", { class: "wpick", id: "spick-" + slot });
     sel.addEventListener("change", () => { state.armour[slot] = sel.value; update(); });
     const aim = el("div", { class: "aim", role: "button", tabindex: "0", id: "slotaim-" + slot },
       el("div", { class: "head" }, el("span", { class: "lbl", text: label }), el("span", { class: "v", id: "slotv-" + slot })),
       el("div", { class: "art" }, el("img", { id: "sloti-" + slot, alt: "" }), el("span", { class: "empty", id: "slote-" + slot, text: T("nothing worn", "нічого не вдягнено") })));
     aim.addEventListener("click", () => aimAtSlot(slot));
     aim.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); aimAtSlot(slot); } });
-    box.append(el("div", { class: "slot", id: "slot-card-" + slot }, aim, sel));
+    box.append(el("div", { class: "slot", id: "slot-card-" + slot }, aim, sel, pick));
+    slotPickers[slot] = makePicker("spick-" + slot, sel, [[null, [["", NONE, ""],
+      ...items.map(([k, a]) => [k, nm(a) + premium(a), T(`lvl ${a.item_level || 0}`, `рів. ${a.item_level || 0}`), a.name])]]], true);
+    $("spick-" + slot + "-btn").setAttribute("aria-label", label);
   }
 }
 function armourMap() {
@@ -378,6 +395,8 @@ function update() {
     const taken = takenBy(slot);
     $("slot-" + slot).value = key || "";
     $("slot-" + slot).disabled = !!taken;
+    $("spick-" + slot + "-btn").disabled = !!taken;
+    paintSlotPicker(slot);
     $("slot-card-" + slot).classList.toggle("taken", !!taken);
     $("slote-" + slot).textContent = taken ? T(`taken by ${taken}`, `зайнято: ${taken}`) : T("nothing worn", "нічого не вдягнено");
     $("slot-card-" + slot).classList.toggle("hit", !!v);
@@ -396,6 +415,7 @@ function update() {
   drawPools(target, sim);
   drawChart(w, a, target);
   drawExplain();
+  drawHealing();
   // The two big tables simulate every part and every gun: draw them a frame
   // later so a click paints first, once for several quick clicks.
   later = () => { drawParts(target); drawCompare(target); };
@@ -607,6 +627,9 @@ function drawExplain() {
     "пул  −= hit       груди, спина → тіло · голова, обличчя → голова · нога · кисть",
     `біль −= hit × k   k = 1 груди, голова, руки · 0.9 ноги · 0.8 кисті, стопи${pk ? ` · ×${pk.damage_protection[0].hit_coeff} ${nm(pk)}` : ""}`,
     "смерть, коли тіло, голова або біль доходить до 0",
+    "",
+    "одна куля крізь кілька зон (дві кисті й груди): кожна зона рахується зі своєю бронею,",
+    "а кожен пул бере від цієї кулі найбільше, не суму: біль від кистей 40 і 40, від грудей 35 → −40, не −115",
   ] : [
     "D, P  = weapon × ammo, lowered between near and far range",
     onyx ? `D, P ×= ${onyx.passive.damage_mul} per ${nm(onyx)} (${onyx.active.damage_mul} active)` : null,
@@ -614,7 +637,95 @@ function drawExplain() {
     "pool −= hit       chest, back → body · head, face → head · leg · hand",
     `pain −= hit × k   k = 1 chest, head, arms · 0.9 legs · 0.8 hands, feet${pk ? ` · ×${pk.damage_protection[0].hit_coeff} ${nm(pk)}` : ""}`,
     "dead when body, head or pain reaches 0",
-  ]).filter(Boolean).join("\n");
+    "",
+    "one bullet through several boxes (both hands and the chest): each box counts with its own armour,",
+    "and each pool takes that bullet's largest share, not the sum: pain 40 and 40 from the hands, 35 from the chest → −40, not −115",
+  ]).filter(x => x !== null).join("\n");
+}
+
+// How many Larkspurs the healing table counts (its own tiles), 1 to 4.
+const larkspurs = () => clamp(state.larkspur || 1, 1, 4);
+function fillHealPick() {
+  const lark = DATA.artefacts && DATA.artefacts.lifebone, host = $("healpick");
+  if (!lark) { host.hidden = true; return; }
+  const src = DATA.icons && DATA.icons.artefact_lifebone;
+  const tiles = [1, 2, 3, 4].map(i => {
+    const b = el("button", { type: "button", class: "fxtile", title: `${nm(lark)} ×${i}`, "aria-label": `${nm(lark)} ×${i}`, "aria-pressed": String(i <= larkspurs()) },
+      src ? el("img", { src, alt: "" }) : el("span", { text: `×${i}` }));
+    b.addEventListener("click", () => {
+      state.larkspur = i; save();
+      tiles.forEach((t, j) => t.setAttribute("aria-pressed", String(j < i)));
+      drawHealing();
+    });
+    return b;
+  });
+  host.append(el("span", { class: "lbl", text: nm(lark) }), ...tiles);
+}
+// Healing compared: recovering by itself, the Larkspur carried and activated,
+// the medikit and bandages, every number from the data.
+function drawHealing() {
+  const row = n => DATA.body.find(r => r.name === n);
+  const pools = [["body"], ["head"], ["right_leg", "right_hand"], ["pain"]];
+  const perS = T("/s", "/с"), sec = T("s", "с"), dash = "—";
+  const full = T("full", "повністю"), fixed = T("fixed", "лікує");
+  const regen = (name, mod, count = 0) => {
+    const r = row(name);
+    let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
+    // One Larkspur callback (0x312590) per Larkspur carried: add, then multiply.
+    for (let i = 0; mod && i < count; i++) {
+      speed = (speed + mod.regen_add) * mod.regen_mul;
+      wait = (wait + mod.timeout_add) * mod.timeout_mul;
+      cap = (cap + mod.threshold_add) * mod.threshold_mul;
+    }
+    return { cell: `${hp(speed)}${perS} → ${cap >= 1 ? full : hp(r.health * cap)}`, wait };
+  };
+  const rows = [];
+  const own = pools.map(([p]) => regen(p));
+  // A row's name with its item's lobby icon.
+  const named = (text, key) => { const src = key && DATA.icons && DATA.icons[key]; return (src ? `<img class="wico" alt="" src="${src}">` : "") + `<b>${text}</b>`; };
+  rows.push([named(T("By itself", "Само собою")), T(`${own[0].wait} s without hits`, `${own[0].wait} с без влучань`), ...own.map(x => x.cell),
+    T(`ends after ${own[0].wait} s without hits`, `минає за ${own[0].wait} с без влучань`)]);
+  const lark = DATA.artefacts && DATA.artefacts.lifebone;
+  if (lark) {
+    const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
+    const n = larkspurs();
+    const carried = pools.map(([p]) => regen(p, mods[p], n));
+    rows.push([named(`${nm(lark)} ×${n}, ${T("carried", "у слоті")}`, "artefact_lifebone"), T(`${carried[0].wait} s without hits`, `${carried[0].wait} с без влучань`), ...carried.map(x => x.cell), dash]);
+    const cures = (lark.active.remove_affects || []).length;
+    rows.push([named(`${nm(lark)}, ${T("activated", "активований")}`, "artefact_lifebone"), T(`at once, every ${lark.cooldown_s} s`, `одразу, раз на ${lark.cooldown_s} с`), dash, dash, dash, dash, cures ? fixed : dash]);
+  }
+  for (const key of ["medkit", "bandages"]) {
+    const d = DATA.drugs && DATA.drugs[key]; if (!d) continue;
+    const heal = d.heal_per_s || {};
+    const cell = ([p]) => {
+      const gain = (heal[p] || 0) * d.activity_s;
+      return gain <= 0 ? dash : gain >= row(p).health ? full : `+${hp(gain)}`;
+    };
+    rows.push([named(nm(d), key), T(`${d.activation_delay_s} s after use, for ${d.activity_s} s`, `через ${d.activation_delay_s} с, ${d.activity_s} с`),
+      ...pools.map(cell), (d.remove_affects || []).length ? fixed : dash]);
+  }
+  // From empty to full: the wait, then the pool at its speed. Each Larkspur
+  // adds speed and wait alike, so past two the wait outgrows what it saves.
+  if (lark) {
+    const mods = Object.fromEntries((lark.passive.regeneration_modifiers || []).map(m => [m.body_part, m]));
+    const cols = [["body"], ["right_leg"], ["pain"]];
+    const timeTo = (p, k) => {
+      const r = row(p), m = mods[p];
+      let speed = r.regeneration_speed, wait = r.regeneration_timeout, cap = r.regeneration_threshold;
+      for (let i = 0; m && i < k; i++) { speed = (speed + m.regen_add) * m.regen_mul; wait = (wait + m.timeout_add) * m.timeout_mul; cap = (cap + m.threshold_add) * m.threshold_mul; }
+      return cap >= 1 ? wait + r.health / speed : { stops: r.health * cap };
+    };
+    const table = [0, 1, 2, 3, 4].map(k => cols.map(([p]) => timeTo(p, k)));
+    const best = cols.map((_, c) => Math.min(...table.map(t => typeof t[c] === "number" ? t[c] : Infinity)));
+    const fcell = (v, c) => typeof v === "number" ? (Math.abs(v - best[c]) < 1e-9 ? `<b>${fx(v, 1)} ${sec}</b>` : `${fx(v, 1)} ${sec}`)
+      : T(`stops at ${hp(v.stops)}`, `до ${hp(v.stops)}`);
+    const n = larkspurs();
+    $("fulltime").innerHTML = `<thead><tr><th>${T("From empty to full", "Від нуля до повного")}</th>${[POOLS.body, T("Leg or hand", "Нога чи кисть"), POOLS.pain].map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+      table.map((t, k) => `<tr${k === n ? ' class="me"' : ""}><td>${k ? `${nm(lark)} ×${k}` : T("No Larkspur", "Без Живокосту")}</td>${t.map((v, c) => `<td class="n">${fcell(v, c)}</td>`).join("")}</tr>`).join("") + "</tbody>";
+  }
+  const head = ["", T("Starts", "Починає"), POOLS.body, POOLS.head, T("Legs, hands", "Ноги, кисті"), POOLS.pain, T("Broken leg, hand", "Зламана нога, кисть")];
+  $("heal").innerHTML = `<thead><tr>${head.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr><td class="hname">${r[0]}</td>${r.slice(1).map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody>";
 }
 
 // ---------- map ----------
@@ -638,16 +749,32 @@ function fillMaps() {
   s.value = state.map;
   s.addEventListener("change", () => { state.map = s.value; state.mapA = state.mapB = null; drawMapBase(); update(); });
   $("mapclear").addEventListener("click", () => { state.mapA = state.mapB = null; update(); });
+  // The render or the game's minimap (same frame), where the map has one.
+  const views = $("mapviews");
+  const paintViews = () => {
+    views.hidden = !DATA.maps[state.map].minimap;
+    for (const c of views.children) c.setAttribute("aria-pressed", String(c.dataset.view === (state.mapView || "render")));
+  };
+  for (const [v, text] of [["render", T("From above", "Згори")], ["minimap", T("Minimap", "Мінімапа")]]) {
+    const c = el("button", { type: "button", class: "chip", text });
+    c.dataset.view = v;
+    c.addEventListener("click", () => { state.mapView = v; paintViews(); drawMapBase(); update(); });
+    views.append(c);
+  }
+  s.addEventListener("change", paintViews);
+  paintViews();
   drawMapBase();
 }
 function drawMapBase() {
   const m = DATA.maps[state.map];
-  $("mapview").innerHTML = `<svg viewBox="0 0 ${m.size[0]} ${m.size[1]}" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
-    <image href="${m.image}" width="${m.size[0]}" height="${m.size[1]}"/><g id="mapover"></g></svg>`;
+  // The play area (the native minimap's part of the render), not the whole square.
+  const [vx, vy, vw, vh] = m.play || [0, 0, m.size[0], m.size[1]];
+  $("mapview").innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" style="width:min(100%, calc(90vh * ${vw / vh}))" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
+    <image href="${state.mapView === "minimap" && m.minimap ? m.minimap : m.image}" width="${m.size[0]}" height="${m.size[1]}" preserveAspectRatio="none"/><g id="mapover"></g></svg>`;
   const svg = $("mapview").querySelector("svg");
   svg.addEventListener("click", ev => {
     const r = svg.getBoundingClientRect();
-    const px = (ev.clientX - r.left) / r.width * m.size[0], py = (ev.clientY - r.top) / r.height * m.size[1];
+    const px = vx + (ev.clientX - r.left) / r.width * vw, py = vy + (ev.clientY - r.top) / r.height * vh;
     const [x, z] = affine(m.p2w, px, py);
     if (!state.mapA || state.mapB) { state.mapA = [x, z]; state.mapB = null; }
     else state.mapB = [x, z];
@@ -672,18 +799,19 @@ function drawMapOver(b) {
   }
   g.innerHTML = h;
   const read = $("mapread");
-  const rings = T(`Orange ring: full damage to ${b.r0.toFixed(0)} m; dashed ring: minimum from ${b.r1.toFixed(0)} m.`,
-    `Помаранчеве коло: повне пошкодження до ${b.r0.toFixed(0)} м; пунктирне: мінімум від ${b.r1.toFixed(0)} м.`);
+  // Under the map, two lines whatever the state: what to do or what was
+  // measured, then the rings' legend. The map never moves.
+  let line;
   if (state.mapA && state.mapB) {
     const [x1, z1] = state.mapA, [x2, z2] = state.mapB;
     const flat = Math.hypot(x2 - x1, z2 - z1);
     const dh = groundAt(m, x2, z2) - groundAt(m, x1, z1);
     const slant = Math.hypot(flat, dh), sign = dh >= 0 ? "+" : "−";
-    read.innerHTML = T(`Shooter → target: <b>${slant.toFixed(1)} m</b> (${flat.toFixed(1)} m across, ${sign}${Math.abs(dh).toFixed(1)} m height). ${rings} Click again to start over.`,
-      `Стрілець → ціль: <b>${slant.toFixed(1)} м</b> (${flat.toFixed(1)} м по горизонталі, ${sign}${Math.abs(dh).toFixed(1)} м по висоті). ${rings} Клікніть ще раз, щоб почати знову.`);
-  } else if (state.mapA) read.innerHTML = T("Now click the target. ", "Тепер клікніть ціль. ") + rings;
-  else read.textContent = T("Click where the shooter stands, then where the target is. The distance goes straight into the calculator.",
-    "Клікніть, де стоїть стрілець, потім — де ціль. Дистанція одразу піде в калькулятор.");
+    line = T(`<b>${slant.toFixed(1)} m</b> (${flat.toFixed(1)} across, ${sign}${Math.abs(dh).toFixed(1)} height). Click again to start over.`,
+      `<b>${slant.toFixed(1)} м</b> (${flat.toFixed(1)} по горизонталі, ${sign}${Math.abs(dh).toFixed(1)} по висоті). Клікніть ще раз, щоб почати знову.`);
+  } else line = state.mapA ? T("Now click the target.", "Тепер клікніть ціль.") : T("Click the shooter, then the target.", "Клікніть стрільця, потім ціль.");
+  read.innerHTML = line + "<br>" + T(`Orange ring: full damage to ${b.r0.toFixed(0)} m; dashed: minimum from ${b.r1.toFixed(0)} m.`,
+    `Помаранчеве коло: повне пошкодження до ${b.r0.toFixed(0)} м; пунктирне: мінімум від ${b.r1.toFixed(0)} м.`);
 }
 // Move the target along the shooter's line until the slant distance is `dist`.
 function slideMapTarget(dist) {
@@ -712,7 +840,7 @@ if (LANG === "uk") {
   document.querySelectorAll("[data-uk]").forEach(n => { n.textContent = n.dataset.uk; });
   document.querySelectorAll("[data-uk-label]").forEach(n => n.setAttribute("aria-label", n.dataset.ukLabel));
 }
-fillWeapons(); fillArmour(); drawDoll(); fillMaps();
+fillWeapons(); fillArmour(); drawDoll(); fillMaps(); fillHealPick();
 if (DATA.stamp) $("source").textContent = T(DATA.stamp, DATA.stamp_uk || DATA.stamp);
 $("dollprev").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) - 1; update(); });
 $("dollnext").addEventListener("click", () => { state.dollShot = (state.dollShot || 1) + 1; update(); });

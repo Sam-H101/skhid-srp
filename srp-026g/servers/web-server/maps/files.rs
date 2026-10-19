@@ -1,0 +1,23 @@
+// Built by srp-026g/scripts/maps-tab/build.py; do not edit. The files maps.html names.
+files! {
+    "maps.js" => "text/javascript; charset=utf-8",
+    "minimap/level_01.webp" => "image/webp",
+    "minimap/level_02.webp" => "image/webp",
+    "minimap/level_03.webp" => "image/webp",
+    "minimap/level_04.webp" => "image/webp",
+    "minimap/level_05.webp" => "image/webp",
+    "minimap/level_06.webp" => "image/webp",
+    "minimap/level_07.webp" => "image/webp",
+    "minimap/level_08.webp" => "image/webp",
+    "minimap/level_09.webp" => "image/webp",
+    "minimap/v011e_level_03.webp" => "image/webp",
+    "minimap/v011e_level_04.webp" => "image/webp",
+    "icons/hud_base.svg" => "image/svg+xml",
+    "icons/hud_battery.svg" => "image/svg+xml",
+    "icons/hud_charger.svg" => "image/svg+xml",
+    "icons/hud_player.svg" => "image/svg+xml",
+    "icons/hud_resupply.svg" => "image/svg+xml",
+    "icons/lifebone.webp" => "image/webp",
+    "icons/onyx.webp" => "image/webp",
+    "icons/spring.webp" => "image/webp",
+}

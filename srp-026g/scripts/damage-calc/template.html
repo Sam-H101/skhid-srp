@@ -1,4 +1,4 @@
-<title>Survarium Damage Calculator</title>
+<title>Damage calculator</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Sans+Narrow:wght@400;700&family=PT+Sans:ital,wght@0,400;0,700;1,400&family=PT+Mono&display=swap">
@@ -50,7 +50,7 @@
   --doll: #343a33; --doll-hi: #e07a43; --doll-cover: #59654c; color-scheme: dark }
 
 * { box-sizing: border-box }
-body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 20px 48px }
 .wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 22px }
@@ -64,12 +64,19 @@ header.top { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; j
   border-bottom: 2px solid var(--ink); padding-bottom: 12px }
 .stamp { font-family: var(--font-data); font-size: .78rem; color: var(--ink-3); text-align: right }
 
-.duel { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); gap: 0 }
+.duel { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); gap: 0;
+  grid-template-areas: "shooter vs target" "map map map" }
+#shooter { grid-area: shooter } .vs { grid-area: vs } #target { grid-area: target } .duel > .mapsec { grid-area: map; margin-top: 22px }
 .vs { display: flex; align-items: center; justify-content: center; position: relative }
 .vs::before { content: ""; position: absolute; inset: 0 50%; border-left: 1px dashed var(--rule) }
 .vs span { position: relative; background: var(--bg); font: 700 .8rem var(--font-display); letter-spacing: .12em;
   color: var(--ink-3); padding: 6px 0; writing-mode: vertical-rl }
-@media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr) } .vs { height: 34px }
+/* A wide screen: the map between shooter and target */
+@media (min-width: 1700px) { .wrap { max-width: 1840px }
+  .duel { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-areas: "shooter map target"; column-gap: 22px }
+  .vs { display: none } .duel > .mapsec { margin-top: 0; align-content: start }
+  .duel > .mapsec .maphead { display: grid; justify-content: stretch } }
+@media (max-width: 900px) { .duel { grid-template-columns: minmax(0, 1fr); grid-template-areas: "shooter" "vs" "target" "map" } .vs { height: 34px }
   .vs::before { inset: 50% 0; border-left: 0; border-top: 1px dashed var(--rule) } .vs span { writing-mode: horizontal-tb; padding: 0 10px } }
 
 .side { background: var(--panel); border: 1px solid var(--rule); padding: 16px; display: grid; gap: 14px; align-content: start; min-width: 0 }
@@ -99,18 +106,20 @@ h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: 
 .note { font-size: .8rem; color: var(--ink-3) }
 /* Modification rows, as the lobby draws them */
 .fxrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px }
+#healpick .lbl { margin-right: 6px }
 .fxrow .chips { margin-left: 8px }
 .fxtile { width: 86px; height: 46px; padding: 2px; border: 1px solid var(--rule); background: var(--bg); cursor: pointer; opacity: .4; display: grid; place-items: center; font: .78rem var(--font-body); color: var(--ink-2) }
 .fxtile img { width: 100%; height: 100%; object-fit: contain; display: block }
 .fxtile:hover { opacity: .75 }
 .fxtile[aria-pressed=true] { opacity: 1; border-color: var(--accent); background: var(--panel) }
 .fxtile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
-.gamemods { background: var(--hud-bg); padding: 8px 12px; display: grid; gap: 4px; font: 700 14px/1.2 "Carlito", Calibri, var(--font-body); color: var(--hud-ink); text-shadow: 0 1px 4px #000 }
-.gmrow { display: grid; grid-template-columns: 31px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 31px }
+.gamemods { background: var(--hud-bg); padding: 8px 12px; display: grid; grid-template-columns: 31px max-content minmax(0, 1fr); align-items: center; gap: 4px 10px; font: 700 14px/1.2 "Carlito", Calibri, var(--font-body); color: var(--hud-ink); text-shadow: 0 1px 4px #000 }
+.gmrow { display: contents }
+.gmrow > * { min-height: 31px; display: flex; align-items: center }
+.gmrow > .gico { display: block }
 .gico { width: 31px; height: 31px; object-fit: contain; display: block }
-.gtext small { font-weight: 400; color: var(--ink-3); text-shadow: none }
 .gv.good { color: var(--mod-good) } .gv.bad { color: var(--mod-bad) }
-.gsteps { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; margin-left: 4px }
+.gsteps { flex-wrap: wrap; gap: 4px }
 .gstep { font: inherit; text-shadow: inherit; min-width: 44px; min-height: 26px; padding: 2px 6px; cursor: pointer;
   background: transparent; color: var(--hud-ink); border: 1px solid var(--hud-line); opacity: .7 }
 .gstep:hover { opacity: 1 }
@@ -151,14 +160,25 @@ h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: 
 .slot .aim:hover .art img { transform: scale(1.06) }
 .slot .aim:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
 .slot .art img { transition: transform .12s }
-.slot .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px }
+.slot .head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; min-width: 0 }
+/* A card's text never runs past it: what does not fit is not shown. */
+.slot > *, .slot .aim > * { min-width: 0 }
+.slot .head > *, .slot .wpick-btn .n { overflow: hidden; white-space: nowrap; text-overflow: clip; min-width: 0 }
+.slot .head .lbl { flex: none }
 .slot .lbl { font-size: .68rem }
 .slot .v { font: .8rem var(--font-data); color: var(--ink-2) }
 .slot.hit .v { color: var(--accent) }
 .slot .art { height: 72px; display: flex; align-items: center; justify-content: center }
 .slot .art img { max-height: 72px; max-width: 100%; object-fit: contain }
 .slot .art .empty { font: .78rem var(--font-body); color: var(--ink-3) }
-.slot select { font-size: .82rem; padding: 4px 6px }
+.slot .wpick-btn { min-height: 30px; padding: 2px 6px; font-size: .82rem; min-width: 0 }
+.slot .wpick-btn img { display: none }
+.slot:has(.wpick-pop:not([hidden])) { z-index: 30 }
+.aitem { display: flex; align-items: center; gap: 10px }
+.aitem img { width: 54px; height: 40px; object-fit: contain; flex: none }
+.aprot { display: flex; flex-wrap: wrap; gap: 2px 12px; font: .8rem var(--font-data); color: var(--ink-2) }
+.aprot b { color: var(--ink) }
+.aprot .here, .aprot .here b { color: var(--accent); font-weight: 700 }
 .wcard { display: flex; gap: 12px; align-items: center; min-height: 64px }
 .wcard img { height: 64px; width: auto; max-width: 48%; object-fit: contain }
 .wcard img#aicon { height: 46px }
@@ -206,15 +226,19 @@ th, td { padding: 6px 10px; border-bottom: 1px solid var(--rule); text-align: le
 th { font: 700 .72rem var(--font-display); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); background: var(--bg); position: sticky; top: 0 }
 th[data-k] { cursor: pointer } th[data-k]:hover { color: var(--ink) }
 td.n { text-align: right }
-#cmp th + th, #cmp td + td { border-left: 1px solid var(--rule) }
-#cmp td.wname { padding-block: 3px }
+.tablebox th + th, .tablebox td + td { border-left: 1px solid var(--rule) }
+#cmp td.wname, #heal td.hname { padding-block: 3px }
+#heal td.hname .wico { margin-left: 0 }
+#fulltime tr.me td { background: color-mix(in srgb, var(--accent) 14%, transparent) }
+#heal td.hname:not(:has(img)) { padding-left: 72px }
 /* The weapon picker: a list with the lobby icons (a <select> cannot show them) */
 .wpick { position: relative }
 .wpick-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 35px; padding: 3px 8px; font: inherit; color: var(--ink);
   background: var(--bg); border: 1px solid var(--rule); border-radius: 2px; cursor: pointer; text-align: left }
 .wpick-btn .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .wpick-btn::after { content: "▾"; color: var(--ink-3); font-size: .8rem }
-.wpick img { width: 54px; height: 26px; object-fit: contain; flex: none }
+.wpick img, .wpick .noimg { width: 54px; height: 26px; object-fit: contain; flex: none }
+.slot .wpick-btn .noimg { display: none }
 .wpick-pop { position: absolute; z-index: 20; left: 0; top: calc(100% + 2px); width: min(max(100%, 360px), calc(100vw - 32px));
   background: var(--panel); border: 1px solid var(--rule); box-shadow: 0 8px 28px rgba(0, 0, 0, .28) }
 .wpick-search { display: block; width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 0; border-bottom: 1px solid var(--rule); padding: 7px 10px }
@@ -254,8 +278,8 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
 .maphead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 10px }
 .maptools { align-items: end }
 .maptools .field { flex: 0 1 260px }
-.mapview { overflow: auto; max-height: min(82vh, 900px); border: 1px solid var(--rule); background: var(--hud-bg); position: relative }
-.mapview svg { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation }
+.mapview { border: 1px solid var(--rule); background: var(--hud-bg); position: relative }
+.mapview svg { display: block; margin: 0 auto; max-width: 100%; height: auto; cursor: crosshair; touch-action: manipulation }
 .mapview .ring { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke }
 .mapview .ring.full { stroke: var(--accent); }
 .mapview .ring.min { stroke: #fff; stroke-dasharray: 8 6; opacity: .8 }
@@ -263,6 +287,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
 .mapview .pt { stroke: #000; stroke-width: 2; vector-effect: non-scaling-stroke }
 .mapview .pt.a { fill: var(--accent) } .mapview .pt.b { fill: #fff }
 .mapview text { font: 700 34px "Carlito", var(--font-display); fill: #fff; paint-order: stroke; stroke: #000; stroke-width: 6px; stroke-linejoin: round }
+.mapread { margin: 0; min-height: 3em }
 .mapread b { font-family: var(--font-data) }
 .formula { margin: 0; padding: 12px 14px; font: .88rem/1.7 var(--font-data); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); overflow-x: auto; white-space: pre }
 .explain { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 14px 26px }
@@ -275,7 +300,7 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
 <div class="wrap">
   <header class="top">
     <div>
-      <h1 data-uk="Калькулятор шкоди Survarium">Survarium Damage Calculator</h1>
+      <h1 data-uk="Калькулятор шкоди">Damage calculator</h1>
     </div>
     <div class="stamp"><span id="source">client 0.26g</span> · build 2777<br><span data-uk="здоров'я ×100 (тіло 100, голова 40)">health shown ×100 (body 100, head 40)</span></div>
   </header>
@@ -321,19 +346,21 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
       <div class="more" id="amods-box"><h3 class="sub" data-uk="Бонуси броні">Armour bonuses</h3><div class="mods" id="amods"></div></div>
       <details class="more" id="tfx-box" open><summary data-uk="Артефакти й препарати">Artefacts &amp; drugs</summary><div class="mods" id="tfx"></div></details>
     </section>
+
+    <section class="mapsec" aria-labelledby="h-map">
+      <div class="maphead">
+        <h2 id="h-map" data-uk="Виміряти на мапі">Measure on a map</h2>
+        <div class="row maptools">
+          <div class="field"><label for="mapsel" data-uk="Мапа">Map</label><select id="mapsel"></select></div>
+          <span class="chips" id="mapviews" role="group"></span>
+          <button type="button" class="chip" id="mapclear" data-uk="Очистити точки">Clear points</button>
+        </div>
+      </div>
+      <div class="mapview" id="mapview"></div>
+      <p class="note mapread" id="mapread"></p>
+    </section>
   </div>
 
-  <section class="mapsec" aria-labelledby="h-map">
-    <div class="maphead">
-      <h2 id="h-map" data-uk="Виміряти на мапі">Measure on a map</h2>
-      <div class="row maptools">
-        <div class="field"><label for="mapsel" data-uk="Мапа">Map</label><select id="mapsel"></select></div>
-        <button type="button" class="chip" id="mapclear" data-uk="Очистити точки">Clear points</button>
-      </div>
-    </div>
-    <p class="note" style="margin:0" id="mapread">Click where the shooter stands, then where the target is. The distance goes straight into the calculator.</p>
-    <div class="mapview" id="mapview"></div>
-  </section>
 
   <section class="result" aria-labelledby="h-result">
     <div style="display:grid;gap:14px;min-width:0">
@@ -366,6 +393,13 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
   <section style="display:grid;gap:12px">
     <h2 data-uk="Формула">Formula</h2>
     <pre class="formula" id="explain"></pre>
+  </section>
+
+  <section style="display:grid;gap:10px">
+    <h2 data-uk="Лікування">Healing</h2>
+    <div class="fxrow" id="healpick"></div>
+    <div class="tablebox"><table id="heal"></table></div>
+    <div class="tablebox"><table id="fulltime"></table></div>
   </section>
 </div>
 

@@ -55,8 +55,10 @@ SECTION_VA = IMAGE_BASE + SECTION_RVA           # 0x49A000, the CAVE of the .bin
 SECTION_CHARACTERISTICS = 0x60000020            # code, execute, read (as .text)
 
 # launcher_values_026g.bin: the code, then three zero-filled ASCII slots.
-BIN_SIZE = 560
+BIN_SIZE = 603
 SLOTS = {"exe_name": (304, 32), "arguments": (336, 160), "server": (496, 64)}
+INSTALL_STATUS_AT = 560
+INSTALL_STATUS = 0x16D06
 
 # registry_key::get_string: push ebp / mov ebp,esp / push ecx / lea eax,[esi+esi]
 # become a jump to the code of the new section and two nops; the code comes
@@ -75,6 +77,11 @@ ENTER_KEY_DONE = 0x14F26
 
 # (VA, original bytes, new bytes, what): code and read-only data, in place.
 PATCHES = [
+    # A State message leaves id 2 in the install-info field. The native
+    # status formatter only has entries for ids 6..9; guard its stack index.
+    (INSTALL_STATUS, "8b86ec510000",
+     (b"\xe9" + struct.pack("<i", SECTION_VA + INSTALL_STATUS_AT - INSTALL_STATUS - 5) + b"\x90").hex(),
+     "refresh_status: validate install-info id before selecting its format"),
     # 1. Run where it is. The original launcher asks its updater to copy both
     # of them to <install>\temp, starts the copy and ends; only the copy shows
     # a window.

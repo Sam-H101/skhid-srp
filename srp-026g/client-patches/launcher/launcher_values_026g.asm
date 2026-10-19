@@ -195,3 +195,22 @@ arguments:
         times ARGUMENTS_SIZE db 0
 server:
         times SERVER_SIZE db 0
+
+; refresh_status indexes four install format strings with pipe ids 6..9.
+; State messages set the id to 2. A filename left by an earlier install
+; then made the next install read a string id from unrelated stack locals.
+install_status:
+        mov     eax, [esi+0x51EC]
+        cmp     eax, 6
+        jb      .generic
+        cmp     eax, 9
+        ja      .generic
+        jmp     0x16D0C
+.generic:
+        ; Bound and temporary destination are already on the stack. Use
+        ; the actual status buffer, as the native generic path at 16CED.
+        lea     eax, [esp+0x38]
+        mov     [esp], eax
+        push    dword 0xA9
+        call    0x137A8
+        jmp     0x16D4B

@@ -481,6 +481,35 @@ found: `../../docs/notes/launcher.md`.
   sixth entry, `SizeOfImage` grows by a page and the PE checksum is
   recomputed.
 
+### 13. Install-status transition crash
+
+The 2026-10-18 launcher dump stops in the invalid-parameter handler with
+`ERANGE` (34), called by `wcscat_s` at `0x25DC9` from `refresh_status`
+(`0x16A94`). The 128-character status buffer contains a Russian CPU warning
+followed by part of the remaining-time suffix.
+
+The cause is an unchecked string-table index at `0x16D2C`. The launcher
+keeps the last pipe message ID at `+0x51EC`, including `2` for a state
+message. If an earlier install left a filename at `+0x4FE4`, entering
+INSTALLING can render that filename before a new install-info message
+arrives. The formatter expects IDs 6..9 and otherwise reads an unrelated
+stack local as a resource ID. This can select long warning text and abort
+while appending the ETA.
+
+The six bytes at `0x16D06` now jump to `install_status` at offset 560 in
+`.skhid`. IDs 6..9 retain the native format; other IDs take the native
+generic installation message (`0xA9`). The stub uses relative branches
+and calls, so rebasing needs no new relocations.
+
+`check_install_status_026g.py ORIGINAL_survarium_launcher.exe` executes the
+original and patched selector plus the native `wcscat_s` under Unicorn.
+It reproduces the Russian overflow, then checks 2,580 cases across all
+five original languages and two image bases, plus the empty-filename
+path. Resource strings come from the original executable. The test stubs
+resource loading and the single `%s` label formatter; it does not run the
+launcher UI or perform an update. `selftest_launcher_026g.py` also checks
+the assembly, patch boundaries, PE layout, checksum and relocations.
+
 ## The pipe, in short
 
 The launcher makes `\\.\pipe\vostok_updater_pipe-Survarium`, then starts the

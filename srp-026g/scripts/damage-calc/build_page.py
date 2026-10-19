@@ -6,8 +6,9 @@
 --site writes the Skhid website's copy (srp-026g/servers/web-server/damage/):
 damage.html, with {{LANG}} and <!--SITE-HEADER--> for the server to fill,
 calc.js (the data, engine, rules and UI), fonts/ and maps/ (the top-down
-renders, assets/maps/README.md). Nothing inline runs and nothing comes from
-elsewhere: the site's Content-Security-Policy allows its own files only.
+renders, assets/maps/README.md); the maps' names and minimaps come from the
+Maps tab's build in the same folder (srp-026g/scripts/maps-tab: run it
+first). Nothing inline runs and nothing comes from elsewhere: the site's Content-Security-Policy allows its own files only.
 Every file the page loads is named with ?v=<its hash>, so a browser may keep
 it for good and still gets the new one after a rebuild.
 
@@ -96,7 +97,7 @@ def map_name_uk(key):
 data["maps"] = {key: {"name": m["name"], "name_uk": map_name_uk(key),
                       "image": ("/damage/maps/" if site else "maps/") + m["image"], "size": m["image_size_px"],
                       "mpp": m["metres_per_pixel"], "p2w": m["pixel_to_world_affine"], "w2p": m["world_to_pixel_affine"],
-                      "bounds": m["world_bounds"],
+                      "bounds": m["world_bounds"], "play": m.get("play_area_px"),
                       "elevation": {k: m["elevation"][k] for k in ("grid", "cell_m", "heights")} if m.get("elevation") else None}
                 for key, m in maps.items()}
 if icons_dir:
@@ -118,6 +119,17 @@ if site:
     faces = "\n".join(f'@font-face {{ font-family: "{family}"; font-weight: {weight}; font-style: {style}; '
                        f'font-display: swap; src: url("/damage/fonts/{file}.woff2?v={version(fonts[file])}") format("woff2"); }}'
                        for family, weight, style, file in FONTS)
+    # The Maps tab's build (srp-026g/scripts/maps-tab, run first): every
+    # map's name from the game's modes and its HUD minimap, in its order.
+    tab = os.path.join(out_path, "..", "maps", "maps.js")
+    if os.path.isfile(tab):
+        with open(tab, encoding="utf-8") as f:
+            tab_maps = json.loads(re.search(r"const MAPS = (.*);\n", f.read()).group(1))["maps"]
+        order = [t["key"] for t in tab_maps if t["key"] in data["maps"]]
+        data["maps"] = {key: data["maps"][key] for key in order + [k for k in data["maps"] if k not in order]}
+        for t in tab_maps:
+            if t["key"] in data["maps"]:
+                data["maps"][t["key"]].update(name=t["name"]["en"], name_uk=t["name"]["uk"], minimap=t["minimap"])
     images = {}
     for key, m in data["maps"].items():
         name = m["image"].rsplit("/", 1)[1]

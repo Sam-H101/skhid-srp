@@ -10,7 +10,8 @@ around (POSX, POSY) exactly like the 0.26g HUD (hud.swf Minimap.setProps):
 
 so +x is to the right and +z is up. Writes OUT_DIR/<KEY>-render.png (RGB),
 OUT_DIR/<KEY>-height.npy (top surface height per pixel, NaN where empty) and
-OUT_DIR/<KEY>-ground.npy (terrain-model height per pixel).
+OUT_DIR/<KEY>-ground.npy (terrain-model height per pixel) and
+OUT_DIR/<KEY>-solid.npy (the top of what is not alpha-tested: no foliage).
 
 The rasterizer (subdivide/rasterize) is copied from the playable-map-pack's
 render_minimap.py.
@@ -25,7 +26,7 @@ import sys
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'gen-data-026g'))  # bincfg
 import bincfg  # noqa: E402
 
 
@@ -251,6 +252,7 @@ def main():
     x0 = a.posx - a.size; ztop = a.posy + a.size
     zbuf = np.full(W * W, -np.inf); col = np.zeros((W * W, 3), np.float32)
     gbuf = np.full(W * W, -np.inf)
+    sbuf = np.full(W * W, -np.inf)
     mats = Materials(root)
     ntri = 0
     for tri, uvw, tex, flat, atest, terrain, blend in surfaces(root, project, mats, ceiling):
@@ -296,9 +298,13 @@ def main():
         if terrain:
             gb = h > gbuf[p]
             gbuf[p[gb]] = h[gb]
-    zbuf[~np.isfinite(zbuf)] = np.nan; gbuf[~np.isfinite(gbuf)] = np.nan
+        if not atest:
+            sb = h > sbuf[p]
+            sbuf[p[sb]] = h[sb]
+    zbuf[~np.isfinite(zbuf)] = np.nan; gbuf[~np.isfinite(gbuf)] = np.nan; sbuf[~np.isfinite(sbuf)] = np.nan
     np.save(out / f'{a.key}-height.npy', zbuf.reshape(W, W).astype(np.float32))
     np.save(out / f'{a.key}-ground.npy', gbuf.reshape(W, W).astype(np.float32))
+    np.save(out / f'{a.key}-solid.npy', sbuf.reshape(W, W).astype(np.float32))
     np.save(out / f'{a.key}-albedo.npy', col.reshape(W, W, 3).astype(np.uint8))
     print(json.dumps({'key': a.key, 'width': W, 'triangles': ntri, 'ceiling': ceiling,
                       'covered': float(np.isfinite(zbuf).mean())}))
