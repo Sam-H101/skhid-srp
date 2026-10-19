@@ -52,7 +52,9 @@ from PIL import Image
 HERE = Path(__file__).resolve().parent
 SRP = HERE.parents[1]
 sys.path.insert(0, str(SRP / "scripts" / "gen-data-026g"))
+sys.path.insert(0, str(SRP / "scripts" / "released-game"))
 import bincfg  # noqa: E402
+from released import LIST, die, extract, offered, revision as revision_of, write_built_from  # noqa: E402
 
 MODES = (2, 3, 4)
 TYPES = {"js": "text/javascript; charset=utf-8", "webp": "image/webp", "svg": "image/svg+xml"}
@@ -67,47 +69,13 @@ RENDERS = SRP / "servers" / "web-server" / "damage" / "maps"
 RENDER_TABLE = SRP / "scripts" / "damage-calc" / "assets" / "maps" / "maps.json"
 
 
-def die(message):
-    sys.exit(f"build.py: {message}")
-
-
 def version(blob):
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def patch_rows(list_path):
-    rows = []
-    for line in Path(list_path).read_text().splitlines():
-        if not line.strip() or line.startswith("#"):
-            continue
-        name, sha, size, *_ = line.split("\t")
-        rows.append((name, sha, int(size)))
-    return rows
-
-
-def extract(args, rows, raw):
-    """Every file the tab reads, the stock db first, each patch over it."""
-    archives = [Path(args.stock)]
-    for name, sha, size in rows:
-        path = Path(args.with_patch) if args.with_patch and name == Path(args.with_patch).name else Path(args.patches) / name
-        if not path.is_file():
-            die(f"{path}: no such file (a row of {args.list})")
-        if path.stat().st_size != size or sha256_file(path) != sha:
-            die(f"{path}: not the file {args.list} names (size or sha256)")
-        archives.append(path)
-    wanted = ["client_project", "gameplay/game_modes/", "gameplay/db_static_dictionaries",
-              "localization/english/localization", "localization/ukrainian/localization", "flash_movies/hud.swf"]
-    for archive in archives:
-        for what in wanted:
-            subprocess.run([args.dbgrab, str(archive), "get", what, str(raw)], check=True, capture_output=True)
+# What the tab reads of the game.
+WANTED = ["client_project", "gameplay/game_modes/", "gameplay/db_static_dictionaries",
+          "localization/english/localization", "localization/ukrainian/localization", "flash_movies/hud.swf"]
 
 
 def load(raw, path):
@@ -240,12 +208,7 @@ def objects(project, artefact_keys):
     """What the tab shows of one project."""
     so = project.get("server_objects") or {}
     spawners = so.get("victory_item_spawners") or []
-    spawner_at = {o.get("full_name"): i for i, o in enumerate(spawners)}
-    stations = []
-    for o in so.get("victory_item_spawn_points") or []:
-        attached = [spawner_at[s["name"]] for s in (o.get("attached_objects") or {}).get("spawners") or []
-                    if s["name"] in spawner_at]
-        stations.append(xzy(o) + [attached])
+    stations = [xzy(o) for o in so.get("victory_item_spawn_points") or []]
     client = project.get("client_objects") or []
     kinds_of = defaultdict(set)
     for o in client:
@@ -293,7 +256,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--stock", required=True)
     ap.add_argument("--patches", required=True, help="the folder with the list's resources.db.patch_<n>")
-    ap.add_argument("--list", default=str(SRP.parent / "release" / "patches.tsv"))
+    ap.add_argument("--list", default=str(LIST))
     ap.add_argument("--with", dest="with_patch", metavar="PATCH",
                     help="the next release's resources.db.patch_<n>, not in the list yet")
     ap.add_argument("--dbgrab", required=True)
@@ -303,13 +266,8 @@ def main():
     ap.add_argument("--allow-missing-renders", action="store_true", help="a map without a render shows its minimap only")
     ap.add_argument("--work", help="keep the extracted files here and reuse them (while working on the page)")
     args = ap.parse_args()
-    rows = patch_rows(args.list)
-    if args.with_patch:
-        extra = Path(args.with_patch)
-        if any(name == extra.name for name, _, _ in rows):
-            die(f"--with {extra.name}: in {args.list} already")
-        rows.append((extra.name, sha256_file(extra), extra.stat().st_size))
-    revision = max((int(n.rsplit("_", 1)[1]) for n, _, _ in rows), default=0)
+    rows = offered(args.list, args.with_patch)
+    revision = revision_of(rows)
     out = Path(args.out)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -317,7 +275,7 @@ def main():
         raw = tmp / "raw"
         if not (args.work and raw.is_dir()):
             raw.mkdir(parents=True, exist_ok=True)
-            extract(args, rows, raw)
+            extract(args.dbgrab, args.stock, rows, args.patches, WANTED, raw)
         texts = localization(raw)
         text = lambda key: {lang: texts[lang].get(key, key) for lang in texts}
         dictionary = load(raw, "gameplay/db_static_dictionaries")
@@ -373,7 +331,11 @@ def main():
                 rules = mm["rules"]
                 if not rules & {GATHER, TIMED}:
                     seen["spawners"], seen["containers"] = [], []
-                if TIMED not in rules:
+                if TIMED in rules:
+                    # The batteries come out of the chargers: their spawn
+                    # points are the chargers' own boxes, not places to show.
+                    seen["spawners"] = []
+                else:
                     seen["stations"] = []
                 p = mm["parameters"]
                 modes.append({"mode": mode_id, "ids": sorted(mm["ids"]), "name": text(mm["mode_name"]),
@@ -448,9 +410,7 @@ def main():
         "files! {\n" + "".join(
             f'    "{f}" => "{TYPES[f.rsplit(".", 1)[1]]}",\n' for f in served)
         + "}\n")
-    (out / "built-from.tsv").write_text(
-        "# The patches the Maps tab was built from (srp-026g/scripts/maps-tab/build.py): name, sha256.\n"
-        + "".join(f"{name}\t{sha}\n" for name, sha, _ in rows))
+    write_built_from(out / "built-from.tsv", rows, "the Maps tab (srp-026g/scripts/maps-tab/build.py)")
     points = sum(len(mo["respawn"]) + len(mo["spawners"]) + len(mo["stations"]) + len(mo["containers"])
                  for m in data_maps for mo in m["modes"]) + sum(len(m["artefacts"]) for m in data_maps)
     print(f"{out}: revision {revision}, {len(data_maps)} maps, {points} points, maps.js {len(script) / 1024:.0f} KB")

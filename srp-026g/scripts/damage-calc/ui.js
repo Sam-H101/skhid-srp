@@ -73,7 +73,8 @@ function fillWeapons() {
 // as if it had been used. groups: [[label or null, [[key, text, note]]]].
 function makePicker(name, select, groups, searchable) {
   const host = $(name); host.innerHTML = "";
-  const icon = k => { const src = DATA.icons && DATA.icons[k]; const img = el("img", { alt: "" }); if (src) img.src = src; return img; };
+  // No icon (an empty slot's "none"): an empty space, not a broken image.
+  const icon = k => { const src = DATA.icons && DATA.icons[k]; return src ? el("img", { alt: "", src }) : el("span", { class: "noimg" }); };
   const btn = el("button", { type: "button", class: "wpick-btn", id: name + "-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
   const list = el("div", { class: "wpick-list", role: "listbox", id: name + "-list", tabindex: "-1" });
   const search = searchable ? el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": name + "-list", "aria-expanded": "true",

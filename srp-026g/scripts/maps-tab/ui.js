@@ -174,12 +174,6 @@
     const team = t => (t === 0 ? "var(--team0)" : t === 1 ? "var(--team1)" : "var(--team-x)");
     const teamName = t => (t === 0 || t === 1 ? T(`team ${t + 1}`, `команда ${t + 1}`) : T("any team", "будь-яка команда"));
     const tip = text => svgEl("title", {}, text);
-    if (state.on.stations && state.on.spawners) {
-      for (const [x, z, , links] of mo.stations) for (const i of links) {
-        const [sx, sz] = mo.spawners[i];
-        kids.push(svgEl("line", { x1: x, y1: -z, x2: sx, y2: -sz, stroke: "var(--link)", "stroke-width": 1.2 * u, "stroke-dasharray": `${3 * u} ${3 * u}`, opacity: 0.8 }));
-      }
-    }
     if (state.on.resupply) for (const [x, z, , t] of mo.resupply)
       kids.push(svgEl("g", { class: "mk" }, hud("resupply", x, -z, MAPS.hud.resupply.h, u, tintOf(t)), tip(`${T("Ammo stash", "Поповнення амуніції")}, ${teamName(t)}`)));
     if (state.on.containers) for (const [x, z, , t] of mo.containers)

@@ -1,4 +1,4 @@
-# The patches the Maps tab was built from (srp-026g/scripts/maps-tab/build.py): name, sha256.
+# The patches the Maps tab (srp-026g/scripts/maps-tab/build.py) was built from: name, sha256.
 resources.db.patch_12	2b771e4b2040707434bb17aa27b1965aacba2ca355eb38634f504b61d6c8fab3
 resources.db.patch_14	60a69dcc6b661d09c3143fb74d6806f6f1ba6d465af3c29bfa669a58ce9a404c
 resources.db.patch_17	807b0e784c679a41009940d56ee76919d2bb5f14559154b927faf43405624081

@@ -26,7 +26,7 @@ served by `servers/web-server/src/maps.rs`.
   - a live release refuses a Maps tab built from other patches than it offers.
 - The calculator's look; English and Ukrainian; names from the game's localization. Little text.
 - A mode shows only what its rules use. Chargers appear in the timed battery mode only, with "N active"
-  from the mode's `spawn_points_count`.
+  from the mode's `spawn_points_count`; that mode shows no battery spawns (its batteries come out of the chargers).
 - Zoom and drag (wheel, two fingers, buttons). The chosen map and mode are in the address (`#level_01/3`).
 - Maps in one frame (a port and its original, such as the three Vostoks) start on the same view, and switching
   between them keeps the zoom: nothing jumps.

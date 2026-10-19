@@ -10,9 +10,9 @@ never-rendered pixels, ppm pixels per metre. Looks:
            albedo desaturated by 35 % and stretched (washed, grey).
   natural  linear-light: a warm sun (north-west, 42 degrees) with soft cast
            shadows whose penumbra grows with distance, a cool sky term with
-           ambient occlusion from the height map, auto exposure on the play
-           area, a filmic tone curve, a partial grey-world white balance and a
-           gentle saturation/warmth grade.
+           ambient occlusion from the height map, a filmic tone curve with the
+           exposure that puts the play area's median at the look's target, and
+           a gentle saturation/warmth grade.
   vivid    natural with deeper shadows and occlusion, more saturation and
            contrast, warmer light.
   soft     natural with light shadows and more sky: an airy, low-contrast
@@ -24,12 +24,12 @@ from scipy import ndimage
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
 LOOKS = {
-    'natural': dict(sun=(1.0, 0.95, 0.86), sky=(0.78, 0.85, 1.0), sun_k=1.0, sky_k=0.45, shadow=0.82,
-                    ao=0.6, sat=1.12, warm=(1.03, 1.0, 0.965), wb=0.35, key=0.19, contrast=0.0),
-    'vivid': dict(sun=(1.0, 0.92, 0.80), sky=(0.74, 0.83, 1.0), sun_k=1.05, sky_k=0.38, shadow=0.9,
-                  ao=0.75, sat=1.28, warm=(1.05, 1.0, 0.94), wb=0.3, key=0.18, contrast=0.12),
+    'natural': dict(sun=(1.0, 0.96, 0.9), sky=(0.8, 0.86, 1.0), sun_k=1.0, sky_k=0.45, shadow=0.8,
+                    ao=0.6, sat=1.22, warm=(1.02, 1.0, 0.98), target=0.43, contrast=0.04),
+    'vivid': dict(sun=(1.0, 0.95, 0.86), sky=(0.76, 0.84, 1.0), sun_k=1.05, sky_k=0.38, shadow=0.86,
+                  ao=0.72, sat=1.38, warm=(1.03, 1.0, 0.97), target=0.42, contrast=0.12),
     'soft': dict(sun=(1.0, 0.97, 0.92), sky=(0.82, 0.87, 1.0), sun_k=0.85, sky_k=0.6, shadow=0.55,
-                 ao=0.45, sat=1.08, warm=(1.02, 1.0, 0.98), wb=0.35, key=0.21, contrast=-0.05),
+                 ao=0.45, sat=1.12, warm=(1.02, 1.0, 0.98), target=0.47, contrast=-0.03),
 }
 
 
@@ -94,9 +94,6 @@ def shade_rgb(alb, hf, area, empty, ppm, look='natural'):
     p = LOOKS[look]
     sel = area & ~empty if (area & ~empty).any() else ~empty
     a = (np.clip(alb, 0, 255) / 255.0) ** 2.2                      # linear albedo
-    # partial grey-world white balance over the play area (olive/blue casts)
-    mean = a[sel].mean(0)
-    a = a * (1 + p['wb'] * (mean.mean() / np.maximum(mean, 1e-4) - 1))
     px = 1.0 / ppm
     gy, gx = np.gradient(ndimage.gaussian_filter(hf, 1.0), px)
     n = np.stack([-gx, np.ones_like(gx), gy], -1)
@@ -109,11 +106,15 @@ def shade_rgb(alb, hf, area, empty, ppm, look='natural'):
     sky = 0.5 + 0.5 * n[..., 1]
     light = (np.array(p['sun']) * (p['sun_k'] * lam * (1 - p['shadow'] * shadow) * (0.75 + 0.25 * ao_k))[..., None]
              + np.array(p['sky']) * (p['sky_k'] * sky * ao_k)[..., None])
-    rgb = a * light
-    lum = rgb @ LUMA
-    rgb *= p['key'] / max(float(np.median(lum[sel])), 1e-4)        # auto exposure
-    rgb = _aces(rgb * 1.6)
-    rgb = rgb ** (1 / 2.2)
+    lin = a * light
+    # exposure: the play area's median brightness after the tone curve is the look's target
+    med = float(np.median((lin @ LUMA)[sel]))
+    lo, hi = -4.0, 4.0
+    for _ in range(14):
+        ev = (lo + hi) / 2
+        out = _aces(med * 2 ** ev) ** (1 / 2.2)
+        lo, hi = (ev, hi) if out < p['target'] else (lo, ev)
+    rgb = _aces(lin * 2 ** ev) ** (1 / 2.2)
     if p['contrast']:
         rgb = np.clip(0.5 + (rgb - 0.5) * (1 + p['contrast']), 0, 1)
     l = (rgb @ LUMA)[..., None]

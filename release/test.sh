@@ -1124,6 +1124,12 @@ grep -v patch_13 "$T/patches.tsv" >"$T/maps-old.tsv"
 maps_built "$T/maps-old.tsv"
 expect_refused "release: a Maps tab built from other patches than offered" \
     "the Maps tab (srp-026g/servers/web-server/maps/built-from.tsv on main) was built from other patches than this release offers" "$here/release.sh"
+mkdir -p "$src/servers/web-server/damage"
+grep -v '^#' "$T/maps-old.tsv" | cut -f1,2 >"$src/servers/web-server/damage/built-from.tsv"
+maps_built "$T/patches.tsv"
+expect_refused "release: a calculator built from other patches than offered" \
+    "the calculator (srp-026g/servers/web-server/damage/built-from.tsv on main) was built from other patches than this release offers" "$here/release.sh"
+rm "$src/servers/web-server/damage/built-from.tsv"
 maps_built "$T/patches.tsv"
 expect_refused "release --resources: a Maps tab built without the new patch" "build.py --with $T/r14/resources.db.patch_14" \
     "$here/release.sh" --resources "$T/r14/resources.db.patch_14"

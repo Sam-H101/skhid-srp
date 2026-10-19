@@ -5,8 +5,8 @@ The website's `/maps` (`srp-026g/servers/web-server/src/maps.rs`, spec in
 points, each kind toggled on its own:
 
 - respawn points, by team;
-- battery spawns and chargers (charging stations), plus a line from each
-  charger to the battery spawns it feeds;
+- battery spawns (the battery mode) and chargers (the mode with chargers:
+  its batteries come out of them, so it has no battery spawns to show);
 - the teams' battery containers;
 - the teams' ammo stashes (resupply zones);
 - artefact spawns, one toggle per artefact.
@@ -19,7 +19,8 @@ The map underneath is either the top-down render or the game's own minimap.
 
 ## Build: every release that changes content
 
-`build.py` reads it all from the game as the players have it: the stock
+`build.py` reads it all from the game as the players have it (through
+`srp-026g/scripts/released-game/released.py`, shared with the calculator's build): the stock
 `resources.db` with exactly the patches of `release/patches.tsv` over it,
 each checked by its sha256. Nothing about a map is typed in by hand: a patch
 that adds a map, moves a spawn or redraws a minimap shows up at the next build.
@@ -44,7 +45,7 @@ Commit them. The patches in `built-from.tsv` must be exactly the offered
 ones:
 
 - `release/release.sh` refuses a live release otherwise (its preflight).
-- The web-server test `the_maps_are_built_from_the_offered_patches` fails
+- The web-server test `the_maps_and_the_calculator_are_built_from_the_offered_patches` fails
   otherwise.
 
 So a content release first merges a rebuild made with `--with <its patch>`.

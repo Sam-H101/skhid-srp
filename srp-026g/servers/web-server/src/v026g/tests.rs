@@ -1055,7 +1055,7 @@ fn every_file_the_maps_name_is_served() {
 }
 
 #[test]
-fn the_maps_are_built_from_the_offered_patches() {
+fn the_maps_and_the_calculator_are_built_from_the_offered_patches() {
     // release/release.sh refuses a release otherwise; this says so on a PR.
     let rows = |text: &str| -> Vec<(String, String)> {
         text.lines()
@@ -1070,9 +1070,14 @@ fn the_maps_are_built_from_the_offered_patches() {
             .collect()
     };
     let offered = rows(include_str!("../../../../../release/patches.tsv"));
-    let built = rows(include_str!("../../maps/built-from.tsv"));
+    let maps = rows(include_str!("../../maps/built-from.tsv"));
     assert_eq!(
-        built, offered,
+        maps, offered,
         "rebuild the Maps tab: srp-026g/scripts/maps-tab/README.md"
+    );
+    let calculator = rows(include_str!("../../damage/built-from.tsv"));
+    assert_eq!(
+        calculator, offered,
+        "rebuild the calculator: srp-026g/scripts/damage-calc/README.md (build_site.py)"
     );
 }
