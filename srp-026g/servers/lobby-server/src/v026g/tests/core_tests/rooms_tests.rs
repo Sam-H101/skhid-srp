@@ -165,7 +165,10 @@ fn a_room_counts_down_from_two_and_plays_the_card_voted_for() {
     assert_eq!(to_alice.0, to_bob.0);
     assert_ne!(to_alice.1, to_bob.1, "one a side");
     let setup = world.host.made.locked().last().unwrap().1.clone();
-    assert_eq!(setup.map_id, voted_cards[2], "the vote's winner when it started");
+    assert_eq!(
+        setup.map_id, voted_cards[2],
+        "the vote's winner when it started"
+    );
     assert_eq!(setup.players.len(), 2, "no bots");
     assert!(!setup.vs_bots);
     world.advance(Duration::from_secs(1));
