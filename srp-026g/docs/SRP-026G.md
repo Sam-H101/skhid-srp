@@ -33,7 +33,7 @@ survarium_srp.exe -server=<host>:1234
       1. login   TCP 1234   the sign-in in the clear, then TLS: the password as a SHA-1
       |                     digest. The answer: a session id and the lobby's IPv4:port
       2. lobby   UDP 1235   one reliable-UDP link a client: account, inventory, shop,
-      |                     skills, quests, chat, friends, squads, the queue, results
+      |                     skills, quests, chat, friends, squads, rooms, results
       3. match   UDP 1236   lockstep: the server relays inputs and compares world
                             hashes; the world itself comes from a patched client
       web page   HTTP 8088  home, download, the launcher's page, the admin page
@@ -41,8 +41,7 @@ survarium_srp.exe -server=<host>:1234
 
 0.26g has no browser server (port 80) and no presence pings. The 0.21d
 servers are still in the tree, compile and are tested, but `srp` does not
-start them: the two lobbies share the store's queue and the two login
-servers one port.
+start them: the two login servers share one port.
 
 ## The parts
 
@@ -50,10 +49,10 @@ servers one port.
 |---|---|
 | `crates/udp-transport` | The 0.26g reliable UDP transport, shared by the lobby and the match server: the per-message delivery table, split messages, ordered and unique channels, the packet log (`SRP_PACKET_LOG`) |
 | `crates/survarium/src/v026g/` | Game data and wire formats. Data from the game's own configs, read at start from the server's game data of the release the players run (`SRP_GAME_DATA`; `game_data`, `tables`): `dictionary`, `item_params`, `prices`, `skills`, `maps`, `quests`, `drops`, `loadouts`, `modifications`, `shop_offers`, `awards`, `lzma2`. `lobby/`: writers for every server message, `requests::parse` for every client message, and the strict `client_model` (reads as the client does; what a client would drop or crash on is a fault). `match_msgs/`: the match messages, the snapshot reader and writer, its client model |
-| `crates/session` | Shared with 0.21d: accounts by user name, argon2id passwords, sessions, the queue (`matchmaking.rs`), squads, bans, limits, `srp.db` |
+| `crates/session` | Shared with 0.21d: accounts by user name, argon2id passwords, sessions, the matches' seats and 0.21d's queue (`matchmaking.rs`), squads, bans, limits, `srp.db` |
 | `crates/session/src/v026g/` | The 0.26g account (`account`: money, gold, premium time, experience and level, skills, reputations, three kits, inventory, quests), the lobby's actions (`rules`), `quests`, the account as messages (`wire`), match rewards (`rewards`), and its tables in the same `srp.db` (`persist`: `g26_*`, versioned on their own in `g26_meta`). `GameAccounts` is the store. `clans`, `extras`, `premium`, `bonus`, `items_rules`, `pay` (the match pay rule), `matchmaking` (a player's level, the map choice) |
 | `servers/login-server/src/v026g.rs` | The TLS sign-in. First sign-in of a name registers it. Bans, limits, closed registration, the game's own status codes |
-| `servers/lobby-server/src/v026g/` | The lobby: `core` (links, sign-in, the tick), `dispatch` (every request answered or refused), `play` (queue, match made through `MatchHost`), `social` (chat, friends, squads), `Inbox` (what other servers tell it: a match is over, an account changed, a push, the operator's text) |
+| `servers/lobby-server/src/v026g/` | The lobby: `core` (links, sign-in, the tick), `dispatch` (every request answered or refused), `play` (Play, a match made through `MatchHost`), `rooms` (the players' "servers": every PvP match), `social` (chat, friends, squads), `Inbox` (what other servers tell it: a match is over, an account changed, a push, the operator's text) |
 | `servers/match-server/src/v026g/` | The match server: `registry` (the lobby makes a match here), `game` (sync, relay, hashes, resync, the end), `server` (socket and loop) |
 | `servers/srp/src/v026g.rs` | Joins them: `Stack` (the three servers and the session collector, each on a supervised thread), `RegistryHost` (lobby → match server), `Settler` (match result → rewards → database → lobby), `WebLink` (web page → lobby) |
 | `servers/web-server` | The web page. `run_026g` is the 0.26g page (`src/v026g.rs`); `run` is the 0.21d page, kept and tested, not started |
@@ -69,23 +68,24 @@ servers one port.
    is the session and the lobby's address.
 2. Lobby sign-in (`2E` with the session). `0x80` goes alone; once it is
    acked the rest of the account follows, unasked.
-3. Play: when a match starts (`crates/session/src/matchmaking.rs`, rules
-   in `matchmaking.md` §3, since 2026-10-13): 20 waiting start at once; 10 to
-   19 when nobody pressed Play for 30 s; 4 to 9 after a countdown of 60 s
-   from the 4th player, each press of Play adding 30 s to what is left; no
-   countdown over 2 minutes; fewer than 4, or one side only (a squad alone
-   is one side), wait. Who plays whom
-   is 0.26g's (`docs/notes/matchmaking.md`): two sides of at most
-   10, squads together, the sides at most a player apart and made to
-   count alike (a player's gear, level and balance rating; with an odd
-   count the stronger players are the side of fewer: §8 there). A player's level
-   is the client's own "equipment level" (its highest kit, moved up by its
-   rating); a match is formed from players whose level is in the range of
-   the one who waited longest, and the range grows by a level every 4 s, so
-   after 56 s any two players meet. The match's level (the reward
-   multipliers) is the mean of its players'. The map is drawn within
-   `SRP_MATCH_MODES` / `SRP_MATCH_MAPS`, more likely the less its players
-   have played it (`SRP_MATCH_MAP_SKEW`); then the mode and weather.
+3. Play (since 2026-10-17 every PvP match is a room's: the owner's; the
+   queue, the "matches now" list and its JOIN went): Play puts the player
+   into a room, the players' "servers" (`servers/lobby-server/src/v026g/
+   rooms.rs`, `lobby.md` §2.16.3): of the open rooms that let it in the one
+   nearest its level, however far (then the fullest), else a new one (8 v 8, any max level, 30 s). Once a room has its players their vote runs for 15 s between
+   three maps of the room's pool, then the room's own wait; its members
+   free in the lobby are put on two sides made to count alike (a player's
+   gear, level and balance rating; with an odd count the stronger players
+   are the side of fewer: `matchmaking.md` §8), squads together. Who comes
+   while the match is played sees the room first and goes into it 15 s
+   later (or at once with Join match) until 30 s are left, on the side
+   that then counts for less (the lead counts too). After the match
+   everyone is in the room again for the next vote; a player leaves by
+   itself, or when its game is gone. A player's level is the client's own
+   "equipment level" (its highest kit, moved up by its rating); the
+   match's level (the reward multipliers) is the mean of its players'.
+   Only a game of patch revision 5 or later plays in rooms. A clan team's
+   match is drawn uniformly from `SRP_MATCH_MODES` / `SRP_MATCH_MAPS`.
 4. The lobby makes the match at the match server and sends its address
    (`0x82`) once "match found" (`0x85`) is acked.
 5. The match: MATCH-SYNC-026G.md. **Only a client with the snapshot-upload
@@ -201,39 +201,25 @@ that rule is mended when the accounts load, and never plays.
 | `SRP_SIGN_INS_PER_MINUTE` | 20 | Password checks an address may ask for a minute |
 | `SRP_REGISTRATIONS_PER_DAY` | 3 | New accounts an address may make a day |
 
-### Queue and lobby
+### Lobby
 
 | Variable | Default | What |
 |---|---|---|
-| `SRP_MATCH_GATHER_SECONDS` | 60 | The countdown that starts when the queue has its 4th player (and two sides) (0: at once). A bad value stops srp |
-| `SRP_MATCH_FILL_PLAYERS` | 10 | With this many waiting … |
-| `SRP_MATCH_QUIET_SECONDS` | 30 | … and nobody pressing Play for this long, the match starts before the countdown ends |
-| `SRP_MATCH_MIN_PLAYERS` | 4 | The fewest players a match starts with (a squad counts its players, but is one side) |
-| `SRP_MATCH_JOIN_EXTENSION_SECONDS` | 30 | Each press of Play adds this to what is left of the countdown |
-| `SRP_MATCH_MAX_COUNTDOWN_SECONDS` | 120 | No countdown runs longer than this from its start |
-| `SRP_MATCH_TEAM_SIZE` | 8 | The most players of a side, 1 to 10 (the client's roster is 20); a match has two sides |
 | `SRP_BALANCE_PLAYER` | 12 | What a player counts for by being there when the sides are made, in gear levels: with an odd count the side with a player more has this much more, so the stronger players are the side of fewer. 0: only the strengths are made even (`matchmaking.md` §8) |
 | `SRP_BALANCE_PLAYER_LEVEL` | 1.5 | What a level of the account counts for, in gear levels |
 | `SRP_BALANCE_RATING` | 4 | What a point of the balance rating counts for, fully trusted, in gear levels |
 | `SRP_BALANCE_TRUST_MATCHES` | 5 | The matches after which a balance rating counts for half; one of no match counts for nothing |
 | `SRP_BALANCE_RATED_PLAYERS` | 4 | The fewest players a match must have had in it to move the balance rating, 1 to 20: the players who were in it for half of the longest stay or more. With 4, one against one and two against one move none; 1: every match does (`matchmaking.md` §8.3). The ranking's rating and the pay do not depend on it |
-| `SRP_BALANCE_BATTERY_LEAD` | 0.55 | In a match being played (modes 2, 3): what a battery of lead counts for, in players, for the side that leads. Used where a player who joins late goes, and in the log's prediction (`matchmaking.md` §9) |
+| `SRP_BALANCE_BATTERY_LEAD` | 0.55 | In a match being played (modes 2, 3): what a battery of lead counts for, in players, for the side that leads. Used where a player who comes into a room while its match is played goes, and in the log's prediction (`matchmaking.md` §9) |
 | `SRP_BALANCE_TICKET_LEAD` | 0.2 | The same for a ticket of lead in a Team Deathmatch |
-| `SRP_BALANCE_DRAMATIC_LEAD` | 2.5 | The lead, in players, from which the side that trails may have two players more than the other when players join late (5 batteries, 13 tickets). 0: never more than one |
-| `SRP_LATE_JOIN_PATIENCE_SECONDS` | 60 | How long a player who would make the sides of a match being played count less alike waits for another before it goes in all the same |
-| `SRP_GROWING_MIN_PLAYERS` | 2 | The fewest players a new match of the late-join queue (games of patch revision 5 or later) starts with: 2 is one against one, and whoever comes later joins them |
-| `SRP_GROWING_GATHER_SECONDS` | 120 | How long after its second player pressed Play such a match starts when it is not full |
-| `SRP_GROWING_POPULATION_EXPONENT` | 1 | Which of several matches being played a player joins: the one with the highest (players with it)^this x minutes left |
 | `SRP_SQUADS` | on | `off`: nobody is invited to a squad or added to one; the one who invites is told in a message box. Clan teams are not squads |
 | `SRP_SQUADS_OFF_TEXT` | `Squads are switched off on this server.` | What that message box shows: a text key of the game or a sentence of up to 255 bytes, shown as it is (the game has no text of its own for this) |
 | `SRP_MIN_PATCH_REVISION` | none | A game whose exe says a patch revision under this one is refused at its sign-in with the game's own "You're using an outdated version of the game." (login answer 0x22), and a lobby sign-in with a session it had before the restart is refused and the session ended, so a game that reconnects goes to its login screen within about half a minute and is refused there. It never gets the lobby's sign-in, which names items (the price list) its game may lack (`patch_check.rs`). The test bots are never refused. Left out or 0: every game is let in; not a number from 0 to 255 stops srp at start, and so does a number under the newest patch of the server's game data (`resources.db.patch_<n>` is released with revision n: an older game lacks its items), with a line that says what to set |
-| `SRP_QUEUE_CHAT` | on | Lines in the general chat when somebody joins or leaves the search (`Alice joined the search (3 waiting)`) and when a match starts (`Match found: Alice, Bob vs Carol`) |
-| `SRP_QUEUE_CHAT_NAME` | none | The sender name of those lines: the client shows the line with no name when it is empty |
-| `SRP_MATCH_SEARCH_STEP_SECONDS` | 4 | A waiting player's range of levels grows by one at each end every so many seconds (1 to 3600); the client's search screen shows the range from the same number. Levels are 0 to 15, so at 4 any two players are in range after 56 s. Raise it on a full server |
 | `SRP_MATCH_MODES` | `2,3,4` | The modes played |
-| `SRP_MATCH_MAPS` | every playable map of those modes | `maps_dict` ids, e.g. `117` (Team Deathmatch on level_01) for a first test. Of these a match gets a map drawn by `SRP_MATCH_MAP_SKEW` |
-| `SRP_MATCH_MAP_SKEW` | 1 | How much a match leans to the maps its players played less, a decimal from 0 to 4. A map's weight is `1 + skew × min(behind, 5) / 5`, `behind` being how many matches per player fewer they played it than their most played map of the pool: at 1 a map 5 or more behind is twice as likely as that one (with 9 maps and the others alike, 20% of the matches instead of 11%; 1 behind, 13%). 0: every map alike |
-| `SRP_LOBBY_LINK_TIMEOUT_SECONDS` | 30 | A client silent this long loses its lobby link: out of the queue, not ready in its squad, offline for its friends |
+| `SRP_MATCH_MAPS` | every playable map of those modes | `maps_dict` ids, e.g. `117` (Team Deathmatch on level_01) for a first test: a room's pool by default, and what a clan team's match is drawn from |
+| `SRP_ROOMS_MAX` | 50 | The most rooms at once, 1 to 1000 |
+| `SRP_ROOMS_EXTRA_MAPS` | none | Playable `maps_dict` ids a room's maker may add to its pool besides `SRP_MATCH_MAPS` (the experimental maps) |
+| `SRP_LOBBY_LINK_TIMEOUT_SECONDS` | 30 | A client silent this long loses its lobby link: offline for its friends (its room keeps its place while its session waits) |
 | `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` | 120 | The same for a player in a match that runs (its level may be loading); never less than the one above |
 | `SRP_LOBBY_SESSION_GRACE_SECONDS` | 60 | How long the session of a link that went silent waits for its client to connect again (the client tries by itself, every 5 s); for a player in a match, counted from the match's end. 0: the session ends with the link |
 
@@ -266,7 +252,6 @@ Each is an escape hatch for one thing not proven against a live client.
 | `SRP_MAPDATA_BUILT` | `<SRP_MAPDATA_DIR>/built` | Where the server writes the grids and trees it builds of the maps and reads them the next time; `off`: built at each load |
 | `SRP_MAPDATA_KEEP` | 1 | Built maps kept that no match holds |
 | `SRP_MAPDATA_AT_ONCE` | 1 | The most bots' maps in memory at once (with `SRP_PVB=on`, at least `SRP_PVB_MAX_MATCHES`) |
-| `SRP_BOTS_GIVE_WAY` | on | `off`: the server's own bots (`SRP_SERVER_BOTS`, testing only) stay to the end; on, one of a side leaves (0xEA) when a late joiner comes onto that side and it would otherwise be the larger one (`game/driven.rs`; a roster place is never freed by it) |
 | `SRP_ENTRY_STATE_SECONDS` | 4 | How long the first world of a game that has none yet is kept on its way before its sync starts over; 2 to 5, and less for an old snapshot (the ticks on the wire reach 6.35 s from the clock the game waits at). A game that plays is resynced within 1.75 s |
 | `SRP_RELAY_PACK_MS` | 15 | How long a relay or a drop order may wait for others to share its datagram (at most 50; 0: each goes at once). Anything else queued, a full datagram or an ack due sends them at once (since 2026-10-14; `docs/notes/transport.md` section 11.1) |
 
@@ -504,7 +489,7 @@ cd srp-026g && cargo test --workspace --offline
 
 - `servers/srp/tests/v026g_end_to_end.rs`: the real servers on free ports
   with a database file, two scripted clients from the TLS sign-in through a
-  purchase, the queue, a whole match, the rewards and the results screen, to
+  purchase, a room, a whole match, the rewards and the results screen, to
   a second sign-in.
 - `servers/srp/tests/v026g_web.rs`: the same servers with the web page: the
   admin's changes reaching an open game, the old exchange form changing
@@ -566,17 +551,18 @@ target\debug\srp-bot.exe --server 127.0.0.1:1234
 `SRP_BOT_PASSWORD`. The default name is `bot-1` (a new name registers
 itself), `--count 3` runs `bot-1`..`bot-3`, the password is never printed
 (without one a built-in password for local tests is used). It prints one
-line a step: signed in, in the lobby, pressed Play, in the queue, match
+line a step: signed in, in the lobby, pressed Play, in a room, match
 found, static info, the world, in the match, the match's end, the results;
 then it presses Play again (`--once`: it stops). When srp is restarted it
 signs in again by itself.
 
-Then press Play in the game: the queue has its two, and the match is made
-`SRP_MATCH_GATHER_SECONDS` later. The bot is on the other team. It sends no
+Then press Play in the game: you go into the bot's room (it is near a new
+account's level), and the match is made after the room's vote and wait.
+The bot is on the other team. It sends no
 inputs: its player is put on a respawn point by the game's own respawn rule
 (no input or kit choice is needed for that: PROVEN in the exe, match.md
-§19) and stands there. With `--count N` the first bot waits in the queue
-and the others join once somebody else waits there.
+§19) and stands there. With `--count N` the first bot waits in its room
+and the others join once somebody else is in it.
 
 With the setting it is proven by the scripted clients only
 (`v026g_end_to_end.rs`, the match server's `tests/bots.rs`). Seen with a real

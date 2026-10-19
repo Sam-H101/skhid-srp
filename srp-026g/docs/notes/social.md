@@ -538,7 +538,11 @@ So: on the general, match and team channels a stock client lets through at most 
 - srp's side: the ten ids are stored for each client (`dispatch.rs`, `Subscribe`); a general line goes to every client whose slot 1 is set, whatever its value; the `channel_id` of `4C` and the language byte are not used (`social.rs` `chat`).
 - Test: `the_general_channel_is_one_room_for_every_language` (an English, a Ukrainian, a Russian and a German client, each with its own room id and language byte, each hears the three others, byte for byte).
 
-### 9.7 Lines about the search (since 2026-10-13, `queue_chat.rs`)
+### 9.7 Lines about the search (2026-10-13 to 2026-10-17, `queue_chat.rs`)
+
+> **Removed 2026-10-17** with the queue (the owner's: every PvP match is a
+> room's). `SRP_QUEUE_CHAT` and `SRP_QUEUE_CHAT_NAME` are gone. Kept for the
+> record.
 
 The game has no text for "somebody joined the search", so these lines are the
 server's own (the owner's rule was game-native text only; this is a

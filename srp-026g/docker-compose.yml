@@ -109,13 +109,6 @@ services:
       - SRP_REGISTRATION
       - SRP_SIGN_INS_PER_MINUTE
       - SRP_REGISTRATIONS_PER_DAY
-      - SRP_MATCH_GATHER_SECONDS
-      - SRP_MATCH_FILL_PLAYERS
-      - SRP_MATCH_QUIET_SECONDS
-      - SRP_MATCH_MIN_PLAYERS
-      - SRP_MATCH_JOIN_EXTENSION_SECONDS
-      - SRP_MATCH_MAX_COUNTDOWN_SECONDS
-      - SRP_MATCH_TEAM_SIZE
       - SRP_BALANCE_PLAYER
       - SRP_BALANCE_PLAYER_LEVEL
       - SRP_BALANCE_RATING
@@ -123,17 +116,11 @@ services:
       - SRP_BALANCE_RATED_PLAYERS
       - SRP_BALANCE_BATTERY_LEAD
       - SRP_BALANCE_TICKET_LEAD
-      - SRP_BALANCE_DRAMATIC_LEAD
-      - SRP_LATE_JOIN_PATIENCE_SECONDS
-      - SRP_GROWING_MIN_PLAYERS
-      - SRP_GROWING_GATHER_SECONDS
-      - SRP_GROWING_POPULATION_EXPONENT
       - SRP_SQUADS
       - SRP_SQUADS_OFF_TEXT
       - SRP_MIN_PATCH_REVISION
       - SRP_MATCH_MODES
       - SRP_MATCH_MAPS
-      - SRP_MATCH_MAP_SKEW
       - SRP_LOBBY_LINK_TIMEOUT_SECONDS
       - SRP_EXPERIENCE_RATE
       - SRP_MONEY_RATE
@@ -157,6 +144,10 @@ services:
       - SRP_PVB_MAX_MATCHES
       - SRP_PVB_PAY
       - SRP_PVB_STALL_S
+      # Rooms, the players' "servers" (servers/lobby-server/src/v026g/rooms.rs):
+      # every PvP match is a room's; they need the lobby movie that has them.
+      - SRP_ROOMS_MAX
+      - SRP_ROOMS_EXTRA_MAPS
       # The bots' maps (docs/notes/player_bots_mapdata.md section 6): the
       # <project>.mapdata files, game data copied by hand into the data
       # volume. The grids and trees the server builds of them are written

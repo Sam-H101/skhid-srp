@@ -236,7 +236,7 @@ login or an admin token, with `Content-Type: application/json` and
 `Cache-Control: no-store`. For example (illustrative counts):
 
 ```json
-{"online":12,"registered":45,"matches":3,"queued":4,"last_match_ends_in":512}
+{"online":12,"registered":45,"matches":3,"rooms":2,"in_rooms":9,"queued":1,"last_match_ends_in":512}
 ```
 
 - `online`: distinct accounts with an active lobby/chat connection or a
@@ -244,9 +244,9 @@ login or an admin token, with `Content-Type: application/json` and
 - `registered`: registered accounts.
 - `matches`: matches created in the match server and not yet ended. This
   includes matches still loading or waiting for their clients to arrive.
-- `queued`: players currently in the regular matchmaking queue, counting
-  each squad member separately. Players already assigned to a match, and
-  players waiting for squad/clan readiness outside matchmaking, are excluded.
+- `rooms`: rooms that exist (the lobby's Rooms; every PvP match is a room's).
+- `in_rooms`: players in a room.
+- `queued`: players waiting in a full room's queue.
 - `last_match_ends_in`: seconds, rounded up, until the last running match
   ends at the latest: the longest time left to the time limit of any match
   (the launcher page's "Time left"); a match still loading, before its
@@ -254,7 +254,7 @@ login or an admin token, with `Content-Type: application/json` and
   0 when none runs. A match can end sooner. `release/release.sh` plans the
   maintenance 30 seconds after it (rounded up to whole minutes).
 
-All five fields are nonnegative integers. Counts are read from live state;
+All seven fields are nonnegative integers. Counts are read from live state;
 separate locks mean they are not a single atomic snapshot. Reading the endpoint
 never forms a match. No names, identifiers, addresses or credentials are
 returned. It is independent of the page language. Poll about once a minute.

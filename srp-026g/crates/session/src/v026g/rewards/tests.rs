@@ -539,7 +539,9 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
     let plain = settle(8, &terms());
     let alice = settle(8, &own);
     assert_eq!(
-        (0..3).map(|line| columns(&alice.full, line).2).collect::<Vec<_>>(),
+        (0..3)
+            .map(|line| columns(&alice.full, line).2)
+            .collect::<Vec<_>>(),
         [24, 2, 331]
     );
     for line in 0..3 {
@@ -550,10 +552,15 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
             "{line}: {money} against {plain_money}"
         );
     }
-    assert_eq!(columns(&alice.full, 0).1, (75.0 * 5.59 * 1.8_f64).floor() as u32);
+    assert_eq!(
+        columns(&alice.full, 0).1,
+        (75.0 * 5.59 * 1.8_f64).floor() as u32
+    );
     // 3 × 1.35 × 1.2 = 4.86, 1.62 and 3.98.
     assert_eq!(
-        (0..3).map(|line| columns(&alice.full, line).3).collect::<Vec<_>>(),
+        (0..3)
+            .map(|line| columns(&alice.full, line).3)
+            .collect::<Vec<_>>(),
         [4, 1, 3]
     );
     // From level 12 on: 220 %.
@@ -566,7 +573,10 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
     }
     // The quest's silver is the match level's alone (50 × 5.59); its
     // reputation is 120 % of the level's (50 × 1.35 = 67.5, × 1.2 = 81).
-    assert_eq!((plain.reward.quest_money, alice.reward.quest_money), (279, 279));
+    assert_eq!(
+        (plain.reward.quest_money, alice.reward.quest_money),
+        (279, 279)
+    );
     assert_eq!(plain.reward.quest_reputation, [(1, 67)]);
     assert_eq!(alice.reward.quest_reputation, [(1, 81)]);
     assert_eq!(alice.full.quest_reputation, 81);
@@ -687,6 +697,61 @@ fn one_who_left_gets_no_finish_bonus_and_no_drop_and_loses_rating() {
     }
     // Teams of two and two: the leaver counts in its team's average.
     assert_eq!(report.stats.team_params, [2, 2]);
+}
+
+/// Bob left the match by his own word (place 1: a kill, three deaths) and
+/// came into it again as a new place (place 2), fresh: only that place is
+/// his, settled once; the one he left counts for nothing (the owner's of
+/// 2026-10-19).
+#[test]
+fn one_who_left_and_came_again_is_settled_once_by_its_latest_place() {
+    let mut players = alice_and_bob();
+    players[1].present_at_end = false;
+    players[1].left = true;
+    players[1].time_in_match_ms = 200_000;
+    let mut again = player(2, 1, "Bob", PlayerStatistics::default());
+    again.account_id = players[1].account_id;
+    again.session_id = players[1].session_id;
+    again.time_in_match_ms = 300_000;
+    players.push(again);
+    let store = accounts(&players);
+    let before = account(&store, 11);
+    let result = result(players);
+    let latest = result.latest_places();
+    assert_eq!(
+        latest
+            .players
+            .iter()
+            .map(|player| (player.place, player.account_id))
+            .collect::<Vec<_>>(),
+        [(0, 10), (2, 11)]
+    );
+    let report = Results::new()
+        .settle(&result, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+
+    // One report and one row of the screen each.
+    assert_eq!(report.players.len(), 2);
+    assert_eq!(report.stats.rows.len(), 2);
+    assert_eq!(report.index_of(11), Some(1));
+    let bob = &report.players[1];
+    assert_eq!(bob.player_id, 3);
+    // His latest place stayed to the end and lost: no kill of the place he
+    // left, the fixed part of a match lost to its end, and the rating of a
+    // loss once.
+    assert_eq!(bob.reward.standing, Standing::Finished);
+    assert_eq!(columns(&bob.full, 0), (0.0, 0, 0, 0));
+    assert_eq!(columns(&bob.full, 2), (1.0, 41, 61, 0));
+    assert_eq!((bob.reward.experience, bob.reward.money), (61, 41));
+    assert_eq!(
+        (bob.reward.rating_before, bob.reward.rating_after),
+        (100, 98)
+    );
+    let after = account(&store, 11);
+    assert_eq!(after.rating, 98);
+    assert_eq!(after.exp_total, before.exp_total + bob.reward.experience);
+    assert_eq!(after.balance.matches, 1);
+    assert_eq!(report.stats.team_params, [1, 1]);
 }
 
 #[test]
@@ -2464,7 +2529,7 @@ fn a_match_with_a_test_bot_moves_no_rating_and_pays_the_bot_no_daily_bonus() {
 
 #[test]
 fn a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0() {
-    // Bob's place is the match server's own bot (`SRP_SERVER_BOTS`): no
+    // Bob's place is the match server's own bot (as against bots): no
     // account, no session.
     let mut players = alice_and_bob();
     let store = accounts(&players);
@@ -2576,7 +2641,14 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
     // A row of the screen can be asked for, as before.
     let mut client = Client::signed_in();
     client
-        .receive(&results.find(MATCH).unwrap().screen_for(10).unwrap().unwrap())
+        .receive(
+            &results
+                .find(MATCH)
+                .unwrap()
+                .screen_for(10)
+                .unwrap()
+                .unwrap(),
+        )
         .unwrap();
     client
         .receive(
@@ -2602,7 +2674,11 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
             results.claim_premium(MATCH + 1, 11, &mut bob, NOW + 960),
             plain.claim_premium(MATCH + 1, 11, &mut plain_bob, NOW + 960)
         );
-        assert!(results.claim_premium(MATCH + 1, 11, &mut bob, NOW + 960).is_none());
+        assert!(
+            results
+                .claim_premium(MATCH + 1, 11, &mut bob, NOW + 960)
+                .is_none()
+        );
     }
     store.mark_dirty(11);
     // Alice's third match of the period is her third: the report, with
@@ -2614,7 +2690,10 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
     let expected = plain
         .settle(&third, &plain_store, &at(NOW + 1800), &mut Rng::new(7))
         .unwrap();
-    assert_eq!(kept.players[0].full.drop_chances, expected.players[0].full.drop_chances);
+    assert_eq!(
+        kept.players[0].full.drop_chances,
+        expected.players[0].full.drop_chances
+    );
     assert_eq!(kept.players[0].reward, expected.players[0].reward);
     // She is shown the last screen and the notices of all three.
     assert!(results.has_unseen(10));
@@ -2680,7 +2759,12 @@ fn only_the_reports_kept_stay_in_the_repository() {
     let results = Results::attached(&store);
     for index in 0..KEPT as u32 + 3 {
         results
-            .settle(&match_of(0x1000 + index), &store, &at(NOW), &mut Rng::new(3))
+            .settle(
+                &match_of(0x1000 + index),
+                &store,
+                &at(NOW),
+                &mut Rng::new(3),
+            )
             .unwrap();
         // Not after every match: several changes go in one pass.
         if index % 5 == 0 {
@@ -2794,7 +2878,14 @@ fn rows_that_do_not_read_are_left_out_and_cleaned_up() {
         .into_iter()
         .map(|row| row.0)
         .collect();
-    assert_eq!(keys, ["other".to_owned(), report_key(MATCH + 2), STATE_KEY.to_owned()]);
+    assert_eq!(
+        keys,
+        [
+            "other".to_owned(),
+            report_key(MATCH + 2),
+            STATE_KEY.to_owned()
+        ]
+    );
     drop(results);
     drop(store);
 
@@ -2807,7 +2898,10 @@ fn rows_that_do_not_read_are_left_out_and_cleaned_up() {
     store.flush();
     let rows = repository.load_results().unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().any(|row| row.0 == STATE_KEY && row.1.starts_with('{')));
+    assert!(
+        rows.iter()
+            .any(|row| row.0 == STATE_KEY && row.1.starts_with('{'))
+    );
 }
 
 /// Accounts kept in memory keep no results either, and nothing fails.

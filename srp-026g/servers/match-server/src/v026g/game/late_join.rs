@@ -3,7 +3,6 @@
 //! clocks, histories and normal input relay while this state machine waits.
 
 use super::*;
-use session::matchmaking_policy::bot_gives_way;
 use survarium::v026g::match_msgs::late_join::{Prepare, Prepared, Proposal, Status};
 use survarium::v026g::match_msgs::{MAX_PLAYERS, id};
 
@@ -175,7 +174,13 @@ impl Game {
     pub(crate) fn admitting(&self) -> bool {
         self.growing_roster()
             && self.players() < MAX_PLAYERS
-            && self.rule.state == rules::state::IN_PROCESS
+            // From the countdown on (the owner's of 2026-10-18: the first
+            // seconds of a room's match take joiners too), not while it
+            // waits for its players.
+            && matches!(
+                self.rule.state,
+                rules::state::COUNTDOWN | rules::state::IN_PROCESS
+            )
             && self.mode_end_at.is_none()
             && self.ending.is_none()
             && self.finished_at.is_none()
@@ -189,6 +194,9 @@ impl Game {
                 .all(|p| p.resources_loaded && p.installed_roster == self.players())
     }
 
+    /// Until when a late joiner is taken: the time limit less
+    /// `LOAD_MARGIN` (30 s, the owner's of 2026-10-19), while the match
+    /// [admits](Self::admitting) players.
     pub(crate) fn admission_deadline(&self, now: Instant) -> Option<Instant> {
         if !self.admitting() {
             return None;
@@ -196,7 +204,7 @@ impl Game {
         let remaining = Duration::from_millis(u64::from(
             self.rule.time_limit_at()?.saturating_sub(self.clock(now)),
         ));
-        let open_for = remaining.checked_sub(session::matchmaking_policy::JOIN_CUTOFF)?;
+        let open_for = remaining.checked_sub(session::matchmaking_policy::LOAD_MARGIN)?;
         if open_for.is_zero() {
             return None;
         }
@@ -537,13 +545,12 @@ impl Game {
     fn enter_group(&mut self, caught_up: Vec<usize>, clock: u32, now: Instant) {
         // One reservation group is pending at a time. Its members enter
         // together, on one tick, even when their resources and snapshots
-        // finish apart: the lobby placed them together, to even the sides
-        // (`matchmaking_policy::place_late`), and a squad is one group. A
-        // place no game could install fails them all: the places after it
-        // can never be installed. A member that failed alone (its game
-        // never came, left, or did not catch up) is left out, and the rest
-        // enter without it if the sides are then no further apart than
-        // one player, or than before (`entry_keeps_balance`).
+        // finish apart: the lobby placed them together, and a squad is one
+        // group. A place no game could install fails them all: the places
+        // after it can never be installed. A member that failed alone (its
+        // game never came, left, or did not catch up) is left out, and the
+        // rest enter without it if the sides are then no further apart
+        // than one player, or than before (`entry_keeps_balance`).
         if self
             .admissions
             .iter()
@@ -592,9 +599,6 @@ impl Game {
                 );
                 self.roster_change(None, index, true, at, now);
             }
-            // The server's bots make room for them where it is needed
-            // (`driven.rs`).
-            self.give_way(&caught_up, at, now);
         }
     }
 
@@ -633,26 +637,9 @@ impl Game {
                 sides[usize::from(place.team.min(1))] += 1;
             }
         }
-        // The server's bots are players of their side too, as the lobby
-        // counts them; one whose side needs the room makes it for an
-        // entrant, as `give_way` lets it after the entry.
-        let staying = self.bots_staying();
-        let mut bots = if self.settings.bots_give_way {
-            staying
-        } else {
-            [0, 0]
-        };
-        for side in 0..2 {
-            sides[side] += staying[side];
-        }
         let before = sides[0].abs_diff(sides[1]);
         for index in entering {
-            let team = usize::from(self.formed.places[*index].team.min(1));
-            if bot_gives_way(sides, bots, team) {
-                bots[team] -= 1;
-            } else {
-                sides[team] += 1;
-            }
+            sides[usize::from(self.formed.places[*index].team.min(1))] += 1;
         }
         let after = sides[0].abs_diff(sides[1]);
         if after <= 1 || after <= before {

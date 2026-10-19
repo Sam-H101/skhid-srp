@@ -1,5 +1,5 @@
 //! The lobby's core with clients in memory. The clock is the test's: each
-//! round is 10 ms, and the transports, the queue and the timeouts all take
+//! round is 10 ms, and the transports, the rooms and the timeouts all take
 //! the time they are given.
 
 use std::net::SocketAddr;
@@ -12,9 +12,11 @@ use session::{LockExt, SessionStore};
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::drops::Rng;
 use survarium::v026g::lobby::client_model::{Decoded, FriendshipPush, Permitted};
+use survarium::v026g::lobby::requests::ClientMessage;
 use survarium::v026g::lobby::requests::{BUY_PREMIUM, INVENTORY_SLOT};
 use survarium::v026g::lobby::{ClientState, FULL_CONDITION, NameRefusal, channel};
 use survarium::v026g::maps;
+use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
 use survarium::v026g::match_msgs::snapshot::{PlayerStatistics, event};
 use survarium::v026g::prices;
 use survarium::v026g::shop_offers;
@@ -24,10 +26,10 @@ use super::{TestHost, denial, find, sent_to_match, signed_in};
 use crate::v026g::core::Core;
 use crate::v026g::{Inbox, MatchFinished, Settings};
 
-mod late_join;
-mod making_matches;
-
 const ROUND: Duration = Duration::from_millis(10);
+/// From Play by two players to their room's match: the vote, the wait of
+/// the room Play makes (30 s), and a little more.
+const PLAY_TO_MATCH: Duration = Duration::from_secs(47);
 
 struct World {
     store: &'static SessionStore,
@@ -43,19 +45,12 @@ struct World {
 }
 
 impl World {
-    /// A lobby whose queue gathers players for `gather`.
-    fn new(gather: Duration) -> Self {
-        Self::with_settings(gather, Settings::local("127.0.0.1:0"))
+    fn new() -> Self {
+        Self::with_settings(Settings::local("127.0.0.1:0"))
     }
 
-    /// The same, with `settings`.
-    fn with_settings(gather: Duration, settings: Settings) -> Self {
-        let store: &'static SessionStore = Box::leak(Box::new(SessionStore::with_start_rules(
-            gather,
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        )));
+    fn with_settings(settings: Settings) -> Self {
+        let store: &'static SessionStore = Box::leak(Box::new(SessionStore::new()));
         let accounts: &'static GameAccounts = Box::leak(Box::new(GameAccounts::new()));
         let results: &'static Results = Box::leak(Box::new(Results::new()));
         let host: &'static TestHost = Box::leak(Box::new(TestHost::default()));
@@ -104,10 +99,24 @@ impl World {
         }
     }
 
-    /// A new account signs in; returns the client's index.
+    /// A new account signs in with a game of the newest patch; returns
+    /// the client's index.
     fn connect(&mut self, name: &str) -> usize {
-        let ids = signed_in(self.store, name);
-        self.connect_session(ids)
+        self.connect_revision(name, PATCH_REVISION)
+    }
+
+    /// The same with a game of patch `revision`.
+    fn connect_revision(&mut self, name: &str, revision: u8) -> usize {
+        let (account, _) = signed_in(self.store, name);
+        let session = self.store.create_session_with_revision(account, revision);
+        self.connect_session((account, session))
+    }
+
+    /// Another session of the account, as a sign-in of a game of the newest
+    /// patch makes it.
+    fn new_session(&self, account_id: u32) -> u32 {
+        self.store
+            .create_session_with_revision(account_id, PATCH_REVISION)
     }
 
     fn connect_session(&mut self, ids: (u32, u32)) -> usize {
@@ -178,9 +187,153 @@ fn queue_state(decoded: &[Decoded]) -> Option<ClientState> {
     })
 }
 
+/// The `91`s the lobby answers a `3B` with `start` at once, as the client
+/// reads them: the rows of each, as `(name, place)`.
+fn answered(world: &mut World, index: usize, start: u32, count: u8) -> Vec<Vec<(String, u32)>> {
+    let addr = world.clients[index].0;
+    let before = world.core.links[&addr].pushed.len();
+    let now = world.now;
+    world
+        .core
+        .handle(addr, ClientMessage::QueryRanking { start, count }, now);
+    let mut client = survarium::v026g::lobby::client_model::Client::signed_in();
+    world.core.links[&addr].pushed[before..]
+        .iter()
+        .map(|message| match client.receive(message).unwrap() {
+            Decoded::EloList(rows) => rows.into_iter().map(|row| (row.0, row.1)).collect(),
+            other => panic!("not a ranking list: {other:?}"),
+        })
+        .collect()
+}
+
+/// srp's own requests (`3B` from `lobby::RESERVED_START` on) that it does
+/// not know get no answer: the start itself, the matches now and the JOIN
+/// that went with the queue, past the replay poll.
+#[test]
+fn a_reserved_start_the_server_does_not_know_gets_no_answer() {
+    use survarium::v026g::lobby::rooms::ROOMS_LIST;
+    use survarium::v026g::lobby::{REPLAY_START, RESERVED_START};
+
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    world.take(alice);
+    for start in [
+        RESERVED_START,
+        RESERVED_START + 1,
+        2_100_000_000,
+        2_100_000_001,
+        REPLAY_START + 1,
+        3_000_000_000,
+        u32::MAX,
+    ] {
+        for count in [0, 1, 32, 255] {
+            world.ask(alice, request::ranking(start, count));
+            assert_eq!(world.take(alice), [], "start {start}, count {count}");
+        }
+    }
+    // The link is as good as before.
+    assert_eq!(answered(&mut world, alice, ROOMS_LIST, 32).len(), 1);
+    world.assert_clean();
+}
+
+#[test]
+fn the_ranking_page_is_answered_as_ever_and_srps_own_requests_touch_nothing_of_it() {
+    use survarium::v026g::lobby::RESERVED_START;
+    use survarium::v026g::lobby::rooms::{ROOM_STATE, ROOMS_LIST};
+
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    world.account(bob).rating += 100;
+    let addr = world.clients[alice].0;
+    let pushed = |world: &World| world.core.links[&addr].pushed.clone();
+    let ranked_sent = |world: &World| world.core.player(addr).unwrap().ranked_sent;
+
+    // The ranking's first page, and a page further down.
+    let first_page = |world: &mut World| {
+        world.take(alice);
+        world.ask(alice, request::ranking(0, 10));
+        world.take(alice)
+    };
+    let before = first_page(&mut world);
+    assert!(matches!(
+        &before[..],
+        [
+            Decoded::BaseInfo { ranked_players: 2, .. },
+            Decoded::Tutorial { show: false, .. },
+            Decoded::PlayerElo { place: 2, .. },
+            Decoded::EloList(rows)
+        ] if rows.len() == 2 && rows[0].0 == "Bob" && rows[0].1 == 1 && rows[1].0 == "Alice"
+    ));
+    world.ask(alice, request::ranking(1, 1));
+    let second = world.take(alice);
+    assert!(matches!(
+        &second[..],
+        [Decoded::EloList(rows)] if rows.len() == 1 && rows[0].0 == "Alice" && rows[0].1 == 2
+    ));
+
+    // srp's own requests, asked with the count the page has of the ranking
+    // made wrong on purpose: the first page of the ranking would put it
+    // right and send the count, the account's own row and the rows. They
+    // do none of that: one `91` each that is answered, and the count is as
+    // it was.
+    world.core.player_mut(addr).unwrap().ranked_sent = 77;
+    let sent = pushed(&world);
+    let now = world.now;
+    for (start, count) in [
+        (ROOMS_LIST, 32),
+        (ROOM_STATE, 1),
+        (RESERVED_START, 32),
+        (u32::MAX, 255),
+    ] {
+        world
+            .core
+            .handle(addr, ClientMessage::QueryRanking { start, count }, now);
+    }
+    assert_eq!(ranked_sent(&world), 77);
+    let answers = pushed(&world)[sent.len()..].to_vec();
+    assert_eq!(
+        answers
+            .iter()
+            .map(|message| message.id_byte())
+            .collect::<Vec<_>>(),
+        [0x91, 0x91]
+    );
+    // The last start of all that is a ranking page's is one: no row is
+    // that far down, and the answer is the empty list it always was.
+    world.core.handle(
+        addr,
+        ClientMessage::QueryRanking {
+            start: RESERVED_START - 1,
+            count: 32,
+        },
+        now,
+    );
+    assert_eq!(ranked_sent(&world), 77);
+    let last = pushed(&world).pop().unwrap();
+    assert_eq!((last.id_byte(), last.body()), (0x91, &[0_u8][..]));
+    // And the first page does put the count right.
+    world.core.handle(
+        addr,
+        ClientMessage::QueryRanking {
+            start: 0,
+            count: 10,
+        },
+        now,
+    );
+    assert_eq!(ranked_sent(&world), 2);
+    world.settle();
+
+    // The page after it all: what it was before.
+    assert_eq!(first_page(&mut world), before);
+    world.ask(alice, request::ranking(1, 1));
+    assert_eq!(world.take(alice), second);
+    world.assert_clean();
+}
+
 #[test]
 fn a_sign_in_is_answered_with_the_whole_account_in_the_clients_order() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let client = world.client(alice);
     assert!(client.model.is_signed_in());
@@ -235,7 +388,7 @@ fn a_sign_in_is_answered_with_the_whole_account_in_the_clients_order() {
 
 #[test]
 fn nothing_but_the_sign_in_answer_goes_before_it_is_acked() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let (_, session) = signed_in(world.store, "Alice");
     let addr: SocketAddr = "127.0.0.1:40000".parse().unwrap();
     let mut client = TestClient::new();
@@ -276,7 +429,7 @@ fn nothing_but_the_sign_in_answer_goes_before_it_is_acked() {
 
 #[test]
 fn an_unknown_or_ended_session_is_refused() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let unknown = world.connect_session((0, 0xBAD));
     assert!(world.client(unknown).disconnected);
     assert!(world.client(unknown).decoded.is_empty());
@@ -295,7 +448,7 @@ fn an_unknown_or_ended_session_is_refused() {
 
 #[test]
 fn a_datagram_that_is_no_sign_in_makes_no_link() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let addr: SocketAddr = "127.0.0.1:40000".parse().unwrap();
     let mut client = TestClient::new();
     let (id, body) = request::play(1);
@@ -338,7 +491,7 @@ fn buyable(account: &Account, stack: bool) -> &'static prices::PriceItem {
 
 #[test]
 fn buying_selling_and_moving_go_round_with_their_pushes() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, |account| {
         account.generic_money = 5_000_000;
@@ -390,7 +543,7 @@ fn buying_selling_and_moving_go_round_with_their_pushes() {
 
 #[test]
 fn a_worn_item_is_repaired_and_gold_is_exchanged() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, |account| {
         account.generic_money = 1_000_000;
@@ -460,7 +613,7 @@ fn a_worn_item_is_repaired_and_gold_is_exchanged() {
 
 #[test]
 fn skills_are_answered_with_the_skills_and_the_kits_that_carry_them() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, |account| {
         account.add_experience(50_000);
@@ -505,7 +658,7 @@ fn skills_are_answered_with_the_skills_and_the_kits_that_carry_them() {
 
 #[test]
 fn a_refusal_carries_the_games_own_text() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, known_to_every_seller);
 
@@ -557,7 +710,7 @@ fn a_refusal_carries_the_games_own_text() {
 
 #[test]
 fn what_srp_does_not_have_is_refused_never_ignored() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     let bytes = |parts: &[&[u8]]| -> Vec<u8> { parts.concat() };
@@ -659,7 +812,7 @@ fn what_srp_does_not_have_is_refused_never_ignored() {
 
 #[test]
 fn the_queries_are_answered() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.take(alice);
@@ -719,7 +872,7 @@ fn the_queries_are_answered() {
 
 #[test]
 fn choosing_a_quest_faction_gives_its_quests() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     world.ask(alice, request::quest_faction(2));
@@ -753,51 +906,35 @@ fn choosing_a_quest_faction_gives_its_quests() {
 }
 
 #[test]
-fn two_players_gather_for_the_window_and_go_to_one_match() {
-    let mut world = World::new(Duration::from_secs(60));
+fn two_players_meet_in_a_room_and_go_to_one_match() {
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.take(alice);
 
-    // Alone in the queue: waiting, however long.
+    // Alone: a room is made for her, and it waits, however long. Her
+    // client is told it is in the lobby, where the movie shows the room.
     world.ask(alice, request::play(1));
-    let decoded = world.take(alice);
-    let Some(ClientState::InQueue {
-        place,
-        queue_total,
-        order_id,
-        ..
-    }) = queue_state(&decoded)
-    else {
-        panic!("{decoded:?}");
-    };
-    assert_eq!((place, queue_total), (1, 1));
-    assert_ne!(order_id, u32::MAX);
+    assert_eq!(queue_state(&world.take(alice)), Some(ClientState::Lobby));
+    let room = world
+        .core
+        .rooms
+        .of(world.ids[alice].0)
+        .expect("Alice's room")
+        .key;
     world.advance(Duration::from_secs(150));
-    let decoded = world.take(alice);
-    // Its queue screen is kept up to date, the wait counted by the server.
-    assert!(decoded.len() > 100);
-    assert!(matches!(
-        queue_state(&decoded),
-        Some(ClientState::InQueue { place: 1, queue_total: 1, current_wait_seconds, .. })
-            if current_wait_seconds >= 149
-    ));
-    assert!(sent_to_match(&decoded).is_none());
+    assert!(sent_to_match(&world.take(alice)).is_none());
     assert!(world.host.made.lock().unwrap().is_empty());
 
-    // The second player starts the window.
+    // The second player goes into it, and its vote and wait begin.
     world.take(bob);
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(58));
+    assert_eq!(
+        world.core.rooms.of(world.ids[bob].0).map(|room| room.key),
+        Some(room)
+    );
+    world.advance(PLAY_TO_MATCH - Duration::from_secs(4));
     assert!(sent_to_match(&world.take(alice)).is_none());
-    assert!(matches!(
-        queue_state(&world.take(bob)),
-        Some(ClientState::InQueue {
-            place: 2,
-            queue_total: 2,
-            ..
-        })
-    ));
     world.advance(Duration::from_secs(4));
     let (to_alice, to_bob) = (world.take(alice), world.take(bob));
     let (alice_match, alice_team) = sent_to_match(&to_alice).expect("Alice's match");
@@ -939,7 +1076,7 @@ fn a_kit_without_a_weapon_is_not_loaded_in_a_match() {
 /// or under it locks Play (`update_play_button_state` 0x21FD40).
 #[test]
 fn a_planned_maintenance_reaches_the_clients_in_the_lobby() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let minutes = |world: &mut World| {
         world.advance(Duration::from_secs(6));
@@ -958,46 +1095,37 @@ fn a_planned_maintenance_reaches_the_clients_in_the_lobby() {
     assert_eq!(minutes(&mut world), Some(1440));
 }
 
+/// Who leaves its room before its match starts is in no match: the room
+/// has one player left, and waits.
 #[test]
-fn leaving_the_queue_goes_back_to_the_lobby_and_no_match_is_made() {
-    let mut world = World::new(Duration::from_secs(10));
+fn leaving_the_room_before_its_match_makes_no_match() {
+    use survarium::v026g::lobby::rooms::ROOM_LEAVE;
+
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
     world.advance(Duration::from_secs(5));
-    world.take(bob);
-    world.ask(bob, request::leave(1, false));
-    assert_eq!(queue_state(&world.take(bob)), Some(ClientState::Lobby));
-    // Alice is alone again: the window is off.
-    world.take(alice);
-    world.advance(Duration::from_secs(30));
-    let decoded = world.take(alice);
-    assert!(matches!(
-        queue_state(&decoded),
-        Some(ClientState::InQueue {
-            place: 1,
-            queue_total: 1,
-            ..
-        })
-    ));
-    assert!(sent_to_match(&decoded).is_none());
-    assert!(world.take(bob).iter().all(|message| !matches!(
-        message,
-        Decoded::ClientState { .. } | Decoded::ConnectToMatch { .. }
-    )));
+    answered(&mut world, bob, ROOM_LEAVE, 1);
+    assert!(world.core.rooms.of(world.ids[bob].0).is_none());
+    world.advance(PLAY_TO_MATCH);
+    for client in [alice, bob] {
+        assert!(sent_to_match(&world.take(client)).is_none());
+    }
+    assert!(world.core.rooms.of(world.ids[alice].0).is_some());
     assert!(world.host.made.lock().unwrap().is_empty());
     world.assert_clean();
 }
 
 #[test]
 fn a_finished_match_brings_its_players_back_to_the_lobby() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    world.advance(PLAY_TO_MATCH);
     let (match_id, _) = sent_to_match(&world.take(alice)).expect("a match");
     assert!(sent_to_match(&world.take(bob)).is_some());
     assert_eq!(world.store.match_count(), 1);
@@ -1024,10 +1152,9 @@ fn a_finished_match_brings_its_players_back_to_the_lobby() {
     assert_eq!(world.store.match_count(), 0);
     assert!(world.core.matches.is_empty());
 
-    // A new Play is a new match.
-    world.ask(alice, request::play(1));
-    world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    // They are in their room still: its next match starts by itself, its
+    // vote 10 s longer after a match.
+    world.advance(PLAY_TO_MATCH + session::v026g::rooms::AFTER_MATCH);
     let again = sent_to_match(&world.take(alice)).expect("a second match").0;
     assert_ne!(again, match_id);
 
@@ -1042,13 +1169,13 @@ fn a_finished_match_brings_its_players_back_to_the_lobby() {
 
 #[test]
 fn a_match_the_match_server_cannot_make_sends_everyone_back() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.host.fail.store(true, Ordering::Relaxed);
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    world.advance(PLAY_TO_MATCH);
     for client in [alice, bob] {
         let decoded = world.take(client);
         assert_eq!(queue_state(&decoded), Some(ClientState::Lobby));
@@ -1060,14 +1187,14 @@ fn a_match_the_match_server_cannot_make_sends_everyone_back() {
     world.host.fail.store(false, Ordering::Relaxed);
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    world.advance(PLAY_TO_MATCH);
     assert!(sent_to_match(&world.take(alice)).is_some());
     world.assert_clean();
 }
 
 #[test]
 fn chat_reaches_who_it_is_for() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -1143,13 +1270,13 @@ fn chat_reaches_who_it_is_for() {
 
 #[test]
 fn players_in_a_match_talk_on_its_channels() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    world.advance(PLAY_TO_MATCH);
     let (match_id, alice_team) = sent_to_match(&world.take(alice)).unwrap();
     world.take(bob);
     world.take(carol);
@@ -1171,7 +1298,7 @@ fn players_in_a_match_talk_on_its_channels() {
 
 #[test]
 fn a_friend_request_makes_friends_and_their_statuses_follow() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (alice_id, bob_id) = (world.ids[alice].0, world.ids[bob].0);
@@ -1238,7 +1365,7 @@ fn a_friend_request_makes_friends_and_their_statuses_follow() {
     let carol = world.connect("Carol");
     world.ask(bob, request::play(1));
     world.ask(carol, request::play(1));
-    world.advance(Duration::from_secs(3));
+    world.advance(PLAY_TO_MATCH);
     let statuses = |decoded: &[Decoded]| -> Vec<Vec<(u32, u8)>> {
         decoded
             .iter()
@@ -1257,7 +1384,7 @@ fn a_friend_request_makes_friends_and_their_statuses_follow() {
     assert!(world.store.has_ended(world.ids[bob].1));
 
     // He signs in again and has his friend, kept with the account.
-    let bob_again = world.connect_session((bob_id, world.store.create_session(bob_id)));
+    let bob_again = world.connect_session((bob_id, world.new_session(bob_id)));
     assert_eq!(
         friends(&world.take(bob_again)),
         Some(vec![(alice_id, "Alice".to_owned(), 0)])
@@ -1283,7 +1410,7 @@ fn a_friend_request_makes_friends_and_their_statuses_follow() {
 
 #[test]
 fn a_friend_request_waits_for_a_player_who_is_away() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob_ids = signed_in(world.store, "Bob");
     world.ask(alice, request::important("Bob", 0, ""));
@@ -1351,7 +1478,7 @@ fn importants(messages: &[Decoded], kind: u8, sender: &str) -> Vec<u32> {
 #[test]
 fn an_accepted_squad_invite_reaches_the_inviter_in_either_order() {
     for answer_first in [false, true] {
-        let mut world = World::new(Duration::ZERO);
+        let mut world = World::new();
         let alice = world.connect("Alice");
         let bob = world.connect("Bob");
         world.take(alice);
@@ -1384,7 +1511,7 @@ fn an_accepted_squad_invite_reaches_the_inviter_in_either_order() {
 /// client said before the answer.
 #[test]
 fn a_declined_squad_invite_is_not_an_acceptance() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.take(alice);
@@ -1403,7 +1530,7 @@ fn a_declined_squad_invite_is_not_an_acceptance() {
 /// and can be answered. (It was dropped, for as long as srp ran.)
 #[test]
 fn a_squad_invite_that_waits_is_sent_again() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (alice_id, bob_id) = (world.ids[alice].0, world.ids[bob].0);
@@ -1412,11 +1539,14 @@ fn a_squad_invite_that_waits_is_sent_again() {
     world.ask(alice, request::important("Bob", 2, "invite"));
     let invite = importants(&world.take(bob), 2, "Alice")[0];
     // Bob's game is started again: a new session, and no invite in it.
-    let bob_again = world.connect_session((bob_id, world.store.create_session(bob_id)));
+    let bob_again = world.connect_session((bob_id, world.new_session(bob_id)));
     assert!(importants(&world.take(bob_again), 2, "Alice").is_empty());
     world.ask(alice, request::important("Bob", 2, "invite"));
     assert_eq!(importants(&world.take(bob_again), 2, "Alice"), [invite]);
-    world.ask(bob_again, request::important("Alice", 3, "membership accepted"));
+    world.ask(
+        bob_again,
+        request::important("Alice", 3, "membership accepted"),
+    );
     world.ask(bob_again, request::answer(invite, 0));
     assert_eq!(importants(&world.take(alice), 3, "Bob").len(), 1);
     world.ask(alice, request::add_squad_member("Bob"));
@@ -1425,8 +1555,8 @@ fn a_squad_invite_that_waits_is_sent_again() {
 }
 
 #[test]
-fn a_squad_of_two_forms_shows_each_mate_and_queues_together() {
-    let mut world = World::new(Duration::ZERO);
+fn a_squad_of_two_forms_shows_each_mate_and_plays_together() {
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -1523,24 +1653,24 @@ fn a_squad_of_two_forms_shows_each_mate_and_queues_together() {
         Decoded::ChatText { channel: channel::SQUAD, body, .. } if body == "ready?"
     )));
 
-    // Bob readies: he waits for the squad, nobody is in the queue.
-    world.ask(bob, request::play(1));
-    assert!(matches!(
-        queue_state(&world.take(bob)),
-        Some(ClientState::InQueue { .. })
-    ));
-    let (_, members, _, _) = squad(&world.take(alice)).expect("Bob is ready");
-    assert!(members[1].ready && !members[0].ready);
-    assert!(world.store.matchmaking().busy_sessions().is_empty());
-    // Carol queues alone meanwhile.
-    world.ask(carol, request::play(1));
-    world.advance(Duration::from_secs(2));
-    assert!(sent_to_match(&world.take(carol)).is_none());
-
-    // The commander presses Play: the squad queues as one, and with Carol
-    // there are enough for a match. The squad is on one team.
-    world.ask(alice, request::play(1));
-    world.advance(Duration::from_secs(2));
+    // Bob's Play makes a room, Alice's goes into it, and Carol's too: the
+    // one open room. When its match
+    // starts the squad is on one team, Carol on the other.
+    for client in [bob, alice, carol] {
+        world.ask(client, request::play(1));
+    }
+    let room = world.core.rooms.of(bob_id).expect("Bob's room").key;
+    for client in [alice, carol] {
+        assert_eq!(
+            world
+                .core
+                .rooms
+                .of(world.ids[client].0)
+                .map(|room| room.key),
+            Some(room)
+        );
+    }
+    world.advance(PLAY_TO_MATCH);
     let (alice_match, alice_team) = sent_to_match(&world.take(alice)).expect("Alice's match");
     let (bob_match, bob_team) = sent_to_match(&world.take(bob)).expect("Bob's match");
     let (carol_match, carol_team) = sent_to_match(&world.take(carol)).expect("Carol's match");
@@ -1562,14 +1692,11 @@ fn a_squad_of_two_forms_shows_each_mate_and_queues_together() {
 }
 
 #[test]
-fn leaving_a_squad_tells_everyone_and_takes_them_out_of_the_queue() {
-    let mut world = World::new(Duration::from_secs(600));
+fn leaving_a_squad_tells_everyone() {
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     form_squad(&mut world, alice, bob);
-    world.ask(bob, request::play(1));
-    world.ask(alice, request::play(1));
-    assert_eq!(world.store.matchmaking().busy_sessions().len(), 2);
     world.take(alice);
     world.take(bob);
 
@@ -1582,20 +1709,18 @@ fn leaving_a_squad_tells_everyone_and_takes_them_out_of_the_queue() {
                 .any(|message| matches!(message, Decoded::SquadInfo { squad_id: 0, .. })),
             "{decoded:?}"
         );
-        assert_eq!(queue_state(&decoded), Some(ClientState::Lobby));
     }
-    assert!(world.store.matchmaking().busy_sessions().is_empty());
     assert!(world.store.squads().of(world.ids[alice].0).is_none());
     world.assert_clean();
 }
 
 #[test]
 fn a_second_sign_in_of_an_account_signs_the_first_out() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let first = world.connect("Alice");
     let account_id = world.ids[first].0;
     world.take(first);
-    let second = world.connect_session((account_id, world.store.create_session(account_id)));
+    let second = world.connect_session((account_id, world.new_session(account_id)));
     // The old game is told (`AA`: "the user is already in the game") and
     // disconnected; its session is over.
     let decoded = world.take(first);
@@ -1612,7 +1737,7 @@ fn a_second_sign_in_of_an_account_signs_the_first_out() {
 
 #[test]
 fn a_session_ended_elsewhere_signs_its_client_out() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     // A ban ends the session in the store.
@@ -1632,7 +1757,7 @@ fn a_session_ended_elsewhere_signs_its_client_out() {
 
 #[test]
 fn a_silent_client_loses_its_link_and_its_session() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.ask(alice, request::play(1));
@@ -1664,7 +1789,7 @@ fn a_silent_client_loses_its_link_and_its_session() {
 
 #[test]
 fn a_client_that_leaves_ends_its_session_at_once() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.client(alice).leave();
     world.settle();
@@ -1675,7 +1800,7 @@ fn a_client_that_leaves_ends_its_session_at_once() {
 
 #[test]
 fn other_servers_reach_a_client_through_the_inbox() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     let account_id = world.ids[alice].0;
@@ -1733,7 +1858,7 @@ fn other_servers_reach_a_client_through_the_inbox() {
 
 #[test]
 fn hundreds_of_ordered_pushes_through_a_lossy_link_all_arrive_in_order() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     // A third of the server's datagrams never arrive. The client drops an
@@ -1775,7 +1900,7 @@ fn hundreds_of_ordered_pushes_through_a_lossy_link_all_arrive_in_order() {
 
 #[test]
 fn the_online_counts_are_repeated_for_a_client_that_missed_them() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     // 0x9F is sent once, never again by the transport; until one arrives
     // the client's Play is off. Nothing changes here, yet they keep coming.
@@ -1795,7 +1920,7 @@ fn the_online_counts_are_repeated_for_a_client_that_missed_them() {
 
 #[test]
 fn a_client_whose_link_broke_connects_again_with_its_session() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let ids = world.ids[alice];
@@ -1817,7 +1942,7 @@ fn a_client_whose_link_broke_connects_again_with_its_session() {
     // client comes back to the lobby with it.
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
+    world.advance(PLAY_TO_MATCH);
     assert!(sent_to_match(&world.take(alice)).is_some());
     let silent = std::mem::replace(&mut world.clients[alice].1, TestClient::new());
     drop(silent);
@@ -1906,13 +2031,24 @@ impl World {
         self.inbox.match_finished(MatchFinished { match_id });
     }
 
-    /// Two players in a match: `(match id, the first one's team)`.
+    /// Two players in a match: both press Play, which puts them into one
+    /// room, and its match starts (after a match of the room, its vote is
+    /// longer). `(match id, the first one's team)`.
     fn match_of(&mut self, first: usize, second: usize) -> (u32, u8) {
         self.ask(first, request::play(1));
         self.ask(second, request::play(1));
-        self.advance(Duration::from_secs(2));
+        for _ in 0..PLAY_TO_MATCH.as_secs() * 2 {
+            if sent_to_match(&self.client(first).decoded).is_some() {
+                break;
+            }
+            self.advance(Duration::from_secs(1));
+        }
+        self.settle();
         let sent = sent_to_match(&self.take(first)).expect("a match");
-        assert!(sent_to_match(&self.take(second)).is_some());
+        assert_eq!(
+            sent_to_match(&self.take(second)).map(|(id, _)| id),
+            Some(sent.0)
+        );
         sent
     }
 }
@@ -1936,7 +2072,7 @@ fn position(decoded: &[Decoded], pick: impl Fn(&Decoded) -> bool) -> Option<usiz
 
 #[test]
 fn a_finished_match_pays_its_players_and_shows_them_the_results() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -2059,19 +2195,19 @@ fn a_finished_match_pays_its_players_and_shows_them_the_results() {
     let paid = world.account(alice).clone();
     world.change(alice, |account| account.premium_money += 600);
     world.ask(alice, request::buy_offer(1, match_id));
-    assert!(
-        world
-            .take(alice)
-            .iter()
-            .any(|message| matches!(message, Decoded::Services { premium_hours: Some(144) }))
-    );
+    assert!(world.take(alice).iter().any(|message| matches!(
+        message,
+        Decoded::Services {
+            premium_hours: Some(144)
+        }
+    )));
     assert_eq!(world.account(alice).exp_total, paid.exp_total);
     world.assert_clean();
 }
 
 #[test]
 fn a_game_started_anew_is_shown_no_results_screen_when_its_old_match_ends() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (match_id, alice_team) = world.match_of(alice, bob);
@@ -2081,7 +2217,7 @@ fn a_game_started_anew_is_shown_no_results_screen_when_its_old_match_ends() {
     // while the match still runs. This game has loaded no match.
     world.client(alice).leave();
     world.settle();
-    let session = world.store.create_session(alice_account);
+    let session = world.new_session(alice_account);
     let again = world.connect_session((alice_account, session));
     assert!(screens(&world.take(again)).is_empty());
     assert!(!world.core.sent_to_match.contains(&session));
@@ -2107,7 +2243,7 @@ fn a_game_started_anew_is_shown_no_results_screen_when_its_old_match_ends() {
 
 #[test]
 fn the_results_wait_for_a_player_who_left_the_match_or_the_game() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (match_id, alice_team) = world.match_of(alice, bob);
@@ -2142,7 +2278,7 @@ fn the_results_wait_for_a_player_who_left_the_match_or_the_game() {
     // translates the map's name of its last match: a null pointer).
     let paid = world.account(alice).generic_money;
     assert!(world.results.has_unseen(alice_account));
-    let session = world.store.create_session(alice_account);
+    let session = world.new_session(alice_account);
     let again = world.connect_session((alice_account, session));
     let decoded = world.take(again);
     assert!(screens(&decoded).is_empty());
@@ -2168,7 +2304,7 @@ fn the_results_wait_for_a_player_who_left_the_match_or_the_game() {
 
 #[test]
 fn a_drop_card_is_used_from_the_results_screen() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let card_dict = Dictionary::shared()
         .item_named("drop_card")
@@ -2230,7 +2366,7 @@ fn a_drop_card_is_used_from_the_results_screen() {
 
 #[test]
 fn a_player_who_signs_in_again_goes_back_to_its_match_under_its_new_session() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (match_id, _) = world.match_of(alice, bob);
@@ -2240,7 +2376,7 @@ fn a_player_who_signs_in_again_goes_back_to_its_match_under_its_new_session() {
     // Bob's game was started anew: a new sign-in, a new session. The old
     // link is signed out; Play sends the new one to the match, and the
     // match server is told whose place it is now.
-    let session = world.store.create_session(account);
+    let session = world.new_session(account);
     assert_ne!(session, old_session);
     let again = world.connect_session((account, session));
     world.take(again);
@@ -2264,7 +2400,7 @@ fn a_player_who_signs_in_again_goes_back_to_its_match_under_its_new_session() {
 
 #[test]
 fn the_operators_text_reaches_everyone_and_who_signs_in_later() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.take(alice);
@@ -2323,16 +2459,14 @@ fn the_operators_text_reaches_everyone_and_who_signs_in_later() {
 
 mod away_tests;
 mod balance_tests;
-mod reconnect_tests;
-mod items_tests;
 mod clan_tests;
-mod join_tests;
 mod feedback_tests;
-mod matches_now_tests;
+mod items_tests;
 mod patch_check_tests;
 mod pvb_tests;
-mod queue_chat_tests;
+mod reconnect_tests;
 mod replay_tests;
+mod rooms_tests;
 
 // ---- the premium shop, items for gold, the daily bonus, the tutorial, a
 // ---- nickname change (`shop`)
@@ -2354,7 +2488,7 @@ fn told_premium(decoded: &[Decoded]) -> Option<Option<u32>> {
 
 #[test]
 fn a_sign_in_brings_the_shop_no_tutorial_and_the_daily_bonus() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let decoded = world.take(alice);
     // The shop: seven premium times and seven bundles.
@@ -2431,7 +2565,7 @@ fn a_sign_in_brings_the_shop_no_tutorial_and_the_daily_bonus() {
     let ids = world.ids[alice];
     world.store.end_session(ids.1);
     world.advance(Duration::from_secs(2));
-    let session = world.store.create_session(ids.0);
+    let session = world.new_session(ids.0);
     let again = world.connect_session((ids.0, session));
     let decoded = world.take(again);
     assert!(decoded.iter().any(|message| matches!(
@@ -2447,7 +2581,7 @@ fn a_sign_in_brings_the_shop_no_tutorial_and_the_daily_bonus() {
 /// a move and goes to Play.
 #[test]
 fn the_third_kit_is_filled_and_played_without_premium() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let decoded = world.take(alice);
     let Some(Decoded::Account(own)) = decoded
@@ -2476,18 +2610,16 @@ fn the_third_kit_is_filled_and_played_without_premium() {
     world.ask(alice, back);
     assert_eq!(denial(&world.take(alice), 0x46), None);
     assert_eq!(world.account(alice).kits[2].slots[7], Some(pistol));
-    // Play with it: in the queue.
+    // Play with it: into a room.
     world.ask(alice, request::play(3));
-    assert!(matches!(
-        queue_state(&world.take(alice)),
-        Some(ClientState::InQueue { .. })
-    ));
+    assert_eq!(denial(&world.take(alice), 0x2F), None);
+    assert!(world.core.rooms.of(world.ids[alice].0).is_some());
     world.assert_clean();
 }
 
 #[test]
 fn premium_time_is_bought_for_gold() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     // A new account has no gold: this one is given some.
@@ -2536,7 +2668,7 @@ fn premium_time_is_bought_for_gold() {
 
 #[test]
 fn a_bundle_and_a_premium_item_are_bought_for_gold() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     world.change(alice, |account| account.premium_money = 2_000);
@@ -2591,7 +2723,7 @@ fn a_bundle_and_a_premium_item_are_bought_for_gold() {
 /// owned is still sold back. The other flags are sold as before.
 #[test]
 fn the_excluded_flags_and_emblems_are_not_sold() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let decoded = world.take(alice);
     let dictionary = Dictionary::shared();
@@ -2662,7 +2794,7 @@ fn the_excluded_flags_and_emblems_are_not_sold() {
 
 #[test]
 fn the_premium_voucher_is_used_from_the_inventory() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     let voucher = Dictionary::shared()
@@ -2672,7 +2804,10 @@ fn the_premium_voucher_is_used_from_the_inventory() {
     let mut item_id = 0;
     world.change(alice, |account| item_id = account.add_item(voucher, 2));
 
-    world.ask(alice, (0x46, [vec![4], item_id.to_le_bytes().to_vec()].concat()));
+    world.ask(
+        alice,
+        (0x46, [vec![4], item_id.to_le_bytes().to_vec()].concat()),
+    );
     let decoded = world.take(alice);
     assert!(matches!(
         decoded[0],
@@ -2690,12 +2825,18 @@ fn the_premium_voucher_is_used_from_the_inventory() {
             .map(|item| item.condition_or_stack)
     };
     assert_eq!(left(&world), Some(1));
-    world.ask(alice, (0x46, [vec![4], item_id.to_le_bytes().to_vec()].concat()));
+    world.ask(
+        alice,
+        (0x46, [vec![4], item_id.to_le_bytes().to_vec()].concat()),
+    );
     assert_eq!(told_premium(&world.take(alice)), Some(Some(48)));
     assert_eq!(left(&world), None);
     // Used up; and the pistol is no voucher.
     for item in [item_id, 1] {
-        world.ask(alice, (0x46, [vec![4], item.to_le_bytes().to_vec()].concat()));
+        world.ask(
+            alice,
+            (0x46, [vec![4], item.to_le_bytes().to_vec()].concat()),
+        );
         assert_eq!(
             denial(&world.take(alice), 0x46).as_deref(),
             Some("st_error_while_using_premium_access_voucher")
@@ -2726,14 +2867,16 @@ fn accept_with_discount(offer_id: u32, discount: f32) -> (u8, Vec<u8>) {
 
 #[test]
 fn a_discount_the_operator_set_is_offered_and_taken() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     world.core.shop.discount_percent = 25;
     let alice = world.connect("Alice");
     let decoded = world.take(alice);
     // `A9`: the discount, for an account without premium.
-    assert!(decoded.iter().any(
-        |message| matches!(message, Decoded::PremiumDiscount(discount) if *discount == 0.25)
-    ));
+    assert!(
+        decoded.iter().any(
+            |message| matches!(message, Decoded::PremiumDiscount(discount) if *discount == 0.25)
+        )
+    );
     // A new account has no gold: this one is given some.
     world.change(alice, |account| account.premium_money = 1_000);
     let gold = world.account(alice).premium_money;
@@ -2765,7 +2908,7 @@ fn a_discount_the_operator_set_is_offered_and_taken() {
     let ids = world.ids[alice];
     world.store.end_session(ids.1);
     world.advance(Duration::from_secs(2));
-    let session = world.store.create_session(ids.0);
+    let session = world.new_session(ids.0);
     let again = world.connect_session((ids.0, session));
     assert!(
         !world
@@ -2778,7 +2921,7 @@ fn a_discount_the_operator_set_is_offered_and_taken() {
 
 #[test]
 fn the_offer_after_a_match_gives_the_premium_half() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     world.core.shop.discount_percent = 20;
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
@@ -2873,7 +3016,7 @@ fn the_offer_after_a_match_gives_the_premium_half() {
 
 #[test]
 fn a_nickname_is_checked_and_changed() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.take(alice);
@@ -2929,7 +3072,10 @@ fn a_nickname_is_checked_and_changed() {
     // The store's name follows: others find the account by it, and the
     // old name is free.
     let alice_id = world.ids[alice].0;
-    assert_eq!(world.store.account(alice_id).unwrap().locked().name, "Alisa");
+    assert_eq!(
+        world.store.account(alice_id).unwrap().locked().name,
+        "Alisa"
+    );
     world.ask(bob, request::find_players("Alis"));
     assert!(matches!(
         &world.take(bob)[..],
@@ -2983,7 +3129,7 @@ fn a_nickname_is_checked_and_changed() {
 #[test]
 fn a_new_account_has_no_tutorial_and_what_it_paid() {
     use survarium::v026g::lobby::tutorial_model::State;
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     // The start is what the client is first told: no window for it.
     assert_eq!(told_money(&world.take(alice)), Some((10_000, 500)));
@@ -3009,7 +3155,7 @@ fn a_new_account_has_no_tutorial_and_what_it_paid() {
     let ids = world.ids[alice];
     world.store.end_session(ids.1);
     world.advance(Duration::from_secs(2));
-    let session = world.store.create_session(ids.0);
+    let session = world.new_session(ids.0);
     let again = world.connect_session((ids.0, session));
     world.take(again);
     assert_eq!(world.account(again).generic_money, money);
@@ -3024,7 +3170,7 @@ fn a_new_account_has_no_tutorial_and_what_it_paid() {
 
 #[test]
 fn the_two_boxes_of_the_kit_window_are_kept() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.take(alice);
     // The lobby's number: 2 is auto-repair alone, 3 both, 0 neither.

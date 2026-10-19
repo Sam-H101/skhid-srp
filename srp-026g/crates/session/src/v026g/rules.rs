@@ -1015,10 +1015,7 @@ mod tests {
         // Its weight counts once.
         let pistol_weight =
             account.kit_weight(&account.kits[0]) - item_params(suit.dict_id).unwrap().weight;
-        assert!(
-            (0.0..2.0).contains(&pistol_weight),
-            "{pistol_weight}"
-        );
+        assert!((0.0..2.0).contains(&pistol_weight), "{pistol_weight}");
         // A weapon slot is not covered.
         let pistol_item = account.item(pistol.unwrap().item_id).unwrap().clone();
         put_on(&mut account, &covers, &[relocation(&pistol_item, 7, 10, 1)]);

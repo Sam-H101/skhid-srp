@@ -17,9 +17,8 @@
 //!   the order the client needs.
 //! - [`persist`]: the repositories (SQLite tables `g26_*` in `srp.db`,
 //!   memory).
-//! - [`matches_now`]: which of the matches being played is listed for the
-//!   players, and which score is told: one rule for the launcher's page
-//!   and the lobby's list.
+//! - [`matches_now`]: which of the matches being played the launcher's page
+//!   lists, and which score it tells.
 //! - [`replays`]: "Watch replay": the conversions waiting, each player's
 //!   latest ask, and the download tokens the lobby gives and the web page
 //!   takes.
@@ -47,6 +46,7 @@ pub mod pvb;
 pub mod quests;
 pub mod replays;
 pub mod rewards;
+pub mod rooms;
 pub mod rules;
 pub mod tutorial;
 pub mod wire;
@@ -578,8 +578,14 @@ mod tests {
             assert_eq!(rifle.condition_or_stack, FULL_CONDITION);
             assert_eq!(rifle.modifications, [(2110, false)]);
             let vest = account.item(vest).unwrap();
-            assert_eq!((vest.condition_or_stack, vest.repair_time), (FULL_CONDITION, 0));
-            assert_eq!(account.item(whole).unwrap().condition_or_stack, FULL_CONDITION);
+            assert_eq!(
+                (vest.condition_or_stack, vest.repair_time),
+                (FULL_CONDITION, 0)
+            );
+            assert_eq!(
+                account.item(whole).unwrap().condition_or_stack,
+                FULL_CONDITION
+            );
             assert_eq!(account.item(rounds).unwrap().condition_or_stack, 90);
         }
         // Nothing left to mend.

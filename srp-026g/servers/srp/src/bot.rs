@@ -13,7 +13,8 @@
 //!    typed password does; a new name registers itself there;
 //! 2. signs in at the lobby (UDP, `2E`) and takes the whole account;
 //! 3. presses Play with the kit the account plays (a new account's
-//!    starter kit) and waits in the queue;
+//!    starter kit), which puts it into a room (the lobby's `rooms`), and
+//!    waits there for the room's match;
 //! 4. told where its match is (0x82), connects to the match server with
 //!    its session (0xD8), answers the port probe, takes the static info,
 //!    and says at once that it has loaded (0xDA): it has no level to load;
@@ -52,6 +53,7 @@ use match_server::v026g::scripted::Client as MatchClient;
 use survarium::v026g::lobby::ClientState;
 use survarium::v026g::lobby::client_model::Decoded;
 use survarium::v026g::lobby::requests::id as lobby_id;
+use survarium::v026g::lobby::rooms::ROOM_STATE;
 use survarium::v026g::maps;
 use survarium::v026g::match_msgs::ServerMessage;
 
@@ -79,6 +81,8 @@ const RESULTS_WAIT: Duration = Duration::from_secs(15);
 const PLAY_AGAIN: Duration = Duration::from_secs(3);
 /// A Play the lobby refused is tried again after this.
 const PLAY_REFUSED: Duration = Duration::from_secs(30);
+/// How often a bot that waits for its room's match asks who is in it.
+const ROOM_POLL: Duration = Duration::from_secs(2);
 /// How often a bot in a match says that it is still there.
 const STATUS_EVERY: Duration = Duration::from_secs(30);
 /// How long a pass of the loop sleeps.
@@ -102,9 +106,8 @@ pub struct Config {
     pub kit: Option<u32>,
     /// In a match, send the inputs of the stage 0 script (`srp::drive`).
     pub drive: bool,
-    /// The patch revision its sign-in says: 0, or 5 and later for the
-    /// queue of the games that speak the late join (the lobby keeps the
-    /// two apart, so a bot of 0 never meets such a game).
+    /// The patch revision its sign-in says: one that speaks the late join
+    /// (5 and later; only such a game plays in rooms).
     pub revision: u8,
 }
 
@@ -250,8 +253,8 @@ enum Stage {
     SigningIn(Instant),
     /// In the lobby; Play is pressed at this time.
     Idle(Instant),
-    /// Play is out.
-    Queued,
+    /// Play is out: in a room, waiting for its match.
+    Waiting,
     InMatch(Box<MatchLink>),
     /// Back from a match: the results screen is awaited since then.
     Results(Instant),
@@ -272,8 +275,10 @@ struct Lobby {
     /// The kit the account plays, and what it was told it has.
     kit: Option<u32>,
     money: Option<(u32, u32)>,
-    /// The last queue state told, so that only changes are printed.
-    queue: Option<(u32, u32)>,
+    /// The room it is in and its members, as last told, so that only
+    /// changes are printed; and when it last asked.
+    room: Option<(u32, u32)>,
+    room_asked: Option<Instant>,
     order_id: u32,
     in_lobby: bool,
     /// The results screen (0x97) that came since the last match began, in
@@ -288,8 +293,8 @@ pub struct Bot {
     print: Print,
     stage: Stage,
     lobby: Option<Lobby>,
-    /// Others than this bot wait in the queue (the lobby's last word).
-    pub others_queued: bool,
+    /// Others than this bot are in its room (the lobby's last word).
+    pub others_in_room: bool,
     /// Matches it was in to their end.
     pub matches: u32,
 }
@@ -301,7 +306,7 @@ impl Bot {
             print,
             stage: Stage::SignedOut(Instant::now()),
             lobby: None,
-            others_queued: false,
+            others_in_room: false,
             matches: 0,
         }
     }
@@ -315,9 +320,9 @@ impl Bot {
         matches!(self.stage, Stage::Done)
     }
 
-    /// It waits in the queue.
-    pub fn is_queued(&self) -> bool {
-        matches!(self.stage, Stage::Queued)
+    /// It waits for its room's match.
+    pub fn is_waiting(&self) -> bool {
+        matches!(self.stage, Stage::Waiting)
     }
 
     fn say(&self, text: &str) {
@@ -334,7 +339,7 @@ impl Bot {
     /// The whole sign-in: the login server, then the lobby's `2E`.
     fn start(&mut self, now: Instant) {
         self.lobby = None;
-        self.others_queued = false;
+        self.others_in_room = false;
         let login = match Self::resolve(&self.config.server) {
             Ok(login) => login,
             Err(error) => {
@@ -403,7 +408,8 @@ impl Bot {
             faults_told: 0,
             kit: None,
             money: None,
-            queue: None,
+            room: None,
+            room_asked: None,
             order_id: 1,
             in_lobby: false,
             results: None,
@@ -511,7 +517,7 @@ impl Bot {
                 RETRY.as_secs()
             ));
             self.lobby = None;
-            self.others_queued = false;
+            self.others_in_room = false;
             self.stage = Stage::SignedOut(now + RETRY);
             return;
         }
@@ -541,13 +547,14 @@ impl Bot {
                     if let Some(lobby) = &mut self.lobby {
                         let (id, body) = request::play(kit);
                         lobby.client.send(id, &body);
-                        lobby.queue = None;
+                        lobby.room = None;
+                        lobby.room_asked = None;
                     }
                     self.say(&format!("pressed Play with kit {kit}"));
-                    self.stage = Stage::Queued;
+                    self.stage = Stage::Waiting;
                 }
             }
-            Stage::Queued => self.queued(&decoded, now),
+            Stage::Waiting => self.waiting(&decoded, now),
             Stage::InMatch(_) => self.in_match(now),
             Stage::Results(since) => {
                 let since = *since;
@@ -580,40 +587,50 @@ impl Bot {
         }
     }
 
-    /// In the queue: its place, then the match's address (0x82).
-    fn queued(&mut self, decoded: &[Decoded], now: Instant) {
+    /// Waiting: who is in its room (asked every [`ROOM_POLL`]), then
+    /// "match found" and the match's address (0x82).
+    fn waiting(&mut self, decoded: &[Decoded], now: Instant) {
+        if let Some(lobby) = &mut self.lobby
+            && lobby
+                .room_asked
+                .is_none_or(|asked| now.saturating_duration_since(asked) >= ROOM_POLL)
+        {
+            let (id, body) = request::ranking(ROOM_STATE, 1);
+            lobby.client.send(id, &body);
+            lobby.room_asked = Some(now);
+        }
         for message in decoded {
             match message {
-                Decoded::ClientState {
-                    state:
-                        ClientState::InQueue {
-                            place, queue_total, ..
-                        },
-                    ..
-                } => {
-                    self.others_queued = *queue_total >= 2;
-                    let told = (*place, *queue_total);
-                    let last = self.lobby.as_ref().and_then(|lobby| lobby.queue);
-                    if last != Some(told) {
+                Decoded::EloList(rows) if rows.first().is_some_and(|row| row.1 == ROOM_STATE) => {
+                    // `S1;R;<key>;..;<members>;..` (`lobby::rooms::room_state`).
+                    let fields: Vec<&str> = rows[0].0.split(';').collect();
+                    let room = (fields.get(1) == Some(&"R"))
+                        .then(|| {
+                            Some((fields.get(2)?.parse().ok()?, fields.get(11)?.parse().ok()?))
+                        })
+                        .flatten();
+                    self.others_in_room = room.is_some_and(|(_, members)| members >= 2);
+                    let last = self.lobby.as_ref().and_then(|lobby| lobby.room);
+                    if room.is_some() && last != room {
                         if let Some(lobby) = &mut self.lobby {
-                            lobby.queue = Some(told);
+                            lobby.room = room;
                         }
-                        if *place == 0 {
-                            self.say("a match is found");
-                        } else {
-                            self.say(&format!(
-                                "in the queue: place {place} of {queue_total} (a match needs \
-                                 two players)"
-                            ));
-                        }
+                        let (key, members) = room.unwrap_or_default();
+                        self.say(&format!(
+                            "in room {key}: {members} in it (a match needs two players)"
+                        ));
                     }
                 }
+                Decoded::ClientState {
+                    state: ClientState::InQueue { place: 0, .. },
+                    ..
+                } => self.say("a match is found"),
                 Decoded::Denied { op, text } if *op == lobby_id::PLAY => {
                     self.say(&format!(
                         "the lobby refused Play ({text}); again in {} s",
                         PLAY_REFUSED.as_secs()
                     ));
-                    self.others_queued = false;
+                    self.others_in_room = false;
                     self.stage = Stage::Idle(now + PLAY_REFUSED);
                     return;
                 }
@@ -627,7 +644,7 @@ impl Bot {
                     // The game sends the `82`'s session in 0xD8 and 0xD9,
                     // never its login one (lobby.md §2.2).
                     let session = *match_session;
-                    self.others_queued = false;
+                    self.others_in_room = false;
                     if let Some(lobby) = &mut self.lobby {
                         lobby.results = None;
                     }
@@ -893,16 +910,18 @@ impl Bot {
 
 /// Run the bots until `stop` is set or each has stopped by itself (after
 /// its one match, or refused at the login server). The first bot presses
-/// Play as soon as it is in the lobby and waits there for a real player;
-/// the others press Play once somebody else waits in the queue, so that
-/// the bots do not make matches among themselves.
+/// Play as soon as it is in the lobby and waits in its room for a real
+/// player; the others press Play once somebody else is in a waiting bot's
+/// room, so that the bots do not make matches among themselves.
 pub fn run(configs: Vec<Config>, print: Print, stop: &AtomicBool) {
     let mut bots: Vec<Bot> = configs
         .into_iter()
         .map(|config| Bot::new(config, print.clone()))
         .collect();
     while !stop.load(Ordering::Relaxed) && !bots.iter().all(Bot::is_done) {
-        let somebody_waits = bots.iter().any(|bot| bot.is_queued() && bot.others_queued);
+        let somebody_waits = bots
+            .iter()
+            .any(|bot| bot.is_waiting() && bot.others_in_room);
         // The first bot that is not done leads.
         let leader = bots.iter().position(|bot| !bot.is_done());
         for (index, bot) in bots.iter_mut().enumerate() {

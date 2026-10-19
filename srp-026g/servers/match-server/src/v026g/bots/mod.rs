@@ -76,7 +76,7 @@ use tactics::Tactics;
 use team::{Asking, Assignment};
 use trace::Trace;
 use tuning::Tuning;
-use view::{BatteryState, Clock, MatchView, Place, PlaceView, SoundKind, Tracker, WorldFacts};
+use view::{BatteryState, Clock, MatchView, Place, PlaceView, Tracker, WorldFacts};
 
 /// From a bot's entry to its first move, ms.
 const START_AFTER_MS: u32 = 2_000;
@@ -119,10 +119,6 @@ const THEFT_RING_POINTS: usize = 6;
 const THEFT_RING_M: f32 = 4.0;
 const THEFT_RING_MS: u32 = 20_000;
 const THEFT_LOOK_KEEP_MS: u32 = 30_000;
-/// A death this recent is a fight where it fell, for the choice of the bot
-/// that gives way to a late joiner ([`Bots::to_give_way`]), ms.
-const FIGHT_DEATH_MS: u32 = 10_000;
-
 /// An input a bot made.
 #[derive(Clone, Debug)]
 pub struct Made {
@@ -707,44 +703,6 @@ impl Bots {
         for team in &mut self.teams {
             team.knowledge.forget(place);
         }
-    }
-
-    /// Which of `candidates` (bots of one side, in the match) gives its
-    /// place up to a human who joined late (`game/driven.rs`, "Giving
-    /// way"), with the clock at `clock`: one dead or waiting to see its
-    /// body first, else the living one farthest from any fight (an enemy,
-    /// a shot heard, a death of the last [`FIGHT_DEATH_MS`]); never one
-    /// carrying a battery as the view has it, and never a living one of a
-    /// side that can no longer respawn (Team Deathmatch out of tickets: it
-    /// could be its side's last life, and the mode's rule ends the match
-    /// when that goes, `rules::tdm_finished`). `None`: none may go now.
-    pub fn to_give_way(&self, candidates: &[Place], clock: u32) -> Option<Place> {
-        let world = self.tactics.as_ref().map(|t| t.world.clone());
-        let at = Clock {
-            clock,
-            time_left_s: 0.0,
-            total_s: 0.0,
-            playing: true,
-        };
-        let view = self.tracker.view(&at, &self.tuning.kin, world.as_deref());
-        candidates
-            .iter()
-            .filter_map(|&place| {
-                let me = view.place(place)?;
-                if me.carrying.is_some()
-                    || (me.alive && !view.can_respawn[usize::from(me.team & 1)])
-                {
-                    return None;
-                }
-                let away = if me.alive {
-                    from_fight(&view, me)
-                } else {
-                    f32::INFINITY
-                };
-                Some((!me.alive, away, place))
-            })
-            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)))
-            .map(|(_, _, place)| place)
     }
 
     pub fn has_entered(&self, place: Place) -> bool {
@@ -1874,28 +1832,6 @@ fn learn_no_way(team: &mut Vec<(Vec3, u32)>, own: &[(Vec3, u32)], now: u32) {
 /// ([`TEAM_NO_WAY_KEEP_MS`]), for the commander's choice.
 fn team_no_way(own: &[(Vec3, u32)], team: &[(Vec3, u32)]) -> Vec<(Vec3, u32)> {
     own.iter().chain(team).copied().collect()
-}
-
-/// How far `me` is from any fight, metres: the nearest enemy in the match
-/// and alive, shot heard (the view keeps the last few seconds of them) or
-/// death of the last [`FIGHT_DEATH_MS`]; infinite with none.
-fn from_fight(view: &MatchView, me: &PlaceView) -> f32 {
-    let enemies = view.enemies_of(me.team).map(|enemy| enemy.feet);
-    let shots = view
-        .sounds
-        .iter()
-        .filter(|sound| sound.kind == SoundKind::Shot)
-        .map(|sound| sound.at);
-    let deaths = view
-        .deaths
-        .iter()
-        .filter(|death| death.time + FIGHT_DEATH_MS >= view.clock)
-        .map(|death| death.at);
-    enemies
-        .chain(shots)
-        .chain(deaths)
-        .map(|at| at.distance_xz(me.feet))
-        .fold(f32::INFINITY, f32::min)
 }
 
 /// One tick of a living bot (`me` with its base pitch): the reflex's look

@@ -118,7 +118,7 @@ impl World {
 /// number of rows.
 #[test]
 fn the_ranking_page_is_right_after_a_restart_and_a_new_player() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -215,7 +215,7 @@ fn ordered(ids: &[u8]) -> Vec<u8> {
 
 #[test]
 fn the_daily_bonus_is_in_the_clients_order_byte_for_byte() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     // One day, nothing won; a stack (the flag FIRST), item id 0, dict
     // 0xD7, 50 of it; no modifications, no upgrades; not given; the
@@ -232,7 +232,7 @@ fn the_daily_bonus_is_in_the_clients_order_byte_for_byte() {
 
 #[test]
 fn a_game_that_connects_again_after_a_restart_takes_the_whole_sign_in_again() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let held = world.client(alice).model.inventory().to_vec();
@@ -278,7 +278,7 @@ fn a_game_that_connects_again_after_a_restart_takes_the_whole_sign_in_again() {
 
 #[test]
 fn a_game_whose_link_went_silent_connects_again_with_all_it_holds() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let session_id = world.ids[alice].1;
     let held = world.client(alice).model.inventory().to_vec();

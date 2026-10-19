@@ -74,7 +74,7 @@ fn chat_lines(pushed: &[(u8, Vec<u8>)]) -> Vec<(u8, Vec<u8>)> {
 
 #[test]
 fn a_private_line_for_nobody_in_the_lobby_is_answered_with_player_not_found() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     // An account that is not in the lobby.
@@ -143,7 +143,7 @@ fn a_private_line_for_nobody_in_the_lobby_is_answered_with_player_not_found() {
 
 #[test]
 fn a_friend_request_or_an_invite_for_nobody_is_answered_with_player_not_found() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -218,7 +218,7 @@ fn a_friend_request_or_an_invite_for_nobody_is_answered_with_player_not_found() 
 
 #[test]
 fn a_refused_squad_action_is_answered_with_the_squad_and_no_text() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
@@ -261,7 +261,7 @@ fn the_general_channel_is_one_room_for_every_language() {
     // THE OWNER'S RULE (2026-10-12), as on 0.21d: English, Ukrainian and
     // Russian players share the general chat. A client names a room of its
     // language in `4F`; the server does not split by it.
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let english = world.connect("Emma");
     let ukrainian = world.connect("Taras");
     let russian = world.connect("Ivan");
@@ -336,7 +336,7 @@ fn a_stock_clients_own_spam_filter_is_stricter_than_the_servers_limit() {
     // line and prints the text itself. So the server's limit must never
     // drop a line a stock client's filter let through, or the player would
     // lose a line with no notice.
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     for client in [alice, bob] {
@@ -442,7 +442,7 @@ impl World {
 
 #[test]
 fn a_row_of_an_open_results_screen_is_answered_however_many_matches_ended_since() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (match_id, _) = world.match_of(alice, bob);

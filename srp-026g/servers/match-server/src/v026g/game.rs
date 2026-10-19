@@ -893,9 +893,6 @@ pub(crate) struct Game {
     /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
     /// ([`driven`], stage 2).
     walkers: Option<driven::Walkers>,
-    /// Bots that owe their place to a late joiner and could not leave yet
-    /// ([`driven`], "Giving way").
-    owed: Vec<driven::Owed>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -955,7 +952,6 @@ impl Game {
             recording: None,
             drives: Self::new_drives(&formed),
             walkers,
-            owed: Vec::new(),
             formed,
         }
     }
@@ -1136,6 +1132,16 @@ impl Game {
             .position(|peer| peer.as_ref().is_some_and(|peer| peer.addr == addr))
     }
 
+    /// The session of the client that was at place `index` and is gone
+    /// (it left, or timed out) while its link is still kept.
+    pub fn gone_session(&self, index: usize) -> Option<u32> {
+        self.peers
+            .get(index)?
+            .as_ref()
+            .filter(|peer| peer.stage == Stage::Gone)
+            .map(|peer| peer.session_id)
+    }
+
     /// The sessions of the clients connected.
     pub fn sessions(&self) -> Vec<u32> {
         self.peers
@@ -1165,6 +1171,18 @@ impl Game {
         }
         if self.peers[index].is_some() {
             self.leave(index, now);
+        }
+        // A place it left before, from this address (it left by its own
+        // word and came again as a new place): that link is done with, and
+        // the address is this place's.
+        for (other, slot) in self.peers.iter_mut().enumerate() {
+            if other != index
+                && slot
+                    .as_ref()
+                    .is_some_and(|peer| peer.addr == addr && peer.stage == Stage::Gone)
+            {
+                *slot = None;
+            }
         }
         self.reset_catchup(index, true);
         log::info!(
@@ -6026,17 +6044,6 @@ impl Game {
 
     pub fn set_clock_correction(&mut self, on: bool) {
         self.settings.clock_correction = on;
-    }
-
-    /// Every roster change so far: its tick, the place, entered (else
-    /// left).
-    pub fn roster_events(&self) -> &[(u32, usize, bool)] {
-        &self.events
-    }
-
-    /// How many bots owe their place to a late joiner and have not left.
-    pub fn bots_owing(&self) -> usize {
-        self.owed.len()
     }
 
     /// Whether the client is in a resync (`Peer::resync_from`), and

@@ -54,7 +54,7 @@ impl World {
 fn a_client_that_only_sends_keep_alives_is_never_dropped() {
     // Out of focus, or idle in the lobby: the client's link still sends
     // its `FC` (transport.md §6.1).
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.advance(Duration::from_secs(300));
     assert!(world.has_link(alice));
@@ -65,28 +65,29 @@ fn a_client_that_only_sends_keep_alives_is_never_dropped() {
 
 #[test]
 fn a_client_silent_for_less_than_the_timeout_keeps_its_link() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.ask(alice, request::play(1));
     world.take(alice);
     world.silent_for(alice, Duration::from_secs(25));
     assert!(world.has_link(alice));
-    // And it is still in the queue, and still served.
-    assert_eq!(world.store.matchmaking().busy_sessions().len(), 1);
+    // And it is still in its room, and still served.
+    assert!(world.core.rooms.of(world.ids[alice].0).is_some());
     world.advance(Duration::from_secs(3));
-    assert!(matches!(
-        queue_state(&world.take(alice)),
-        Some(ClientState::InQueue { .. })
-    ));
-    // (The queue's states were sent again while it acked none: the copies
-    // it drops as not newer are no fault.)
+    world.ask(alice, request::autobuy(true));
+    assert!(
+        world
+            .take(alice)
+            .iter()
+            .any(|message| matches!(message, Decoded::Permitted(Permitted::Autobuy(true))))
+    );
     assert_eq!(world.client(alice).faults, Vec::<String>::new());
     assert_eq!(world.client(alice).waiting_in_order(), 0);
 }
 
 #[test]
 fn a_silent_client_is_out_of_the_lobby_first_and_its_session_ends_after_the_wait() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.ask(alice, request::play(1));
@@ -116,7 +117,7 @@ fn a_silent_client_is_out_of_the_lobby_first_and_its_session_ends_after_the_wait
 
 #[test]
 fn a_silent_client_that_connects_again_in_time_is_taken_back() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let session_id = world.ids[alice].1;
     world.silent_for(alice, Duration::from_secs(45));
@@ -133,16 +134,14 @@ fn a_silent_client_that_connects_again_in_time_is_taken_back() {
     assert_eq!(world.store.players_online(), 1);
     // And the lobby serves it.
     world.ask(alice, request::play(1));
-    assert!(matches!(
-        queue_state(&world.take(alice)),
-        Some(ClientState::InQueue { .. })
-    ));
+    assert_eq!(denial(&world.take(alice), 0x2F), None);
+    assert!(world.core.rooms.of(world.ids[alice].0).is_some());
     world.assert_clean();
 }
 
 #[test]
 fn a_client_in_a_match_may_be_silent_for_longer() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let (match_id, alice_team) = world.match_of(alice, bob);
@@ -168,7 +167,7 @@ fn a_client_in_a_match_may_be_silent_for_longer() {
 
 #[test]
 fn a_link_lost_in_a_match_comes_back_into_the_match() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let session_id = world.ids[alice].1;
@@ -201,13 +200,19 @@ fn a_link_lost_in_a_match_comes_back_into_the_match() {
 
 #[test]
 fn a_client_away_through_its_match_comes_back_to_the_lobby_after_it() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
     let dave = world.connect("Dave");
     let (alice_session, carol_session) = (world.ids[alice].1, world.ids[carol].1);
+    // Carol and Dave are of a level far from Alice's: Carol makes a room of
+    // her own, and Dave's Play takes it, the room nearest his level.
+    for player in [carol, dave] {
+        super::pvb_tests::with_gear(&mut world, player, 6);
+    }
     let (first, alice_team) = world.match_of(alice, bob);
+    super::rooms_tests::create(&mut world, carol, super::rooms_tests::spec(8), None);
     let (second, carol_team) = world.match_of(carol, dave);
     world.silent_for(alice, Duration::from_secs(121));
     // Carol's game is gone for good.
@@ -237,13 +242,13 @@ fn a_client_away_through_its_match_comes_back_to_the_lobby_after_it() {
 
 #[test]
 fn an_account_that_signs_in_anew_ends_the_session_that_waited() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let (account_id, old_session) = world.ids[alice];
     world.silent_for(alice, Duration::from_secs(31));
     assert!(world.core.away.contains_key(&old_session));
     // The player started the game again and signed in: a new session.
-    let new_session = world.store.create_session(account_id);
+    let new_session = world.new_session(account_id);
     let again = world.connect_session((account_id, new_session));
     assert!(world.client(again).model.is_signed_in());
     assert!(world.core.away.is_empty());
@@ -253,7 +258,7 @@ fn an_account_that_signs_in_anew_ends_the_session_that_waited() {
 
 #[test]
 fn with_no_wait_a_silent_client_loses_its_session_with_its_link() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     world.core.settings.session_grace = Duration::ZERO;
     let alice = world.connect("Alice");
     let session_id = world.ids[alice].1;
@@ -269,7 +274,7 @@ fn a_drop_query_is_not_answered() {
     // `42 00 <u32>`: sent only after a chat line of the statistics
     // service on channel 4, which srp never sends; nothing in the client
     // waits for an answer (results.md §5.3).
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.advance(Duration::from_secs(6));
     world.take(alice);

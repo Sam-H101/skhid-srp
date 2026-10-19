@@ -1,8 +1,12 @@
-//! Experimental `GrowingRoster` uses `matchmaking_policy`: two minutes from
-//! the second queued player, no arrival extensions, full balanced matches early.
-//! Whole squads are selected together, team sizes differ by at most one, and
-//! team-average levels are balanced without a level-range admission restriction.
-//! Standard matchmaking below retains its existing rules.
+//! The matches and their seats, and 0.21d's queue.
+//!
+//! A 0.26g match is seated at once by the lobby: a room's two sides
+//! ([`Matchmaking::seat_sides_in_pool`], its members who come later on
+//! [`Matchmaking::append_player`]), a clan match's two teams
+//! ([`Matchmaking::seat_teams_in_pool`]), or one player against the
+//! server's bots ([`Matchmaking::seat_solo`]). 0.26g has no queue: its
+//! queue, the level search and the late joins it scored went with the
+//! rooms (the owner's of 2026-10-17).
 //!
 //! 0.21d matchmaking. A 0.21d match has a fixed roster: every client is sent
 //! the whole player list (0x51) before it loads, and a player not on it can
@@ -14,17 +18,6 @@
 //!   starts when the second party joins; a player or a squad alone waits
 //!   for as long as it takes, and if the queue drops back to one party,
 //!   the window starts over.
-//! - A queue that looks at levels (0.26g's, [`Matchmaking::poll_with`]) is
-//!   stricter, and its rules are, for the players:
-//!   1. A full match starts at once.
-//!   2. 10 or more waiting: it starts when nobody has pressed Play for 30 s.
-//!   3. 4 to 9 waiting: a countdown of 60 s starts when the queue gets its
-//!      4th player; each time somebody presses Play, 30 s are added to what
-//!      is left of it.
-//!   4. No countdown runs longer than 2 minutes from its start.
-//!   5. Fewer than 4 players, or only one side (one player alone, one squad
-//!      alone), wait; if the queue drops under 4 the countdown is cancelled
-//!      and starts anew at the 4th.
 //! - A squad queues as one group and plays on one team, so a squad alone
 //!   would have nobody against it: it is one party, whatever its size.
 //!   (Until 2026-10-12 the count was of players, and two squadmates alone
@@ -34,22 +27,20 @@
 //!   player who left the match by its own will (its client says so on the
 //!   match link: [`Matchmaking::give_up_seat`]) has given the seat up:
 //!   Play queues it for another match. (Until 2026-10-12 Play sent it back
-//!   to the match it had just left, for as long as that match ran.)
+//!   to the match it had just left, for as long as that match ran.) A seat
+//!   given up is a place of the roster still, and the account may be
+//!   seated in the same match again as a new place
+//!   ([`Matchmaking::append_player`]; the owner's of 2026-10-19): its
+//!   seats are told apart by their places, never by the account alone.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::LockExt;
-use crate::matchmaking_policy::{self as policy, Team, Worth};
 
 /// `player_profile[20]` in the client's `match_options`.
 pub const MAX_PLAYERS_PER_MATCH: usize = 20;
-/// The most players of a side when `SRP_MATCH_TEAM_SIZE` is unset: 8 a side,
-/// the owner's word for the release of 2026-10-18 ("8vs8 not 10vs10"), as
-/// the wiki's "two teams of up to 8 players" (February 2015;
-/// `progression_sources.md` §9). The client's roster allows 10 a side.
-pub const DEFAULT_TEAM_SIZE: usize = 8;
 /// The first match id handed out.
 const FIRST_MATCH_ID: u32 = 0x123;
 /// With this many waiting (5 v 5), a match starts once nobody has joined the
@@ -58,15 +49,6 @@ pub const DEFAULT_FILL_PLAYERS: usize = 10;
 pub const DEFAULT_QUIET_PERIOD: Duration = Duration::from_secs(30);
 /// How long the queue gathers players by default.
 pub const DEFAULT_GATHER_WINDOW: Duration = Duration::from_secs(60);
-/// A queue that looks at levels (0.26g's) starts no match with fewer players
-/// than this (`SRP_MATCH_MIN_PLAYERS`).
-pub const DEFAULT_MIN_PLAYERS: usize = 4;
-/// Each time somebody presses Play while the countdown runs, that much is
-/// added to what is left of it (`SRP_MATCH_JOIN_EXTENSION_SECONDS`).
-pub const DEFAULT_JOIN_EXTENSION: Duration = Duration::from_secs(30);
-/// No countdown runs longer than this from its start
-/// (`SRP_MATCH_MAX_COUNTDOWN_SECONDS`).
-pub const DEFAULT_MAX_COUNTDOWN: Duration = Duration::from_secs(120);
 
 /// A player who pressed Play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,47 +94,19 @@ pub enum QueueState {
     },
 }
 
-/// The levels a player is looked for a match at before it has waited
-/// (0.26g: `match_maker_defines.items_levels_modifiers`' `item_level_min`
-/// and `item_level_max` of its row; `crate::v026g::matchmaking`).
+/// A player's gear level (0.26g: `match_maker_defines.items_levels_modifiers`'
+/// `item_level_min` of its row; `crate::v026g::matchmaking`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Level {
     pub min: u8,
-    pub max: u8,
 }
 
-/// One level, as a player's strength counts it
-/// ([`QueuedGroup::player_strength`]): strengths are whole numbers, so a
-/// part of a level can be told.
+/// One level, as a player's strength counts it: strengths are whole
+/// numbers, so a part of a level can be told.
 pub const STRENGTH_SCALE: i32 = 100;
 
-/// The rules of a queue that looks at levels (0.26g's). Without them
-/// ([`Matchmaking::poll`]) a match takes whoever waits, up to
-/// [`MAX_PLAYERS_PER_MATCH`], as 0.21d's does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LevelRules {
-    /// The most players of a side; a match has two sides.
-    pub team_size: usize,
-    /// A waiting player's range of levels grows by one at each end every
-    /// `step` it has waited (what the 0.26g client shows as its search
-    /// range: 0x225655). Zero: levels do not matter.
-    pub step: Duration,
-}
-
-impl LevelRules {
-    /// The most players of a match.
-    pub fn match_size(&self) -> usize {
-        (self.team_size.max(1) * 2).min(MAX_PLAYERS_PER_MATCH)
-    }
-
-    /// How many levels the range has grown by after `waited`; `None` when
-    /// levels do not matter.
-    fn widened(&self, waited: Duration) -> Option<u128> {
-        (!self.step.is_zero()).then(|| waited.as_millis() / self.step.as_millis().max(1))
-    }
-}
-
-/// Clients from different pools never share a newly formed match.
+/// Clients from different pools never share a match: a 0.26g game that
+/// takes late joiners (`GrowingRoster`, patch revision 5 on) or not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum QueuePool {
     #[default]
@@ -160,77 +114,15 @@ pub enum QueuePool {
     GrowingRoster,
 }
 
-/// An immutable queue observation; admission checks it again before committing.
+/// A party that waits in 0.21d's queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QueuedGroup {
-    pub players: Vec<Player>,
-    /// By player; empty in a queue without levels.
-    levels: Vec<Level>,
-    /// By player: what it counts for when the sides are made
-    /// ([`Matchmaking::set_strengths`]); a player without one counts for
-    /// its level.
-    strengths: Vec<Option<i32>>,
-    pub squad: bool,
-    pub since: Instant,
-    pub pool: QueuePool,
+struct QueuedGroup {
+    players: Vec<Player>,
+    squad: bool,
+    since: Instant,
 }
 
 impl QueuedGroup {
-    pub fn population(&self) -> Team {
-        Team {
-            players: self.players.len(),
-            level_sum: (0..self.players.len())
-                .map(|i| u32::from(self.player_level(i)))
-                .sum(),
-        }
-    }
-
-    /// The group as a match being played counts it: its players and what
-    /// they count for together ([`Self::player_strength`]).
-    pub fn worth(&self) -> Worth {
-        Worth {
-            players: self.players.len(),
-            strength: (0..self.players.len())
-                .map(|index| i64::from(self.player_strength(index)))
-                .sum(),
-        }
-    }
-
-    /// The group is looked for a match by its highest player [LIKELY: the
-    /// client takes the highest of an account's kits the same way].
-    fn level(&self) -> Level {
-        self.levels
-            .iter()
-            .copied()
-            .max_by_key(|level| (level.min, level.max))
-            .unwrap_or_default()
-    }
-
-    /// Does this group's widened search range include an existing match?
-    pub fn accepts_level(&self, level: u8, now: Instant, rules: &LevelRules) -> bool {
-        let own = self.level();
-        let distance = u128::from(own.min.saturating_sub(level))
-            + u128::from(level.saturating_sub(own.max.max(own.min)));
-        rules
-            .widened(now.saturating_duration_since(self.since))
-            .is_none_or(|widened| distance <= widened)
-    }
-
-    /// The level of a player, 0 without levels.
-    pub fn player_level(&self, index: usize) -> u8 {
-        self.levels.get(index).map_or(0, |level| level.min)
-    }
-
-    /// What a player counts for when the sides are made, in
-    /// [`STRENGTH_SCALE`]s: the strength it was given, else its level.
-    pub fn player_strength(&self, index: usize) -> i32 {
-        self.strengths
-            .get(index)
-            .copied()
-            .flatten()
-            .unwrap_or_else(|| i32::from(self.player_level(index)) * STRENGTH_SCALE)
-    }
-
     /// How many parties it is: a squad is one (its players came together
     /// and play on one team), every other player one of its own.
     fn parties(&self) -> usize {
@@ -238,34 +130,12 @@ impl QueuedGroup {
     }
 }
 
-struct Countdown {
-    since: Instant,
-    extra: Duration,
-}
-
 struct Inner {
-    growing_gather: Duration,
-    /// The fewest players a new match of the growing queue starts with
-    /// (`SRP_GROWING_MIN_PLAYERS`, 2 to a whole match; default 2: one
-    /// against one, and whoever comes later joins them).
-    growing_min_players: usize,
-    population_exponent: f64,
     gather: Duration,
     fill_players: usize,
     quiet: Duration,
-    /// The fewest players a leveled queue starts a match with.
-    min_players: usize,
-    /// What a press of Play adds to the countdown left.
-    extension: Duration,
-    /// The longest a countdown runs.
-    max_countdown: Duration,
-    /// What a player counts for by being there, whatever its strength
-    /// ([`Matchmaking::set_player_value`]).
-    player_value: i32,
     /// When someone last pressed Play.
     last_joined: Option<Instant>,
-    pool_last_joined: HashMap<QueuePool, Instant>,
-    pool_countdowns: HashMap<QueuePool, Countdown>,
     /// When the queue got its second party (a player alone or a squad:
     /// [`QueuedGroup::parties`]); `None` while it has fewer.
     gathering_since: Option<Instant>,
@@ -280,8 +150,12 @@ struct Inner {
     /// after the one that pressed Play dropped.
     told: HashSet<u32>,
     /// The seats given up ([`Matchmaking::give_up_seat`]), by match and
-    /// account. The place stays in the roster, which is fixed.
-    given_up: HashSet<(u32, u32)>,
+    /// roster place. The place stays in the roster, which is fixed.
+    given_up: HashSet<(u32, usize)>,
+    /// `(match, account)`: who left its match by its own word
+    /// ([`Matchmaking::leave_match`]) and the lobby was not told yet
+    /// ([`Matchmaking::take_left`]).
+    left: Vec<(u32, u32)>,
 }
 
 pub struct Matchmaking {
@@ -290,26 +164,12 @@ pub struct Matchmaking {
 
 impl Matchmaking {
     pub fn new(gather: Duration) -> Self {
-        let (growing_min_players, growing_gather) = growing_start_rules_from_env();
         Self {
             inner: Mutex::new(Inner {
-                growing_gather,
-                growing_min_players,
-                population_exponent: env_number::<f64>("SRP_GROWING_POPULATION_EXPONENT")
-                    .filter(|p| p.is_finite() && *p > 0.0 && *p <= 8.0)
-                    .unwrap_or(1.0),
                 gather,
                 fill_players: fill_from_env(),
                 quiet: quiet_from_env(),
-                min_players: env_number("SRP_MATCH_MIN_PLAYERS").unwrap_or(DEFAULT_MIN_PLAYERS),
-                extension: env_number("SRP_MATCH_JOIN_EXTENSION_SECONDS")
-                    .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
-                max_countdown: env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
-                    .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
-                player_value: 0,
                 last_joined: None,
-                pool_last_joined: HashMap::new(),
-                pool_countdowns: HashMap::new(),
                 gathering_since: None,
                 next_match_id: FIRST_MATCH_ID,
                 queue: Vec::new(),
@@ -319,76 +179,8 @@ impl Matchmaking {
                 formed_at: HashMap::new(),
                 told: HashSet::new(),
                 given_up: HashSet::new(),
+                left: Vec::new(),
             }),
-        }
-    }
-
-    /// Configure the experimental pool independently of standard matchmaking.
-    pub fn set_growing_rules(&self, gather: Duration, population_exponent: f64) {
-        assert!(
-            population_exponent.is_finite()
-                && population_exponent > 0.0
-                && population_exponent <= 8.0
-        );
-        let mut inner = self.inner.locked();
-        inner.growing_gather = gather;
-        inner.population_exponent = population_exponent;
-    }
-
-    pub fn population_exponent(&self) -> f64 {
-        self.inner.locked().population_exponent
-    }
-
-    /// The fewest players a new match of the growing queue starts with, in
-    /// place of the environment's; 2 at least.
-    pub fn set_growing_min_players(&self, players: usize) {
-        self.inner.locked().growing_min_players = players.clamp(2, MAX_PLAYERS_PER_MATCH);
-    }
-
-    /// The start rules of the leveled queue ([`Self::poll_with`]) in place
-    /// of the environment's: the fewest players for a match, what a press
-    /// of Play adds to the countdown left, and the longest a countdown runs.
-    pub fn with_start_rules(
-        self,
-        min_players: usize,
-        extension: Duration,
-        longest: Duration,
-    ) -> Self {
-        self.set_start_rules(min_players, extension, longest);
-        self
-    }
-
-    /// [`Self::with_start_rules`] on a queue already made.
-    pub fn set_start_rules(&self, min_players: usize, extension: Duration, longest: Duration) {
-        let mut inner = self.inner.locked();
-        inner.min_players = min_players;
-        inner.extension = extension;
-        inner.max_countdown = longest;
-    }
-
-    /// What a player counts for by being there when the leveled queue
-    /// makes the sides, in [`STRENGTH_SCALE`]s, on top of its own strength.
-    /// With an odd count the side with one player more has this much more,
-    /// so the stronger players go to the smaller side. 0 (the default):
-    /// only the strengths are made even.
-    pub fn set_player_value(&self, value: i32) {
-        self.inner.locked().player_value = value.max(0);
-    }
-
-    /// What each of these accounts counts for when the sides are made, in
-    /// [`STRENGTH_SCALE`]s, for the ones that wait. Nothing else of the
-    /// queue changes: no party's wait or countdown starts again.
-    pub fn set_strengths(&self, strengths: &[(u32, i32)]) {
-        let mut inner = self.inner.locked();
-        for group in &mut inner.queue {
-            group.strengths.resize(group.players.len(), None);
-            for (player, strength) in group.players.iter().zip(&mut group.strengths) {
-                if let Some((_, current)) =
-                    strengths.iter().find(|(id, _)| *id == player.account_id)
-                {
-                    *strength = Some(*current);
-                }
-            }
         }
     }
 
@@ -398,42 +190,12 @@ impl Matchmaking {
     /// A squad is one party, and a match needs two: a squad alone in the
     /// queue waits for somebody who is not of it.
     pub fn queue(&self, players: &[Player], squad: bool, now: Instant) {
-        self.queue_leveled(players, &[], squad, now);
-    }
-
-    /// [`Self::queue`] with each player's level (`levels[i]` is
-    /// `players[i]`'s; a player without one has level 0), for a queue
-    /// polled with [`Self::poll_with`].
-    pub fn queue_leveled(&self, players: &[Player], levels: &[Level], squad: bool, now: Instant) {
-        self.queue_in_pool(players, levels, squad, now, QueuePool::Standard);
-    }
-
-    pub fn queue_in_pool(
-        &self,
-        players: &[Player],
-        levels: &[Level],
-        squad: bool,
-        now: Instant,
-        pool: QueuePool,
-    ) {
         let mut inner = self.inner.locked();
-        let mut waiting = Vec::new();
-        let mut waiting_levels = Vec::new();
-        for (index, player) in players.iter().enumerate() {
-            let before = inner
-                .seat_of_account_mut(player.account_id)
-                .map(|seat| std::mem::replace(&mut seat.player.session_id, player.session_id));
-            match before {
-                // Pressing Play sends it to its match again.
-                Some(session_id) => {
-                    inner.told.remove(&session_id);
-                }
-                None => {
-                    waiting.push(*player);
-                    waiting_levels.push(levels.get(index).copied().unwrap_or_default());
-                }
-            }
-        }
+        let waiting: Vec<Player> = players
+            .iter()
+            .filter(|player| !inner.back_to_seat(**player))
+            .copied()
+            .collect();
         if waiting.is_empty() {
             return;
         }
@@ -445,40 +207,13 @@ impl Matchmaking {
             })
         });
         let joined = waiting.len();
-        let counting = inner.pool_countdowns.contains_key(&pool);
-        if pool == QueuePool::GrowingRoster && !squad {
-            for (player, level) in waiting.into_iter().zip(waiting_levels) {
-                inner.queue.push(QueuedGroup {
-                    players: vec![player],
-                    levels: vec![level],
-                    strengths: Vec::new(),
-                    squad: false,
-                    since: now,
-                    pool,
-                });
-            }
-        } else {
-            inner.queue.push(QueuedGroup {
-                players: waiting,
-                levels: waiting_levels,
-                strengths: Vec::new(),
-                squad,
-                since: now,
-                pool,
-            });
-        }
-        if pool == QueuePool::Standard {
-            inner.last_joined = Some(now);
-        }
-        inner.pool_last_joined.insert(pool, now);
+        inner.queue.push(QueuedGroup {
+            players: waiting,
+            squad,
+            since: now,
+        });
+        inner.last_joined = Some(now);
         inner.track(now);
-        let extension = inner.extension;
-        if pool == QueuePool::Standard
-            && counting
-            && let Some(countdown) = inner.pool_countdowns.get_mut(&pool)
-        {
-            countdown.extra += extension;
-        }
         log::info!(
             "Queue: {joined} joined{}; {} waiting",
             if squad { " as a squad" } else { "" },
@@ -486,79 +221,20 @@ impl Matchmaking {
         );
     }
 
-    /// Read waiting parties without forming new matches.
-    pub fn queued_groups(&self, pool: QueuePool) -> Vec<QueuedGroup> {
-        self.inner
-            .locked()
-            .queue
-            .iter()
-            .filter(|group| group.pool == pool)
-            .cloned()
-            .collect()
-    }
-
-    /// Commit only if the observed party still waits and the host reserves it.
-    /// `reserve` runs under the queue lock and must not call matchmaking again.
-    pub fn append_group(
-        &self,
-        match_id: u32,
-        group: &QueuedGroup,
-        team: u8,
-        now: Instant,
-        reserve: impl FnOnce(usize, &[Seat]) -> bool,
-    ) -> bool {
-        self.append_batch(match_id, &[(group.clone(), team)], now, reserve)
-    }
-
-    /// Reserve all selected squads and solos atomically, preserving separate squad ids.
-    /// A stale queue observation or a host refusal leaves every group queued.
-    pub fn append_batch(
-        &self,
-        match_id: u32,
-        groups: &[(QueuedGroup, u8)],
-        now: Instant,
-        reserve: impl FnOnce(usize, &[Seat]) -> bool,
-    ) -> bool {
-        let mut inner = self.inner.locked();
-        let mut positions = Vec::new();
-        for (group, _) in groups {
-            let Some(position) = inner.queue.iter().position(|waiting| waiting == group) else {
-                return false;
-            };
-            if group.pool != QueuePool::GrowingRoster || positions.contains(&position) {
-                return false;
-            }
-            positions.push(position);
-        }
-        let parties: Vec<(&[Player], bool, u8)> = groups
-            .iter()
-            .map(|(group, team)| (&group.players[..], group.squad, *team))
-            .collect();
-        let Some((first, seats)) = inner.late_seats(match_id, &parties) else {
-            return false;
-        };
-        if !reserve(first, &seats) {
-            return false;
-        }
-        inner
-            .matches
-            .get_mut(&match_id)
-            .expect("match checked under lock")
-            .extend(seats);
-        positions.sort_unstable();
-        for position in positions.into_iter().rev() {
-            inner.queue.remove(position);
-        }
-        inner.track(now);
-        true
+    /// The player has a seat in a match being played: it goes back to it,
+    /// under its new session if it signed in again, and is told where the
+    /// match is once more. `false`: it has none.
+    pub fn back_to_seat(&self, player: Player) -> bool {
+        self.inner.locked().back_to_seat(player)
     }
 
     /// Seat one player who is not in the queue straight into a match being
-    /// played, on `team`: the lobby's JOIN, for a place it held for that
-    /// player. The same rules as [`Self::append_batch`] (a match of growing
-    /// rosters with no fixed teams, a place left, nobody with a place
-    /// anywhere or a former one in it), and the player must not wait in
-    /// the queue either. `reserve` runs under the queue lock as there.
+    /// played, on `team`: a room's member who comes while its match is
+    /// played. A match of growing rosters with no fixed teams and a place
+    /// left; nobody with a place anywhere. One whose place in it was given
+    /// up comes as a new place (the old one stays given up). `reserve`
+    /// runs under the lock (the match server's reservation) and must not
+    /// call matchmaking again: the seat is kept only if it says yes.
     pub fn append_player(
         &self,
         match_id: u32,
@@ -575,7 +251,7 @@ impl Matchmaking {
         if queued {
             return false;
         }
-        let Some((first, seats)) = inner.late_seats(match_id, &[(&[player], false, team)]) else {
+        let Some((first, seats)) = inner.late_seat(match_id, player, team) else {
             return false;
         };
         if !reserve(first, &seats) {
@@ -587,41 +263,6 @@ impl Matchmaking {
             .expect("match checked under lock")
             .extend(seats);
         true
-    }
-
-    /// Replace changed search levels, restarting the affected parties at
-    /// the back of the queue. All members of a squad restart together.
-    /// Unchanged parties and seats in already formed matches are untouched.
-    /// Returns the players whose search restarted.
-    pub fn refresh_levels(&self, levels: &[(u32, Level)], now: Instant) -> Vec<Player> {
-        let mut inner = self.inner.locked();
-        let mut restarted = Vec::new();
-        let mut players = Vec::new();
-        let queue = std::mem::take(&mut inner.queue);
-        for mut group in queue {
-            let mut changed = false;
-            for (player, level) in group.players.iter().zip(&mut group.levels) {
-                if let Some((_, current)) = levels.iter().find(|(id, _)| *id == player.account_id)
-                    && level != current
-                {
-                    *level = *current;
-                    changed = true;
-                }
-            }
-            if changed {
-                group.since = now;
-                players.extend_from_slice(&group.players);
-                restarted.push(group);
-            } else {
-                inner.queue.push(group);
-            }
-        }
-        if !restarted.is_empty() {
-            // Nobody joined or left: keep the shared countdown, including
-            // its maximum duration. Only the parties' range timers restart.
-            inner.queue.extend(restarted);
-        }
-        players
     }
 
     /// A player leaves the queue, and its squad with it.
@@ -645,25 +286,10 @@ impl Matchmaking {
     }
 
     /// Where a session stands now; `None` if it is neither waiting nor
-    /// seated. Starts the matches whose players have gathered.
+    /// seated. Starts the matches whose players have gathered (0.21d).
     pub fn poll(&self, session_id: u32, now: Instant) -> Option<QueueState> {
-        self.poll_with(session_id, now, None)
-    }
-
-    /// [`Self::poll`], forming matches by `rules` when given: sides of at
-    /// most [`LevelRules::team_size`], of players whose levels are in the
-    /// range of the one the match is formed around.
-    pub fn poll_with(
-        &self,
-        session_id: u32,
-        now: Instant,
-        rules: Option<&LevelRules>,
-    ) -> Option<QueueState> {
         let mut inner = self.inner.locked();
-        match rules {
-            Some(rules) => inner.form_leveled(now, rules),
-            None => inner.form(now),
-        }
+        inner.form(now);
         if let Some((match_id, index, seat)) = inner.seat_of_session(session_id) {
             return Some(QueueState::Placed {
                 match_id,
@@ -696,23 +322,6 @@ impl Matchmaking {
         self.inner.locked().waiting()
     }
 
-    /// How many players wait at each level (a level over the last counts
-    /// as the last).
-    pub fn waiting_by_level<const N: usize>(&self) -> [u16; N] {
-        let inner = self.inner.locked();
-        let mut counts = [0_u16; N];
-        if N == 0 {
-            return counts;
-        }
-        for group in &inner.queue {
-            for index in 0..group.players.len() {
-                let level = usize::from(group.player_level(index)).min(N - 1);
-                counts[level] = counts[level].saturating_add(1);
-            }
-        }
-        counts
-    }
-
     /// Seat two given teams in a new match at once, each on its own side
     /// (a clan match: who waits for it is the lobby's to keep). `None`,
     /// and nothing changed, when a team is empty, the two do not fit a
@@ -727,6 +336,32 @@ impl Matchmaking {
         teams: [&[Player]; 2],
         now: Instant,
         pool: QueuePool,
+    ) -> Option<u32> {
+        self.seat_given_sides(teams, now, pool, true, &|_| 0)
+    }
+
+    /// Seat the two sides of a room's match at once, as
+    /// [`Self::seat_teams_in_pool`] does, but with teams that are not fixed:
+    /// the match takes late joiners (the room's members who come while it
+    /// is played; `session::v026g::rooms`). `squad_of` gives each account
+    /// its squad's id in the match (0: none).
+    pub fn seat_sides_in_pool(
+        &self,
+        teams: [&[Player]; 2],
+        now: Instant,
+        pool: QueuePool,
+        squad_of: &dyn Fn(u32) -> u8,
+    ) -> Option<u32> {
+        self.seat_given_sides(teams, now, pool, false, squad_of)
+    }
+
+    fn seat_given_sides(
+        &self,
+        teams: [&[Player]; 2],
+        now: Instant,
+        pool: QueuePool,
+        fixed: bool,
+        squad_of: &dyn Fn(u32) -> u8,
     ) -> Option<u32> {
         let mut inner = self.inner.locked();
         let players = || teams.iter().flat_map(|team| team.iter());
@@ -753,7 +388,7 @@ impl Matchmaking {
                 players.iter().map(move |player| Seat {
                     player: *player,
                     team: team as u8,
-                    squad: 0,
+                    squad: squad_of(player.account_id),
                 })
             })
             .collect();
@@ -764,14 +399,16 @@ impl Matchmaking {
         );
         inner.matches.insert(id, seats);
         inner.match_pools.insert(id, pool);
-        inner.fixed_teams.insert(id);
+        if fixed {
+            inner.fixed_teams.insert(id);
+        }
         inner.formed_at.insert(id, now);
         Some(id)
     }
 
     /// Seat one player alone in a new match at once, on `team`, its teams
     /// fixed: a match against the server's own bots ("Player vs Bots"),
-    /// whose places the lobby adds after it ([`Matchmaking::add_bots`]).
+    /// whose places the match server adds after it.
     /// No rule of two parties, of levels or of a gather window; and as a
     /// match of fixed teams it never takes a late joiner (`late_seats`).
     /// `None`, and nothing changed, when the player has a seat in a match
@@ -816,14 +453,24 @@ impl Matchmaking {
     /// sending it back. Its place stays in the roster (nobody else can
     /// take it). Returns the match, or `None` if the account has no seat.
     pub fn give_up_seat(&self, account_id: u32) -> Option<u32> {
+        self.inner.locked().give_up_seat(account_id)
+    }
+
+    /// [`Self::give_up_seat`] for a player that left its match by its own
+    /// word (its client's 0xE0): the lobby hears of it once
+    /// ([`Self::take_left`]) and takes it out of its room (the owner's of
+    /// 2026-10-19).
+    pub fn leave_match(&self, account_id: u32) -> Option<u32> {
         let mut inner = self.inner.locked();
-        let (match_id, session_id) = {
-            let (match_id, _, seat) = inner.live_seat_of_account(account_id)?;
-            (match_id, seat.player.session_id)
-        };
-        inner.given_up.insert((match_id, account_id));
-        inner.told.remove(&session_id);
+        let match_id = inner.give_up_seat(account_id)?;
+        inner.left.push((match_id, account_id));
         Some(match_id)
+    }
+
+    /// `(match, account)` of every [`Self::leave_match`] since the last
+    /// call, in order.
+    pub fn take_left(&self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.inner.locked().left)
     }
 
     /// A lobby connection sent the session to its match.
@@ -867,28 +514,6 @@ impl Matchmaking {
         })
     }
 
-    /// The match server's own bots (`SRP_SERVER_BOTS`) take the places after
-    /// the players', one on each team of `teams`: seats of session, account
-    /// and profile 0, which no player has (sessions and accounts are never
-    /// 0), so that a place taken later counts from past them. `false` when
-    /// the match is not being played.
-    pub fn add_bots(&self, match_id: u32, teams: &[u8]) -> bool {
-        let mut inner = self.inner.locked();
-        let Some(seats) = inner.matches.get_mut(&match_id) else {
-            return false;
-        };
-        seats.extend(teams.iter().map(|&team| Seat {
-            player: Player {
-                session_id: 0,
-                account_id: 0,
-                profile_id: 0,
-            },
-            team,
-            squad: 0,
-        }));
-        true
-    }
-
     /// The match is over: its seats are free. A session that gave its seat
     /// up and sits in another match keeps being told of that one: clearing
     /// it sent the game to the match it was already playing again (it
@@ -896,9 +521,9 @@ impl Matchmaking {
     pub fn end_match(&self, match_id: u32) {
         let mut inner = self.inner.locked();
         if let Some(seats) = inner.matches.remove(&match_id) {
-            for seat in seats {
+            for (index, seat) in seats.into_iter().enumerate() {
                 let session_id = seat.player.session_id;
-                if inner.given_up.contains(&(match_id, seat.player.account_id))
+                if inner.given_up.contains(&(match_id, index))
                     || inner.seat_of_session(session_id).is_some()
                 {
                     continue;
@@ -907,6 +532,7 @@ impl Matchmaking {
             }
         }
         inner.given_up.retain(|(id, _)| *id != match_id);
+        inner.left.retain(|(id, _)| *id != match_id);
         inner.formed_at.remove(&match_id);
         inner.match_pools.remove(&match_id);
         inner.fixed_teams.remove(&match_id);
@@ -940,79 +566,69 @@ impl Inner {
         self.queue.iter().map(|group| group.players.len()).sum()
     }
 
-    /// The roster places `parties` (their players, whether they are a
-    /// squad, their team) would take in a match being played, and the
-    /// first of them; `None` when the match takes none of them: it is no
-    /// match of growing rosters, its teams are fixed, a party is empty or
-    /// has a team over 1, a player comes twice, has a place in a match
-    /// (one it gave up aside) or had one in this match, or there is not
-    /// room for them all. A squad gets the next squad id of the match.
-    fn late_seats(
-        &self,
-        match_id: u32,
-        parties: &[(&[Player], bool, u8)],
-    ) -> Option<(usize, Vec<Seat>)> {
-        if parties.is_empty()
+    /// The roster place `player` would take on `team` in a match being
+    /// played, and its index; `None` when the match takes nobody: it is no
+    /// match of growing rosters, its teams are fixed, `team` is over 1, the
+    /// player has a place in a match (one it gave up aside: it comes again
+    /// as a new place), or there is no room.
+    fn late_seat(&self, match_id: u32, player: Player, team: u8) -> Option<(usize, Vec<Seat>)> {
+        if team > 1
             || self.fixed_teams.contains(&match_id)
             || self.match_pools.get(&match_id) != Some(&QueuePool::GrowingRoster)
+            || self.live_seat_of_account(player.account_id).is_some()
         {
             return None;
         }
         let roster = self.matches.get(&match_id)?;
         let first = roster.len();
-        let mut seats = Vec::new();
-        let mut accounts = HashSet::new();
-        let mut sessions = HashSet::new();
-        let mut squad = roster.iter().map(|seat| seat.squad).max().unwrap_or(0);
-        for &(players, is_squad, team) in parties {
-            if team > 1 || players.is_empty() {
-                return None;
-            }
-            let squad_id = if is_squad {
-                squad = squad.checked_add(1)?;
-                squad
-            } else {
-                0
-            };
-            for &player in players {
-                if !accounts.insert(player.account_id)
-                    || !sessions.insert(player.session_id)
-                    || self.live_seat_of_account(player.account_id).is_some()
-                    || roster
-                        .iter()
-                        .any(|seat| seat.player.account_id == player.account_id)
-                {
-                    return None;
-                }
-                seats.push(Seat {
-                    player,
-                    team,
-                    squad: squad_id,
-                });
-            }
+        if first >= MAX_PLAYERS_PER_MATCH {
+            return None;
         }
-        (seats.len() <= MAX_PLAYERS_PER_MATCH - first).then_some((first, seats))
+        let seat = Seat {
+            player,
+            team,
+            squad: 0,
+        };
+        Some((first, vec![seat]))
     }
 
     /// The account's seat, unless it was given up.
     fn seat_of_account_mut(&mut self, account_id: u32) -> Option<&mut Seat> {
-        let given_up = &self.given_up;
-        self.matches
-            .iter_mut()
-            .filter(|(match_id, _)| !given_up.contains(&(**match_id, account_id)))
-            .flat_map(|(_, seats)| seats)
-            .find(|seat| seat.player.account_id == account_id)
+        let (match_id, index) = self
+            .live_seat_of_account(account_id)
+            .map(|(match_id, index, _)| (match_id, index))?;
+        self.matches.get_mut(&match_id)?.get_mut(index)
     }
 
-    /// [`Self::seat_of_account_mut`], with the match and the roster index.
+    /// [`Matchmaking::give_up_seat`].
+    fn give_up_seat(&mut self, account_id: u32) -> Option<u32> {
+        let (match_id, index, session_id) = {
+            let (match_id, index, seat) = self.live_seat_of_account(account_id)?;
+            (match_id, index, seat.player.session_id)
+        };
+        self.given_up.insert((match_id, index));
+        self.told.remove(&session_id);
+        Some(match_id)
+    }
+
+    /// [`Matchmaking::back_to_seat`].
+    fn back_to_seat(&mut self, player: Player) -> bool {
+        let Some(seat) = self.seat_of_account_mut(player.account_id) else {
+            return false;
+        };
+        let before = std::mem::replace(&mut seat.player.session_id, player.session_id);
+        self.told.remove(&before);
+        true
+    }
+
+    /// [`Self::seat_of_account_mut`], with the match and the roster index:
+    /// of the account's places, the one not given up (it has one at most).
     fn live_seat_of_account(&self, account_id: u32) -> Option<(u32, usize, &Seat)> {
         self.matches.iter().find_map(|(match_id, seats)| {
-            if self.given_up.contains(&(*match_id, account_id)) {
-                return None;
-            }
-            let index = seats
-                .iter()
-                .position(|seat| seat.player.account_id == account_id)?;
+            let index = (0..seats.len()).rev().find(|&index| {
+                seats[index].player.account_id == account_id
+                    && !self.given_up.contains(&(*match_id, index))
+            })?;
             Some((*match_id, index, &seats[index]))
         })
     }
@@ -1020,51 +636,18 @@ impl Inner {
     /// The session's seat, unless it was given up.
     fn seat_of_session(&self, session_id: u32) -> Option<(u32, usize, &Seat)> {
         self.matches.iter().find_map(|(match_id, seats)| {
-            let index = seats.iter().position(|seat| {
-                seat.player.session_id == session_id
-                    && !self.given_up.contains(&(*match_id, seat.player.account_id))
+            let index = (0..seats.len()).rev().find(|&index| {
+                seats[index].player.session_id == session_id
+                    && !self.given_up.contains(&(*match_id, index))
             })?;
             Some((*match_id, index, &seats[index]))
         })
     }
 
-    /// Standard countdowns require two parties and the configured minimum.
-    /// Growing countdowns start at two players; formation separately requires
-    /// balanced opposing teams, so a lone squad still cannot start a match.
+    /// The gathering window starts with the queue's second party and ends
+    /// when it drops below two.
     fn track(&mut self, now: Instant) {
-        for pool in [QueuePool::Standard, QueuePool::GrowingRoster] {
-            let parties: usize = self
-                .queue
-                .iter()
-                .filter(|group| group.pool == pool)
-                .map(QueuedGroup::parties)
-                .sum();
-            let players: usize = self
-                .queue
-                .iter()
-                .filter(|group| group.pool == pool)
-                .map(|group| group.players.len())
-                .sum();
-            let minimum = if pool == QueuePool::GrowingRoster {
-                self.growing_min_players
-            } else {
-                self.min_players
-            };
-            if players < minimum || (pool == QueuePool::Standard && parties < 2) {
-                self.pool_countdowns.remove(&pool);
-            } else {
-                self.pool_countdowns.entry(pool).or_insert(Countdown {
-                    since: now,
-                    extra: Duration::ZERO,
-                });
-            }
-        }
-        let parties: usize = self
-            .queue
-            .iter()
-            .filter(|group| group.pool == QueuePool::Standard)
-            .map(QueuedGroup::parties)
-            .sum();
+        let parties: usize = self.queue.iter().map(QueuedGroup::parties).sum();
         if parties < 2 {
             self.gathering_since = None;
         } else if self.gathering_since.is_none() {
@@ -1081,12 +664,7 @@ impl Inner {
             let Some(since) = self.gathering_since else {
                 return;
             };
-            let total: usize = self
-                .queue
-                .iter()
-                .filter(|group| group.pool == QueuePool::Standard)
-                .map(|group| group.players.len())
-                .sum();
+            let total: usize = self.queue.iter().map(|group| group.players.len()).sum();
             let settled = total >= self.fill_players
                 && self
                     .last_joined
@@ -1100,9 +678,6 @@ impl Inner {
             let mut chosen = Vec::new();
             let mut count = 0;
             for (index, group) in self.queue.iter().enumerate() {
-                if group.pool != QueuePool::Standard {
-                    continue;
-                }
                 let size = group.players.len();
                 if count + size <= MAX_PLAYERS_PER_MATCH {
                     count += size;
@@ -1141,281 +716,6 @@ impl Inner {
             self.gathering_since = None;
         }
     }
-
-    /// [`Self::form`] by `rules`. A match is formed around a waiting group
-    /// (the one that waited longest first) from the groups whose level is
-    /// in its range, which starts as its own [`Level`] and grows with its
-    /// wait. The conditions, counted over those groups, are the ones in the
-    /// module's docs: at least two parties and `min_players` players, and
-    /// either a full match, or 10 or more players and nobody pressing Play
-    /// for the quiet period, or fewer and the countdown over (60 s from the
-    /// `min_players`th player, a press of Play adding 30 s to what is left);
-    /// no countdown runs longer than `max_countdown`. So a level only
-    /// delays a match until the range has grown over it.
-    fn form_leveled(&mut self, now: Instant, rules: &LevelRules) {
-        self.form_growing(now, rules.team_size);
-        let size = rules.match_size();
-        let min_players = self.min_players.min(size);
-        loop {
-            self.track(now);
-            let found = (0..self.queue.len()).find_map(|anchor| {
-                let pool = self.queue[anchor].pool;
-                if pool != QueuePool::Standard {
-                    return None;
-                }
-                let countdown = self.pool_countdowns.get(&pool)?;
-                let elapsed = now.saturating_duration_since(countdown.since);
-                let longest = self.max_countdown.max(self.gather);
-                let window_over = elapsed >= (self.gather + countdown.extra).min(longest);
-                let capped = elapsed >= longest;
-                let quiet = self
-                    .pool_last_joined
-                    .get(&pool)
-                    .is_none_or(|joined| now.saturating_duration_since(*joined) >= self.quiet);
-                let near = self.in_range_of(anchor, now, rules);
-                let chosen = fitting(&self.queue, near, size, rules.team_size);
-                let players: usize = chosen
-                    .iter()
-                    .map(|&index| self.queue[index].players.len())
-                    .sum();
-                let parties: usize = chosen
-                    .iter()
-                    .map(|&index| self.queue[index].parties())
-                    .sum();
-                let ready = parties >= 2
-                    && players >= min_players
-                    && (players >= size
-                        || if players >= self.fill_players {
-                            quiet || capped
-                        } else {
-                            window_over
-                        });
-                ready.then_some(chosen)
-            });
-            let Some(mut chosen) = found else {
-                return;
-            };
-            let pool = self.queue[chosen[0]].pool;
-            // In the order they came.
-            chosen.sort_unstable();
-            let mut taken: Vec<QueuedGroup> = chosen
-                .iter()
-                .rev()
-                .map(|&index| self.queue.remove(index))
-                .collect();
-            taken.reverse();
-            let id = self.next_match_id;
-            self.next_match_id += 1;
-            let seats = seat_balanced(taken, rules.team_size, self.player_value);
-            log::info!(
-                "Match {id:#x} formed for {} players: {:?}",
-                seats.len(),
-                seats
-                    .iter()
-                    .map(|seat| (seat.player.session_id, seat.team))
-                    .collect::<Vec<_>>()
-            );
-            self.matches.insert(id, seats);
-            self.match_pools.insert(id, pool);
-            self.formed_at.insert(id, now);
-            // Whoever is left waits a new window.
-            self.gathering_since = None;
-            self.pool_countdowns.remove(&pool);
-        }
-    }
-
-    fn form_growing(&mut self, now: Instant, capacity: usize) {
-        loop {
-            self.track(now);
-            let Some(countdown) = self.pool_countdowns.get(&QueuePool::GrowingRoster) else {
-                return;
-            };
-            let order: Vec<_> = self
-                .queue
-                .iter()
-                .enumerate()
-                .filter(|(_, group)| group.pool == QueuePool::GrowingRoster)
-                .map(|(index, _)| index)
-                .collect();
-            let waiting: usize = order
-                .iter()
-                .map(|&index| self.queue[index].players.len())
-                .sum();
-            if waiting < capacity.min(MAX_PLAYERS_PER_MATCH / 2) * 2
-                && now.saturating_duration_since(countdown.since) < self.growing_gather
-            {
-                return;
-            }
-            let groups: Vec<_> = order
-                .iter()
-                .map(|&index| self.queue[index].population())
-                .collect();
-            let Some(placement) = policy::place([Team::default(); 2], &groups, capacity) else {
-                return;
-            };
-            if placement.population() < self.growing_min_players
-                || (placement.population() < capacity.min(MAX_PLAYERS_PER_MATCH / 2) * 2
-                    && now.saturating_duration_since(countdown.since) < self.growing_gather)
-            {
-                return;
-            }
-            // The placement says who plays; the sides are made as the
-            // standard queue makes them, by what each counts for.
-            let mut chosen: Vec<usize> = placement
-                .assignments
-                .iter()
-                .map(|&(index, _)| order[index])
-                .collect();
-            chosen.sort_unstable();
-            let mut taken: Vec<QueuedGroup> = chosen
-                .iter()
-                .rev()
-                .map(|&index| self.queue.remove(index))
-                .collect();
-            taken.reverse();
-            let seats = seat_balanced(taken, capacity, self.player_value);
-            let id = self.next_match_id;
-            self.next_match_id += 1;
-            log::info!(
-                "Match {id:#x} formed for {} players: {:?}",
-                seats.len(),
-                seats
-                    .iter()
-                    .map(|seat| (seat.player.session_id, seat.team))
-                    .collect::<Vec<_>>()
-            );
-            self.matches.insert(id, seats);
-            self.match_pools.insert(id, QueuePool::GrowingRoster);
-            self.formed_at.insert(id, now);
-            self.pool_countdowns.remove(&QueuePool::GrowingRoster);
-        }
-    }
-
-    /// The groups whose level is in the range of the group at `anchor`
-    /// now: itself first, then the nearest levels first, and of those the
-    /// ones that came first.
-    fn in_range_of(&self, anchor: usize, now: Instant, rules: &LevelRules) -> Vec<usize> {
-        let own = self.queue[anchor].level();
-        let waited = now.saturating_duration_since(self.queue[anchor].since);
-        let widened = rules.widened(waited);
-        // How far outside the anchor's own levels a group is.
-        let distance = |index: usize| {
-            let level = u128::from(self.queue[index].level().min);
-            let (min, max) = (u128::from(own.min), u128::from(own.max.max(own.min)));
-            min.saturating_sub(level) + level.saturating_sub(max)
-        };
-        let mut near: Vec<usize> = (0..self.queue.len())
-            .filter(|&index| {
-                self.queue[index].pool == self.queue[anchor].pool
-                    && (index == anchor || widened.is_none_or(|widened| distance(index) <= widened))
-            })
-            .collect();
-        near.sort_by_key(|&index| (index != anchor, distance(index), index));
-        near
-    }
-}
-
-/// Of the groups at `order`, in that order, as many as fit a match of
-/// `size` players whose two sides both fit `team_size`.
-fn fitting(queue: &[QueuedGroup], order: Vec<usize>, size: usize, team_size: usize) -> Vec<usize> {
-    let mut chosen = Vec::new();
-    let mut sizes = Vec::new();
-    for index in order {
-        sizes.push(queue[index].players.len());
-        if sizes.iter().sum::<usize>() <= size && sides_fit(&sizes, team_size) {
-            chosen.push(index);
-        } else {
-            sizes.pop();
-        }
-    }
-    chosen
-}
-
-/// Whether groups of these sizes can be split into two sides of at most
-/// `team_size` players.
-fn sides_fit(sizes: &[usize], team_size: usize) -> bool {
-    let total: usize = sizes.iter().sum();
-    if total > 2 * team_size || team_size >= 64 {
-        return false;
-    }
-    // Bit `n`: some of the groups make a side of `n` players.
-    let mut sums: u64 = 1;
-    for &size in sizes {
-        if size > team_size {
-            return false;
-        }
-        sums |= sums << size;
-    }
-    (0..=team_size.min(total)).any(|side| sums >> side & 1 == 1 && total - side <= team_size)
-}
-
-/// [`seat`], with sides of at most `team_size` and as even as the groups
-/// allow. The sides are at most one player apart when the groups allow it;
-/// among those splits the one whose sides count for the most alike is
-/// taken, a side counting `player_value` for each of its players and each
-/// player's own strength ([`QueuedGroup::player_strength`]). So with an odd
-/// count the side with a player fewer gets the stronger ones, as far as
-/// `player_value` asks. The teams are `seat`'s whenever no other split is
-/// better.
-fn seat_balanced(groups: Vec<QueuedGroup>, team_size: usize, player_value: i32) -> Vec<Seat> {
-    let count = groups.len();
-    let sizes: Vec<i64> = groups
-        .iter()
-        .map(|group| group.players.len() as i64)
-        .collect();
-    let strengths: Vec<i64> = groups
-        .iter()
-        .map(|group| {
-            (0..group.players.len())
-                .map(|index| i64::from(group.player_strength(index)))
-                .sum()
-        })
-        .collect();
-    let player_value = i64::from(player_value);
-    // What a split is worth, the less the better: players over a side's
-    // size, then players apart past one (an even count is never one apart,
-    // nor an odd one none), then what the sides count for apart. Bit `i`
-    // of `mask`: group `i` is on team 1.
-    let score = |mask: u32| {
-        let mut players = [0_i64; 2];
-        let mut strength = [0_i64; 2];
-        for index in 0..count {
-            let team = (mask >> index & 1) as usize;
-            players[team] += sizes[index];
-            strength[team] += strengths[index];
-        }
-        let over: i64 = players
-            .iter()
-            .map(|&side| (side - team_size as i64).max(0))
-            .sum();
-        let apart = (players[0] - players[1]).abs();
-        let worth = |side: usize| player_value * players[side] + strength[side];
-        (over, (apart - 1).max(0), (worth(0) - worth(1)).abs())
-    };
-    let mut best = seat_teams_of(&groups)
-        .iter()
-        .enumerate()
-        .fold(0_u32, |mask, (index, &team)| {
-            mask | u32::from(team) << index
-        });
-    // The largest group (of those, the one that came first) stays on team
-    // 0, as `seat` has it.
-    let fixed = (0..count).max_by_key(|&index| (sizes[index], std::cmp::Reverse(index)));
-    if count <= MAX_PLAYERS_PER_MATCH {
-        let mut best_score = score(best);
-        for mask in 0..1_u32 << count {
-            if fixed.is_some_and(|fixed| mask >> fixed & 1 == 1) {
-                continue;
-            }
-            let this = score(mask);
-            if this < best_score {
-                best = mask;
-                best_score = this;
-            }
-        }
-    }
-    let teams: Vec<u8> = (0..count).map(|index| (best >> index & 1) as u8).collect();
-    seats_of(groups, &teams)
 }
 
 /// [`seat`]'s teams, by group: the largest first, each on the team with
@@ -1458,42 +758,6 @@ fn seats_of(groups: Vec<QueuedGroup>, team_of: &[u8]) -> Vec<Seat> {
         }));
     }
     seats
-}
-
-/// What the leveled queue (0.26g's) is set to, for the pages that tell
-/// the players: the fewest players for a match, what a press of Play adds
-/// to the countdown, and the longest a countdown runs.
-pub fn leveled_start_rules_from_env() -> (usize, Duration, Duration) {
-    (
-        env_number("SRP_MATCH_MIN_PLAYERS").unwrap_or(DEFAULT_MIN_PLAYERS),
-        env_number("SRP_MATCH_JOIN_EXTENSION_SECONDS")
-            .map_or(DEFAULT_JOIN_EXTENSION, Duration::from_secs),
-        env_number("SRP_MATCH_MAX_COUNTDOWN_SECONDS")
-            .map_or(DEFAULT_MAX_COUNTDOWN, Duration::from_secs),
-    )
-}
-
-/// `SRP_GROWING_MIN_PLAYERS` when unset.
-pub const DEFAULT_GROWING_MIN_PLAYERS: usize = 2;
-
-/// What the growing queue (the games of patch revision 5 or later) is set
-/// to, for the pages that tell the players: the fewest players a new match
-/// starts with (`SRP_GROWING_MIN_PLAYERS`), and how long after that many
-/// wait it starts (`SRP_GROWING_GATHER_SECONDS`). A full match starts at once.
-pub fn growing_start_rules_from_env() -> (usize, Duration) {
-    (
-        env_number::<usize>("SRP_GROWING_MIN_PLAYERS")
-            .filter(|players| (2..=MAX_PLAYERS_PER_MATCH).contains(players))
-            .unwrap_or(DEFAULT_GROWING_MIN_PLAYERS),
-        env_number("SRP_GROWING_GATHER_SECONDS").map_or(policy::GATHER_WINDOW, Duration::from_secs),
-    )
-}
-
-/// A number from the environment; `None` if it is unset or bad.
-fn env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
 }
 
 /// `SRP_MATCH_FILL_PLAYERS` (default 10) and `SRP_MATCH_QUIET_SECONDS`
@@ -1545,252 +809,6 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_pools_have_separate_rosters_and_gather_windows() {
-        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        );
-        let now = Instant::now();
-        mm.queue_in_pool(&[player(1)], &[at(0)], false, now, QueuePool::Standard);
-        mm.queue_in_pool(&[player(2)], &[at(0)], false, now, QueuePool::GrowingRoster);
-        mm.poll_with(1, after(now, 60), Some(&EIGHT));
-        assert_eq!(mm.match_count(), 0);
-        mm.queue_in_pool(
-            &[player(3)],
-            &[at(0)],
-            false,
-            after(now, 60),
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(2, after(now, 179), Some(&EIGHT));
-        assert_eq!(mm.match_count(), 0);
-        mm.poll_with(2, after(now, 180), Some(&EIGHT));
-        let (id, _) = mm.seat(2).unwrap();
-        assert_eq!(mm.seat(3).map(|seat| seat.0), Some(id));
-        assert!(mm.seat(1).is_none());
-        let formed = mm.formed_match(id).unwrap();
-        assert_eq!(formed.pool, QueuePool::GrowingRoster);
-        assert!(!formed.fixed_teams);
-        assert_eq!(formed.seats.len(), 2);
-    }
-
-    #[test]
-    fn the_growing_queue_starts_no_match_with_fewer_players_than_it_is_told() {
-        let now = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        mm.set_growing_rules(Duration::ZERO, 1.0);
-        mm.set_growing_min_players(4);
-        let players: Vec<_> = (1..4).map(player).collect();
-        for &one in &players {
-            mm.queue_in_pool(&[one], &[at(0)], false, now, QueuePool::GrowingRoster);
-        }
-        let later = now + Duration::from_secs(300);
-        assert!(matches!(
-            mm.poll_with(players[0].session_id, later, Some(&TEN)),
-            Some(QueueState::Waiting { .. })
-        ));
-        mm.queue_in_pool(
-            &[player(4)],
-            &[at(0)],
-            false,
-            later,
-            QueuePool::GrowingRoster,
-        );
-        assert!(matches!(
-            mm.poll_with(players[0].session_id, later, Some(&TEN)),
-            Some(QueueState::Placed { .. })
-        ));
-        // Told nothing, it starts with two.
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        mm.set_growing_rules(Duration::ZERO, 1.0);
-        for &one in &players[..2] {
-            mm.queue_in_pool(&[one], &[at(0)], false, now, QueuePool::GrowingRoster);
-        }
-        assert!(matches!(
-            mm.poll_with(players[0].session_id, now, Some(&TEN)),
-            Some(QueueState::Placed { .. })
-        ));
-    }
-
-    #[test]
-    fn growing_queue_does_not_shorten_the_legacy_gather_window() {
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        let now = Instant::now();
-        mm.queue(&[player(1), player(2)], false, now);
-        let growing: Vec<_> = (3..23).map(player).collect();
-        mm.queue_in_pool(&growing, &[], false, now, QueuePool::GrowingRoster);
-        mm.poll(1, now);
-        assert_eq!(mm.match_count(), 0);
-        mm.poll(1, after(now, 60));
-        assert!(mm.seat(1).is_some());
-        assert!(mm.seat(3).is_none());
-        assert_eq!(mm.match_count(), 1);
-    }
-
-    #[test]
-    fn growing_wait_starts_at_two_and_arrivals_do_not_extend_it() {
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        let now = Instant::now();
-        mm.queue_in_pool(&[player(1)], &[at(0)], false, now, QueuePool::GrowingRoster);
-        mm.poll_with(1, after(now, 300), Some(&TEN));
-        assert!(mm.seat(1).is_none());
-        mm.queue_in_pool(
-            &[player(2)],
-            &[at(100)],
-            false,
-            after(now, 300),
-            QueuePool::GrowingRoster,
-        );
-        mm.queue_in_pool(
-            &[player(3)],
-            &[at(200)],
-            false,
-            after(now, 419),
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, after(now, 419), Some(&TEN));
-        assert!(mm.seat(1).is_none());
-        mm.poll_with(1, after(now, 420), Some(&TEN));
-        let formed = mm.formed_match(mm.seat(1).unwrap().0).unwrap();
-        assert_eq!(formed.seats.len(), 3);
-        assert_eq!(
-            formed
-                .seats
-                .iter()
-                .filter(|s| s.team == 0)
-                .count()
-                .abs_diff(formed.seats.iter().filter(|s| s.team == 1).count()),
-            1
-        );
-    }
-
-    #[test]
-    fn growing_timer_resets_below_two_and_full_balanced_matches_start_early() {
-        let mm = Matchmaking::new(Duration::ZERO);
-        let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2)],
-            &[],
-            false,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.leave_queue(2);
-        mm.queue_in_pool(
-            &[player(3)],
-            &[],
-            false,
-            after(now, 100),
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, after(now, 219), Some(&TEN));
-        assert!(mm.seat(1).is_none());
-        mm.poll_with(1, after(now, 220), Some(&TEN));
-        assert!(mm.seat(1).is_some());
-        let mm = Matchmaking::new(Duration::ZERO);
-        let players: Vec<_> = (1..=20).map(player).collect();
-        mm.queue_in_pool(&players, &[], false, now, QueuePool::GrowingRoster);
-        mm.poll_with(1, now, Some(&TEN));
-        let formed = mm.formed_match(mm.seat(1).unwrap().0).unwrap();
-        assert_eq!(formed.seats.iter().filter(|s| s.team == 0).count(), 10);
-        assert_eq!(formed.seats.iter().filter(|s| s.team == 1).count(), 10);
-    }
-
-    #[test]
-    fn gathering_expiry_does_not_start_three_against_one() {
-        let mm = Matchmaking::new(Duration::ZERO);
-        let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2), player(3)],
-            &[],
-            true,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.queue_in_pool(&[player(4)], &[], false, now, QueuePool::GrowingRoster);
-        mm.poll_with(1, after(now, 120), Some(&TEN));
-        assert_eq!(mm.match_count(), 0);
-        mm.queue_in_pool(
-            &[player(5)],
-            &[],
-            false,
-            after(now, 121),
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, after(now, 121), Some(&TEN));
-        assert_eq!(
-            mm.formed_match(mm.seat(1).unwrap().0).unwrap().seats.len(),
-            5
-        );
-    }
-
-    #[test]
-    fn appending_a_party_checks_the_queue_again_and_commits_only_after_host_success() {
-        let mm = Matchmaking::new(Duration::ZERO).with_start_rules(
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        );
-        mm.set_growing_rules(Duration::ZERO, 1.0);
-        let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2)],
-            &[at(0); 2],
-            false,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, now, Some(&EIGHT));
-        let id = mm.seat(1).unwrap().0;
-        mm.queue_in_pool(
-            &[player(3), player(4)],
-            &[at(0); 2],
-            true,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
-        assert!(!mm.append_group(id, &group, 0, now, |_, _| false));
-        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 2);
-        assert_eq!(mm.queued_players(), 2);
-        mm.leave_queue(3);
-        assert!(!mm.append_group(id, &group, 0, now, |_, _| panic!(
-            "stale party reached host"
-        )));
-        mm.queue_in_pool(
-            &[player(3), player(4)],
-            &[at(0); 2],
-            true,
-            after(now, 1),
-            QueuePool::GrowingRoster,
-        );
-        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
-        assert!(mm.append_group(id, &group, 0, now, |first, seats| {
-            assert_eq!(first, 2);
-            assert_eq!(seats.len(), 2);
-            assert_ne!(seats[0].squad, 0);
-            assert_eq!(seats[0].squad, seats[1].squad);
-            true
-        }));
-        assert_eq!(mm.seat(3), Some((id, 2)));
-        assert_eq!(mm.seat(4), Some((id, 3)));
-        assert_eq!(mm.queued_players(), 0);
-        mm.give_up_seat(player(3).account_id);
-        mm.queue_in_pool(
-            &[player(3)],
-            &[at(0)],
-            false,
-            after(now, 2),
-            QueuePool::GrowingRoster,
-        );
-        let group = mm.queued_groups(QueuePool::GrowingRoster).pop().unwrap();
-        assert!(!mm.append_group(id, &group, 0, now, |_, _| panic!(
-            "duplicate account reached host"
-        )));
-    }
-
-    #[test]
     fn queued_players_counts_members_without_forming_matches() {
         let mm = Matchmaking::new(Duration::ZERO);
         let now = Instant::now();
@@ -1812,72 +830,21 @@ mod tests {
         assert_eq!(mm.queued_players(), 0);
     }
 
+    /// A room's member who comes while its match is played is seated in
+    /// it: only once the host reserved the place, never twice, never one
+    /// who waits in the queue or has a place anywhere.
     #[test]
-    fn batches_are_atomic_and_keep_each_squads_identity() {
+    fn a_player_out_of_the_queue_is_seated_into_a_match_being_played() {
         let mm = Matchmaking::new(Duration::ZERO);
-        mm.set_growing_rules(Duration::ZERO, 1.0);
         let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2), player(3), player(4), player(5)],
-            &[],
-            false,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, now, Some(&TEN));
-        let id = mm.seat(1).unwrap().0;
-        mm.queue_in_pool(
-            &[player(6), player(7)],
-            &[],
-            true,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.queue_in_pool(
-            &[player(8), player(9), player(10)],
-            &[],
-            true,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        let groups = mm.queued_groups(QueuePool::GrowingRoster);
-        let batch = vec![(groups[0].clone(), 0), (groups[1].clone(), 1)];
-        assert!(!mm.append_batch(id, &batch, now, |_, seats| {
-            assert_eq!(seats.len(), 5);
-            false
-        }));
-        assert_eq!(mm.queued_players(), 5);
-        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 5);
-        assert!(mm.append_batch(id, &batch, now, |first, seats| {
-            assert_eq!(first, 5);
-            assert_eq!(seats[0].squad, seats[1].squad);
-            assert_eq!(seats[2].squad, seats[4].squad);
-            assert_ne!(seats[0].squad, seats[2].squad);
-            assert_ne!(seats[0].squad, 0);
-            true
-        }));
-        assert_eq!(mm.queued_players(), 0);
-        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 10);
-        assert!(!mm.append_batch(id, &batch, now, |_, _| panic!("stale batch reserved")));
-    }
-
-    /// The lobby's JOIN seats a player who is in no queue, by the rules of
-    /// a batch: only once the host reserved it, never twice, never one who
-    /// waits in the queue or has a place anywhere.
-    #[test]
-    fn a_player_out_of_the_queue_is_seated_by_the_rules_of_a_batch() {
-        let mm = Matchmaking::new(Duration::ZERO);
-        mm.set_growing_rules(Duration::ZERO, 1.0);
-        let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2)],
-            &[],
-            false,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, now, Some(&TEN));
-        let id = mm.seat(1).unwrap().0;
+        let id = mm
+            .seat_sides_in_pool(
+                [&[player(1)], &[player(2)]],
+                now,
+                QueuePool::GrowingRoster,
+                &|_| 0,
+            )
+            .expect("seated");
         // The host refuses: nothing changes.
         assert!(!mm.append_player(id, player(3), 1, |_, _| false));
         assert_eq!(mm.formed_match(id).unwrap().seats.len(), 2);
@@ -1898,26 +865,55 @@ mod tests {
             true
         }));
         assert_eq!(mm.seat(3), Some((id, 2)));
-        assert_eq!(mm.queued_players(), 0);
         // Seated already; and one who waits in the queue.
         assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("twice")));
-        mm.queue_in_pool(&[player(4)], &[], false, now, QueuePool::GrowingRoster);
+        mm.queue(&[player(4)], false, now);
         assert!(!mm.append_player(id, player(4), 0, |_, _| panic!("queued")));
-        // A place given up is still a place of the match.
-        mm.give_up_seat(player(3).account_id);
-        assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("former place")));
-        // A match of the standard queue takes nobody late.
+        // A place given up by the player's own word is still a place of
+        // the match: one who comes again is a new place (the owner's of
+        // 2026-10-19), live, its old one given up; the lobby hears of the
+        // leave once.
+        assert_eq!(mm.leave_match(player(3).account_id), Some(id));
+        assert_eq!(mm.take_left(), [(id, player(3).account_id)]);
+        assert_eq!(mm.take_left(), []);
+        assert_eq!(mm.seat(3), None);
+        assert_eq!(mm.pool_of_account(player(3).account_id), None);
+        assert!(mm.append_player(id, player(3), 0, |first, _| {
+            assert_eq!(first, 3);
+            true
+        }));
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 4);
+        assert_eq!(mm.seat(3), Some((id, 3)));
+        assert_eq!(
+            mm.pool_of_account(player(3).account_id),
+            Some(QueuePool::GrowingRoster)
+        );
+        // Back to its seat goes to the new place, never the old one.
+        let again = Player {
+            session_id: 33,
+            ..player(3)
+        };
+        assert!(mm.back_to_seat(again));
+        assert_eq!(mm.seat(33), Some((id, 3)));
+        assert_eq!(mm.formed_match(id).unwrap().seats[2].player, player(3));
+        // Seated again: not a third place while it is.
+        assert!(!mm.append_player(id, again, 0, |_, _| panic!("seated")));
+        // Its new place given up, and only that one: none is left.
+        assert_eq!(mm.give_up_seat(player(3).account_id), Some(id));
+        assert_eq!(mm.seat(33), None);
+        assert_eq!(mm.give_up_seat(player(3).account_id), None);
+        assert_eq!(mm.take_left(), []);
+        // A match of fixed teams, or of the standard queue, takes nobody
+        // late.
+        let clan = mm
+            .seat_teams_in_pool([&[player(8)], &[player(9)]], now, QueuePool::GrowingRoster)
+            .expect("seated");
+        assert!(!mm.append_player(clan, player(7), 0, |_, _| panic!("fixed")));
         mm.queue(&[player(5), player(6)], false, now);
         let Some(QueueState::Placed { match_id, .. }) = mm.poll(5, now) else {
             panic!("a standard match");
         };
         assert!(!mm.append_player(match_id, player(7), 0, |_, _| panic!("standard")));
-    }
-
-    /// A leveled queue as it was before the start rules of 2026-10-13: two
-    /// players are enough, and a press of Play adds nothing.
-    fn classic(gather: Duration) -> Matchmaking {
-        Matchmaking::new(gather).with_start_rules(2, Duration::ZERO, Duration::from_secs(3600))
     }
 
     fn after(start: Instant, seconds: u64) -> Instant {
@@ -2320,778 +1316,13 @@ mod tests {
         assert_eq!(matchmaking.match_count(), 0);
     }
 
-    const EIGHT: LevelRules = LevelRules {
-        team_size: 8,
-        step: Duration::from_secs(4),
-    };
-
-    fn at(level: u8) -> Level {
-        Level {
-            min: level,
-            max: level + 1,
-        }
-    }
-
-    /// The players of each team of a match, by session.
-    fn teams(matchmaking: &Matchmaking, match_id: u32) -> [Vec<u32>; 2] {
-        let mut teams = [Vec::new(), Vec::new()];
-        for seat in matchmaking.formed_match(match_id).unwrap().seats {
-            teams[usize::from(seat.team)].push(seat.player.session_id);
-        }
-        teams
-    }
-
-    #[test]
-    fn sixteen_fill_a_match_of_eight_a_side_and_the_rest_wait() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        for id in 1..=20 {
-            mm.queue_leveled(&[player(id)], &[at(3)], false, start);
-        }
-        assert!(matches!(
-            mm.poll_with(1, start, Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        let teams = teams(&mm, FIRST_MATCH_ID);
-        assert_eq!((teams[0].len(), teams[1].len()), (8, 8));
-        // The first sixteen that came; the other four wait a countdown.
-        assert!(teams.iter().flatten().all(|&session| session <= 16));
-        assert_eq!(
-            mm.poll_with(17, after(start, 59), Some(&EIGHT)),
-            Some(QueueState::Waiting {
-                place: 1,
-                total: 4,
-                since: start
-            })
-        );
-        assert!(matches!(
-            mm.poll_with(17, after(start, 60), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        assert_eq!(mm.match_count(), 2);
-    }
-
-    #[test]
-    fn the_side_size_is_the_rules() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
-        let rules = LevelRules {
-            team_size: 2,
-            step: Duration::ZERO,
-        };
-        assert_eq!(rules.match_size(), 4);
-        for id in 1..=5 {
-            mm.queue_leveled(&[player(id)], &[at(0)], false, start);
-        }
-        mm.poll_with(1, start, Some(&rules));
-        let teams = teams(&mm, FIRST_MATCH_ID);
-        assert_eq!((teams[0].len(), teams[1].len()), (2, 2));
-        // A side is never more than the client's roster takes.
-        let large = LevelRules {
-            team_size: 50,
-            step: Duration::ZERO,
-        };
-        assert_eq!(large.match_size(), MAX_PLAYERS_PER_MATCH);
-    }
-
-    #[test]
-    fn two_players_still_start_after_the_window_and_one_waits_alone() {
-        let start = Instant::now();
-        let mm = classic(Duration::from_secs(60));
-        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
-        assert!(matches!(
-            mm.poll_with(1, after(start, 900), Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 1, .. })
-        ));
-        mm.queue_leveled(&[player(2)], &[at(0)], false, after(start, 900));
-        assert!(matches!(
-            mm.poll_with(1, after(start, 959), Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 2, .. })
-        ));
-        assert_eq!(
-            mm.poll_with(1, after(start, 960), Some(&EIGHT)),
-            Some(QueueState::Placed {
-                match_id: FIRST_MATCH_ID,
-                team: 0,
-                index: 0
-            })
-        );
-        assert_eq!(
-            mm.poll_with(2, after(start, 960), Some(&EIGHT)),
-            Some(QueueState::Placed {
-                match_id: FIRST_MATCH_ID,
-                team: 1,
-                index: 1
-            })
-        );
-    }
-
-    /// Seen live on 2026-10-12: two squadmates alone in the queue were
-    /// given a match after the window, both on one team and nobody against
-    /// them.
-    #[test]
-    fn a_squad_alone_gets_no_match_by_levels_either() {
-        let start = Instant::now();
-        let mm = classic(Duration::from_secs(60));
-        mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
-        assert_eq!(
-            mm.poll_with(1, after(start, 900), Some(&EIGHT)),
-            Some(QueueState::Waiting {
-                place: 1,
-                total: 2,
-                since: start
-            })
-        );
-        assert_eq!(mm.match_count(), 0);
-        // One player alone is somebody: a match once the window that
-        // begins with it is over, the squad on one side.
-        mm.queue_leveled(&[player(3)], &[at(0)], false, after(start, 900));
-        assert!(matches!(
-            mm.poll_with(1, after(start, 959), Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 3, .. })
-        ));
-        let Some(QueueState::Placed { match_id, .. }) =
-            mm.poll_with(3, after(start, 960), Some(&EIGHT))
-        else {
-            panic!("the window ended at 960 s");
-        };
-        assert_eq!(teams(&mm, match_id), [vec![1, 2], vec![3]]);
-    }
-
-    #[test]
-    fn a_squad_is_not_matched_with_itself_while_another_is_out_of_its_levels() {
-        let start = Instant::now();
-        let mm = classic(Duration::ZERO);
-        mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
-        mm.queue_leveled(&[player(3)], &[at(5)], false, start);
-        // Two parties wait, so the window (none here) is over; but each is
-        // out of the other's range (0..=1 and 5) for 4 steps of 4 s.
-        assert!(matches!(
-            mm.poll_with(1, after(start, 15), Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 3, .. })
-        ));
-        assert_eq!(mm.match_count(), 0);
-        assert!(matches!(
-            mm.poll_with(1, after(start, 16), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        assert_eq!(teams(&mm, FIRST_MATCH_ID), [vec![1, 2], vec![3]]);
-    }
-
-    #[test]
-    fn a_squad_stays_on_one_side_and_the_sides_are_even() {
-        let start = Instant::now();
-        let mm = classic(Duration::ZERO);
-        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(2), player(3), player(4)], &[at(0); 3], true, start);
-        mm.queue_leveled(&[player(5), player(6)], &[at(0); 2], true, start);
-        mm.queue_leveled(&[player(7)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(8)], &[at(0)], false, start);
-        mm.poll_with(1, start, Some(&EIGHT));
-        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
-        let of = |session: u32| {
-            let seat = seats
-                .iter()
-                .find(|seat| seat.player.session_id == session)
-                .unwrap();
-            (seat.team, seat.squad)
-        };
-        assert_eq!(of(2), of(3));
-        assert_eq!(of(2), of(4));
-        assert_eq!(of(5), of(6));
-        assert_ne!(of(2).1, 0);
-        assert_ne!(of(5).1, of(2).1);
-        assert_eq!((of(1).1, of(7).1), (0, 0));
-        // Four a side: the three with one alone, the two with two alone.
-        let teams = teams(&mm, FIRST_MATCH_ID);
-        assert_eq!((teams[0].len(), teams[1].len()), (4, 4));
-        // The largest group is on team 0, as without levels.
-        assert_eq!(of(2).0, 0);
-    }
-
-    #[test]
-    fn squads_that_do_not_fit_two_sides_are_not_put_together() {
-        // Three squads of five: no two sides of eight hold them all.
-        assert!(!sides_fit(&[5, 5, 5], 8));
-        assert!(sides_fit(&[5, 5, 3, 3], 8));
-        assert!(sides_fit(&[8, 8], 8));
-        assert!(!sides_fit(&[9], 8));
-        assert!(!sides_fit(&[8, 8, 1], 8));
-        assert!(sides_fit(&[], 8));
-
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        for squad in 0..3 {
-            let players: Vec<Player> = (1..=5).map(|id| player(squad * 10 + id)).collect();
-            mm.queue_leveled(&players, &[at(0); 5], true, start);
-        }
-        mm.queue_leveled(&[player(41)], &[at(0)], false, start);
-        let start = after(start, 60);
-        mm.poll_with(1, start, Some(&EIGHT));
-        // The first two squads and the one alone; the third squad waits
-        // a new window.
-        let teams = teams(&mm, FIRST_MATCH_ID);
-        assert_eq!(teams[0].len() + teams[1].len(), 11);
-        assert!(teams.iter().all(|team| team.len() <= 8));
-        assert!(matches!(
-            mm.poll_with(21, start, Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 5, .. })
-        ));
-        assert!(matches!(
-            mm.poll_with(41, start, Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-    }
-
-    #[test]
-    fn the_sides_are_even_in_levels_too() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
-        let rules = LevelRules {
-            team_size: 8,
-            step: Duration::ZERO,
-        };
-        for (id, level) in [(1, 15), (2, 14), (3, 1), (4, 0)] {
-            mm.queue_leveled(&[player(id)], &[at(level)], false, start);
-        }
-        mm.poll_with(1, start, Some(&rules));
-        // 15 + 0 against 14 + 1, not 15 + 1 against 14 + 0.
-        let mut teams = teams(&mm, FIRST_MATCH_ID);
-        teams.sort();
-        assert_eq!(teams, [vec![1, 4], vec![2, 3]]);
-    }
-
-    /// The sides of a match of players alone at these levels, the rules'
-    /// step zero, with `player_value` and the strengths given.
-    fn sides_of(levels: &[u8], player_value: i32, strengths: &[(u32, i32)]) -> [Vec<u32>; 2] {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO).with_start_rules(
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        );
-        mm.set_player_value(player_value);
-        let rules = LevelRules {
-            team_size: 10,
-            step: Duration::ZERO,
-        };
-        for (index, &level) in levels.iter().enumerate() {
-            mm.queue_leveled(&[player(index as u32 + 1)], &[at(level)], false, start);
-        }
-        mm.set_strengths(strengths);
-        mm.poll_with(1, start, Some(&rules));
-        teams(&mm, FIRST_MATCH_ID)
-    }
-
-    #[test]
-    fn with_an_odd_count_the_side_of_fewer_gets_the_stronger_players() {
-        // Levels 6, 5, 1, 1, 0. Without a value for a player the sums are
-        // made even (6 against 7), so the two highest are not the two.
-        let mut even = sides_of(&[6, 5, 1, 1, 0], 0, &[]);
-        even.sort_by_key(Vec::len);
-        assert_eq!(even[0].len(), 2);
-        assert_ne!(even[0], vec![1, 2]);
-        // A player counting for 12 levels: the two highest are the two.
-        let mut fair = sides_of(&[6, 5, 1, 1, 0], 12 * STRENGTH_SCALE, &[]);
-        fair.sort_by_key(Vec::len);
-        assert_eq!(fair, [vec![1, 2], vec![3, 4, 5]]);
-    }
-
-    #[test]
-    fn a_players_value_never_puts_the_sides_more_than_one_apart() {
-        // One at level 15 and four at 0: with any value it is two against
-        // three, never one against four, and with a value the one at 15 is
-        // of the two.
-        for value in [0, 4, 12, 100] {
-            let mut sides = sides_of(&[15, 0, 0, 0, 0], value * STRENGTH_SCALE, &[]);
-            sides.sort_by_key(Vec::len);
-            assert_eq!((sides[0].len(), sides[1].len()), (2, 3), "value {value}");
-            assert!(value == 0 || sides[0].contains(&1), "value {value}");
-        }
-    }
-
-    #[test]
-    fn an_even_count_is_not_changed_by_a_players_value() {
-        for value in [0, 12 * STRENGTH_SCALE] {
-            let mut sides = sides_of(&[15, 14, 1, 0], value, &[]);
-            sides.sort();
-            assert_eq!(sides, [vec![1, 4], vec![2, 3]]);
-        }
-    }
-
-    #[test]
-    fn the_sides_are_made_by_the_strengths_given_and_by_the_level_without_one() {
-        // By level: 4 + 0 against 3 + 2. Player 4 (level 0) is given the
-        // strength of 5 levels: 4 + 3 against 2 + 5.
-        let mut by_level = sides_of(&[4, 3, 2, 0], 0, &[]);
-        by_level.sort();
-        assert_eq!(by_level, [vec![1, 4], vec![2, 3]]);
-        let fourth = player(4).account_id;
-        let mut given = sides_of(&[4, 3, 2, 0], 0, &[(fourth, 5 * STRENGTH_SCALE)]);
-        given.sort();
-        assert_eq!(given, [vec![1, 2], vec![3, 4]]);
-    }
-
-    #[test]
-    fn giving_strengths_restarts_no_wait() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        );
-        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(2)], &[at(0)], false, start);
-        let before: Vec<Instant> = mm
-            .queued_groups(QueuePool::Standard)
-            .iter()
-            .map(|group| group.since)
-            .collect();
-        mm.set_strengths(&[
-            (player(1).account_id, 250),
-            (player(2).account_id, -40),
-            (9, 1),
-        ]);
-        let groups = mm.queued_groups(QueuePool::Standard);
-        assert_eq!(
-            groups.iter().map(|group| group.since).collect::<Vec<_>>(),
-            before
-        );
-        assert_eq!(groups[0].player_strength(0), 250);
-        assert_eq!(groups[1].player_strength(0), -40);
-    }
-
-    #[test]
-    fn the_range_of_levels_grows_with_the_wait() {
-        let start = Instant::now();
-        let mm = classic(Duration::ZERO);
-        // Levels 2 and 9: 6 outside the first's 2..=3.
-        mm.queue_leveled(&[player(1)], &[at(2)], false, start);
-        mm.queue_leveled(&[player(2)], &[at(9)], false, start);
-        assert!(matches!(
-            mm.poll_with(1, after(start, 23), Some(&EIGHT)),
-            Some(QueueState::Waiting { total: 2, .. })
-        ));
-        // 4 s a level: after 24 s the range is -4..=9.
-        assert!(matches!(
-            mm.poll_with(1, after(start, 24), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        assert!(matches!(
-            mm.poll_with(2, after(start, 24), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-    }
-
-    #[test]
-    fn the_range_reaches_down_as_well_as_up() {
-        let start = Instant::now();
-        let mm = classic(Duration::ZERO);
-        // The one who waited longest is the higher: 9 down to 2 is 7.
-        mm.queue_leveled(&[player(1)], &[at(9)], false, start);
-        mm.queue_leveled(&[player(2)], &[at(2)], false, after(start, 20));
-        // The second's own range reaches 9 after 24 s of its wait (44 s);
-        // the first's reaches 2 after 28 s of its own.
-        assert!(matches!(
-            mm.poll_with(1, after(start, 27), Some(&EIGHT)),
-            Some(QueueState::Waiting { .. })
-        ));
-        assert!(matches!(
-            mm.poll_with(1, after(start, 28), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-    }
-
-    #[test]
-    fn nobody_waits_for_ever_whatever_the_levels() {
-        let start = Instant::now();
-        let mm = classic(Duration::from_secs(60));
-        // The lowest and the highest level there is.
-        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(2)], &[Level { min: 15, max: 15 }], false, start);
-        // 14 levels outside 0..=1: 56 s at 4 s a level, within the window.
-        assert!(matches!(
-            mm.poll_with(1, after(start, 60), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        // And with a slow step, as soon as the range is there.
-        let slow = LevelRules {
-            team_size: 8,
-            step: Duration::from_secs(60),
-        };
-        let mm = classic(Duration::from_secs(60));
-        mm.queue_leveled(&[player(1)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(2)], &[Level { min: 15, max: 15 }], false, start);
-        assert!(matches!(
-            mm.poll_with(1, after(start, 14 * 60 - 1), Some(&slow)),
-            Some(QueueState::Waiting { .. })
-        ));
-        assert!(matches!(
-            mm.poll_with(1, after(start, 14 * 60), Some(&slow)),
-            Some(QueueState::Placed { .. })
-        ));
-    }
-
-    #[test]
-    fn players_of_near_levels_go_first_and_the_far_one_is_not_held_back_by_them() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        // One of level 0 came first; sixteen of level 12 after it.
-        mm.queue_leveled(&[player(100)], &[at(0)], false, start);
-        for id in 1..=16 {
-            mm.queue_leveled(&[player(id)], &[at(12)], false, after(start, 1));
-        }
-        // The sixteen fill a match at once, around the first of them.
-        assert!(matches!(
-            mm.poll_with(1, after(start, 1), Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        assert_eq!(
-            mm.poll_with(100, after(start, 1), Some(&EIGHT)),
-            Some(QueueState::Waiting {
-                place: 1,
-                total: 1,
-                since: start
-            })
-        );
-    }
-
-    #[test]
-    fn with_more_than_a_match_waiting_the_nearest_levels_are_taken() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::ZERO);
-        let rules = LevelRules {
-            team_size: 2,
-            step: Duration::from_secs(1),
-        };
-        // The first is of level 5; five more of levels 9, 6, 1, 5, 4.
-        for (id, level) in [(1, 5), (2, 9), (3, 6), (4, 1), (5, 5), (6, 4)] {
-            mm.queue_leveled(&[player(id)], &[at(level)], false, start);
-        }
-        mm.poll_with(1, after(start, 30), Some(&rules));
-        let mut seated: Vec<u32> = teams(&mm, FIRST_MATCH_ID).into_iter().flatten().collect();
-        seated.sort_unstable();
-        // 5, 6 (in 5..=6), 5 again, then 4: not 9 or 1.
-        assert_eq!(seated, [1, 3, 5, 6]);
-    }
-
-    #[test]
-    fn a_squad_is_looked_for_by_its_highest_player() {
-        let start = Instant::now();
-        let mm = classic(Duration::ZERO);
-        mm.queue_leveled(&[player(1), player(2)], &[at(1), at(10)], true, start);
-        mm.queue_leveled(&[player(3)], &[at(10)], false, start);
-        assert!(matches!(
-            mm.poll_with(3, start, Some(&EIGHT)),
-            Some(QueueState::Placed { .. })
-        ));
-        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 3);
-    }
-
-    #[test]
-    fn the_waiting_are_counted_by_level() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        mm.queue_leveled(&[player(1), player(2)], &[at(1), at(10)], true, start);
-        mm.queue_leveled(&[player(3)], &[at(10)], false, start);
-        mm.queue(&[player(4)], false, start);
-        mm.queue_leveled(&[player(5)], &[at(30)], false, start);
-        let counts: [u16; 20] = mm.waiting_by_level();
-        let mut expected = [0; 20];
-        expected[0] = 1;
-        expected[1] = 1;
-        expected[10] = 2;
-        expected[19] = 1;
-        assert_eq!(counts, expected);
-        mm.leave_queue(3);
-        assert_eq!(mm.waiting_by_level::<20>()[10], 1);
-    }
-
-    #[test]
-    fn a_queue_without_levels_is_not_changed_by_the_rules_of_another() {
-        // 0.21d's poll: twenty in a match, whatever was queued with levels.
-        let start = Instant::now();
-        let mm = Matchmaking::new(Duration::from_secs(60));
-        for id in 1..=20 {
-            mm.queue_leveled(&[player(id)], &[at((id % 16) as u8)], false, start);
-        }
-        assert!(matches!(mm.poll(1, start), Some(QueueState::Placed { .. })));
-        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 20);
-    }
-
-    const TEN: LevelRules = LevelRules {
-        team_size: 10,
-        step: Duration::ZERO,
-    };
-
-    /// Joins `count` players (ids from `first`) one by one, `gap` s apart
-    /// from `at_s`; returns the time of the last.
-    fn join_all(mm: &Matchmaking, first: u32, count: u32, at_s: u64, gap: u64, start: Instant) {
-        for n in 0..count {
-            mm.queue_leveled(
-                &[player(first + n)],
-                &[at(0)],
-                false,
-                after(start, at_s + u64::from(n) * gap),
-            );
-        }
-    }
-
-    fn placed(mm: &Matchmaking, session: u32, at_s: u64, start: Instant) -> bool {
-        matches!(
-            mm.poll_with(session, after(start, at_s), Some(&TEN)),
-            Some(QueueState::Placed { .. })
-        )
-    }
-
-    #[test]
-    fn fewer_than_four_players_wait_however_long() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 3, 0, 1, start);
-        assert!(!placed(&mm, 1, 5000, start));
-        // The 4th starts a countdown of 60 s.
-        join_all(&mm, 4, 1, 5000, 0, start);
-        assert!(!placed(&mm, 1, 5059, start));
-        assert!(placed(&mm, 1, 5060, start));
-    }
-
-    #[test]
-    fn each_press_of_play_adds_thirty_seconds_to_what_is_left() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 4, 0, 0, start);
-        // 4th at 0: ends at 60. A 5th at 50 (10 s left) makes it 90.
-        join_all(&mm, 5, 1, 50, 0, start);
-        assert!(!placed(&mm, 1, 89, start));
-        assert!(placed(&mm, 1, 90, start));
-    }
-
-    #[test]
-    fn changing_equipment_does_not_restart_the_shared_countdown() {
-        // Four players use the gathering countdown; ten use the quiet period.
-        for (count, changed_at, starts_at) in [(4, 59, 60), (10, 29, 30)] {
-            let start = Instant::now();
-            let mm = Matchmaking::new(Duration::from_secs(60)).with_start_rules(
-                4,
-                Duration::from_secs(15),
-                Duration::from_secs(120),
-            );
-            {
-                let mut inner = mm.inner.locked();
-                inner.fill_players = 10;
-                inner.quiet = Duration::from_secs(30);
-            }
-            for id in 1..=count {
-                mm.queue_leveled(&[player(id)], &[at(0)], false, start);
-            }
-            let levels: Vec<_> = (1..=count)
-                .map(|id| (player(id).account_id, at(10)))
-                .collect();
-            assert_eq!(
-                mm.refresh_levels(&levels, after(start, changed_at)).len(),
-                count as usize
-            );
-            assert!(matches!(
-                mm.poll_with(1, after(start, changed_at), Some(&EIGHT)),
-                Some(QueueState::Waiting { since, .. }) if since == after(start, changed_at)
-            ));
-            assert!(matches!(
-                mm.poll_with(1, after(start, starts_at), Some(&EIGHT)),
-                Some(QueueState::Placed { .. })
-            ));
-            // Once seated, changes cannot put players back into search.
-            assert!(
-                mm.refresh_levels(
-                    &[(player(1).account_id, at(0))],
-                    after(start, starts_at + 1)
-                )
-                .is_empty()
-            );
-        }
-    }
-
-    #[test]
-    fn refreshing_growing_levels_invalidates_old_batches_without_extending_gathering() {
-        let mm = Matchmaking::new(Duration::ZERO);
-        mm.set_growing_rules(Duration::ZERO, 1.0);
-        let now = Instant::now();
-        mm.queue_in_pool(
-            &[player(1), player(2)],
-            &[],
-            false,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.poll_with(1, now, Some(&TEN));
-        let running = mm.seat(1).unwrap().0;
-        mm.set_growing_rules(Duration::from_secs(120), 1.0);
-        mm.queue_in_pool(
-            &[player(3), player(4)],
-            &[at(0); 2],
-            true,
-            now,
-            QueuePool::GrowingRoster,
-        );
-        mm.queue_in_pool(&[player(5)], &[at(0)], false, now, QueuePool::GrowingRoster);
-        let before = mm.queued_groups(QueuePool::GrowingRoster);
-        let changed = mm.refresh_levels(&[(player(3).account_id, at(10))], after(now, 119));
-        assert_eq!(changed, [player(3), player(4)]);
-        assert!(!mm.append_batch(
-            running,
-            &[(before[0].clone(), 0), (before[1].clone(), 1)],
-            after(now, 119),
-            |_, _| panic!("stale levels reached the match host")
-        ));
-        let after = mm.queued_groups(QueuePool::GrowingRoster);
-        assert_eq!(after[1].population().level_sum, 10);
-        assert_eq!(after[1].pool, QueuePool::GrowingRoster);
-        mm.poll_with(3, now + Duration::from_secs(119), Some(&TEN));
-        assert!(mm.seat(3).is_none());
-        mm.poll_with(3, now + Duration::from_secs(120), Some(&TEN));
-        let formed = mm.formed_match(mm.seat(3).unwrap().0).unwrap();
-        assert_eq!(formed.seats.len(), 3);
-        let squad: Vec<_> = formed.seats.iter().filter(|seat| seat.squad != 0).collect();
-        assert_eq!(squad.len(), 2);
-        assert_eq!(squad[0].team, squad[1].team);
-    }
-
-    #[test]
-    fn a_countdown_never_runs_longer_than_two_minutes() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 4, 0, 0, start);
-        // One more player every 20 s would push the end out for ever.
-        join_all(&mm, 5, 5, 20, 20, start);
-        assert!(!placed(&mm, 1, 119, start));
-        assert!(placed(&mm, 1, 120, start));
-        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 9);
-    }
-
-    #[test]
-    fn ten_or_more_start_after_thirty_quiet_seconds_and_twenty_at_once() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 10, 0, 5, start);
-        // The 10th joined at 45 s, and the countdown (from the 4th, at 15 s)
-        // is over: it waits for 30 s without a press (75 s).
-        assert!(!placed(&mm, 1, 74, start));
-        assert!(placed(&mm, 1, 75, start));
-        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 10);
-
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 20, 0, 0, start);
-        assert!(placed(&mm, 1, 0, start));
-        assert_eq!(mm.formed_match(FIRST_MATCH_ID).unwrap().seats.len(), 20);
-    }
-
-    #[test]
-    fn ten_or_more_that_keep_coming_start_by_two_minutes() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        // 10 at 0 s, then one every 20 s: never quiet for 30 s.
-        join_all(&mm, 1, 10, 0, 0, start);
-        join_all(&mm, 11, 5, 20, 20, start);
-        assert!(!placed(&mm, 1, 119, start));
-        assert!(placed(&mm, 1, 120, start));
-    }
-
-    #[test]
-    fn the_countdown_is_cancelled_under_four_and_starts_anew() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        join_all(&mm, 1, 4, 0, 0, start);
-        mm.leave_queue(4);
-        join_all(&mm, 4, 1, 50, 0, start);
-        // Not 60 s from the first 4th, but from the new one at 50 s.
-        assert!(!placed(&mm, 1, 109, start));
-        assert!(placed(&mm, 1, 110, start));
-    }
-
-    #[test]
-    fn a_squad_alone_waits_even_with_four_players() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        let squad: Vec<Player> = (1..=4).map(player).collect();
-        mm.queue_leveled(&squad, &[at(0); 4], true, start);
-        assert!(!placed(&mm, 1, 5000, start));
-    }
-
-    #[test]
-    fn a_squad_counts_its_players_toward_four_but_is_one_side() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        // A squad of 3 and one player: 4 players, two sides.
-        let squad: Vec<Player> = (1..=3).map(player).collect();
-        mm.queue_leveled(&squad, &[at(0); 3], true, start);
-        mm.queue_leveled(&[player(4)], &[at(0)], false, after(start, 10));
-        // The countdown starts with the 4th player, at 10 s.
-        assert!(!placed(&mm, 1, 69, start));
-        assert!(placed(&mm, 1, 70, start));
-        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
-        let team = |session: u32| {
-            seats
-                .iter()
-                .find(|seat| seat.player.session_id == session)
-                .unwrap()
-                .team
-        };
-        assert_eq!((team(1), team(2)), (team(3), team(3)));
-        assert_ne!(team(1), team(4));
-    }
-
-    #[test]
-    fn two_squads_of_two_make_a_match_on_two_sides() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        mm.queue_leveled(&[player(1), player(2)], &[at(0); 2], true, start);
-        mm.queue_leveled(&[player(3), player(4)], &[at(0); 2], true, start);
-        assert!(placed(&mm, 1, 60, start));
-        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
-        let teams: Vec<_> = seats.iter().map(|seat| (seat.team, seat.squad)).collect();
-        assert_eq!(teams, [(0, 1), (0, 1), (1, 2), (1, 2)]);
-    }
-
-    #[test]
-    fn squads_are_never_split_when_a_match_is_full() {
-        let start = Instant::now();
-        let mm = Matchmaking::new(DEFAULT_GATHER_WINDOW);
-        // 20 places: two squads of 9 and two players; a squad of 5 waits.
-        for first in [1_u32, 20] {
-            let squad: Vec<Player> = (first..first + 9).map(player).collect();
-            mm.queue_leveled(&squad, &[at(0); 9], true, start);
-        }
-        mm.queue_leveled(&[player(40)], &[at(0)], false, start);
-        mm.queue_leveled(&[player(41)], &[at(0)], false, start);
-        let squad: Vec<Player> = (50..55).map(player).collect();
-        mm.queue_leveled(&squad, &[at(0); 5], true, start);
-        assert!(placed(&mm, 1, 0, start));
-        let seats = mm.formed_match(FIRST_MATCH_ID).unwrap().seats;
-        assert_eq!(seats.len(), 20);
-        assert!(seats.iter().all(|seat| seat.player.session_id < 50));
-        for squad in [1, 2] {
-            let teams: HashSet<u8> = seats
-                .iter()
-                .filter(|seat| seat.squad == squad)
-                .map(|seat| seat.team)
-                .collect();
-            assert_eq!(teams.len(), 1, "squad {squad} was split");
-        }
-    }
-
     /// A player alone against the server's bots: seated at once, out of the
-    /// queue, the teams fixed, the bots after it; nobody joins it late.
+    /// queue, the teams fixed; nobody joins it late.
     #[test]
     fn a_solo_match_is_seated_at_once_and_takes_no_late_joiner() {
         let mm = Matchmaking::new(Duration::from_secs(60));
         let start = Instant::now();
-        mm.queue_in_pool(
-            &[player(1)],
-            &[Level::default()],
-            false,
-            start,
-            QueuePool::GrowingRoster,
-        );
+        mm.queue(&[player(1)], false, start);
         let id = mm
             .seat_solo(player(1), 0, start, QueuePool::GrowingRoster)
             .expect("seated");
@@ -3104,18 +1335,10 @@ mod tests {
                 index: 0
             })
         );
-        assert!(mm.add_bots(id, &[1, 0, 1]));
         let formed = mm.formed_match(id).unwrap();
         assert!(formed.fixed_teams);
         assert_eq!(formed.pool, QueuePool::GrowingRoster);
-        assert_eq!(
-            formed
-                .seats
-                .iter()
-                .map(|seat| seat.team)
-                .collect::<Vec<_>>(),
-            [0, 1, 0, 1]
-        );
+        assert_eq!(formed.seats.len(), 1);
         // Seated already: not twice; a team over 1 is none.
         assert_eq!(
             mm.seat_solo(player(1), 0, start, QueuePool::GrowingRoster),
@@ -3127,7 +1350,7 @@ mod tests {
         );
         // No late joiner.
         assert!(!mm.append_player(id, player(2), 1, |_, _| true));
-        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 4);
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 1);
     }
 
     #[test]

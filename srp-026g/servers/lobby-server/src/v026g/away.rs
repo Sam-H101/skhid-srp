@@ -14,8 +14,9 @@
 //!
 //! 1. **The link goes** after [`Settings::link_timeout`] of silence
 //!    ([`Settings::match_link_timeout`] for a player in a match that runs).
-//!    The player is out of the lobby: out of the queue, not ready in its
-//!    squad, out of its clan team's wait, and its friends see it offline.
+//!    The player is out of the lobby: out of its clan team's wait, and its
+//!    friends see it offline. Its room keeps its place until its session
+//!    ends (step 3: about 90 s of silence in all, the owner's of 2026-10-18).
 //!    A client that leaves in words (`FA`) ends its session at once
 //!    instead.
 //! 2. **The session waits** for [`Settings::session_grace`]: a client that
@@ -109,7 +110,13 @@ impl Core<'_> {
             }
         }
         for session_id in ended {
-            self.away.remove(&session_id);
+            // Its room loses it with its session (`rooms`), unless its
+            // account is in the lobby again under another one.
+            if let Some(away) = self.away.remove(&session_id)
+                && !self.by_account.contains_key(&away.account_id)
+            {
+                self.room_gone(away.account_id);
+            }
             if self.store.end_session(session_id) {
                 log::info!(
                     "Session {session_id:#x} ended: its client did not connect again in {} s",

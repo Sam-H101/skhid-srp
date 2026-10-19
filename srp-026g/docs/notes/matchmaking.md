@@ -7,10 +7,22 @@ Tags: **PROVEN** = read in the exe (VA cited), the data or the lobby SWF. **LIKE
 = inference. **choice** = srp's own rule, where the client and the sources of the time say
 nothing.
 
-Code: `crates/session/src/v026g/matchmaking.rs` (level, match level, map choice, map counts),
-`crates/session/src/matchmaking.rs` (`LevelRules`, `queue_leveled`, `poll_with`: the queue, the
-range, the sides), `servers/lobby-server/src/v026g/play.rs` (Play, queue screen, making the
-match), `crates/session/src/v026g/persist/map_plays.rs` (`g26_map_plays`, schema step 5).
+Code: `crates/session/src/v026g/matchmaking.rs` (level, match level, map counts),
+`crates/session/src/matchmaking.rs` (the matches' seats), `crates/session/src/v026g/rooms.rs`
+(rooms and their sides), `crates/session/src/matchmaking_policy.rs` (where a late joiner goes),
+`servers/lobby-server/src/v026g/play.rs` (Play, making the match), `.../rooms.rs` (a room's
+match and late joiners), `crates/session/src/v026g/persist/map_plays.rs` (`g26_map_plays`,
+schema step 5).
+
+> **Since 2026-10-17 every PvP match is a room's** (the owner's: `lobby.md` §2.16.3,
+> `servers/lobby-server/src/v026g/rooms.rs`). The 0.26g queue went with all of its rules: §3
+> (the start rules, the level range and the search step), §5's skewed map draw (a room's map is
+> voted on; a clan match's is drawn uniformly; the plays per map are still counted), §9.1-9.2
+> and §9.7 (the late-join queue, its scoring across matches, its patience, the dramatic lead,
+> JOIN), the server's PvP bots and their giving way, and `JOIN_CUTOFF` (a room's match takes a
+> member who comes from its countdown until 30 s are left, `LOAD_MARGIN`, on the side that then
+> counts for less: `matchmaking_policy::place_weaker`). Those sections are kept for the record. §1, §4, §8 (the
+> sides now made by `rooms::sides` with the same count) and §9.8 still hold.
 
 Sources of the time: `progression_sources.md` §9.
 
@@ -260,9 +272,10 @@ account's level is `Account::level` (its skill points); trust is
 `matches / (matches + SRP_BALANCE_TRUST_MATCHES)` (default 5), 0 for a rating
 of no match.
 
-`seat_balanced` takes, of all splits: no side over `SRP_MATCH_TEAM_SIZE`; the
-sides at most one player apart when the squads allow it; then the two sides
-counting as alike as can be. So:
+`rooms::sides` (`seat_balanced` of the queue before 2026-10-17) takes, of all
+splits: no side over the room's size; the sides at most one player apart
+when the squads allow it; then the two sides counting as alike as can be.
+So:
 
 - An even count is split as before, by what the players count for (now with
   the level and the rating, not the gear alone).
@@ -274,10 +287,8 @@ counting as alike as can be. So:
 - `SRP_BALANCE_PLAYER=0`, `SRP_BALANCE_PLAYER_LEVEL=0`, `SRP_BALANCE_RATING=0`
   is the rule of before.
 
-The lobby gives the queue each waiting player's number before every poll
-(`refresh_search_levels` → `Matchmaking::set_strengths`), without touching
-anybody's wait. A queue that was given none counts a player for its level
-(0.21d's entry, the tests).
+The lobby works out each member's number when its room's match starts
+(`play::strength_of`).
 
 The weights are the fit's, in gear levels: with the rating a player is 15, a
 level 1.2, a rating point 3.9; without it 12 and 1.5. On the same rosters the

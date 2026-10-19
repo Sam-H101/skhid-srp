@@ -168,7 +168,7 @@ impl World {
     /// A lobby with the clan rules given, whatever the environment
     /// says.
     fn with_clans(config: Config) -> Self {
-        let world = World::new(Duration::from_secs(60));
+        let world = World::new();
         world.accounts.clans().set_config(config);
         world
     }

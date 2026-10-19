@@ -60,8 +60,7 @@ use session::v026g::{Account, quests, wire};
 use session::{LockExt, Squad, SquadError};
 use survarium::v026g::lobby::requests::{ClientMessage, FriendshipAction, id};
 use survarium::v026g::lobby::{
-    self, ClientState, Friend, KIT_READY, ServerMessage, SquadMember, WireError, channel,
-    important, sender,
+    self, Friend, KIT_READY, ServerMessage, SquadMember, WireError, channel, important, sender,
 };
 
 use super::core::{Core, Who};
@@ -809,18 +808,12 @@ impl Core<'_> {
         )
     }
 
-    /// Send each client its squad when it differs from what it has, and
-    /// take out of the queue a player whose squad changed under it (a
-    /// membership change makes everyone ready again; a mate left it
-    /// alone).
+    /// Send each client its squad when it differs from what it has.
     ///
     /// 0xA1 is not ordered against other 0xA1s (transport.md §4.1): the
     /// next one for a client goes only when the last is acked.
     pub(super) fn refresh_squads(&mut self) {
         self.squads_dirty = false;
-        let none = lobby::squad_info(0, &[], 0, false, 0)
-            .map(ServerMessage::into_body)
-            .unwrap_or_default();
         for addr in self.players() {
             let Some(link) = self.links.get(&addr) else {
                 continue;
@@ -835,11 +828,7 @@ impl Core<'_> {
                 self.squads_dirty = true;
                 continue;
             }
-            let (me, session_id, queued) = (
-                player.account_id,
-                player.session_id,
-                player.queued_since.is_some(),
-            );
+            let me = player.account_id;
             let squad = self.store.squads().of(me);
             let message = match self.squad_message(me, squad.as_ref()) {
                 Ok(message) => message,
@@ -851,32 +840,13 @@ impl Core<'_> {
             let Some(player) = self.player(addr) else {
                 continue;
             };
-            let changed = player.squad_sent.as_deref() != Some(message.body());
-            let had_squad = player.squad_sent.as_ref().is_some_and(|sent| *sent != none);
-            let mut out_of_queue = false;
-            if changed {
+            if player.squad_sent.as_deref() != Some(message.body()) {
                 let body = message.body().to_vec();
                 let serial = self.send(addr, message);
                 if let Some(player) = self.player_mut(addr) {
                     player.squad_sent = Some(body);
                     player.squad_serial = serial;
                 }
-                // Its squad is no more: out of the queue the squad was in.
-                out_of_queue = squad.is_none() && had_squad && queued;
-            }
-            if let Some(squad) = &squad
-                && queued
-                && !squad.is_ready(me)
-            {
-                out_of_queue = true;
-            }
-            if out_of_queue {
-                let name = self.player(addr).map(|player| player.name.clone());
-                self.leave_queue_announced(session_id, me, &name.unwrap_or_default());
-                if let Some(player) = self.player_mut(addr) {
-                    player.queued_since = None;
-                }
-                self.send(addr, lobby::client_state(&ClientState::Lobby, None));
             }
         }
     }
