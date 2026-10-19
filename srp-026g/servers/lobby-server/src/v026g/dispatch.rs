@@ -253,9 +253,11 @@ impl Core<'_> {
             } => self.choose_modifier(who, item_id, old_modification_id, new_modification_id),
             // The item, its donor, and whether gold pays.
             M::Craft { a0, a1, flag } => self.craft(who, a0, a1, flag),
-            // The tutorial's "choose a weapon" step waits for the inventory
-            // (`shop`).
-            M::TutorialWeaponChosen => self.tutorial_choose_weapon(who),
+            // No client runs the tutorial (`session::v026g::tutorial`): its
+            // steps are not answered.
+            M::TutorialWeaponChosen | M::TutorialStep { .. } | M::SkipTutorial => {
+                log::info!("{}: a tutorial step, but there is no tutorial", who.name);
+            }
 
             // ---- the shop (0x47) ----
             M::Buy {
@@ -414,9 +416,6 @@ impl Core<'_> {
                     }
                 }
             }
-            // The tutorial's steps and their awards (`shop`).
-            M::TutorialStep { step } => self.tutorial_step(who, step),
-            M::SkipTutorial => self.skip_tutorial(who),
 
             // ---- chat, friends (0x4C..=0x50) ----
             M::ChatText {
@@ -542,7 +541,7 @@ impl Core<'_> {
             // came after this one signed in pushed its last rows out. `9D`
             // with `show` off stores the same flags and runs no tutorial
             // (0x27136E).
-            let recount = tutorial::message(&who.account.locked(), false);
+            let recount = tutorial::message(false);
             self.send(who.addr, recount);
             if let Some(player) = self.player_mut(who.addr) {
                 player.ranked_sent = ranking.len() as u32;

@@ -414,7 +414,7 @@ The sign-in `need_shop_items` flag still means "no shop array yet" (lc+0x1EE5F4 
 4 × u8 → lc+0x1EE5F0..F3. Byte +1 is the minimum and byte +2 the maximum clan-team size allowed to press Play (compared in `update_play_button_state` 0x21FF12 / 0x21FF1B, only in clan-team mode, see social.md §2.2; log "battle_cnt=%d min_cnt=%d max_cnt%d"). If never sent, both are 0 and a clan-team commander can never press Play; ordinary squads are not affected. Bytes +0 and +3 are unknown (+0 is used at 0x2A0FB8).
 
 ### 2.21 0x9D tutorial / awards (NEW) — PROVEN 0x271340
-`bool show`, `u32 a` (lc+0x1EE600), `u32 b` (lc+0x1EE604). If show: the tutorial state machine 0x283190 runs (`tutorial_state_choose_nickname`, `tutorial_state_click_inventory`, `tutorial_state_equip_drop`, `set_tutorial_rewards`). The handler then shows the ranking total (from 0x8F) and calls 0x2768A0, which sends client message 0x45 with the UI language (§4). `a` is a bit set (tested `& 0x22` at 0x21D40C). GUESS: a = tutorial flags, b = reward state. **Corrected 2026-10-12, see premium.md §5: bit n of `a` is tutorial step n; the awards are `unique_awards.options`. The lobby tutorial's states and the `89` its weapon step waits for after `46 0A`: premium.md §5.1.**
+`bool show`, `u32 a` (lc+0x1EE600), `u32 b` (lc+0x1EE604). If show: the tutorial state machine 0x283190 runs (`tutorial_state_choose_nickname`, `tutorial_state_click_inventory`, `tutorial_state_equip_drop`, `set_tutorial_rewards`). The handler then shows the ranking total (from 0x8F) and calls 0x2768A0, which sends client message 0x45 with the UI language (§4). `a` is a bit set (tested `& 0x22` at 0x21D40C). GUESS: a = tutorial flags, b = reward state. **Corrected 2026-10-12, see premium.md §5: bit n of `a` is tutorial step n; the awards are `unique_awards.options`. The lobby tutorial's states and the `89` its weapon step waits for after `46 0A`: premium.md §5.1. srp sends every step done since 2026-10-19: no tutorial (premium.md §5).**
 
 ### 2.22 0x9E video tutorial link (NEW) — PROVEN 0x2713A0
 `bool` (lc+0x1EE611), `u16 n`, then `n × u16` UTF-16 chars. They are copied to a stack buffer of about 0x1EC bytes (**n ≤ ~245; no check → stack overflow**), then converted to UTF-8 into lc+0x1E6144 (0x200 bytes) → `root.show_video_tutorial_link(bool)`.
@@ -452,7 +452,7 @@ The sign-in `need_shop_items` flag still means "no shop array yet" (lc+0x1EE5F4 
 9. `87` own account (profiles + items + level/exp).
 10. `8C` level + skills.
 11. `92` quests (n = 0).
-12. `9C` squad limits, `9D` tutorial (show = 0), `9F` online stats (see the social notes for the maintenance semantics).
+12. `9C` squad limits, `9D` tutorial (show = 1, every step done: no tutorial), `9F` online stats (see the social notes for the maintenance semantics).
 13. `85 00` client state 0.
 
 ---

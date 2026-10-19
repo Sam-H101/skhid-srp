@@ -694,22 +694,13 @@ fn the_queries_are_answered() {
             Decoded::EloList(rows)
         ] if rows.len() == 2 && rows[0].0 == "Bob" && rows[1].0 == "Alice"
     ));
-    // The echo after 0x80 and the tutorial's own reports ask for nothing.
+    // The echo after 0x80 asks for nothing; nor does a tutorial step
+    // (there is no tutorial).
     world.ask(alice, (0x32, vec![0, 0]));
     world.ask(alice, (0x4B, vec![2]));
     world.ask(alice, (0x49, vec![0x24, 0]));
-    assert!(world.take(alice).is_empty());
-    assert!(world.account(alice).tutorial_done);
-    // A step of the tutorial pays its award (the notes about items: 25
-    // gold), so the account follows.
     world.ask(alice, (0x4B, vec![1, 2]));
-    assert!(
-        world
-            .take(alice)
-            .iter()
-            .any(|message| matches!(message, Decoded::Money { .. }))
-    );
-    assert_eq!(world.account(alice).tutorial_step, 2);
+    assert!(world.take(alice).is_empty());
 
     // The autobuy box and the active kit have their own `83 49`.
     world.ask(alice, request::autobuy(true));
@@ -2362,7 +2353,7 @@ fn told_premium(decoded: &[Decoded]) -> Option<Option<u32>> {
 }
 
 #[test]
-fn a_sign_in_brings_the_shop_the_tutorial_and_the_daily_bonus() {
+fn a_sign_in_brings_the_shop_no_tutorial_and_the_daily_bonus() {
     let mut world = World::new(Duration::from_secs(60));
     let alice = world.connect("Alice");
     let decoded = world.take(alice);
@@ -2391,13 +2382,13 @@ fn a_sign_in_brings_the_shop_the_tutorial_and_the_daily_bonus() {
         message,
         Decoded::ServicePrices(prices) if prices.change_name == 250
     )));
-    // The tutorial runs for a new account, from the inventory step.
+    // No tutorial: every step done.
     assert!(decoded.iter().any(|message| matches!(
         message,
         Decoded::Tutorial {
             show: true,
-            a: 1,
-            b: 0
+            a: 0x3F,
+            b: 1
         }
     )));
     // The daily bonus: day 1 of 7, nothing won, 50 gold on the seventh;
@@ -2985,152 +2976,49 @@ fn a_nickname_is_checked_and_changed() {
     world.assert_clean();
 }
 
+/// No tutorial (`session::v026g::tutorial`): a new account is told every
+/// step is done, so its client runs none of it, and starts with 10 000
+/// silver, 500 gold, the steps' experience and the ammo; a step a client
+/// sends anyway is not answered.
 #[test]
-fn the_tutorials_steps_pay_their_awards_once() {
+fn a_new_account_has_no_tutorial_and_what_it_paid() {
+    use survarium::v026g::lobby::tutorial_model::State;
     let mut world = World::new(Duration::from_secs(60));
     let alice = world.connect("Alice");
-    world.take(alice);
-    let (silver, gold) = {
-        let account = world.account(alice);
-        (account.generic_money, account.premium_money)
-    };
-    // The notes about items (step 2): 25 gold.
-    world.ask(alice, (0x4B, vec![1, 2]));
-    assert_eq!(told_money(&world.take(alice)), Some((silver, gold + 25)));
-    // Again: nothing.
-    world.ask(alice, (0x4B, vec![1, 2]));
-    assert!(world.take(alice).is_empty());
-    // The tutorial itself (step 1): 1000 silver and 250 experience.
-    world.ask(alice, (0x4B, vec![1, 1]));
-    let decoded = world.take(alice);
-    assert_eq!(told_money(&decoded), Some((silver + 1000, gold + 25)));
-    assert!(decoded.iter().any(|message| matches!(
-        message,
-        Decoded::Skills { exp_total: 250, .. }
-    )));
-    // A step that is none asks for nothing.
-    world.ask(alice, (0x4B, vec![1, 9]));
-    assert!(world.take(alice).is_empty());
-    {
-        let account = world.account(alice);
-        assert_eq!(account.extras.tutorial_flags, 0b111);
-        assert!(account.tutorial_done);
+    // The start is what the client is first told: no window for it.
+    assert_eq!(told_money(&world.take(alice)), Some((10_000, 500)));
+    assert_eq!(world.client(alice).model.tutorial().state(), State::Default);
+    let account = world.account(alice);
+    assert_eq!((account.generic_money, account.premium_money), (10_000, 500));
+    assert_eq!(account.exp_total, 250);
+    // The Scavengers' quests, never neutral.
+    assert_eq!(account.quest_faction, 1);
+    for (name, rounds) in session::v026g::tutorial::SIGNUP_AMMO {
+        let dict_id = Dictionary::shared().item_named(name).unwrap().dict_id;
+        let owned: u32 = account
+            .inventory
+            .iter()
+            .filter(|item| item.dict_id == dict_id)
+            .map(|item| item.condition_or_stack)
+            .sum();
+        assert!(owned > rounds, "{name}: {owned}");
     }
-    // The next sign-in tells the client the tutorial is over.
+    drop(account);
+    // Given once: the next sign-in gives nothing more.
+    let money = world.account(alice).generic_money;
     let ids = world.ids[alice];
     world.store.end_session(ids.1);
     world.advance(Duration::from_secs(2));
     let session = world.store.create_session(ids.0);
     let again = world.connect_session((ids.0, session));
-    assert!(world.take(again).iter().any(|message| matches!(
-        message,
-        Decoded::Tutorial {
-            show: true,
-            a: 0b111,
-            b: 1
-        }
-    )));
-    world.assert_clean();
-}
-
-/// The first live session (2026-10-12) stopped here: the client's tutorial
-/// sent `49 02` and `46 0A`, srp answered `83` alone, and no weapon could
-/// be dragged. The client highlights the two weapons when the inventory
-/// comes again (`tutorial_model`).
-#[test]
-fn the_tutorials_weapon_step_is_answered_with_the_inventory() {
-    use survarium::v026g::lobby::tutorial_model::{CHOICE, State, Stuck, WEAPON_SLOT};
-    let mut world = World::new(Duration::from_secs(60));
-    let alice = world.connect("Alice");
-    world.take(alice);
-    // The sign-in's `9D` started the tutorial at the inventory tab.
-    assert_eq!(
-        world.client(alice).model.tutorial().state(),
-        State::ClickInventory
-    );
-    let kit = world.account(alice).kits[0].id;
-    // The player opens the inventory: the client's two requests.
-    let requests = world
-        .client(alice)
-        .model
-        .tutorial_mut()
-        .inventory_opened(kit)
-        .unwrap();
-    assert_eq!(requests[1], (0x46, vec![0x0A]));
-    // `49 02` alone: its `83`, and still nothing to drag.
-    world.ask(alice, requests[0].clone());
-    assert_eq!(world.client(alice).ids, [0x83]);
-    world.take(alice);
-    assert_eq!(
-        world
-            .client(alice)
-            .model
-            .tutorial_mut()
-            .drag_started(CHOICE[0]),
-        Err(Stuck::NotHighlighted(CHOICE[0]))
-    );
-    // `46 0A`: the inventory, the account and the money, in that order.
-    world.ask(alice, requests[1].clone());
-    assert_eq!(world.client(alice).ids, [0x89, 0x87, 0x8B]);
-    let decoded = world.take(alice);
-    let Decoded::Inventory { items, .. } = &decoded[0] else {
-        panic!("not the inventory: {:?}", decoded[0]);
-    };
-    // Nothing was given: a new account owns the three starting weapons and
-    // their two kinds of ammo.
-    let mut dicts: Vec<u16> = items.iter().map(|item| item.dict_id).collect();
-    dicts.sort_unstable();
-    assert_eq!(dicts, [18, 50, 104, 106, 107]);
-    // Both weapons can be dragged now, and dropped on weapon slot 1.
-    let model = &mut world.client(alice).model;
-    assert_eq!(model.tutorial().highlighted(), CHOICE);
-    model.tutorial_mut().drag_started(CHOICE[1]).unwrap();
-    model.tutorial_mut().dropped_on_weapon_slot(CHOICE[1]).unwrap();
-    assert_eq!(model.tutorial().state(), State::ClickAmmo);
-    // The drop's own request (`46 00`): the Mosin into weapon slot 1.
-    let mosin = world
-        .account(alice)
-        .inventory
-        .iter()
-        .find(|item| item.dict_id == CHOICE[1])
-        .unwrap()
-        .item_id;
-    world.ask(
-        alice,
-        request::move_item(kit, mosin, CHOICE[1], INVENTORY_SLOT, WEAPON_SLOT, 1),
-    );
-    world.take(alice);
-    {
-        let account = world.account(alice);
-        let slot = account.kits[0].slots[usize::from(WEAPON_SLOT)].unwrap();
-        assert_eq!(slot.item_id, mosin);
+    world.take(again);
+    assert_eq!(world.account(again).generic_money, money);
+    // The tutorial's steps and its "choose a weapon": nothing.
+    for step in [(0x4B, vec![1, 1]), (0x4B, vec![2]), (0x46, vec![0x0A])] {
+        world.ask(again, step);
+        assert!(world.take(again).is_empty());
     }
-
-    // An account in the tutorial that lost one of the two gets it back.
-    let bob = world.connect("Bob");
-    world.take(bob);
-    world.change(bob, |account| {
-        account.inventory.retain(|item| item.dict_id != CHOICE[0]);
-    });
-    let kit = world.account(bob).kits[0].id;
-    world
-        .client(bob)
-        .model
-        .tutorial_mut()
-        .inventory_opened(kit)
-        .unwrap();
-    world.ask(bob, (0x46, vec![0x0A]));
-    world.take(bob);
-    assert_eq!(world.client(bob).model.tutorial().highlighted(), CHOICE);
-    assert_eq!(
-        world
-            .account(bob)
-            .inventory
-            .iter()
-            .filter(|item| item.dict_id == CHOICE[0])
-            .count(),
-        1
-    );
+    assert_eq!(world.account(again).generic_money, money);
     world.assert_clean();
 }
 

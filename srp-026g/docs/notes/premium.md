@@ -40,7 +40,7 @@ Record 0xD0 bytes, reader of the UI 0x227F60. PROVEN:
 
 **The third kit is not premium's in srp** (the owner's choice, 2026-10-17): every account uses all three kits, premium or not, and no kit is sent with the client's premium state 2 (`Account::kit_usable`; lobby.md §2.5). The client locks a kit only by that state (`ProfileSelector.setupProfiles`, `LobbyMenu.onProfileContextMenu`: the buy-premium box opens for a state-2 tab), not by the account's premium. The original game's third kit was premium's (PN 0.26g, `progression_sources.md`). Premium's other benefits are unchanged. OPEN: the client's premium windows (`MessagePremium`, `MessagePremiumDiscount`) still list `st_premium_bonus_profile` ("Профиль экипировки", an equipment profile) among premium's bonuses; that text is the game's localization in `resources.db`, which a server change does not reach.
 
-**Gold has no real-money source in srp**: level rewards (a new account starts with none since 2026-10-12), the tutorial's notes (100 in all), the daily bonus (50 a week), drops, the operator's web page.
+**Gold has no real-money source in srp**: level rewards, a new account's 500 (`no-tutorial.md`), the daily bonus (50 a week), drops, the operator's web page.
 
 ## 2. Buying: requests and answers
 
@@ -78,7 +78,7 @@ The game's own texts: "Play everyday and get x2 experience and reputation for th
 
 The awards are the game's `gameplay/awards/unique_awards.options` (PROVEN data; answers data.md question 8: `type` is the lobby's `Reward` constant, 0 experience, 1 reputation, 2 money; for money `param` 0 silver, 1 gold, LIKELY): `tutorial_completed` 1000 silver + 250 experience (step 1), `survival_item_notes_completed` 25 gold (step 2), `survival_prepare_to_battle_notes_completed` 25 gold (step 3), `game_world_tutorial_completed` 50 gold (step 4), `tutorial_change_name` nothing. That the server paid them for these steps is LIKELY.
 
-[srp]: a new account starts with bit 0 (its name is the one it signed up with); `b` = 1 once the account has experience (GUESS); a step is paid once; `SRP_TUTORIAL=off` sends `show` false. The video link (`9E`) stays hidden. **First run against a real client 2026-10-12: it stopped at the "choose a weapon" step; cause and fix in §5.1. The steps after it are still unseen live; "Skip tutorial" always gets out (§5.2), and `SRP_TUTORIAL=off` keeps it away.**
+[srp] **No tutorial since 2026-10-19 (the owner's):** it took a new player through Play into a match, and with rooms nobody is sent into a match they did not choose. Every `9D` has `a` = 0x3F, every step done (`session::v026g::tutorial::ALL_DONE`): `a & 0x22` puts the lobby in `default_state`, bit 4 skips the match's own tutorial, bits 2 and 3 hide the notes' rewards; `b` = 1. The sign-in's has `show` on, the ranking's recounts off. A step a client sends anyway (`4B`, `46 0A`) is not answered. **A new account starts with** (at its first sign-in, before its client hears of it: no window) 10 000 silver and 500 gold, the steps' 250 experience (read from the awards file), and 1000 rounds each of 7.62x25 (the TT-33's and PPSh-41's) and 7.62x54R (the Mosin's) on its starting stacks; its quests are the Scavengers' (the tutorial ended in `state_choose_faction`; never neutral). A player counts as new for the first match's drop table while it has no more experience than that. The video link (`9E`) stays hidden. §5.1 and §5.2 are what the tutorial was, kept as knowledge of the client.
 
 ### 5.1 The lobby tutorial's states, and the one step the server has a part in (2026-10-12)
 
@@ -121,7 +121,7 @@ PROVEN: the state becomes `state_choose_faction` when the account has no quest f
 
 ## 7. The level notice: important message type 14 (corrects social.md §1.4)
 
-0x226B5B: the text is four bracketed numbers, read in this order by 0x227120: **`[skill_level][reward_type][reward_id][reward_amount]`** (PROVEN). The lobby shows "Level N achieved" with `reward_amount` of money and one skill point; `reward_id` 0 is silver, else gold (`MessagePlayerRank`). `reward_type` is read by nothing of that window; srp sends the same number as `reward_id` (GUESS). srp sends one for each level a match, a claimed premium half or the tutorial reached. Other types: 1 and 4 were sent already; 5 shows nothing; 6 (item repaired) is the items work's; 13 (referral) has no rule in srp.
+0x226B5B: the text is four bracketed numbers, read in this order by 0x227120: **`[skill_level][reward_type][reward_id][reward_amount]`** (PROVEN). The lobby shows "Level N achieved" with `reward_amount` of money and one skill point; `reward_id` 0 is silver, else gold (`MessagePlayerRank`). `reward_type` is read by nothing of that window; srp sends the same number as `reward_id` (GUESS). srp sends one for each level a match or a claimed premium half reached. Other types: 1 and 4 were sent already; 5 shows nothing; 6 (item repaired) is the items work's; 13 (referral) has no rule in srp.
 
 ## 8. Settings
 
@@ -131,7 +131,6 @@ PROVEN: the state becomes `state_choose_faction` when the account has no quest f
 | `SRP_PREMIUM_DISCOUNT` | 0 | percent off premium time, offered by `A9` / `A8`; 0 offers none |
 | `SRP_PREMIUM_OFFER_SECONDS` | 3600 | how long the offer after a match stands |
 | `SRP_RENAME_COST` | 250 | gold for a nickname change |
-| `SRP_TUTORIAL` | on | `off`: the client's tutorial stays disabled |
 | `SRP_AMMO_USE` | on | `off`: a match takes nothing off the stacks |
 
 ## 9. Open

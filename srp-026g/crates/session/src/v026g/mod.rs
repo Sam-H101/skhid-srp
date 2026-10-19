@@ -276,8 +276,9 @@ impl GameAccounts {
         self.accounts.locked().get(&account_id).cloned()
     }
 
-    /// The account with this id; at its first 0.26g sign-in it is made, with
-    /// the game's starting state ([`Account::new`]) under `name`.
+    /// The account with this id; made with the game's starting state
+    /// ([`Account::new`]) under `name` if it has none (a sign-in makes it
+    /// with [`Self::sign_up`]).
     pub fn get_or_create(&self, account_id: u32, name: &str) -> Arc<Mutex<Account>> {
         let mut accounts = self.accounts.locked();
         if let Some(account) = accounts.get(&account_id) {
@@ -288,6 +289,19 @@ impl GameAccounts {
         drop(accounts);
         self.mark_dirty(account_id);
         account
+    }
+
+    /// The account with this id; at its first 0.26g sign-in it is made, as
+    /// [`Self::get_or_create`] makes it, and given what the tutorial it no
+    /// longer has paid ([`tutorial::signup_grant`]). Whether it was made
+    /// now.
+    pub fn sign_up(&self, account_id: u32, name: &str) -> (Arc<Mutex<Account>>, bool) {
+        let made = !self.accounts.locked().contains_key(&account_id);
+        let account = self.get_or_create(account_id, name);
+        if made {
+            tutorial::signup_grant(&mut account.locked());
+        }
+        (account, made)
     }
 
     /// How many accounts have 0.26g state.

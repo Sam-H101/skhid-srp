@@ -308,7 +308,7 @@ pub fn sign_in_push(account: &Account, info: &SignInInfo) -> Result<Vec<ServerMe
         quests(account, now),
         // The numbers of the clan rules (`clans::Config`).
         super::clans::limits(super::clans::Config::shared()),
-        tutorial::message(account, settings.tutorial),
+        tutorial::message(true),
         lobby::online_stats(
             info.players_online,
             info.games_online,

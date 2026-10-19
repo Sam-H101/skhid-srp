@@ -77,7 +77,7 @@ What could still be missed:
 | 7 | `45` tutorial video link | fixed answer | Always `9E` with "hide" and an empty address. The video link never appears in the lobby. |
 | 8 | `49 24` hide the video link | accepted, no effect | Nothing: the link is never shown, so the button cannot be reached. |
 | 9 | `32` after sign-in | accepted, no effect | Nothing. What it asks for is not known. The client waits for no answer. |
-| 10 | `46 0A` the tutorial's "choose a weapon" step | **real since 2026-10-12** | The client waits for the inventory (`89`) to highlight the two weapons (`premium.md` §5.1); srp sends `89`, `87`, `8B`. |
+| 10 | `46 0A` the tutorial's "choose a weapon" step | **accepted, not answered** since 2026-10-19 | No tutorial (`no-tutorial.md`): no client sends it. It was answered with `89`, `87`, `8B` from 2026-10-12 (`premium.md` §5.1). |
 | 11 | `E1` match keep-alive | accepted, no effect | Nothing. It only keeps the link alive, which the transport does on its own. |
 | 12 | login UDP `03 <queue id>` queue ping | not parsed | Nothing. The client sends it only after the login answer `25` ("in the online queue"), which srp never sends. The 0.26g stack has no UDP listener on the login port. |
 
@@ -202,7 +202,7 @@ Dispatch: `servers/lobby-server/src/v026g/dispatch.rs`, `Core::handle`. "Writer"
 | `07` | changing a modification | 0x270E30 / 0x270E41 | **real**: paid, three choices drawn, `83 46 07` | `items.rs` `reroll_modifier` | medium |
 | `08` | picking one of the three | 0x270EE0 / 0x270EED | **real**: `83 46 08` | `items.rs` `choose_modifier` | medium |
 | `09` | upgrading an item with a donor | 0x270F90 / 0x270FA1 | **real**: `83 46 09`; a failure is `83 46 09 FE` | `items.rs` `craft` | medium |
-| `0A` | the tutorial's "choose a weapon" step | 0x2A45D0 / 0x2A467C | **real**: `89`, `87`, `8B`; a missing tutorial weapon is given (`premium.md` §5.1) | `shop.rs` `tutorial_choose_weapon` | high (that an `89` is awaited), LIKELY (the grant) |
+| `0A` | the tutorial's "choose a weapon" step | 0x2A45D0 / 0x2A467C | **accepted, not answered** (no tutorial, `no-tutorial.md`; it was `89`, `87`, `8B`, `premium.md` §5.1) | `dispatch.rs` (logged) | high (that an `89` is awaited), LIKELY (the grant) |
 
 ### 6.3 Shop (`47`)
 
@@ -223,8 +223,8 @@ Dispatch: `servers/lobby-server/src/v026g/dispatch.rs`, `Core::handle`. "Writer"
 | `48 00` | applying skills | 0x271100 / 0x27111D | **real**: checked, stored, `8C`, account pushed | `dispatch.rs` `skills_answer`; `rules::set_skills` | medium |
 | `48 01` | resetting a branch | 0x271270 / 0x271285 | **real**: paid in silver or gold, `8C` | `rules::reset_skills` | medium |
 | `4B 00` | choosing the quest faction | 0x273070 / 0x27307D | **real**: stored, `8E`, `83 4B` | `dispatch.rs`; `quests::choose_faction` | high |
-| `4B 01` | tutorial and survival-notes steps | 0x270B70 / 0x270B7D | **real**: the step is stored and paid once | `shop.rs` `tutorial_step` | medium |
-| `4B 02` | skipping the tutorial | 0x281660 / 0x2816EA | **real**: stored | `shop.rs` `skip_tutorial` | medium |
+| `4B 01` | tutorial and survival-notes steps | 0x270B70 / 0x270B7D | **accepted, not answered** (no tutorial, `no-tutorial.md`) | `dispatch.rs` (logged) | medium |
+| `4B 02` | skipping the tutorial | 0x281660 / 0x2816EA | **accepted, not answered** (no tutorial, `no-tutorial.md`) | `dispatch.rs` (logged) | medium |
 
 ### 6.5 Kits and the account (`49 00..05`, `24`)
 
