@@ -42,6 +42,7 @@
 
 mod damage;
 mod launcher;
+mod maps;
 mod password_reset;
 mod patches;
 mod stats;
@@ -644,11 +645,13 @@ impl Web {
             self.resource(&mut stream, &request, &file);
             return;
         }
-        // The calculator's files on the 0.26g site; its fonts, which every
-        // page uses, on both.
+        // The calculator's and the Maps tab's files on the 0.26g site; the
+        // calculator's fonts, which every page uses, on both.
         let site_file = self.game.is_some() || request.path.starts_with(damage::FONTS);
         if site_file && matches!(request.method.as_str(), "GET" | "HEAD") {
-            if let Some((content_type, bytes)) = damage::file(&request.path) {
+            let file = damage::file(&request.path)
+                .or_else(|| self.game.as_ref().and_then(|_| maps::file(&request.path)));
+            if let Some((content_type, bytes)) = file {
                 damage::send(&mut stream, request.method == "HEAD", content_type, bytes);
                 return;
             }
@@ -658,6 +661,8 @@ impl Web {
             launcher::policy()
         } else if self.game.is_some() && request.path == damage::PATH {
             damage::POLICY
+        } else if self.game.is_some() && request.path == maps::PATH {
+            maps::POLICY
         } else {
             POLICY
         };
@@ -914,6 +919,7 @@ impl Web {
                     "/patches" => return patches::response(&game.patches),
                     "/api/client-files" => return launcher::client_files(),
                     damage::PATH => return damage_page(request.lang),
+                    maps::PATH => return maps_page(request.lang),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(
                             launcher::language(path, request.lang),
@@ -1542,27 +1548,35 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
 
 /// The calculator: its page under the site's header.
 fn damage_page(lang: Lang) -> Response {
+    damage::page(lang, &tool_header(lang, damage::PATH))
+}
+
+/// The Maps tab: its page under the site's header.
+fn maps_page(lang: Lang) -> Response {
+    maps::page(lang, &tool_header(lang, maps::PATH))
+}
+
+/// The site's header over a page of its own look (the calculator's, the
+/// Maps tab's), `path` the page shown.
+fn tool_header(lang: Lang, path: &str) -> String {
     let connect = CONNECT.get();
     let test = connect.is_some_and(|connect| connect.test_server);
     let other_url = connect.and_then(|connect| connect.other_url.as_deref());
-    let (header, test_notice) = site_header(lang, true, test, other_url, true);
-    damage::page(
-        lang,
-        &format!(
-            "<div class=site><style>{}</style>{header}{test_notice}</div>",
-            damage::HEADER_STYLE
-        ),
+    let (header, test_notice) = site_header(lang, true, test, other_url, path);
+    format!(
+        "<div class=site><style>{}</style>{header}{test_notice}</div>",
+        damage::HEADER_STYLE
     )
 }
 
 /// Every page's header (the 0.26g site's or the 0.21d's), and what a test
-/// server says under it. `damage`: the calculator is the page shown.
+/// server says under it. `current`: the path of the tab shown, if one is.
 fn site_header(
     lang: Lang,
     v026g: bool,
     test: bool,
     other_url: Option<&str>,
-    damage: bool,
+    current: &str,
 ) -> (String, String) {
     let code = lang.code();
     let (other, other_name) = match lang {
@@ -1585,14 +1599,22 @@ fn site_header(
             String::new(),
         )
     };
-    // The calculator is the 0.26g game's.
-    let damage_link = if v026g {
+    // The calculator and the maps are the 0.26g game's.
+    let tab = |path: &str, name: &str| {
         format!(
-            "<a href=\"{}?lang={code}\"{}>{}</a>",
-            damage::PATH,
-            if damage { " aria-current=page" } else { "" },
-            lang.tr("Damage calculator", "Калькулятор шкоди"),
+            "<a href=\"{path}?lang={code}\"{}>{name}</a>",
+            if current == path {
+                " aria-current=page"
+            } else {
+                ""
+            },
         )
+    };
+    let damage_link = if v026g {
+        tab(
+            damage::PATH,
+            &lang.tr("Damage calculator", "Калькулятор шкоди"),
+        ) + &tab(maps::PATH, &lang.tr("Maps", "Мапи"))
     } else {
         String::new()
     };
@@ -1615,7 +1637,7 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     };
     let code = lang.code();
     let version = if form.is_026g() { "0.26g" } else { "0.21d" };
-    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, false);
+    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, "");
     let body = match form {
         Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
@@ -3061,6 +3083,13 @@ mod tests {
         // The site's fonts are the calculator's, served on both servers.
         assert!(home.contains("src: url(\"/damage/fonts/pt-sans-regular.woff2?v="));
         assert!(crate::damage::file("/damage/fonts/pt-sans-regular.woff2").is_some());
+    }
+
+    #[test]
+    fn the_maps_are_the_026g_sites_only() {
+        let web = web(None);
+        assert_eq!(web.route(&get("/maps"), "t").status, "404 Not Found");
+        assert!(!web.route(&get("/"), "t").body.contains("href=\"/maps"));
     }
 
     #[test]

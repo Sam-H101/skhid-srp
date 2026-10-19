@@ -977,6 +977,20 @@ if [[ -n $rev ]] && ((rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.pat
     ${resources##*/} != "resources.db.patch_$MENUS_PATCH" ]]; then
     problem "revision $rev needs resources.db.patch_$MENUS_PATCH (the menus) offered, and $PATCH_LIST has no row of it: release it (--resources) first"
 fi
+# The site's Maps tab: built from exactly the patches the release offers
+# (with --resources, that one too), so it never shows stale spawns.
+if ((!test_server)) && [[ -n $main_commit ]]; then
+    maps_built=srp-026g/servers/web-server/maps/built-from.tsv
+    want=$( { cut -d' ' -f1,2 <<<"$LIST"; if [[ -n $resources && -f $resources ]]; then echo "${resources##*/} $(sha256_of "$resources")"; fi; } | grep . | sort || true)
+    have=$(git -C "$REPO" show "$main_commit:$maps_built" 2>/dev/null | grep -v '^#' | tr '\t' ' ' | grep . | sort || true)
+    if ! git -C "$REPO" cat-file -e "$main_commit:$maps_built" 2>/dev/null; then
+        say "  note     no Maps tab on $ref ($maps_built): nothing to check"
+    elif [[ $have == "$want" ]]; then
+        okay "the Maps tab: built from the patches this release offers"
+    else
+        problem "the Maps tab ($maps_built on $ref) was built from other patches than this release offers: rebuild it (srp-026g/scripts/maps-tab/README.md${resources:+; build.py --with $resources}) and merge that first"
+    fi
+fi
 
 # The target: disk, leftovers, settings, the container, the admin page.
 if ((target_ok)); then

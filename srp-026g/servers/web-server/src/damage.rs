@@ -44,7 +44,8 @@ macro_rules! files {
     };
 }
 
-/// The files the page loads: address, content type, bytes.
+/// The files the page loads: address, content type, bytes. The renders are
+/// the Maps tab's too ([`crate::maps`]), which has every map's.
 const FILES: &[(&str, &str, &[u8])] = files! {
     "calc.js" => "text/javascript; charset=utf-8",
     "fonts/carlito-bold.woff2" => "font/woff2",
@@ -62,6 +63,9 @@ const FILES: &[(&str, &str, &[u8])] = files! {
     "maps/level_06.webp" => "image/webp",
     "maps/level_07.webp" => "image/webp",
     "maps/level_08.webp" => "image/webp",
+    "maps/level_09.webp" => "image/webp",
+    "maps/v011e_level_03.webp" => "image/webp",
+    "maps/v011e_level_04.webp" => "image/webp",
     "maps/v021d_level_03.webp" => "image/webp",
     "maps/v021d_level_06.webp" => "image/webp",
 };

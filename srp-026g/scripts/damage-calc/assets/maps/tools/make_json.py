@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Write maps.json for the damage-calculator map images.
 
-    make_json.py WORK_DIR OUT_DIR TABLE_RS
+    make_json.py WORK_DIR OUT_DIR TABLE_RS [--only KEY ...]
 
 TABLE_RS is srp-026g/crates/survarium/src/v026g/maps/table.rs (maps_dict ids
-per level). Elevation grids come from WORK_DIR/out/<key>-ground.npy (terrain
+per level; that file is gone since the server derives the table from the game
+data, so take it from git history). With --only, OUT_DIR/maps.json is updated
+in place: the named maps are written (added or replaced) and the others kept
+as they are; the patch-added maps (build_all.PATCHED) need no TABLE_RS. Elevation grids come from WORK_DIR/out/<key>-ground.npy (terrain
 model heights) with WORK_DIR/out/<key>-height.npy (top surface) where no
 terrain was rendered.
 """
@@ -17,7 +20,7 @@ import numpy as np
 from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_all import NATIVE, PORTED, TARGET  # noqa: E402
+from build_all import NATIVE, PATCHED, PORTED, TARGET  # noqa: E402
 
 GRID = 64
 WEATHER = {1: 'day', 2: 'rain', 3: 'evening', 4: 'night', 5: 'prerain'}
@@ -43,14 +46,18 @@ def elevation(work, key, size):
 
 def main():
     work, out, table = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+    only = sys.argv[sys.argv.index('--only') + 1:] if '--only' in sys.argv else None
     rows = re.findall(r'MapMode \{ id: (\d+), config: "([^"]+)", name: "([^"]+)", mode: (\d+), level: (\d+), '
-                      r'weather: (\d+), project: "([^"]+)", has_project: (true|false)', table.read_text())
-    maps = {}
-    for key, m in {**NATIVE, **PORTED}.items():
+                      r'weather: (\d+), project: "([^"]+)", has_project: (true|false)', table.read_text()) \
+        if table.is_file() else []
+    maps = json.loads((out / 'maps.json').read_text())['maps'] if only else {}
+    for key, m in {**NATIVE, **PORTED, **PATCHED}.items():
+        if only and key not in only:
+            continue
         size = m['size']; W = TARGET; mpp = 2 * size / W
         x0, z1 = m['posX'] - size, m['posY'] + size
         lvl = int(key[-2:])
-        if key in PORTED:
+        if key in PORTED or key in PATCHED:
             modes = [dict(map_id=i, config=f'{key}_day_{mo}.options', name=f'{key}_{mo}', mode=mo,
                           mode_name=MODE[mo], weather='day', project=f'{key}/day_{mo}')
                      for i, mo in m['map_ids'].items()]
@@ -63,7 +70,9 @@ def main():
             'name': m['name'],
             'name_key': m.get('name_key', f'st_level_{lvl:02d}_name'),
             'origin': ('ported: Skhid content pack maps-021d-7 (released in revision 20), geometry from the '
-                       'pack overlay + the 0.26g db' if key in PORTED else 'native 0.26g'),
+                       'pack overlay + the 0.26g db' if key in PORTED else
+                       f"skhid patch: {m['origin']}, geometry from the 0.26g db with the released patches over it"
+                       if key in PATCHED else 'native 0.26g'),
             'image': f'{key}.webp',
             'image_size_px': [W, W],
             'metres_per_pixel': round(mpp, 6),

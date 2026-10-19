@@ -2,9 +2,15 @@
 """Extract what a top-down render of one 0.26g project needs from resources.db.
 
     extract_level.py DBGRAB RESOURCES_DB PROJECT(e.g. level_01/day_2) OUT_DIR [PACK_FILES_DIR]
+                     [--patch resources.db.patch_<n> ...]
 
 With PACK_FILES_DIR (a content pack's files/ tree, e.g. a ported map), files
 are taken from it first and from the database otherwise.
+
+With --patch (repeatable), the patches are mounted over the database as the
+game mounts them: a file is read from the highest-numbered patch that has it,
+else from the database. Use it for maps a released patch added (London in
+patch 14, the 0.11e maps in patch 22).
 
 OUT_DIR/project            decoded client_project (bincfg JSON)
 OUT_DIR/models/<lib>.model/{settings,render/<surface>/converted_model}
@@ -28,10 +34,23 @@ DIFFUSE_SLOTS = ('texture_diffuse', 'texture_detail_0', 'texture_vertex_blended_
 
 
 OVERLAY = None   # a pack's files/ directory, searched before the database
+PATCHES = []     # (patch number, path, set of its file paths), lowest first
 
 
-def grab(dbgrab, db, prefix, dest):
-    """Extract every file under prefix into dest, restoring '/' layout."""
+def patch_number(path):
+    return int(Path(path).name.rsplit('_', 1)[1])
+
+
+def load_patches(dbgrab, paths):
+    out = []
+    for path in sorted(paths, key=patch_number):
+        listing = subprocess.run([dbgrab, path, 'list'], check=True, capture_output=True, text=True).stdout
+        out.append((patch_number(path), path, {line.split('\t', 1)[0] for line in listing.splitlines() if line}))
+    return out
+
+
+def grab_one(dbgrab, db, prefix, dest):
+    """Extract every file of one archive under prefix into dest, restoring '/' layout."""
     if OVERLAY is not None:
         src = OVERLAY / prefix.rstrip('/')
         if src.is_file():
@@ -41,19 +60,38 @@ def grab(dbgrab, db, prefix, dest):
         if prefix.endswith('/') and src.is_dir():
             shutil.copytree(src, dest / prefix.rstrip('/'), dirs_exist_ok=True)
             return 1
+    # dbgrab writes a path with '/' as '__', which is ambiguous where a name
+    # ends or starts with '_' (surface "l3terr_"), so the real paths come from
+    # the archive's listing.
+    listing = subprocess.run([dbgrab, db, 'list', prefix], check=True, capture_output=True, text=True).stdout
+    real = {path.replace('/', '__'): path for path in (line.split('\t', 1)[0] for line in listing.splitlines())
+            if path.startswith(prefix)}
+    if not real:
+        return 0
     with tempfile.TemporaryDirectory(dir=dest.parent if dest.parent.exists() else None) as tmp:
-        out = subprocess.run([dbgrab, db, 'get', prefix, tmp], check=True, capture_output=True, text=True).stdout
-        flat_prefix = prefix.replace('/', '__')
+        subprocess.run([dbgrab, db, 'get', prefix, tmp], check=True, capture_output=True)
         n = 0
-        for name in out.split():
-            if not name.startswith(flat_prefix):
+        for name in sorted(os.listdir(tmp)):
+            if name not in real:
                 continue
-            rel = prefix + name[len(flat_prefix):].replace('__', '/')
-            target = dest / rel
+            target = dest / real[name]
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(os.path.join(tmp, name), target)
             n += 1
         return n
+
+
+def grab(dbgrab, db, prefix, dest):
+    """Extract every file under prefix into dest, restoring '/' layout: from the
+    pack, else from the database with each patch that has a file under prefix
+    laid over it in order (the highest patch's copy of a path wins)."""
+    if OVERLAY is not None and (OVERLAY / prefix.rstrip('/')).exists():
+        return grab_one(dbgrab, db, prefix, dest)
+    n = grab_one(dbgrab, db, prefix, dest)
+    for _, path, files in PATCHES:
+        if any(f.startswith(prefix) for f in files):
+            n += grab_one(dbgrab, path, prefix, dest)
+    return n
 
 
 def leaves(d, p=''):
@@ -68,10 +106,18 @@ def leaves(d, p=''):
 
 
 def main():
-    global OVERLAY
-    dbgrab, db, project, out = sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])
-    if len(sys.argv) > 5:
-        OVERLAY = Path(sys.argv[5])
+    global OVERLAY, PATCHES
+    args, patches = [], []
+    it = iter(sys.argv[1:])
+    for a in it:
+        if a == '--patch':
+            patches.append(next(it))
+        else:
+            args.append(a)
+    dbgrab, db, project, out = args[0], args[1], args[2], Path(args[3])
+    if len(args) > 4:
+        OVERLAY = Path(args[4])
+    PATCHES = load_patches(dbgrab, patches)
     out.mkdir(parents=True, exist_ok=True)
     grab(dbgrab, db, f'projects/{project}/client_project', out)
     proj = bincfg.load(out / 'projects' / project / 'client_project')

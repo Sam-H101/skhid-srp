@@ -865,7 +865,8 @@ fn the_damage_calculator_is_a_026g_page_under_the_sites_header() {
     let world = world();
     let home = world.web.route(&get("/"), "t").body;
     assert!(home.contains(
-        "<nav><a href=\"/?lang=en\">Home</a><a href=\"/damage?lang=en\">Damage calculator</a>"
+        "<nav><a href=\"/?lang=en\">Home</a><a href=\"/damage?lang=en\">Damage calculator</a>\
+         <a href=\"/maps?lang=en\">Maps</a>"
     ));
     let page = world.web.route(&get("/damage"), "t");
     assert_eq!(page.status, "200 OK");
@@ -991,5 +992,86 @@ fn every_file_the_calculator_names_is_served_to_be_kept() {
         head(&answers[3])
             .0
             .starts_with("HTTP/1.0 404 Not Found\r\n")
+    );
+}
+
+#[test]
+fn the_maps_are_a_026g_page_under_the_sites_header() {
+    let world = world();
+    let page = world.web.route(&get("/maps"), "t");
+    assert_eq!(page.status, "200 OK");
+    assert!(
+        page.body
+            .starts_with("<!doctype html>\n<html lang=\"en\">\n")
+    );
+    assert!(
+        page.body
+            .contains("<a href=\"/maps?lang=en\" aria-current=page>Maps</a>")
+    );
+    assert!(
+        page.body
+            .contains("<a href=\"/damage?lang=en\">Damage calculator</a>")
+    );
+    assert!(!page.body.contains("{{LANG}}") && !page.body.contains("<!--SITE-HEADER-->"));
+    assert!(!page.body.contains("<script>") && !page.body.contains("https://"));
+    let mut uk = get("/maps");
+    uk.lang = Lang::Uk;
+    let uk = world.web.route(&uk, "t").body;
+    assert!(uk.starts_with("<!doctype html>\n<html lang=\"uk\">\n"));
+    assert!(uk.contains(" aria-current=page>Мапи</a>"));
+}
+
+#[test]
+fn every_file_the_maps_name_is_served() {
+    // What the page and its script ask for, before a ?v=: its own files
+    // and the calculator's renders and fonts.
+    fn named(text: &str) -> Vec<String> {
+        ["/maps/", "/damage/"]
+            .iter()
+            .flat_map(|prefix| text.match_indices(prefix))
+            // "/damage/maps/..." holds a "/maps/" too.
+            .filter(|&(at, _)| !text[..at].ends_with("/damage"))
+            .filter_map(|(at, _)| text[at..].split_once("?v="))
+            .map(|(path, _)| path.to_owned())
+            .filter(|path| !path.contains(['"', ' ', '<', '\n']))
+            .collect()
+    }
+    let world = world();
+    let page = world.web.route(&get("/maps"), "t").body;
+    let mut wanted = named(&page);
+    let (script_type, script) = crate::maps::file("/maps/maps.js").unwrap();
+    assert_eq!(script_type, "text/javascript; charset=utf-8");
+    wanted.extend(named(std::str::from_utf8(script).unwrap()));
+    assert!(wanted.iter().any(|path| path.starts_with("/maps/minimap/")));
+    assert!(wanted.iter().any(|path| path.starts_with("/maps/icons/")));
+    assert!(wanted.iter().any(|path| path.starts_with("/damage/maps/")));
+    for path in &wanted {
+        let (_, bytes) = crate::maps::file(path)
+            .or_else(|| crate::damage::file(path))
+            .unwrap_or_else(|| panic!("{path}"));
+        assert!(!bytes.is_empty(), "{path}");
+    }
+}
+
+#[test]
+fn the_maps_are_built_from_the_offered_patches() {
+    // release/release.sh refuses a release otherwise; this says so on a PR.
+    let rows = |text: &str| -> Vec<(String, String)> {
+        text.lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .map(|line| {
+                let mut fields = line.split('\t');
+                (
+                    fields.next().unwrap().to_owned(),
+                    fields.next().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let offered = rows(include_str!("../../../../../release/patches.tsv"));
+    let built = rows(include_str!("../../maps/built-from.tsv"));
+    assert_eq!(
+        built, offered,
+        "rebuild the Maps tab: srp-026g/scripts/maps-tab/README.md"
     );
 }

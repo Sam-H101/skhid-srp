@@ -1,23 +1,21 @@
 """Adds each map's play area to maps.json: the box, in render pixels, around
-the native HUD minimap's opaque part (the area shade.py outlines in yellow),
+the native HUD minimap's play area (minimap_area.py; shade.py outlines it),
 with a margin. The calculator shows that box rather than the whole square.
 
 usage: play_area.py <maps.json> <hud_images dir>   (ffdec export of hud.swf)
 """
 import json
+from pathlib import Path
 import re
 import sys
 
 import numpy as np
-from PIL import Image
-from scipy import ndimage
 
-BITMAPS = {  # as build_all.py: the _levels bitmap per project
-    "level_01": "967_minimap_rudnya_minimap_rudnya.png", "level_02": "499_minimap_school_minimap_school.png",
-    "level_03": "976_minimap_base_minimap_base.png", "level_04": "911_minimap_zavod_minimap_zavod.png",
-    "level_05": "955_minimap_fort_minimap_fort.png", "level_06": "975_Map_06_Map_06.png",
-    "level_07": "974_Map_07_Map_07.png", "level_08": "972_Map_08_Map_08.png",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_all import NATIVE, PATCHED  # noqa: E402  (the _levels bitmap per project, and its kind)
+from minimap_area import area_mask  # noqa: E402
+
+BITMAPS = {key: (m['bitmap'], m.get('area', 'alpha')) for key, m in {**NATIVE, **PATCHED}.items()}
 MARGIN = 0.04  # of the image side, around the play area
 
 path, hud = sys.argv[1], sys.argv[2]
@@ -28,8 +26,8 @@ for key, m in data["maps"].items():
         m["play_area_px"] = None
         print(key, "whole image")
         continue
-    alpha = np.asarray(Image.open(f"{hud}/{BITMAPS[key]}").convert("RGBA").resize((W, H), Image.BILINEAR), np.float32)[..., 3] / 255
-    area = ndimage.binary_fill_holes(alpha > 0.15)
+    bitmap, kind = BITMAPS[key]
+    area = area_mask(f"{hud}/{bitmap}", W, kind)
     ys, xs = np.nonzero(area)
     pad = round(MARGIN * W)
     x0, y0 = max(0, xs.min() - pad), max(0, ys.min() - pad)
