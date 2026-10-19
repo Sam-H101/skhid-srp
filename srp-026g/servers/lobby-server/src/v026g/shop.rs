@@ -26,7 +26,7 @@
 
 use session::LockExt;
 use session::v026g::rewards::MatchReport;
-use session::v026g::{bonus, names, premium, quests, tutorial, wire};
+use session::v026g::{bonus, names, premium, quests, wire};
 use survarium::v026g::lobby::requests::id;
 use survarium::v026g::lobby::{self, NameRefusal};
 
@@ -407,52 +407,5 @@ impl Core<'_> {
                 self.push_friends(&other);
             }
         }
-    }
-
-    // ----------------------------------------------------------- tutorial
-
-    /// `4B 01 <step>`: a step of the tutorial done; its award, the first
-    /// time.
-    pub(super) fn tutorial_step(&mut self, who: &Who, step: u8) {
-        let paid = tutorial::step(&mut who.account.locked(), step);
-        self.accounts.mark_dirty(who.account_id);
-        let Some(paid) = paid else {
-            return;
-        };
-        log::info!(
-            "{} did tutorial step {step}: {} silver, {} gold, {} experience",
-            who.name,
-            paid.silver,
-            paid.gold,
-            paid.experience
-        );
-        if paid.silver == 0 && paid.gold == 0 && paid.experience == 0 {
-            return;
-        }
-        self.push_account(who);
-        if paid.experience > 0 {
-            let skills = wire::level_and_skills(&who.account.locked());
-            self.send_made(who.addr, skills);
-        }
-        self.notify(who, &paid.notices);
-    }
-
-    /// `46 0A`: the tutorial's "choose a weapon" step. The client waits
-    /// for the inventory (`89`) to highlight the two weapons; without it
-    /// nothing in its lobby can be dragged (`session::v026g::tutorial`).
-    pub(super) fn tutorial_choose_weapon(&mut self, who: &Who) {
-        let given = tutorial::choose_weapon(&mut who.account.locked());
-        if !given.is_empty() {
-            log::info!("{} got the tutorial's weapons {given:?}", who.name);
-        }
-        self.push_account(who);
-    }
-
-    /// `4B 02`: the tutorial skipped.
-    pub(super) fn skip_tutorial(&mut self, who: &Who) {
-        if tutorial::skip(&mut who.account.locked()) {
-            log::info!("{} skipped the tutorial", who.name);
-        }
-        self.accounts.mark_dirty(who.account_id);
     }
 }

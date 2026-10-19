@@ -558,7 +558,7 @@ impl<'a> Core<'a> {
             .or(still_in_match)
             .filter(|id| self.matches.contains_key(id));
 
-        let game = self.accounts.get_or_create(account_id, &login_name);
+        let game = self.accounts.sign_up(account_id, &login_name);
         let unix = quests::now();
         // A test bot (`SRP_BOT_ACCOUNTS`) starts no run of bonus days.
         let bot = self.accounts.is_bot(account_id);
@@ -912,7 +912,7 @@ impl<'a> Core<'a> {
             // a match: the client has its lobby again when it is back.
             if player.in_match.is_none() && player.ranked_sent != ranked {
                 let count = lobby::base_info(ranked, &player.name);
-                let recount = tutorial::message(&player.account.locked(), false);
+                let recount = tutorial::message(false);
                 self.send(addr, count);
                 self.send(addr, recount);
                 if let Some(player) = self.player_mut(addr) {

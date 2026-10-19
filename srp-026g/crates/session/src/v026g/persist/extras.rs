@@ -138,7 +138,10 @@ mod tests {
         repository.save(8, &Account::new("Bob")).unwrap();
         let loaded = repository.load_all().unwrap();
         assert_eq!(loaded[0], (7, account.clone()));
-        assert_eq!(loaded[1].1.extras.tutorial_flags, flag::NICKNAME);
+        assert_eq!(
+            loaded[1].1.extras.tutorial_flags,
+            crate::v026g::tutorial::ALL_DONE
+        );
         // A change is written over the row.
         account.extras.auto_repair = false;
         account.extras.bonus.completed = true;

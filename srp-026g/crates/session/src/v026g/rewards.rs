@@ -1623,9 +1623,10 @@ impl<'a> Shared<'a> {
             reward.supplies_used =
                 super::autobuy::used(account, player.supplies.as_ref(), &shots, respawns);
         }
-        // A new player is one with no experience yet: its first drop is
-        // from the new player's table.
-        let new_player = account.exp_total == 0;
+        // A new player is one with no experience from a match yet (what a
+        // new account starts with at most, `tutorial::experience`): its
+        // first drop is from the new player's table.
+        let new_player = account.exp_total <= super::tutorial::experience();
 
         // The score's lines, and the premium half of each kit's column. A
         // match against the server's bots pays a share of the silver and
@@ -1944,22 +1945,6 @@ impl<'a> Shared<'a> {
     }
 }
 
-/// Puts units of a stack into the inventory: onto the stack owned, else as
-/// a new one. Returns its item id.
-fn add_to_stack(account: &mut Account, dict_id: u16, units: u32) -> u32 {
-    match account
-        .inventory
-        .iter_mut()
-        .find(|item| item.dict_id == dict_id)
-    {
-        Some(owned) => {
-            owned.condition_or_stack = owned.condition_or_stack.saturating_add(units);
-            owned.item_id
-        }
-        None => account.add_item(dict_id, units),
-    }
-}
-
 /// Gives the account a rolled drop: silver and gold to the balances, a
 /// stack onto the one owned, anything else as a new item with the
 /// modifications of its rarity (`items_rules::roll_modifications`).
@@ -1987,7 +1972,7 @@ fn give_drop(
             (0, rolled.count, rolled.rarity)
         }
         dict_id if dictionary.is_stack(dict_id) => (
-            add_to_stack(account, dict_id, rolled.count),
+            account.add_to_stack(dict_id, rolled.count),
             rolled.count,
             rolled.rarity,
         ),

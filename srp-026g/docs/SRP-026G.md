@@ -325,7 +325,6 @@ name belongs to whoever registers it first, as any name does.
 | `SRP_PREMIUM_DISCOUNT` | 0 | Percent off premium time for a player without premium (0 to 90); 0 offers none |
 | `SRP_PREMIUM_OFFER_SECONDS` | 3600 | How long the premium offer after a match stands (the client counts it down) |
 | `SRP_RENAME_COST` | the rename voucher's price in the game's dictionary | Gold for a nickname change |
-| `SRP_TUTORIAL` | on | `off`: the client's tutorial stays disabled |
 | `SRP_AMMO_USE` | on | `off`: a match takes no ammo off the account |
 | `SRP_ITEM_DEFECTS` | on | `off`: items get no defects |
 

@@ -101,6 +101,10 @@ fn alice_and_bob() -> Vec<PlayerResult> {
     ]
 }
 
+/// Experience of an account that has played: more than a new account is
+/// given (`tutorial::experience`), short of a level.
+const PLAYED: u32 = 251;
+
 /// The accounts of the players, none of them a new player.
 fn accounts(players: &[PlayerResult]) -> GameAccounts {
     let store = GameAccounts::new();
@@ -108,7 +112,7 @@ fn accounts(players: &[PlayerResult]) -> GameAccounts {
         let account = store.get_or_create(player.account_id, &player.name);
         let mut account = account.locked();
         only_the_pistol(&mut account);
-        account.exp_total = 1;
+        account.exp_total = PLAYED;
         // The day's three doubled victories are behind it (`bonus`): what
         // the tests below count is a plain match's pay.
         account.extras.bonus = spent_day();
@@ -1446,7 +1450,7 @@ fn premium_adds_half_and_can_be_claimed_from_the_screen() {
             ..BonusColumn::default()
         }
     );
-    assert_eq!(account(&store, 10).exp_total, 1 + 198);
+    assert_eq!(account(&store, 10).exp_total, PLAYED + 198);
     assert_eq!(alice.full.daily, lobby::BonusBlock::default());
     assert_eq!(alice.full.premium_items, lobby::BonusBlock::default());
 
@@ -1579,7 +1583,7 @@ fn a_match_nobody_reached_or_never_played_pays_nothing() {
 fn an_account_the_store_lacks_is_a_row_and_nothing_else() {
     let players = alice_and_bob();
     let store = GameAccounts::new();
-    store.get_or_create(10, "Alice").locked().exp_total = 1;
+    store.get_or_create(10, "Alice").locked().exp_total = PLAYED;
     let report = Results::new()
         .settle(&result(players), &store, &terms(), &mut Rng::new(1))
         .unwrap();
@@ -1966,7 +1970,7 @@ fn the_days_first_three_victories_pay_double() {
     }
     assert_eq!(shown, (alice.reward.experience, alice.reward.reputation));
     let after = account(&store, 10);
-    assert_eq!(after.exp_total, 1 + alice.reward.experience);
+    assert_eq!(after.exp_total, PLAYED + alice.reward.experience);
     assert_eq!(crate::v026g::bonus::progress(&after), 1);
     assert_eq!(after.extras.bonus.day, 1);
     // The screen goes out in a form the client takes.
@@ -2021,6 +2025,8 @@ fn the_third_victory_of_the_seventh_day_gives_the_weeks_reward() {
         // Six days made, and two victories today.
         alice.extras.bonus.day = 7;
         alice.extras.bonus.wins = [3, 3, 3, 3, 3, 3, 2];
+        // Past level 1, far from level 2: the match pays no level's gold.
+        alice.exp_total = 600;
     }
     let before = account(&store, 10);
     let results = Results::new();
@@ -2492,7 +2498,7 @@ fn kept_accounts(players: &[PlayerResult], repository: &MemoryGameRepository) ->
         let mut account = account.locked();
         if account.exp_total == 0 {
             only_the_pistol(&mut account);
-            account.exp_total = 1;
+            account.exp_total = PLAYED;
             account.extras.bonus = spent_day();
         }
     }

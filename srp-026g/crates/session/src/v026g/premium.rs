@@ -70,9 +70,6 @@ pub struct Settings {
     /// `SRP_RENAME_COST`: gold for a nickname change (0x8D's fourth
     /// price). Default: what the rename voucher costs in the dictionary.
     pub rename_cost: u32,
-    /// `SRP_TUTORIAL=off`: the client's tutorial stays disabled
-    /// ([`super::tutorial`]).
-    pub tutorial: bool,
     /// `SRP_AMMO_USE=off`: a match takes no ammo off the account
     /// ([`super::autobuy`]).
     pub ammo_use: bool,
@@ -88,7 +85,6 @@ impl Default for Settings {
             discount_percent: 0,
             offer_seconds: 3600,
             rename_cost,
-            tutorial: true,
             ammo_use: true,
         }
     }
@@ -158,10 +154,7 @@ impl Settings {
                 ),
             }
         }
-        for (name, field) in [
-            ("SRP_TUTORIAL", &mut settings.tutorial),
-            ("SRP_AMMO_USE", &mut settings.ammo_use),
-        ] {
+        for (name, field) in [("SRP_AMMO_USE", &mut settings.ammo_use)] {
             if let Some(value) = var(name) {
                 match switch(&value) {
                     Some(on) => *field = on,
@@ -444,7 +437,7 @@ mod tests {
         assert_eq!(none.offer_seconds, 3600);
         // The rename voucher's own price.
         assert_eq!(none.rename_cost, 250);
-        assert!(none.tutorial && none.ammo_use);
+        assert!(none.ammo_use);
 
         let set = Settings::read(|name| {
             Some(
@@ -453,7 +446,6 @@ mod tests {
                     "SRP_PREMIUM_DISCOUNT" => "25",
                     "SRP_PREMIUM_OFFER_SECONDS" => "600",
                     "SRP_RENAME_COST" => "0",
-                    "SRP_TUTORIAL" => "off",
                     "SRP_AMMO_USE" => "OFF",
                     _ => return None,
                 }
@@ -466,7 +458,7 @@ mod tests {
         assert_eq!(set.discount(), 0.25);
         assert_eq!(set.offer_seconds, 600);
         assert_eq!(set.rename_cost, 0);
-        assert!(!set.tutorial && !set.ammo_use);
+        assert!(!set.ammo_use);
 
         // What is no value is not used.
         let bad = Settings::read(|name| {
@@ -476,7 +468,7 @@ mod tests {
                     "SRP_PREMIUM_DISCOUNT" => "100",
                     "SRP_PREMIUM_OFFER_SECONDS" => "0",
                     "SRP_RENAME_COST" => "free",
-                    "SRP_TUTORIAL" => "maybe",
+                    "SRP_AMMO_USE" => "maybe",
                     _ => return None,
                 }
                 .to_owned(),

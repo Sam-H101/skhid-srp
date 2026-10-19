@@ -318,14 +318,11 @@ Known gaps a live session will meet:
   window; `/exchange` only says so). Never seen
   with a real client: whether an account pushed again outside a sign-in,
   and the operator's text (0xA5), show as expected is open.
-- Premium, the shop's bundles, the daily bonus, the tutorial, a nickname
-  change, autobuy and auto-repair are there (`premium.md`) and were never
-  seen with a real client, but for the start of the tutorial (2026-10-12:
-  it stopped at "choose a weapon" because `46 0A` was not answered with
-  the inventory; fixed, `premium.md` §5.1). **A new account gets the
-  client's tutorial and the daily bonus window at its sign-in: "Skip
-  tutorial" gets out of the tutorial at any step; `SRP_TUTORIAL=off`
-  keeps it away.**
+- Premium, the shop's bundles, the daily bonus, a nickname change,
+  autobuy and auto-repair are there (`premium.md`). **There is no
+  tutorial since 2026-10-19** (`premium.md` §5): a new account gets the
+  daily bonus window at its sign-in, and starts with 10 000 silver and
+  500 gold.
 - **The lobby on a screen wider than 16:9** (seen 2026-10-12 at 3440x1440:
   the top bar's parts overlap). The lobby SWF is drawn for 1920x1080 and
   has two paths split at aspect 1.85 (`LobbyMenu.onStageResize`: scale by

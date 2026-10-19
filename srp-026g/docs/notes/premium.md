@@ -78,7 +78,7 @@ The game's own texts: "Play everyday and get x2 experience and reputation for th
 
 The awards are the game's `gameplay/awards/unique_awards.options` (PROVEN data; answers data.md question 8: `type` is the lobby's `Reward` constant, 0 experience, 1 reputation, 2 money; for money `param` 0 silver, 1 gold, LIKELY): `tutorial_completed` 1000 silver + 250 experience (step 1), `survival_item_notes_completed` 25 gold (step 2), `survival_prepare_to_battle_notes_completed` 25 gold (step 3), `game_world_tutorial_completed` 50 gold (step 4), `tutorial_change_name` nothing. That the server paid them for these steps is LIKELY.
 
-[srp]: a new account starts with bit 0 (its name is the one it signed up with); `b` = 1 once the account has experience (GUESS); a step is paid once; `SRP_TUTORIAL=off` sends `show` false. The video link (`9E`) stays hidden. **First run against a real client 2026-10-12: it stopped at the "choose a weapon" step; cause and fix in §5.1. The steps after it are still unseen live; "Skip tutorial" always gets out (§5.2), and `SRP_TUTORIAL=off` keeps it away.**
+[srp] **No tutorial since 2026-10-19 (the owner's):** it took a new player through Play into a match, and with rooms nobody is sent into a match they did not choose. Every `9D` has `a` = 0x3F, every step done (`session::v026g::tutorial::ALL_DONE`): `a & 0x22` puts the lobby in `default_state`, bit 4 skips the match's own tutorial, bits 2 and 3 hide the notes' rewards; `b` = 1. The sign-in's has `show` on, the ranking's recounts off. A step a client sends anyway (`4B`, `46 0A`) is not answered. **A new account starts with** (at its first sign-in, before its client hears of it: no window) 10 000 silver and 500 gold, the steps' 250 experience (read from the awards file), and 1000 rounds each of 7.62x25 (the TT-33's and PPSh-41's) and 7.62x54R (the Mosin's) on its starting stacks. A player counts as new for the first match's drop table while it has no more experience than that. The video link (`9E`) stays hidden. §5.1 and §5.2 are what the tutorial was, kept as knowledge of the client.
 
 ### 5.1 The lobby tutorial's states, and the one step the server has a part in (2026-10-12)
 
@@ -131,7 +131,6 @@ PROVEN: the state becomes `state_choose_faction` when the account has no quest f
 | `SRP_PREMIUM_DISCOUNT` | 0 | percent off premium time, offered by `A9` / `A8`; 0 offers none |
 | `SRP_PREMIUM_OFFER_SECONDS` | 3600 | how long the offer after a match stands |
 | `SRP_RENAME_COST` | 250 | gold for a nickname change |
-| `SRP_TUTORIAL` | on | `off`: the client's tutorial stays disabled |
 | `SRP_AMMO_USE` | on | `off`: a match takes nothing off the stacks |
 
 ## 9. Open
