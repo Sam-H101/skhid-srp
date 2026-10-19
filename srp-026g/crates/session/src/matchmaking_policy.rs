@@ -6,11 +6,12 @@
 
 use std::time::Duration;
 
-/// A match takes late joiners until this is left of it: the time a game
-/// needs to load into it. One let in later would still be loading when the
-/// match ends, and a game that has loaded no match dies of its results
-/// screen (`results.md` §6, hazard 10).
-pub const LOAD_MARGIN: Duration = Duration::from_secs(45);
+/// A match takes late joiners until this is left of it (the owner's of
+/// 2026-10-19); one who comes in its last seconds waits in the room for the
+/// next. A joiner still loading when the match ends is safe: its loading
+/// screen has set the map name the results screen reads (`results.md` §6,
+/// hazard 10, is a game that never loaded a match).
+pub const LOAD_MARGIN: Duration = Duration::from_secs(30);
 
 /// A side of a match being played, or a joiner: its players and what they
 /// count for together beside being there (their strengths, in

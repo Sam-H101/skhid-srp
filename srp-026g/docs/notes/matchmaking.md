@@ -20,7 +20,7 @@ schema step 5).
 > voted on; a clan match's is drawn uniformly; the plays per map are still counted), §9.1-9.2
 > and §9.7 (the late-join queue, its scoring across matches, its patience, the dramatic lead,
 > JOIN), the server's PvP bots and their giving way, and `JOIN_CUTOFF` (a room's match takes a
-> member who comes from its countdown until 45 s are left, `LOAD_MARGIN`, on the side that then
+> member who comes from its countdown until 30 s are left, `LOAD_MARGIN`, on the side that then
 > counts for less: `matchmaking_policy::place_weaker`). Those sections are kept for the record. §1, §4, §8 (the
 > sides now made by `rooms::sides` with the same count) and §9.8 still hold.
 
