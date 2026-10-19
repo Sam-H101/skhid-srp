@@ -483,6 +483,41 @@ The input is the movie with Get Gold (`b7cf70a8…`); the build is
 deterministic (`f900cc8b…` with FFDec 25.1.3). Tests:
 `python -m unittest test_exchange_update`. Not in a release yet.
 
+## Buy for modified items
+
+`buy_modified_026g.py`: right-click on an owned item with modifications lists
+Buy, which buys a stock one (the rules: `docs/notes/buy-modified.md`). The
+menu (`InventoryList.showContextMenu`) listed Buy for an item that is not a
+stack only when `!itemData.rank`; an owned item's rank is its number of
+modifications (the server's `roll_modifications`), and a dictionary item's
+is its rarity. The test becomes `!rank || itemAvailable`, the method's own
+"owned and enabled" (`descriptor <= 100 && enabled`): after `getproperty
+rank`, `convert_b; getlocal <itemAvailable>; not; bitand` (no jump added;
+the register from the method's debug name), and the `not` that followed
+stays. Shop, bundle and bundle-content entries are never `itemAvailable`, so
+they keep the old rule. `buyElement` and `try_buy_item` go by the dictionary
+id and the shop's
+price and seller, so nothing else changes; the server gives a new item
+without modifications.
+
+A buy on an owned item is not asked "This item is already purchased by you.
+Would you like to buy anyway?" any more. `LobbyMenu.try_buy_item`, which
+every buy goes through, asked it for a non-stack item the account has unless
+the buy came from a bundle (`sourceSlot != 300`); it asks it now only for a
+buy from the shop's list (`sourceSlot == 200`): `pushshort 300; equals;
+not` becomes `pushshort 200; equals; nop`. A buy on an owned item comes
+with that item's own slot (100 or less), the victory screen's treasure maps
+with 200 as before.
+
+The input is the movie of the exchange update (`f900cc8b…`); the build is
+deterministic (`45452c50…` with FFDec 25.1.3):
+
+```sh
+python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+Tests: `python -m unittest test_buy_modified`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
