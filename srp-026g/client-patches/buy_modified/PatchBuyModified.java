@@ -1,16 +1,17 @@
 // Buy on an item the account owns (its right-click menu, its card's Buy):
-//   InventoryList.showContextMenu  `!itemData.rank` (no modifications, and not
-//       a bundle item) becomes `!itemData.fromBundle` (not a bundle item), so
-//       a modified item lists Buy too. Buying goes by the dictionary id: it
-//       buys a stock item, unmodified.
+//   InventoryList.showContextMenu  Buy was listed for an item that is not a
+//       stack only when `!itemData.rank`; an owned item's rank is its number
+//       of modifications. It is listed now when `!rank || itemAvailable` (the
+//       method's own "owned and enabled"), so a modified owned item lists Buy;
+//       shop, bundle and bundle-content entries keep their rule. Buying goes by
+//       the dictionary id: it buys a stock item, unmodified.
 //   LobbyMenu.try_buy_item  "This item is already purchased by you. Would you
 //       like to buy anyway?" was asked for any buy of a non-stack item the
 //       account has, but from a bundle (`sourceSlot != 300`); it is asked only
 //       for a buy from the shop's list (`sourceSlot == 200`): `pushshort 300;
 //       equals; not` becomes `pushshort 200; equals; nop`. A buy on an owned
 //       item comes with that item's own slot (100 or less) and is not asked.
-// Each edit keeps every instruction's length; every other method stays byte
-// for byte.
+// Every other method stays byte for byte.
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -23,7 +24,8 @@ import com.jpexs.decompiler.flash.abc.types.Multiname;
 import com.jpexs.decompiler.flash.tags.Tag;
 
 public class PatchBuyModified {
-    private static final int GETPROPERTY = 0x66, PUSHSHORT = 0x25, EQUALS = 0xab, NOT = 0x96, NOP = 0x02;
+    private static final int GETPROPERTY = 0x66, PUSHSHORT = 0x25, EQUALS = 0xab, NOT = 0x96, NOP = 0x02,
+        DEBUG = 0xef, CONVERT_B = 0x76, GETLOCAL = 0x62, BITAND = 0xa8;
     private static final int BUNDLE = 300, SHOP = 200;
 
     private static String name(ABC abc, int multiname) {
@@ -48,7 +50,13 @@ public class PatchBuyModified {
         return found;
     }
 
+    // FFDec finds a body by the class's own name: that name is the block's once.
     private static MethodBody body(ABC abc, String cls, String method) throws IOException {
+        int named = 0;
+        for (var info : abc.instance_info)
+            if (info.getName(abc.constants).getName(new HashSet<>(), abc, abc.constants, new ArrayList<>(), false, false).equals(cls))
+                named++;
+        if (named != 1) throw new IOException(named + " classes named " + cls + " in the block");
         MethodBody body = abc.findBodyByClassAndName(cls, method);
         if (body == null) throw new IOException("Missing " + cls + "." + method);
         return body;
@@ -58,32 +66,32 @@ public class PatchBuyModified {
         return ins.definition.instructionCode;
     }
 
-    // showContextMenu: `rank` read once becomes `fromBundle`.
+    // showContextMenu: `itemData.rank`, read once, becomes
+    // `(itemData.rank ? 1 : 0) & (itemAvailable ? 0 : 1)`; the `not` after it
+    // then gives `!rank || itemAvailable`. No jump is added.
     private static void menu(ABC abc, MethodBody body) throws Exception {
         AVM2Code code = body.getCode();
-        AVM2Instruction read = null;
-        for (AVM2Instruction ins : code.code)
+        int read = -1, available = -1;
+        for (int i = 0; i < code.code.size(); i++) {
+            AVM2Instruction ins = code.code.get(i);
             if (code(ins) == GETPROPERTY && "rank".equals(name(abc, ins.operands[0]))) {
-                if (read != null) throw new IOException("showContextMenu reads rank more than once");
-                read = ins;
+                if (read >= 0) throw new IOException("showContextMenu reads rank more than once");
+                read = i;
             }
-        if (read == null) throw new IOException("showContextMenu does not read rank (already patched?)");
-        // `fromBundle` as the block already names it, in rank's namespace.
-        Multiname rank = abc.constants.getMultiname(read.operands[0]);
-        int fromBundle = -1;
-        for (int i = 1; i < abc.constants.getMultinameCount(); i++) {
-            Multiname m = abc.constants.getMultiname(i);
-            if (m.kind == rank.kind && m.namespace_index == rank.namespace_index
-                && m.namespace_set_index == rank.namespace_set_index && "fromBundle".equals(name(abc, i))) {
-                fromBundle = i;
-                break;
-            }
+            // The debug names count registers from the first after `this`.
+            if (code(ins) == DEBUG && "itemAvailable".equals(abc.constants.getString(ins.operands[1])))
+                available = ins.operands[2] + 1;
         }
-        if (fromBundle < 0) throw new IOException("No fromBundle name like rank's in the block");
-        // The same length, so no jump of the method moves.
-        if (u30(fromBundle) != u30(read.operands[0])) throw new IOException("fromBundle's index is not as long as rank's");
-        read.operands[0] = fromBundle;
+        if (read < 0) throw new IOException("showContextMenu does not read rank (already patched?)");
+        if (available < 0) throw new IOException("showContextMenu has no itemAvailable");
+        if (code(code.code.get(read + 1)) != NOT) throw new IOException("showContextMenu does not test !rank");
+        int[][] added = {{CONVERT_B}, {GETLOCAL, available}, {NOT}, {BITAND}};
+        for (int k = 0; k < added.length; k++)
+            code.insertInstruction(read + 1 + k, new AVM2Instruction(0, added[k][0],
+                Arrays.copyOfRange(added[k], 1, added[k].length)), body);
+        body.max_stack += 1;
         body.setCode(code);
+        body.getCode().checkValidOffsets(body);
     }
 
     // try_buy_item: the one `sourceSlot != 300` becomes `sourceSlot == 200`.
@@ -119,11 +127,10 @@ public class PatchBuyModified {
         ABC lobbyAbc = swf.getAbcList().get(lobbyBlock).getABC();
         MethodBody showMenu = body(listAbc, "InventoryList", "showContextMenu");
         MethodBody tryBuy = body(lobbyAbc, "LobbyMenu", "try_buy_item");
-        int menuLength = showMenu.getCodeBytes().length, buyLength = tryBuy.getCodeBytes().length;
+        int buyLength = tryBuy.getCodeBytes().length;
         menu(listAbc, showMenu);
         ask(tryBuy);
-        if (showMenu.getCodeBytes().length != menuLength || tryBuy.getCodeBytes().length != buyLength)
-            throw new IOException("An edited method changed length");
+        if (tryBuy.getCodeBytes().length != buyLength) throw new IOException("try_buy_item changed length");
         ((Tag) listAbc.parentTag).setModified(true);
         ((Tag) lobbyAbc.parentTag).setModified(true);
         try (OutputStream out = Files.newOutputStream(Path.of(args[1]))) { swf.saveTo(out); }

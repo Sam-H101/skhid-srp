@@ -15,8 +15,8 @@ would just buy a normal unmodified item").
   Buy): buying on the item you have says you want another. The owner's rule: 2026-10-20 ("'the
   item is already purchased' should not show up"). A buy from the shop's list of an item the account
   has (a click, a drag onto the character) still asks, as before.
-- **Not listed:** for a bundle item (the dictionary's own rarity, `fromBundle`), as before: the
-  shop does not sell it.
+- **Only owned items change:** shop entries, bundles and a bundle's contents keep the old rule
+  (Buy when not of a rarity), so the shop's and the bundles' menus are as before.
 - **Not changed:** the shop list (a shop item whose owned copy is modified is still listed in the
   shop too); the item card's buttons; the server (it buys by dictionary id and gives a new item
   without modifications).

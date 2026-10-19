@@ -5,8 +5,9 @@
 
 Right-click on an owned item listed Buy only for an item without
 modifications (and not a bundle item): the menu tested the item's rank, which
-an owned item's modifications raise. It now tests only that the item is not a
-bundle item (buy_modified/PatchBuyModified.java). Buying goes by the item's
+an owned item's modifications raise. It now lists Buy for an owned item
+whatever its rank; shop and bundle entries keep the old rule
+(buy_modified/PatchBuyModified.java). Buying goes by the item's
 dictionary id and the shop's price, so Buy on a modified item buys a stock
 one, unmodified. A buy on an owned item is no longer asked "This item is
 already purchased by you. Would you like to buy anyway?": only a buy from the
