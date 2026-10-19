@@ -290,7 +290,9 @@ pub(super) struct Counts {
     pub online: usize,
     pub registered: usize,
     pub matches: usize,
-    pub queued: usize,
+    /// Rooms that exist, and the players in them.
+    pub rooms: usize,
+    pub in_rooms: usize,
     pub clans: usize,
     /// The minutes to a planned maintenance.
     pub maintenance: Option<u32>,
@@ -334,7 +336,8 @@ fn current(store: &SessionStore, game: &Game) -> (Board, Vec<LiveMatch>, Counts)
         online: store.players_present(),
         registered: store.registered_accounts(),
         matches: game.matches.active_matches(),
-        queued: store.matchmaking().queued_players(),
+        rooms: store.room_counts().rooms,
+        in_rooms: store.room_counts().in_rooms,
         clans: game.accounts.clans().len(),
         maintenance: store.minutes_to_maintenance(),
     };
@@ -563,9 +566,10 @@ fn places(lang: Lang, board: &Board, live: &[LiveMatch], counts: Counts) -> [Str
         format!("<td><b>{}</b><span>{label}</span></td>", grouped(value))
     };
     let now = format!(
-        "<table class=nums cellspacing=0 cellpadding=0><tr>{}{}{}</tr></table>",
+        "<table class=nums cellspacing=0 cellpadding=0><tr>{}{}{}{}</tr></table>",
         cell(counts.online as u64, lang.tr("online", "онлайн")),
-        cell(counts.queued as u64, lang.tr("searching", "у пошуку")),
+        cell(counts.rooms as u64, lang.tr("rooms", "кімнат")),
+        cell(counts.in_rooms as u64, lang.tr("in rooms", "у кімнатах")),
         cell(
             counts.matches as u64,
             lang.tr("matches now", "матчів зараз")
@@ -732,7 +736,8 @@ mod tests {
             online: 12,
             registered: 3456,
             matches: 2,
-            queued: 5,
+            rooms: 3,
+            in_rooms: 5,
             clans: 7,
             maintenance: None,
         }
@@ -828,7 +833,8 @@ mod tests {
         assert!(page.contains("&lt;b&gt;x&lt;/b&gt;"));
         assert!(!page.contains("<b>x</b>"));
         assert!(page.contains("<b>12</b><span>online</span>"));
-        assert!(page.contains("<b>5</b><span>searching</span>"));
+        assert!(page.contains("<b>3</b><span>rooms</span>"));
+        assert!(page.contains("<b>5</b><span>in rooms</span>"));
         assert!(page.contains("<b>2</b><span>matches now</span>"));
         assert!(page.contains("<b>3&nbsp;456</b><span>players</span>"));
         assert!(page.contains("<b>1&nbsp;234&nbsp;567</b><span>battles fought</span>"));

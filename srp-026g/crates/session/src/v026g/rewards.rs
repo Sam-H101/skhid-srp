@@ -223,8 +223,8 @@ pub struct PlayerResult {
     pub account_id: u32,
     pub name: String,
     pub team: u8,
-    /// The match server's own bot (`SRP_SERVER_BOTS`): no account (0), no
-    /// session; it is shown and paid nothing.
+    /// The match server's own bot (a match against bots): no account (0),
+    /// no session; it is shown and paid nothing.
     pub driven: bool,
     /// Whether the player was ever in the match.
     pub entered: bool,
@@ -946,8 +946,8 @@ impl Results {
         }
         let mut shared = Shared::of(result, terms);
         // Test bots (`super::bots`; none unless `SRP_BOT_ACCOUNTS` names
-        // them) and the match server's own (`SRP_SERVER_BOTS`, and every
-        // match against bots): a match with one in it moves no rating, and
+        // them) and the match server's own (in every match against bots):
+        // a match with one in it moves no rating, and
         // a bot is paid no daily bonus (nor is the player of a match
         // against bots, `settle_player`).
         let bots: Vec<bool> = result

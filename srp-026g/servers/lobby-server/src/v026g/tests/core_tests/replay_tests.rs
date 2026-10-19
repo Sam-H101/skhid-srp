@@ -77,7 +77,7 @@ fn poll(world: &mut World, index: usize) -> (Option<String>, String) {
 
 #[test]
 fn replays_off_answer_off_and_ask_nothing() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = player(&mut world, "Alice", 14);
     world.take(alice);
     world.ask(alice, request::player_details(REPLAY_ASK, MATCH));
@@ -90,7 +90,7 @@ fn replays_off_answer_off_and_ask_nothing() {
 #[test]
 fn a_player_of_the_match_gets_the_link_before_a_ready_row() {
     let root = temp("ready");
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = player(&mut world, "Alice", 14);
     let bob = player(&mut world, "Bob", 14);
     let carol = player(&mut world, "Carol", 12);
@@ -153,7 +153,7 @@ fn a_player_of_the_match_gets_the_link_before_a_ready_row() {
 #[test]
 fn a_preparing_row_carries_the_place_in_the_conversion_line() {
     let root = temp("line");
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = player(&mut world, "Alice", 14);
     let bob = player(&mut world, "Bob", 14);
     let desk = replays(&root, &[]);
@@ -253,7 +253,7 @@ fn poll_refused(world: &mut World, index: usize) -> (String, Option<String>) {
 #[test]
 fn a_replay_of_games_before_the_last_simulation_change_is_refused_and_said_why() {
     let root = temp("older");
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let taras = player(&mut world, "Taras", 17);
     let emma = player(&mut world, "Emma", 17);
     // Revision 17 changed what a match computes; the match was of 16.
@@ -295,7 +295,7 @@ fn a_replay_of_games_before_the_last_simulation_change_is_refused_and_said_why()
 #[test]
 fn a_replay_recorded_before_the_revisions_were_kept_is_refused() {
     let root = temp("unknown");
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let ivan = player(&mut world, "Ivan", 16);
     world.core.replays = Some(replays_of(&root, 11, vec![None, None]));
     world.ask(ivan, subscribe(1));

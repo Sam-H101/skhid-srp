@@ -71,13 +71,12 @@ pub fn run(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}, relays packed for {} ms, bots give way: {}",
+         check: {}, relays packed for {} ms",
         config.match_server.bind_addr(),
         settings.late_inputs,
         switch(settings.clock_correction),
         switch(settings.check_initial_world),
-        settings.pack.as_millis(),
-        switch(settings.bots_give_way)
+        settings.pack.as_millis()
     );
     serve(
         &socket,
@@ -122,13 +121,12 @@ pub fn run_on_with_replays(
     let switch = |on: bool| if on { "on" } else { "off" };
     log::info!(
         "Match server (0.26g) on UDP {}; late inputs: {:?}, clock correction: {}, initial world \
-         check: {}, relays packed for {} ms, bots give way: {}",
+         check: {}, relays packed for {} ms",
         socket.local_addr()?,
         settings.late_inputs,
         switch(settings.clock_correction),
         switch(settings.check_initial_world),
-        settings.pack.as_millis(),
-        switch(settings.bots_give_way)
+        settings.pack.as_millis()
     );
     let port = registry.port();
     serve(

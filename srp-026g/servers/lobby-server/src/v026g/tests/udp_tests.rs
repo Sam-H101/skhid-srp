@@ -12,11 +12,13 @@ use session::v026g::GameAccounts;
 use session::{LockExt, SessionStore};
 use survarium::v026g::lobby::client_model::{Decoded, FriendshipPush, Permitted};
 use survarium::v026g::lobby::requests::INVENTORY_SLOT;
+use survarium::v026g::lobby::rooms::ROOM_STATE;
 use survarium::v026g::lobby::{ClientState, channel};
+use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
 use survarium::v026g::prices;
 
 use super::client::{TestClient, request};
-use super::{TestHost, denial, find, sent_to_match, signed_in};
+use super::{TestHost, denial, find, signed_in};
 use crate::v026g::{Inbox, Lobby, Settings};
 
 /// No wait is longer.
@@ -32,14 +34,9 @@ struct Server {
 }
 
 impl Server {
-    /// A lobby on a free port whose queue gathers for `gather`.
-    fn start(gather: Duration, link_timeout: Duration) -> Self {
-        let store = Arc::new(SessionStore::with_start_rules(
-            gather,
-            2,
-            Duration::ZERO,
-            Duration::from_secs(3600),
-        ));
+    /// A lobby on a free port.
+    fn start(link_timeout: Duration) -> Self {
+        let store = Arc::new(SessionStore::new());
         let accounts = Arc::new(GameAccounts::new());
         let host = Arc::new(TestHost::default());
         let inbox = Inbox::new();
@@ -72,7 +69,7 @@ impl Server {
     }
 
     fn quick() -> Self {
-        Self::start(Duration::ZERO, Duration::from_secs(30))
+        Self::start(Duration::from_secs(30))
     }
 }
 
@@ -94,9 +91,12 @@ struct Peer {
 }
 
 impl Peer {
-    /// A client with a session, not yet connected.
+    /// A client of the newest patch with a session, not yet connected.
     fn new(server: &Server, name: &str) -> Self {
-        let (account_id, session_id) = signed_in(&server.store, name);
+        let (account_id, _) = signed_in(&server.store, name);
+        let session_id = server
+            .store
+            .create_session_with_revision(account_id, PATCH_REVISION);
         Self::with_session(server, account_id, session_id)
     }
 
@@ -178,6 +178,25 @@ fn connect(peer: &mut Peer) {
             && ids.contains(&0xA1)
             && ids.iter().filter(|id| **id == 0xA3).count() == 2
     });
+}
+
+/// The key of the peer's room, as the room's state says it; `None`: in no
+/// room.
+fn room_key(peer: &mut Peer) -> Option<u32> {
+    peer.take();
+    peer.ask(request::ranking(ROOM_STATE, 1));
+    until(&mut [&mut *peer], "the room's state", |peers| {
+        has(
+            peers[0],
+            |message| matches!(message, Decoded::EloList(rows) if rows[0].1 == ROOM_STATE),
+        )
+    });
+    let state = find(&peer.take(), |message| match message {
+        Decoded::EloList(rows) if rows[0].1 == ROOM_STATE => Some(rows[0].0.clone()),
+        _ => None,
+    })?;
+    let fields: Vec<&str> = state.split(';').collect();
+    (fields[1] == "R").then(|| fields[2].parse().unwrap())
 }
 
 fn assert_clean(peers: &[&Peer]) {
@@ -324,78 +343,33 @@ fn an_unknown_or_ended_session_is_turned_away_over_udp() {
     assert_clean(&[&stranger, &ended]);
 }
 
+/// Play makes a room for the first player and puts the second into it;
+/// each is told it is in the lobby, where the movie shows the room.
 #[test]
-fn a_lone_player_waits_and_two_go_to_the_same_match() {
+fn play_over_udp_makes_a_room_and_the_next_play_goes_into_it() {
     let server = Server::quick();
     let mut alice = Peer::new(&server, "Alice");
     let mut bob = Peer::new(&server, "Bob");
     connect(&mut alice);
     connect(&mut bob);
-    alice.take();
-
-    // Alone, also with a gather window of nothing: no match.
-    alice.ask(request::play(1));
-    run_for(&mut [&mut alice, &mut bob], Duration::from_millis(600));
-    let decoded = alice.take();
-    let waits = decoded
-        .iter()
-        .filter(|message| {
-            matches!(
-                message,
-                Decoded::ClientState {
-                    state: ClientState::InQueue {
-                        place: 1,
-                        queue_total: 1,
+    assert_eq!(room_key(&mut alice), None);
+    for peer in [&mut alice, &mut bob] {
+        peer.ask(request::play(1));
+        until(&mut [&mut *peer], "the lobby state", |peers| {
+            has(peers[0], |message| {
+                matches!(
+                    message,
+                    Decoded::ClientState {
+                        state: ClientState::Lobby,
                         ..
-                    },
-                    ..
-                }
-            )
-        })
-        .count();
-    assert!(waits >= 3, "{waits} queue updates");
-    assert!(sent_to_match(&decoded).is_none());
+                    }
+                )
+            })
+        });
+    }
+    let key = room_key(&mut alice).expect("Alice's room");
+    assert_eq!(room_key(&mut bob), Some(key));
     assert!(server.host.made.locked().is_empty());
-
-    // Leaving the queue: back in the lobby.
-    alice.ask(request::leave(1, false));
-    until(&mut [&mut alice, &mut bob], "the lobby state", |peers| {
-        has(peers[0], |message| {
-            matches!(
-                message,
-                Decoded::ClientState {
-                    state: ClientState::Lobby,
-                    ..
-                }
-            )
-        })
-    });
-    assert!(server.store.matchmaking().busy_sessions().is_empty());
-    alice.take();
-    bob.take();
-
-    // Both press Play: one match, on opposite teams.
-    alice.ask(request::play(1));
-    bob.ask(request::play(1));
-    until(&mut [&mut alice, &mut bob], "the match", |peers| {
-        peers
-            .iter()
-            .all(|peer| sent_to_match(&peer.client.decoded).is_some())
-    });
-    let (alice_match, alice_team) = sent_to_match(&alice.take()).unwrap();
-    let (bob_match, bob_team) = sent_to_match(&bob.take()).unwrap();
-    assert_eq!(alice_match, bob_match);
-    assert_ne!(alice_team, bob_team);
-    let made = server.host.made.locked().clone();
-    assert_eq!(made.len(), 1);
-    assert_eq!(made[0].0, alice_match);
-    let sessions: Vec<u32> = made[0]
-        .1
-        .players
-        .iter()
-        .map(|player| player.session_id)
-        .collect();
-    assert!(sessions.contains(&alice.session_id) && sessions.contains(&bob.session_id));
     assert_clean(&[&alice, &bob]);
 }
 
@@ -484,7 +458,7 @@ fn two_clients_chat_and_become_friends() {
 }
 
 #[test]
-fn a_squad_of_two_queues_together_over_udp() {
+fn a_squad_of_two_plays_in_one_room_over_udp() {
     let server = Server::quick();
     let mut alice = Peer::new(&server, "Alice");
     let mut bob = Peer::new(&server, "Bob");
@@ -524,50 +498,21 @@ fn a_squad_of_two_queues_together_over_udp() {
         in_squad(peers[0]) && in_squad(peers[1])
     });
 
-    // The soldier readies, then the commander; Carol makes up the match.
-    carol.ask(request::play(1));
-    bob.ask(request::play(1));
-    run_for(
-        &mut [&mut alice, &mut bob, &mut carol],
-        Duration::from_millis(200),
-    );
-    assert!(server.host.made.locked().is_empty());
-    alice.ask(request::play(1));
-    until(
-        &mut [&mut alice, &mut bob, &mut carol],
-        "the match",
-        |peers| {
-            peers
-                .iter()
-                .all(|peer| sent_to_match(&peer.client.decoded).is_some())
-        },
-    );
-    let alice_seat = sent_to_match(&alice.client.decoded).unwrap();
-    let bob_seat = sent_to_match(&bob.client.decoded).unwrap();
-    let carol_seat = sent_to_match(&carol.client.decoded).unwrap();
-    assert_eq!(alice_seat, bob_seat);
-    assert_eq!(carol_seat.0, alice_seat.0);
-    assert_ne!(carol_seat.1, alice_seat.1);
-    let made = server.host.made.locked().clone();
-    let squad_of = |account_id: u32| {
-        made[0]
-            .1
-            .players
-            .iter()
-            .find(|player| player.account_id == account_id)
-            .unwrap()
-            .profile
-            .squad
-    };
-    assert_ne!(squad_of(alice.account_id), 0);
-    assert_eq!(squad_of(alice.account_id), squad_of(bob.account_id));
-    assert_eq!(squad_of(carol.account_id), 0);
+    // The commander's Play makes a room, the soldier's goes into it, and
+    // Carol's too: it is the one open room.
+    for peer in [&mut alice, &mut bob, &mut carol] {
+        peer.ask(request::play(1));
+        run_for(&mut [&mut *peer], Duration::from_millis(100));
+    }
+    let key = room_key(&mut alice).expect("Alice's room");
+    assert_eq!(room_key(&mut bob), Some(key));
+    assert_eq!(room_key(&mut carol), Some(key));
     assert_clean(&[&alice, &bob, &carol]);
 }
 
 #[test]
 fn a_link_that_goes_silent_frees_its_session() {
-    let server = Server::start(Duration::ZERO, Duration::from_millis(1000));
+    let server = Server::start(Duration::from_millis(1000));
     let mut alice = Peer::new(&server, "Alice");
     let mut bob = Peer::new(&server, "Bob");
     connect(&mut alice);

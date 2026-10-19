@@ -3,17 +3,17 @@
 
 use super::*;
 use crate::v026g::DEFAULT_SQUADS_OFF_TEXT;
+use session::STRENGTH_SCALE;
 use session::v026g::balance::{Balance, UNIT, Weights};
-use session::{QueuePool, STRENGTH_SCALE};
 use survarium::v026g::lobby::requests::id;
 
-/// Five players press Play and get a match after the window; the side of
-/// each, by client.
+/// Five players press Play, which puts them into one room, and get its
+/// match; the side of each, by client.
 fn sides_of_five(world: &mut World, players: &[usize]) -> Vec<u8> {
     for &player in players {
         world.ask(player, request::play(1));
     }
-    world.advance(Duration::from_secs(61));
+    world.advance(PLAY_TO_MATCH);
     players
         .iter()
         .map(|&player| sent_to_match(&world.take(player)).expect("a match").1)
@@ -32,7 +32,7 @@ fn with_an_odd_count_the_stronger_players_are_the_side_of_fewer() {
     let settings = Settings::local("127.0.0.1:0");
     assert_eq!(settings.balance, Weights::default());
 
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let players = five(&mut world);
     // Carol and Erin have won much, over many matches: each counts for
     // six gear levels more than the others, who are new.
@@ -53,7 +53,7 @@ fn with_an_odd_count_the_stronger_players_are_the_side_of_fewer() {
 
 #[test]
 fn a_level_of_the_account_counts_too() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let players = five(&mut world);
     // Bob and Dave are of level 4 (3,500 experience), the others of none.
     for veteran in [players[1], players[3]] {
@@ -69,13 +69,13 @@ fn a_level_of_the_account_counts_too() {
     );
 }
 
-#[test]
-fn a_waiting_player_counts_for_its_gear_its_level_and_its_trusted_rating() {
-    let mut world = World::new(Duration::from_secs(600));
+/// Alice (level 2, a point of balance rating over five matches) and Bob
+/// (five points no match stands behind) in a match: what each counts for
+/// in it, beside being there.
+fn strengths_in_a_match(world: &mut World) -> [i32; 2] {
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     world.change(alice, |account| {
-        // Level 2, and a point over five matches: half trusted.
         account.exp_total = 1_250;
         account.balance = Balance {
             rating: UNIT,
@@ -83,39 +83,47 @@ fn a_waiting_player_counts_for_its_gear_its_level_and_its_trusted_rating() {
         };
     });
     world.change(bob, |account| {
-        // A rating no match stands behind counts for nothing.
         account.balance = Balance {
             rating: 5 * UNIT,
             matches: 0,
         };
     });
-    world.ask(alice, request::play(1));
-    world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
-    let strengths = |world: &World| -> Vec<i32> {
-        world
-            .store
-            .matchmaking()
-            .queued_groups(QueuePool::Standard)
+    let (ticket, _) = world.match_of(alice, bob);
+    let running = world
+        .core
+        .matches
+        .values()
+        .find(|running| running.ticket.match_id == ticket)
+        .unwrap();
+    [alice, bob].map(|player| {
+        let place = running
+            .seats
             .iter()
-            .map(|group| group.player_strength(0))
-            .collect()
-    };
-    // Gear level 0; 2 levels at 1.5; half of 4 for the point.
+            .position(|(session_id, _)| *session_id == world.ids[player].1)
+            .unwrap();
+        running.strengths[place]
+    })
+}
+
+#[test]
+fn a_player_counts_for_its_gear_its_level_and_its_trusted_rating() {
+    // Gear level 0; 2 levels at 1.5; half of 4 for the point. A rating no
+    // match stands behind counts for nothing.
+    let mut world = World::new();
     assert_eq!(
-        strengths(&world),
+        strengths_in_a_match(&mut world),
         [3 * STRENGTH_SCALE + 2 * STRENGTH_SCALE, 0]
     );
 
     // The weights are settings: with none, only the gear level is left.
+    let mut world = World::new();
     world.core.settings.balance = Weights {
         player: 0.0,
         player_level: 0.0,
         rating: 0.0,
         ..Weights::default()
     };
-    world.advance(Duration::from_secs(2));
-    assert_eq!(strengths(&world), [0, 0]);
+    assert_eq!(strengths_in_a_match(&mut world), [0, 0]);
 }
 
 #[test]
@@ -127,7 +135,7 @@ fn squads_are_on_unless_the_server_is_told_otherwise() {
 
 #[test]
 fn with_squads_off_an_invite_is_refused_and_its_sender_told() {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     world.core.settings.squads = false;
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
@@ -163,8 +171,8 @@ fn with_squads_off_an_invite_is_refused_and_its_sender_told() {
 }
 
 #[test]
-fn with_squads_off_two_friends_queue_as_players_alone() {
-    let mut world = World::new(Duration::ZERO);
+fn with_squads_off_two_friends_play_as_players_alone() {
+    let mut world = World::new();
     world.core.settings.squads = false;
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
@@ -172,8 +180,8 @@ fn with_squads_off_two_friends_queue_as_players_alone() {
     world.ask(alice, request::add_squad_member("Bob"));
     world.ask(alice, request::play(1));
     world.ask(bob, request::play(1));
-    world.advance(Duration::from_secs(2));
-    // Two players, two sides: a squad of two alone would have waited.
+    world.advance(PLAY_TO_MATCH);
+    // Two players, two sides: a squad of two is one side.
     let a = sent_to_match(&world.take(alice)).expect("a match").1;
     let b = sent_to_match(&world.take(bob)).expect("a match").1;
     assert_ne!(a, b);

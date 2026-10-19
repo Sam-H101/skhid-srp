@@ -99,11 +99,7 @@
 //! - `SRP_PVB_STALL_S` (default 60, 10 to 3600): a match against the
 //!   server's bots whose only player has been asked for its world this
 //!   long and uploaded none is over (as deserted): its bots see the world
-//!   only through that player's uploads;
-//! - `SRP_BOTS_GIVE_WAY=on|off` (default `on`): whether one of the
-//!   server's own bots of a side leaves the match when a late joiner comes
-//!   onto that side and it needs the room (`game/driven.rs`, `give_way`).
-//!   Off, bots stay to the end and a full side takes nobody.
+//!   only through that player's uploads.
 
 /// The server's own bots (`MatchPlayer::driven`): their maps.
 pub mod bots;
@@ -261,9 +257,6 @@ pub(crate) struct Settings {
     pub pack: Duration,
     /// `SRP_MAPDATA_DIR`: the bots' maps, shared by every match.
     pub maps: Option<Arc<bots::maps::Maps>>,
-    /// `SRP_BOTS_GIVE_WAY`: the server's bots give their place up to late
-    /// joiners who need it.
-    pub bots_give_way: bool,
     pub timing: Timing,
 }
 
@@ -280,7 +273,6 @@ impl Default for Settings {
             record: None,
             pack: Config::for_table(Table::Match).gather,
             maps: None,
-            bots_give_way: true,
             timing: Timing::default(),
         }
     }
@@ -347,11 +339,6 @@ impl Settings {
                     session::v026g::pvb::max_matches(),
                 ) as u32,
                 var("SRP_MAPDATA_BUILT").as_deref(),
-            ),
-            bots_give_way: parse_switch(
-                "SRP_BOTS_GIVE_WAY",
-                var("SRP_BOTS_GIVE_WAY").as_deref(),
-                true,
             ),
             timing: {
                 let client_timeout = Duration::from_secs(u64::from(

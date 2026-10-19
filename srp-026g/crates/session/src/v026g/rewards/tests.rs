@@ -539,7 +539,9 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
     let plain = settle(8, &terms());
     let alice = settle(8, &own);
     assert_eq!(
-        (0..3).map(|line| columns(&alice.full, line).2).collect::<Vec<_>>(),
+        (0..3)
+            .map(|line| columns(&alice.full, line).2)
+            .collect::<Vec<_>>(),
         [24, 2, 331]
     );
     for line in 0..3 {
@@ -550,10 +552,15 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
             "{line}: {money} against {plain_money}"
         );
     }
-    assert_eq!(columns(&alice.full, 0).1, (75.0 * 5.59 * 1.8_f64).floor() as u32);
+    assert_eq!(
+        columns(&alice.full, 0).1,
+        (75.0 * 5.59 * 1.8_f64).floor() as u32
+    );
     // 3 × 1.35 × 1.2 = 4.86, 1.62 and 3.98.
     assert_eq!(
-        (0..3).map(|line| columns(&alice.full, line).3).collect::<Vec<_>>(),
+        (0..3)
+            .map(|line| columns(&alice.full, line).3)
+            .collect::<Vec<_>>(),
         [4, 1, 3]
     );
     // From level 12 on: 220 %.
@@ -566,7 +573,10 @@ fn the_owners_rates_raise_silver_by_match_level_experience_and_reputation() {
     }
     // The quest's silver is the match level's alone (50 × 5.59); its
     // reputation is 120 % of the level's (50 × 1.35 = 67.5, × 1.2 = 81).
-    assert_eq!((plain.reward.quest_money, alice.reward.quest_money), (279, 279));
+    assert_eq!(
+        (plain.reward.quest_money, alice.reward.quest_money),
+        (279, 279)
+    );
     assert_eq!(plain.reward.quest_reputation, [(1, 67)]);
     assert_eq!(alice.reward.quest_reputation, [(1, 81)]);
     assert_eq!(alice.full.quest_reputation, 81);
@@ -2464,7 +2474,7 @@ fn a_match_with_a_test_bot_moves_no_rating_and_pays_the_bot_no_daily_bonus() {
 
 #[test]
 fn a_match_with_a_server_bot_moves_no_rating_and_leaves_nothing_for_account_0() {
-    // Bob's place is the match server's own bot (`SRP_SERVER_BOTS`): no
+    // Bob's place is the match server's own bot (as against bots): no
     // account, no session.
     let mut players = alice_and_bob();
     let store = accounts(&players);
@@ -2576,7 +2586,14 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
     // A row of the screen can be asked for, as before.
     let mut client = Client::signed_in();
     client
-        .receive(&results.find(MATCH).unwrap().screen_for(10).unwrap().unwrap())
+        .receive(
+            &results
+                .find(MATCH)
+                .unwrap()
+                .screen_for(10)
+                .unwrap()
+                .unwrap(),
+        )
         .unwrap();
     client
         .receive(
@@ -2602,7 +2619,11 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
             results.claim_premium(MATCH + 1, 11, &mut bob, NOW + 960),
             plain.claim_premium(MATCH + 1, 11, &mut plain_bob, NOW + 960)
         );
-        assert!(results.claim_premium(MATCH + 1, 11, &mut bob, NOW + 960).is_none());
+        assert!(
+            results
+                .claim_premium(MATCH + 1, 11, &mut bob, NOW + 960)
+                .is_none()
+        );
     }
     store.mark_dirty(11);
     // Alice's third match of the period is her third: the report, with
@@ -2614,7 +2635,10 @@ fn a_restart_keeps_the_screens_not_shown_and_the_play_periods() {
     let expected = plain
         .settle(&third, &plain_store, &at(NOW + 1800), &mut Rng::new(7))
         .unwrap();
-    assert_eq!(kept.players[0].full.drop_chances, expected.players[0].full.drop_chances);
+    assert_eq!(
+        kept.players[0].full.drop_chances,
+        expected.players[0].full.drop_chances
+    );
     assert_eq!(kept.players[0].reward, expected.players[0].reward);
     // She is shown the last screen and the notices of all three.
     assert!(results.has_unseen(10));
@@ -2680,7 +2704,12 @@ fn only_the_reports_kept_stay_in_the_repository() {
     let results = Results::attached(&store);
     for index in 0..KEPT as u32 + 3 {
         results
-            .settle(&match_of(0x1000 + index), &store, &at(NOW), &mut Rng::new(3))
+            .settle(
+                &match_of(0x1000 + index),
+                &store,
+                &at(NOW),
+                &mut Rng::new(3),
+            )
             .unwrap();
         // Not after every match: several changes go in one pass.
         if index % 5 == 0 {
@@ -2794,7 +2823,14 @@ fn rows_that_do_not_read_are_left_out_and_cleaned_up() {
         .into_iter()
         .map(|row| row.0)
         .collect();
-    assert_eq!(keys, ["other".to_owned(), report_key(MATCH + 2), STATE_KEY.to_owned()]);
+    assert_eq!(
+        keys,
+        [
+            "other".to_owned(),
+            report_key(MATCH + 2),
+            STATE_KEY.to_owned()
+        ]
+    );
     drop(results);
     drop(store);
 
@@ -2807,7 +2843,10 @@ fn rows_that_do_not_read_are_left_out_and_cleaned_up() {
     store.flush();
     let rows = repository.load_results().unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().any(|row| row.0 == STATE_KEY && row.1.starts_with('{')));
+    assert!(
+        rows.iter()
+            .any(|row| row.0 == STATE_KEY && row.1.starts_with('{'))
+    );
 }
 
 /// Accounts kept in memory keep no results either, and nothing fails.

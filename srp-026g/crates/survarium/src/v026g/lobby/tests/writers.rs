@@ -578,157 +578,12 @@ fn money_skills_and_the_small_pushes() {
     assert_bytes(&online_stats(12, 3, 1440), "9F 0C000000 03000000 A0050000");
 }
 
-/// srp's own answer to a `3B` with the reserved start: ranking rows whose
-/// names carry the matches, told from a ranking page by their places
-/// (2 000 000 000 is 0x77359400).
-#[test]
-fn the_matches_now_are_ranking_rows_with_reserved_places() {
-    assert_eq!(MATCHES_START, 2_000_000_000);
-    assert_eq!(RESERVED_START, MATCHES_START);
-    // No match: the header alone, so the window can tell it from no answer.
-    assert_bytes(
-        &matches_now(0, &[]).unwrap(),
-        "91 01 'M2;0' 00943577 0000 0000",
-    );
-    let playing = MatchNow {
-        level: 1,
-        mode: 4,
-        phase: MatchPhase::Playing,
-        players: [4, 3],
-        score: Some([88, 78]),
-        played: Some(380),
-        join: JoinCode::Yes,
-        key: 7,
-        match_level: Some(3),
-    };
-    let gathering = MatchNow {
-        level: 8,
-        mode: 2,
-        phase: MatchPhase::Gathering,
-        players: [10, 10],
-        score: None,
-        played: None,
-        join: JoinCode::NotStarted,
-        key: 12,
-        match_level: None,
-    };
-    // The header counts the matches open, listed or not; the rows follow
-    // in the order given, each a place further. The match level is the
-    // last field, `-` when not known.
-    let message = matches_now(5, &[playing, gathering]).unwrap();
-    assert_bytes(
-        &message,
-        "91 03 'M2;5' 00943577 0000 0000
-               '1;4;2;4;3;88;78;380;1;7;3' 01943577 0000 0000
-               '8;2;0;10;10;-;-;-;5;12;-' 02943577 0000 0000",
-    );
-    // The client reads it as it reads a ranking page.
-    let mut client = Client::signed_in();
-    assert_eq!(
-        client.receive(&message).unwrap(),
-        Decoded::EloList(vec![
-            ("M2;5".into(), 2_000_000_000, 0, 0),
-            ("1;4;2;4;3;88;78;380;1;7;3".into(), 2_000_000_001, 0, 0),
-            ("8;2;0;10;10;-;-;-;5;12;-".into(), 2_000_000_002, 0, 0),
-        ])
-    );
-    // Each code is its number in the row.
-    for (code, number) in [
-        (JoinCode::Unknown, 0),
-        (JoinCode::Yes, 1),
-        (JoinCode::Balanced, 2),
-        (JoinCode::NoPlace, 3),
-        (JoinCode::AnotherJoining, 4),
-        (JoinCode::NotStarted, 5),
-        (JoinCode::EndsSoon, 6),
-        (JoinCode::NoLateJoiners, 7),
-        (JoinCode::InMatch, 8),
-        (JoinCode::InSquad, 9),
-        (JoinCode::Outdated, 10),
-        (JoinCode::HadPlace, 11),
-        (JoinCode::AfterMaintenance, 12),
-        (JoinCode::InQueue, 13),
-    ] {
-        let row = MatchNow {
-            join: code,
-            ..playing
-        };
-        let Decoded::EloList(rows) = client.receive(&matches_now(1, &[row]).unwrap()).unwrap()
-        else {
-            panic!("not a ranking list");
-        };
-        assert_eq!(rows[1].0, format!("1;4;2;4;3;88;78;380;{number};7;3"));
-    }
-    // The countdown's number, and the widest row there can be, every field
-    // the largest number its type holds (three digits for the level, the
-    // mode and each team, five for each score and the match level, ten for
-    // the seconds and the key, two for the largest code). The client copies
-    // a name into 64 bytes without a check (0x271EB0): 63 is all it may be,
-    // and this one is 60, so nothing of it is cut.
-    let widest = MatchNow {
-        level: u8::MAX,
-        mode: u8::MAX,
-        phase: MatchPhase::Countdown,
-        players: [u8::MAX, u8::MAX],
-        score: Some([u16::MAX, u16::MAX]),
-        played: Some(u32::MAX),
-        join: JoinCode::InQueue,
-        key: u32::MAX,
-        match_level: Some(u16::MAX),
-    };
-    let name = "255;255;1;255;255;65535;65535;4294967295;13;4294967295;65535";
-    assert_eq!(name.len(), 60);
-    assert!(name.len() <= limits::NAME);
-    let message = matches_now(u32::MAX, &[widest; MATCHES_NOW_ROWS]).unwrap();
-    // On the wire: after the count and the header, the name's length byte
-    // and the name whole.
-    let header = h("91 21 'M2;4294967295' 00943577 0000 0000");
-    assert_eq!(bytes(&message)[..header.len()], header);
-    assert_eq!(bytes(&message)[header.len()], 60);
-    assert_eq!(
-        bytes(&message)[header.len() + 1..header.len() + 61],
-        *name.as_bytes()
-    );
-    let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
-        panic!("not a ranking list");
-    };
-    assert_eq!(rows.len(), 1 + MATCHES_NOW_ROWS);
-    assert_eq!(rows[0].0, "M2;4294967295");
-    assert!(rows[1..].iter().all(|row| row.0 == name));
-    assert!(rows.iter().all(|row| row.0.len() <= limits::NAME));
-    // What a real match has at the most: one-digit level and mode, two
-    // digits a team, five a score, four for the seconds of a match, two
-    // for the code, eight for the key, two for the match level.
-    let full = MatchNow {
-        level: 8,
-        mode: 4,
-        phase: MatchPhase::Playing,
-        players: [10, 10],
-        score: Some([u16::MAX, u16::MAX]),
-        played: Some(9999),
-        join: JoinCode::InQueue,
-        key: JOIN_KEY_MAX,
-        match_level: Some(10),
-    };
-    let message = matches_now(1, &[full]).unwrap();
-    let Decoded::EloList(rows) = client.receive(&message).unwrap() else {
-        panic!("not a ranking list");
-    };
-    assert_eq!(rows[1].0, "8;4;2;10;10;65535;65535;9999;13;99999999;10");
-    assert_eq!(rows[1].0.len(), 43);
-    // No more matches than the answer lists.
-    assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS]).is_ok());
-    assert!(matches_now(40, &[gathering; MATCHES_NOW_ROWS + 1]).is_err());
-}
-
 /// The answer to a replay poll: one ranking row at the replay start
-/// (2 200 000 000 is 0x83215600, past every JOIN start) whose name is the
+/// (2 200 000 000 is 0x83215600) whose name is the
 /// asker's status, the match in 8 lower-case hex digits and the size.
 #[test]
 fn a_replay_poll_is_answered_with_one_row_at_the_replay_start() {
     assert_eq!(REPLAY_START, 2_200_000_000);
-    // The first start after the last JOIN start.
-    assert_eq!(REPLAY_START - (JOIN_START + JOIN_KEY_MAX), 1);
     assert_eq!(REPLAY_ASK, 0xFFFF_FF01);
     assert_bytes(
         &replay_answer("ready", 0x1F07_C8FB, 1_166_938).unwrap(),
@@ -752,67 +607,17 @@ fn a_replay_poll_is_answered_with_one_row_at_the_replay_start() {
     assert_eq!(rows[0].0, longest);
 }
 
-/// The answer to a JOIN button's request: one ranking row at the JOIN
-/// start (2 100 000 000 is 0x7D2B7500) whose name says what came of it:
-/// the word the first M2 movie reads, then the code of why.
-#[test]
-fn a_join_is_answered_with_one_row_at_the_join_start() {
-    assert_eq!(JOIN_START, 2_100_000_000);
-    assert_eq!(JOIN_KEY_MAX, 99_999_999);
-    // The last JOIN start, past every place of the list and within a u32.
-    assert_eq!(JOIN_START.checked_add(JOIN_KEY_MAX), Some(2_199_999_999));
-    assert_bytes(
-        &join_answer(JoinCode::Yes, 7).unwrap(),
-        "91 01 'J1;ok;7;1' 00752B7D 0000 0000",
-    );
-    let mut client = Client::signed_in();
-    for (code, name) in [
-        (JoinCode::Yes, "J1;ok;99999999;1"),
-        (JoinCode::Unknown, "J1;gone;99999999;0"),
-        (JoinCode::Balanced, "J1;full;99999999;2"),
-        (JoinCode::NoPlace, "J1;full;99999999;3"),
-        (JoinCode::AnotherJoining, "J1;full;99999999;4"),
-        (JoinCode::NotStarted, "J1;gone;99999999;5"),
-        (JoinCode::EndsSoon, "J1;gone;99999999;6"),
-        (JoinCode::NoLateJoiners, "J1;gone;99999999;7"),
-        (JoinCode::InMatch, "J1;busy;99999999;8"),
-        (JoinCode::InSquad, "J1;busy;99999999;9"),
-        (JoinCode::Outdated, "J1;busy;99999999;10"),
-        (JoinCode::HadPlace, "J1;busy;99999999;11"),
-        (JoinCode::AfterMaintenance, "J1;gone;99999999;12"),
-        (JoinCode::InQueue, "J1;busy;99999999;13"),
-    ] {
-        let message = join_answer(code, JOIN_KEY_MAX).unwrap();
-        assert_eq!(
-            client.receive(&message).unwrap(),
-            Decoded::EloList(vec![(name.into(), 2_100_000_000, 0, 0)])
-        );
-        assert!(name.len() <= limits::NAME);
-    }
-    // The longest: 19 bytes for a key the lobby gives, 21 for any u32.
-    assert_eq!("J1;busy;99999999;13".len(), 19);
-    let Decoded::EloList(rows) = client
-        .receive(&join_answer(JoinCode::HadPlace, u32::MAX).unwrap())
-        .unwrap()
-    else {
-        panic!("not a ranking list");
-    };
-    assert_eq!(rows[0].0, "J1;busy;4294967295;11");
-    assert_eq!(rows[0].0.len(), 21);
-}
-
 /// "Player vs Bots": the status (`B1` and a row a map, from 2 050 000 000)
 /// and a choice's answer (`B2`, at the start it was asked with), as the
-/// client reads them; every name within the 63 bytes, every start between
-/// the list of the matches and the JOIN starts.
+/// client reads them; every name within the 63 bytes, every start above
+/// the reserved start.
 #[test]
 fn player_vs_bots_rows_are_ranking_rows_at_their_starts() {
     assert_eq!(PVB_STATUS_START, 2_050_000_000);
     assert_eq!(PVB_CHOOSE_BASE, 2_051_000_000);
     const {
-        assert!(MATCHES_START + MATCHES_NOW_ROWS as u32 + 1 < PVB_STATUS_START);
+        assert!(RESERVED_START < PVB_STATUS_START);
         assert!(PVB_STATUS_START + PVB_MAP_ROWS as u32 + 1 < PVB_CHOOSE_BASE);
-        assert!(PVB_CHOOSE_LAST < JOIN_START);
     }
     assert_eq!(pvb_choice_start(8, 61), 2_051_008_061);
     assert_eq!(pvb_choice(2_051_008_061), Some((8, 61)));

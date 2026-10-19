@@ -48,7 +48,6 @@ impl Game {
             phase,
             players,
             present,
-            giving_way: self.giving_way(),
             kills,
             played: self
                 .rule

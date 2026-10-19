@@ -17,7 +17,7 @@ fn running() -> Bench {
 }
 
 #[test]
-fn admission_closes_at_two_minutes_remaining_and_stale_publications_expire() {
+fn admission_closes_at_the_end_of_the_match_and_stale_publications_expire() {
     let bench = running();
     let deadline = bench.game().admission_deadline(bench.now()).unwrap();
     assert!(
@@ -33,18 +33,12 @@ fn admission_closes_at_two_minutes_remaining_and_stale_publications_expire() {
             .admission_deadline(deadline + Duration::from_millis(1))
             .is_none()
     );
-    assert_eq!(
-        bench
-            .registry
-            .admission_remaining(bench.match_id, deadline - Duration::from_millis(1)),
-        Some(Duration::from_millis(120_001))
-    );
     assert!(
         bench
             .registry
-            .admission_remaining(bench.match_id, deadline)
-            .is_none()
+            .admits(bench.match_id, deadline - Duration::from_millis(1))
     );
+    assert!(!bench.registry.admits(bench.match_id, deadline));
     // No game-loop update is needed to reject a reservation after its deadline.
     bench
         .registry
@@ -418,7 +412,7 @@ fn registry_admission_is_atomic_and_rejects_invalid_profiles() {
 }
 
 #[test]
-fn admission_stays_closed_before_play_and_after_match_end() {
+fn admission_is_closed_while_waiting_open_from_the_countdown_and_closed_at_the_end() {
     let mut bench = Bench::growing(2, MAP_BATTERIES, Settings::default());
     assert_eq!(
         bench.registry.join_running(bench.match_id, player(2)),
@@ -426,9 +420,11 @@ fn admission_stays_closed_before_play_and_after_match_end() {
     );
     bench.join_all();
     assert_ne!(bench.game().rule_state(), state::IN_PROCESS);
-    assert_eq!(
-        bench.registry.join_running(bench.match_id, player(2)),
-        Err(JoinError::Unavailable)
+    // The countdown takes joiners (the owner's of 2026-10-18), once every
+    // game in it has loaded.
+    assert!(
+        bench.until(30_000, |b| b.game().rule_state() == state::COUNTDOWN
+            && b.game().admitting())
     );
     bench.run_long(130_000);
     assert!(bench.game().admitting());

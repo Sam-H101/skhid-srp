@@ -31,12 +31,11 @@ and presses Play again.
   --name      the first bot's user name (default bot-1; or SRP_BOT_NAME)
   --password  the bots' password (or SRP_BOT_PASSWORD; a built-in one for
               local tests when neither is given). Never printed.
-  --count N   N bots: bot-1 .. bot-N (default 1). The first waits in the
-              queue; the others join once somebody else waits there.
+  --count N   N bots: bot-1 .. bot-N (default 1). The first waits in a
+              room; the others join once somebody else is in it.
   --once      stop after one match
-  --revision N  the patch revision the sign-in says (default 0); 5 or
-              later puts the bots in the queue of the games that speak
-              the late join, the only one such a game meets
+  --revision N  the patch revision the sign-in says (default: the newest,
+              the late join's); only 5 or later plays in rooms
   --kit ID    press Play with this kit id (default: the kit the account
               plays)
   --drive     in a match, send inputs: a fixed script (walk, turn a quarter,
@@ -75,7 +74,7 @@ fn main() {
     let mut once = false;
     let mut kit = None;
     let mut drive = false;
-    let mut revision = 0_u8;
+    let mut revision = survarium::v026g::match_msgs::late_join::PATCH_REVISION;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

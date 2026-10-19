@@ -213,8 +213,6 @@ pub(crate) struct Live {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
-    /// [`LiveMatch::giving_way`].
-    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -251,12 +249,6 @@ pub struct LiveMatch {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
-    /// By roster place: the server's own bots in the match that give their
-    /// place up to a late joiner whose side needs the room
-    /// (`session::matchmaking_policy::bot_gives_way`, `game/driven.rs`);
-    /// none with `SRP_BOTS_GIVE_WAY=off`. One that owes its place already
-    /// and has not left yet is not among them.
-    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -266,9 +258,6 @@ pub struct LiveMatch {
     pub time_left: Option<Duration>,
     /// `None` until a world was trusted.
     pub standing: Option<LiveStanding>,
-    /// The row of `match_levels_dict` its rewards are multiplied by
-    /// ([`MatchSetup::match_level`]), fixed when it was made.
-    pub match_level: u16,
 }
 
 #[derive(Default)]
@@ -639,17 +628,13 @@ impl MatchRegistry {
         }
     }
 
-    /// Time remaining while new reservations are allowed. The absolute deadline
+    /// Whether new reservations are allowed at `now`. The absolute deadline
     /// also closes admission if the match thread stops publishing updates.
-    pub fn admission_remaining(
-        &self,
-        match_id: u32,
-        now: std::time::Instant,
-    ) -> Option<std::time::Duration> {
-        let inner = self.inner();
-        let deadline = *inner.admitting.get(&match_id)?;
-        (now < deadline)
-            .then(|| deadline.duration_since(now) + session::matchmaking_policy::JOIN_CUTOFF)
+    pub fn admits(&self, match_id: u32, now: std::time::Instant) -> bool {
+        self.inner()
+            .admitting
+            .get(&match_id)
+            .is_some_and(|deadline| now < *deadline)
     }
 
     /// The place a session has in a match that is not over.
@@ -764,12 +749,10 @@ impl MatchRegistry {
                 phase: LivePhase::Gathering,
                 players,
                 present: (1_u32 << formed.places.len().min(31)) - 1,
-                giving_way: 0,
                 kills: [0; 2],
                 played: None,
                 time_left: None,
                 standing: None,
-                match_level: formed.match_level,
             };
         };
         let since = now.saturating_duration_since(live.at);
@@ -779,7 +762,6 @@ impl MatchRegistry {
             phase: live.phase,
             players: live.players,
             present: live.present,
-            giving_way: live.giving_way,
             kills: live.kills,
             played: live.played.map(|played| played + since),
             time_left: live.time_left.map(|left| left.saturating_sub(since)),
@@ -788,7 +770,6 @@ impl MatchRegistry {
                 winner: standing.winner,
                 age: age + since,
             }),
-            match_level: formed.match_level,
         }
     }
 

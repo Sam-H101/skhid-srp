@@ -893,9 +893,6 @@ pub(crate) struct Game {
     /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
     /// ([`driven`], stage 2).
     walkers: Option<driven::Walkers>,
-    /// Bots that owe their place to a late joiner and could not leave yet
-    /// ([`driven`], "Giving way").
-    owed: Vec<driven::Owed>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -955,7 +952,6 @@ impl Game {
             recording: None,
             drives: Self::new_drives(&formed),
             walkers,
-            owed: Vec::new(),
             formed,
         }
     }
@@ -6026,17 +6022,6 @@ impl Game {
 
     pub fn set_clock_correction(&mut self, on: bool) {
         self.settings.clock_correction = on;
-    }
-
-    /// Every roster change so far: its tick, the place, entered (else
-    /// left).
-    pub fn roster_events(&self) -> &[(u32, usize, bool)] {
-        &self.events
-    }
-
-    /// How many bots owe their place to a late joiner and have not left.
-    pub fn bots_owing(&self) -> usize {
-        self.owed.len()
     }
 
     /// Whether the client is in a resync (`Peer::resync_from`), and

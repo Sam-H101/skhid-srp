@@ -8,8 +8,8 @@
 //!
 //! - **A side counts** [`Weights::player`] for each of its players, and
 //!   each player's [`Weights::strength`]: its gear level, its own level and
-//!   its balance rating as far as that is trusted. The queue makes the two
-//!   sides count alike (`crate::matchmaking`'s `seat_balanced`).
+//!   its balance rating as far as that is trusted. A room makes its two
+//!   sides count alike (`crate::v026g::rooms::sides`).
 //! - **The balance rating** ([`Balance`]) is not the ranking's
 //!   (`Account::rating`), which the client shows and which every player of
 //!   a side moves by alike whatever the sides' sizes. This one is kept for
@@ -24,10 +24,8 @@
 //!   how sides should be made.
 //! - **A match that is being played** counts a third thing for the side
 //!   that leads: its lead ([`Weights::lead`]), a battery or a ticket being
-//!   a part of a player. A player who joins such a match goes where the
-//!   sides then count most alike, and the side that trails may get two
-//!   players more than the other, not one, once the lead is
-//!   [`Weights::dramatic`] (`crate::matchmaking_policy::place_late`).
+//!   a part of a player. A player who joins such a match goes to the side
+//!   that then counts for less (`crate::matchmaking_policy::place_weaker`).
 //!   [`Weights::expected`] is the chance the whole count gives a side; the
 //!   lobby writes it in its log each minute, to be fitted again.
 
@@ -207,9 +205,6 @@ pub struct Weights {
     pub battery_lead: f64,
     /// The same for a ticket of lead in a Team Deathmatch.
     pub ticket_lead: f64,
-    /// The lead, in players, from which the side that trails may have two
-    /// players more than the other. 0: never.
-    pub dramatic_lead: f64,
 }
 
 impl Default for Weights {
@@ -233,13 +228,12 @@ impl Default for Weights {
             trust_matches: 5.0,
             battery_lead: 0.55,
             ticket_lead: 0.2,
-            dramatic_lead: 2.5,
         }
     }
 }
 
 impl Weights {
-    /// [`Self::player`] as the queue takes it (`Matchmaking::set_player_value`).
+    /// [`Self::player`] as the sides of a match count it.
     pub fn player_value(&self) -> i32 {
         scaled(self.player)
     }
@@ -254,8 +248,8 @@ impl Weights {
         }
     }
 
-    /// What a player counts for on top of [`Self::player`], as the queue
-    /// takes it (`Matchmaking::set_strengths`): its gear level
+    /// What a player counts for on top of [`Self::player`] when the sides
+    /// of a match are made: its gear level
     /// (`matchmaking::level`'s `min`), its own level and its rating.
     pub fn strength(&self, gear_level: u8, player_level: u8, balance: Balance) -> i32 {
         let rating = f64::from(balance.rating) / f64::from(UNIT);
@@ -267,8 +261,8 @@ impl Weights {
     }
 
     /// What each side's lead counts for in a match of `game_mode` that
-    /// stands at `points` (batteries home, or tickets left), as the queue
-    /// takes it: nothing for the side that trails.
+    /// stands at `points` (batteries home, or tickets left): nothing for the
+    /// side that trails.
     pub fn lead(&self, game_mode: u8, points: [u16; 2]) -> [i32; 2] {
         let each = if game_mode == mode::TEAM_DEATHMATCH {
             self.ticket_lead
@@ -282,15 +276,8 @@ impl Weights {
         [ahead(0), ahead(1)]
     }
 
-    /// Whether a lead that counts for `lead` ([`Self::lead`]) is one from
-    /// which the side that trails may have two players more.
-    pub fn dramatic(&self, lead: i32) -> bool {
-        let least = scaled(self.dramatic_lead * self.player);
-        self.dramatic_lead > 0.0 && least > 0 && lead >= least
-    }
-
     /// The chance of side 0 when it counts for `apart` more than side 1
-    /// (players, strengths and lead together, as the queue takes them): a
+    /// (players, strengths and lead together): a
     /// player more is [`PLAYER`] rating points, as in [`changes`].
     pub fn expected(&self, apart: i64) -> f64 {
         let player = f64::from(self.player_value());
@@ -301,7 +288,7 @@ impl Weights {
     }
 }
 
-/// Gear levels as the queue's whole numbers.
+/// Gear levels as whole numbers ([`STRENGTH_SCALE`]).
 fn scaled(levels: f64) -> i32 {
     (levels * f64::from(STRENGTH_SCALE))
         .round()
@@ -424,18 +411,12 @@ mod tests {
         assert_eq!(weights.lead(mode::BATTERIES, [4, 4]), [0, 0]);
         // Tickets: a fifth of a player.
         assert_eq!(weights.lead(mode::TEAM_DEATHMATCH, [80, 93]), [0, 3120]);
-        // Dramatic from two and a half players: five batteries, thirteen tickets.
-        let batteries = |lead| weights.lead(mode::BATTERIES, [lead, 0])[0];
-        assert!(!weights.dramatic(batteries(4)) && weights.dramatic(batteries(5)));
-        let tickets = |lead| weights.lead(mode::TEAM_DEATHMATCH, [lead, 0])[0];
-        assert!(!weights.dramatic(tickets(12)) && weights.dramatic(tickets(13)));
         // With no weight for a player there is no lead to count.
         let none = Weights {
             player: 0.0,
             ..weights
         };
         assert_eq!(none.lead(mode::BATTERIES, [9, 0]), [0, 0]);
-        assert!(!none.dramatic(i32::MAX));
         assert_eq!(none.expected(5000), 0.5);
     }
 

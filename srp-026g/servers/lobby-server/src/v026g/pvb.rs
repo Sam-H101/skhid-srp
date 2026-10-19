@@ -22,12 +22,11 @@
 //!    other (`play::server_bot_teams`), on the map chosen. No rule of two
 //!    parties, of levels or of a gather window; the play counts towards no
 //!    map rotation. A Play whose hold ran out within [`EXPIRED_REFUSED`]
-//!    is refused (`st_cant_change_ready_state`) and never queued: the
-//!    player meant bots, not the queue.
+//!    is refused (`st_cant_change_ready_state`) and never goes into a
+//!    room: the player meant bots.
 //!
 //! A match against bots takes no late joiner (its teams are fixed:
-//! `late_admission` is `None`, its row in the list of the matches says
-//! code 7, "This match takes no new players"). Its rewards are
+//! `play::late_admission`). Its rewards are
 //! `session::v026g::rewards`' for `vs_bots`: [`SRP_PVB_PAY`] of the silver
 //! and experience, no quest, no daily bonus, no rating. The match server
 //! ends it when its player stops uploading the worlds it is asked for
@@ -38,8 +37,8 @@
 //!
 //! The first reason of this order is the one said: the mode is off (6);
 //! the player's game is too old (5: it does not play in growing rosters);
-//! it is in a match, sent to one, has a place in one or holds a JOIN (4);
-//! it waits in the queue (3); it is in a squad with others (2); it is in
+//! it is in a match, sent to one, or has a place in one (4); it waits with
+//! its clan team (3); it is in a squad with others (2); it is in
 //! its clan's team (9); its equipment level (the client's, of the kits it
 //! can play: `matchmaking::gear_level`) is over [`Config::max_gear`] (1);
 //! a planned maintenance is 30 minutes away or less (8); as many matches
@@ -66,8 +65,13 @@ use survarium::v026g::lobby::requests::id;
 use survarium::v026g::lobby::{self, PvbCode, PvbMap, PvbNumbers, PvbStatus};
 use survarium::v026g::maps::{self, MapMode};
 
+use super::MAINTENANCE_WINDOW;
 use super::core::{Core, Who};
-use super::join::{JOIN_REFUSED, MAINTENANCE_WINDOW};
+
+/// The game's text for a Play the choice no longer makes: "Error changing
+/// readiness status." in the player's language, what the game says of a
+/// Play-like press it could not carry out (the clan team's ready, `clans`).
+pub(super) const PLAY_REFUSED: &str = "st_cant_change_ready_state";
 
 /// The maps offered, by `maps_dict` id (the owner's list of 2026-10-16):
 /// the day of each of the eight levels in batteries (mode 2: 61 Rudnya to
@@ -85,7 +89,7 @@ pub const DEFAULT_MAP: u8 = 61;
 /// How long a choice is held for the player's Play.
 pub const HOLD: Duration = Duration::from_secs(10);
 /// A Play this long after its hold ran out is still taken as one meant for
-/// bots: refused, not queued.
+/// bots: refused, never into a room.
 pub const EXPIRED_REFUSED: Duration = Duration::from_secs(30);
 /// `SRP_PVB_MAX_GEAR` when unset: "5 or lower" (the owner's).
 pub const DEFAULT_MAX_GEAR: u8 = 5;
@@ -239,10 +243,6 @@ impl Core<'_> {
                 .matchmaking()
                 .pool_of_account(who.account_id)
                 .is_some()
-            || self
-                .holds
-                .get(&who.account_id)
-                .is_some_and(|hold| hold.until > now)
         {
             return Err(PvbCode::InMatch);
         }
@@ -370,8 +370,8 @@ impl Core<'_> {
     /// Play with a choice held (`hold`, live): the rule is checked again,
     /// and the match is made at once with this player alone against the
     /// server's bots (`play::launch` takes the choice). Otherwise the Play
-    /// is refused ([`JOIN_REFUSED`]) and the player stays in the lobby, not
-    /// queued.
+    /// is refused ([`PLAY_REFUSED`]) and the player stays in the lobby, in
+    /// no room.
     pub(super) fn play_vs_bots(&mut self, who: &Who, kit_id: u32, hold: Hold, now: Instant) {
         let refuse = |core: &mut Self, why: String| {
             log::info!(
@@ -381,7 +381,7 @@ impl Core<'_> {
                 hold.size,
                 hold.map_id
             );
-            core.deny(who.addr, id::PLAY, JOIN_REFUSED);
+            core.deny(who.addr, id::PLAY, PLAY_REFUSED);
         };
         if let Err(code) = self.pvb_fit(who, now) {
             refuse(self, format!("{}; code {}", why(code), code as u8));
