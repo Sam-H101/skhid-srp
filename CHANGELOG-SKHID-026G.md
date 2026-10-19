@@ -438,3 +438,13 @@ kept and can be put back).
 - TODO: #178 Fix launcher crash when an install starts with stale status information
 - TODO: #196 Shop: sell the STK2 Novice's knit cap to everyone
 - TODO: #197 Site: Maps tab and calculator built with revision 23's patch
+
+## 19 Oct, 18:03 — TODO: the owner's words (update required)
+
+<!-- Revision 24 (026g-rev24), released 2026-10-19 18:03 UTC. To be worded for players; what it shipped: -->
+
+- TODO: #204 Patch list: Google Drive mirrors of patches 19 to 23
+- TODO: #202 No tutorial: new accounts start with 10k silver, 500 gold, the Scavengers and ammo
+- TODO: #203 Rooms: every PvP match is a room's (the in-game Rooms window); the old queue goes
+- TODO: #206 Patch 39: the Tab list shows the places in the match, none whose player left
+- TODO: #207 Site: Maps tab and calculator built with revision 24's patch
