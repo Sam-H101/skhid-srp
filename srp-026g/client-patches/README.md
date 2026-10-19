@@ -497,8 +497,17 @@ block already has in `rank`'s namespace, of the same encoded length.
 price and seller, so nothing else changes; the server gives a new item
 without modifications.
 
+A buy on an owned item is not asked "This item is already purchased by you.
+Would you like to buy anyway?" any more. `LobbyMenu.try_buy_item`, which
+every buy goes through, asked it for a non-stack item the account has unless
+the buy came from a bundle (`sourceSlot != 300`); it asks it now only for a
+buy from the shop's list (`sourceSlot == 200`): `pushshort 300; equals;
+not` becomes `pushshort 200; equals; nop`. A buy on an owned item comes
+with that item's own slot (100 or less), the victory screen's treasure maps
+with 200 as before.
+
 The input is the movie of the exchange update (`f900cc8b…`); the build is
-deterministic (`7b018792…` with FFDec 25.1.3):
+deterministic (`a6f44ee8…` with FFDec 25.1.3):
 
 ```sh
 python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar

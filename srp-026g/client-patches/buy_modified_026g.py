@@ -8,12 +8,14 @@ modifications (and not a bundle item): the menu tested the item's rank, which
 an owned item's modifications raise. It now tests only that the item is not a
 bundle item (buy_modified/PatchBuyModified.java). Buying goes by the item's
 dictionary id and the shop's price, so Buy on a modified item buys a stock
-one, unmodified.
+one, unmodified. A buy on an owned item is no longer asked "This item is
+already purchased by you. Would you like to buy anyway?": only a buy from the
+shop's list is.
 
 The input is the live lobby movie as a file (or the newest one built for the
 next patch); the output is a new movie for a new resources.db.patch_<n>
-(`srp-game-data pack`). One instruction of one method changes; every other
-method is checked byte for byte. Requires a JDK and JPEXS FFDec (tested with
+(`srp-game-data pack`). Two methods change, each instruction keeping its
+length; every other method is checked byte for byte. Requires a JDK and JPEXS FFDec (tested with
 25.1.3). No game assets are stored in this repository.
 """
 import argparse
@@ -53,8 +55,9 @@ def build_movie(original, ffdec, java, javac, work, known=True):
     replacements = [t for t in hint.unpack(edited.read_bytes())[2] if t[0] == 82]
     before = [t for t in tags if t[0] == 82]
     changed = sum(a != b for a, b in zip(before, replacements))
-    if len(before) != len(replacements) or changed != 1:
-        raise ValueError(f"Expected the inventory's ABC block alone to change, got {changed}")
+    # The inventory list's block and the lobby's (one if they share it).
+    if len(before) != len(replacements) or not 1 <= changed <= 2:
+        raise ValueError(f"Expected the inventory's and the lobby's ABC blocks to change, got {changed}")
     replacement_iter = iter(replacements)
     updated = [next(replacement_iter) if t[0] == 82 else t for t in tags]
     result = hint.pack(version, header, updated)
