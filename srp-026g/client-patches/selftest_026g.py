@@ -228,8 +228,9 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     client+1F1C60h), byte for byte. The code calls and leaves only to what
     it names, stores nothing but on its stack; no relocation under a site
     and nothing aims inside one. Its camera before the start
-    (warmup_look_026g.asm at WARMUP_LOOK_OFFSET and warmup_limits_026g.asm
-    at WARMUP_LIMITS_OFFSET, check 15's layout): the game world's input
+    (warmup_look_026g.asm at WARMUP_LOOK_OFFSET, warmup_limits_026g.asm
+    at WARMUP_LIMITS_OFFSET and warmup_keys_026g.asm at WARMUP_KEYS_OFFSET,
+    check 15's layout): the game world's input
     handler's on_mouse_move (0x25D0E0, its vtable 0x9FC588's +0Ch,
     priority 7) jumps to warmup_look with five nops where it began, and
     process_warmup_mode's store of the pitch (0x24225E) calls
@@ -486,7 +487,10 @@ def test_bins():
     for source, defines, path in (
             ("warmup_look_026g.asm", [f"-DCAVE={P.WARMUP_LOOK_VA:#x}", f"-DSTATE={state:#x}",
                                       f"-DLIMITS={P.WARMUP_LIMITS_VA:#x}"], P.warmup_look_bin()),
-            ("warmup_limits_026g.asm", [f"-DCAVE={P.WARMUP_LIMITS_VA:#x}"], P.warmup_limits_bin())):
+            ("warmup_limits_026g.asm", [f"-DCAVE={P.WARMUP_LIMITS_VA:#x}"], P.warmup_limits_bin()),
+            ("warmup_keys_026g.asm", [f"-DCAVE={P.WARMUP_KEYS_VA:#x}",
+                                      f"-DSTATE={state - P.WARMUP_LOOK_STATE_OFFSET + P.WARMUP_KEYS_STATE_OFFSET:#x}"],
+             P.warmup_keys_bin())):
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "out.bin")
             subprocess.run([tool("nasm"), "-f", "bin", *defines, os.path.join(HERE, source), "-o", out],
@@ -1282,7 +1286,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.SHARED_UPGRADES_HOOKS] + \
         [(va, len(old)) for va, old, _ in P.FOV_PATCHES] + pickup_sites() + \
         [(va, len(old)) for va, old, _, _ in P.KIT_CHANGE_HOOKS] + [(P.KIT_PICK[0], len(P.KIT_PICK[1]))] + \
-        [(P.WARMUP_LOOK_HOOK[0], len(P.WARMUP_LOOK_HOOK[1])), (P.WARMUP_LIMITS_HOOK[0], len(P.WARMUP_LIMITS_HOOK[1]))] + \
+        [(P.WARMUP_LOOK_HOOK[0], len(P.WARMUP_LOOK_HOOK[1])), (P.WARMUP_LIMITS_HOOK[0], len(P.WARMUP_LIMITS_HOOK[1])),
+         (P.WARMUP_KEYS_HOOK[0], len(P.WARMUP_KEYS_HOOK[1]))] + \
         [(P.READ_ORDER_VA, P.READ_ORDER_SIZE)] + \
         [(P.BAKED_TEXTURE_MISSING[0], len(P.BAKED_TEXTURE_MISSING[1]))] + \
         [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))] + \
@@ -2825,6 +2830,70 @@ def test_warmup_look(original, image, before):
           + "".join(f", {h:#x}" for h in found))
 
 
+def test_warmup_keys(original, image, before):
+    """Check 32 (continued): a mouse button held from before the start is
+    not the player's until it is let go (WARMUP_KEYS_*).
+    check_kit_change_026g.py runs the code on made-up events."""
+    stock = Image(original)
+    texts = lambda img, va, size: [text for _, _, text in ndisasm(img.read(va, size), va)]
+    slot = lambda vt, at: struct.unpack("<I", stock.read(vt + at, 4))[0]
+    va, old, offset, opcode = P.WARMUP_KEYS_HOOK
+    new = P.hook_bytes(P.WARMUP_KEYS_VA, va, old, offset, opcode)
+    original_texts = ["push ebp", "push esi", "mov esi,ecx", "mov ecx,[esp+0xc]", "mov eax,[ecx]"]
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new
+          and texts(stock, va, len(old)) == original_texts
+          and texts(image, va, len(old)) == [f"jmp {P.WARMUP_KEYS_VA:#x}"] + ["nop"] * 5,
+          f"{va:#x}: `{' / '.join(original_texts)}` in the original and the build without the late join, "
+          f"`jmp {P.WARMUP_KEYS_VA:#x}` and 5 nops here")
+    key = texts(stock, 0x25CF60, 0x25D0E0 - 0x25CF60)
+    check(slot(0x9FC588, 0x8) == 0x25CF60 and "cmp byte [esi+0x2e0],0x0" in key
+          and key.count("mov al,0x1") == 3 and key.count("xor al,al") == 1 and key.count("ret 0xc") == 4
+          and key.count("cmp byte [esi+0x2e0],0x0") == 2 and stock.read(0x25CF6A, 3) == bytes.fromhex("8b5024"),
+          "the game world's input handler (vtable 0x9FC588) has on_mouse_key_action 0x25CF60 (vtable+8; the input "
+          "world, the key, the kind on the stack, `ret 0Ch`), which takes the mouse's keys (1) while the cursor is "
+          "shown (+2E0h); 0x25CF6A, where warmup_keys goes on, begins an instruction")
+    process = texts(stock, 0x3B9D90, 0x3B9F10 - 0x3B9D90)
+    codes = texts(stock, 0x3B9CAE, 0x3B9CDE - 0x3B9CAE)
+    player = texts(stock, 0x23FF50, 0x240046 - 0x23FF50)
+    check("mov al,[esi+0x10]" in process and "mov dl,[esi+0x20]" in process
+          and process.count("mov edx,[edx+0x8]") + process.count("mov eax,[eax+0x8]") >= 3
+          and process.count("push byte +0x2") == 2 and process.count("push byte +0x1") == 1
+          and process.count("push byte +0x0") == 1
+          and codes[0] == "mov eax,0x151" and codes[-2] == "mov eax,0x158"
+          and slot(0xA04048, 0x8) == 0x23FF50 and player.count("call 0x242580") == 3
+          and "lea ecx,[ebx+0x98]" in player,
+          "the mouse's process (0x3B9D90; held now +10h, the frame before +20h) tells the handlers (vtable+8) of a "
+          "button gone down (kind 0 and 2), let go (1) and still held (2, every frame); its codes are 151h..158h "
+          "(0x3B9CA0); the player's input handler (vtable 0xA04048) keeps each kind as the action's state at "
+          "+98h (0x23FF50)")
+    code = open(P.warmup_keys_bin(), "rb").read()
+    state = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.WARMUP_KEYS_STATE_OFFSET
+    listing = ndisasm(code, P.WARMUP_KEYS_VA)
+    inside = lambda target: P.WARMUP_KEYS_VA <= target < P.WARMUP_KEYS_VA + len(code)
+    starts = {address for address, _, _ in listing}
+    targets = [t for _, _, text in listing if (t := branch_target(text)) is not None and not text.startswith("call")]
+    calls = [text for address, _, text in listing if text.startswith("call")
+             and not (branch_target(text) == address + 5 and text.startswith("call 0x"))]
+    check(image.read(P.WARMUP_KEYS_VA, len(code)) == code
+          and all(t in starts for t in targets if inside(t)) and [t for t in targets if not inside(t)] == [0x25CF6A]
+          and not calls and [text for _, _, text in listing if text.startswith("ret")] == ["ret 0xc"]
+          and not [t for _, _, t in listing if re.search(r"\[(?:dword |byte )?0x", t)]
+          and P.warmup_keys_state(code) == state
+          and P.WARMUP_LOOK_STATE_OFFSET + P.WARMUP_LOOK_STATE_SIZE <= P.WARMUP_KEYS_STATE_OFFSET
+          and P.WARMUP_KEYS_STATE_OFFSET + P.WARMUP_KEYS_STATE_SIZE <= P.LATE_JOIN_STATE_SIZE,
+          f"the code at {P.WARMUP_KEYS_VA:#x} is warmup_keys' .bin ({len(code)} bytes): its branches land on its "
+          f"instructions or leave to 0x25cf6a, it calls nothing, holds no address and keeps its state at {state:#x} "
+          f"(the late join's page +{P.WARMUP_KEYS_STATE_OFFSET:#x}, after the warmup look's)")
+    hits = [h for h in aimed_inside(original, va, len(old), 0x80) if not va <= h < va + len(old)]
+    spelled = [va + i for i in range(1, len(old)) if original.find(struct.pack("<I", va + i)) != -1]
+    found = hits[:len(hits) - len(spelled)]
+    found += [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    found += [address for address, _, text in ndisasm(stock.read(0x25CF60, 0x25D0E0 - 0x25CF60), 0x25CF60)
+              if (target := branch_target(text)) is not None and va < target < va + len(old)]
+    check(not found, "nothing aims inside the site and no base relocation is under it"
+          + "".join(f", {h:#x}" for h in found))
+
+
 def test_suicide_key(original, image, before):
     """Check 35: the commit_suicide key (patch 34, SUICIDE_KEY_*).
     check_suicide_key_026g.py runs the builder's last call on made-up input
@@ -3288,6 +3357,7 @@ def test_late_join(original, without, server, source):
     warmup_look = open(P.warmup_look_bin(), "rb").read()
     warmup_limits = open(P.warmup_limits_bin(), "rb").read()
     suicide_key = open(P.suicide_key_bin(), "rb").read()
+    warmup_keys = open(P.warmup_keys_bin(), "rb").read()
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
     shared = open(P.shared_upgrades_bin(), "rb").read()
@@ -3297,6 +3367,7 @@ def test_late_join(original, without, server, source):
               (P.SHARED_UPGRADES_OFFSET, len(shared), "the shared upgrades' code"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SUICIDE_KEY_OFFSET, len(suicide_key), "the suicide key"),
+              (P.WARMUP_KEYS_OFFSET, len(warmup_keys), "the warmup keys"),
               (P.SEEK_CLEAR_OFFSET, len(seek), "the seek code"),
               (P.WARMUP_LIMITS_OFFSET, len(warmup_limits), "the warmup camera's limits"),
               (P.FORWARD_SCROLL_OFFSET, len(forward_scroll), "the forward effect's scrolling"),
@@ -3322,7 +3393,9 @@ def test_late_join(original, without, server, source):
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SUICIDE_KEY_OFFSET]) <= {0xCC}
           and body[P.SUICIDE_KEY_OFFSET:P.SUICIDE_KEY_OFFSET + len(suicide_key)] == suicide_key
-          and set(body[P.SUICIDE_KEY_OFFSET + len(suicide_key):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
+          and set(body[P.SUICIDE_KEY_OFFSET + len(suicide_key):P.WARMUP_KEYS_OFFSET]) <= {0xCC}
+          and body[P.WARMUP_KEYS_OFFSET:P.WARMUP_KEYS_OFFSET + len(warmup_keys)] == warmup_keys
+          and set(body[P.WARMUP_KEYS_OFFSET + len(warmup_keys):P.SEEK_CLEAR_OFFSET]) <= {0xCC}
           and body[P.SEEK_CLEAR_OFFSET:P.SEEK_CLEAR_OFFSET + len(seek)] == seek
           and set(body[P.SEEK_CLEAR_OFFSET + len(seek):P.WARMUP_LIMITS_OFFSET]) <= {0xCC}
           and body[P.WARMUP_LIMITS_OFFSET:P.WARMUP_LIMITS_OFFSET + len(warmup_limits)] == warmup_limits
@@ -3344,7 +3417,7 @@ def test_late_join(original, without, server, source):
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
           f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, "
-          f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the seek "
+          f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the warmup keys at +{P.WARMUP_KEYS_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the warmup camera's limits at +{P.WARMUP_LIMITS_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
           f"the weapon preview's draw at +{P.WEAPON_DRAW_OFFSET:#x}, the warmup look at +{P.WARMUP_LOOK_OFFSET:#x}, "
           f"the shell_32.dll check at +{P.STALE_DLL_OFFSET:#x} "
@@ -3496,6 +3569,7 @@ def test_late_join(original, without, server, source):
     test_shared_upgrades(original, image, before)
     test_kit_change(original, image, before)
     test_warmup_look(original, image, before)
+    test_warmup_keys(original, image, before)
     test_read_order(original, image, before)
     test_baked_texture_missing(original, image, before)
     test_ai_arena(original, image, before)

@@ -75,12 +75,13 @@ release's. The "Result" row is the build of the revision named in it.
 | `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `warmup_look_026g.asm`, `warmup_look_026g.section.bin` | The source of patch 31's camera before the start (while the kits are shown, a drag turns the warmup camera and the wheel moves it, as the lobby's character view) and that code assembled for 0xD40 of `.srp`, its state at 0xE20 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_keys_026g.asm`, `warmup_keys_026g.section.bin` | The same patch's buttons: one held from before the start (a drag of its camera) is not the player's until it is let go, and that code assembled for 0x9A8 of `.srp`, its state at 0xE30 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `warmup_limits_026g.asm`, `warmup_limits_026g.section.bin` | The same camera's end of a drag and its limits (the lobby camera's: distance 1.5 to 4.6, pitch within 60 degrees) and that code assembled for 0xA98 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
-| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
+| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves and the mouse's buttons through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
 | `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `weapon_draw_026g.asm`, `weapon_draw_026g.section.bin` | The source of patch 32's draw (a weapon's window draws the player as the lobby does) and that code assembled for 0xD20 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -1619,6 +1620,21 @@ start, below):
   takes every move as before. The warmup mode gives the player's input no
   turn: nothing a match computes changes, and a game with it and one
   without play together.
+  A button held from before the start is not the player's until it is let
+  go (the owner, 2026-10-19: "players will shoot immediately once match
+  starts"). The input world tells its handlers of a button still held at
+  every frame (kind 2, 0x3B9D90); the game world's input handler takes the
+  mouse's keys while the cursor is shown (0x25CF60), and the player's handler
+  keeps a kind 2 as a held action (0x23FF50, 0x242460): a drag still held
+  when the kits went at the start fired the weapon at the next frame (and
+  aimed with the right button; a pick held through a respawn did the same).
+  The first ten bytes of 0x25CF60 jump to `warmup_keys_026g.asm` (87 bytes
+  at `.srp`+9A8h, after the suicide key; the buttons marked in a dword at
+  `.srpd`+E30h): a button that goes down while the cursor is shown is
+  marked; while the cursor is not shown a marked button's kind 2 is taken
+  there and its release unmarks it and goes on as before. The player's input
+  only misses held states of a press it never had: nothing a match computes
+  changes.
 
 **Order.** In a tick of a build with the late join the respawn rule runs
 first (tick list 0, its key from the core's counter), then the places, which
@@ -1665,7 +1681,10 @@ sites, the lobby camera's buttons, step and limits;
 `check_kit_change_026g.py`'s mouse moves through the input world's loop
 and the warmup mode's step: plain moves, a click with a little movement, a
 left drag, a right drag, the wheel, the wheel in a drag, the death screen,
-a replay's cursor, no local player; eight broken builds fail it): its
+a replay's cursor, no local player; the mouse's buttons through the
+input world's loop and the game world's handler: a left or right drag held
+into the start, a pick held through a respawn, a click let go before the
+start, a press in play; nine broken builds fail it): its
 first form, every move turning the camera, was run by the owner on
 2026-10-18 ("not very good, it should rotate when the left button is
 pressed"); **the drag, the wheel and the limits are not run in a game**.

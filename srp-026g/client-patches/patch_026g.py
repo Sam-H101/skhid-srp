@@ -790,6 +790,26 @@ WARMUP_LIMITS_OFFSET = 0xA98
 WARMUP_LIMITS_VA = SECTION_VA + WARMUP_LIMITS_OFFSET
 WARMUP_DRAG_END_OFFSET, WARMUP_LIMITS_ENTRY_OFFSET = 0, 0x20       # the .asm's two entries
 WARMUP_LIMITS_HOOK = (0x24225E, bytes.fromhex("f30f118650030000"), WARMUP_LIMITS_ENTRY_OFFSET, 0xE8)   # the pitch's store
+# And a mouse button held from before the start is not the player's until it
+# is let go: warmup_keys_026g.asm at WARMUP_KEYS_OFFSET of `.srp` (after the
+# suicide key, before the seek code), the buttons marked in a dword at
+# WARMUP_KEYS_STATE_OFFSET of the late join's state page (after the warmup
+# look's). The input world tells its handlers of each button each frame
+# until one answers 1 (0x3B9D90): kind 0 and 2 when it goes down, 1 when it
+# is let go, 2 at every frame it stays held; the game world's
+# on_mouse_key_action (0x25CF60) takes them while the cursor is shown, the
+# player's input handler keeps the kind as the action's state (0x23FF50) and
+# a state 2 is a held action (0x242460): a drag of the warmup camera still
+# held at the start fired the weapon at the next frame. Its first five
+# instructions (ten bytes) are a jump to warmup_keys and five nops: a button
+# pressed while the cursor is shown is marked, and while the cursor is not
+# shown a marked button's kind 2 is taken there and its release unmarks it
+# (and goes on, as before). No base relocation under the site.
+WARMUP_KEYS_OFFSET = 0x9A8
+WARMUP_KEYS_VA = SECTION_VA + WARMUP_KEYS_OFFSET
+WARMUP_KEYS_HOOK = (0x25CF60, bytes.fromhex("5556" "8bf1" "8b4c240c" "8b01"), 0, 0xE9)   # on_mouse_key_action: warmup_keys
+WARMUP_KEYS_STATE_OFFSET = 0xE30
+WARMUP_KEYS_STATE_SIZE = 4
 
 # The order of the archive reads (patch 33, README; client_patch.md section
 # 3.31). vostok::resources::hdd_manager_sorting_predicate::operator()
@@ -1744,8 +1764,23 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         if WEAPON_PREVIEW_STATE_OFFSET + WEAPON_PREVIEW_STATE_SIZE > WARMUP_LOOK_STATE_OFFSET \
                 or WARMUP_LOOK_STATE_OFFSET + WARMUP_LOOK_STATE_SIZE > LATE_JOIN_STATE_SIZE:
             sys.exit("the warmup look's state is not between the weapon preview's and the page's end")
+        warmup_keys = open(warmup_keys_bin(), "rb").read()
+        # warmup_keys begins `mov eax,[esp+8]` and ends with the ten bytes it
+        # replaced, the jump back and `pop edx; mov al,1; ret 0Ch`.
+        tail = WARMUP_KEYS_HOOK[1] + b"\xE9" + struct.pack(
+            "<i", WARMUP_KEYS_HOOK[0] + len(WARMUP_KEYS_HOOK[1]) - (WARMUP_KEYS_VA + len(warmup_keys) - 6)) \
+            + bytes.fromhex("5ab001c20c00")
+        if warmup_keys[:4] != bytes.fromhex("8b442408") or not warmup_keys.endswith(tail) \
+                or warmup_keys_state(warmup_keys) != late_join_state_va(late_join) + WARMUP_KEYS_STATE_OFFSET:
+            sys.exit(f"warmup_keys_026g.section.bin: its entry, its end or its state are not where patch_026g.py "
+                     f"puts them (assembled with -DCAVE={WARMUP_KEYS_VA:#x} "
+                     f"-DSTATE={late_join_state_va(late_join) + WARMUP_KEYS_STATE_OFFSET:#x}?)")
+        if WARMUP_LOOK_STATE_OFFSET + WARMUP_LOOK_STATE_SIZE > WARMUP_KEYS_STATE_OFFSET \
+                or WARMUP_KEYS_STATE_OFFSET + WARMUP_KEYS_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the warmup keys' state is not between the warmup look's and the page's end")
         for (va, expected, offset, opcode), base in ((WARMUP_LOOK_HOOK, WARMUP_LOOK_VA),
-                                                     (WARMUP_LIMITS_HOOK, WARMUP_LIMITS_VA)):
+                                                     (WARMUP_LIMITS_HOOK, WARMUP_LIMITS_VA),
+                                                     (WARMUP_KEYS_HOOK, WARMUP_KEYS_VA)):
             patch(data, va, expected, hook_bytes(base, va, expected, offset, opcode))
             if neutralize_relocs(data, [(va, va + len(expected))]):
                 sys.exit(f"{va:#x}: a base relocation under a hook of the warmup camera")
@@ -1793,8 +1828,9 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             sys.exit("a base relocation under the weapon preview's draw site")
         suicide_key = open(suicide_key_bin(), "rb").read()
         if PICKUP_OFFSET + len(pickup) > SUICIDE_KEY_OFFSET \
-                or SUICIDE_KEY_OFFSET + len(suicide_key) > SEEK_CLEAR_OFFSET:
-            sys.exit("the pickup code, the suicide key and the seek code do not fit")
+                or SUICIDE_KEY_OFFSET + len(suicide_key) > WARMUP_KEYS_OFFSET \
+                or WARMUP_KEYS_OFFSET + len(warmup_keys) > SEEK_CLEAR_OFFSET:
+            sys.exit("the pickup code, the suicide key, the warmup keys and the seek code do not fit")
         # It begins `push dword [esp+0Ch]` and ends `jmp 0x242460`.
         if suicide_key[:4] != bytes.fromhex("ff74240c") or suicide_key[-5:] != \
                 b"\xE9" + struct.pack("<i", ACTION_STATE_VA - (SUICIDE_KEY_VA + len(suicide_key))):
@@ -1847,6 +1883,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             cave = cave + b"\xCC" * (SHARED_UPGRADES_OFFSET - len(cave)) + shared_upgrades
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SUICIDE_KEY_OFFSET - len(cave)) + suicide_key
+            cave = cave + b"\xCC" * (WARMUP_KEYS_OFFSET - len(cave)) + warmup_keys
             cave = cave + b"\xCC" * (SEEK_CLEAR_OFFSET - len(cave)) + seek_clear
             cave = cave + b"\xCC" * (WARMUP_LIMITS_OFFSET - len(cave)) + warmup_limits
             cave = cave + b"\xCC" * (FORWARD_SCROLL_OFFSET - len(cave)) + forward_scroll
@@ -1955,6 +1992,20 @@ def warmup_look_bin():
 
 def warmup_limits_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_limits_026g.section.bin")
+
+
+def warmup_keys_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "warmup_keys_026g.section.bin")
+
+
+def warmup_keys_state(code):
+    """The state address warmup_keys_026g.asm was assembled for: its one
+    `call $+5` / `pop edx` / `add edx,imm32`; 0 when it is not there once."""
+    find = bytes.fromhex("e800000000" "5a" "81c2")
+    at = code.find(find)
+    if at < 0 or code.find(find, at + 1) >= 0:
+        return 0
+    return (WARMUP_KEYS_VA + at + 5 + struct.unpack_from("<i", code, at + 8)[0]) & 0xFFFFFFFF
 
 
 def warmup_look_state(code):

@@ -2,8 +2,9 @@
 """Run the original and patch 31's respawn rule tick (0x316820), the
 client's view of a kit change (0x2678E0), the hud's update of the local
 player's state (0x23B7B3), the kits' pick (0x233F28), the input world's
-mouse moves through the game world's input handler (0x3B9F0A, 0x25D0E0)
-and the warmup mode's step (0x242200) on made-up objects.
+mouse moves through the game world's input handler (0x3B9F0A, 0x25D0E0),
+the mouse's buttons through it (0x3B9D90, 0x25CF60) and the warmup mode's
+step (0x242200) on made-up objects.
 
     python check_kit_change_026g.py <original survarium.exe>
 
@@ -759,6 +760,108 @@ def check_look(data, patched):
     return checks
 
 
+# The mouse's buttons (vostok::input::platform::mouse::process 0x3B9D90, ecx
+# = the mouse, [esp+4] the handlers' vector, to 0x3B9EF8 where its moves
+# begin): the buttons held now (+10h) against the frame before (+20h), each
+# button gone down (kinds 0 and 2), let go (1) and still held (2) to the
+# handlers (vtable+8, the world, the code 151h + the bit, the kind) until one
+# answers 1: the game world's input handler (on_mouse_key_action 0x25CF60,
+# which takes them while the cursor is shown) and then the player's, here a
+# stub that keeps what it is told. A run is a series of frames in one game:
+# the cursor shown (the kits before the start, the death screen) or not.
+KEYS_FROM, KEYS_TO = 0x3B9D90, 0x3B9EF8
+KEYBOARD, KBVT, HUD_OBJECT = HEAP + 0x39B00, HEAP + 0x39C00, HEAP + 0x39D00
+IWVT = HEAP + 0x39E00
+GET_KEYBOARD, KEY_DOWN, UI_CLICK, PLAYER_KEY = STUB + 0xC0, STUB + 0xD0, STUB + 0xE0, STUB + 0xF0
+UI_CLICK_VA = 0x2AF610                             # the hud's click (shown cursor), a stub
+
+
+class Keys(Look):
+    def __init__(self, data):
+        super().__init__(data, kits=1, mode=3, cursor=1)
+        self.word(PIVT + 0x8, PLAYER_KEY)
+        self.word(INPUT_WORLD, IWVT)
+        self.word(IWVT + 0x24, GET_KEYBOARD)
+        self.word(KEYBOARD, KBVT)
+        self.word(KBVT, KEY_DOWN)
+        self.word(LOOK_HANDLER + 0xC, HUD_OBJECT)
+        self.word(HANDLERS + 4, LIST + 8)          # the vector's end
+        self.held = 0
+        self.player = []
+
+    def shown(self, value):
+        self.byte(LOOK_WORLD + 0x1FC + 0x2DC, value)
+
+    def stub(self, emu, address, size, _):
+        sp, this = emu.reg_read(UC_X86_REG_ESP), emu.reg_read(UC_X86_REG_ECX)
+        if address == GET_KEYBOARD:                # the input world's keyboard
+            assert this == INPUT_WORLD
+            self.returns(KEYBOARD, 0)
+        elif address == KEY_DOWN:                  # no Alt held
+            assert this == KEYBOARD
+            self.returns(0, 4)
+        elif address == UI_CLICK_VA:               # the hud takes the click
+            self.calls.append(("hud", self.read(sp + 4) & 0xFF))
+            self.returns(0, 12)
+        elif address == PLAYER_KEY:                # the player's on_mouse_key_action(world, code, kind)
+            assert this == PLAYER_INPUT and self.read(sp + 4) == INPUT_WORLD
+            self.player.append((self.read(sp + 8), self.read(sp + 12)))
+            self.returns(0, 12)
+        else:
+            super().stub(emu, address, size, _)
+
+    def frame(self, buttons):
+        """One frame with these buttons held: what the player's handler is told."""
+        self.byte(MOUSE + 0x20, self.held)
+        self.byte(MOUSE + 0x10, buttons)
+        self.held = buttons
+        self.player = []
+        emu = self.emu
+        emu.mem_write(STACK - 8, struct.pack("<II", STOP, HANDLERS))
+        emu.reg_write(UC_X86_REG_ESP, STACK - 8)
+        emu.reg_write(UC_X86_REG_ECX, MOUSE)
+        emu.emu_start(KEYS_FROM, KEYS_TO, count=4000)
+        assert emu.reg_read(UC_X86_REG_EIP) == KEYS_TO
+        return self.player
+
+
+def keys_cases():
+    """(name, [(the cursor shown, the buttons held, what the original tells
+    the player's handler, what the build tells it)]): frames in one game."""
+    left, right = 0x151, 0x152
+    held = lambda code: [(code, 2)]
+    press = lambda code: [(code, 0), (code, 2)]
+    up = lambda code: [(code, 1)]
+    yield "a left drag held into the start", [
+        (1, LEFT, [], []), (1, LEFT, [], []),
+        (0, LEFT, held(left), []), (0, LEFT, held(left), []),        # the original fires
+        (0, 0, up(left), up(left)),
+        (0, LEFT, press(left), press(left)), (0, LEFT, held(left), held(left)), (0, 0, up(left), up(left))]
+    yield "a right drag held into the start", [
+        (1, RIGHT, [], []), (0, RIGHT, held(right), []), (0, 0, up(right), up(right)),
+        (0, RIGHT, press(right), press(right))]
+    yield "a pick on the death screen held through the respawn", [
+        (1, LEFT, [], []), (1, LEFT | RIGHT, [], []),
+        (0, LEFT | RIGHT, held(left) + held(right), []), (0, RIGHT, up(left) + held(right), up(left)),
+        (0, 0, up(right), up(right))]
+    yield "a click before the start, let go before it", [
+        (1, LEFT, [], []), (1, 0, [], []), (0, 0, [], []), (0, LEFT, press(left), press(left))]
+    yield "a press in play", [
+        (0, LEFT, press(left), press(left)), (0, LEFT, held(left), held(left)), (0, 0, up(left), up(left))]
+
+
+def check_keys(data, patched):
+    checks = 0
+    for name, frames in keys_cases():
+        keys = Keys(data)
+        for i, (shown, buttons, original, build) in enumerate(frames):
+            keys.shown(shown)
+            told = keys.frame(buttons)
+            assert told == (build if patched else original), (patched, name, i, told)
+            checks += 1
+    return checks
+
+
 # The warmup mode's step (process_warmup_mode 0x242200, esi = the player's
 # input handler, to its `ret`): the wheel of the frame (+348h) into the
 # distance (+354h), the turn (+338h, two halves; 0: none) into the yaw and
@@ -851,12 +954,13 @@ def main():
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
         checks += check_death(data, is_patched) + check_look(data, is_patched) + check_limits(data, is_patched)
+        checks += check_keys(data, is_patched)
     # A build that does not look at the statistics, or at the state, or at
     # the end of the places, or that gives the spawn no protection when none
     # is left (which leaves the new kit's damage model as it was), fails; so
     # does one whose view always gives the warmup, one whose mouse moves
-    # drag in any mode, one that drags at the first move of a click, and one
-    # with no nearest distance.
+    # drag in any mode, one that drags at the first move of a click, one
+    # with no nearest distance, and one that never marks a button.
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
                             (bytes.fromhex("48d1e8750d"), bytes.fromhex("48d1e8eb00"), check_boundary),
                             (bytes.fromhex("3b865c84010073ee"), bytes.fromhex("3b865c8401009090"), check_tick),
@@ -864,7 +968,8 @@ def main():
                             (bytes.fromhex("83be601c1f000375"), bytes.fromhex("83be601c1f0003eb"), check_view),
                             (bytes.fromhex("83b858030000037416"), bytes.fromhex("83b85803000003eb16"), check_look),
                             (bytes.fromhex("890b83f90876b4"), bytes.fromhex("890b83f908eb00"), check_look),
-                            (bytes.fromhex("39d00f4cc2"), bytes.fromhex("39d0909090"), check_limits)):
+                            (bytes.fromhex("39d00f4cc2"), bytes.fromhex("39d0909090"), check_limits),
+                            (bytes.fromhex("0fab02"), bytes.fromhex("909090"), check_keys)):
         broken = bytearray(patched)
         at = broken.rfind(old)                     # in `.srp`, the last section with bytes
         assert at > base.Headers(broken).sections(broken)[-2][3]
@@ -875,7 +980,7 @@ def main():
             checks += 1
         else:
             sys.exit(f"a broken build ({new.hex()}) passed")
-    print(f"patch 31: {checks} runs as expected (the original, the build and eight broken builds)")
+    print(f"patch 31: {checks} runs as expected (the original, the build and nine broken builds)")
 
 
 if __name__ == "__main__":
