@@ -147,8 +147,11 @@ def hud_minimaps(args, raw, work):
     return out
 
 
-# The HUD minimap's own icons (Minimap._icons), frame 1 of each class.
-HUD_ICONS = {"player": "PlayerBlue", "base": "Base", "charger": "SpawnIcon", "resupply": "ResupplyIcon"}
+# The HUD's own icons, frame 1 of each class: the minimap's (Minimap._icons)
+# and the battery, the game's render of it that the HUD shows a carrier
+# (SrvContainerSymbol: the game calls the battery a container).
+HUD_ICONS = {"player": "PlayerBlue", "base": "Base", "charger": "SpawnIcon", "resupply": "ResupplyIcon",
+             "battery": "SrvContainerSymbol"}
 
 
 def lightness(svg):
