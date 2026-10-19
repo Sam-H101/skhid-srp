@@ -427,6 +427,34 @@ server): the window opens centred, shows both directions with their balances
 and rate, the swap button works, and gold bought with silver reaches the top
 bar. Not in release overlays yet.
 
+## Get Gold opens the exchange
+
+`buy_gold_026g.py` makes every "Get Gold" of the lobby open the exchange
+window above, to buy gold with silver, instead of the online store (a browser
+window on a dead site). The rules: `docs/notes/buy-gold.md`. The
+"Insufficient Gold Rubles" dialog's button calls `goToStore` of the window that
+showed it; the bodies of all ten (`ItemCard`, `StatusPanel`, `MessageAsk`,
+`MessageCraftItem`, `MessagePostPremium`, `MessagePremium`,
+`MessagePremiumDiscount`, `MessagePremiumProfile`, `MessageRepair`,
+`MessageRerollItem`) and the premium window's gold button
+(`MessagePremium.onPremiumMoneyAddClick`, which asked first) become
+`SrpBuyGold.open()`. It shows the exchange with `showMessage`'s third argument
+set, so it opens over a dialog still open instead of waiting behind it. The
+build refuses a movie where one of them is missing or does not lead to the
+store, and checks that no method pushes `go_to_store` afterwards. The exe and
+the server do not change.
+
+The input is the live lobby movie (`flash_movies/lobby_menu.swf` of
+`resources.db.patch_24`, sha256 `3ca94f2a…`); the output is a new movie for a
+new `resources.db.patch_<n>`, as for the rooms:
+
+```sh
+python buy_gold_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+The build is deterministic (sha256 `3515f001…` with FFDec 25.1.3). Tests:
+`python -m unittest test_buy_gold`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
