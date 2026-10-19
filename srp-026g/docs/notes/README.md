@@ -43,6 +43,7 @@ given), LIKELY or GUESS.
 | [damage_calculator.md](damage_calculator.md) | The site's damage calculator (`/damage`): the owner's rules for it, the data it is built from, how it is served and kept up to date |
 | [maps_tab.md](maps_tab.md) | The site's Maps tab (`/maps`): spawns, batteries, chargers, containers and artefacts on every map; the owner's rules, rebuilt per release |
 | [spotting.md](spotting.md) | Spotting: no cooldown, a battery's body and its use box both spot it, the markers (the owner, 2026-10-19; exe patch 38) |
+| [fov_lod.md](fov_lod.md) | Models at a high field of view: why they went out sooner (LOD and screen factor by size on the screen), the scale table, the fix (exe patch 40) |
 | [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
 
