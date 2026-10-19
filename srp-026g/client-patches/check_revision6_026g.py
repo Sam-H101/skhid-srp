@@ -76,6 +76,14 @@ class Machine:
         uc.mem_map(OPTIONS, 0x60000)
         uc.mem_map(0x2000000, 0x10000)
         uc.mem_map(STOP, 4096)
+        # The late join's state page (.srpd, zeroed), where patch 39 keeps
+        # the places the scoreboard was made with.
+        uc.mem_map(P.late_join_state_va(open(P.late_join_bin(), "rb").read()), 0x1000)
+        # Every place in the match (kd_stats' online in the hud's state,
+        # +0C0h + 8 x place): patch 39 gives a row to those alone
+        # (check_tab_list_026g.py has the others).
+        for place in range(len(teams)):
+            uc.mem_write(HUD + 0xC0 + 8 * place, b"\x01")
         self.w(HUD + 0x1C, OPTIONS)
         self.w(HUD + 0x344, own_team)
         for at, movie in MOVIES.items():
@@ -228,7 +236,13 @@ def check(original):
             assert names[per_list:] == [f"player{i}" for i in range(per_list)], names[per_list:]
         sides = [event[3] for event in rows if event[2] == "team"][:per_list]
         assert sides == [1 if team == own_team else 2 for team in teams], sides
-        enemies = [event[2] for event in m.events if event[0] == "append"]
+        # The enemies' ids are the second array made (the scoreboard's rows,
+        # the first, are appended too since patch 39).
+        arrays = [event[1] for event in m.events if event[0] == "array"]
+        enemies = [event[2] for event in m.events if event[0] == "append" and event[1] == arrays[1]]
+        scoreboard = [event for event in m.events if event[0] in ("append", "element") and event[1] == arrays[0]]
+        assert len(scoreboard) == per_list and all(event[0] == "append" for event in scoreboard), \
+            "the scoreboard's rows are not appended, one for each place in the match"
         assert enemies == [i for i, team in enumerate(teams) if team != own_team], enemies
 
     # A hud that is not the one this match's start made, or has lost a movie.

@@ -82,6 +82,7 @@ release's. The "Result" row is the build of the revision named in it.
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
+| `check_tab_list_026g.py` | Runs the original's and patch 39's refresh of the scoreboard's rows (update_ui 0x23B421..0x23B477), with the game's own list code of initialize_match made again, on made-up huds whose places enter and leave (needs Unicorn) |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves and the mouse's buttons through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
 | `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -2007,6 +2008,51 @@ With the smaller pool and one player, ten fresh-process loads and ten calls to
 the native resource reload routine did not reproduce the failure. Memory use
 settled after the second reload. That stress test does not exercise full
 lobby-to-match transitions. The exact reported intermittent crash remains open.
+
+### 39. The Tab list shows the places in the match, none whose player left (the next release's revision)
+
+Seen since the rooms (#203): a player who left a running match (Leave
+match) and came back into it as a new place had two rows in the others'
+scoreboard, the old one grey. The owner (2026-10-19): "once they leave their
+previous entry should be removed". The rules: `../docs/notes/tab-list-left-places.md`.
+
+Every game of a match knows which places are in it: the server's 0xE9 and
+0xEA (a leave by the player's own word, or a link silent for
+`SRP_MATCH_CLIENT_TIMEOUT_SECONDS`) set and clear kd_stats_rule's `online`
+of the place at the same tick in every game, the worlds carry it, and the
+hud's state has it for every place. The stock hud made the scoreboard's
+rows once for every roster place (and again after a late join's install)
+and only greyed a place that was not in; no row was ever taken out.
+
+**The patch.** Only in the builds with the late join; its code is in
+`late_join_026g.asm` (`late_join_026g.section.bin` differs in its first
+4096 bytes, the assembly; the C part is the same), three sites:
+
+- the hud's initialize_match puts a place's row into the scoreboard only
+  when the place is in the match (0x23537A calls `tab_row`, which appends
+  it);
+- while the list is shown, a change of the places in the match makes the
+  three lists again, as a late join's install does (0x23B421 calls
+  `tab_shown`; `lists_hook` ends that run too);
+- the rows' refresh leaves the places not in the match alone (0x23B447..
+  0x23B476 rewritten in place): no greying call for a place that left,
+  which, by name, also greyed a player back under the same name.
+
+A place that left has no row; one not in yet (loading at the start, a
+newcomer being prepared) has none until it enters; a lost player is listed
+until the server gives its place up and listed again if it comes back to
+it. No row is greyed: a lost player greyed for the rooms' 90 s needs the
+server to tell the games which places are away (`../docs/notes/client_patch.md`
+section 3.36). The replay bar, the enemies' markers and the results screen
+keep every place. Nothing a match computes: a game with it and one without
+play together, and no server rule asks for it.
+
+Checked: `selftest_026g.py` check 39; `check_tab_list_026g.py` runs the
+build's and the original's rows with the game's own list code on made-up
+huds (places leaving, entering, a late joiner, nobody, the list hidden, a
+list made by the install, a player back under the same name);
+`check_revision6_026g.py` and `check_late_join_026g.py` pass with it.
+**Not run in a game.**
 
 ## Not ported, not done
 

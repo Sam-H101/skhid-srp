@@ -325,6 +325,15 @@ Patches:
   MiB, matching the launcher (patch 37, with the late join). Only the two
   default-only immediates change; explicit numeric options keep their native
   branches. See README section 37 for the crash evidence and its limits;
+- the scoreboard (Tab) shows a row for the places in the match and none for
+  a place whose player left (patch 39, with the late join, client_patch.md
+  section 3.36; the rules: docs/notes/tab-list-left-places.md): its rows
+  are put in by place in the hud's initialize_match (0x234880) and were
+  never taken out, so a player who left kept a grey row, and one who came
+  back had a second. The row goes in only for a place whose kd_stats
+  `online` is set (tab_row, late_join_026g.asm), the shown list is made
+  again when those places change (tab_shown, at 0x23B421), and the
+  refresh leaves the other places alone (0x23B447..0x23B476 in place);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -918,6 +927,62 @@ SUICIDE_KEY_OFFSET = 0x980
 SUICIDE_KEY_VA = SECTION_VA + SUICIDE_KEY_OFFSET
 ACTION_STATE_VA = 0x242460                    # player_input_handler: the state of a buffered action
 SUICIDE_KEY_HOOK = (0x242196, bytes.fromhex("e8c5020000"), 0, 0xE8)
+
+# The scoreboard (Tab) shows the places in the match and no place whose
+# player left (patch 39, README; client_patch.md section 3.36; the rules:
+# docs/notes/tab-list-left-places.md). A place is in the match from the
+# server's 0xE9 for it to its 0xEA (a leave by the player's own word, 0xE0,
+# or a link the server gave up on): kd_stats_rule's `online` (+114h + 8 x
+# place; set by on_player_entered_match 0x3239F0, cleared by
+# on_player_left_match 0x323A00, which game_world_core's 0x2D2040 calls for
+# every rule; in every game at the same tick, and in the worlds), copied
+# into the hud's state (hud+0C0h + 8 x place) every tick by
+# fill_match_hud_state 0x323980. The game made the scoreboard's rows once,
+# in the hud's initialize_match (0x234880, again after a late join's
+# install: rebuild_lists), for every place below the count, and greyed a
+# row whose place was not in (set_online_player); none was ever taken out,
+# so a player who left kept a grey row and one who came back as a new
+# place had two. The code is the late join's (late_join_026g.asm), its one
+# dword at TAB_LIST_STATE_OFFSET of the late join's state page:
+# - 0x23537A in 0x234880's first loop, where a row goes into the
+#   scoreboard's array by SetElement(data, place, row) (`lea eax,[esp+58h]`
+#   / `push eax` / `mov eax,[esp+138h]` / `push ebx` / `push eax` / `call
+#   edx`), calls tab_row: the row goes in at the array's end (PushBack, the
+#   interface's vtable+3Ch) when the place is in the match, and the dword
+#   becomes -1 (a list made);
+# - 0x23B421 in update_ui (0x23B200), `cmp byte [edi+0BAh],0` before the
+#   rows are refreshed, calls tab_shown: while the list is shown, when the
+#   places in the match are not the mask the dword holds, the three lists
+#   are made again (rebuild_lists; lists_hook ends that run as it ends the
+#   install's) and the dword is that mask; it sets the flags as the `cmp`;
+# - the refresh's loop body (0x23B447..0x23B476: set_online_player and
+#   list_update_player for every place below the count) is rewritten in
+#   place: a place not in the match is left alone. Same calls, same
+#   arguments otherwise (list_update_player's place from ebx's low byte,
+#   which it reads alone, instead of the byte stored at [esp+14h]).
+# No site holds an address: no base relocation under them. Nothing a match
+# computes: the hud's lists only.
+TAB_LIST_STATE_OFFSET = 0xE40
+TAB_LIST_STATE_SIZE = 4
+TAB_ROW_OFFSET, TAB_SHOWN_OFFSET = 2480, 3600
+TAB_LIST_HOOKS = (
+    (0x23537A, bytes.fromhex("8d442458" "50" "8b842438010000" "53" "50" "ffd2"), TAB_ROW_OFFSET, 0xE8),
+    (0x23B421, bytes.fromhex("80bfba00000000"), TAB_SHOWN_OFFSET, 0xE8),
+)
+# The first bytes of the two entries: `call get_state` (to 2304) and `or
+# dword [eax+TAB_LIST_STATE_OFFSET],-1`; `cmp byte [edi+0BAh],0`.
+TAB_ROW_START = b"\xE8" + struct.pack("<i", 2304 - TAB_ROW_OFFSET - 5) + b"\x83\x88" + \
+    struct.pack("<I", TAB_LIST_STATE_OFFSET) + b"\xFF"
+TAB_SHOWN_START = bytes.fromhex("80bfba00000000")
+TAB_LIST_LOOP_VA = 0x23B447
+TAB_LIST_LOOP = (TAB_LIST_LOOP_VA,
+                 bytes.fromhex("0fb6c3" "8bd0" "0fb684c7c0000000" "69d2fc450000" "03ca" "50" "8d4148" "83c108"
+                               "57" "e887f3ffff" "8b4c2414" "51" "e8bdb8ffff" "fec3" "ebb5"),
+                 # movzx eax,bl / imul edx,eax,45FCh / movzx eax,byte [edi+eax*8+0C0h] / test al,al /
+                 # jz .next / add ecx,edx / push eax / lea eax,[ecx+48h] / add ecx,8 / push edi /
+                 # call 0x23A7F0 / push ebx / call 0x236D30 / .next: inc bl / jmp short 0x23B42C / nop / nop
+                 bytes.fromhex("0fb6c3" "69d0fc450000" "0fb684c7c0000000" "84c0" "7415" "01d1" "50" "8d4148"
+                               "83c108" "57" "e885f3ffff" "53" "e8bfb8ffff" "fec3" "ebb7" "9090"))
 
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
@@ -1860,6 +1925,21 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         patch(data, va, expected, hook_bytes(SUICIDE_KEY_VA, va, expected, offset, opcode))
         if neutralize_relocs(data, [(va, va + len(expected))]):
             sys.exit("a base relocation under the suicide key's hook")
+        if late_join[TAB_ROW_OFFSET:TAB_ROW_OFFSET + len(TAB_ROW_START)] != TAB_ROW_START \
+                or late_join[TAB_SHOWN_OFFSET:TAB_SHOWN_OFFSET + len(TAB_SHOWN_START)] != TAB_SHOWN_START:
+            sys.exit("late_join_026g.section.bin: the scoreboard's entries (tab_row, tab_shown) or its state are "
+                     "not where patch_026g.py puts them")
+        if WARMUP_KEYS_STATE_OFFSET + WARMUP_KEYS_STATE_SIZE > TAB_LIST_STATE_OFFSET \
+                or TAB_LIST_STATE_OFFSET + TAB_LIST_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the scoreboard's state is not between the warmup keys' and the page's end")
+        sites = []
+        for va, expected, offset, opcode in TAB_LIST_HOOKS:
+            patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        patch(data, *TAB_LIST_LOOP)
+        sites.append((TAB_LIST_LOOP_VA, TAB_LIST_LOOP_VA + len(TAB_LIST_LOOP[1])))
+        if neutralize_relocs(data, sites):
+            sys.exit("a base relocation under a site of the scoreboard's rows")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1948,7 +2028,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the archive reads' order is a strict weak ordering, "
                      f"the ai arena is {AI_ARENA_SIZE >> 20} MiB, "
                      "a weapon's upgrade window shows the weapon, "
-                     "the commit_suicide key (K) kills one's own player"
+                     "the commit_suicide key (K) kills one's own player, "
+                     "the scoreboard shows the places in the match and none whose player left"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
