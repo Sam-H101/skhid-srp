@@ -673,7 +673,8 @@ package
         // parts again over it (side panels, chat), and their hidden areas
         // then take the clicks meant for our window. The game's windows that
         // open over it close it first (the top menu).
-        private static const PANELS:Array = ["squadList", "questList", "chat"];
+        // The chat stays over ours (the owner's of 2026-10-19).
+        private static const PANELS:Array = ["squadList", "questList"];
 
         private function overPanels():void
         {
@@ -693,6 +694,16 @@ package
                     && parent.getChildIndex(panel) > parent.getChildIndex(this))
                     parent.setChildIndex(this, parent.getChildIndex(panel));
             }
+            var chat:DisplayObject = null;
+            try
+            {
+                chat = parent["chat"] as DisplayObject;
+            }
+            catch (e:Error)
+            {
+            }
+            if (chat != null && chat.parent == parent && parent.getChildIndex(chat) < parent.getChildIndex(this))
+                parent.setChildIndex(chat, parent.getChildIndex(this));
         }
 
         // Our own icon on the top tab: the map's art (frame 6) is drawn
@@ -794,6 +805,7 @@ package
         {
             if (parent != null)
                 parent.setChildIndex(this, parent.numChildren - 1);
+            overPanels();
         }
 
         // Each frame: a lobby window that has just opened hides ours.
