@@ -221,6 +221,11 @@ pub const EXCEPTIONS: &[(&str, &[(u8, u8)])] = {
         // premium copies stay in bundles 12 and 10.
         ("vityaz", &[(0, 0)]),
         ("izh_27_lancaster", &[(0, 0)]),
+        // The STK2 Novice's knit cap (1821) and field jacket (1822): no
+        // faction, "they shouldn't belong to any group" (the owner,
+        // 2026-10-19). Sold to everyone at no rank, as the two above.
+        ("novice_026_helmet", &[(0, 0)]),
+        ("novice_026_torso", &[(0, 0)]),
         // --- Ammo (W:8170, W:8172, W:8175, W:8176; PROVEN but where
         // said) ---
         ("ammo_12mm_buck", &[(SCAV, 1), (BM, 1)]),
@@ -361,6 +366,9 @@ pub const UNRELEASED: &[&str] = &[
     "ammo_5.7x28",
     "ammo_7.62x54_7n13",
     "ammo_12mm_buck2",
+    // The STK2 Novice's cap and jacket (resource-porter pack novice-5).
+    "novice_026_helmet",
+    "novice_026_torso",
 ];
 
 /// Whether buying ammo needs the seller's rank of [`EXCEPTIONS`]. The
