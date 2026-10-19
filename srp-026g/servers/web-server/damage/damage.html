@@ -175,7 +175,14 @@ h3.sub { margin: 0 0 8px; font: 700 .78rem var(--font-display); letter-spacing: 
 .slot .art { height: 72px; display: flex; align-items: center; justify-content: center }
 .slot .art img { max-height: 72px; max-width: 100%; object-fit: contain }
 .slot .art .empty { font: .78rem var(--font-body); color: var(--ink-3) }
-.slot select { font-size: .82rem; padding: 4px 6px }
+.slot .wpick-btn { min-height: 30px; padding: 2px 6px; font-size: .82rem }
+.slot .wpick-btn img { display: none }
+.slot:has(.wpick-pop:not([hidden])) { z-index: 30 }
+.aitem { display: flex; align-items: center; gap: 10px }
+.aitem img { width: 54px; height: 40px; object-fit: contain; flex: none }
+.aprot { display: flex; flex-wrap: wrap; gap: 2px 12px; font: .8rem var(--font-data); color: var(--ink-2) }
+.aprot b { color: var(--ink) }
+.aprot .here, .aprot .here b { color: var(--accent); font-weight: 700 }
 .wcard { display: flex; gap: 12px; align-items: center; min-height: 64px }
 .wcard img { height: 64px; width: auto; max-width: 48%; object-fit: contain }
 .wcard img#aicon { height: 46px }
@@ -397,4 +404,4 @@ tr.click { cursor: pointer } tr.click:hover td { background: color-mix(in srgb, 
     <div class="tablebox"><table id="fulltime"></table></div>
   </section>
 </div>
-<script src="/damage/calc.js?v=c0b3aca5ecec"></script>
+<script src="/damage/calc.js?v=832a3dcabaa7"></script>
