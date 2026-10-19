@@ -355,6 +355,39 @@ fn a_reroll_offers_three_other_modifications() {
 }
 
 #[test]
+fn a_reroll_offers_three_on_an_item_of_few_types() {
+    // A backpack takes three types that roll (18, 24, 32; as Skhid's
+    // Marauder backpack and Bandit balaclava take three): with two of its
+    // own, the replaced one's type and the third are left, two types, so
+    // another strength fills the offer; full, only the replaced one's type.
+    let data = Modifications::shared();
+    let backpack = dict("scav_back_1");
+    let mut rng = Rng::new(5);
+    let kind = |id: u32| data.modification(id).unwrap().kind;
+    let mut kinds_seen = std::collections::BTreeSet::new();
+    for _ in 0..300 {
+        let choices = data
+            .reroll_choices(backpack, &[1062, 1120], 1062, &mut rng)
+            .expect("an offer");
+        assert!(choices[0] != choices[1] && choices[1] != choices[2] && choices[0] != choices[2]);
+        for &choice in &choices {
+            assert_ne!(choice, 1062);
+            assert_ne!(kind(choice), kind(1120), "the type the item keeps");
+            assert!(data.fits(backpack, &[1120], choice));
+            kinds_seen.insert(kind(choice));
+        }
+        // Both types left are offered before a second strength of one.
+        let kinds: std::collections::BTreeSet<u8> = choices.iter().map(|&id| kind(id)).collect();
+        assert_eq!(kinds.len(), 2);
+    }
+    assert_eq!(kinds_seen.len(), 2);
+    let choices = data
+        .reroll_choices(backpack, &[1062, 1120, 1201], 1201, &mut rng)
+        .expect("an offer");
+    assert!(choices.iter().all(|&id| kind(id) == kind(1201) && id != 1201));
+}
+
+#[test]
 fn defects_come_with_wear() {
     let data = Modifications::shared();
     // No defect at all over 90 %.

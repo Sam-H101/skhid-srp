@@ -1,0 +1,277 @@
+{
+ "frame": {
+  "x": 0.0,
+  "y": -24.65,
+  "w": 140,
+  "h": 124,
+  "note": "sprite-119 px; canvas pixel = (x - frame.x, y - frame.y)"
+ },
+ "parts": [
+  {
+   "name": "lLeg",
+   "depth": 8,
+   "part_id": 3,
+   "file": "art/leg.png",
+   "w": 16,
+   "h": 49,
+   "mirrored": false,
+   "matrix": [
+    1,
+    0,
+    0,
+    1,
+    93.0,
+    16.4
+   ],
+   "bbox_sprite": [
+    93.0,
+    16.4,
+    16,
+    49
+   ],
+   "bbox_canvas": [
+    93.0,
+    41.05,
+    16,
+    49
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "rLeg",
+   "depth": 10,
+   "part_id": 4,
+   "file": "art/leg.png",
+   "w": 16,
+   "h": 49,
+   "mirrored": true,
+   "matrix": [
+    -1,
+    0,
+    0,
+    1,
+    95.25,
+    16.4
+   ],
+   "bbox_sprite": [
+    79.25,
+    16.4,
+    16,
+    49
+   ],
+   "bbox_canvas": [
+    79.25,
+    41.05,
+    16,
+    49
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "body",
+   "depth": 12,
+   "part_id": 6,
+   "file": "art/body.png",
+   "w": 22,
+   "h": 36,
+   "mirrored": false,
+   "matrix": [
+    1,
+    0,
+    0,
+    1,
+    82.95,
+    -12.05
+   ],
+   "bbox_sprite": [
+    82.95,
+    -12.05,
+    22,
+    36
+   ],
+   "bbox_canvas": [
+    82.95,
+    12.6,
+    22,
+    36
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "head",
+   "depth": 14,
+   "part_id": 5,
+   "file": "art/head.png",
+   "w": 12,
+   "h": 16,
+   "mirrored": false,
+   "matrix": [
+    1,
+    0,
+    0,
+    1,
+    88.0,
+    -24.35
+   ],
+   "bbox_sprite": [
+    88.0,
+    -24.35,
+    12,
+    16
+   ],
+   "bbox_canvas": [
+    88.0,
+    0.3,
+    12,
+    16
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "rHand",
+   "depth": 16,
+   "part_id": 2,
+   "file": "art/arm.png",
+   "w": 18,
+   "h": 35,
+   "mirrored": true,
+   "matrix": [
+    -1,
+    0,
+    0,
+    1,
+    85.35,
+    -9.0
+   ],
+   "bbox_sprite": [
+    67.35,
+    -9.0,
+    18,
+    35
+   ],
+   "bbox_canvas": [
+    67.35,
+    15.65,
+    18,
+    35
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "lHand",
+   "depth": 18,
+   "part_id": 1,
+   "file": "art/arm.png",
+   "w": 18,
+   "h": 35,
+   "mirrored": false,
+   "matrix": [
+    1,
+    0,
+    0,
+    1,
+    103.1,
+    -9.0
+   ],
+   "bbox_sprite": [
+    103.1,
+    -9.0,
+    18,
+    35
+   ],
+   "bbox_canvas": [
+    103.1,
+    15.65,
+    18,
+    35
+   ],
+   "initial_colorTransform": "alphaMultiplier 0.5 (128/256), rgb x1"
+  },
+  {
+   "name": "outline",
+   "depth": 21,
+   "part_id": null,
+   "file": "art/outline.png",
+   "w": 63,
+   "h": 107,
+   "mirrored": false,
+   "matrix": [
+    1,
+    0,
+    0,
+    1,
+    63.0,
+    -24.65
+   ],
+   "bbox_sprite": [
+    63.0,
+    -24.65,
+    63,
+    107
+   ],
+   "bbox_canvas": [
+    63.0,
+    0.0,
+    63,
+    107
+   ],
+   "initial_colorTransform": "none"
+  }
+ ],
+ "icons": [
+  {
+   "name": "bleedInd",
+   "depth": 2,
+   "file": "art/icon_bleed.png",
+   "w": 10,
+   "h": 15,
+   "origin_sprite": [
+    16.0,
+    69.0
+   ],
+   "bbox_canvas": [
+    11.0,
+    86.15,
+    10,
+    15
+   ],
+   "note": "white vector; hidden at start, exe never shows it"
+  },
+  {
+   "name": "toxInd",
+   "depth": 4,
+   "file": "art/icon_rad_tox.png",
+   "w": 20,
+   "h": 19,
+   "origin_sprite": [
+    40.0,
+    69.0
+   ],
+   "bbox_canvas": [
+    30.0,
+    84.15,
+    20,
+    19
+   ],
+   "note": "white vector; hidden at start, exe never shows it"
+  },
+  {
+   "name": "radInd",
+   "depth": 6,
+   "file": "art/icon_rad_tox.png",
+   "w": 20,
+   "h": 19,
+   "origin_sprite": [
+    16.0,
+    47.45
+   ],
+   "bbox_canvas": [
+    6.0,
+    62.6,
+    20,
+    19
+   ],
+   "note": "white vector; hidden at start, exe never shows it"
+  }
+ ]
+}

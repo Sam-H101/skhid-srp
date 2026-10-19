@@ -93,6 +93,10 @@ impl AccountRecord {
             notices,
             ban,
             last_ip,
+            // Not kept: only the admin's password reset shows the first,
+            // and the second orders sign-ins against resets while srp runs.
+            last_sign_in: _,
+            password_epoch: _,
         } = account;
         Self {
             id: *id,
@@ -123,6 +127,8 @@ impl AccountRecord {
             notices: self.notices,
             ban: self.ban,
             last_ip: self.last_ip,
+            last_sign_in: None,
+            password_epoch: 0,
         }
     }
 
@@ -223,9 +229,17 @@ struct MemoryInner {
     sessions: HashMap<u32, StoredSession>,
     session_saves: usize,
     ip_bans: Vec<IpBan>,
+    /// Account writes fail while it is on: a database refusing them.
+    failing_account_saves: bool,
 }
 
 impl MemoryRepository {
+    /// Make every account write fail (with `BadRow`), or work again: a
+    /// database that refuses them, for tests.
+    pub fn fail_account_saves(&self, failing: bool) {
+        self.inner.locked().failing_account_saves = failing;
+    }
+
     /// How many accounts were written so far.
     pub fn saves(&self) -> usize {
         self.inner.locked().saves
@@ -266,6 +280,9 @@ impl AccountRepository for MemoryRepository {
 
     fn save_account(&mut self, record: &AccountRecord) -> Result<(), PersistError> {
         let mut inner = self.inner.locked();
+        if inner.failing_account_saves {
+            return Err(PersistError::BadRow(record.id, "disk full".into()));
+        }
         inner.next_account_id = inner.next_account_id.max(record.id + 1);
         inner.accounts.insert(record.id, record.clone());
         inner.saves += 1;

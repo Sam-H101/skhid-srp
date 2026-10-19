@@ -1,0 +1,91 @@
+{
+ "source": "flash_movies/hud.swf sprite 119 SrvCriticalIndicator (survarium.controls.CriticalIndicator)",
+ "viewBox": [
+  -1,
+  -1,
+  65,
+  109
+ ],
+ "game_parts": {
+  "head": "head",
+  "body": "torso",
+  "lHand": "left arm (whole)",
+  "rHand": "right arm (whole)",
+  "lLeg": "left leg (whole)",
+  "rLeg": "right leg (whole)"
+ },
+ "cuts_y": {
+  "brain|face": 6.0,
+  "forearm(whole arm)|arm(hand) at wrist": 44.0,
+  "hip(whole leg)|foot at ankle": 84.0
+ },
+ "bones": {
+  "front": "Spine+Chest+Neck",
+  "back": "Chest+Spine",
+  "brain": "Head (sphere)",
+  "face": "Head (front box)",
+  "forearm_*": "Arm+ForeArm (shoulder to wrist)",
+  "arm_*": "Hand",
+  "hip_*": "UpLeg+Leg (hip to ankle)",
+  "foot_*": "Foot",
+  "source": "models/character/human/base/base_character_full.skinned_model/hit_targets"
+ },
+ "zones": {
+  "brain": {
+   "label": "Head (brain)",
+   "game_part": "head",
+   "zonemap_color": "#ff0000"
+  },
+  "face": {
+   "label": "Face",
+   "game_part": "head",
+   "zonemap_color": "#ff8000"
+  },
+  "front": {
+   "label": "Torso (front)",
+   "game_part": "body",
+   "zonemap_color": "#00c000"
+  },
+  "forearm_l": {
+   "label": "Left arm",
+   "game_part": "lHand",
+   "zonemap_color": "#00a0ff"
+  },
+  "arm_l": {
+   "label": "Left hand",
+   "game_part": "lHand",
+   "zonemap_color": "#0040ff"
+  },
+  "forearm_r": {
+   "label": "Right arm",
+   "game_part": "rHand",
+   "zonemap_color": "#ff00ff"
+  },
+  "arm_r": {
+   "label": "Right hand",
+   "game_part": "rHand",
+   "zonemap_color": "#a000ff"
+  },
+  "hip_l": {
+   "label": "Left leg",
+   "game_part": "lLeg",
+   "zonemap_color": "#ffff00"
+  },
+  "foot_l": {
+   "label": "Left foot",
+   "game_part": "lLeg",
+   "zonemap_color": "#808000"
+  },
+  "hip_r": {
+   "label": "Right leg",
+   "game_part": "rLeg",
+   "zonemap_color": "#00ffff"
+  },
+  "foot_r": {
+   "label": "Right foot",
+   "game_part": "rLeg",
+   "zonemap_color": "#008080"
+  }
+ },
+ "back_view": "doll_back.svg: mirrored, torso id \"back\", sides keep the character's left/right"
+}

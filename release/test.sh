@@ -1113,6 +1113,29 @@ expect_refused "release --test needs its own patches server" "SKHID_TEST_PATCHES
 check "release: the refusals planned nothing" test ! -s "$T/state/admin.log"
 check "release: ... and published nothing" test ! -e "$T/patches/resources.db.patch_14" -a ! -e "$T/patches-test/resources.db.patch_14"
 
+# The Maps tab: built from exactly the patches the release offers, the
+# --resources one too; none on main (as here up to now): nothing to check.
+maps_built() { # <list>: main's Maps tab built from its patches
+    mkdir -p "$src/servers/web-server/maps"
+    grep -v '^#' "$1" | cut -f1,2 >"$src/servers/web-server/maps/built-from.tsv"
+    commit "the Maps tab, built"
+}
+grep -v patch_13 "$T/patches.tsv" >"$T/maps-old.tsv"
+maps_built "$T/maps-old.tsv"
+expect_refused "release: a Maps tab built from other patches than offered" \
+    "the Maps tab (srp-026g/servers/web-server/maps/built-from.tsv on main) was built from other patches than this release offers" "$here/release.sh"
+mkdir -p "$src/servers/web-server/damage"
+grep -v '^#' "$T/maps-old.tsv" | cut -f1,2 >"$src/servers/web-server/damage/built-from.tsv"
+maps_built "$T/patches.tsv"
+expect_refused "release: a calculator built from other patches than offered" \
+    "the calculator (srp-026g/servers/web-server/damage/built-from.tsv on main) was built from other patches than this release offers" "$here/release.sh"
+rm "$src/servers/web-server/damage/built-from.tsv"
+maps_built "$T/patches.tsv"
+expect_refused "release --resources: a Maps tab built without the new patch" "build.py --with $T/r14/resources.db.patch_14" \
+    "$here/release.sh" --resources "$T/r14/resources.db.patch_14"
+{ cat "$T/patches.tsv"; printf 'resources.db.patch_14\t%s\n' "$(sha256sum <"$T/r14/resources.db.patch_14" | cut -d' ' -f1)"; } >"$T/maps-14.tsv"
+maps_built "$T/maps-14.tsv"
+
 # The dry run.
 before=$(tree)
 published_before=$(ls "$T/patches")
@@ -1128,6 +1151,9 @@ check "release --dry-run: shows what /patches will offer" has "$out" "  patch_14
 check "release --dry-run: shows the swap and the restart" has "$out" "docker compose up -d --no-deps --force-recreate srp26"
 check "release --dry-run: shows the build" has "$out" "build srp26"
 check "release --dry-run: says so" has "$out" "dry run: nothing was planned, uploaded or changed"
+check "release --dry-run: the Maps tab, built with the new patch, passes" has "$out" "the Maps tab: built from the patches this release offers"
+git_t -C "$T/repo" rm -q -r "$src/servers/web-server/maps"
+commit "no Maps tab again (the rest of the runs)"
 
 # The preflight checks every URL of every row, mirrors too: once whole,
 # then (the cache, across runs) by their first bytes.

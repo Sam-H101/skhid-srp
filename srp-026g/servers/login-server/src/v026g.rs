@@ -603,9 +603,9 @@ fn handle_sign_in(
     };
     // The account (made here on a first sign-in) and the session come only
     // once the digest is right.
-    let account_id =
+    let signed_in =
         match store.sign_in_with_digest_from(&user_name, digest, peer.ip(), Instant::now()) {
-            Ok(account_id) => account_id,
+            Ok(signed_in) => signed_in,
             Err(error) => {
                 match error {
                     SignInError::WrongPassword => log::info!("Wrong password for {user_name}"),
@@ -627,8 +627,15 @@ fn handle_sign_in(
                 return;
             }
         };
+    let account_id = signed_in.account_id();
+    // None: the admin reset the password while it was checked. Only a
+    // sign-in that got its session is where the account last signed in.
+    let Some(session_id) = store.create_signed_in_session(signed_in, sign_in.patch_revision) else {
+        log::warn!("Sign-in of {user_name} refused: its password was reset meanwhile");
+        let _ = ssl_stream.write_all(&[INVALID_USER_NAME_OR_PASSWORD]);
+        return;
+    };
     store.signed_in_from(account_id, peer.ip());
-    let session_id = store.create_session_with_revision(account_id, sign_in.patch_revision);
     let (lobby_ip, lobby_port) = lobby.address_for(peer.ip(), reached);
     log::info!(
         "Sign-in: account={account_id:#x} session={session_id:#x}, \
@@ -981,7 +988,7 @@ mod tests {
         // is asked as the login server asks it, from elsewhere).
         let from = "203.0.113.7".parse::<IpAddr>().unwrap();
         let now = Instant::now();
-        let mut last = Ok(0);
+        let mut last = Err(SignInError::InvalidUserName);
         for name in ["one", "two", "three", "four"] {
             last = store.sign_in_with_digest_from(name, DIGEST_1, from, now);
         }
