@@ -49,18 +49,35 @@ pub struct LatePlacement {
     pub apart_after: i64,
 }
 
-/// Where a match being played, whose sides are `sides` now, takes `joiner`:
-/// first by players, on the side with fewer in the match (the owner's of
-/// 2026-10-19: a room's match went to 4 v 8, its four strong and leading);
-/// of two alike in that, the one that counts for less (players, strengths
-/// and the lead); of two alike in that too, side 0. Only that side being
-/// full (`capacity`) with it, and the match's `room`, stop it.
-pub fn place_weaker(sides: [Worth; 2], joiner: Worth, rule: &LateRule) -> Option<LatePlacement> {
+/// Where a match being played, whose sides are `sides` now, takes `joiner`
+/// (the owner's of 2026-10-19: players, then the previous team, then the
+/// balance):
+/// 1. the side with fewer players in the match (a room's match went to
+///    4 v 8, its four strong and leading);
+/// 2. of two alike in that, `previous`: the side the joiner played on in
+///    this match before (it left, or its game was gone for good);
+/// 3. then the one that counts for less (players, strengths and the lead);
+/// 4. then side 0.
+///
+/// Only that side being full (`capacity`) with it, and the match's `room`,
+/// stop it.
+pub fn place_weaker(
+    sides: [Worth; 2],
+    joiner: Worth,
+    previous: Option<u8>,
+    rule: &LateRule,
+) -> Option<LatePlacement> {
     let worth = |sides: &[Worth; 2], side: usize| {
         rule.player_value * sides[side].players as i64 + sides[side].strength + rule.lead[side]
     };
-    let side =
-        usize::from((sides[1].players, worth(&sides, 1)) < (sides[0].players, worth(&sides, 0)));
+    let key = |side: usize| {
+        (
+            sides[side].players,
+            previous != Some(side as u8),
+            worth(&sides, side),
+        )
+    };
+    let side = usize::from(key(1) < key(0));
     let mut after = sides;
     after[side].players += joiner.players;
     after[side].strength += joiner.strength;
@@ -101,12 +118,12 @@ mod tests {
             lead: [0, 5000],
             ..rule()
         };
-        let placed = place_weaker([side(4, -3000), side(3, 3000)], one, &led).unwrap();
+        let placed = place_weaker([side(4, -3000), side(3, 3000)], one, None, &led).unwrap();
         assert_eq!(placed.assignments, [(0, 1)]);
         assert_eq!(placed.sides, [side(4, -3000), side(4, 3300)]);
         assert_eq!(placed.apart_before, 1200 - 3000 - 3000 - 5000);
         assert_eq!(placed.apart_after, -3000 - 3300 - 5000);
-        let placed = place_weaker([side(3, 3000), side(4, -3000)], one, &rule()).unwrap();
+        let placed = place_weaker([side(3, 3000), side(4, -3000)], one, None, &rule()).unwrap();
         assert_eq!(placed.assignments, [(0, 0)]);
     }
 
@@ -114,7 +131,7 @@ mod tests {
     fn of_sides_alike_in_players_the_weaker_then_side_0() {
         let one = side(1, 0);
         // Three against three, side 1 weaker by value: there.
-        let placed = place_weaker([side(3, 1000), side(3, 400)], one, &rule()).unwrap();
+        let placed = place_weaker([side(3, 1000), side(3, 400)], one, None, &rule()).unwrap();
         assert_eq!(placed.assignments, [(0, 1)]);
         assert_eq!(placed.sides, [side(3, 1000), side(4, 400)]);
         // The lead counts: side 0 leads by more than side 1 is stronger.
@@ -122,14 +139,30 @@ mod tests {
             lead: [1000, 0],
             ..rule()
         };
-        let placed = place_weaker([side(3, 0), side(3, 500)], one, &led).unwrap();
+        let placed = place_weaker([side(3, 0), side(3, 500)], one, None, &led).unwrap();
         assert_eq!(placed.assignments, [(0, 1)]);
         // Alike in both: side 0.
-        let placed = place_weaker([side(3, 0), side(3, 0)], one, &rule()).unwrap();
+        let placed = place_weaker([side(3, 0), side(3, 0)], one, None, &rule()).unwrap();
         assert_eq!(placed.assignments, [(0, 0)]);
         // An empty match: side 0.
-        let placed = place_weaker([side(0, 0), side(0, 0)], one, &rule()).unwrap();
+        let placed = place_weaker([side(0, 0), side(0, 0)], one, None, &rule()).unwrap();
         assert_eq!(placed.sides, [side(1, 0), side(0, 0)]);
+    }
+
+    #[test]
+    fn one_who_played_the_match_goes_back_to_its_side_when_the_players_are_alike() {
+        let one = side(1, 0);
+        // Alike in players: its side, though the other counts for less.
+        let placed = place_weaker([side(3, 0), side(3, 2000)], one, Some(1), &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 1)]);
+        let placed = place_weaker([side(3, 2000), side(3, 0)], one, Some(0), &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        // Fewer players come first: its side has more, so the other.
+        let placed = place_weaker([side(3, 0), side(4, -2000)], one, Some(1), &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
+        // No previous side: the balance.
+        let placed = place_weaker([side(3, 0), side(3, 2000)], one, None, &rule()).unwrap();
+        assert_eq!(placed.assignments, [(0, 0)]);
     }
 
     #[test]
@@ -140,16 +173,22 @@ mod tests {
             ..rule()
         };
         // The side with fewer goes to three, its capacity.
-        let placed = place_weaker([side(2, 2000), side(3, 0)], one, &small).unwrap();
+        let placed = place_weaker([side(2, 2000), side(3, 0)], one, None, &small).unwrap();
         assert_eq!(placed.assignments, [(0, 0)]);
         // Both full: nobody.
-        assert_eq!(place_weaker([side(3, 0), side(3, 0)], one, &small), None);
+        assert_eq!(
+            place_weaker([side(3, 0), side(3, 0)], one, None, &small),
+            None
+        );
         // No roster place left.
         let no_room = LateRule { room: 0, ..rule() };
-        assert_eq!(place_weaker([side(3, 0), side(2, 0)], one, &no_room), None);
+        assert_eq!(
+            place_weaker([side(3, 0), side(2, 0)], one, None, &no_room),
+            None
+        );
         // Nobody to place.
         assert_eq!(
-            place_weaker([side(3, 0), side(2, 0)], Worth::default(), &rule()),
+            place_weaker([side(3, 0), side(2, 0)], Worth::default(), None, &rule()),
             None
         );
     }

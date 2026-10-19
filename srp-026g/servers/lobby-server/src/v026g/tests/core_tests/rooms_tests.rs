@@ -910,3 +910,45 @@ fn one_who_leaves_the_match_by_its_own_word_is_out_of_the_room_and_may_come_agai
     assert_eq!(report.stats.rows.len(), 2);
     world.assert_clean();
 }
+
+/// The owner's of 2026-10-19: one who comes back into its room's match goes,
+/// of two sides with as many players, to the side it played on (players,
+/// then the previous team, then the balance).
+#[test]
+fn one_who_comes_back_into_the_match_goes_to_its_side_when_the_players_are_alike() {
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    let key = create(&mut world, alice, spec(6), None);
+    rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    world.advance(VOTE_AND_WAIT);
+    let (ticket, _) = sent_to_match(&world.take(alice)).expect("a match");
+    assert!(sent_to_match(&world.take(bob)).is_some());
+    let (bob_account, _) = world.ids[bob];
+    let (&id, _) = world
+        .core
+        .matches
+        .iter()
+        .find(|(_, running)| running.ticket.match_id == ticket)
+        .unwrap();
+    // Bob plays on team 1: alone, a joiner of sides alike would go to 0.
+    assert_eq!(world.core.room_teams.get(&bob_account), Some(&(id, 1)));
+
+    assert_eq!(world.store.matchmaking().leave_match(bob_account), Some(id));
+    world.ask(bob, request::leave(1, true));
+    world.advance(Duration::from_secs(1));
+    world.host.admitting.locked().insert(ticket);
+    rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    world.take(bob);
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(bob)).expect("Bob goes in again");
+    assert_eq!(sent, ticket);
+    // The roster (no live view here) has 1 v 1 with Bob's old place: alike,
+    // so his side.
+    let running = &world.core.matches[&id];
+    assert_eq!(running.seats.last().map(|&(_, team)| team), Some(1));
+    assert_eq!(world.core.room_teams.get(&bob_account), Some(&(id, 1)));
+    world.end_match(ticket, 0);
+    world.settle();
+    assert_eq!(world.core.room_teams.get(&bob_account), None);
+}
