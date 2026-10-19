@@ -124,9 +124,10 @@ package
             "code": ["code", "код", "код", "Code", "kod"],
             "leave": ["Leave", "Вийти", "Выйти", "Verlassen", "Opuść"],
             "switchTo": ["Switch room", "Змінити кімнату", "Сменить комнату", "Raum wechseln", "Zmień pokój"],
-            "switchWhy": ["A room for gear up to level %L has a place for you", "Є місце в кімнаті для спорядження до рівня %L",
-                "Есть место в комнате для снаряжения до уровня %L", "Ein Raum für Ausrüstung bis Stufe %L hat Platz für dich",
-                "Pokój dla ekwipunku do poziomu %L ma dla ciebie miejsce"],
+            // Short: they share the footer with two buttons.
+            "switchWhy": ["A place free: room for gear up to level %L", "Є місце: кімната для рівня спорядження до %L",
+                "Есть место: комната для снаряжения до %L", "Platz frei: Raum bis Ausrüstungsstufe %L",
+                "Wolne miejsce: pokój do poziomu %L"],
             "switchWho": ["%N's room · %P players", "Кімната %N · гравців: %P", "Комната %N · игроков: %P",
                 "Raum von %N · %P Spieler", "Pokój %N · graczy: %P"],
             "countdown": ["Starts", "Старт", "Старт", "Start", "Start"],

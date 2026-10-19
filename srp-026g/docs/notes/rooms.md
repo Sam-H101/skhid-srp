@@ -42,7 +42,7 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Cod
   left to the lobby, or is lost past the 90 s, has its row removed; coming back after the
   90 s is a new person (a new place, fresh state).
 - **Switch to a lower max level:** a member not playing a match is offered, beside Leave,
-  "Switch room", with what it is beside it ("A room for gear up to level N has a place for you", whose, how full): the open room (no PIN, a place free, not kicked from) of the lowest max
+  "Switch room", with what it is beside it ("A place free: room for gear up to level N", whose, how full): the open room (no PIN, a place free, not kicked from) of the lowest max
   level that takes its equipment and is lower than its own room's (none set counts as the
   highest); then the fullest. One click joins it, out of the room it was in.
 - **Queue:** a full room offers "Queue": from no room only, one queue at a time, PIN asked
