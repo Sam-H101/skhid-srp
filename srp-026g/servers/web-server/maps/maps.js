@@ -101,12 +101,12 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
     return svgEl("image", attrs);
   }
   // Legend swatches, drawn as the markers are.
+  // Two teams in one swatch: blue above and behind, red below and in front.
   const swatch = key => {
     const s = svgEl("svg", { viewBox: "-11 -11 22 22", "aria-hidden": "true" });
-    if (key === "respawn") s.append(hud("player", -5, 1, 15, 1, "t0"), hud("player", 6, 1, 15, 1, "t1"));
+    if (key === "respawn") s.append(hud("player", -3, -3, 14, 1, "t0"), hud("player", 3, 3, 14, 1, "t1"));
     if (key === "spawners") s.append(hud("battery", 0, 0, 14, 1));
     if (key === "stations") s.append(hud("charger", 0, 0, 22, 1));
-    // Two teams: blue above and behind, red below and in front.
     if (key === "containers") s.append(hud("base", -4, -2, 16, 1, "t0"), hud("base", 4, 2, 16, 1, "t1"));
     if (key === "resupply") s.append(hud("resupply", -4, -2, 16, 1, "t0"), hud("resupply", 4, 2, 16, 1, "t1"));
     return s;
