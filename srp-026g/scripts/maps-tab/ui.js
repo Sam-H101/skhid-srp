@@ -28,6 +28,7 @@
     { key: "spawners", label: T("Battery spawns", "Батареї") },
     { key: "stations", label: T("Chargers", "Зарядки") },
     { key: "containers", label: T("Containers", "Контейнери") },
+    { key: "resupply", label: T("Ammo stashes", "Поповнення амуніції") },
     ...Object.entries(MAPS.artefacts).map(([k, a]) => ({ key: "art:" + k, label: N(a.name), icon: a.icon })),
   ];
   const state = {
@@ -41,6 +42,8 @@
   };
   fromHash();
   const map = () => MAPS.maps.find(m => m.key === state.map);
+  // Two maps in (nearly) one frame: a port and its original.
+  const sameFrame = (a, b) => a.box.every((v, i) => Math.abs(v - b.box[i]) < 2);
   const mode = () => map().modes.find(m => m.mode === state.mode) || map().modes[0];
 
   document.title = T("Survarium maps", "Мапи Survarium");
@@ -60,38 +63,53 @@
     return same.length > 1 && m.stations.length ? `${N(m.name)} · ${T("chargers", "зарядки")}` : N(m.name);
   };
 
+  // The HUD minimap's icons (MAPS.hud), white ones tinted by team: filters
+  // that multiply white into a colour, with the HUD's dark outline.
+  const TINTS = { t0: "#3b82f6", t1: "#e5484d", tx: "#9aa0a6", battery: "#f2c94c", none: "#ffffff" };
+  const defs = svgEl("svg", { width: 0, height: 0, "aria-hidden": "true", style: "position:absolute" }, svgEl("defs", {},
+    ...Object.entries(TINTS).map(([id, hex]) => {
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+      return svgEl("filter", { id: "tint-" + id, "color-interpolation-filters": "sRGB", primitiveUnits: "objectBoundingBox", x: "-30%", y: "-30%", width: "160%", height: "160%" },
+        svgEl("feColorMatrix", { type: "matrix", values: `${r} 0 0 0 0 0 ${g} 0 0 0 0 0 ${b} 0 0 0 0 0 1 0` }),
+        svgEl("feDropShadow", { dx: 0, dy: 0, stdDeviation: 0.06, "flood-color": "#000", "flood-opacity": 0.9 }));
+    })));
+  document.body.append(defs);
+  const tintOf = t => (t === 0 ? "t0" : t === 1 ? "t1" : "tx");
+  // One icon at (x, y), `px` screen pixels high, its anchor on the point.
+  function hud(name, x, y, px, u, tint = "none", rotate = 0) {
+    const i = MAPS.hud[name], k = (px * u) / i.h;
+    const attrs = { href: i.src, x: x - i.ax * k, y: y - i.ay * k, width: i.w * k, height: i.h * k, filter: `url(#tint-${tint})` };
+    if (rotate) attrs.transform = `rotate(${rotate} ${x} ${y})`;
+    return svgEl("image", attrs);
+  }
   // Legend swatches, drawn as the markers are.
   const swatch = key => {
     const s = svgEl("svg", { viewBox: "-11 -11 22 22", "aria-hidden": "true" });
-    if (key === "respawn") s.append(svgEl("circle", { cx: -4, cy: 0, r: 5, fill: "var(--team0)", stroke: "#fff", "stroke-width": 1.5 }),
-      svgEl("circle", { cx: 5, cy: 0, r: 5, fill: "var(--team1)", stroke: "#fff", "stroke-width": 1.5 }));
-    if (key === "spawners") s.append(battery(0, 0, 1));
-    if (key === "stations") s.append(charger(0, 0, 1));
-    if (key === "containers") s.append(svgEl("rect", { x: -9, y: -7, width: 8, height: 14, fill: "var(--team0)", stroke: "#fff", "stroke-width": 1.5 }),
-      svgEl("rect", { x: 1, y: -7, width: 8, height: 14, fill: "var(--team1)", stroke: "#fff", "stroke-width": 1.5 }));
+    if (key === "respawn") s.append(hud("player", -5, 1, 15, 1, "t0"), hud("player", 6, 1, 15, 1, "t1"));
+    if (key === "spawners") s.append(hud("battery", 0, 0, 19, 1, "battery"));
+    if (key === "stations") s.append(hud("charger", 0, 0, 22, 1));
+    if (key === "containers") s.append(hud("base", -5, 2, 17, 1, "t0"), hud("base", 6, 2, 17, 1, "t1"));
+    if (key === "resupply") s.append(hud("resupply", 0, 0, 22, 1));
     return s;
   };
-  function battery(x, y, u) {
-    return svgEl("g", { transform: `translate(${x} ${y}) scale(${u})` },
-      svgEl("rect", { x: -4, y: -7, width: 8, height: 13, rx: 1.5, fill: "var(--battery)", stroke: "#000", "stroke-width": 1.4 }),
-      svgEl("rect", { x: -2, y: -9, width: 4, height: 2.4, fill: "#000" }));
-  }
-  function charger(x, y, u) {
-    return svgEl("g", { transform: `translate(${x} ${y}) scale(${u})` },
-      svgEl("path", { d: "M0 -10 L10 0 L0 10 L-10 0 Z", fill: "var(--charger)", stroke: "#fff", "stroke-width": 1.6 }),
-      svgEl("path", { d: "M1.5 -6 L-3 1 L0 1 L-1.5 6 L3 -1 L0 -1 Z", fill: "#fff" }));
-  }
 
   function drawControls() {
     const m = map();
     if (!m.modes.some(o => o.mode === state.mode)) state.mode = m.modes[0].mode;
-    chips($("maps"), MAPS.maps.map(o => [o.key, N(o.name)]), state.map, k => { state.map = k; state.vb = null; go(); });
+    // A map in the same frame (a port and its original) keeps the view, for comparing.
+    chips($("maps"), MAPS.maps.map(o => [o.key, N(o.name)]), state.map, k => {
+      const before = map();
+      state.map = k;
+      if (!sameFrame(map(), before)) state.vb = null;
+      go();
+    });
     chips($("modes"), m.modes.map(o => [o.mode, modeName(o, m.modes)]), state.mode, k => { state.mode = k; go(); });
     chips($("views"), [["render", T("From above", "Згори")], ["minimap", T("Minimap", "Мінімапа")]], state.view,
       v => { state.view = v; store.set("view", v); go(); });
     const mo = mode();
     const counts = {
       respawn: mo.respawn.length, spawners: mo.spawners.length, stations: mo.stations.length, containers: mo.containers.length,
+      resupply: mo.resupply.length,
       ...Object.fromEntries(Object.keys(MAPS.artefacts).map(k => ["art:" + k, m.artefacts.filter(a => a[3].includes(k)).length])),
     };
     $("layers").replaceChildren(...LAYERS.map(l => {
@@ -109,11 +127,13 @@
 
   // The view box: the play area to start, then wherever the reader zooms and drags.
   const svg = $("map");
-  // The play area, grown to hold every point of the map.
+  // The play area, grown to hold every point of the map: of every map in
+  // its frame, so maps that share one start in the same place.
   const fit = () => {
-    const m = map();
-    let [x0, y0, x1, y1] = m.play;
-    const points = [...m.artefacts, ...m.modes.flatMap(o => [...o.respawn, ...o.spawners, ...o.stations, ...o.containers])];
+    const same = MAPS.maps.filter(m => sameFrame(m, map()));
+    let [x0, y0, x1, y1] = map().play;
+    for (const m of same) { x0 = Math.min(x0, m.play[0]); y0 = Math.min(y0, m.play[1]); x1 = Math.max(x1, m.play[2]); y1 = Math.max(y1, m.play[3]); }
+    const points = same.flatMap(m => [...m.artefacts, ...m.modes.flatMap(o => [...o.respawn, ...o.spawners, ...o.stations, ...o.containers, ...o.resupply])]);
     for (const [x, z] of points) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, -z); y1 = Math.max(y1, -z); }
     const pad = Math.max(x1 - x0, y1 - y0) * 0.03;
     return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
@@ -145,13 +165,16 @@
         kids.push(svgEl("line", { x1: x, y1: -z, x2: sx, y2: -sz, stroke: "var(--link)", "stroke-width": 1.2 * u, "stroke-dasharray": `${3 * u} ${3 * u}`, opacity: 0.8 }));
       }
     }
+    if (state.on.resupply) for (const [x, z, , t] of mo.resupply)
+      kids.push(svgEl("g", { class: "mk" },
+        svgEl("circle", { cx: x, cy: -z, r: 16 * u, fill: team(t), "fill-opacity": 0.85, stroke: "#fff", "stroke-width": 1.4 * u }),
+        hud("resupply", x, -z, 21, u), tip(`${T("Ammo stash", "Поповнення амуніції")}, ${teamName(t)}`)));
     if (state.on.containers) for (const [x, z, , t] of mo.containers)
-      kids.push(svgEl("rect", { class: "mk", x: x - 8 * u, y: -z - 8 * u, width: 16 * u, height: 16 * u, fill: team(t), stroke: "#fff", "stroke-width": 2.5 * u },
-        tip(`${T("Container", "Контейнер")}, ${teamName(t)}`)));
+      kids.push(svgEl("g", { class: "mk" }, hud("base", x, -z, 34, u, tintOf(t)), tip(`${T("Container", "Контейнер")}, ${teamName(t)}`)));
     if (state.on.spawners) for (const [x, z] of mo.spawners)
-      kids.push(svgEl("g", { class: "mk" }, battery(x, -z, u), tip(T("Battery spawn", "Поява батареї"))));
+      kids.push(svgEl("g", { class: "mk" }, hud("battery", x, -z, 20, u, "battery"), tip(T("Battery spawn", "Поява батареї"))));
     if (state.on.stations) for (const [x, z] of mo.stations)
-      kids.push(svgEl("g", { class: "mk" }, charger(x, -z, 1.1 * u), tip(T("Charger", "Зарядка"))));
+      kids.push(svgEl("g", { class: "mk" }, hud("charger", x, -z, 32, u), tip(T("Charger", "Зарядка"))));
     for (const [x, z, , kinds] of m.artefacts) {
       const shown = kinds.filter(k => state.on["art:" + k]);
       shown.forEach((k, i) => {
@@ -162,9 +185,9 @@
           tip(kinds.map(k => N(MAPS.artefacts[k].name)).join(", "))));
       });
     }
-    if (state.on.respawn) for (const [x, z, , t] of mo.respawn)
-      kids.push(svgEl("circle", { class: "mk", cx: x, cy: -z, r: 5.5 * u, fill: team(t), stroke: "#fff", "stroke-width": 1.6 * u },
-        tip(`${T("Spawn", "Відродження")}, ${teamName(t)}`)));
+    // The HUD's player triangle, turned the way the player faces at spawn.
+    if (state.on.respawn) for (const [x, z, , t, facing] of mo.respawn)
+      kids.push(svgEl("g", { class: "mk" }, hud("player", x, -z, 19, u, tintOf(t), facing), tip(`${T("Spawn", "Відродження")}, ${teamName(t)}`)));
     svg.replaceChildren(...kids);
   }
 

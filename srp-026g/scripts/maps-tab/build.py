@@ -37,6 +37,7 @@ icons the damage calculator's build exports (assets/tools/build_icons.py).
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -54,6 +55,7 @@ sys.path.insert(0, str(SRP / "scripts" / "gen-data-026g"))
 import bincfg  # noqa: E402
 
 MODES = (2, 3, 4)
+TYPES = {"js": "text/javascript; charset=utf-8", "webp": "image/webp", "svg": "image/svg+xml"}
 # The rule classes (a mode config's `rules`) that use the battery objects
 # (docs/notes/modes_maps.md section 4): gather_victory_items (88) the spawners and
 # containers; match_time_vi_spawn (89) those and the charging stations. A
@@ -145,6 +147,52 @@ def hud_minimaps(args, raw, work):
     return out
 
 
+# The HUD minimap's own icons (Minimap._icons): the class of each, frame 1.
+# The battery is the "Artifact" glyph a carrier's icon wears.
+HUD_ICONS = {"player": "PlayerBlue", "base": "Base",
+             "charger": "SpawnIcon", "resupply": "ResupplyIcon"}
+CARRY = "PlayerCarry"
+
+
+def hud_icons(args, raw, work, out):
+    """{name: {src, w, h, ax, ay}}: each icon as an SVG file and its anchor."""
+    swf = raw / "flash_movies__hud.swf"
+    target = work / "sprites"
+    classes = ",".join([*HUD_ICONS.values(), CARRY])
+    subprocess.run(["java", "-jar", args.ffdec, "-format", "sprite:svg", "-selectclass", classes,
+                    "-export", "sprite", str(target), str(swf)], check=True, capture_output=True)
+    frame = lambda cls: next((d / "1.svg" for d in target.iterdir() if d.name.endswith(f"_{cls}_{cls}")), None)
+    found = {name: frame(cls) for name, cls in HUD_ICONS.items()}
+    carry = frame(CARRY)
+    if not all(found.values()) or not carry:
+        die("hud.swf: a minimap icon is missing (" + ", ".join(c for n, c in HUD_ICONS.items() if not found[n]) + ")")
+    svgs = {name: path.read_text() for name, path in found.items()}
+    # The carrier's battery: its "Artifact" use alone, at the origin.
+    text = carry.read_text()
+    use = re.search(r'<use [^>]*ffdec:characterName="Artifact"[^>]*/>', text)
+    if not use:
+        die(f"hud.swf: {CARRY} has no Artifact glyph")
+    w, h = (float(re.search(rf'{k}="([\d.]+)"', use.group(0)).group(1)) for k in ("width", "height"))
+    glyph = re.sub(r'transform="[^"]*"', 'transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)"', use.group(0), count=1)
+    defs = re.search(r"<defs>.*</defs>", text, re.S).group(0)
+    svgs["battery"] = (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+                       f'xmlns:ffdec="https://www.free-decompiler.com/flash" width="{w}px" height="{h}px">'
+                       f'<g transform="matrix(1.0, 0.0, 0.0, 1.0, {w / 2}, {h / 2})">'
+                       f'<g transform="matrix(1.0, 0.0, 0.0, 1.0, {-w / 2}, {-h / 2})">{glyph}</g></g>{defs}</svg>')
+    icons = {}
+    (out / "icons").mkdir(parents=True, exist_ok=True)
+    for name, svg in svgs.items():
+        svg = re.sub(r'\s(ffdec:\w+)="[^"]*"', "", svg)
+        width = float(re.search(r'<svg[^>]*\swidth="([\d.]+)', svg).group(1))
+        height = float(re.search(r'<svg[^>]*\sheight="([\d.]+)', svg).group(1))
+        ax, ay = map(float, re.search(r'<g transform="matrix\(1\.0, 0\.0, 0\.0, 1\.0, (-?[\d.]+), (-?[\d.]+)\)"', svg).groups())
+        path = out / "icons" / f"hud_{name}.svg"
+        path.write_text(svg)
+        icons[name] = {"src": f"{SITE}/icons/hud_{name}.svg?v={version(svg.encode())}",
+                       "w": width, "h": height, "ax": ax, "ay": ay}
+    return icons
+
+
 def localization(raw):
     return {lang: load(raw, f"localization/{name}/localization")["strings"]
             for lang, name in (("en", "english"), ("uk", "ukrainian"))}
@@ -167,6 +215,18 @@ def r1(v):
 def xzy(o):
     x, y, z = o["position"]
     return [r1(x), r1(z), r1(y)]
+
+
+def heading(o):
+    """Which way a respawn point faces, as the SVG rotation of the HUD's
+    player triangle (it points down, +y): the engine's yaw is rotation y,
+    turned by pi when x and z are both pi; forward is (-sin yaw, cos yaw) in
+    x/z. Checked on every map: the points face the enemy's side, at 60
+    degrees from its spawns on average."""
+    rx, ry, rz = o.get("rotation") or (0, 0, 0)
+    yaw = math.pi - ry if abs(abs(rx) - math.pi) < 0.1 and abs(abs(rz) - math.pi) < 0.1 else ry
+    vx, vz = -math.sin(yaw), math.cos(yaw)
+    return round(math.degrees(math.atan2(-vz, vx)) - 90) % 360
 
 
 def objects(project, artefact_keys):
@@ -198,11 +258,17 @@ def objects(project, artefact_keys):
             zones = [by_name[c["name"]] for c in o.get("collision_geometries") or [] if c.get("name") in by_name]
             if kinds:
                 artefacts.append(xzy(zones[0] if zones else o) + [kinds])
+    resupply = []
+    for o in client:
+        if o.get("game_object_type") == "resupply_zone":
+            zones = [by_name[c["name"]] for c in o.get("collision_geometries") or [] if c.get("name") in by_name]
+            resupply.append(xzy(zones[0] if zones else o) + [o.get("team", -1)])
     return {
-        "respawn": sorted(xzy(o) + [o.get("team", -1)] for o in so.get("respawn_points") or []),
+        "respawn": sorted(xzy(o) + [o.get("team", -1), heading(o)] for o in so.get("respawn_points") or []),
         "spawners": [xzy(o) for o in spawners],
         "stations": stations,
         "containers": sorted(xzy(o) + [o.get("team", -1)] for o in so.get("victory_items_containers") or []),
+        "resupply": sorted(resupply),
         "artefacts": sorted(artefacts),
     }
 
@@ -272,9 +338,10 @@ def main():
             die("no playable map in the data")
 
         minimaps = hud_minimaps(args, raw, tmp)
-        renders = json.loads(RENDER_TABLE.read_text())["maps"]
         for sub in ("minimap", "icons"):
             shutil.rmtree(out / sub, ignore_errors=True)
+        hud = hud_icons(args, raw, tmp, out)
+        renders = json.loads(RENDER_TABLE.read_text())["maps"]
         out.mkdir(parents=True, exist_ok=True)
         data_maps, missing = [], []
         used_artefacts = set()
@@ -355,7 +422,7 @@ def main():
             blob = (out / "icons" / f"{key}.webp").read_bytes()
             icons[key]["icon"] = f"{SITE}/icons/{key}.webp?v={version(blob)}"
 
-    data = {"revision": revision, "maps": data_maps, "artefacts": icons}
+    data = {"revision": revision, "maps": data_maps, "artefacts": icons, "hud": hud}
     script = ('"use strict";\n// Built by srp-026g/scripts/maps-tab/build.py; do not edit.\n'
               f"const MAPS = {json.dumps(data, ensure_ascii=False, separators=(',', ':'))};\n"
               + (HERE / "ui.js").read_text())
@@ -370,7 +437,7 @@ def main():
     (out / "files.rs").write_text(
         "// Built by srp-026g/scripts/maps-tab/build.py; do not edit. The files maps.html names.\n"
         "files! {\n" + "".join(
-            f'    "{f}" => "{"text/javascript; charset=utf-8" if f.endswith(".js") else "image/webp"}",\n' for f in served)
+            f'    "{f}" => "{TYPES[f.rsplit(".", 1)[1]]}",\n' for f in served)
         + "}\n")
     (out / "built-from.tsv").write_text(
         "# The patches the Maps tab was built from (srp-026g/scripts/maps-tab/build.py): name, sha256.\n"

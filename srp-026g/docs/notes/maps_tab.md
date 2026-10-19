@@ -6,11 +6,13 @@ served by `servers/web-server/src/maps.rs`.
 ## Owner's rules
 
 - Every playable map, the ported ones too. The points shown:
-  - player spawns (by team);
+  - player spawns (by team, turned the way the player faces);
   - battery spawns;
   - chargers (they spawn batteries);
   - battery containers;
+  - ammo stashes (the teams' resupply zones);
   - artefact spawns.
+- The markers are the game's own HUD minimap icons (hud.swf `Minimap._icons`), tinted by team.
 - Each kind is toggled on its own; one toggle per artefact.
 - The map underneath is either the top-down render ("From above") or the game's minimap. Nothing else.
 - Data-driven, per release, never stale:
@@ -20,4 +22,6 @@ served by `servers/web-server/src/maps.rs`.
 - A mode shows only what its rules use. Chargers appear in the timed battery mode only, with "N active"
   from the mode's `spawn_points_count`.
 - Zoom and drag (wheel, two fingers, buttons). The chosen map and mode are in the address (`#level_01/3`).
+- Maps in one frame (a port and its original, such as the three Vostoks) start on the same view, and switching
+  between them keeps the zoom: nothing jumps.
 - The view and toggles are remembered in the browser.

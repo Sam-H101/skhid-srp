@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:ffdec="https://www.free-decompiler.com/flash" width="11.0px" height="9.0px"><g transform="matrix(1.0, 0.0, 0.0, 1.0, 5.5, 4.5)"><g transform="matrix(1.0, 0.0, 0.0, 1.0, -5.5, -4.5)"><use height="9.0" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" width="11.0" xlink:href="#sprite2"/></g></g><defs>
+    <g id="sprite0">
+      <use height="15.0" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" width="15.0" xlink:href="#shape0"/>
+    </g>
+    <g id="shape0">
+      <pattern height="15" id="PatternID_29_1" overflow="visible" patternTransform="matrix(1.0, 0.0, 0.0, 1.0, -2.0, -10.0)" patternUnits="userSpaceOnUse" viewBox="0 0 15 15" width="15">
+        <image height="15" style="image-rendering:optimizeQuality" width="15" xlink:href="data:image/PNG;base64,iVBORw0KGgoAAAANSUhEUgAAAA8AAAAPCAYAAAA71pVKAAAAsUlEQVR4XmNgQABmIGbFgUFyOAEXEJsCsRsQewCxFxSD2M5ArAvEHHDVaEDv8+fP7//jAA8ePLgBVKOKrgkGtE6dOnUYXRMMFBUV9QDViKFrggGBxMTEVpAN6Bqhtjow4PO3iIiIGsgGdM1QWyXQ1aMDNiB2QradKFuRgASy7cTaCgMgG8C2Q221g4oRBZiAflfds2fP9pSUlCYgXxRdASEASlHSQCyALkEsYEIXGEYAAKO5lA2LO46NAAAAAElFTkSuQmCC"/>
+      </pattern>
+      <path d="M-2.0 -10.0 L13.0 -10.0 13.0 5.0 -2.0 5.0 -2.0 -10.0" ffdec:fill-bitmapId="28" fill-rule="evenodd" style="fill:url(#PatternID_29_1)"/>
+    </g>
+    <g id="sprite1">
+      <use height="16.0" transform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" width="16.0" xlink:href="#shape1"/>
+    </g>
+    <g id="shape1">
+      <pattern height="16" id="PatternID_33_1" overflow="visible" patternTransform="matrix(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)" patternUnits="userSpaceOnUse" viewBox="0 0 16 16" width="16">
+        <image height="16" style="image-rendering:optimizeQuality" width="16" xlink:href="data:image/PNG;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAa0lEQVR4Xp2OQQ6AMAjA9jT9ub/aZYmKsWabiEATLiTQlmJQa13OWee9m9baJjPvXYh9v0lViJkH4YreDqGK3g7uCs0OrgrNDr8Vlh3MCssOnxUeO6gVHju8KiJ2GCoidngqMna4KjJ2kNsDSwQr9+Y+F34AAAAASUVORK5CYII="/>
+      </pattern>
+      <path d="M0.0 0.0 L16.0 0.0 16.0 16.0 0.0 16.0 0.0 0.0" ffdec:fill-bitmapId="32" fill-rule="evenodd" style="fill:url(#PatternID_33_1)"/>
+    </g>
+    <g id="sprite2">
+      <use height="9.0" transform="matrix(1.0, 0.0, 0.0, 1.0, -5.0, -4.0)" width="11.0" xlink:href="#sprite3"/>
+    </g>
+    <g id="sprite3">
+      <use height="9.0" transform="matrix(1.0, 0.0, 0.0, 1.0, 5.4, 11.35)" width="11.0" xlink:href="#shape2"/>
+    </g>
+    <g id="shape2">
+      <pattern height="9" id="PatternID_36_1" overflow="visible" patternTransform="matrix(1.0, 0.0, 0.0, 1.0, -5.4, -11.35)" patternUnits="userSpaceOnUse" viewBox="0 0 11 9" width="11">
+        <image height="9" style="image-rendering:optimizeQuality" width="11" xlink:href="data:image/PNG;base64,iVBORw0KGgoAAAANSUhEUgAAAAsAAAAJCAYAAADkZNYtAAAAi0lEQVR4Xq1QwQ2AIAwsgQ878HEMnozi06cbwAZuwdcRdBI2QXukGuRtk0uvvWugJeecLaVs1xC11pdDJyLLoAkNzpHxGVJKwRRFn2D2UiyMtTejRl+4hzlIEbTWjXfm0Osf88N/M/uc89mbxoBujGl/xpYzI8n2O+OQjDqJ3q6B+4Fgsj07AH3o9ga0fLiG6f5ODgAAAABJRU5ErkJggg=="/>
+      </pattern>
+      <path d="M5.6 -2.35 L-5.4 -2.35 -5.4 -11.35 5.6 -11.35 5.6 -2.35" ffdec:fill-bitmapId="35" fill-rule="evenodd" style="fill:url(#PatternID_36_1)"/>
+    </g>
+  </defs></svg>

@@ -8,7 +8,12 @@ points, each kind toggled on its own:
 - battery spawns and chargers (charging stations), plus a line from each
   charger to the battery spawns it feeds;
 - the teams' battery containers;
+- the teams' ammo stashes (resupply zones);
 - artefact spawns, one toggle per artefact.
+
+Player spawns are drawn as the HUD's player triangle, turned the way the
+player faces at spawn. The markers are the game's own HUD minimap icons,
+tinted by team.
 
 The map underneath is either the top-down render or the game's own minimap.
 
@@ -50,6 +55,9 @@ What comes from where:
 |---|---|
 | maps, modes, names | `maps_dict` ids whose `gameplay/game_modes/` config is mode 2, 3 or 4 and whose project exists (the server's rule, `crates/survarium/src/v026g/maps.rs`); names from the localization |
 | respawn points, battery spawns, chargers, containers | the project's `server_objects`, shown only where the mode's `rules` read them (88 gather, 89 timed with chargers) |
+| ammo stashes | `client_objects`: each `resupply_zone`'s collision zone, by team |
+| marker icons | `hud.swf` `Minimap._icons` (`PlayerBlue`, `Base`, `SpawnIcon`, `ResupplyIcon`) and the battery glyph of `PlayerCarry`, as SVG (FFDec) |
+| spawn facing | the respawn point's rotation: yaw = y, or pi - y when x and z are pi; forward (-sin yaw, cos yaw) in x/z (on every map the points face the enemy's side) |
 | artefact spawns | `client_objects`: each `artefact_container`'s collision zone, its artefacts from the `generic_anomaly_core` that lists it; names from `st_<artefact>_pickup_hint` |
 | minimap and its frame | `flash_movies/hud.swf`, `survarium.controls.Minimap` (`_minimapProps`, `_levels`) by the project's `project_name`, as the HUD picks it (exported with FFDec) |
 | top-down render | `srp-026g/scripts/damage-calc/assets/maps/` (its README) and the site copy in `servers/web-server/damage/maps/`: the one input not read from the game |
