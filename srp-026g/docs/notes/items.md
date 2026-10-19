@@ -150,7 +150,7 @@ srp's reading of what only the server knew:
 |---|---|
 | an item gets modifications of the types its mask names, one of a type, by `drop_weight` | LIKELY |
 | a dropped weapon or armour of rarity `n` gets `n` modifications | LIKELY (the rank shown is their count) |
-| a reroll offers three of different types that fit in the replaced one's place (its own type too, another strength) | [srp] |
+| a reroll offers three that fit in the replaced one's place (its own type too, another strength): of different types while the item has them, then other strengths of those, so an item of few types (a backpack, a balaclava) is offered three too | [srp] |
 | the payment is taken when the three are offered; an offer not chosen is kept and shown again when the window opens | [srp] |
 | each change of an item makes the next cost `reroll_modificator_multiplicator` (1.1) times more | GUESS: the number's use is not in the client; the per-item prices in `83 46 06`/`08` suggest the price was the item's own |
 | the donor must be another of the same item | LIKELY (the result window shows the donor's dictionary entry as the upgraded item) |
