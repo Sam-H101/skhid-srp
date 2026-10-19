@@ -123,7 +123,12 @@ package
                 "Drużyny są losowane na starcie meczu."],
             "code": ["code", "код", "код", "Code", "kod"],
             "leave": ["Leave", "Вийти", "Выйти", "Verlassen", "Opuść"],
-            "switchTo": ["Switch: max", "Перейти: макс.", "Перейти: макс.", "Wechseln: max.", "Przejdź: maks."],
+            "switchTo": ["Switch room", "Змінити кімнату", "Сменить комнату", "Raum wechseln", "Zmień pokój"],
+            "switchWhy": ["A room for gear up to level %L has a place for you", "Є місце в кімнаті для спорядження до рівня %L",
+                "Есть место в комнате для снаряжения до уровня %L", "Ein Raum für Ausrüstung bis Stufe %L hat Platz für dich",
+                "Pokój dla ekwipunku do poziomu %L ma dla ciebie miejsce"],
+            "switchWho": ["%N's room · %P players", "Кімната %N · гравців: %P", "Комната %N · игроков: %P",
+                "Raum von %N · %P Spieler", "Pokój %N · graczy: %P"],
             "countdown": ["Starts", "Старт", "Старт", "Start", "Start"],
             "inMatch": ["Playing", "Грають", "Играют", "Läuft", "Gra"],
             "experimental": ["exp.", "експ.", "эксп.", "exp.", "eksp."],
@@ -2360,8 +2365,17 @@ package
             // A room of a lower max level that takes us: one click there
             // (the server offers it only while we play no match).
             if (room.switchTo != null)
-                footer([[say("leave"), onLeave, null],
-                    [say("switchTo") + " " + room.switchTo.max, onSwitch, room.switchTo]]);
+            {
+                var to:Object = room.switchTo;
+                var made:Array = footer([[say("leave"), onLeave, null], [say("switchTo"), onSwitch, to]]);
+                // What the switch is, left of the buttons: the room's gear cap,
+                // whose it is and how full.
+                var room_w:Number = made[0].x - 28;
+                var fy:Number = _h - FOOT_H;
+                text(_content, say("switchWhy").split("%L").join(String(to.max)), 16, fy + 5, room_w, 13, GOLD);
+                text(_content, say("switchWho").split("%N").join(to.name).split("%P").join(to.players + " / " + to.size * 2),
+                    16, fy + 24, room_w, 12, GREY);
+            }
             else
                 footer([[say("leave"), onLeave, null]]);
         }
