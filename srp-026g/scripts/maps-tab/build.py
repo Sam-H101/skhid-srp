@@ -38,7 +38,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import shutil
 import subprocess
@@ -51,12 +50,10 @@ from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 SRP = HERE.parents[1]
-sys.path.insert(0, str(SRP / "scripts" / "gen-data-026g"))
 sys.path.insert(0, str(SRP / "scripts" / "released-game"))
-import bincfg  # noqa: E402
 from released import LIST, die, extract, offered, revision as revision_of, write_built_from  # noqa: E402
+from game_maps import WANTED, hud_minimaps, load, playable  # noqa: E402
 
-MODES = (2, 3, 4)
 TYPES = {"js": "text/javascript; charset=utf-8", "webp": "image/webp", "svg": "image/svg+xml"}
 # The rule classes (a mode config's `rules`) that use the battery objects
 # (docs/notes/modes_maps.md section 4): gather_victory_items (88) the spawners and
@@ -71,48 +68,6 @@ RENDER_TABLE = SRP / "scripts" / "damage-calc" / "assets" / "maps" / "maps.json"
 
 def version(blob):
     return hashlib.sha256(blob).hexdigest()[:12]
-
-
-# What the tab reads of the game.
-WANTED = ["client_project", "gameplay/game_modes/", "gameplay/db_static_dictionaries",
-          "localization/english/localization", "localization/ukrainian/localization", "flash_movies/hud.swf"]
-
-
-def load(raw, path):
-    file = raw / path.replace("/", "__")
-    return bincfg.parse(file.read_bytes()) if file.is_file() else None
-
-
-def hud_minimaps(args, raw, work):
-    """{project_name: (frame, bitmap png path)} from hud.swf's Minimap class."""
-    swf = raw / "flash_movies__hud.swf"
-    for what in ("script", "image"):
-        cmd = ["java", "-jar", args.ffdec]
-        if what == "script":
-            cmd += ["-selectclass", "survarium.controls.Minimap"]
-        subprocess.run(cmd + ["-export", what, str(work / what), str(swf)], check=True, capture_output=True)
-    source = (work / "script" / "scripts" / "survarium" / "controls" / "Minimap.as").read_text()
-    num = r"(-?[\d.]+)"
-    props = {m.group(1): {"size": float(m.group(2)), "posX": float(m.group(3)), "posY": float(m.group(4))}
-             for m in re.finditer(r"_minimapProps\.(\w+) = \{\s*\"size\":" + num + r",\s*\"posX\":" + num
-                                  + r",\s*\"posY\":" + num, source)}
-    for alias, of in re.findall(r"_minimapProps\.(\w+) = this\._minimapProps\.(\w+);", source):
-        props[alias] = props[of]
-    fields = dict(re.findall(r"private var (\w+):BitmapData = new (\w+)\(\);", source))
-    levels = {}
-    block = re.search(r"_levels(?::Object)? = \{(.*?)\};", source, re.S)
-    if not block:
-        die("hud.swf: Minimap has no _levels table")
-    for key, cls, field in re.findall(r"\"(\w+)\":(?:new (\w+)\(\)|this\.(\w+))", block.group(1)):
-        levels[key] = cls or fields[field]
-    images = os.listdir(work / "image")
-    out = {}
-    for key, cls in levels.items():
-        found = [n for n in images if re.fullmatch(rf"\d+_{re.escape(cls)}(_.*)?\.png", n)]
-        if len(found) != 1 or key not in props:
-            continue
-        out[key] = (props[key], work / "image" / found[0])
-    return out
 
 
 # The HUD's own icons, frame 1 of each class: the minimap's (Minimap._icons)
@@ -283,28 +238,9 @@ def main():
                          if i["cfg_name"].startswith("gameplay/items/artefacts/")}
 
         # The playable ids, by map (the project's folder) and mode.
-        maps = defaultdict(lambda: {"modes": defaultdict(lambda: {"ids": [], "projects": []})})
-        for entry in dictionary["maps_dict"]:
-            config = load(raw, "gameplay/game_modes/" + entry["cfg_mode_name"])
-            if not config or config["mode"].get("mode") not in MODES:
-                continue
-            mode = config["mode"]
-            project_path = mode["match_making_params"]["map_name"]
-            if not (raw / f"projects__{project_path.replace('/', '__')}__client_project").is_file():
-                continue
-            folder = project_path.split("/")[0]
-            m = maps[folder]
-            m["map_name"] = mode["ui"]["map_name"]
-            entry_mode = m["modes"][mode["mode"]]
-            entry_mode["ids"].append(entry["id"])
-            entry_mode["projects"].append(project_path)
-            entry_mode["mode_name"] = mode["ui"]["mode_name"]
-            entry_mode["parameters"] = mode.get("parameters") or {}
-            entry_mode["rules"] = set(mode.get("rules") or [])
-        if not maps:
-            die("no playable map in the data")
+        maps = playable(raw)
 
-        minimaps = hud_minimaps(args, raw, tmp)
+        minimaps = hud_minimaps(args.ffdec, raw, tmp)
         for sub in ("minimap", "icons"):
             shutil.rmtree(out / sub, ignore_errors=True)
         hud = hud_icons(args, raw, tmp, out)
@@ -349,7 +285,7 @@ def main():
             name = f"{project_name}.webp"
             bbox, size = webp(bitmap, out / "minimap" / name)
             blob = (out / "minimap" / name).read_bytes()
-            s, px, py = frame["size"], frame["posX"], frame["posY"]
+            s, px, py = (float(frame[k]) for k in ("size", "posX", "posY"))
             k = 2 * s / size[0]
             # World rectangles as [x0, -z1, x1, -z0]: the SVG's x right, y down = -z.
             box = [r1(px - s), r1(-py - s), r1(px + s), r1(-py + s)]

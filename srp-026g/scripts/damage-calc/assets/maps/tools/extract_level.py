@@ -2,7 +2,7 @@
 """Extract what a top-down render of one 0.26g project needs from resources.db.
 
     extract_level.py DBGRAB RESOURCES_DB PROJECT(e.g. level_01/day_2) OUT_DIR [PACK_FILES_DIR]
-                     [--patch resources.db.patch_<n> ...]
+                     [--patch resources.db.patch_<n> ...] [--manifest FILE]
 
 With PACK_FILES_DIR (a content pack's files/ tree, e.g. a ported map), files
 are taken from it first and from the database otherwise.
@@ -11,6 +11,11 @@ With --patch (repeatable), the patches are mounted over the database as the
 game mounts them: a file is read from the highest-numbered patch that has it,
 else from the database. Use it for maps a released patch added (London in
 patch 14, the 0.11e maps in patch 22).
+
+With --manifest, FILE gets what was read as JSON: "files", every archive path
+extracted, and "absent", every path looked for and found in no archive (a
+missing texture): build_maps.py hashes where each comes from to know when a
+render is stale.
 
 OUT_DIR/project            decoded client_project (bincfg JSON)
 OUT_DIR/models/<lib>.model/{settings,render/<surface>/converted_model}
@@ -26,7 +31,7 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'gen-data-026g'))  # bincfg
 import bincfg  # noqa: E402
 from PIL import Image  # noqa: E402
 
@@ -35,6 +40,8 @@ DIFFUSE_SLOTS = ('texture_diffuse', 'texture_detail_0', 'texture_vertex_blended_
 
 OVERLAY = None   # a pack's files/ directory, searched before the database
 PATCHES = []     # (patch number, path, set of its file paths), lowest first
+FETCHED = set()  # the archive paths extracted
+ABSENT = set()   # the paths looked for and not found
 
 
 def patch_number(path):
@@ -77,6 +84,7 @@ def grab_one(dbgrab, db, prefix, dest):
             target = dest / real[name]
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(os.path.join(tmp, name), target)
+            FETCHED.add(real[name])
             n += 1
         return n
 
@@ -91,6 +99,8 @@ def grab(dbgrab, db, prefix, dest):
     for _, path, files in PATCHES:
         if any(f.startswith(prefix) for f in files):
             n += grab_one(dbgrab, path, prefix, dest)
+    if not n:
+        ABSENT.add(prefix)
     return n
 
 
@@ -107,11 +117,13 @@ def leaves(d, p=''):
 
 def main():
     global OVERLAY, PATCHES
-    args, patches = [], []
+    args, patches, manifest = [], [], None
     it = iter(sys.argv[1:])
     for a in it:
         if a == '--patch':
             patches.append(next(it))
+        elif a == '--manifest':
+            manifest = Path(next(it))
         else:
             args.append(a)
     dbgrab, db, project, out = args[0], args[1], args[2], Path(args[3])
@@ -175,6 +187,8 @@ def main():
             print('bad texture', t, e, file=sys.stderr)
         dds.unlink()
     shutil.rmtree(out / 'textures', ignore_errors=True)
+    if manifest:
+        manifest.write_text(json.dumps({'files': sorted(FETCHED), 'absent': sorted(ABSENT)}, indent=0))
     print(json.dumps({'project': project, 'models': len(libs), 'materials': len(materials),
                       'textures': len(textures)}))
 

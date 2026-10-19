@@ -27,7 +27,7 @@ served by `servers/web-server/src/maps.rs`.
 - The calculator's look; English and Ukrainian; names from the game's localization. Little text.
 - A mode shows only what its rules use. Chargers appear in the timed battery mode only, with "N active"
   from the mode's `spawn_points_count`; that mode shows no battery spawns (its batteries come out of the chargers).
-- Zoom and drag (wheel, two fingers, buttons). The chosen map and mode are in the address (`#level_01/3`).
-- Maps in one frame (a port and its original, such as the three Vostoks) start on the same view, and switching
-  between them keeps the zoom: nothing jumps.
+- No zoom or drag: the map shows its whole play area. The chosen map and mode are in the address (`#level_01/3`).
+- Maps in one frame (a port and its original, such as the three Vostoks) show the same view: switching between
+  them, nothing jumps.
 - The view and toggles are remembered in the browser.

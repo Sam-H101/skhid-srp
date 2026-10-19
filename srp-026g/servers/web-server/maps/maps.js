@@ -37,7 +37,6 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
   const state = {
     map: MAPS.maps[0].key, mode: null, view: store.get("view") || "render",
     on: Object.assign(Object.fromEntries(LAYERS.map(l => [l.key, true])), store.get("on") || {}),
-    vb: null,
   };
   const fromHash = () => {
     const [key, mode] = decodeURIComponent(location.hash.slice(1)).split("/");
@@ -107,21 +106,16 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
     if (key === "respawn") s.append(hud("player", -5, 1, 15, 1, "t0"), hud("player", 6, 1, 15, 1, "t1"));
     if (key === "spawners") s.append(hud("battery", 0, 0, 14, 1));
     if (key === "stations") s.append(hud("charger", 0, 0, 22, 1));
-    if (key === "containers") s.append(hud("base", -5, 2, 17, 1, "t0"), hud("base", 6, 2, 17, 1, "t1"));
-    if (key === "resupply") s.append(hud("resupply", -4, -1, 18, 1, "t0"), hud("resupply", 5, 1, 18, 1, "t1"));
+    // Two teams: blue above and behind, red below and in front.
+    if (key === "containers") s.append(hud("base", -4, -2, 16, 1, "t0"), hud("base", 4, 2, 16, 1, "t1"));
+    if (key === "resupply") s.append(hud("resupply", -4, -2, 16, 1, "t0"), hud("resupply", 4, 2, 16, 1, "t1"));
     return s;
   };
 
   function drawControls() {
     const m = map();
     if (!m.modes.some(o => o.mode === state.mode)) state.mode = m.modes[0].mode;
-    // A map in the same frame (a port and its original) keeps the view, for comparing.
-    chips($("maps"), MAPS.maps.map(o => [o.key, N(o.name)]), state.map, k => {
-      const before = map();
-      state.map = k;
-      if (!sameFrame(map(), before)) state.vb = null;
-      go();
-    });
+    chips($("maps"), MAPS.maps.map(o => [o.key, N(o.name)]), state.map, k => { state.map = k; go(); });
     chips($("modes"), m.modes.map(o => [o.mode, modeName(o, m.modes)]), state.mode, k => { state.mode = k; go(); });
     chips($("views"), [["render", T("From above", "Згори")], ["minimap", T("Minimap", "Мінімапа")]], state.view,
       v => { state.view = v; store.set("view", v); go(); });
@@ -144,7 +138,7 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
     $("note").textContent = mo.batteries && !tdm ? T(`${mo.batteries} batteries to win.`, `${mo.batteries} батарей для перемоги.`) : "";
   }
 
-  // The view box: the play area to start, then wherever the reader zooms and drags.
+  // The view box: the play area, the same for maps in one frame.
   const svg = $("map");
   // The play area, grown to hold every point of the map: of every map in
   // its frame, so maps that share one start in the same place.
@@ -157,17 +151,16 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
     const pad = Math.max(x1 - x0, y1 - y0) * 0.03;
     return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
   };
-  // Metres per screen pixel, so markers keep their size on screen at any zoom
-  // (the HUD's bitmaps at their own pixel size: crisp).
+  // Metres per screen pixel, so markers keep their size on screen (the HUD's
+  // bitmaps at their own pixel size: crisp).
   const unit = () => {
-    const r = svg.getBoundingClientRect(), [, , w, h] = state.vb;
+    const r = svg.getBoundingClientRect(), [, , w, h] = fit();
     return Math.max(w / (r.width || 800), h / (r.height || 800));
   };
 
   function drawMap() {
     const m = map(), mo = mode();
-    state.vb = state.vb || fit();
-    svg.setAttribute("viewBox", state.vb.join(" "));
+    svg.setAttribute("viewBox", fit().join(" "));
     svg.setAttribute("aria-label", N(m.name));
     const u = unit();
     const kids = [];
@@ -206,46 +199,7 @@ const MAPS = {"revision":22,"maps":[{"key":"level_01","name":{"en":"Rudnya","uk"
     drawMap();
   }
 
-  // Zoom and drag: the wheel, two fingers, the buttons; a double click fits the map again.
-  const zoomAt = (k, cx, cy) => {
-    const [x, y, w, h] = state.vb, full = fit();
-    const nw = Math.min(full[2] * 1.5, Math.max(full[2] / 12, w * k)), f = nw / w;
-    state.vb = [cx - (cx - x) * f, cy - (cy - y) * f, w * f, h * f];
-    drawMap();
-  };
-  const toWorld = (px, py) => {
-    const r = svg.getBoundingClientRect(), p = svg.createSVGPoint();
-    p.x = px; p.y = py;
-    const q = p.matrixTransform(svg.getScreenCTM().inverse());
-    return r.width ? [q.x, q.y] : [state.vb[0] + state.vb[2] / 2, state.vb[1] + state.vb[3] / 2];
-  };
-  const centre = () => [state.vb[0] + state.vb[2] / 2, state.vb[1] + state.vb[3] / 2];
-  svg.addEventListener("wheel", e => { e.preventDefault(); zoomAt(e.deltaY > 0 ? 1.2 : 1 / 1.2, ...toWorld(e.clientX, e.clientY)); }, { passive: false });
-  svg.addEventListener("dblclick", () => { state.vb = fit(); drawMap(); });
-  $("zin").addEventListener("click", () => zoomAt(1 / 1.4, ...centre()));
-  $("zout").addEventListener("click", () => zoomAt(1.4, ...centre()));
-  $("zfit").addEventListener("click", () => { state.vb = fit(); drawMap(); });
-  const pointers = new Map();
-  let pinch = null;
-  svg.addEventListener("pointerdown", e => { svg.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); svg.classList.add("drag"); pinch = null; });
-  svg.addEventListener("pointermove", e => {
-    if (!pointers.has(e.pointerId)) return;
-    const prev = pointers.get(e.pointerId);
-    pointers.set(e.pointerId, [e.clientX, e.clientY]);
-    if (pointers.size === 1) {
-      const u = unit();
-      state.vb = [state.vb[0] - (e.clientX - prev[0]) * u, state.vb[1] - (e.clientY - prev[1]) * u, state.vb[2], state.vb[3]];
-      drawMap();
-    } else if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-      if (pinch) zoomAt(pinch / d, ...toWorld((a[0] + b[0]) / 2, (a[1] + b[1]) / 2));
-      pinch = d;
-    }
-  });
-  const up = e => { pointers.delete(e.pointerId); pinch = null; if (!pointers.size) svg.classList.remove("drag"); };
-  svg.addEventListener("pointerup", up);
-  svg.addEventListener("pointercancel", up);
   addEventListener("resize", () => drawMap());
-  addEventListener("hashchange", () => { fromHash(); state.vb = null; go(); });
+  addEventListener("hashchange", () => { fromHash(); go(); });
   go();
 })();
