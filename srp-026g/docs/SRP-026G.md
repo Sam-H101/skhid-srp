@@ -77,8 +77,9 @@ start them: the two login servers share one port.
    free in the lobby are put on two sides made to count alike (a player's
    gear, level and balance rating; with an odd count the stronger players
    are the side of fewer: `matchmaking.md` §8), squads together. Who comes
-   while the match is played goes into it at once, to its very end, on the
-   side that then counts for less (the lead counts too). After the match
+   while the match is played sees the room first and goes into it 15 s
+   later (or at once with Join match) until 30 s are left, on the side
+   that then counts for less (the lead counts too). After the match
    everyone is in the room again for the next vote; a player leaves by
    itself, or when its game is gone. A player's level is the client's own
    "equipment level" (its highest kit, moved up by its rating); the

@@ -20,20 +20,24 @@
 //!   (`Matchmaking::seat_sides_in_pool`), on the map the vote chose and
 //!   with none of the server's bots; then "match found" and `82`
 //!   as for any Play. Its rewards are any match's.
-//! - **Late.** A member in the lobby while the room's match is played goes
-//!   into it at once if the match admits players (to its end), on the side
-//!   that counts for less (`matchmaking_policy::place_weaker`); otherwise it
-//!   waits for the next match.
+//! - **Late.** A member in the lobby while the room's match is played sees
+//!   the room first and goes into it `LATE_JOIN_WAIT` later (or at once on
+//!   its ask) if the match admits players (from its countdown until
+//!   `LOAD_MARGIN` is left), on the side that counts for less
+//!   (`matchmaking_policy::place_weaker`); otherwise it waits for the next
+//!   match.
 //! - **After.** The match over, its players are in the lobby again and in
 //!   the room, whose next vote and wait begin.
 //! - **Play.** Play with nothing else chosen puts the player into an open
-//!   room (a squad mate's first, then the one nearest its level), or makes
+//!   room (the one nearest its level, however far, then the fullest), or makes
 //!   one for it (8 v 8, any max level, 30 s, the whole pool), and answers
 //!   with the lobby state: the movie shows the room.
-//! - A member whose game is gone (closed, killed, its link silent) keeps
+//! - A member whose game is gone (crashed, killed, its link silent) keeps
 //!   its place while its session is kept: the link's 30 s and the session's
 //!   60 s, about 90 s in all (the owner's of 2026-10-18); then it leaves the
-//!   room and its queue, and may join again as a new member.
+//!   room and its queue, and may join again as a new member. Its game
+//!   started anew within that keeps the place; a game quit from its menu
+//!   (`FA`) leaves the room at once.
 //!
 //! # Settings (environment, read once at start)
 //!
@@ -445,7 +449,7 @@ impl Core<'_> {
     }
 
     /// Play's room: the asker's own if it is in one; else an open room
-    /// (`Rooms::open_for`), or a new one made for it. What went wrong is
+    /// (`room_for_play`), or a new one made for it. What went wrong is
     /// kept for its next state.
     fn room_quick(&mut self, who: &Who, now: Instant) {
         // Play is another choice than waiting: out of any queue.
@@ -578,6 +582,8 @@ impl Core<'_> {
     /// the highest) and not under its equipment; the lowest of them, then
     /// the fullest, then the oldest. None while it plays a match.
     fn room_switch(&self, who: &Who, room: &model::Room) -> Option<RoomSwitch> {
+        // Only what a Join would take (no maintenance near, no clan team).
+        self.room_fit(who).ok()?;
         let playing = room.in_match.contains(&who.account_id)
             || self
                 .player(who.addr)
@@ -703,6 +709,11 @@ impl Core<'_> {
     /// match), its equipment within the max level. Straight into a match
     /// being played. One who may not is out of the queue.
     fn room_admit_queues(&mut self, now: Instant) {
+        // Near a maintenance nobody may come: the queues wait, to be told
+        // (code 9) when their rooms are disbanded.
+        if self.maintenance_is_near() {
+            return;
+        }
         for key in self.rooms.with_queue_and_place() {
             while let Some(account_id) = self.rooms.next_in_queue(key) {
                 let fits = self.room_fit_of(account_id).is_ok()

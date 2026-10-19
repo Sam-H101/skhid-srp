@@ -1727,24 +1727,24 @@ fn room_rules(lang: Lang, squads: bool) -> String {
     let cards = session::v026g::rooms::CARDS;
     let mut items = vec![
         lang.tr(
-            "Matches are played on servers in the lobby: join one from the list, make your own (its size, maps, wait and an optional PIN), or press Play.",
-            "Матчі грають на серверах у лобі: приєднайтеся до одного зі списку, створіть свій (розмір, мапи, очікування й PIN за бажанням) або натисніть «Грати».",
+            "Matches are played in rooms in the lobby: join one from the list, make your own (its size, max level, maps, wait and an optional PIN), or press Play.",
+            "Матчі грають у кімнатах у лобі: приєднайтеся до однієї зі списку, створіть свою (розмір, макс. рівень, мапи, очікування й PIN за бажанням) або натисніть «Грати».",
         ),
         lang.tr(
-            "Play puts you on the server nearest your level, a squad mate's first, or makes a new one.",
-            "«Грати» ставить вас на сервер, найближчий до вашого рівня (спершу — на сервер товариша по загону), або створює новий.",
+            "Play puts you in the open room nearest your level, or makes a new one.",
+            "«Грати» ставить вас у відкриту кімнату, найближчу до вашого рівня, або створює нову.",
         ),
         lang.tr(
             &format!(
-                "Once a server has its players, they vote for {vote} s between {cards} maps, and the match starts after the server's wait."
+                "Once a room has its players, they vote for {vote} s between {cards} maps, and the match starts after the room's wait."
             ),
             &format!(
-                "Коли на сервері досить гравців, вони {vote} с голосують за одну з {cards} мап, і матч починається після очікування сервера."
+                "Коли в кімнаті досить гравців, вони {vote} с голосують за одну з {cards} мап, і матч починається після очікування кімнати."
             ),
         ),
         lang.tr(
-            "Join a server while its match is played and you go into it, to its very end, on the weaker side. After a match everyone is back on the server.",
-            "Хто приєднується до сервера під час матчу, потрапляє в цей матч, аж до його кінця, на слабшу сторону. Після матчу всі повертаються на сервер.",
+            "Join a room while its match is played: you see the room, then go into the match (on the weaker side) until its last 30 s. After a match everyone is back in the room.",
+            "Хто приєднується до кімнати під час матчу, бачить кімнату, а потім потрапляє в матч (на слабшу сторону) — до його останніх 30 с. Після матчу всі повертаються в кімнату.",
         ),
         lang.tr(
             "Teams are balanced by gear, level and past results.",
@@ -2902,7 +2902,7 @@ mod tests {
     fn the_rooms_are_told_as_they_are() {
         let en = room_rules(Lang::En, false);
         assert!(en.contains("vote for 15 s between 3 maps"));
-        assert!(en.contains("to its very end, on the weaker side"));
+        assert!(en.contains("until its last 30 s"));
         assert!(en.contains("Squads are off"));
         // Nothing of the queue's rules is left in it.
         assert!(!en.contains("countdown"));

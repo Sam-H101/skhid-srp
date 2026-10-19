@@ -243,6 +243,26 @@ fn play_takes_the_room_nearest_the_players_level_however_far() {
     assert_eq!(play(&mut world, fay), low);
 }
 
+/// A member whose game is started anew (closed or crashed: a new sign-in,
+/// a new session) is still in its room.
+#[test]
+fn a_game_started_anew_keeps_its_room() {
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    let key = create(&mut world, alice, spec(8), None);
+    rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    let (account_id, _) = world.ids[bob];
+    let session = world.new_session(account_id);
+    let again = world.connect_session((account_id, session));
+    world.take(again);
+    assert_eq!(
+        world.core.rooms.of(account_id).map(|room| room.key),
+        Some(key)
+    );
+    assert_eq!(header(&state(&mut world, alice))[MEMBERS], "2");
+}
+
 /// A member is offered the open room of the lowest max level that takes it,
 /// lower than its own room's, and one click (a Join) moves it there; none
 /// over its equipment, none with a PIN, none in its own room (the owner's

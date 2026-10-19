@@ -550,7 +550,9 @@ impl<'a> Core<'a> {
                     link.transport.kick(now);
                 }
             } else {
-                self.sign_out(old, "its account signed in again", now);
+                // Its game started anew (closed, crashed): a new session, but
+                // the same player, whose room keeps it.
+                self.sign_out(old, "its account signed in again", now, false);
             }
         }
 
@@ -728,6 +730,12 @@ impl<'a> Core<'a> {
     /// (unless its game goes on with another link) its session and its
     /// room ended. The link itself stays for the transport to finish.
     pub fn retire(&mut self, addr: SocketAddr, why: &str, end_session: bool) {
+        self.retire_link(addr, why, end_session, end_session);
+    }
+
+    /// [`Self::retire`], its room ended or not apart from its session (an
+    /// account that signed in again from a game started anew keeps it).
+    fn retire_link(&mut self, addr: SocketAddr, why: &str, end_session: bool, room_ends: bool) {
         let Some(link) = self.links.get_mut(&addr) else {
             return;
         };
@@ -743,9 +751,10 @@ impl<'a> Core<'a> {
         if let Some(account) = self.store.account(player.account_id) {
             account.locked().play = None;
         }
-        if end_session {
-            // And its room.
+        if room_ends {
             self.room_gone(player.account_id);
+        }
+        if end_session {
             // It leaves its squad with it; a seat in a match is kept by the
             // store until the match is over.
             self.store.end_session(player.session_id);
@@ -761,8 +770,10 @@ impl<'a> Core<'a> {
     /// Sign a player out from this side: `AA` (the client goes to its login
     /// screen with `st_login_menu_status_sign_in_already_online`), then the
     /// disconnect.
-    pub fn sign_out(&mut self, addr: SocketAddr, why: &str, now: Instant) {
-        self.retire(addr, why, true);
+    /// `room_ends`: its room ends with it (not for an account that signed in
+    /// again).
+    pub fn sign_out(&mut self, addr: SocketAddr, why: &str, now: Instant, room_ends: bool) {
+        self.retire_link(addr, why, true, room_ends);
         if let Some(link) = self.links.get_mut(&addr) {
             let serial = link.push(lobby::signed_out());
             link.stage = Stage::Leaving {
@@ -885,7 +896,7 @@ impl<'a> Core<'a> {
             })
             .collect();
         for addr in ended {
-            self.sign_out(addr, "its session ended", now);
+            self.sign_out(addr, "its session ended", now, true);
         }
 
         self.check_matches(now);

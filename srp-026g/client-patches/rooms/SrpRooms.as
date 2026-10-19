@@ -848,7 +848,14 @@ package
                 // Grey in a room, and from a press until its answer (6 s at
                 // most); the game's own word otherwise.
                 var asking:Boolean = _playAskedAt != 0 && getTimer() - _playAskedAt < 6000;
-                _lobby.statusPanel.playBtn.enabled = _room == null && !asking && _nativePlay;
+                // Our row says we play the room's match, yet we are here (the
+                // game started anew): Play takes us back to our seat.
+                var seat:Boolean = false;
+                if (_room != null)
+                    for (var i:int = 0; i < _room.members.length; i++)
+                        if (_room.members[i].me && _room.members[i].inMatch)
+                            seat = true;
+                _lobby.statusPanel.playBtn.enabled = (_room == null || seat) && !asking && _nativePlay;
             }
             catch (e:Error)
             {

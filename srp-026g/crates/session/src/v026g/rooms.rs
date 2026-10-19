@@ -24,7 +24,7 @@
 //! - After the match everyone is back in the room, and the next vote and
 //!   wait begin.
 //! - Play with nothing else chosen puts a player into an open room (no
-//!   PIN, a place free; [`Rooms::open_for`]), or makes a new one.
+//!   PIN, a place free; [`Rooms::open_rooms`]), or makes a new one.
 //!
 //! This module keeps the rooms and their rules. The lobby asks it, does
 //! what it says (sends players to a match, tells the clients) and tells it
@@ -396,26 +396,6 @@ impl Rooms {
         // In a room: no queue any more.
         self.dequeue(account_id);
         Ok(())
-    }
-
-    /// An open room the account (with its squad's members `mates`) would go
-    /// into on Play: no PIN, a place free, its max level not under the
-    /// account's equipment level `gear`, not one that turned it out. A
-    /// room a mate is in first; then the fullest, a room that is not in a
-    /// match before one that is; then the lowest key (keys are random).
-    pub fn open_for(&self, account_id: u32, gear: u8, mates: &[u32]) -> Option<u32> {
-        self.open_rooms(account_id, gear)
-            .max_by_key(|room| {
-                let with_mate = room.members.iter().any(|member| mates.contains(member));
-                let waiting = !matches!(room.stage, Stage::InMatch { .. });
-                (
-                    with_mate,
-                    room.members.len(),
-                    waiting,
-                    std::cmp::Reverse(room.key),
-                )
-            })
-            .map(|room| room.key)
     }
 
     /// The rooms Play may put the account into: no PIN, a place free, its
@@ -1172,27 +1152,6 @@ mod tests {
     }
 
     #[test]
-    fn play_finds_an_open_room_a_mate_is_in_first() {
-        let now = Instant::now();
-        let mut rooms = Rooms::default();
-        let mut keys = 0..;
-        let mut next = |_: usize| keys.next().unwrap();
-        let locked = rooms
-            .create(1, 0, spec(8, Some(1)), &POOL, &POOL, 50, now, &mut next)
-            .unwrap();
-        let big = rooms
-            .create(2, 0, spec(8, None), &POOL, &POOL, 50, now, &mut next)
-            .unwrap();
-        rooms.join(3, 0, big, now).unwrap();
-        let small = rooms
-            .create(4, 0, spec(8, None), &POOL, &POOL, 50, now, &mut next)
-            .unwrap();
-        assert_ne!(locked, big);
-        assert_eq!(rooms.open_for(9, 0, &[]), Some(big));
-        assert_eq!(rooms.open_for(9, 0, &[4]), Some(small));
-    }
-
-    #[test]
     fn a_draft_names_the_pool_and_lasts_a_while() {
         let now = Instant::now();
         let mut rooms = Rooms::default();
@@ -1262,7 +1221,7 @@ mod tests {
             .create(1, 5, capped, &POOL, &POOL, 50, now, &mut first)
             .unwrap();
         assert_eq!(rooms.join(2, 6, key, now), Err(Refused::GearTooHigh));
-        assert_eq!(rooms.open_for(2, 6, &[]), None);
+        assert!(rooms.open_rooms(2, 6).next().is_none());
         assert_eq!(rooms.join(2, 5, key, now), Ok(()));
         let any = room_of(&mut rooms, 3, 8, None, now);
         assert_eq!(rooms.join(4, 15, any, now), Ok(()));

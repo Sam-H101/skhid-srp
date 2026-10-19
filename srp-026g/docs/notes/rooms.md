@@ -22,9 +22,11 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Cod
 - **Members:** stay in their room from match to match until they press Leave, the owner
   kicks them (only in a room with a PIN; they may not come back), the room is disbanded,
   or their game is gone for good.
-- **Lost (game closed, killed, link silent):** the place is kept for about 90 s (the link's
+- **Lost (game crashed, killed, link silent; or started anew):** the place is kept for about 90 s (the link's
   30 s + the session's 60 s), the member shown grey (`away`); Play within it goes back to the
-  same seat, state kept. After it the place is lost: they may join again as a new member.
+  same seat, state kept (Play stays usable while their row says they play the match). After
+  it the place is lost: they may join again as a new member. A game quit from its menu leaves
+  the room at once.
 - **Before each match:** once the minimum of players who can play is in, a 15 s vote on 3
   cards (map + weather + mode; 25 s after a match: players come back from results first);
   votes may change; most votes wins, a tie or none drawn at random. Then the owner's wait,

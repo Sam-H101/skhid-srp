@@ -194,9 +194,9 @@ impl Game {
                 .all(|p| p.resources_loaded && p.installed_roster == self.players())
     }
 
-    /// Until when a late joiner is taken: the time limit, while the match
-    /// [admits](Self::admitting) players (to its very end, the owner's of
-    /// 2026-10-17).
+    /// Until when a late joiner is taken: the time limit less
+    /// `LOAD_MARGIN` (30 s, the owner's of 2026-10-19), while the match
+    /// [admits](Self::admitting) players.
     pub(crate) fn admission_deadline(&self, now: Instant) -> Option<Instant> {
         if !self.admitting() {
             return None;
