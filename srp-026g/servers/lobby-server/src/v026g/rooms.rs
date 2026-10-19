@@ -23,8 +23,8 @@
 //! - **Late.** A member in the lobby while the room's match is played sees
 //!   the room first and goes into it `LATE_JOIN_WAIT` later (or at once on
 //!   its ask) if the match admits players (from its countdown until
-//!   `LOAD_MARGIN` is left), on the side that counts for less
-//!   (`matchmaking_policy::place_weaker`); otherwise it waits for the next
+//!   `LOAD_MARGIN` is left), on the side with fewer players in it, then
+//!   the one that counts for less (`matchmaking_policy::place_weaker`); otherwise it waits for the next
 //!   match.
 //! - **After.** The match over, its players are in the lobby again and in
 //!   the room, whose next vote and wait begin.

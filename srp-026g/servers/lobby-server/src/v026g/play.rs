@@ -9,8 +9,9 @@
 //!
 //! The match itself is the match server's: the lobby hands it the roster
 //! through [`MatchHost`] and sends each player where the ticket says
-//! (0x82). A running room match takes a late joiner on the side that
-//! counts for less (`rooms`, `policy::place_weaker`) until its end.
+//! (0x82). A running room match takes a late joiner on the side with fewer
+//! players, then the one that counts for less (`rooms`,
+//! `policy::place_weaker`) until its end.
 //!
 //! Each minute of a match being played the log has what its sides count for
 //! and the chance that gives team 0 ([`Core::log_predictions`]): what the

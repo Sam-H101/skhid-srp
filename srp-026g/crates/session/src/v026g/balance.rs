@@ -25,7 +25,8 @@
 //! - **A match that is being played** counts a third thing for the side
 //!   that leads: its lead ([`Weights::lead`]), a battery or a ticket being
 //!   a part of a player. A player who joins such a match goes to the side
-//!   that then counts for less (`crate::matchmaking_policy::place_weaker`).
+//!   with fewer players, and of two alike in that to the one that then
+//!   counts for less (`crate::matchmaking_policy::place_weaker`).
 //!   [`Weights::expected`] is the chance the whole count gives a side; the
 //!   lobby writes it in its log each minute, to be fitted again.
 
