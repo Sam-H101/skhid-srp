@@ -74,11 +74,14 @@ release's. The "Result" row is the build of the revision named in it.
 | `shared_upgrades_026g.asm`, `shared_upgrades_026g.section.bin` | The source of patch 30's code (one upgrade on several items: taking it off names the item) and that code assembled for 0x700 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_shared_upgrades_026g.py` | Runs the original's and patch 30's upgrade-window drop and the `83 46 01` / `02` answers on made-up inventories with one upgrade on several items (needs Unicorn) |
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_look_026g.asm`, `warmup_look_026g.section.bin` | The source of patch 31's camera before the start (while the kits are shown, a drag turns the warmup camera and the wheel moves it, as the lobby's character view) and that code assembled for 0xD40 of `.srp`, its state at 0xE20 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_keys_026g.asm`, `warmup_keys_026g.section.bin` | The same patch's buttons: one held from before the start (a drag of its camera) is not the player's until it is let go, and that code assembled for 0x9A8 of `.srp`, its state at 0xE30 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `warmup_limits_026g.asm`, `warmup_limits_026g.section.bin` | The same camera's end of a drag and its limits (the lobby camera's: distance 1.5 to 4.6, pitch within 60 degrees) and that code assembled for 0xA98 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
-| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change and the hud's update of the local player on made-up objects (needs Unicorn) |
+| `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves and the mouse's buttons through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
 | `check_baked_texture_026g.py` | Runs the original's and patch 35's baked-texture list of the camouflage/decal baker (the look-up, the push and check_loaded_baked_texture) on made-up loads, among them those of the crash of 2026-10-17 (needs Unicorn) |
 | `weapon_preview_026g.asm`, `weapon_preview_026g.section.bin` | The source of patch 32's code (a weapon's upgrade window shows the weapon) and that code assembled for 0x2E50 of `.srp`, its state at 0xE00 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `weapon_draw_026g.asm`, `weapon_draw_026g.section.bin` | The source of patch 32's draw (a weapon's window draws the player as the lobby does) and that code assembled for 0xD20 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -1549,7 +1552,9 @@ each game must do it, at the same tick.
 
 **The patch.** Only in the builds with the late join; `kit_change_026g.asm`,
 319 bytes at `.srp`+EC0h (after the shell_32.dll check, before the late
-join), four sites, and nine nops at a fifth:
+join), four sites, nine nops at a fifth, and `warmup_look_026g.asm` and
+`warmup_limits_026g.asm` at a sixth and a seventh (the camera before the
+start, below):
 
 - The respawn rule's tick (0x316820, its first three instructions) first
   goes over the places while the time rule's state is "waiting for players"
@@ -1584,6 +1589,56 @@ join), four sites, and nine nops at a fifth:
   cursor where it is, for another pick, before the start and on the death
   screen alike, until the player becomes alive (in play they are then
   hidden as before).
+- The camera before the start (2026-10-18, the owner: "once we added the
+  ability to switch kits at start up, it is no longer possible to move the
+  camera around"; of the first fix, which let every move turn it: "it
+  should rotate when the left button is pressed, just like in the lobby",
+  "and scrolling for putting the camera further, just like in the lobby").
+  The kits show the hud's cursor, and the game world's input handler, which
+  gets a mouse move before the player's input handler (priority 7 before
+  10), moves the cursor and keeps the move while the cursor is shown
+  (0x25D0E0), so the warmup camera, which the player's handler turns and
+  moves by the wheel, stood still. The first ten bytes of 0x25D0E0 jump to
+  `warmup_look_026g.asm` (184 bytes at `.srp`+D40h, after the weapon
+  preview's draw; 12 bytes of state at `.srpd`+E20h). While the kits are
+  shown and the player's handler is in the warmup mode (3, before play), as
+  the lobby's character view (`lobby_camera`, 0x283D30):
+  - plain moves are the cursor's; a left press that moves no more than 8
+    units (|x| + |y|) is a click, the selector's;
+  - past that, and at once with the lobby camera's own buttons (right, 5th,
+    7th), it is a drag: the moves go to the player's handler and turn the
+    camera, the cursor stays (the hud's pointer off the screen meanwhile,
+    so a drag begun on a kit picks nothing) and is put back where it was at
+    the first move after the release, as the lobby does;
+  - the wheel goes on to the player's handler alone (no turn): nearer
+    forward, further back, 0.12 a notch, the lobby's step.
+  `warmup_limits_026g.asm` (101 bytes at `.srp`+A98h, after the seek code)
+  has the end of a drag and, called from the warmup mode's store of the
+  pitch (0x24225E, eight bytes), the lobby camera's limits: the pitch within
+  60 degrees, the distance within 1.5 and 4.6 (the stock warmup had none,
+  and starts at 1.0: it now starts at 1.5). On the death screen the cursor
+  takes every move as before. The warmup mode gives the player's input no
+  turn: nothing a match computes changes, and a game with it and one
+  without play together.
+  A button held from before the start is not the player's until it is let
+  go (the owner, 2026-10-19: "players will shoot immediately once match
+  starts"). The input world tells its handlers of a button still held at
+  every frame (kind 2, 0x3B9D90); the game world's input handler takes the
+  mouse's keys while the cursor is shown (0x25CF60), and the player's handler
+  queues every kind it is told, which the play step takes as the weapon's
+  action whatever the kind (0x23FF50, 0x242460): a drag still held when the
+  kits went at the start fired the weapon at the next frame and once more at
+  its release (and aimed with the right button; a pick held through a
+  respawn did the same).
+  The first ten bytes of 0x25CF60 jump to `warmup_keys_026g.asm` (88 bytes
+  at `.srp`+9A8h, after the suicide key, up to the seek code; the buttons
+  marked in a dword at `.srpd`+E30h): a button that goes down while the
+  cursor is shown is marked; while the cursor is not shown a marked button's
+  kind 2 and its release are taken there, and the release unmarks it. The
+  owner, on the first writing, which gave the release on: "when mouse is
+  released one shot still happens". The player's input only misses the held
+  states and the release of a press it never had: nothing a match computes
+  changes.
 
 **Order.** In a tick of a build with the late join the respawn rule runs
 first (tick list 0, its key from the core's counter), then the places, which
@@ -1625,7 +1680,19 @@ first person and free to move during the countdown; with the view's fix
 (d8acf39): the camera and the movement lock right, a click on a kit reset
 the cursor; 3417c05 (two games): a switch before the start in place with
 the warmup's camera, the cursor kept, re-picks, re-picks on the death
-screen, the start's release. **Not run in a game: this build**, which adds
+screen, the start's release. The camera before the start (check 32's two
+sites, the lobby camera's buttons, step and limits;
+`check_kit_change_026g.py`'s mouse moves through the input world's loop
+and the warmup mode's step: plain moves, a click with a little movement, a
+left drag, a right drag, the wheel, the wheel in a drag, the death screen,
+a replay's cursor, no local player; the mouse's buttons through the
+input world's loop and the game world's handler: a left or right drag held
+into the start, a pick held through a respawn, a click let go before the
+start, a press in play; nine broken builds fail it): its
+first form, every move turning the camera, was run by the owner on
+2026-10-18 ("not very good, it should rotate when the left button is
+pressed"); **the drag, the wheel and the limits are not run in a game**.
+**Not run in a game: this build**, which adds
 the end of the places and the protection when none is left (a switch of a
 place of the match plays as in 3417c05; with no protection left the new kit
 is not invulnerable in either, and in the tick its protection ends it now
