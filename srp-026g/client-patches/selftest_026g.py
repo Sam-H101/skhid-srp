@@ -1307,7 +1307,8 @@ def late_join_sites():
         [(P.AI_ARENA_VA, len(P.AI_ARENA[1]))] + \
         [(va, len(old)) for va, old, _ in P.MEMORY_DEFAULTS] + \
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
-        [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))]
+        [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))] + \
+        [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))]
 
 
 def pickup_sites():
@@ -1337,7 +1338,7 @@ def test_late_join_bin():
           f"its first {P.LATE_JOIN_ASM_SIZE} bytes are what nasm makes of late_join_026g.asm today")
     check(all(0 < offset < len(code) - P.LATE_JOIN_ASM_SIZE for offset in kept["symbols"].values()),
           "the C functions the assembly calls are inside the C code")
-    entries = sorted({offset for _, _, offset, _ in P.LATE_JOIN_HOOKS} | {P.LATE_JOIN_READY_OFFSET})
+    entries = sorted({offset for _, _, offset, _ in P.LATE_JOIN_HOOKS + P.TAB_LIST_HOOKS} | {P.LATE_JOIN_READY_OFFSET})
     check(all(code[offset] != 0xCC and (offset == 0 or code[offset - 1] == 0xCC) for offset in entries),
           f"the {len(entries)} entries the hooks go to start code after int3 padding")
     return code
@@ -3004,6 +3005,102 @@ def imports(image):
     return out
 
 
+def test_tab_list(original, image, before):
+    """Check 39: the scoreboard shows the places in the match and no place
+    whose player left (patch 39, TAB_LIST_*). check_tab_list_026g.py runs
+    the rows' refresh and the lists made again on made-up huds."""
+    stock = Image(original)
+    rows = lambda blob, at, size: [text for _, _, text in ndisasm(blob.read(at, size), at)]
+    # What `online` is: kd_stats_rule's +114h + 8 x place, set on entering,
+    # cleared on leaving (vtable 0xA177D4: +20h, +24h), copied by
+    # fill_match_hud_state (+44h) into the hud's state at +9Ch + 8 x place.
+    slots = struct.unpack("<3I", stock.read(0xA177F4, 8) + stock.read(0xA17818, 4))
+    fill = rows(stock, 0x323980, 0x50)
+    check(slots == (0x3239F0, 0x323A00, 0x323980)
+          and rows(stock, 0x3239F0, 0x10) == ["movzx eax,byte [esp+0x4]", "mov byte [ecx+eax*8+0x114],0x1",
+                                             "ret 0x8"]
+          and rows(stock, 0x323A00, 0x10) == ["movzx eax,byte [esp+0x4]", "mov byte [ecx+eax*8+0x114],0x0",
+                                             "ret 0x8"]
+          and "mov bl,[ecx+eax*8+0x114]" in fill and "mov [esi+eax*8+0x9c],bl" in fill,
+          "kd_stats_rule's on_player_entered_match (vtable 0xA177D4 +20h, 0x3239F0) sets the place's online byte "
+          "(+114h + 8 x place), on_player_left_match (+24h, 0x323A00) clears it, fill_match_hud_state (+44h, "
+          "0x323980) copies it into the hud's state at +9Ch + 8 x place")
+    left = rows(stock, 0x2D2119, 0x31)
+    check(left[:2] == ["mov esi,[ebp+0x18824]", "mov ebp,[ebp+0x18828]"] and "mov edx,[edx+0x24]" in left
+          and "call edx" in left,
+          "game_world_core::on_player_left_match (0x2D2040) calls slot +24h of every rule of the core "
+          "(+18824h..+18828h)")
+    check(rows(stock, 0x23B2D2, 0xB) == ["lea eax,[edi+0x24]", "lea ecx,[edi+0x2d8]", "cmp eax,ecx"],
+          "update_ui (0x23B200) hashes the hud's state, hud+24h..+2D8h: online of place i is hud+0C0h + 8i")
+    # The sites.
+    for va, old, offset, opcode in P.TAB_LIST_HOOKS:
+        new = P.late_join_hook(va, old, offset, opcode)
+        check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
+              f"{va:#x}: the original's {len(old)} bytes in the original and the build without the late join, "
+              f"`call {P.LATE_JOIN_VA + offset:#x}` and nops here")
+    va, old, new = P.TAB_LIST_LOOP
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
+          f"{va:#x}: the rows' refresh is the original's in the original and the build without the late join, "
+          "rewritten here")
+    check(rows(stock, va, len(old)) == ["movzx eax,bl", "mov edx,eax", "movzx eax,byte [edi+eax*8+0xc0]",
+                                         "imul edx,edx,dword 0x45fc", "add ecx,edx", "push eax", "lea eax,[ecx+0x48]",
+                                         "add ecx,byte +0x8", "push edi", "call 0x23a7f0", "mov ecx,[esp+0x14]",
+                                         "push ecx", "call 0x236d30", "inc bl", "jmp short 0x23b42c"]
+          and rows(image, va, len(new)) == ["movzx eax,bl", "imul edx,eax,dword 0x45fc",
+                                             "movzx eax,byte [edi+eax*8+0xc0]", "test al,al", "jz 0x23b471",
+                                             "add ecx,edx", "push eax", "lea eax,[ecx+0x48]", "add ecx,byte +0x8",
+                                             "push edi", "call 0x23a7f0", "push ebx", "call 0x236d30", "inc bl",
+                                             "jmp short 0x23b42c", "nop", "nop"],
+          "the loop body: set_online_player (0x23A7F0) with the place's online byte and list_update_player "
+          "(0x236D30) for every place in the original; here only for a place whose byte is not 0, the same "
+          "arguments (the place from ebx, whose low byte is the one stored at [esp+14h])")
+    check(stock.read(0x23B421, 9) == bytes.fromhex("80bfba00000000744d")
+          and image.read(0x23B428, 2) == bytes.fromhex("744d"),
+          "0x23B421: the shown flag's test is followed by `jz 0x23b477`, which stays (the call sets its flags)")
+    check(rows(stock, 0x23536E, 0x1C) == ["mov ecx,[esp+0x12c]", "mov edx,[ecx]", "mov edx,[edx+0x34]",
+                                          "lea eax,[esp+0x58]", "push eax", "mov eax,[esp+0x138]", "push ebx",
+                                          "push eax", "call edx"]
+          and rows(stock, 0x234F04, 0x2B)[-3:] == ["mov eax,[eax+0x3c]", "push edx", "call eax"],
+          "0x23537A: the scoreboard's row goes in by its array's SetElement (vtable+34h: data, the place, the row); "
+          "the enemies' ids go in by PushBack (vtable+3Ch: data, the value, 0x234F2D)")
+    code = open(P.late_join_bin(), "rb").read()
+    for offset, start, size, wanted in ((P.TAB_ROW_OFFSET, P.TAB_ROW_START, 0x2F, {P.LATE_JOIN_VA + 2304}),
+                                        (P.TAB_SHOWN_OFFSET, P.TAB_SHOWN_START, 0x62,
+                                         {P.LATE_JOIN_VA + 2304, P.LATE_JOIN_VA + 3328})):
+        at = P.LATE_JOIN_VA + offset
+        listing = ndisasm(code[offset:offset + size], at)
+        calls = {branch_target(text) for _, _, text in listing if text.startswith("call 0x")}
+        leaving = [text for _, _, text in listing if branch_target(text) is not None
+                   and not text.startswith("call") and not at <= branch_target(text) < at + size]
+        check(code[offset:offset + len(start)] == start and image.read(at, size) == code[offset:offset + size]
+              and calls == wanted and not leaving and listing[-1][2] == "ret"
+              and not [t for _, _, t in listing if re.search(r"\[(?:dword )?0x", t)],
+              f"{at:#x}: the code calls get_state{' and rebuild_lists' if len(wanted) > 1 else ''} alone, leaves "
+              "by its `ret`, and holds no absolute address (the state page is found from its own address)")
+    hook = ndisasm(code[3456:3520], P.LATE_JOIN_VA + 3456)
+    back = P.LATE_JOIN_VA + P.TAB_SHOWN_OFFSET + code[P.TAB_SHOWN_OFFSET:].index(bytes.fromhex("57e8")) + 6
+    pc = P.LATE_JOIN_VA + 3456 + 5
+    adds = [int(text.split(",")[1], 16) for _, _, text in hook if text.startswith("add ecx,")]
+    check(len(adds) == 2 and (pc + adds[0]) & 0xFFFFFFFF == P.LATE_JOIN_VA + 1120 + 100
+          and (pc + adds[0] + adds[1]) & 0xFFFFFFFF == back and code[back - P.LATE_JOIN_VA:][:2] == b"\x8f\x06",
+          "lists_hook ends a run of the lists whose return address is install_context's or tab_shown's (the "
+          "instruction after its call of rebuild_lists)")
+    sites = [(h[0], h[1]) for h in P.TAB_LIST_HOOKS] + [(va, old)]
+    # A rel8 branch byte near a site counts when it is an instruction of the
+    # host function's own listing; a 4-byte value spelling an address
+    # inside is no pointer without a relocation (none is under the sites).
+    spelled = {site + i for site, bytes_ in sites for i in range(1, len(bytes_))
+               if original.find(struct.pack("<I", site + i)) != -1}
+    hosts = ((0x234E71, 0x23572B), (0x23B200, 0x23B4A0))
+    starts = {address for lo, hi in hosts for address, _, _ in ndisasm(stock.read(lo, hi - lo), lo)}
+    found = [a for site, bytes_ in sites for a in aimed_inside(original, site, len(bytes_), 0x82)
+             if a not in spelled and (a in starts or not any(lo <= a < hi for lo, hi in hosts))]
+    under = [v for kind, v in stock.relocations().values() if kind == 3
+             and any(site - 3 < v < site + len(bytes_) for site, bytes_ in sites)]
+    check(not found and not under, "nothing aims inside the three sites (no branch of .text, and no 4-byte value "
+          "that is a pointer) and no base relocation is under them" + "".join(f", {h:#x}" for h in found + under))
+
+
 def test_replay_link(original, image, before):
     """"Watch replay" (patch revision 14, REPLAY_LINK_HOOK): the lobby's
     video_tutorial_link_clicked opened its link buffer with ShellExecuteA;
@@ -3598,6 +3695,7 @@ def test_late_join(original, without, server, source):
     test_memory_defaults(original, image, before)
     test_weapon_preview(original, image, before)
     test_suicide_key(original, image, before)
+    test_tab_list(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")
