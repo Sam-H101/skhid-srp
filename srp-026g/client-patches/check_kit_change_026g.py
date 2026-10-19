@@ -3,8 +3,8 @@
 client's view of a kit change (0x2678E0), the hud's update of the local
 player's state (0x23B7B3), the kits' pick (0x233F28), the input world's
 mouse moves through the game world's input handler (0x3B9F0A, 0x25D0E0),
-the mouse's buttons through it (0x3B9D90, 0x25CF60), the warmup camera's
-switch (0x1F8190) and the warmup mode's step (0x242200) on made-up objects.
+the mouse's buttons through it (0x3B9D90, 0x25CF60) and the warmup mode's
+step (0x242200) on made-up objects.
 
     python check_kit_change_026g.py <original survarium.exe>
 
@@ -907,52 +907,6 @@ def check_limits(data, patched):
     return checks
 
 
-# switch_to_warmup_camera (0x1F8190, edx = the game world) to 0x1F81C7, after
-# its store of the mode: the player's input handler (game world+4D58h) in
-# mode 3 (+358h), +35Ch set when the camera changes, and the yaw and pitch
-# (+34Ch, +350h) the warmup camera turns the player's matrix by.
-FACE_TO = 0x1F81C7
-FACE_WORLD, FACE_HANDLER = HEAP + 0x3B000, HEAP + 0x3A000
-
-
-def warmup_switch(data, mode, changed, yaw, pitch):
-    emu = Emu(data)
-    emu.word(FACE_WORLD + 0x4D58, FACE_HANDLER)
-    emu.word(FACE_HANDLER + 0x358, mode)
-    emu.byte(FACE_HANDLER + 0x35C, changed)
-    emu.emu.mem_write(FACE_HANDLER + 0x34C, struct.pack("<2f", yaw, pitch))
-    emu.word(STACK, STOP)
-    emu.emu.reg_write(UC_X86_REG_ESP, STACK)
-    emu.emu.reg_write(UC_X86_REG_EDX, FACE_WORLD)
-    emu.emu.reg_write(UC_X86_REG_EDI, 0x12345678)
-    emu.emu.emu_start(WARMUP_CAMERA, FACE_TO, count=100)
-    assert emu.emu.reg_read(UC_X86_REG_EIP) == FACE_TO
-    assert emu.emu.reg_read(UC_X86_REG_EDX) == FACE_WORLD and emu.emu.reg_read(UC_X86_REG_ESP) == STACK - 8
-    assert (emu.read(FACE_HANDLER + 0x358), emu.byte(FACE_HANDLER + 0x35C)) == (3, 1 if changed or mode != 3 else 0)
-    yaw, pitch = struct.unpack("<2f", emu.emu.mem_read(FACE_HANDLER + 0x34C, 8))
-    return round(yaw, 4), round(pitch, 4)
-
-
-def face_cases():
-    """(name, the mode before, +35Ch before, the yaw and pitch before, the
-    original's (yaw, pitch) after, the build's)."""
-    front = (3.1416, 0.0)
-    yield "a new player (the constructor's mode 0, a change)", 0, 1, 0.0, 0.0, (0.0, 0.0), front
-    yield "from play (mode 0, played)", 0, 0, 0.0, 0.0, (0.0, 0.0), front
-    yield "from the death view (mode 1) after a drag", 1, 0, 1.0, 0.5, (1.0, 0.5), front
-    yield "the warmup camera again, played: the drag kept", 3, 0, 1.0, 0.5, (1.0, 0.5), (1.0, 0.5)
-    yield "the warmup camera again, not played yet", 3, 1, 1.0, 0.5, (1.0, 0.5), front
-
-
-def check_face(data, patched):
-    checks = 0
-    for name, mode, changed, yaw, pitch, original, build in face_cases():
-        got = warmup_switch(data, mode, changed, yaw, pitch)
-        assert got == (build if patched else original), (patched, name, got)
-        checks += 1
-    return checks
-
-
 def death_cases():
     """(name, the relayed choices as (time, kit), the kit of the respawn,
     the next kit after it): a dead player in play, due to respawn at R."""
@@ -1000,15 +954,14 @@ def main():
         checks += check_tick(data, is_patched) + check_boundary(data, is_patched)
         checks += check_view(data, is_patched) + check_hud(data, is_patched) + check_pick(data, is_patched)
         checks += check_death(data, is_patched) + check_look(data, is_patched) + check_limits(data, is_patched)
-        checks += check_keys(data, is_patched) + check_face(data, is_patched)
+        checks += check_keys(data, is_patched)
     # A build that does not look at the statistics, or at the state, or at
     # the end of the places, or that gives the spawn no protection when none
     # is left (which leaves the new kit's damage model as it was), fails; so
     # does one whose view always gives the warmup, one whose mouse moves
     # drag in any mode, one that drags at the first move of a click, one
     # with no nearest distance, one that never marks a button, and one that
-    # gives a marked button's release on (the player's handler fires at it),
-    # and one that puts the warmup camera in front at every switch.
+    # gives a marked button's release on (the player's handler fires at it).
     for old, new, check in ((bytes.fromhex("837c8afc00"), bytes.fromhex("39c0909090"), check_tick),
                             (bytes.fromhex("48d1e8750d"), bytes.fromhex("48d1e8eb00"), check_boundary),
                             (bytes.fromhex("3b865c84010073ee"), bytes.fromhex("3b865c8401009090"), check_tick),
@@ -1018,8 +971,7 @@ def main():
                             (bytes.fromhex("890b83f90876b4"), bytes.fromhex("890b83f908eb00"), check_look),
                             (bytes.fromhex("39d00f4cc2"), bytes.fromhex("39d0909090"), check_limits),
                             (bytes.fromhex("0fab02"), bytes.fromhex("909090"), check_keys),
-                            (bytes.fromhex("0fb302731c"), bytes.fromhex("0fb302eb1c"), check_keys),
-                            (bytes.fromhex("84c97411"), bytes.fromhex("84c99090"), check_face)):
+                            (bytes.fromhex("0fb302731c"), bytes.fromhex("0fb302eb1c"), check_keys)):
         broken = bytearray(patched)
         at = broken.rfind(old)                     # in `.srp`, the last section with bytes
         assert at > base.Headers(broken).sections(broken)[-2][3]
@@ -1030,7 +982,7 @@ def main():
             checks += 1
         else:
             sys.exit(f"a broken build ({new.hex()}) passed")
-    print(f"patch 31: {checks} runs as expected (the original, the build and eleven broken builds)")
+    print(f"patch 31: {checks} runs as expected (the original, the build and ten broken builds)")
 
 
 if __name__ == "__main__":

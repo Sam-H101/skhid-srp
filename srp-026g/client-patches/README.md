@@ -76,7 +76,6 @@ release's. The "Result" row is the build of the revision named in it.
 | `kit_change_026g.asm`, `kit_change_026g.section.bin` | The source of patch 31's code (a kit chosen before the match starts is played at once) and that code assembled for 0xEC0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `warmup_look_026g.asm`, `warmup_look_026g.section.bin` | The source of patch 31's camera before the start (while the kits are shown, a drag turns the warmup camera and the wheel moves it, as the lobby's character view) and that code assembled for 0xD40 of `.srp`, its state at 0xE20 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `warmup_keys_026g.asm`, `warmup_keys_026g.section.bin` | The same patch's buttons: one held from before the start (a drag of its camera) is not the player's until it is let go, and that code assembled for 0x9A8 of `.srp`, its state at 0xE30 of `.srpd`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
-| `warmup_face_026g.asm`, `warmup_face_026g.section.bin` | The same camera's start: in front of the player, looking at them, and that code assembled for 0x7C0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `warmup_limits_026g.asm`, `warmup_limits_026g.section.bin` | The same camera's end of a drag and its limits (the lobby camera's: distance 1.5 to 4.6, pitch within 60 degrees) and that code assembled for 0xA98 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
@@ -1621,16 +1620,6 @@ start, below):
   takes every move as before. The warmup mode gives the player's input no
   turn: nothing a match computes changes, and a game with it and one
   without play together.
-  The warmup camera starts in front of the player, looking at them (the
-  owner, 2026-10-19: "can we change camera to look at you, not at your
-  back", "because often it clips through walls"). It looks at the player
-  from its yaw and pitch about the player's facing (0x2422B0), both 0 from
-  the constructor: behind the back. `mov [eax+358h],esi` at 0x1F81C1, where
-  `switch_to_warmup_camera` stores the mode, calls `warmup_face_026g.asm`
-  (28 bytes at `.srp`+7C0h, after the shared upgrades' code), which stores
-  it and, when the camera changes (cl, +35Ch), puts the yaw at pi and the
-  pitch at 0. A drag after that turns it as before; the other views that
-  place the camera by that yaw (modes 1 and 2) keep theirs.
   A button held from before the start is not the player's until it is let
   go (the owner, 2026-10-19: "players will shoot immediately once match
   starts"). The input world tells its handlers of a button still held at
