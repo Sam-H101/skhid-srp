@@ -108,6 +108,23 @@ const RULES = (() => {
     return true;
   }
 
+  // Covered parts in the doll's order, a left and right of the same armour
+  // as one ("Arms 50").
+  const PAIRS = [["right_forearm", "left_forearm", ["Arms", "Руки"]], ["right_arm", "left_arm", ["Hands", "Кисті"]],
+    ["right_hip", "left_hip", ["Legs", "Ноги"]], ["right_foot", "left_foot", ["Feet", "Стопи"]]];
+  const partsName = parts => parts.length > 1 ? T(...PAIRS.find(([r]) => r === parts[0])[2]) : PARTS[parts[0]];
+  function protParts(cover) {
+    const v = p => (cover[p] || {}).ranged || 0;
+    const out = [];
+    for (const p of Object.keys(PARTS)) {
+      if (!(v(p) > 0) || out.some(([ps]) => ps.includes(p))) continue;
+      const pair = PAIRS.find(([r, l]) => r === p || l === p);
+      const twin = pair && (pair[0] === p ? pair[1] : pair[0]);
+      out.push([twin && v(twin) === v(p) ? [pair[0], pair[1]] : [p], v(p)]);
+    }
+    return out;
+  }
+
   return {
     applyWeaponMods(w, chosen) {
       const s = sums(idsOf(w, chosen));
@@ -146,8 +163,19 @@ const RULES = (() => {
         if (!((item.hit_params[state.part] || {}).ranged > 0)) continue;
         covering++;
         state.amods[key] = state.amods[key] || {};
-        abox.append(el("span", { class: "lbl", text: `${label}: ${nm(item)}` }));
-        if (!modControls(abox, item, state.amods[key], update))
+        // The item and its gunshot armour on each part it covers, after the
+        // bonuses picked below: the part being hit in bold.
+        const prot = el("div", { class: "aprot", id: "aprot-" + slot });
+        const paintProt = () => {
+          const cover = this.itemArmour(item, state.amods[key]);
+          prot.replaceChildren(...protParts(cover).map(([parts, v]) =>
+            el("span", { class: parts.includes(state.part) ? "here" : "" }, `${partsName(parts)} `, el("b", { text: hp(v) }))));
+        };
+        paintProt();
+        const src = DATA.icons && DATA.icons[key];
+        abox.append(el("div", { class: "aitem" }, src ? el("img", { src, alt: "" }) : null,
+          el("div", {}, el("span", { class: "lbl", text: `${label}: ${nm(item)}` }), prot)));
+        if (!modControls(abox, item, state.amods[key], () => { paintProt(); update(); }))
           abox.append(el("span", { class: "note", text: T("This item takes no armour bonuses.", "Цей предмет не має бонусів броні.") }));
       }
       if (!covering) abox.append(el("span", { class: "note", text: T(`Nothing worn covers the ${part}.`, `Ніщо вдягнене не захищає: ${part}.`) }));

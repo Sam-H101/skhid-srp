@@ -27,7 +27,7 @@ The rules follow the client's hit code as the reverse-engineering notes record i
 The page follows the game as Skhid's players have it: the stock `resources.db` with every released `resources.db.patch_<n>` (`release/patches.tsv`) mounted over it. A patch is an archive of the same kind holding only the files it replaces, so extract the stock db first and then each patch in revision order over the same folders:
 
 ```
-for db in <stock resources.db> resources.db.patch_12 ... resources.db.patch_21; do
+for db in <stock resources.db> resources.db.patch_12 ... resources.db.patch_22; do
   dbgrab $db get gameplay/ raw
   dbgrab $db get localization/english raw
   dbgrab $db get localization/ukrainian raw
@@ -38,8 +38,8 @@ python -I gen_calc_data.py json calc-data.json
 java -jar ffdec-cli.jar -export image lobby_images swf/flash_movies__lobby_menu.swf
 python -I assets/tools/build_icons.py json lobby_images icons --webp
 python -I assets/maps/tools/build_all.py ...   # top-down renders -> maps/<key>.webp (see assets/maps/README.md)
-python -I build_page.py --site calc-data.json ../../servers/web-server/damage icons/icons maps 21   # the website's copy
-python -I build_page.py calc-data.json damage-calc.html icons/icons 21                            # one standalone file
+python -I build_page.py --site calc-data.json ../../servers/web-server/damage icons/icons maps 22   # the website's copy
+python -I build_page.py calc-data.json damage-calc.html icons/icons 22                            # one standalone file
 ```
 
 Rebuild the website's copy with every content patch that changes weapons, ammo, armour, artefacts, drugs or names, and commit `srp-026g/servers/web-server/damage/`: the server binary includes those files. The page names each file it loads with `?v=<its hash>`.
