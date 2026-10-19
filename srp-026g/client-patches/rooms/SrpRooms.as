@@ -670,6 +670,7 @@ package
             watchWindows();
             topIcon();
             overPanels();
+            alertNear();
         }
 
         // While open, ours is the lobby's top child: the lobby adds its own
@@ -1097,10 +1098,10 @@ package
                     "pool": int(head[10]), "serial": int(head[12]), "pin": head[13] == "1", "next": int(head[14]), "min": int(head[15]),
                     "cards": [], "members": [], "last": 0, "switchTo": null, "joinIn": -1};
                 _roomAt = getTimer();
-                // The vote chose the map: the game's alert (6, its important
-                // message's), not the match's own start (15), the owner's.
-                if (was != null && was.key == _room.key && was.phase == 3 && _room.phase == 1)
-                    gameSound(6);
+                // A new vote (another room, or after its match): its alert
+                // may sound again (`alertNear`).
+                if (was == null || was.key != _room.key || was.phase != 3)
+                    _alerted = false;
                 for (var k:int = 1; k < rows.length; k++)
                 {
                     var r:Array = fields(rows[k]);
@@ -1701,11 +1702,12 @@ package
                 text(row, String(room.level), tw * cols[1], 10, tw * 0.09, 17, LIGHT);
                 text(row, levelText(room.max), tw * cols[2], 10, tw * 0.09, 17, LIGHT);
                 var e:Object = entry(room.map);
-                text(row, e != null ? levelName(e.level) + " · " + weatherName(e.weather) : "",
-                    tw * cols[3], 10, tw * 0.27, 15, GREY);
+                // No card leads alone yet (a tie, no votes): the start draws one.
+                text(row, e != null ? levelName(e.level) + " · " + weatherName(e.weather)
+                    : room.phase == 3 ? say("voting") : "", tw * cols[3], 10, tw * 0.27, 15, GREY);
                 text(row, room.players + " / " + room.size * 2, tw * cols[4], 10, tw * 0.10, 17, LIGHT);
                 _stateCells[String(room.key)] = text(row, phaseText(room), tw * cols[5], 10, tw * 0.16, 15,
-                    room.phase == 2 ? GOLD : room.phase == 1 ? 0x8FD18F : GREY);
+                    room.phase == 2 ? GOLD : room.phase == 3 || room.phase == 1 ? 0x8FD18F : GREY);
                 row.buttonMode = true;
                 row.mouseChildren = false;
                 row.name = String(room.key);
@@ -2512,6 +2514,25 @@ package
                     if (_room.members[i].me)
                         return _room.members[i].fit;
             return 0;
+        }
+
+        // The vote's alert: the game's (6, its important message's), not
+        // the match's own start (15), the owner's; once a vote, when 10 s
+        // or less are left of it (the vote runs until the match starts, the
+        // owner's of 2026-10-19), also with the window hidden.
+        private var _alerted:Boolean = false;
+        private static const ALERT_SECS:int = 10;
+
+        private function alertNear():void
+        {
+            if (_room == null || _room.phase != 3 || _alerted)
+                return;
+            var left:int = _room.secs - int((getTimer() - _roomAt) / 1000);
+            if (left <= ALERT_SECS)
+            {
+                _alerted = true;
+                gameSound(6);
+            }
         }
 
         // The countdown, kept moving between the server's answers.

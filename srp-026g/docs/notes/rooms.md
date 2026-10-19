@@ -73,8 +73,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   Ranking while the lobby loads); the window fills the Character + Inventory area, the
   inventory's header and close button; × and Esc hide it; opening another lobby window hides
   it. The bottom bar's Matches tab is hidden.
-- **Sounds:** the game's click on every control; its alert (6) when the vote chooses the map
-  (not the match start's 15).
+- **Sounds:** the game's click on every control; its alert (6) once a vote, 10 s before the
+  match starts (the vote's last seconds; the vote runs until the start, 2026-10-19), also with
+  the window hidden (not the match start's 15).
 - **Site:** the launcher shows rooms and players in rooms; `/api/stats` has `rooms`,
   `in_rooms`, `queued` (in room queues).
 - **Deferred:** the Rooms list's visibility (members of the selected room, "Full · N in

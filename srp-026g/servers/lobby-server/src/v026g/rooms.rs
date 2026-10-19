@@ -644,17 +644,12 @@ impl Core<'_> {
             .all()
             .map(|room| {
                 let (phase, secs) = phase_of(room, now);
+                // Before its match: the card that leads alone, or none (a
+                // tie or no votes is drawn at the start, so no map is shown
+                // that may not be played).
                 let map_id = match room.stage {
                     Stage::InMatch { .. } => room.last_map,
-                    _ => {
-                        let tally = room.tally();
-                        tally
-                            .iter()
-                            .enumerate()
-                            .max_by_key(|(index, votes)| (**votes, std::cmp::Reverse(*index)))
-                            .and_then(|(index, _)| room.cards.get(index).copied())
-                            .unwrap_or(0)
-                    }
+                    _ => room.leading().unwrap_or(0),
                 };
                 RoomRow {
                     key: room.key,
