@@ -43,6 +43,12 @@
 #      --resources file); with
 #      --resources, the file is resources.db.patch_<the release's revision>,
 #      srp-game-data reads it, and it is neither published nor listed yet;
+#      live: the site's pages made from the game data (the Maps tab, the
+#      calculator): built from other patches than the list (and the
+#      --resources file) on main, they are rebuilt here from those
+#      (release/build-site, about 2 min, in a worktree of the commit; a
+#      failure stops the run), and the server's source carries them (the
+#      server code is then built);
 #      which server code differs between main and the target's tree;
 #      whether main changes what a match computes: a `next` row of
 #      srp-026g/crates/session/src/v026g/simulation_changes.tsv, which a PR
@@ -80,7 +86,7 @@
 #      stages both in it (sha256 checked there, chmod 644), with
 #      changed.txt; with server code to build: tags the running image (by
 #      its ID) srp-026g:before-rev<rev>-<stamp>, unpacks main's source in the
-#      folder's src/ and runs docker compose build srp26 there;
+#      folder's src/ (with the rebuilt pages) and runs docker compose build srp26 there;
 #   5. at the later of the planned time and the end of step 4 (staged after
 #      the planned time: at once), once the launcher page says the server is
 #      down and $SKHID_SITE/api/stats says "matches":0 (waiting up to
@@ -110,7 +116,8 @@
 #      srp-026g/client-patches/README.md (the time, the exe's sha256 with
 #      and without the server, the ZIP's, what it shipped: the merged PRs
 #      since the tag before), an entry in CHANGELOG-SKHID-026G.md for the
-#      owner to word, release/patches.tsv as offered, and <n> in place of
+#      owner to word, release/patches.tsv as offered, the pages step 1
+#      rebuilt, and <n> in place of
 #      a `next` row of simulation_changes.tsv (step 1); pushed as
 #      release/record-rev<n>, its PR opened and merged as a merge commit
 #      (gh). What gh could not do (the merge, when the token may not) is said
@@ -161,10 +168,11 @@
 . "$(dirname "$0")/lib.sh"
 here=$(cd "$(dirname "$0")" && pwd)
 
-# For release/test.sh only: another checkout, a stand-in for build-zip, a
-# shorter minute, another stock db.
+# For release/test.sh only: another checkout, stand-ins for build-zip and
+# build-site, a shorter minute, another stock db.
 REPO=${SKHID_TEST_REPO:-$ROOT}
 BUILD_ZIP=${SKHID_TEST_BUILD_ZIP:-$here/build-zip}
+BUILD_SITE=${SKHID_TEST_BUILD_SITE:-$here/build-site}
 MINUTE=${SKHID_TEST_SECONDS_PER_MINUTE:-60}
 STOCK_SHA=${SKHID_TEST_STOCK_SHA256:-$STOCK_DB_SHA256}
 
@@ -662,6 +670,15 @@ record_files() { # <wt> <shipped>
         cp "$PATCH_LIST" "$wt/release/patches.tsv"
         LIST_RECORDED=1
     fi
+    # The site's pages the preflight rebuilt, as the server has them now.
+    if [[ -n $site_tree ]]; then
+        for page in "${SITE_PAGES[@]}"; do
+            if ! { rm -rf "${wt:?}/$page" && cp -a "$site_tree/$page" "$wt/$page"; }; then
+                record_problem "the rebuilt $page could not be copied into the record"
+                return 1
+            fi
+        done
+    fi
 }
 
 record_release() {
@@ -709,6 +726,12 @@ record_release() {
             say "the offered-patch list (release/patches.tsv) as the server offers it now."
         else
             say "srp-026g/client-patches/README.md, a changelog entry for the owner to word."
+        fi
+        if [[ -n $site_tree ]]; then
+            say
+            say "The Maps tab and the calculator (srp-026g/servers/web-server/maps/ and"
+            say "damage/) rebuilt from the offered patches by release/build-site, as the"
+            say "server has them now."
         fi
         if [[ -n $SIM_NEXT ]]; then
             say
@@ -787,6 +810,7 @@ on_exit() {
     lock_drop
     if [[ -d $work/zip/src ]]; then git -C "$REPO" worktree remove --force "$work/zip/src" 2>/dev/null; fi
     if [[ -d $work/record ]]; then git -C "$REPO" worktree remove --force "$work/record" 2>/dev/null; fi
+    if [[ -d $work/site ]]; then git -C "$REPO" worktree remove --force "$work/site" 2>/dev/null; fi
     exit "$status"
 }
 trap on_exit EXIT
@@ -979,22 +1003,52 @@ if [[ -n $rev ]] && ((rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.pat
 fi
 # The site's pages built from the game (the Maps tab, the calculator): each
 # from exactly the patches the release offers (with --resources, that one
-# too), so neither shows stale data. A ref without one has nothing to check.
+# too), so neither shows stale data. Built from others on main (a release
+# with new content always is): rebuilt here, in a worktree of the commit
+# (release/build-site), nothing players see; the server's source carries
+# them and the record commits them. A ref without them has nothing to build.
+SITE_PAGES=(srp-026g/servers/web-server/maps srp-026g/servers/web-server/damage)
+site_tree='' site_stale=0
 if ((!test_server)) && [[ -n $main_commit ]]; then
     want=$( { cut -d' ' -f1,2 <<<"$LIST"; if [[ -n $resources && -f $resources ]]; then echo "${resources##*/} $(sha256_of "$resources")"; fi; } | grep . | sort || true)
-    for page in "the Maps tab:maps:srp-026g/scripts/maps-tab/README.md; build.py" \
-        "the calculator:damage:srp-026g/scripts/damage-calc/README.md; build_site.py"; do
-        IFS=: read -r what dir how <<<"$page"
+    built_from() { grep -v '^#' "$1" | tr '\t' ' ' | grep . | sort || true; }
+    for page in "the Maps tab:maps" "the calculator:damage"; do
+        IFS=: read -r what dir <<<"$page"
         built=srp-026g/servers/web-server/$dir/built-from.tsv
-        have=$(git -C "$REPO" show "$main_commit:$built" 2>/dev/null | grep -v '^#' | tr '\t' ' ' | grep . | sort || true)
         if ! git -C "$REPO" cat-file -e "$main_commit:$built" 2>/dev/null; then
-            say "  note     no $built on $ref: nothing to check"
-        elif [[ $have == "$want" ]]; then
+            say "  note     no $built on $ref: nothing to build"
+        elif [[ $(built_from <(git -C "$REPO" show "$main_commit:$built")) == "$want" ]]; then
             okay "$what: built from the patches this release offers"
         else
-            problem "$what ($built on $ref) was built from other patches than this release offers: rebuild it (${how}${resources:+ --with $resources}) and merge that first"
+            say "  note     $what ($built on $ref) was built from other patches than this release offers: the release rebuilds it"
+            site_stale=1
         fi
     done
+    build_site=("$BUILD_SITE" --tree "$work/site")
+    if [[ -n $resources ]]; then build_site+=(--with "$resources"); fi
+    if ((site_stale && DRY_RUN)); then
+        say "  [dry run] would rebuild the Maps tab and the calculator (about 2 min; the patches from ~/.cache/skhid-release/patches/, else downloaded) in a worktree of ${main_commit:0:7}: ${build_site[*]}"
+    elif ((site_stale)); then
+        say "  ...      rebuilding the Maps tab and the calculator (release/build-site, about 2 min; its log: $work/build-site.log)"
+        site_start=$(date +%s)
+        if ! git -C "$REPO" worktree add --quiet --detach "$work/site" "$main_commit" 2>"$work/build-site.log"; then
+            problem "the Maps tab and the calculator: no worktree to rebuild them in: $(tr '\n' ' ' <"$work/build-site.log")"
+        elif ! "${build_site[@]}" </dev/null >"$work/build-site.log" 2>&1; then
+            problem "the Maps tab and the calculator: the rebuild failed (release/build-site; its log: $work/build-site.log): $(tail -n 3 "$work/build-site.log" | tr '\n' ' ')"
+        else
+            site_tree=$work/site
+            for page in "the Maps tab:maps" "the calculator:damage"; do
+                IFS=: read -r what dir <<<"$page"
+                if [[ $(built_from "$site_tree/srp-026g/servers/web-server/$dir/built-from.tsv") != "$want" ]]; then
+                    problem "$what, rebuilt: its built-from.tsv does not name the patches this release offers"
+                    site_tree=''
+                fi
+            done
+            if [[ -n $site_tree ]]; then
+                okay "the Maps tab and the calculator: rebuilt from the patches this release offers ($(span $(($(date +%s) - site_start)))); the server's source carries them, the record commits them"
+            fi
+        fi
+    fi
 fi
 
 # The target: disk, leftovers, settings, the container, the admin page.
@@ -1072,6 +1126,14 @@ if [[ -n $main_commit ]]; then
     elif git -C "$REPO" archive --format=tar -o "$src_tar" "$main_commit:srp-026g" "${build_paths[@]}" 2>"$work/archive.log"; then
         mkdir -p "$work/src"
         tar -xf "$src_tar" -C "$work/src"
+        # The pages rebuilt above in place of main's, in the source too.
+        if [[ -n $site_tree ]]; then
+            for page in "${SITE_PAGES[@]}"; do
+                rm -rf "$work/src/${page#srp-026g/}"
+                cp -a "$site_tree/$page" "$work/src/${page#srp-026g/}"
+            done
+            tar -cf "$src_tar" -C "$work/src" "${build_paths[@]}"
+        fi
         inputs=$(printf '%q ' "${build_paths[@]}")
         list="find $inputs -type f ! -path '*/__pycache__/*' ! -path '*/target/*' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r sha256sum"
         (cd "$work/src" && bash -c "$list") >"$work/src-main.sha256"
@@ -1098,6 +1160,9 @@ if [[ -n $main_commit ]]; then
             yes) build_code=1 ;;
             no) ((code_changes == 0)) || say "  WARNING  --server-code no: the image is NOT built although the code differs" ;;
             esac
+            if [[ -n $site_tree ]] && ((!build_code)) && grep -qE "^(ADDED|CHANGED) +servers/web-server/(maps|damage)/" <<<"$code_report"; then
+                problem "the Maps tab and the calculator were rebuilt, and the server code is not built (--server-code no): the site would go on showing the old ones"
+            fi
         fi
     else
         problem "git archive of main's srp-026g failed: $(cat "$work/archive.log")"
@@ -1164,6 +1229,11 @@ say "  new content: ${resources:-none}"
 say "  /patches will offer:"
 say_offered
 say "  server code: $(if ((build_code)); then say "built before the swap (docker compose build srp26)"; else say "not built"; fi)"
+if [[ -n $site_tree ]]; then
+    say "  the Maps tab and the calculator: rebuilt from what /patches will offer (in the server's source; the record commits them)"
+elif ((site_stale)); then
+    say "  the Maps tab and the calculator: a real run rebuilds them in its preflight (before the go) from what /patches will offer"
+fi
 if [[ -n $SIM_NEXT ]]; then
     say "  replays: what a match computes changes ($SIM_NEXT): recordings of games before revision $rev are refused from the swap on"
 else
@@ -1381,7 +1451,7 @@ if ((DRY_RUN)); then
         say "[dry run] 7. no record (--test: no commit, no tag)"
     else
         say "[dry run] 7. once it went out, the record: git tag -a $(release_tag "$rev") ${main_commit:0:7} (the UTC time, the ZIP's and the server data's sha256) and git push origin refs/tags/$(release_tag "$rev");"
-        say "[dry run]    the commit \"Release revision $rev\" on ${main_commit:0:7} (REVISION = $rev, the README revision table's row, a changelog entry to word, release/patches.tsv as offered$([[ -z $SIM_NEXT ]] || printf ", %s for \`next\` in %s" "$rev" "$SIMULATION_CHANGES")), pushed as $(record_branch "$rev"), gh pr create, gh pr merge --merge"
+        say "[dry run]    the commit \"Release revision $rev\" on ${main_commit:0:7} (REVISION = $rev, the README revision table's row, a changelog entry to word, release/patches.tsv as offered$( ((!site_stale)) || printf ", the rebuilt Maps tab and calculator")$([[ -z $SIM_NEXT ]] || printf ", %s for \`next\` in %s" "$rev" "$SIMULATION_CHANGES")), pushed as $(record_branch "$rev"), gh pr create, gh pr merge --merge"
         say "[dry run]    it would ship (merged PRs): $(shipped_prs "$main_commit" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
     fi
     say
