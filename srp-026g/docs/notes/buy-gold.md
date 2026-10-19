@@ -18,7 +18,8 @@ website, instead it should just open gold trading menu").
   The player presses Buy (or Repair, …) again: the dialog does not retry by itself.
 - **The amount:** the exchange opens as from the top bar; it is not filled with the gold missing.
 - **Texts:** unchanged. "Get Gold" fits buying gold with silver.
-- **Not enough silver for the gold either:** the exchange says so, as it does from the top bar.
+- **Not enough silver for the gold either:** typing more than the silver buys gives the most it
+  does (`exchange.md`).
 - **Server:** nothing changes; the exchange's `47 04` is the one already live.
 - **Release:** a new `lobby_menu.swf` in a new `resources.db.patch_<n>`; built on revision 24's
   movie. A later movie patch must be built on this one (or rebuild both).
