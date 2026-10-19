@@ -188,8 +188,21 @@ package
             ["Mamayev Kurgan", "Мамаїв курган", "Мамаев курган", "Mamaew kurgan", "Kurhan Mamaja"],
             ["Vector Laboratory", "Лабораторія \"Вектор\"", "Лаборатория \"Вектор\"", "Labor Vektor", "Laboratorium \"Wektor\""],
             ["Cologne", "Кельн", "Кельн", "Köln", "Most w Kolonii"],
-            ["London", "Лондон", "Лондон", "London", "Londyn"]
+            ["London", "Лондон", "Лондон", "London", "Londyn"],
+            // The ports of revision 23 (BottomPanel's own table).
+            ["Vostok Radar Station (v0.21)", "РЛС \"Восток\" (v0.21)", "РЛС \"Восток\" (v0.21)", "RS Vostok (v0.21)",
+                "Stacja Radarowa \"Vostok\" (v0.21)"],
+            ["Mamayev Kurgan (v0.21)", "Мамаїв курган (v0.21)", "Мамаев курган (v0.21)", "Mamaew kurgan (v0.21)",
+                "Kurhan Mamaja (v0.21)"],
+            ["Chemical Plant (v0.11)", "Хімзавод (v0.11)", "Химзавод (v0.11)", "Chemiebetrieb (v0.11)",
+                "Zakłady chemiczne (v0.11)"],
+            ["Vostok Radar Station (v0.11)", "РЛС \"Восток\" (v0.11)", "РЛС \"Восток\" (v0.11)", "RS Vostok (v0.11)",
+                "Stacja Radarowa \"Vostok\" (v0.11)"]
         ];
+        // The render a level is drawn with: the v0.21 ports with the map they
+        // are an older look of, the v0.11 ones with their one loading image.
+        private static const RENDER_LEVEL:Object = {"10": 3, "11": 6};
+        private static const RENDER_ONE:Object = {"12": "Level_v011e", "13": "Level_v011e"};
         private static const MODES:Object = {
             "2": ["Protective device", "Захисний пристрій", "Защитное устройство", "Schutzeinrichtung", "Urządzenie ochronne"],
             "3": ["Protective device: chargers", "Захисний пристрій: зарядники", "Защитное устройство: зарядники",
@@ -1139,7 +1152,7 @@ package
                 small = new BitmapData(w, h, false, 0x05080B);
                 try
                 {
-                    var cls:Class = getDefinitionByName("Level" + level + "_" + RENDER[String(weather)]) as Class;
+                    var cls:Class = renderClass(level, weather);
                     var big:BitmapData = new cls() as BitmapData;
                     var scale:Number = Math.max(w / big.width, h / big.height);
                     var m:Matrix = new Matrix();
@@ -1154,6 +1167,24 @@ package
                 _renders[key] = small;
             }
             return new Bitmap(small);
+        }
+
+        // The library bitmap of a level in a weather; its day one when that
+        // weather has none.
+        private function renderClass(level:int, weather:int):Class
+        {
+            var one:String = RENDER_ONE[String(level)] as String;
+            if (one != null)
+                return getDefinitionByName(one) as Class;
+            var base:int = RENDER_LEVEL[String(level)] != null ? int(RENDER_LEVEL[String(level)]) : level;
+            try
+            {
+                return getDefinitionByName("Level" + base + "_" + RENDER[String(weather)]) as Class;
+            }
+            catch (e:Error)
+            {
+            }
+            return getDefinitionByName("Level" + base + "_day") as Class;
         }
 
         private function text(box:Sprite, value:String, x:Number, y:Number, w:Number, size:Number,
@@ -1634,6 +1665,18 @@ package
                 row.name = String(room.key);
                 row.addEventListener(MouseEvent.CLICK, onRow, false, 0, true);
                 inner.addChild(row);
+                // A press the content got itself (as on the left side) picks
+                // the row too; only where the list shows it (not scrolled away
+                // under its mask).
+                route(row, function(control:DisplayObject, e:MouseEvent):void
+                {
+                    var shown:DisplayObject = (control.parent as Sprite).mask;
+                    if (shown != null && !shown.hitTestPoint(e.stageX, e.stageY, false))
+                        return;
+                    clickSound();
+                    _selKey = int(control.name);
+                    render();
+                });
             }
             scrollDone(_rooms.length * 42);
             var joinable:Object = null;

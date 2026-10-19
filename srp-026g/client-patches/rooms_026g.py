@@ -32,7 +32,7 @@ import login_hint_026g as hint
 # The live movies the rooms are built on: lobby_menu.swf as the patches carry
 # it, by the sha256 of the file.
 MOVIE_SHA256S = {
-    "dac19ff2c94f6786b8320d05b7413f1f1299c8592e0ac792fccac84261809308": "resources.db.patch_17 (revision 17)",
+    "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b": "resources.db.patch_23 (revision 23)",
 }
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
 HERE = Path(__file__).resolve().parent / "rooms"
