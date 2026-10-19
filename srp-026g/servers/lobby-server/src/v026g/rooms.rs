@@ -548,10 +548,9 @@ impl Core<'_> {
             members,
             last_map: room.last_map,
             min_players: room.needs() as u8,
-            next_map: match room.stage {
-                Stage::Countdown { map_id, .. } => map_id,
-                _ => 0,
-            },
+            // The vote is open until the match starts: no map is fixed
+            // before (the cards show the votes).
+            next_map: 0,
             switch: self.room_switch(who, room),
             join_in: self.room_join_in(who, room, now),
         })
@@ -647,7 +646,6 @@ impl Core<'_> {
                 let (phase, secs) = phase_of(room, now);
                 let map_id = match room.stage {
                     Stage::InMatch { .. } => room.last_map,
-                    Stage::Countdown { map_id, .. } => map_id,
                     _ => {
                         let tally = room.tally();
                         tally
@@ -1182,10 +1180,6 @@ fn phase_of(room: &model::Room, now: Instant) -> (RoomPhase, u32) {
         Stage::Waiting => (RoomPhase::Waiting, 0),
         Stage::Vote { until } => (
             RoomPhase::Vote,
-            until.saturating_duration_since(now).as_secs() as u32,
-        ),
-        Stage::Countdown { until, .. } => (
-            RoomPhase::Countdown,
             until.saturating_duration_since(now).as_secs() as u32,
         ),
         Stage::InMatch { since, .. } => (

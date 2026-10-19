@@ -52,6 +52,8 @@ package
         public static const CREATE:int = FIRST + 10000000;
         public static const LAST:int = FIRST + 19999999;
         public static const WAITS:Array = [15, 20, 25, 30, 35, 40, 45, 50, 55, 60];
+        // The vote's own time before the wait (srp's rooms::VOTE).
+        public static const VOTE_SECS:int = 15;
         public static const GOLD:uint = 0xE0A64E;
         public static const RED:uint = 0xE0533F;
         public static const LIGHT:uint = 0xE8EEF2;
@@ -91,22 +93,23 @@ package
             "map": ["Map", "Карта", "Карта", "Karte", "Mapa"],
             "state": ["State", "Стан", "Состояние", "Status", "Stan"],
             "size": ["Team size", "Розмір команд", "Размер команд", "Teamgröße", "Rozmiar drużyn"],
-            "wait": ["Wait after the vote", "Очікування після голосування", "Ожидание после голосования", "Wartezeit nach der Wahl",
-                "Czekanie po głosowaniu"],
+            "wait": ["Time to start", "Час до старту", "Время до старта", "Zeit bis zum Start", "Czas do startu"],
             "pin": ["PIN", "PIN", "PIN", "PIN", "PIN"],
             "pinHint": ["4 digits; empty: an open room", "4 цифри; порожньо: відкрита кімната",
                 "4 цифры; пусто: открытая комната", "4 Ziffern; leer: offener Raum", "4 cyfry; puste: pokój otwarty"],
-            "waitHint": ["Then: 15 s map vote, this wait, the match.", "Далі: 15 с голосування, це очікування, матч.",
-                "Затем: 15 с голосования, это ожидание, матч.", "Dann: 15 s Kartenwahl, diese Wartezeit, das Match.",
-                "Potem: 15 s głosowania, to czekanie, mecz."],
+            "waitHint": ["The map vote runs all that time; the match starts on its winner.",
+                "Голосування за карту йде весь цей час; матч почнеться на переможниці.",
+                "Голосование за карту идёт всё это время; матч начнётся на победителе.",
+                "Die Kartenwahl läuft die ganze Zeit; das Match beginnt auf der Gewinnerin.",
+                "Głosowanie na mapę trwa cały ten czas; mecz zacznie się na zwycięskiej."],
             "minPlayers": ["Players to start", "Гравців для старту", "Игроков для старта", "Spieler zum Start",
                 "Graczy do startu"],
             "voting": ["Map vote", "Голосування", "Голосование", "Kartenwahl", "Głosowanie"],
-            "voteNow": ["Vote for the next map: click a card. The wait starts when the vote ends.",
-                "Голосуйте за наступну карту: клацніть картку. Очікування почнеться після голосування.",
-                "Голосуйте за следующую карту: нажмите карточку. Ожидание начнётся после голосования.",
-                "Stimme für die nächste Karte: klicke eine Karte. Danach beginnt die Wartezeit.",
-                "Zagłosuj na następną mapę: kliknij kartę. Czekanie zacznie się po głosowaniu."],
+            "voteNow": ["Vote for the next map: click a card. The match starts on the winner when the time is up.",
+                "Голосуйте за наступну карту: клацніть картку. Коли час вийде, матч почнеться на переможниці.",
+                "Голосуйте за следующую карту: нажмите карточку. Когда время выйдет, матч начнётся на победителе.",
+                "Stimme für die nächste Karte: klicke eine Karte. Ist die Zeit um, beginnt das Match auf der Gewinnerin.",
+                "Zagłosuj na następną mapę: kliknij kartę. Gdy czas minie, mecz zacznie się na zwycięskiej."],
             "nextMap": ["Next", "Далі", "Далее", "Als Nächstes", "Następna"],
             "pin4": ["The PIN is 4 digits.", "PIN — це 4 цифри.", "PIN — это 4 цифры.", "Die PIN hat 4 Ziffern.",
                 "PIN ma 4 cyfry."],
@@ -2178,8 +2181,19 @@ package
 
         private function stopText(what:String, v:int):String
         {
-            return what == "wait" ? (v >= 60 ? "1 " + say("min") : v + " " + say("sec")) : what == "size" || what == "min" ? v + " v " + v
+            return what == "wait" ? startText(v) : what == "size" || what == "min" ? v + " v " + v
                 : levelText(v);
+        }
+
+        // The time to start a wait makes: the vote's own 15 s and the wait
+        // (the owner's of 2026-10-19: the vote runs until the match starts,
+        // its time added to the wait; 30 s at the least).
+        private function startText(wait:int):String
+        {
+            var all:int = wait + VOTE_SECS;
+            if (all < 60)
+                return all + " " + say("sec");
+            return int(all / 60) + " " + say("min") + (all % 60 != 0 ? " " + (all % 60) + " " + say("sec") : "");
         }
 
         // A slider's places: the values it stops at, in order.
@@ -2552,7 +2566,7 @@ package
                 return;
             }
             var left:int = _room.secs - int((getTimer() - _roomAt) / 1000);
-            var tail:String = _room.phase == 1 ? clock(left)
+            var tail:String = _room.phase == 1 || _room.phase == 3 ? clock(left)
                 : _room.phase == 2 ? say("inMatch") : _room.members.length + "/" + _room.size * 2;
             setTab(say("room") + " " + tail);
         }
