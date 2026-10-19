@@ -759,10 +759,13 @@ impl Modifications {
     }
 
     /// The three modifications offered in place of `replaced` on an item
-    /// that holds `held` (`replaced` among them): of three different types
-    /// the item's other modifications leave free, the replaced one's own
-    /// type included but not `replaced` itself. `None` when the item has
-    /// not three to offer [srp: the lobby's window shows three].
+    /// that holds `held` (`replaced` among them): of the types the item's
+    /// other modifications and its defaults leave free, the replaced one's
+    /// own type included but not `replaced` itself; three different types
+    /// while there are, then other strengths of the types offered (an item
+    /// that takes few types, as a backpack or a balaclava with two
+    /// modifications, has only two types left). `None` when the item has not
+    /// three modifications to offer [srp: the lobby's window shows three].
     pub fn reroll_choices(
         &self,
         dict_id: u16,
@@ -777,11 +780,19 @@ impl Modifications {
             .filter(|row| row.id != replaced)
             .collect();
         let mut choices = [0; REROLL_CHOICES];
+        let mut offered: u64 = 0;
         for choice in &mut choices {
-            let weights: Vec<u32> = pool.iter().map(|row| weight(row.drop_weight)).collect();
-            let picked = pool[rng.pick(&weights)?];
+            let fresh: Vec<&Modification> = pool
+                .iter()
+                .copied()
+                .filter(|row| offered & (1 << row.kind) == 0)
+                .collect();
+            let from = if fresh.is_empty() { &pool } else { &fresh };
+            let weights: Vec<u32> = from.iter().map(|row| weight(row.drop_weight)).collect();
+            let picked = from[rng.pick(&weights)?];
             *choice = picked.id;
-            pool.retain(|row| row.kind != picked.kind);
+            offered |= 1 << picked.kind;
+            pool.retain(|row| row.id != picked.id);
         }
         Some(choices)
     }
