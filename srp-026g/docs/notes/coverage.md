@@ -350,7 +350,7 @@ The lobby link timeout (`SRP_LOBBY_LINK_TIMEOUT_SECONDS`, `core.rs` `step`) is *
 
 ## 10. Web page (HTTP 8088)
 
-`servers/web-server/src/v026g.rs`. The game client sends it nothing; a browser does. It is real: the admin tabs change the stored 0.26g accounts and tell the lobby, which pushes the account to an open game (`core.rs` `notice`). Its silver and gold exchange is gone since 2026-10-16: silver and gold are exchanged in the lobby's exchange window (`47 04`), and `GET /exchange` only says so. The lobby's `go_to_store`, `go_to_knowledge_base` and `video_tutorial_link_clicked` callbacks reach no request writer; where they open a browser was not traced.
+`servers/web-server/src/v026g.rs`. The game client sends it nothing; a browser does. It is real: the admin tabs change the stored 0.26g accounts and tell the lobby, which pushes the account to an open game (`core.rs` `notice`). Its silver and gold exchange is gone since 2026-10-16: silver and gold are exchanged in the lobby's exchange window (`47 04`), and `GET /exchange` only says so. The lobby's `go_to_store`, `go_to_knowledge_base` and `video_tutorial_link_clicked` callbacks reach no request writer; where they open a browser was not traced. The lobby movie no longer calls `go_to_store`: every "Get Gold" opens the exchange window (`buy-gold.md`).
 
 ---
 
