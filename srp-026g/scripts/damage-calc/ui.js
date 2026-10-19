@@ -117,6 +117,10 @@ function makePicker(name, select, groups, searchable) {
   };
   const open = () => {
     pop.hidden = false; btn.setAttribute("aria-expanded", "true");
+    // A list wider than its button, under one near the right edge, opens leftwards.
+    pop.style.left = "";
+    const over = pop.getBoundingClientRect().right - (document.documentElement.clientWidth - 16);
+    if (over > 0) pop.style.left = -over + "px";
     if (search) search.value = "";
     filter(); keys.focus();
   };
@@ -213,22 +217,34 @@ function takenBy(slot) {
   }
   return null;
 }
+// A slot's items as the weapons are: by level, then name, with their icons.
+const slotItems = slot => Object.entries(DATA.armour).filter(([, a]) => a.slot === slot)
+  .sort((a, b) => (a[1].item_level || 0) - (b[1].item_level || 0) || nm(a[1]).localeCompare(nm(b[1])));
+const NONE = T("— none —", "— нічого —");
+const slotPickers = {};
+function paintSlotPicker(slot) {
+  const key = state.armour[slot] || "";
+  slotPickers[slot].paint(key, key ? nm(DATA.armour[key]) + premium(DATA.armour[key]) : NONE);
+}
 function fillArmour() {
   const box = $("armour"); box.innerHTML = "";
   for (const [slot, label] of SLOTS) {
-    const items = Object.entries(DATA.armour).filter(([, a]) => a.slot === slot)
-      .sort((a, b) => a[1].armor - b[1].armor || nm(a[1]).localeCompare(nm(b[1])));
-    const sel = el("select", { id: "slot-" + slot, "aria-label": label });
-    sel.append(el("option", { value: "", text: T("— none —", "— нічого —") }));
-    for (const [k, a] of items) sel.append(el("option", { value: k, text: `${nm(a)}${a.premium ? T(" (premium)", " (преміум)") : ""} · ${hp(a.armor)}` }));
+    const items = slotItems(slot);
+    const sel = el("select", { id: "slot-" + slot, "aria-label": label, hidden: "" });
+    sel.append(el("option", { value: "", text: NONE }));
+    for (const [k, a] of items) sel.append(el("option", { value: k, text: nm(a) + premium(a) }));
     sel.value = state.armour[slot] || "";
+    const pick = el("div", { class: "wpick", id: "spick-" + slot });
     sel.addEventListener("change", () => { state.armour[slot] = sel.value; update(); });
     const aim = el("div", { class: "aim", role: "button", tabindex: "0", id: "slotaim-" + slot },
       el("div", { class: "head" }, el("span", { class: "lbl", text: label }), el("span", { class: "v", id: "slotv-" + slot })),
       el("div", { class: "art" }, el("img", { id: "sloti-" + slot, alt: "" }), el("span", { class: "empty", id: "slote-" + slot, text: T("nothing worn", "нічого не вдягнено") })));
     aim.addEventListener("click", () => aimAtSlot(slot));
     aim.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); aimAtSlot(slot); } });
-    box.append(el("div", { class: "slot", id: "slot-card-" + slot }, aim, sel));
+    box.append(el("div", { class: "slot", id: "slot-card-" + slot }, aim, sel, pick));
+    slotPickers[slot] = makePicker("spick-" + slot, sel, [[null, [["", NONE, ""],
+      ...items.map(([k, a]) => [k, nm(a) + premium(a), T(`lvl ${a.item_level || 0}`, `рів. ${a.item_level || 0}`), a.name])]]], true);
+    $("spick-" + slot + "-btn").setAttribute("aria-label", label);
   }
 }
 function armourMap() {
@@ -378,6 +394,8 @@ function update() {
     const taken = takenBy(slot);
     $("slot-" + slot).value = key || "";
     $("slot-" + slot).disabled = !!taken;
+    $("spick-" + slot + "-btn").disabled = !!taken;
+    paintSlotPicker(slot);
     $("slot-card-" + slot).classList.toggle("taken", !!taken);
     $("slote-" + slot).textContent = taken ? T(`taken by ${taken}`, `зайнято: ${taken}`) : T("nothing worn", "нічого не вдягнено");
     $("slot-card-" + slot).classList.toggle("hit", !!v);
