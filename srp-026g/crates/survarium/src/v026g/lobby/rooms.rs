@@ -45,6 +45,9 @@ pub const ROOM_PIN_BASE: u32 = ROOMS_FIRST + 10_000;
 pub const ROOM_JOIN_BASE: u32 = ROOMS_FIRST + 100_000;
 /// Leave the queue the asker waits in. Answered with the state.
 pub const ROOM_UNQUEUE: u32 = ROOMS_FIRST + 7;
+/// Go into the asker's room's match being played now, without waiting for
+/// [`RoomView::join_in`]. Answered with the state.
+pub const ROOM_JOIN_MATCH: u32 = ROOMS_FIRST + 8;
 /// `ROOM_QUEUE_BASE + key`, key 1 to [`ROOM_KEY_MAX`]: wait in that full
 /// room's queue (its PIN, if it asks one, given just before), or join it if
 /// a place is free. Answered with the state.
@@ -125,6 +128,7 @@ pub enum RoomRequest {
     Join { key: u32 },
     Queue { key: u32 },
     Unqueue,
+    JoinMatch,
     Bits { chunk: u8, bits: u32 },
     Create(RoomSpec),
 }
@@ -168,6 +172,7 @@ pub fn room_request(start: u32, count: u8) -> Option<RoomRequest> {
         ROOM_LEAVE => R::Leave,
         ROOM_PLAY => R::Play,
         ROOM_UNQUEUE => R::Unqueue,
+        ROOM_JOIN_MATCH => R::JoinMatch,
         _ if (ROOM_VOTE_BASE..ROOM_VOTE_BASE + CARDS as u32).contains(&start) => R::Vote {
             card: (start - ROOM_VOTE_BASE) as u8,
         },
@@ -366,6 +371,10 @@ pub struct RoomView {
     /// A room with a lower max level the asker may join now, offered as a
     /// one-click switch.
     pub switch: Option<RoomSwitch>,
+    /// The asker came while its room's match is played: seconds until it is
+    /// put into it, unless it asks first ([`ROOM_JOIN_MATCH`]); none when it
+    /// is in it, or the match takes nobody now.
+    pub join_in: Option<u32>,
 }
 
 /// A room to switch to (`W` row of [`room_state`]).
@@ -471,7 +480,9 @@ pub fn room_list(
 ///   <in match>;<fit>;<away>;<name>` (`fit`: [`Fit`]; `away` 1: its game is
 ///   gone for now), a row `W;<key>;<max level>;<players>;<size>;<name>` when
 ///   a room of a lower max level would take the asker now ([`RoomSwitch`]),
-///   and `L;<map_id>`, the last match's map (0: none).
+///   a row `J;<seconds>` when the asker waits to go into its room's match
+///   being played ([`RoomView::join_in`]), and `L;<map_id>`, the last
+///   match's map (0: none).
 pub fn room_state(
     room: Option<&RoomView>,
     code: RoomCode,
@@ -523,6 +534,9 @@ pub fn room_state(
             row_name(&member.name)
         )
     }));
+    if let Some(secs) = room.join_in {
+        names.push(format!("J;{secs}"));
+    }
     if let Some(switch) = &room.switch {
         names.push(format!(
             "W;{};{};{};{};{}",
@@ -603,7 +617,12 @@ mod tests {
         // nothing up to the pool.
         assert_eq!(ROOM_VOTE_BASE + 3, ROOM_PLAY);
         assert_eq!(ROOM_PLAY + 1, ROOM_UNQUEUE);
-        assert_eq!(room_request(ROOM_UNQUEUE + 1, 1), None);
+        assert_eq!(ROOM_UNQUEUE + 1, ROOM_JOIN_MATCH);
+        assert_eq!(
+            room_request(ROOM_JOIN_MATCH, 1),
+            Some(RoomRequest::JoinMatch)
+        );
+        assert_eq!(room_request(ROOM_JOIN_MATCH + 1, 1), None);
         assert_eq!(
             room_request(ROOM_POOL_BASE + 15, 1),
             Some(RoomRequest::Pool { page: 15 })

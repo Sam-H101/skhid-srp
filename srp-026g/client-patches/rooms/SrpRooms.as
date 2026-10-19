@@ -40,6 +40,7 @@ package
         public static const LEAVE:int = FIRST + 2;
         public static const PLAY:int = FIRST + 6;
         public static const UNQUEUE:int = FIRST + 7;
+        public static const JOIN_MATCH:int = FIRST + 8;
         public static const QUEUE:int = FIRST + 200000;
         public static const VOTE:int = FIRST + 3;
         public static const POOL:int = FIRST + 10;
@@ -123,6 +124,10 @@ package
                 "Drużyny są losowane na starcie meczu."],
             "code": ["code", "код", "код", "Code", "kod"],
             "leave": ["Leave", "Вийти", "Выйти", "Verlassen", "Opuść"],
+            "joinMatch": ["Join match", "Увійти в матч", "Войти в матч", "Match beitreten", "Dołącz do meczu"],
+            "joinIn": ["Into the match in %S s, or now with Join match", "У матч за %S с, або зараз: «Увійти в матч»",
+                "В матч через %S с, или сейчас: «Войти в матч»", "Ins Match in %S s, oder jetzt: Match beitreten",
+                "Do meczu za %S s albo teraz: Dołącz do meczu"],
             "switchTo": ["Switch room", "Змінити кімнату", "Сменить комнату", "Raum wechseln", "Zmień pokój"],
             // Short: they share the footer with two buttons.
             "switchWhy": ["A place free: room for gear up to level %L", "Є місце: кімната для рівня спорядження до %L",
@@ -155,9 +160,9 @@ package
                 "Ваше снаряжение выше макс. уровня: снизьте, иначе на старте вы выйдете из комнаты.",
                 "Deine Ausrüstung liegt über der max. Stufe: senke sie, sonst verlässt du beim Start den Raum.",
                 "Twój ekwipunek przekracza maks. poziom: obniż go, inaczej na starcie opuścisz pokój."],
-            "lateHint": ["Joining now puts you straight into the match.", "Хто зайде зараз, одразу потрапить у матч.",
-                "Кто зайдёт сейчас, сразу попадёт в матч.", "Wer jetzt beitritt, kommt direkt ins Match.",
-                "Kto dołączy teraz, trafi od razu do meczu."],
+            "lateHint": ["Who joins now sees the room, then goes into the match.", "Хто зайде зараз, побачить кімнату, потім потрапить у матч.",
+                "Кто зайдёт сейчас, увидит комнату, потом попадёт в матч.", "Wer jetzt beitritt, sieht den Raum, dann geht es ins Match.",
+                "Kto dołączy teraz, zobaczy pokój, potem trafi do meczu."],
             "waitingShort": ["Waiting", "Очікування", "Ожидание", "Warten", "Oczekiwanie"],
             "code0": ["", "", "", "", ""],
             "code2": ["That room is gone.", "Цієї кімнати вже немає.", "Этой комнаты больше нет.",
@@ -1061,7 +1066,7 @@ package
                 _room = {"key": int(head[2]), "level": int(head[3]), "max": int(head[4]), "size": int(head[5]),
                     "wait": int(head[6]), "phase": int(head[7]), "secs": int(head[8]), "owner": head[9] == "1",
                     "pool": int(head[10]), "serial": int(head[12]), "pin": head[13] == "1", "next": int(head[14]), "min": int(head[15]),
-                    "cards": [], "members": [], "last": 0, "switchTo": null};
+                    "cards": [], "members": [], "last": 0, "switchTo": null, "joinIn": -1};
                 _roomAt = getTimer();
                 // The vote chose the map: the game's alert (6, its important
                 // message's), not the match's own start (15), the owner's.
@@ -1076,6 +1081,8 @@ package
                         _room.members.push({"gear": int(r[2]), "owner": r[3] == "1", "me": r[4] == "1",
                             "inMatch": r[5] == "1", "fit": int(r[6]), "away": r[7] == "1",
                             "name": r.slice(8).join(";")});
+                    else if (r[0] == "J")
+                        _room.joinIn = int(r[1]);
                     else if (r[0] == "W")
                         _room.switchTo = {"key": int(r[1]), "max": int(r[2]), "players": int(r[3]),
                             "size": int(r[4]), "name": r.slice(5).join(";")};
@@ -2365,10 +2372,17 @@ package
             }
             // A room of a lower max level that takes us: one click there
             // (the server offers it only while we play no match).
+            var buttons:Array = [[say("leave"), onLeave, null]];
+            if (room.joinIn >= 0)
+                buttons.push([say("joinMatch"), onJoinMatch, null]);
             if (room.switchTo != null)
             {
                 var to:Object = room.switchTo;
-                var made:Array = footer([[say("leave"), onLeave, null], [say("switchTo"), onSwitch, to]]);
+                buttons.push([say("switchTo"), onSwitch, to]);
+                var made:Array = footer(buttons);
+                // Two buttons leave room for what the switch is; three do not.
+                if (buttons.length < 3)
+                {
                 // What the switch is, left of the buttons: the room's gear cap,
                 // whose it is and how full.
                 var room_w:Number = made[0].x - 28;
@@ -2376,9 +2390,10 @@ package
                 text(_content, say("switchWhy").split("%L").join(String(to.max)), 16, fy + 5, room_w, 13, GOLD);
                 text(_content, say("switchWho").split("%N").join(to.name).split("%P").join(to.players + " / " + to.size * 2),
                     16, fy + 24, room_w, 12, GREY);
+                }
             }
             else
-                footer([[say("leave"), onLeave, null]]);
+                footer(buttons);
         }
 
         private var _banner:TextField;
@@ -2420,7 +2435,10 @@ package
             {
                 _bannerLabel.text = say("playing").toUpperCase();
                 _banner.text = clock(_room.secs + passed);
-                _bannerHint.text = say("lateHint");
+                // Waiting to go into it: the seconds left, counted here.
+                _bannerHint.text = _room.joinIn >= 0
+                    ? say("joinIn").split("%S").join(String(Math.max(0, _room.joinIn - passed)))
+                    : say("lateHint");
             }
             else
             {
@@ -2461,6 +2479,16 @@ package
         {
             if (_view == "room" && _room != null)
                 ask(LEAVE, 1);
+        }
+
+        // Into the room's match now, without waiting for the countdown.
+        private function onJoinMatch(e:Event):void
+        {
+            if (_steps.length > 0)
+                return;
+            busy(e);
+            ask(JOIN_MATCH, 1);
+            _fastUntil = getTimer() + 5000;
         }
 
         // The room offered of a lower max level: joining it leaves ours.

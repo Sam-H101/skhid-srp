@@ -43,7 +43,7 @@
 //! | `SRP_ROOMS_EXTRA_MAPS` | (none) | playable `maps_dict` ids a creator may add to a pool besides the match pool (`SRP_MATCH_MAPS`): the experimental maps |
 
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use session::matchmaking_policy::{self as policy, Worth};
 use session::v026g::rooms::{self as model, Due, Refused, Spec, Stage};
@@ -66,6 +66,10 @@ pub const DEFAULT_MAX_ROOMS: usize = 50;
 /// 8 a side, the owner's word of 2026-10-18 ("8vs8 not 10vs10").
 const QUICK_SIZE: u8 = 8;
 const QUICK_WAIT: u8 = 30;
+/// How long a member who comes while its room's match is played sees the
+/// room before it is put into the match, unless it asks first (the owner's
+/// of 2026-10-19).
+pub const LATE_JOIN_WAIT: Duration = Duration::from_secs(15);
 
 /// The rooms' settings in the lobby.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,9 +331,9 @@ impl Core<'_> {
                 if code != RoomCode::None {
                     log::info!("{}: join room {key}: refused ({code:?})", who.name);
                 }
-                // The answer first, then its match if one is being played.
+                // Into the room first: its match, if one is played, after
+                // `LATE_JOIN_WAIT` or on the member's ask (the tick).
                 self.send_room_state(who, code, now);
-                self.room_late_join(who.account_id, now);
             }
             // A full room's queue (the owner's of 2026-10-17): from the lobby
             // only, one at a time; a room with a place is joined at once.
@@ -354,7 +358,12 @@ impl Core<'_> {
                     },
                 };
                 self.send_room_state(who, code, now);
+            }
+            RoomRequest::JoinMatch => {
+                // The member does not wait: into its room's match now.
+                self.room_join_at.insert(who.account_id, now);
                 self.room_late_join(who.account_id, now);
+                self.send_room_state(who, RoomCode::None, now);
             }
             RoomRequest::Unqueue => {
                 if let Some(key) = self.rooms.dequeue(who.account_id) {
@@ -452,7 +461,6 @@ impl Core<'_> {
                     match self.room_for_play(who.account_id, gear) {
                         Some(key) if self.rooms.join(who.account_id, gear, key, now).is_ok() => {
                             log::info!("{} pressed Play: into room {key}", who.name);
-                            self.room_late_join(who.account_id, now);
                         }
                         _ => {
                             self.rooms.forget_draft(who.account_id);
@@ -537,7 +545,31 @@ impl Core<'_> {
                 _ => 0,
             },
             switch: self.room_switch(who, room),
+            join_in: self.room_join_in(who, room, now),
         })
+    }
+
+    /// Seconds until the member goes into its room's match being played
+    /// (it came while it is played; the tick puts it in): none when it is
+    /// in it, or the match takes nobody now.
+    fn room_join_in(&self, who: &Who, room: &model::Room, now: Instant) -> Option<u32> {
+        let Stage::InMatch { match_id, .. } = room.stage else {
+            return None;
+        };
+        if room.in_match.contains(&who.account_id) {
+            return None;
+        }
+        let running = self.matches.get(&match_id)?;
+        if !self.late_admission(running, now) {
+            return None;
+        }
+        let at = self
+            .room_join_at
+            .get(&who.account_id)
+            .copied()
+            .unwrap_or(now + LATE_JOIN_WAIT);
+        let left = at.saturating_duration_since(now);
+        Some(left.as_millis().div_ceil(1000) as u32)
     }
 
     /// A room the member may switch to with one click (the owner's of
@@ -680,7 +712,6 @@ impl Core<'_> {
                     });
                 if fits && self.rooms.admit(account_id, key) {
                     log::info!("Account {account_id}: from room {key}'s queue into it");
-                    self.room_late_join(account_id, now);
                     continue;
                 }
                 log::info!("Account {account_id}: out of room {key}'s queue (may not come now)");
@@ -821,8 +852,19 @@ impl Core<'_> {
                     .collect::<Vec<_>>()
             })
             .collect();
+        // Each goes into the match `LATE_JOIN_WAIT` after it came (or at
+        // once on its ask): the room shows first (the owner's of
+        // 2026-10-19).
+        self.room_join_at
+            .retain(|account_id, _| waiting.contains(account_id));
         for account_id in waiting {
-            self.room_late_join(account_id, now);
+            let at = *self
+                .room_join_at
+                .entry(account_id)
+                .or_insert(now + LATE_JOIN_WAIT);
+            if at <= now {
+                self.room_late_join(account_id, now);
+            }
         }
     }
 

@@ -6,8 +6,8 @@
 use session::v026g::matchmaking;
 use session::v026g::rooms::Stage;
 use survarium::v026g::lobby::rooms::{
-    ROOM_JOIN_BASE, ROOM_LEAVE, ROOM_PIN_BASE, ROOM_PLAY, ROOM_QUEUE_BASE, ROOM_STATE,
-    ROOM_UNQUEUE, ROOM_VOTE_BASE, ROOMS_LIST, RoomSpec, create_start, kick_start,
+    ROOM_JOIN_BASE, ROOM_JOIN_MATCH, ROOM_LEAVE, ROOM_PIN_BASE, ROOM_PLAY, ROOM_QUEUE_BASE,
+    ROOM_STATE, ROOM_UNQUEUE, ROOM_VOTE_BASE, ROOMS_LIST, RoomSpec, create_start, kick_start,
 };
 
 use super::pvb_tests::with_gear;
@@ -428,13 +428,16 @@ fn a_max_level_keeps_higher_equipment_out() {
 }
 
 /// Carol joins a room whose match is being played and admits players: she
-/// goes into it at once.
+/// sees the room first (who is in it, a switch, her own room) and goes into
+/// the match 15 s later; Dave asks to go in at once (the owner's of
+/// 2026-10-19).
 #[test]
 fn a_member_who_comes_while_the_match_is_played_goes_into_it() {
     let mut world = World::new();
     let alice = world.connect("Alice");
     let bob = world.connect("Bob");
     let carol = world.connect("Carol");
+    let dave = world.connect("Dave");
     let key = create(&mut world, alice, spec(6), None);
     rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
     world.advance(VOTE_AND_WAIT);
@@ -470,10 +473,34 @@ fn a_member_who_comes_while_the_match_is_played_goes_into_it() {
     })
     .expect("the room's state");
     assert_eq!(joined.split(';').nth(MEMBERS), Some("3"), "{joined}");
-    let (sent, _) = sent_to_match(&decoded).expect("Carol goes in late");
+    // The room first: not in the match yet, 15 s to go.
+    assert!(sent_to_match(&decoded).is_none());
+    let waiting = state(&mut world, carol);
+    assert!(waiting.iter().any(|row| row == "J;15"), "{waiting:?}");
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(carol)).expect("Carol goes in late");
+    assert_eq!(sent, ticket);
+    // Dave does not wait: Join match puts him in at once (the match takes
+    // the next one once Carol is in).
+    world.host.admitting.locked().insert(ticket);
+    rows(&mut world, dave, ROOM_JOIN_BASE + key, 1);
+    world.take(dave);
+    let addr = world.clients[dave].0;
+    let now = world.now;
+    world.core.handle(
+        addr,
+        ClientMessage::QueryRanking {
+            start: ROOM_JOIN_MATCH,
+            count: 1,
+        },
+        now,
+    );
+    // Sent on the lobby's next tick, not after 15 s.
+    world.advance(Duration::from_secs(2));
+    let (sent, _) = sent_to_match(&world.take(dave)).expect("Dave goes in at once");
     assert_eq!(sent, ticket);
     let setup = world.host.made.locked().last().unwrap().1.clone();
-    assert_eq!(setup.players.len(), 3);
+    assert_eq!(setup.players.len(), 4);
 }
 
 /// The match server cannot make the room's match: nobody is left marked as

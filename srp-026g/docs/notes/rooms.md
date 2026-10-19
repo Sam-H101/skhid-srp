@@ -35,7 +35,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Cod
   room when the match starts without it (code 13 / 12); it may rejoin.
 - **Sides:** drawn at the start, as even as can be (every split by the same count), squads
   together; a room of one squad plays it on both sides.
-- **Late joins:** a member who comes during the room's match goes straight into it, on the
+- **Late joins:** a member who comes during the room's match (by Play, Join, its queue or a
+  switch) sees the room first: who is in it and at what levels, to switch or make its own;
+  it goes into the match 15 s later, or at once with "Join match". It goes in on the
   weaker side, from its countdown on (the first seconds too) until 30 s (`LOAD_MARGIN`) are
   left of it; one who comes later waits in the same room and plays its next match.
 - **In the match (Tab list), to do:** a lost player's row stays grey for the 90 s; one who

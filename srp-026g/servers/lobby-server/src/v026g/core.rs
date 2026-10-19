@@ -222,6 +222,9 @@ pub(super) struct Core<'a> {
     /// Why a request or a Play left the account outside a room, said once
     /// with its next room state (`rooms`).
     pub room_codes: HashMap<u32, survarium::v026g::lobby::rooms::RoomCode>,
+    /// When a member who came while its room's match is played goes into
+    /// it (`rooms::LATE_JOIN_WAIT` after it came, or at once on its ask).
+    pub room_join_at: HashMap<u32, Instant>,
 }
 
 impl<'a> Core<'a> {
@@ -270,6 +273,7 @@ impl<'a> Core<'a> {
             rooms: Default::default(),
             room_launching: HashMap::new(),
             room_codes: HashMap::new(),
+            room_join_at: HashMap::new(),
         }
     }
 
