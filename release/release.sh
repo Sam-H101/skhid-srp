@@ -977,6 +977,25 @@ if [[ -n $rev ]] && ((rev >= MENUS_PATCH)) && [[ -z $(list_row "resources.db.pat
     ${resources##*/} != "resources.db.patch_$MENUS_PATCH" ]]; then
     problem "revision $rev needs resources.db.patch_$MENUS_PATCH (the menus) offered, and $PATCH_LIST has no row of it: release it (--resources) first"
 fi
+# The site's pages built from the game (the Maps tab, the calculator): each
+# from exactly the patches the release offers (with --resources, that one
+# too), so neither shows stale data. A ref without one has nothing to check.
+if ((!test_server)) && [[ -n $main_commit ]]; then
+    want=$( { cut -d' ' -f1,2 <<<"$LIST"; if [[ -n $resources && -f $resources ]]; then echo "${resources##*/} $(sha256_of "$resources")"; fi; } | grep . | sort || true)
+    for page in "the Maps tab:maps:srp-026g/scripts/maps-tab/README.md; build.py" \
+        "the calculator:damage:srp-026g/scripts/damage-calc/README.md; build_site.py"; do
+        IFS=: read -r what dir how <<<"$page"
+        built=srp-026g/servers/web-server/$dir/built-from.tsv
+        have=$(git -C "$REPO" show "$main_commit:$built" 2>/dev/null | grep -v '^#' | tr '\t' ' ' | grep . | sort || true)
+        if ! git -C "$REPO" cat-file -e "$main_commit:$built" 2>/dev/null; then
+            say "  note     no $built on $ref: nothing to check"
+        elif [[ $have == "$want" ]]; then
+            okay "$what: built from the patches this release offers"
+        else
+            problem "$what ($built on $ref) was built from other patches than this release offers: rebuild it (${how}${resources:+ --with $resources}) and merge that first"
+        fi
+    done
+fi
 
 # The target: disk, leftovers, settings, the container, the admin page.
 if ((target_ok)); then

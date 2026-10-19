@@ -208,10 +208,15 @@ default_ammo = {w: s[0] for w, s in compat.items()}
 
 # Artefacts: their data blocks as they are. Onyx is the one that changes a
 # hit (0x312bf0); Spring and Lifebone only touch movement and regeneration.
-# The names the game's own pickup hints use (st_<artefact>_pickup_hint):
-# the Lifebone config is the Larkspur, Живокіст.
-ARTEFACT_NAMES = {"onyx": "Onyx", "spring": "Spring", "lifebone": "Larkspur"}
-ARTEFACT_NAMES_UK = {"onyx": "Онікс", "spring": "Пружина", "lifebone": "Живокіст"}
+# 0.26g ships no names for the artefacts' configs; the game's pickup hints
+# name them (st_<artefact>_pickup_hint: "Onyx artifact. ...", "Артефакт
+# Онікс. ..."): the Lifebone config is the Larkspur, Живокіст.
+def pickup_name(key, strings, pattern):
+    import re
+    m = re.match(pattern, strings.get(f"st_{key}_pickup_hint", ""))
+    return m.group(1) if m else None
+
+
 artefacts = {}
 for file in files("gameplay__items__artefacts__"):
     cfg = load(file)
@@ -219,10 +224,9 @@ for file in files("gameplay__items__artefacts__"):
     key = key_of(file).removeprefix("artefact_")
     artefacts[key] = {
         **ui(cfg),
-        # 0.26g ships no English names for the artefacts.
         "name": text(cfg["ui_desc"]["text_descriptions"]["name"]) if cfg["ui_desc"]["text_descriptions"]["name"] in strings
-        else ARTEFACT_NAMES.get(key, key),
-        "name_uk": text_uk(cfg["ui_desc"]["text_descriptions"]["name"]) or ARTEFACT_NAMES_UK.get(key),
+        else pickup_name(key, strings, r"\s*(.+?) artifact\.") or key,
+        "name_uk": text_uk(cfg["ui_desc"]["text_descriptions"]["name"]) or pickup_name(key, strings_uk, r"\s*Артефакт (.+?)\."),
         "cooldown_s": r(d.get("cooldown_sec", 0)),
         "passive": {k: r(v) for k, v in (d.get("passive") or {}).items()},
         "active": {k: r(v) if not isinstance(v, (dict, list)) else v for k, v in (d.get("active") or {}).items()},

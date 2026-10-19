@@ -73,7 +73,8 @@ function fillWeapons() {
 // as if it had been used. groups: [[label or null, [[key, text, note]]]].
 function makePicker(name, select, groups, searchable) {
   const host = $(name); host.innerHTML = "";
-  const icon = k => { const src = DATA.icons && DATA.icons[k]; const img = el("img", { alt: "" }); if (src) img.src = src; return img; };
+  // No icon (an empty slot's "none"): an empty space, not a broken image.
+  const icon = k => { const src = DATA.icons && DATA.icons[k]; return src ? el("img", { alt: "", src }) : el("span", { class: "noimg" }); };
   const btn = el("button", { type: "button", class: "wpick-btn", id: name + "-btn", "aria-haspopup": "listbox", "aria-expanded": "false" });
   const list = el("div", { class: "wpick-list", role: "listbox", id: name + "-list", tabindex: "-1" });
   const search = searchable ? el("input", { type: "search", class: "wpick-search", role: "combobox", "aria-controls": name + "-list", "aria-expanded": "true",
@@ -748,6 +749,20 @@ function fillMaps() {
   s.value = state.map;
   s.addEventListener("change", () => { state.map = s.value; state.mapA = state.mapB = null; drawMapBase(); update(); });
   $("mapclear").addEventListener("click", () => { state.mapA = state.mapB = null; update(); });
+  // The render or the game's minimap (same frame), where the map has one.
+  const views = $("mapviews");
+  const paintViews = () => {
+    views.hidden = !DATA.maps[state.map].minimap;
+    for (const c of views.children) c.setAttribute("aria-pressed", String(c.dataset.view === (state.mapView || "render")));
+  };
+  for (const [v, text] of [["render", T("From above", "Згори")], ["minimap", T("Minimap", "Мінімапа")]]) {
+    const c = el("button", { type: "button", class: "chip", text });
+    c.dataset.view = v;
+    c.addEventListener("click", () => { state.mapView = v; paintViews(); drawMapBase(); update(); });
+    views.append(c);
+  }
+  s.addEventListener("change", paintViews);
+  paintViews();
   drawMapBase();
 }
 function drawMapBase() {
@@ -755,7 +770,7 @@ function drawMapBase() {
   // The play area (the native minimap's part of the render), not the whole square.
   const [vx, vy, vw, vh] = m.play || [0, 0, m.size[0], m.size[1]];
   $("mapview").innerHTML = `<svg viewBox="${vx} ${vy} ${vw} ${vh}" style="width:min(100%, calc(90vh * ${vw / vh}))" role="img" aria-label="${T("Top-down view of", "Вигляд згори:")} ${nm(m)}">
-    <image href="${m.image}" width="${m.size[0]}" height="${m.size[1]}"/><g id="mapover"></g></svg>`;
+    <image href="${state.mapView === "minimap" && m.minimap ? m.minimap : m.image}" width="${m.size[0]}" height="${m.size[1]}" preserveAspectRatio="none"/><g id="mapover"></g></svg>`;
   const svg = $("mapview").querySelector("svg");
   svg.addEventListener("click", ev => {
     const r = svg.getBoundingClientRect();

@@ -42,6 +42,7 @@
 
 mod damage;
 mod launcher;
+mod maps;
 mod password_reset;
 mod patches;
 mod stats;
@@ -644,11 +645,13 @@ impl Web {
             self.resource(&mut stream, &request, &file);
             return;
         }
-        // The calculator's files on the 0.26g site; its fonts, which every
-        // page uses, on both.
+        // The calculator's and the Maps tab's files on the 0.26g site; the
+        // calculator's fonts, which every page uses, on both.
         let site_file = self.game.is_some() || request.path.starts_with(damage::FONTS);
         if site_file && matches!(request.method.as_str(), "GET" | "HEAD") {
-            if let Some((content_type, bytes)) = damage::file(&request.path) {
+            let file = damage::file(&request.path)
+                .or_else(|| self.game.as_ref().and_then(|_| maps::file(&request.path)));
+            if let Some((content_type, bytes)) = file {
                 damage::send(&mut stream, request.method == "HEAD", content_type, bytes);
                 return;
             }
@@ -658,6 +661,8 @@ impl Web {
             launcher::policy()
         } else if self.game.is_some() && request.path == damage::PATH {
             damage::POLICY
+        } else if self.game.is_some() && request.path == maps::PATH {
+            maps::POLICY
         } else {
             POLICY
         };
@@ -914,6 +919,7 @@ impl Web {
                     "/patches" => return patches::response(&game.patches),
                     "/api/client-files" => return launcher::client_files(),
                     damage::PATH => return damage_page(request.lang),
+                    maps::PATH => return maps_page(request.lang),
                     path if path.starts_with(launcher::FRESH) => {
                         return launcher::fresh(
                             launcher::language(path, request.lang),
@@ -1542,27 +1548,35 @@ fn page(lang: Lang, form: Form, message: &str) -> Response {
 
 /// The calculator: its page under the site's header.
 fn damage_page(lang: Lang) -> Response {
+    damage::page(lang, &tool_header(lang, damage::PATH))
+}
+
+/// The Maps tab: its page under the site's header.
+fn maps_page(lang: Lang) -> Response {
+    maps::page(lang, &tool_header(lang, maps::PATH))
+}
+
+/// The site's header over a page of its own look (the calculator's, the
+/// Maps tab's), `path` the page shown.
+fn tool_header(lang: Lang, path: &str) -> String {
     let connect = CONNECT.get();
     let test = connect.is_some_and(|connect| connect.test_server);
     let other_url = connect.and_then(|connect| connect.other_url.as_deref());
-    let (header, test_notice) = site_header(lang, true, test, other_url, true);
-    damage::page(
-        lang,
-        &format!(
-            "<div class=site><style>{}</style>{header}{test_notice}</div>",
-            damage::HEADER_STYLE
-        ),
+    let (header, test_notice) = site_header(lang, true, test, other_url, path);
+    format!(
+        "<div class=site><style>{}</style>{header}{test_notice}</div>",
+        damage::HEADER_STYLE
     )
 }
 
 /// Every page's header (the 0.26g site's or the 0.21d's), and what a test
-/// server says under it. `damage`: the calculator is the page shown.
+/// server says under it. `current`: the path of the tab shown, if one is.
 fn site_header(
     lang: Lang,
     v026g: bool,
     test: bool,
     other_url: Option<&str>,
-    damage: bool,
+    current: &str,
 ) -> (String, String) {
     let code = lang.code();
     let (other, other_name) = match lang {
@@ -1585,23 +1599,29 @@ fn site_header(
             String::new(),
         )
     };
-    // The calculator is the 0.26g game's.
-    let damage_link = if v026g {
+    // The calculator and the maps are the 0.26g game's.
+    let tab = |path: &str, name: &str| {
         format!(
-            "<a href=\"{}?lang={code}\"{}>{}</a>",
-            damage::PATH,
-            if damage { " aria-current=page" } else { "" },
-            lang.tr("Damage calculator", "Калькулятор шкоди"),
+            "<a href=\"{path}?lang={code}\"{}>{name}</a>",
+            if current == path {
+                " aria-current=page"
+            } else {
+                ""
+            },
         )
+    };
+    let home_link = tab("/", &lang.tr("Home", "Головна"));
+    let damage_link = if v026g {
+        tab(damage::PATH, &lang.tr("Calculator", "Калькулятор"))
+            + &tab(maps::PATH, &lang.tr("Maps", "Мапи"))
     } else {
         String::new()
     };
     let header = format!(
         "<header><a class=brand href=\"/?lang={code}\">СХІД</a>{badge}\
          <span class=tag>{}</span>\
-         <nav><a href=\"/?lang={code}\">{}</a>{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
+         <nav>{home_link}{damage_link}{other_link}</nav> <a class=lang href=\"?lang={other}\">{other_name}</a></header>",
         page_tag(lang, version, test),
-        lang.tr("Home", "Головна"),
     );
     (header, test_notice)
 }
@@ -1615,7 +1635,12 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
     };
     let code = lang.code();
     let version = if form.is_026g() { "0.26g" } else { "0.21d" };
-    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, false);
+    let current = if matches!(form, Form::Home(_)) {
+        "/"
+    } else {
+        ""
+    };
+    let (header, test_notice) = site_header(lang, form.is_026g(), test, other_url, current);
     let body = match form {
         Form::InTheGame26(code) => v026g::in_the_game_now(code),
         Form::Admin(view) => admin_form(lang, &view),
@@ -1646,16 +1671,18 @@ fn page_as(lang: Lang, form: Form, message: &str, test: bool, other_url: Option<
 }
 
 /// The site's look: the damage calculator's (paper and ink, PT Sans, PT Sans
-/// Narrow headings, PT Mono numbers), light or dark as the system is. The
-/// header keeps its own dark band on every page, the calculator's included.
+/// Narrow headings, PT Mono numbers), light or dark as the system is, the
+/// header too: on every page, the calculator's and the maps' included
+/// ([`damage::HEADER_STYLE`]).
 const STYLE: &str = ":root{--bg:#e9e6dc;--panel:#f5f3ec;--ink:#1f2420;--ink-2:#4d544c;--ink-3:#7b8277;--rule:#c9c5b6;--accent:#b4501f;--accent-ink:#fff8f0;--bad:#a3322a;--code:#ece8dc;\
 --display:'PT Sans Narrow','Arial Narrow',sans-serif;--body:'PT Sans','Segoe UI',Roboto,sans-serif;--data:'PT Mono',ui-monospace,Consolas,monospace}\
 @media (prefers-color-scheme:dark){:root{--bg:#171a17;--panel:#1f231f;--ink:#e6e4da;--ink-2:#b4b6a8;--ink-3:#868a7e;--rule:#353a33;--accent:#e07a43;--accent-ink:#1a0f08;--bad:#e0675c;--code:#151815;color-scheme:dark}}\
 *{box-sizing:border-box}body{font:15px/1.55 var(--body);background:var(--bg);color:var(--ink);margin:0;min-height:100vh}\
-header{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1.2rem;padding:.9rem 1.4rem;background:#0b0c0d;border-bottom:2px solid #d4a017;box-shadow:0 2px 18px #0008;font-family:system-ui,'Segoe UI',sans-serif}\
-.brand{font:700 1.6rem Impact,'Arial Narrow',sans-serif;letter-spacing:.28em;color:#d4a017;text-decoration:none}.tag{font-size:.7rem;letter-spacing:.12em;color:#8a8f94;flex:1;min-width:12rem}\
-nav a{margin-right:.9rem;color:#e3e3e0;font-size:.85rem;text-decoration:none;text-transform:uppercase;letter-spacing:.08em}nav a:hover{color:#d4a017}\
-.lang{color:#d4a017;font-size:.85rem;text-decoration:none;border:1px solid #d4a01766;padding:.15rem .6rem;border-radius:2px}\
+header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.4rem;padding:.75rem 16px;background:var(--bg);border-bottom:2px solid var(--ink)}\
+.brand{font:700 1.5rem var(--display);letter-spacing:.24em;color:var(--accent);text-decoration:none}.tag{font:.72rem var(--data);color:var(--ink-3);flex:1;min-width:12rem}\
+nav{display:flex;flex-wrap:wrap;align-items:center;row-gap:.3rem}nav a{font:700 .85rem var(--display);text-transform:uppercase;letter-spacing:.1em;color:var(--ink-2);text-decoration:none;padding:0 .8rem;line-height:1.1}\
+nav a+a{border-left:2px solid var(--ink-3)}nav a:first-child{padding-left:0}nav a:hover{color:var(--ink)}nav a[aria-current]{color:var(--accent)}\
+.lang{font:.8rem var(--body);color:var(--ink-2);text-decoration:none;border:1px solid var(--rule);background:var(--bg);padding:.15rem .7rem;border-radius:999px}.lang:hover{border-color:var(--ink-3);color:var(--ink)}\
 main{max-width:46rem;margin:22px auto;padding:0 16px;display:grid;gap:22px}a{color:var(--accent)}\
 h1,h2,h3{font-family:var(--display);font-weight:700;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--ink)}h1{font-size:1.35rem}h2{font-size:1.15rem}\
 .card{background:var(--panel);border:1px solid var(--rule);padding:16px;display:grid;gap:12px;align-content:start;min-width:0}\
@@ -3061,6 +3088,13 @@ mod tests {
         // The site's fonts are the calculator's, served on both servers.
         assert!(home.contains("src: url(\"/damage/fonts/pt-sans-regular.woff2?v="));
         assert!(crate::damage::file("/damage/fonts/pt-sans-regular.woff2").is_some());
+    }
+
+    #[test]
+    fn the_maps_are_the_026g_sites_only() {
+        let web = web(None);
+        assert_eq!(web.route(&get("/maps"), "t").status, "404 Not Found");
+        assert!(!web.route(&get("/"), "t").body.contains("href=\"/maps"));
     }
 
     #[test]

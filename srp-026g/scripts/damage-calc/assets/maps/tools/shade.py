@@ -2,25 +2,30 @@
 """Shade a top-down albedo with its height map and frame it with the native
 minimap's play area.
 
-    shade.py RENDER_DIR KEY NATIVE_MINIMAP_PNG OUT.png [--ppm 6]
+    shade.py RENDER_DIR KEY NATIVE_MINIMAP_PNG OUT.png [--ppm 6] [--area alpha|alpha:<t>|line]
 
 Lighting: Lambert from a sun in the north-west at 45 degrees on the height
 map's normals, plus cast shadows marched along the sun direction. The native
-HUD bitmap (same square frame) gives the play area: outside it the render is
-dimmed, and its edge is drawn as a light line.
+HUD bitmap (same square frame) gives the play area (minimap_area.py): outside
+it the render is dimmed, and its edge is drawn as a light line.
 """
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
 from PIL import Image, ImageFilter
 from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from minimap_area import area_mask  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dir'); ap.add_argument('key'); ap.add_argument('native'); ap.add_argument('out')
     ap.add_argument('--ppm', type=float, default=6)
+    ap.add_argument('--area', default='alpha')
     a = ap.parse_args()
     d = Path(a.dir)
     alb = np.load(d / f'{a.key}-albedo.npy').astype(np.float32)
@@ -32,13 +37,11 @@ def main():
     idx = ndimage.distance_transform_edt(empty, return_distances=False, return_indices=True)
     hf = h[tuple(idx)]
     albf = alb[tuple(idx)]
-    # play area from the native minimap (alpha), resized to this frame
+    # play area from the native minimap, in this frame
     if a.native == 'none':          # no native minimap: no play-area frame
         area = np.ones((W, W), bool); draw_edge = False
     else:
-        nat = Image.open(a.native).convert('RGBA')
-        alpha = np.asarray(nat.resize((W, W), Image.BILINEAR), np.float32)[..., 3] / 255
-        area = ndimage.binary_fill_holes(alpha > 0.15); draw_edge = True
+        area = area_mask(a.native, W, a.area); draw_edge = True
     px = 1.0 / a.ppm                                      # metres per pixel
     gy, gx = np.gradient(ndimage.gaussian_filter(hf, 0.7), px)   # d/dy(px rows: -z), d/dx(+x)
     # normal in (x, y-up, z) with image rows pointing to -z
