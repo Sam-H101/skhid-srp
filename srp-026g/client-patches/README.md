@@ -483,6 +483,29 @@ The input is the movie with Get Gold (`b7cf70a8…`); the build is
 deterministic (`f900cc8b…` with FFDec 25.1.3). Tests:
 `python -m unittest test_exchange_update`. Not in a release yet.
 
+## Buy for modified items
+
+`buy_modified_026g.py`: right-click on an owned item with modifications lists
+Buy, which buys a stock one (the rules: `docs/notes/buy-modified.md`). The
+menu (`InventoryList.showContextMenu`) listed Buy for an item that is not a
+stack only when `!itemData.rank`; an owned item's rank is its number of
+modifications (the server's `roll_modifications`), and a dictionary item's
+is its bundle rarity. The test becomes `!itemData.fromBundle` (the
+dictionary's own bundle flag): one operand of one `getproperty`, a name the
+block already has in `rank`'s namespace, of the same encoded length.
+`buyElement` and `try_buy_item` go by the dictionary id and the shop's
+price and seller, so nothing else changes; the server gives a new item
+without modifications.
+
+The input is the movie of the exchange update (`f900cc8b…`); the build is
+deterministic (`7b018792…` with FFDec 25.1.3):
+
+```sh
+python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+Tests: `python -m unittest test_buy_modified`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
