@@ -885,6 +885,20 @@ fn one_who_leaves_the_match_by_its_own_word_is_out_of_the_room_and_may_come_agai
     let map = maps::map_mode(setup.map_id).unwrap().level;
     assert_eq!(world.account(bob).map_plays, [(map, 1)]);
 
+    // He leaves again and comes back: he comes back once; now he waits for
+    // the next match (no third place of his).
+    assert_eq!(world.store.matchmaking().leave_match(bob_account), Some(id));
+    world.ask(bob, request::leave(1, true));
+    world.advance(Duration::from_secs(1));
+    world.host.admitting.locked().insert(ticket);
+    rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    let waiting = state(&mut world, bob);
+    assert!(!waiting.iter().any(|row| row.starts_with("J;")), "{waiting:?}");
+    world.take(bob);
+    world.advance(Duration::from_secs(16));
+    assert!(sent_to_match(&world.take(bob)).is_none());
+    assert_eq!(world.host.made.locked().last().unwrap().1.players.len(), 3);
+
     // The match ends: Bob's latest place is his result, once.
     world.end_match(ticket, 0);
     world.settle();

@@ -78,6 +78,11 @@ const QUICK_WAIT: u8 = 30;
 /// room before it is put into the match, unless it asks first (the owner's
 /// of 2026-10-19).
 pub const LATE_JOIN_WAIT: Duration = Duration::from_secs(15);
+/// The places one account may have in a match: its own and one more after
+/// it left by its own word (the owner's of 2026-10-19: one comes back once;
+/// again, it waits for the next match). Keeps a leaver from using up the
+/// match's 20 places.
+const PLACES_A_PLAYER: usize = 2;
 
 /// The rooms' settings in the lobby.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -568,7 +573,9 @@ impl Core<'_> {
             return None;
         }
         let running = self.matches.get(&match_id)?;
-        if !self.late_admission(running, now) {
+        if !self.late_admission(running, now)
+            || self.places_in_match(match_id, who.account_id) >= PLACES_A_PLAYER
+        {
             return None;
         }
         let at = self
@@ -578,6 +585,20 @@ impl Core<'_> {
             .unwrap_or(now + LATE_JOIN_WAIT);
         let left = at.saturating_duration_since(now);
         Some(left.as_millis().div_ceil(1000) as u32)
+    }
+
+    /// The places the account has had in the match.
+    fn places_in_match(&self, match_id: u32, account_id: u32) -> usize {
+        self.store
+            .matchmaking()
+            .formed_match(match_id)
+            .map_or(0, |formed| {
+                formed
+                    .seats
+                    .iter()
+                    .filter(|seat| seat.player.account_id == account_id)
+                    .count()
+            })
     }
 
     /// A room the member may switch to with one click (the owner's of
@@ -1121,7 +1142,11 @@ impl Core<'_> {
         }
         // One that left this match by its own word comes again as a new
         // place, its state fresh; the place it left is gone for good
-        // (`room_left_matches`). A place is never taken twice.
+        // (`room_left_matches`). A place is never taken twice, and one comes
+        // back once.
+        if self.places_in_match(match_id, account_id) >= PLACES_A_PLAYER {
+            return;
+        }
         let Some(ready) = self.room_ready(account_id) else {
             return;
         };
