@@ -1182,3 +1182,57 @@ fn a_game_out_of_step_while_a_place_is_installed_is_resynced_afterwards() {
     assert!(bench.until(8_000, |b| b.stages() == "LLLL"));
     bench.assert_no_faults();
 }
+
+/// A player that left by its own word (0xE0) comes into the match again
+/// as a new place (the owner's of 2026-10-19): not while its place has a
+/// seat; once it left, the registry takes the account once more, and its
+/// game, connecting from the address it had, gets the new place with a
+/// fresh state, never the one it left.
+#[test]
+fn a_player_that_left_by_its_own_word_comes_again_as_a_new_place() {
+    let mut bench = running();
+    let again = MatchPlayer {
+        session_id: session_of(1),
+        account_id: 101,
+        profile: profile("player1", 1),
+        bot: false,
+        driven: false,
+    };
+    assert_eq!(
+        bench.registry.join_running(bench.match_id, again.clone()),
+        Err(JoinError::AlreadyPlaying)
+    );
+    bench.clients[1].leave();
+    assert!(bench.until(2_000, |b| b.clients[0].left().contains(&1)));
+    assert!(bench.registry.seat(session_of(1)).is_none());
+    assert!(bench.until(2_000, |b| b.game().admitting()));
+    bench.registry.join_running(bench.match_id, again).unwrap();
+    assert_eq!(
+        bench.registry.seat(session_of(1)),
+        Some(crate::v026g::Seat {
+            match_id: bench.match_id,
+            place: 2
+        })
+    );
+    // Its game connects again from the address it had: the place it left
+    // still has that address's link, gone.
+    assert_eq!(bench.game().gone_session(1), Some(session_of(1)));
+    let addr = bench.addrs[1];
+    bench.addrs[1].set_port(43_001);
+    bench
+        .clients
+        .push(Client::growing(session_of(1), 3, MAP_BATTERIES));
+    bench.addrs.push(addr);
+    bench.join(2);
+    assert!(bench.until(2_000, |b| b.clients[0].entered().contains(&2)));
+    bench.run(2_000);
+    assert_eq!(bench.stages().as_bytes()[2], b'L', "{}", bench.stages());
+    assert_ne!(bench.stages().as_bytes()[1], b'L', "{}", bench.stages());
+    for client in [0, 2] {
+        let mask = bench.clients[client].sim.rule_at(bench.clock()).mask;
+        assert_eq!(mask & (1 << 1), 0);
+        assert_ne!(mask & (1 << 2), 0);
+    }
+    assert_eq!(bench.game().resyncs(0), 0);
+    bench.assert_no_faults();
+}

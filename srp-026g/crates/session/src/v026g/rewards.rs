@@ -112,6 +112,7 @@
 //! | stayed to the end | everything above |
 //! | left early | what its counters earned (kills, help, other score), a loss in the rating whatever its team did, wear, quests; nothing of the activity row's fixed part, no daily bonus and no drop |
 //! | never got into the match | nothing; its rating stays (0.21d) |
+//! | left by its own word and came into the match again (a new place) | its latest place's as above; the place it left counts for nothing ([`MatchResult::latest_places`]) |
 //! | any, when play never began (`played_ms` is `None`) | nothing |
 //! | any, when no snapshot was trusted (`trusted_by` 0) | no counters and no winner: the fixed part of a match not won, wear, a drop; the rating stays (0.21d's unknown result) |
 //! | any, when one client alone vouched (`trusted_by` 1) | in full, as 0.21d paid a match one client was alone in (its numbers passed the match server's checks) |
@@ -276,6 +277,32 @@ pub struct MatchResult {
     /// [`Terms::pvb_pay`] of its silver and experience, and counts for no
     /// quest and no daily bonus.
     pub vs_bots: bool,
+}
+
+impl MatchResult {
+    /// The result with each account's latest place only: a player that
+    /// left the match by its own word and came into it again is a new
+    /// place, and the place it left counts for nothing, as if it was not
+    /// there (the owner's of 2026-10-19). The server's own bots (account
+    /// 0) are all kept.
+    pub fn latest_places(&self) -> MatchResult {
+        let players = self
+            .players
+            .iter()
+            .enumerate()
+            .filter(|(index, player)| {
+                player.account_id == 0
+                    || !self.players[index + 1..]
+                        .iter()
+                        .any(|later| later.account_id == player.account_id)
+            })
+            .map(|(_, player)| player.clone())
+            .collect();
+        MatchResult {
+            players,
+            ..self.clone()
+        }
+    }
 }
 
 /// What the rewards of a match are counted with.
@@ -944,6 +971,10 @@ impl Results {
         if result.end == MatchEnd::NoShow {
             return None;
         }
+        // An account's place it left and came back from counts for
+        // nothing: its latest one is its result.
+        let latest = result.latest_places();
+        let result = &latest;
         let mut shared = Shared::of(result, terms);
         // Test bots (`super::bots`; none unless `SRP_BOT_ACCOUNTS` names
         // them) and the match server's own (in every match against bots):

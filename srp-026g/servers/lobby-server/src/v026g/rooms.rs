@@ -38,6 +38,10 @@
 //!   room and its queue, and may join again as a new member. Its game
 //!   started anew within that keeps the place; a game quit from its menu
 //!   (`FA`) leaves the room at once.
+//! - A member that leaves the room's match by its own word (0xE0) leaves
+//!   the room (`room_left_matches`); joining it again while that match is
+//!   played, it goes into it late as a new place (the owner's of
+//!   2026-10-19).
 //!
 //! # Settings (environment, read once at start)
 //!
@@ -743,6 +747,26 @@ impl Core<'_> {
         self.room_codes.remove(&account_id);
     }
 
+    /// Who left its room's match by its own word (its game's 0xE0, which
+    /// the match server passes on: `Matchmaking::leave_match`) is out of
+    /// the room, as by Leave: it may join again, and while the match is
+    /// played it goes into it again as a new place (the owner's of
+    /// 2026-10-19).
+    fn room_left_matches(&mut self) {
+        for (match_id, account_id) in self.store.matchmaking().take_left() {
+            let left = self.rooms.of(account_id).is_some_and(|room| {
+                matches!(room.stage, Stage::InMatch { match_id: id, .. } if id == match_id)
+                    && room.in_match.contains(&account_id)
+            });
+            if left && let Some(key) = self.rooms.leave(account_id) {
+                log::info!(
+                    "{}: left match {match_id:#x} by its own word, and with it room {key}",
+                    self.name_of(account_id).unwrap_or_default()
+                );
+            }
+        }
+    }
+
     /// The room's match is over.
     pub(super) fn room_match_over(&mut self, match_id: u32) {
         self.room_launching.remove(&match_id);
@@ -812,6 +836,7 @@ impl Core<'_> {
             in_rooms: self.rooms.all().map(|room| room.members.len()).sum(),
             queued: self.rooms.queued_total(),
         });
+        self.room_left_matches();
         if self.rooms.is_empty() {
             return;
         }
@@ -1094,17 +1119,9 @@ impl Core<'_> {
         if !self.late_admission(running, now) || self.maintenance_is_near() {
             return;
         }
-        let Some(formed) = self.store.matchmaking().formed_match(match_id) else {
-            return;
-        };
-        // A former place is never taken again (the match server's rule).
-        if formed
-            .seats
-            .iter()
-            .any(|seat| seat.player.account_id == account_id)
-        {
-            return;
-        }
+        // One that left this match by its own word comes again as a new
+        // place, its state fresh; the place it left is gone for good
+        // (`room_left_matches`). A place is never taken twice.
         let Some(ready) = self.room_ready(account_id) else {
             return;
         };

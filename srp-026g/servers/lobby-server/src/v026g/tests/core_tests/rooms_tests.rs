@@ -820,3 +820,78 @@ fn a_full_room_takes_the_first_of_its_queue_when_a_member_leaves() {
     world.advance(Duration::from_secs(1));
     assert_eq!(world.core.store.room_counts().queued, 0);
 }
+
+/// Bob leaves the room's match by his own word (his game's 0xE0, which the
+/// match server passes on): he is out of the room, as by Leave, and may
+/// join it again; while the match is played he goes into it again 15 s
+/// later as a new place, fresh. Its results count his latest place only,
+/// and his map once (the owner's of 2026-10-19).
+#[test]
+fn one_who_leaves_the_match_by_its_own_word_is_out_of_the_room_and_may_come_again() {
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
+    let key = create(&mut world, alice, spec(6), None);
+    rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    world.advance(VOTE_AND_WAIT);
+    let (ticket, _) = sent_to_match(&world.take(alice)).expect("a match");
+    assert!(sent_to_match(&world.take(bob)).is_some());
+    let (&id, _) = world
+        .core
+        .matches
+        .iter()
+        .find(|(_, running)| running.ticket.match_id == ticket)
+        .unwrap();
+    let (bob_account, bob_session) = world.ids[bob];
+
+    // His game leaves the match: the match server gives his seat up, and
+    // his client is back in the lobby.
+    assert_eq!(world.store.matchmaking().leave_match(bob_account), Some(id));
+    world.ask(bob, request::leave(1, true));
+    world.advance(Duration::from_secs(1));
+    assert_eq!(world.core.rooms.key_of(bob_account), None);
+    let room = world.core.rooms.get(key).unwrap();
+    assert_eq!(room.members.len(), 1);
+    assert!(!room.kicked.contains(&bob_account));
+    assert!(!room.in_match.contains(&bob_account));
+    assert_eq!(state(&mut world, bob), ["S1;N;0;0;0"]);
+
+    // He joins again while the match is played: into it 15 s later, as a
+    // new place.
+    world.host.admitting.locked().insert(ticket);
+    let joined = rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
+    assert_eq!(header(&joined)[MEMBERS], "2", "{joined:?}");
+    world.take(bob);
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(bob)).expect("Bob goes in again");
+    assert_eq!(sent, ticket);
+    let setup = world.host.made.locked().last().unwrap().1.clone();
+    let places: Vec<u32> = setup
+        .players
+        .iter()
+        .map(|player| player.account_id)
+        .collect();
+    assert_eq!(places, [world.ids[alice].0, bob_account, bob_account]);
+    assert_eq!(world.store.matchmaking().seat(bob_session), Some((id, 2)));
+    assert!(
+        world
+            .core
+            .rooms
+            .get(key)
+            .unwrap()
+            .in_match
+            .contains(&bob_account)
+    );
+    let map = maps::map_mode(setup.map_id).unwrap().level;
+    assert_eq!(world.account(bob).map_plays, [(map, 1)]);
+
+    // The match ends: Bob's latest place is his result, once.
+    world.end_match(ticket, 0);
+    world.settle();
+    let report = world.results.find(ticket).expect("its report");
+    assert_eq!(report.players.len(), 2);
+    let bob_report = report.player(bob_account).unwrap();
+    assert_eq!(bob_report.player_id, 3);
+    assert_eq!(report.stats.rows.len(), 2);
+    world.assert_clean();
+}

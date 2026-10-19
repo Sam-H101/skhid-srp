@@ -540,15 +540,14 @@ impl MatchRegistry {
         {
             return Err(JoinError::Unavailable);
         }
+        // An account whose place in this match has no seat any more (it
+        // left by its own word) comes as a new place, its old one gone for
+        // good (the owner's of 2026-10-19); one with a seat anywhere, never.
         let mut sessions = HashSet::new();
         let mut accounts = HashSet::new();
         for player in &players {
             if !sessions.insert(player.session_id)
                 || !accounts.insert(player.account_id)
-                || formed
-                    .places
-                    .iter()
-                    .any(|place| place.account_id == player.account_id)
                 || inner.seats.contains_key(&player.session_id)
                 || inner.seats.values().any(|seat| {
                     inner
@@ -661,9 +660,10 @@ impl MatchRegistry {
     /// The account's place in the match is now `session_id`'s: the player
     /// signed in again while the match goes on, and its client signs its
     /// match connection (0xD8) with the new session. The session it was
-    /// seated under has no place any more. `None`, and nothing changed,
-    /// when the match is not open, the account has no place in it, or the
-    /// session is seated elsewhere.
+    /// seated under has no place any more. Of an account's places in the
+    /// match (it left one and came again) its latest: the others are gone
+    /// for good. `None`, and nothing changed, when the match is not open,
+    /// the account has no place in it, or the session is seated elsewhere.
     pub fn reseat(&self, match_id: u32, account_id: u32, session_id: u32) -> Option<Seat> {
         let mut inner = self.inner();
         let place = inner
@@ -671,7 +671,7 @@ impl MatchRegistry {
             .get(&match_id)?
             .places
             .iter()
-            .position(|place| place.account_id == account_id)?;
+            .rposition(|place| place.account_id == account_id)?;
         let seat = Seat {
             match_id,
             place: place as u8,

@@ -1,6 +1,6 @@
 # Rooms
 
-The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Code: the wire
+The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Code: the wire
 `survarium::v026g::lobby::rooms`, the model `session::v026g::rooms`, the lobby
 `lobby-server/src/v026g/rooms.rs`, the movie `client-patches/rooms/SrpRooms.as`
 (`rooms_026g.py`). Contract: `lobby.md` §2.16.3.
@@ -27,6 +27,11 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-18. Cod
   same seat, state kept (Play stays usable while their row says they play the match). After
   it the place is lost: they may join again as a new member. A game quit from its menu leaves
   the room at once.
+- **Leave match (its own word, 0xE0; the owner's of 2026-10-19):** takes the player out of
+  its room as Leave does (not kicked; it may join again). Joining again while that match is
+  played puts it into the same match as a late join (15 s or "Join match") as a new place,
+  fresh (new index, zero stats), never its old one; only an account's latest place in a match
+  counts (results, rewards, ratings, quests, map plays), the place it left for nothing.
 - **Before each match:** once the minimum of players who can play is in, a 15 s vote on 3
   cards (map + weather + mode; 25 s after a match: players come back from results first);
   votes may change; most votes wins, a tie or none drawn at random. Then the owner's wait,

@@ -522,6 +522,15 @@ impl Core<'_> {
         let counted = self.counted(placement.sides, lead);
         let weights = self.settings.balance;
         let scale = f64::from(session::STRENGTH_SCALE);
+        // The seats as they are now, the joiners' with them: one that had
+        // a place in this match before (it left by its own word and came
+        // again) has played its map once already.
+        let seats = self
+            .store
+            .matchmaking()
+            .formed_match(id)
+            .map(|formed| formed.seats)
+            .unwrap_or_default();
         let Some(running) = self.matches.get_mut(&id) else {
             return;
         };
@@ -543,8 +552,14 @@ impl Core<'_> {
                         matchmaking::level(&account, unix).min
                     )
                 ));
-                matchmaking::count_map_play(&mut account, map);
-                self.accounts.mark_dirty(player.account_id);
+                let places = seats
+                    .iter()
+                    .filter(|seat| seat.player.account_id == player.account_id)
+                    .count();
+                if places <= 1 {
+                    matchmaking::count_map_play(&mut account, map);
+                    self.accounts.mark_dirty(player.account_id);
+                }
             }
             running.names.push(name);
         }

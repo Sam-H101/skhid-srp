@@ -27,7 +27,11 @@
 //!   player who left the match by its own will (its client says so on the
 //!   match link: [`Matchmaking::give_up_seat`]) has given the seat up:
 //!   Play queues it for another match. (Until 2026-10-12 Play sent it back
-//!   to the match it had just left, for as long as that match ran.)
+//!   to the match it had just left, for as long as that match ran.) A seat
+//!   given up is a place of the roster still, and the account may be
+//!   seated in the same match again as a new place
+//!   ([`Matchmaking::append_player`]; the owner's of 2026-10-19): its
+//!   seats are told apart by their places, never by the account alone.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -146,8 +150,12 @@ struct Inner {
     /// after the one that pressed Play dropped.
     told: HashSet<u32>,
     /// The seats given up ([`Matchmaking::give_up_seat`]), by match and
-    /// account. The place stays in the roster, which is fixed.
-    given_up: HashSet<(u32, u32)>,
+    /// roster place. The place stays in the roster, which is fixed.
+    given_up: HashSet<(u32, usize)>,
+    /// `(match, account)`: who left its match by its own word
+    /// ([`Matchmaking::leave_match`]) and the lobby was not told yet
+    /// ([`Matchmaking::take_left`]).
+    left: Vec<(u32, u32)>,
 }
 
 pub struct Matchmaking {
@@ -171,6 +179,7 @@ impl Matchmaking {
                 formed_at: HashMap::new(),
                 told: HashSet::new(),
                 given_up: HashSet::new(),
+                left: Vec::new(),
             }),
         }
     }
@@ -222,7 +231,8 @@ impl Matchmaking {
     /// Seat one player who is not in the queue straight into a match being
     /// played, on `team`: a room's member who comes while its match is
     /// played. A match of growing rosters with no fixed teams and a place
-    /// left; nobody with a place anywhere or a former one in it. `reserve`
+    /// left; nobody with a place anywhere. One whose place in it was given
+    /// up comes as a new place (the old one stays given up). `reserve`
     /// runs under the lock (the match server's reservation) and must not
     /// call matchmaking again: the seat is kept only if it says yes.
     pub fn append_player(
@@ -443,14 +453,24 @@ impl Matchmaking {
     /// sending it back. Its place stays in the roster (nobody else can
     /// take it). Returns the match, or `None` if the account has no seat.
     pub fn give_up_seat(&self, account_id: u32) -> Option<u32> {
+        self.inner.locked().give_up_seat(account_id)
+    }
+
+    /// [`Self::give_up_seat`] for a player that left its match by its own
+    /// word (its client's 0xE0): the lobby hears of it once
+    /// ([`Self::take_left`]) and takes it out of its room (the owner's of
+    /// 2026-10-19).
+    pub fn leave_match(&self, account_id: u32) -> Option<u32> {
         let mut inner = self.inner.locked();
-        let (match_id, session_id) = {
-            let (match_id, _, seat) = inner.live_seat_of_account(account_id)?;
-            (match_id, seat.player.session_id)
-        };
-        inner.given_up.insert((match_id, account_id));
-        inner.told.remove(&session_id);
+        let match_id = inner.give_up_seat(account_id)?;
+        inner.left.push((match_id, account_id));
         Some(match_id)
+    }
+
+    /// `(match, account)` of every [`Self::leave_match`] since the last
+    /// call, in order.
+    pub fn take_left(&self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.inner.locked().left)
     }
 
     /// A lobby connection sent the session to its match.
@@ -501,9 +521,9 @@ impl Matchmaking {
     pub fn end_match(&self, match_id: u32) {
         let mut inner = self.inner.locked();
         if let Some(seats) = inner.matches.remove(&match_id) {
-            for seat in seats {
+            for (index, seat) in seats.into_iter().enumerate() {
                 let session_id = seat.player.session_id;
-                if inner.given_up.contains(&(match_id, seat.player.account_id))
+                if inner.given_up.contains(&(match_id, index))
                     || inner.seat_of_session(session_id).is_some()
                 {
                     continue;
@@ -512,6 +532,7 @@ impl Matchmaking {
             }
         }
         inner.given_up.retain(|(id, _)| *id != match_id);
+        inner.left.retain(|(id, _)| *id != match_id);
         inner.formed_at.remove(&match_id);
         inner.match_pools.remove(&match_id);
         inner.fixed_teams.remove(&match_id);
@@ -548,8 +569,8 @@ impl Inner {
     /// The roster place `player` would take on `team` in a match being
     /// played, and its index; `None` when the match takes nobody: it is no
     /// match of growing rosters, its teams are fixed, `team` is over 1, the
-    /// player has a place in a match (one it gave up aside) or had one in
-    /// this match, or there is no room.
+    /// player has a place in a match (one it gave up aside: it comes again
+    /// as a new place), or there is no room.
     fn late_seat(&self, match_id: u32, player: Player, team: u8) -> Option<(usize, Vec<Seat>)> {
         if team > 1
             || self.fixed_teams.contains(&match_id)
@@ -560,11 +581,7 @@ impl Inner {
         }
         let roster = self.matches.get(&match_id)?;
         let first = roster.len();
-        if first >= MAX_PLAYERS_PER_MATCH
-            || roster
-                .iter()
-                .any(|seat| seat.player.account_id == player.account_id)
-        {
+        if first >= MAX_PLAYERS_PER_MATCH {
             return None;
         }
         let seat = Seat {
@@ -577,12 +594,21 @@ impl Inner {
 
     /// The account's seat, unless it was given up.
     fn seat_of_account_mut(&mut self, account_id: u32) -> Option<&mut Seat> {
-        let given_up = &self.given_up;
-        self.matches
-            .iter_mut()
-            .filter(|(match_id, _)| !given_up.contains(&(**match_id, account_id)))
-            .flat_map(|(_, seats)| seats)
-            .find(|seat| seat.player.account_id == account_id)
+        let (match_id, index) = self
+            .live_seat_of_account(account_id)
+            .map(|(match_id, index, _)| (match_id, index))?;
+        self.matches.get_mut(&match_id)?.get_mut(index)
+    }
+
+    /// [`Matchmaking::give_up_seat`].
+    fn give_up_seat(&mut self, account_id: u32) -> Option<u32> {
+        let (match_id, index, session_id) = {
+            let (match_id, index, seat) = self.live_seat_of_account(account_id)?;
+            (match_id, index, seat.player.session_id)
+        };
+        self.given_up.insert((match_id, index));
+        self.told.remove(&session_id);
+        Some(match_id)
     }
 
     /// [`Matchmaking::back_to_seat`].
@@ -595,15 +621,14 @@ impl Inner {
         true
     }
 
-    /// [`Self::seat_of_account_mut`], with the match and the roster index.
+    /// [`Self::seat_of_account_mut`], with the match and the roster index:
+    /// of the account's places, the one not given up (it has one at most).
     fn live_seat_of_account(&self, account_id: u32) -> Option<(u32, usize, &Seat)> {
         self.matches.iter().find_map(|(match_id, seats)| {
-            if self.given_up.contains(&(*match_id, account_id)) {
-                return None;
-            }
-            let index = seats
-                .iter()
-                .position(|seat| seat.player.account_id == account_id)?;
+            let index = (0..seats.len()).rev().find(|&index| {
+                seats[index].player.account_id == account_id
+                    && !self.given_up.contains(&(*match_id, index))
+            })?;
             Some((*match_id, index, &seats[index]))
         })
     }
@@ -611,9 +636,9 @@ impl Inner {
     /// The session's seat, unless it was given up.
     fn seat_of_session(&self, session_id: u32) -> Option<(u32, usize, &Seat)> {
         self.matches.iter().find_map(|(match_id, seats)| {
-            let index = seats.iter().position(|seat| {
-                seat.player.session_id == session_id
-                    && !self.given_up.contains(&(*match_id, seat.player.account_id))
+            let index = (0..seats.len()).rev().find(|&index| {
+                seats[index].player.session_id == session_id
+                    && !self.given_up.contains(&(*match_id, index))
             })?;
             Some((*match_id, index, &seats[index]))
         })
@@ -844,9 +869,40 @@ mod tests {
         assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("twice")));
         mm.queue(&[player(4)], false, now);
         assert!(!mm.append_player(id, player(4), 0, |_, _| panic!("queued")));
-        // A place given up is still a place of the match.
-        mm.give_up_seat(player(3).account_id);
-        assert!(!mm.append_player(id, player(3), 0, |_, _| panic!("former place")));
+        // A place given up by the player's own word is still a place of
+        // the match: one who comes again is a new place (the owner's of
+        // 2026-10-19), live, its old one given up; the lobby hears of the
+        // leave once.
+        assert_eq!(mm.leave_match(player(3).account_id), Some(id));
+        assert_eq!(mm.take_left(), [(id, player(3).account_id)]);
+        assert_eq!(mm.take_left(), []);
+        assert_eq!(mm.seat(3), None);
+        assert_eq!(mm.pool_of_account(player(3).account_id), None);
+        assert!(mm.append_player(id, player(3), 0, |first, _| {
+            assert_eq!(first, 3);
+            true
+        }));
+        assert_eq!(mm.formed_match(id).unwrap().seats.len(), 4);
+        assert_eq!(mm.seat(3), Some((id, 3)));
+        assert_eq!(
+            mm.pool_of_account(player(3).account_id),
+            Some(QueuePool::GrowingRoster)
+        );
+        // Back to its seat goes to the new place, never the old one.
+        let again = Player {
+            session_id: 33,
+            ..player(3)
+        };
+        assert!(mm.back_to_seat(again));
+        assert_eq!(mm.seat(33), Some((id, 3)));
+        assert_eq!(mm.formed_match(id).unwrap().seats[2].player, player(3));
+        // Seated again: not a third place while it is.
+        assert!(!mm.append_player(id, again, 0, |_, _| panic!("seated")));
+        // Its new place given up, and only that one: none is left.
+        assert_eq!(mm.give_up_seat(player(3).account_id), Some(id));
+        assert_eq!(mm.seat(33), None);
+        assert_eq!(mm.give_up_seat(player(3).account_id), None);
+        assert_eq!(mm.take_left(), []);
         // A match of fixed teams, or of the standard queue, takes nobody
         // late.
         let clan = mm

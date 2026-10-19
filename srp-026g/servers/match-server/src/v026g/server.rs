@@ -254,8 +254,18 @@ impl Server {
 
     pub fn receive(&mut self, addr: SocketAddr, datagram: &[u8], now: Instant) {
         if let Some(&(match_id, index)) = self.routes.get(&addr) {
+            // A game that left its place and was given a new one (it left
+            // by its own word and came again, the owner's of 2026-10-19)
+            // may connect from the address it had: its new 0xD8 is no
+            // datagram of the place it left.
             if let Some(game) = self.games.get_mut(&match_id)
                 && game.peer_index(addr) == Some(index)
+                && !game
+                    .gone_session(index)
+                    .and_then(|session_id| self.registry.seat(session_id))
+                    .is_some_and(|seat| {
+                        (seat.match_id, usize::from(seat.place)) != (match_id, index)
+                    })
             {
                 game.receive(index, datagram, now);
                 for (session_id, account_id) in game.take_quits() {
@@ -266,12 +276,16 @@ impl Server {
                     // presses Play. (Until 2026-10-12 it did, for as long
                     // as the match ran: live, a player who left a match of
                     // two was sent back to it three times.) The place
-                    // itself stays the account's in the roster and in the
-                    // result.
+                    // stays in the roster, and the lobby takes the player
+                    // out of its room; joining it again while the match is
+                    // played puts it in as a new place (the owner's of
+                    // 2026-10-19), and the result counts its latest place
+                    // only.
                     self.registry.release(session_id);
-                    self.store.matchmaking().give_up_seat(account_id);
+                    self.store.matchmaking().leave_match(account_id);
                     log::info!(
-                        "Match {match_id:#x}: player {index} left by its own word (0xE0): its                          place is given up, and Play queues it for another match"
+                        "Match {match_id:#x}: player {index} left by its own word (0xE0): its \
+                         place is given up (and its room left, if it was in one)"
                     );
                 }
                 return;

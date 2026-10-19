@@ -270,7 +270,9 @@ impl Settler {
     /// One finished match: called on the match server's thread, before its
     /// clients hear the end.
     pub fn match_ended(&mut self, result: matches::MatchResult) {
-        let result = match_result(result);
+        // Each account's latest place: one it left and came back from is
+        // nobody's (the rewards take the same, `settle`).
+        let result = match_result(result).latest_places();
         let match_id = result.match_id;
         let terms = Terms::at(quests::now());
         match self

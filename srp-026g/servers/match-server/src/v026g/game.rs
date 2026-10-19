@@ -1132,6 +1132,16 @@ impl Game {
             .position(|peer| peer.as_ref().is_some_and(|peer| peer.addr == addr))
     }
 
+    /// The session of the client that was at place `index` and is gone
+    /// (it left, or timed out) while its link is still kept.
+    pub fn gone_session(&self, index: usize) -> Option<u32> {
+        self.peers
+            .get(index)?
+            .as_ref()
+            .filter(|peer| peer.stage == Stage::Gone)
+            .map(|peer| peer.session_id)
+    }
+
     /// The sessions of the clients connected.
     pub fn sessions(&self) -> Vec<u32> {
         self.peers
@@ -1161,6 +1171,18 @@ impl Game {
         }
         if self.peers[index].is_some() {
             self.leave(index, now);
+        }
+        // A place it left before, from this address (it left by its own
+        // word and came again as a new place): that link is done with, and
+        // the address is this place's.
+        for (other, slot) in self.peers.iter_mut().enumerate() {
+            if other != index
+                && slot
+                    .as_ref()
+                    .is_some_and(|peer| peer.addr == addr && peer.stage == Stage::Gone)
+            {
+                *slot = None;
+            }
         }
         self.reset_catchup(index, true);
         log::info!(

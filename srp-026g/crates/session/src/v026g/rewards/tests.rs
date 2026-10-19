@@ -699,6 +699,61 @@ fn one_who_left_gets_no_finish_bonus_and_no_drop_and_loses_rating() {
     assert_eq!(report.stats.team_params, [2, 2]);
 }
 
+/// Bob left the match by his own word (place 1: a kill, three deaths) and
+/// came into it again as a new place (place 2), fresh: only that place is
+/// his, settled once; the one he left counts for nothing (the owner's of
+/// 2026-10-19).
+#[test]
+fn one_who_left_and_came_again_is_settled_once_by_its_latest_place() {
+    let mut players = alice_and_bob();
+    players[1].present_at_end = false;
+    players[1].left = true;
+    players[1].time_in_match_ms = 200_000;
+    let mut again = player(2, 1, "Bob", PlayerStatistics::default());
+    again.account_id = players[1].account_id;
+    again.session_id = players[1].session_id;
+    again.time_in_match_ms = 300_000;
+    players.push(again);
+    let store = accounts(&players);
+    let before = account(&store, 11);
+    let result = result(players);
+    let latest = result.latest_places();
+    assert_eq!(
+        latest
+            .players
+            .iter()
+            .map(|player| (player.place, player.account_id))
+            .collect::<Vec<_>>(),
+        [(0, 10), (2, 11)]
+    );
+    let report = Results::new()
+        .settle(&result, &store, &terms(), &mut Rng::new(1))
+        .unwrap();
+
+    // One report and one row of the screen each.
+    assert_eq!(report.players.len(), 2);
+    assert_eq!(report.stats.rows.len(), 2);
+    assert_eq!(report.index_of(11), Some(1));
+    let bob = &report.players[1];
+    assert_eq!(bob.player_id, 3);
+    // His latest place stayed to the end and lost: no kill of the place he
+    // left, the fixed part of a match lost to its end, and the rating of a
+    // loss once.
+    assert_eq!(bob.reward.standing, Standing::Finished);
+    assert_eq!(columns(&bob.full, 0), (0.0, 0, 0, 0));
+    assert_eq!(columns(&bob.full, 2), (1.0, 41, 61, 0));
+    assert_eq!((bob.reward.experience, bob.reward.money), (61, 41));
+    assert_eq!(
+        (bob.reward.rating_before, bob.reward.rating_after),
+        (100, 98)
+    );
+    let after = account(&store, 11);
+    assert_eq!(after.rating, 98);
+    assert_eq!(after.exp_total, before.exp_total + bob.reward.experience);
+    assert_eq!(after.balance.matches, 1);
+    assert_eq!(report.stats.team_params, [1, 1]);
+}
+
 #[test]
 fn a_solo_match_pays_in_full_and_moves_no_rating() {
     let players = vec![player(
