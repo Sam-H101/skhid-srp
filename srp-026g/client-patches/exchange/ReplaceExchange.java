@@ -47,8 +47,46 @@ public class ReplaceExchange {
                 traits(code, abc, owner + ".", abc.instance_info.get(c).instance_traits);
                 traits(code, abc, owner + ".static ", abc.class_info.get(c).static_traits);
             }
+            // Each script's initializer, by the names it defines.
+            for (var script : abc.script_info) {
+                if (script.deleted) continue;
+                List<String> names = new ArrayList<>();
+                for (Trait trait : script.traits.traits)
+                    names.add(trait.getName(abc).getNameWithNamespace(new HashSet<>(), abc, abc.constants, false)
+                        .toRawString());
+                if (names.contains(CLASS)) continue;
+                Collections.sort(names);
+                put(code, abc, b + ":script " + names, script.init_index);
+            }
         }
         return code;
+    }
+
+    // The constant pools: what unchanged code points at keeps its value
+    // (new entries may follow).
+    private static List<List<String>> poolsOf(SWF swf) {
+        List<List<String>> pools = new ArrayList<>();
+        for (int b = 0; b < swf.getAbcList().size(); b++) {
+            var pool = swf.getAbcList().get(b).getABC().constants;
+            List<String> entries = new ArrayList<>();
+            for (int i = 1; i < pool.getStringCount(); i++) entries.add("s" + i + "=" + pool.getString(i));
+            for (int i = 1; i < pool.getIntCount(); i++) entries.add("i" + i + "=" + pool.getInt(i));
+            for (int i = 1; i < pool.getUIntCount(); i++) entries.add("u" + i + "=" + pool.getUInt(i));
+            for (int i = 1; i < pool.getDoubleCount(); i++) entries.add("d" + i + "=" + pool.getDouble(i));
+            for (int i = 1; i < pool.getNamespaceCount(); i++) {
+                var ns = pool.getNamespace(i);
+                entries.add("n" + i + "=" + ns.kind + "/" + ns.name_index);
+            }
+            for (int i = 1; i < pool.getNamespaceSetCount(); i++)
+                entries.add("ns" + i + "=" + Arrays.toString(pool.getNamespaceSet(i).namespaces));
+            for (int i = 1; i < pool.getMultinameCount(); i++) {
+                var name = pool.getMultiname(i);
+                entries.add("m" + i + "=" + name.kind + "/" + name.name_index + "/" + name.namespace_index
+                    + "/" + name.namespace_set_index + "/" + name.qname_index);
+            }
+            pools.add(entries);
+        }
+        return pools;
     }
 
     private static ScriptPack pack(SWF swf) throws IOException {
@@ -66,6 +104,7 @@ public class ReplaceExchange {
         SWF swf;
         try (InputStream in = Files.newInputStream(Path.of(args[0]))) { swf = new SWF(in, true); }
         Map<String, byte[]> before = codeOf(swf);
+        List<List<String>> poolsBefore = poolsOf(swf);
         ScriptPack pack = pack(swf);
         if (!pack.abc.replaceScriptPack(As3ScriptReplacerFactory.createFFDec(), pack,
                 Files.readString(Path.of(args[1])), new ArrayList<SWF>()))
@@ -81,6 +120,12 @@ public class ReplaceExchange {
         for (String key : before.keySet())
             if (!Arrays.equals(before.get(key), after.get(key)))
                 throw new IOException("Unrelated method changed: " + key);
-        System.out.println(CLASS + " replaced; " + before.size() + " other methods unchanged");
+        List<List<String>> poolsAfter = poolsOf(saved);
+        for (int b = 0; b < poolsBefore.size(); b++)
+            if (poolsAfter.get(b).size() < poolsBefore.get(b).size()
+                || !new HashSet<>(poolsAfter.get(b)).containsAll(poolsBefore.get(b)))
+                throw new IOException("A constant of block " + b + " changed");
+        System.out.println(CLASS + " replaced; " + before.size() + " other methods and scripts unchanged, "
+            + "every constant kept");
     }
 }

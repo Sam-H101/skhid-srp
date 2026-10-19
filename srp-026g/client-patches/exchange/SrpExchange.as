@@ -359,7 +359,7 @@ package
             {
                 // Silver goes by whole gold: the field is evened out on leaving.
                 _gold = limit(typed / rate());
-                if (Math.floor(typed / rate()) > _gold)
+                if (typed > limit(Number.POSITIVE_INFINITY) * rate())
                     retype(source, _gold * rate());
                 goldField().text = String(_gold);
             }

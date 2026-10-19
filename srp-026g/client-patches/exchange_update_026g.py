@@ -17,9 +17,11 @@ other class is checked byte for byte. Requires a JDK and JPEXS FFDec (tested
 with 25.1.3). No game assets are stored in this repository.
 """
 import argparse
+import collections
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -34,7 +36,17 @@ RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b95985
 HERE = Path(__file__).resolve().parent / "exchange"
 
 
+def check_source(source):
+    """FFDec's compiler takes two methods of one name and keeps the last: a
+    call to the first then runs the second. Refuse that."""
+    names = collections.Counter(re.findall(r"\bfunction\s+(?!get\b|set\b)(\w+)\s*\(", source))
+    twice = sorted(name for name, count in names.items() if count > 1)
+    if twice:
+        raise ValueError("SrpExchange.as defines these more than once: " + ", ".join(twice))
+
+
 def build_movie(original, ffdec, java, javac, work, known=True):
+    check_source((HERE / "SrpExchange.as").read_text(encoding="utf-8"))
     digest = hashlib.sha256(original).hexdigest()
     if digest == RETAIL_SHA256:
         raise ValueError("This is the retail lobby movie; use the live one (with the exchange window)")

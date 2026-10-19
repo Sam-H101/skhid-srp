@@ -463,21 +463,24 @@ The build is deterministic (sha256 `b7cf70a8…` with FFDec 25.1.3). Tests:
 `exchange_update_026g.py` brings a change of `exchange/SrpExchange.as` to a
 live lobby movie, which has the window already: FFDec compiles the class anew
 over the one in the movie (`exchange/ReplaceExchange.java`). Only the window's
-ABC block changes; every method of every other class, found by its class and
-name (the block's bodies may be renumbered), is checked byte for byte.
+ABC block changes; every method of every other class and every other
+script's initializer, found by name (the block's bodies may be renumbered),
+is checked byte for byte, and every constant they may point at keeps its
+index and value. A method defined twice in the source is refused (FFDec keeps
+the last).
 
 The first such change (2026-10-20): an amount more than the Pay balance pays
 for becomes, as it is typed, the most it does, in the field typed in. Buying
 gold with 5,500 silver: 10,000 in Pay becomes 5,500, 100 in Receive becomes
 55. Selling gold works the same way with the gold balance. Silver is still
-whole gold: with 5,550 silver, 10,000 becomes 5,500.
+whole gold: with 5,550 silver, anything over 5,500 becomes 5,500.
 
 ```sh
 python exchange_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
 ```
 
 The input is the movie with Get Gold (`b7cf70a8…`); the build is
-deterministic (`ed1c04b6…` with FFDec 25.1.3). Tests:
+deterministic (`f900cc8b…` with FFDec 25.1.3). Tests:
 `python -m unittest test_exchange_update`. Not in a release yet.
 
 ## What each patch does

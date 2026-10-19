@@ -34,6 +34,11 @@ class ExchangeUpdateTests(unittest.TestCase):
                     update.main()
             self.assertEqual(output.read_bytes(), b'existing movie')
 
+    def test_a_method_defined_twice_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'refresh'):
+            update.check_source('function refresh():void {}\nfunction refresh():void {}')
+        update.check_source('function get x():int {}\nfunction set x(v:int):void {}')
+
 
 if __name__ == '__main__':
     unittest.main()
