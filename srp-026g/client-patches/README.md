@@ -586,7 +586,10 @@ the repository holds, in order, as `patch_026g.py` does for the exe:
 3. the exchange window's amounts (`exchange_update_026g.py`, #214);
 4. Buy on owned items (`buy_modified_026g.py`, #215);
 5. the craft window's menu and buttons (`craft_menu_026g.py`, #216);
-6. Optics in a weapon's menu (`scope_context_menu_026g.py`, #217).
+6. Optics in a weapon's menu (`scope_context_menu_026g.py`, #217);
+7. Show player's information in the Rankings (`player_gear_026g.py`): a
+   right-click on any row shows that player's kits in the game's own window
+   ([player_gear.md](../docs/notes/player_gear.md)).
 
 A change of a step's source is built in by building again; a new lobby change
 is a new entry of `STEPS`. Never ship a movie made by running one step alone
@@ -608,7 +611,7 @@ the base (a change of theirs needs a new base); the exchange's later changes
 are a step.
 
 Since the rooms' window under a match's results (2026-10-20): `RESULT_SHA256` is
-`57f73166…` (the owner checked `d41b9655…` in the game; then #219's review fixes); with #211 (Leave room / Leave queue, the yellow tab) `a56cd0ed…` (the owner checked `d7907536…`; then the review fixes); with #209 (why a waiting member cannot go into its room's match, `J;-1;<why>`) `57258f9e…`, not yet checked in the game; with the remembered create window (the last room made by hand, `S1;F`) `88fa657a…`, not yet checked in the game. The first build of 2026-10-20 (`main` with
+`57f73166…` (the owner checked `d41b9655…` in the game; then #219's review fixes); with #211 (Leave room / Leave queue, the yellow tab) `a56cd0ed…` (the owner checked `d7907536…`; then the review fixes); with #209 (why a waiting member cannot go into its room's match, `J;-1;<why>`) `57258f9e…`, not yet checked in the game; with the remembered create window (the last room made by hand, `S1;F`) `88fa657a…`, not yet checked in the game; with Show player's information in the Rankings `d3f81436…` (`929f3f0a…`, then the review fixes), not yet checked in the game. The first build of 2026-10-20 (`main` with
 #212): sha256 `8841ba5c…`, deterministic
 with FFDec 25.1.3. Its 881 scripts decompile byte for byte to those of the
 movie the owner tested with #212 (`ed14345f…`, made the long way: the rooms
