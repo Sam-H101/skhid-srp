@@ -38,8 +38,8 @@ def transplant(original, edited):
     return result
 
 
-def build_movie(original, ffdec, java, javac, work):
-    if hashlib.sha256(original).hexdigest() not in MOVIE_SHA256S:
+def build_movie(original, ffdec, java, javac, work, known=True):
+    if known and hashlib.sha256(original).hexdigest() not in MOVIE_SHA256S:
         raise ValueError("Not a known live lobby movie (or already patched)")
     version, header, tags = swf.unpack(original)
     code = work / "code.swf"
