@@ -2,8 +2,10 @@ package
 {
     import flash.display.DisplayObject;
     import flash.events.MouseEvent;
+    import flash.events.TimerEvent;
     import flash.external.ExternalInterface;
     import flash.utils.Dictionary;
+    import flash.utils.Timer;
     import flash.utils.getTimer;
     import scaleform.gfx.MouseEventEx;
     import survarium.controls.SrvContextMenu;
@@ -25,14 +27,21 @@ package
     {
         // The request's `player` (`3D 00 <how> <player>`, as srp's History
         // asks for a replay): its `match` is then the place of a row of the
-        // ranking (1 the first; srp's lobby::GEAR_BY_PLACE) or an account's
-        // id (lobby::GEAR_BY_ACCOUNT, the rooms' lists).
+        // ranking (1 the first; srp's lobby::GEAR_BY_PLACE).
         public static const BY_PLACE:uint = 0xFFFFFF03;
-        public static const BY_ACCOUNT:uint = 0xFFFFFF02;
-        // An answer later than this is not ours: the results screen's.
-        private static const WAIT_MS:int = 6000;
+        // The server answers at once or never (no such place): an ask with
+        // no answer by then is taken as unanswered.
+        private static const WAIT_MS:int = 3000;
+        // The ask in flight: its name and when it was sent. One at a time:
+        // a `93` carries nothing of the player it is about, so an answer is
+        // ours only as the answer to the one ask in flight.
         private static var _name:String = null;
         private static var _at:int = 0;
+        // The newest ask made while one was in flight, as [nickname, player,
+        // how]: sent when that one is answered (its answer, now stale, is
+        // dropped) or has waited WAIT_MS.
+        private static var _next:Array = null;
+        private static var _wait:Timer = null;
         private static var _hooked:Dictionary = new Dictionary(true);
 
         // The game's right-click menu with the one item, at the mouse.
@@ -41,17 +50,35 @@ package
             if (nickname == null || nickname == "")
                 return;
             SrvContextMenu.show([{"name": LocalizationData.getName("show_player_info_button_hint"),
-                "click_function": onItem, "callBack": true, "nickname": nickname, "player": player,
-                "how": how}]);
-        }
-
-        private static function onItem(item:Object):void
-        {
-            ask(String(item.nickname), uint(item.player), uint(item.how));
+                "click_function": function(e:* = null):void { ask(nickname, player, how); }}]);
         }
 
         public static function ask(nickname:String, player:uint, how:uint):void
         {
+            if (!inFlight())
+            {
+                send(nickname, player, how);
+                return;
+            }
+            _next = [nickname, player, how];
+            if (_wait == null)
+            {
+                _wait = new Timer(WAIT_MS, 1);
+                _wait.addEventListener(TimerEvent.TIMER_COMPLETE, onWait);
+            }
+            _wait.reset();
+            _wait.delay = Math.max(1, WAIT_MS - (getTimer() - _at));
+            _wait.start();
+        }
+
+        private static function inFlight():Boolean
+        {
+            return _name != null && getTimer() - _at < WAIT_MS;
+        }
+
+        private static function send(nickname:String, player:uint, how:uint):void
+        {
+            _next = null;
             _name = nickname;
             _at = getTimer();
             try
@@ -63,6 +90,34 @@ package
             }
         }
 
+        private static function sendNext():void
+        {
+            var next:Array = _next;
+            send(String(next[0]), uint(next[1]), uint(next[2]));
+        }
+
+        // The ask in flight got no answer: the newest one goes now.
+        private static function onWait(e:TimerEvent):void
+        {
+            if (_next != null && !inFlight())
+                sendNext();
+        }
+
+        // The results screen is showing (LobbyMenu's own test): a `93` now
+        // is its answer. It is modal: no list of ours can be clicked.
+        private static function resultsShown(lobby:*):Boolean
+        {
+            try
+            {
+                var screen:* = lobby.victory_screen;
+                return screen != null && screen.parent != null && screen.visible;
+            }
+            catch (e:Error)
+            {
+            }
+            return false;
+        }
+
         // LobbyMenu.fill_victory_screen_player, first: the answer to our
         // ask opens the window here, as VictoryScreen.setPlayerData and
         // LobbyMenu.onVSPlayerInfo do for a row of the results (they keep
@@ -70,10 +125,27 @@ package
         // other answer is the results screen's, as before.
         public static function take(lobby:*, value:Object):Boolean
         {
-            if (_name == null || getTimer() - _at > WAIT_MS)
+            if (resultsShown(lobby))
+            {
+                // Never the results screen's answer; an ask of ours from
+                // before it opened is given up.
+                _name = null;
+                _next = null;
                 return false;
+            }
+            if (!inFlight())
+            {
+                _name = null;
+                return false;
+            }
             var nickname:String = _name;
             _name = null;
+            if (_next != null)
+            {
+                // Asked again since: this answer is the older ask's.
+                sendNext();
+                return true;
+            }
             if (!value)
                 return true;
             if (!(value is Array))

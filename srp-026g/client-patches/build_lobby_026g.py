@@ -44,8 +44,9 @@ import scope_context_menu_026g
 BASE_SHA256 = "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b"
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
 # The movie the steps make (FFDec 25.1.3). Set it anew, on purpose, when a
-# step changes. 929f3f0a (2026-10-20): a right-click on a row of the
-# Rankings shows that player's kits (player_gear_026g.py); NOT yet checked
+# step changes. d3f81436 (2026-10-20): a right-click on a row of the
+# Rankings shows that player's kits (player_gear_026g.py; 929f3f0a, then the
+# review fixes: one ask in flight, the menu item a closure); not yet checked
 # in the game. Before it, 88fa657a (2026-10-20): the create window starts
 # with the player's last room made by hand (the server's `S1;F`);
 # NOT yet checked in the game. Before it, 57258f9e (#209,
@@ -56,7 +57,7 @@ RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b95985
 # and the yellow tab in a room or a queue (#211: the owner checked d7907536;
 # then the review fixes: no double-click into Play, Leave on whatever the
 # game says of Play).
-RESULT_SHA256 = "929f3f0a21d932810f2fc2169b25a2ebbe84f9b82051539a3d16fc555dab20b3"
+RESULT_SHA256 = "d3f814364a2324d0ea6f9a99ee7453311c0d1984e06b4ad97a2b28a02e88fd64"
 # Every lobby change, in the order they are built (each on the one before).
 STEPS = [
     ("the rooms window (rooms/SrpRooms.as)", rooms_026g),

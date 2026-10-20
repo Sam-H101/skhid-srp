@@ -550,6 +550,9 @@ impl Core<'_> {
             if let Some(place) = ranking.iter().position(|row| row.0 == who.account_id) {
                 let row = &ranking[place];
                 self.send(who.addr, lobby::player_elo(place as u32 + 1, row.2, row.3));
+                // The own place under the list: a right-click on it is the
+                // asker, however the ranking moves.
+                self.ranked_shown(who, place as u32, vec![who.account_id]);
             }
         }
         let rows: Vec<Ranked> = ranking[from..to]
@@ -562,14 +565,8 @@ impl Core<'_> {
             .collect();
         // Who each row of the page is: a right-click on it asks for that
         // account's kits by its place (`gear`), whatever moved since.
-        if let Some(player) = self.player_mut(who.addr) {
-            if start == 0 {
-                player.ranked_shown.clear();
-            }
-            for (index, row) in ranking[from..to].iter().enumerate() {
-                player.ranked_shown.insert((from + index) as u32 + 1, row.0);
-            }
-        }
+        let shown = ranking[from..to].iter().map(|row| row.0).collect();
+        self.ranked_shown(who, from as u32, shown);
         self.send_made(who.addr, lobby::elo_list(from as u32, &rows));
     }
 

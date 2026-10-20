@@ -1,4 +1,4 @@
-# A player's equipment from the Rankings (and the rooms' lists)
+# A player's equipment from the Rankings
 
 The rules the code follows. Code: `client-patches/player_gear_026g.py`,
 `player_gear/SrpPlayerGear.as`, `player_gear/PatchPlayerGear.java`; the lobby's
@@ -21,12 +21,18 @@ should be able to go to rankings and rmb to do the same", "for every single play
   asker itself: the server answers from the account as it is now (srp.db, kept in memory).
   Kits as they are now, not as some match left them.
 - **Which player:** the request names the row's place (`3D 00 <GEAR_BY_PLACE> <place>`, as the
-  History's "Watch replay" names its match). The server keeps, for each player's session, which
-  account each place it was sent was (since its page last opened): a row is the player the page
-  showed there, however the ranking moved since. A place it was not sent (rows of the
-  sign-in's pushes): the ranking's now.
+  History's "Watch replay" names its match). The server keeps, for each player's session, its last
+  8 ranking pages as sent (the first place, the account of each row): a place is the account the
+  newest kept page with it showed there, however the ranking moved since, so a tab the movie
+  keeps (Top 100 while "My place" was asked, or the other way) is what it showed. The own place
+  under the list is the asker itself (kept as a page of one row when the page opens). A place no
+  kept page has (rows of the sign-in's pushes): the ranking's now.
+- **Which answer:** a `93` carries nothing of the player it is about, so the movie has one ask
+  in flight at a time: an ask made meanwhile waits, the answer to the older one is then dropped
+  and the newest goes; an ask not answered in 3 s (no such place) is given up. While the results
+  screen shows, every `93` is its own (the screen is modal; an ask of ours from before it opened
+  is given up).
 - **Nothing to show** (no such place or account): no answer, no window (the game has no "nothing
   to show" message for `93`).
-- **The rooms' lists** use the same menu and window (`SrpPlayerGear.menu`; `rooms.md`).
 - **Older movies:** never ask. An older server does not answer (no window opens).
 - **Release:** a lobby movie (resources.db patch) and the server; the server first.

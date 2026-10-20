@@ -12,19 +12,45 @@ use session::v026g::{quests, wire};
 
 use super::core::{Core, Who};
 
+/// The ranking pages a session keeps (`Player::ranked_shown`): its two tabs
+/// and the pages it turned to last.
+pub(super) const PAGES_KEPT: usize = 8;
+
 impl Core<'_> {
+    /// Rows of the ranking sent to the asker from index `from` (0 the
+    /// first): their accounts, for a right-click on one of them later.
+    pub(super) fn ranked_shown(&mut self, who: &Who, from: u32, accounts: Vec<u32>) {
+        let Some(player) = self.player_mut(who.addr) else {
+            return;
+        };
+        let end = from as usize + accounts.len();
+        let shown = &mut player.ranked_shown;
+        // A page this one covers is never looked at again (newest first).
+        shown.retain(|(start, rows)| !(from <= *start && *start as usize + rows.len() <= end));
+        shown.push((from, accounts));
+        if shown.len() > PAGES_KEPT {
+            shown.remove(0);
+        }
+    }
+
     /// `3D 00 <GEAR_BY_PLACE> <place>`: the kits of the player at that
-    /// place of the ranking: the account the asker's page was sent there,
-    /// or, for a place it was not sent (a row from the sign-in's pushes),
-    /// the ranking's now.
+    /// place of the ranking: the account the asker's newest page with that
+    /// place showed there (the page may be a cached tab, and the ranking may
+    /// have moved since), or, for a place no kept page has (a row from the
+    /// sign-in's pushes), the ranking's now.
     pub(super) fn ranked_gear(&mut self, who: &Who, place: u32) {
-        let shown = self
-            .player(who.addr)
-            .and_then(|player| player.ranked_shown.get(&place).copied());
-        let account_id = shown.or_else(|| {
-            let index = usize::try_from(place).ok()?.checked_sub(1)?;
-            self.accounts.ranking().get(index).map(|row| row.0)
+        let index = usize::try_from(place)
+            .ok()
+            .and_then(|place| place.checked_sub(1));
+        let shown = index.and_then(|index| {
+            let player = self.player(who.addr)?;
+            player
+                .ranked_shown
+                .iter()
+                .rev()
+                .find_map(|(from, rows)| rows.get(index.checked_sub(*from as usize)?).copied())
         });
+        let account_id = shown.or_else(|| self.accounts.ranking().get(index?).map(|row| row.0));
         match account_id {
             Some(account_id) => self.send_gear(who, account_id, place),
             None => log::info!(

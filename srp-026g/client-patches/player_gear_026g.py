@@ -13,7 +13,7 @@ results row has (`GEAR_BY_PLACE`, as srp's History asks for a replay), and the
 answer (`93`) opens the game's own window ("player_info") with that player's
 kits (player_gear/SrpPlayerGear.as). The server answers from the account as it
 is now (lobby-server `gear.rs`; docs/notes/player_gear.md). `SrpPlayerGear.menu`
-is there for the movie's other lists too (the rooms').
+is public: other lists of the movie can open the same menu.
 
 Two methods change and a class is added (player_gear/PatchPlayerGear.java):
 `LobbyMenu.fill_victory_screen_player` hands the answer to an ask of ours to the

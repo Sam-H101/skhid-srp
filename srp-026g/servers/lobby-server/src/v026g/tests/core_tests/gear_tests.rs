@@ -94,3 +94,57 @@ fn a_row_is_the_player_the_page_showed_with_its_kits_now() {
     assert_eq!(gear(&mut world, alice), [(names[2].clone(), kits)]);
     world.assert_clean();
 }
+
+/// The own place under the list is the asker, though another player has
+/// taken that place since; a cached tab's rows are what that tab showed,
+/// though a newer page of the other tab was sent since.
+#[test]
+fn the_own_place_and_a_cached_tab_are_what_they_showed() {
+    let mut world = World::new();
+    let names = ranked_accounts(&world, 300);
+    let alice = world.connect("Alice");
+    world.account(alice).rating = 1;
+    // Top 100 (Alice is 301st, under the list), then the "My place" tab.
+    world.ask(alice, request::ranking(0, 100));
+    world.take(alice);
+    world.ask(alice, request::ranking(201, 100));
+    world.take(alice);
+    // Alice goes to the top and Ranked0 to the bottom.
+    world.account(alice).rating = 9000;
+    world.accounts.get(900_000).unwrap().locked().rating = 0;
+    let kits = world.accounts.get(900_000).unwrap().locked().kits.len();
+    // The own place under the list (301) is Alice, not Ranked0 now there.
+    world.ask(alice, request::player_details(GEAR_BY_PLACE, 301));
+    assert_eq!(gear(&mut world, alice), [("Alice".to_owned(), kits)]);
+    // The cached Top 100 tab: place 1 is Ranked0, as it showed.
+    world.ask(alice, request::player_details(GEAR_BY_PLACE, 1));
+    assert_eq!(gear(&mut world, alice), [(names[0].clone(), kits)]);
+    // The "My place" tab, sent last: place 250 as it showed.
+    world.ask(alice, request::player_details(GEAR_BY_PLACE, 250));
+    assert_eq!(gear(&mut world, alice), [(names[249].clone(), kits)]);
+    world.assert_clean();
+}
+
+/// A session keeps its last pages only: a place of a page long gone is the
+/// ranking's now.
+#[test]
+fn only_the_last_pages_are_kept() {
+    let mut world = World::new();
+    let names = ranked_accounts(&world, 300);
+    let alice = world.connect("Alice");
+    world.ask(alice, request::ranking(0, 10));
+    world.take(alice);
+    for page in 1..=10 {
+        world.ask(alice, request::ranking(page * 20, 10));
+        world.take(alice);
+    }
+    // Ranked0 drops to the bottom: place 1 is Ranked1 now.
+    world.accounts.get(900_000).unwrap().locked().rating = 0;
+    let kits = world.accounts.get(900_001).unwrap().locked().kits.len();
+    world.ask(alice, request::player_details(GEAR_BY_PLACE, 1));
+    assert_eq!(gear(&mut world, alice), [(names[1].clone(), kits)]);
+    // A page still kept: what it showed.
+    world.ask(alice, request::player_details(GEAR_BY_PLACE, 201));
+    assert_eq!(gear(&mut world, alice), [(names[200].clone(), kits)]);
+    world.assert_clean();
+}
