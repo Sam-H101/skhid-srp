@@ -45,10 +45,11 @@
 #      srp-game-data reads it, and it is neither published nor listed yet;
 #      live: the site's pages made from the game data (the Maps tab, the
 #      calculator): built from other patches than the list (and the
-#      --resources file) on main, they are rebuilt here from those
-#      (release/build-site, about 2 min, in a worktree of the commit; a
-#      failure stops the run), and the server's source carries them (the
-#      server code is then built);
+#      --resources file) on main, they are rebuilt from those, last in the
+#      preflight and only when nothing else failed (release/build-site,
+#      about 2 min, in a worktree of the commit; a failure stops the run),
+#      and the server's source carries them (the server code is then built;
+#      --server-code no is refused, the dry run too);
 #      which server code differs between main and the target's tree;
 #      whether main changes what a match computes: a `next` row of
 #      srp-026g/crates/session/src/v026g/simulation_changes.tsv, which a PR
@@ -199,6 +200,8 @@ while (($#)); do
 done
 ((yes == i_know)) || die "--yes goes with --i-know (both or neither): without a terminal to ask, this restarts the live server"
 [[ $server_code =~ ^(auto|yes|no)$ ]] || die "--server-code is auto, yes or no"
+# Absolute, for the steps that run elsewhere (build-site in a worktree).
+if [[ -n $resources && -e $resources ]]; then resources=$(realpath -s -- "$resources"); fi
 [[ -z $revision_arg ]] || is_revision "$revision_arg" || die "--revision $revision_arg: a revision is a whole number from 1 to 255"
 [[ -z $minutes || $no_maint == 0 ]] || die "--minutes is the countdown, and --no-maintenance has none"
 [[ -z $minutes || $now == 0 ]] || die "--minutes is the countdown, and --now has none"
@@ -1004,14 +1007,16 @@ fi
 # The site's pages built from the game (the Maps tab, the calculator): each
 # from exactly the patches the release offers (with --resources, that one
 # too), so neither shows stale data. Built from others on main (a release
-# with new content always is): rebuilt here, in a worktree of the commit
-# (release/build-site), nothing players see; the server's source carries
-# them and the record commits them. A ref without them has nothing to build.
+# with new content always is): rebuilt below, at the end of the preflight
+# (release/build-site, in a worktree of the commit), nothing players see; the
+# server's source carries them (so the server code is built) and the record
+# commits them. A ref without them has nothing to build.
 SITE_PAGES=(srp-026g/servers/web-server/maps srp-026g/servers/web-server/damage)
-site_tree='' site_stale=0
+site_tree='' site_stale=0 want=''
 if ((!test_server)) && [[ -n $main_commit ]]; then
-    want=$( { cut -d' ' -f1,2 <<<"$LIST"; if [[ -n $resources && -f $resources ]]; then echo "${resources##*/} $(sha256_of "$resources")"; fi; } | grep . | sort || true)
-    built_from() { grep -v '^#' "$1" | tr '\t' ' ' | grep . | sort || true; }
+    site_with=''
+    if [[ -n $resources && -f $resources ]]; then site_with=$resources; fi
+    want=$(site_wants "$site_with")
     for page in "the Maps tab:maps" "the calculator:damage"; do
         IFS=: read -r what dir <<<"$page"
         built=srp-026g/servers/web-server/$dir/built-from.tsv
@@ -1024,30 +1029,8 @@ if ((!test_server)) && [[ -n $main_commit ]]; then
             site_stale=1
         fi
     done
-    build_site=("$BUILD_SITE" --tree "$work/site")
-    if [[ -n $resources ]]; then build_site+=(--with "$resources"); fi
-    if ((site_stale && DRY_RUN)); then
-        say "  [dry run] would rebuild the Maps tab and the calculator (about 2 min; the patches from ~/.cache/skhid-release/patches/, else downloaded) in a worktree of ${main_commit:0:7}: ${build_site[*]}"
-    elif ((site_stale)); then
-        say "  ...      rebuilding the Maps tab and the calculator (release/build-site, about 2 min; its log: $work/build-site.log)"
-        site_start=$(date +%s)
-        if ! git -C "$REPO" worktree add --quiet --detach "$work/site" "$main_commit" 2>"$work/build-site.log"; then
-            problem "the Maps tab and the calculator: no worktree to rebuild them in: $(tr '\n' ' ' <"$work/build-site.log")"
-        elif ! "${build_site[@]}" </dev/null >"$work/build-site.log" 2>&1; then
-            problem "the Maps tab and the calculator: the rebuild failed (release/build-site; its log: $work/build-site.log): $(tail -n 3 "$work/build-site.log" | tr '\n' ' ')"
-        else
-            site_tree=$work/site
-            for page in "the Maps tab:maps" "the calculator:damage"; do
-                IFS=: read -r what dir <<<"$page"
-                if [[ $(built_from "$site_tree/srp-026g/servers/web-server/$dir/built-from.tsv") != "$want" ]]; then
-                    problem "$what, rebuilt: its built-from.tsv does not name the patches this release offers"
-                    site_tree=''
-                fi
-            done
-            if [[ -n $site_tree ]]; then
-                okay "the Maps tab and the calculator: rebuilt from the patches this release offers ($(span $(($(date +%s) - site_start)))); the server's source carries them, the record commits them"
-            fi
-        fi
+    if ((site_stale)) && [[ $server_code == no ]]; then
+        problem "the Maps tab and the calculator are rebuilt by this release, and --server-code no builds no server code: the site would go on showing the old ones (leave --server-code out)"
     fi
 fi
 
@@ -1116,6 +1099,38 @@ if [[ -n $matches ]]; then okay "$TARGET_SITE/api/stats: $matches match(es) now"
 OLD_PATCHES=$(served_patches)
 say "  now      /patches: ${OLD_PATCHES:-(no list: a server from before patches)}"
 
+# The site's pages rebuilt (about 2 min), last in the preflight so far, and
+# only when nothing of it failed: a real run with a problem stops anyway.
+if ((site_stale)); then
+    build_site=("$BUILD_SITE" --tree "$work/site")
+    if [[ -n $resources ]]; then build_site+=(--with "$resources"); fi
+    if ((DRY_RUN)); then
+        say "  [dry run] would rebuild the Maps tab and the calculator (about 2 min; the patches from ~/.cache/skhid-release/patches/, else downloaded) in a worktree of ${main_commit:0:7}: ${build_site[*]}"
+    elif ((${#problems[@]})); then
+        say "  note     the Maps tab and the calculator: not rebuilt, as the preflight has ${#problems[@]} problem(s) already"
+    else
+        say "  ...      rebuilding the Maps tab and the calculator (release/build-site, about 2 min; its log: $work/build-site.log)"
+        site_start=$(date +%s)
+        if ! git -C "$REPO" worktree add --quiet --detach "$work/site" "$main_commit" 2>"$work/build-site.log"; then
+            problem "the Maps tab and the calculator: no worktree to rebuild them in: $(tr '\n' ' ' <"$work/build-site.log")"
+        elif ! "${build_site[@]}" </dev/null >"$work/build-site.log" 2>&1; then
+            problem "the Maps tab and the calculator: the rebuild failed (release/build-site; its log: $work/build-site.log): $(tail -n 3 "$work/build-site.log" | tr '\n' ' ')"
+        else
+            site_tree=$work/site
+            for page in "the Maps tab:maps" "the calculator:damage"; do
+                IFS=: read -r what dir <<<"$page"
+                if [[ $(built_from "$site_tree/srp-026g/servers/web-server/$dir/built-from.tsv") != "$want" ]]; then
+                    problem "$what, rebuilt: its built-from.tsv does not name the patches this release offers"
+                    site_tree=''
+                fi
+            done
+            if [[ -n $site_tree ]]; then
+                okay "the Maps tab and the calculator: rebuilt from the patches this release offers ($(span $(($(date +%s) - site_start)))); the server's source carries them, the record commits them"
+            fi
+        fi
+    fi
+fi
+
 # The server code: main's srp-026g build inputs against the live tree.
 build_code=0 code_report=''
 src_tar=$work/srp-026g-src.tar
@@ -1144,6 +1159,14 @@ if [[ -n $main_commit ]]; then
                     for (p in main) if (!(p in live)) print "ADDED     " p; else if (main[p] != live[p]) print "CHANGED   " p
                     for (p in live) if (!(p in main)) print "only live " p
                 }' "$work/src-main.sha256" "$work/src-live.sha256" | LC_ALL=C sort -k2)
+            # The dry run rebuilds nothing: the pages a real run rebuilds
+            # (and its source carries), as changed all the same.
+            if ((site_stale && DRY_RUN)); then
+                for page in "${SITE_PAGES[@]}"; do
+                    code_report+="${code_report:+$'\n'}CHANGED   ${page#srp-026g/}/ (a real run rebuilds it)"
+                done
+                code_report=$(LC_ALL=C sort -k2 <<<"$code_report")
+            fi
             code_changes=$(grep -cE '^(ADDED|CHANGED)' <<<"$code_report" || true)
             if ((code_changes)); then
                 okay "server code: $code_changes file(s) of main differ from the live tree:"
@@ -1160,9 +1183,6 @@ if [[ -n $main_commit ]]; then
             yes) build_code=1 ;;
             no) ((code_changes == 0)) || say "  WARNING  --server-code no: the image is NOT built although the code differs" ;;
             esac
-            if [[ -n $site_tree ]] && ((!build_code)) && grep -qE "^(ADDED|CHANGED) +servers/web-server/(maps|damage)/" <<<"$code_report"; then
-                problem "the Maps tab and the calculator were rebuilt, and the server code is not built (--server-code no): the site would go on showing the old ones"
-            fi
         fi
     else
         problem "git archive of main's srp-026g failed: $(cat "$work/archive.log")"

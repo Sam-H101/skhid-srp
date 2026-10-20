@@ -34,13 +34,14 @@ patches (cached in `~/.cache/skhid-release/patches/`). The server's source
 carries the rebuilt pages, and the release's record commits them with the
 list. A failed rebuild stops the release before players see anything.
 
-By hand, for a local preview, on your own checkout (the same steps):
+By hand, for a local preview, on your own checkout (the same steps; it
+reads the owner's `private/release/release.env`):
 
 ```
 release/build-site --tree . [--with <resources.db.patch_<n>>]
 ```
 
-or this tab on its own:
+or, without that file, this tab on its own:
 
 ```
 nix build --impure -o py --expr 'with import <nixpkgs>{}; python3.withPackages(p:[p.pillow])'
@@ -61,7 +62,7 @@ It writes `srp-026g/servers/web-server/maps/`:
 The patches in `built-from.tsv` are exactly the offered ones on main. The
 web-server test `the_maps_and_the_calculator_are_built_from_the_offered_patches`
 fails a PR otherwise. A PR that changes the page's code commits its rebuild
-(`release/build-site --tree .`). FFDec is 26.0.0: it makes the committed
+(`release/build-site --tree .`, or the commands above). FFDec is 26.0.0: it makes the committed
 icons byte for byte.
 
 What comes from where:

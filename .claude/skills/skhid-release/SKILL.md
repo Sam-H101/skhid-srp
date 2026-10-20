@@ -198,12 +198,13 @@ The order, as it runs:
    patches than the list (and the `--resources` file), it rebuilds both
    with `release/build-site` in a worktree of the commit (about 2 min; the
    patches cached in `~/.cache/skhid-release/patches/`, FFDec 26.0.0
-   downloaded there, dbgrab built there from `tools/re-kit` with the
+   downloaded there, dbgrab built there from the commit's `tools/re-kit` with the
    unpacker checked out as `tools/vostok-resources-db` in the main checkout,
-   or `$SKHID_DBGRAB`). Nobody rebuilds them by hand before a release. A
-   failed rebuild is a problem like any other: the run stops before the go.
+   or `$SKHID_DBGRAB`). Nobody rebuilds them by hand before a release. The
+   rebuild comes after the other checks and is skipped when one of them
+   failed. A failed rebuild is a problem like any other: the run stops before the go.
    The server's source carries the rebuilt pages, so the server code is
-   built (`--server-code no` is refused then). Last, which server-code
+   built (`--server-code no` is refused then, by the dry run too). Last, which server-code
    files differ, which settings
    main's compose file newly passes that the target's `.env` sets (names
    only: their values take effect at the recreate), and whether main

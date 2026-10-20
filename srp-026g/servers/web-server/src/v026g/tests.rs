@@ -1066,11 +1066,11 @@ fn the_maps_and_the_calculator_are_built_from_the_offered_patches() {
     let maps = rows(include_str!("../../maps/built-from.tsv"));
     assert_eq!(
         maps, offered,
-        "the Maps tab is built from other patches than release/patches.tsv: release/build-site --tree ."
+        "the Maps tab is built from other patches than release/patches.tsv: rebuild it with build.py (srp-026g/scripts/maps-tab/README.md)"
     );
     let calculator = rows(include_str!("../../damage/built-from.tsv"));
     assert_eq!(
         calculator, offered,
-        "the calculator is built from other patches than release/patches.tsv: release/build-site --tree ."
+        "the calculator is built from other patches than release/patches.tsv: rebuild it with build_site.py (srp-026g/scripts/damage-calc/README.md)"
     );
 }
