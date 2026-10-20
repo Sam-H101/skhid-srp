@@ -1,8 +1,8 @@
 # Builds and tests everything that builds on Linux: the three servers
 # (srp-0100b, srp-021d, srp-026g), the players' BugTrap.dll and
 # updater_skhid.exe (cross-built for i686 Windows with rust-lld), and, on
-# `main`, the 0.26g server's Docker image into this repository's packages
-# (ghcr.io). Nothing here deploys: the live host is updated by
+# `main` and on every tag pushed, the 0.26g server's Docker image into this
+# repository's packages (ghcr.io). Nothing here deploys: the live host is updated by
 # release/release.sh, the test host by deploy-test.yml.
 #
 # Nightly Rust, as srp-026g/flake.nix: the workspaces' scripts use
@@ -11,10 +11,12 @@
 # libssl-dev and a C compiler.
 name: Build
 on:
-  # Pull requests and `main`; another branch by hand (Actions -> Build ->
-  # Run workflow).
+  # Pull requests, `main` and every new tag (a release's `026g-rev<n>`, or
+  # the tag a GitHub release creates); another branch by hand (Actions ->
+  # Build -> Run workflow).
   push:
     branches: [main]
+    tags: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -108,9 +110,10 @@ jobs:
           retention-days: 14
 
   # The 0.26g server's image (srp-026g/Dockerfile) as
-  # ghcr.io/<owner>/<repo>/srp-026g:<sha> and :latest. `main` only.
+  # ghcr.io/<owner>/<repo>/srp-026g:<sha> and, from `main`, :latest; from a
+  # tag, :<tag> instead of :latest.
   image:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     needs: server
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -133,6 +136,6 @@ jobs:
           push: true
           tags: |
             ${{ steps.name.outputs.image }}:${{ github.sha }}
-            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
