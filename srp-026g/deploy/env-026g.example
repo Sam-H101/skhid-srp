@@ -101,7 +101,8 @@ RUST_LOG=info
 # match on the side with fewer players; of two alike in that, the side it
 # played on before in that match; then the side that counts for less: what
 # its players count for (above), and the lead. So the lead only decides
-# between sides with as many players. What a battery and a ticket of lead
+# between sides with as many players, for a joiner that has no side of its
+# own in that match yet. What a battery and a ticket of lead
 # count for, in players:
 # SRP_BALANCE_BATTERY_LEAD=0.55
 # SRP_BALANCE_TICKET_LEAD=0.2
