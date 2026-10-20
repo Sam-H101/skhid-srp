@@ -328,6 +328,19 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     whose branches inside land on instructions; the build without the
     late join keeps both; no relocation under the sites and nothing aims
     inside them. check_spot_026g.py runs it.
+40. the same build: a model's LOD and screen factor at a wider field of
+    view are the original's (patch 40). select_lod's `mulss xmm0,[0x927a44]`
+    (0.5, 0x16F2A4) and calculate_screen_factor's `fmul dword [0xa710d0]`
+    (100, 0x1590AF) are each a call of the original's length into the late
+    join, to fov_lod_scale and fov_screen_scale: the original instruction,
+    then, when the state page's k (FOV_LOD_STATE_OFFSET) is not 0, the same
+    by k, and ret. The original's two are where the original reads them
+    (select_lod's screen-size branch before its params, the factor before
+    its store at +58h); their relocations are disabled; fov_projection
+    alone writes k (fptan twice, then the store); k is after the other
+    states of the page; no branch lands inside the two sites.
+    check_fov_lod_026g.py runs the projection, select_lod and the screen
+    factor of the original and the build.
 """
 
 import ctypes
@@ -1335,7 +1348,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
         [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))] + \
-        [(P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))]
+        [(P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))] + \
+        [(va, len(old)) for va, old, _, _ in P.FOV_LOD_HOOKS]
 
 
 def pickup_sites():
@@ -1365,7 +1379,8 @@ def test_late_join_bin():
           f"its first {P.LATE_JOIN_ASM_SIZE} bytes are what nasm makes of late_join_026g.asm today")
     check(all(0 < offset < len(code) - P.LATE_JOIN_ASM_SIZE for offset in kept["symbols"].values()),
           "the C functions the assembly calls are inside the C code")
-    entries = sorted({offset for _, _, offset, _ in P.LATE_JOIN_HOOKS + P.TAB_LIST_HOOKS} | {P.LATE_JOIN_READY_OFFSET})
+    entries = sorted({offset for _, _, offset, _ in P.LATE_JOIN_HOOKS + P.TAB_LIST_HOOKS + P.FOV_LOD_HOOKS}
+                     | {P.LATE_JOIN_READY_OFFSET})
     check(all(code[offset] != 0xCC and (offset == 0 or code[offset - 1] == 0xCC) for offset in entries),
           f"the {len(entries)} entries the hooks go to start code after int3 padding")
     return code
@@ -1607,10 +1622,10 @@ def test_fov(original, image, before):
           and source.read(va, rest) == P.FOV_PROJECTION_BODY and refs(0xA2D9EC) == [va + 0x3A],
           f"the projection's first instruction jumps to fov_projection ({entry:#x}); the rest of its body, which "
           "alone reads the 65-degree constant 0xA2D9EC, is the original's; the build without the late join keeps it")
-    rows = ndisasm(image.read(entry, 0x80), entry)
+    rows = ndisasm(image.read(entry, 0xC0), entry)
     end_at = next(i for i, (_, _, text) in enumerate(rows) if text.startswith("ret"))
     texts = [text for _, _, text in rows[:end_at + 1]]
-    data = image.read(rows[end_at][0] + len(rows[end_at][1]) // 2, 16)
+    data = image.read(rows[end_at][0] + len(rows[end_at][1]) // 2, 20)
     returns = lambda text: text.replace("ret word ", "ret ")  # ndisasm 3 spells `ret 0x8` so
     was = [text for _, _, text in ndisasm(source.read(va, rest), va)]
     calls = lambda texts: [branch_target(text) for text in texts if text.startswith("call")]
@@ -1618,8 +1633,8 @@ def test_fov(original, image, before):
           and f"fld dword [0x{P.FOV_VALUE:x}]" in [t.replace("[dword 0x", "[0x") for t in texts]  # ndisasm 2.x spells [dword 0x..]
           and "fcmovb st1" in texts
           and not any("xmm" in text and "xmm0" not in text for text in texts)
-          and data == struct.pack("<4f", 0.25, 1.3333334, 65.0, 0.017453292),
-          "fov_projection reads uro_fov, takes max(0, (z - 0.25) / 0.75) (0.25, 4/3, 65 and pi/180 after its code), "
+          and data == struct.pack("<5f", 0.25, 1.3333334, 65.0, 0.017453292, 0.008726646),
+          "fov_projection reads uro_fov, takes max(0, (z - 0.25) / 0.75) (0.25, 4/3, 65, pi/180 and pi/360 after its code), "
           "calls the matrix builder 0xEEE30 as the original, writes no XMM register but xmm0 and returns with `ret 0x8`")
     check(all(source.read(vtable, 4) == pack(P.FOV_PROJECTION_VA)
               and string(source, struct.unpack("<I", source.read(struct.unpack("<I", source.read(vtable - 4, 4))[0] + 12,
@@ -1641,6 +1656,58 @@ def test_fov(original, image, before):
              if not (va <= hit < va + len(old)) and starts_instruction(source, hit)]
     check(not found, "no rel32 branch of .text, no rel8 branch near them (read as the functions' instructions) and "
           "no 4-byte value aims inside the two sites rewritten in place" + "".join(f"\n          {a:#x}" for a in found))
+
+
+def test_fov_lod(original, image, before):
+    """Check 40: a model's LOD and screen factor at a wider field of view
+    are the original's (patch 40)."""
+    source = Image(original)
+    k = P.late_join_state_va(open(P.late_join_bin(), "rb").read()) + P.FOV_LOD_STATE_OFFSET
+    pack = lambda value: struct.pack("<I", value)
+    plain = lambda text: text.replace("[dword 0x", "[0x").replace("dword [", "[")
+    # The two constants where the original reads them: select_lod's half of
+    # the larger extent, just before param2 (+8) is compared; the screen
+    # factor's 100 after pow and before the store at +58h.
+    lod = {a: plain(t) for a, _, t in ndisasm(source.read(0x16F280, 0x40), 0x16F280)}
+    factor = {a: plain(t) for a, _, t in ndisasm(source.read(0x15909A, 0x30), 0x15909A)}
+    check(lod.get(0x16F2A4) == "mulss xmm0,[0x927a44]" and lod.get(0x16F2AC) == "movss xmm1,[eax+0x8]"
+          and lod.get(0x16F2B1) == "comiss xmm1,xmm0"
+          and factor.get(0x1590AA) == "call 0x3a9b0" and factor.get(0x1590AF) == "fmul [0xa710d0]"
+          and factor.get(0x1590BF) == "fstp [esi+0x58]"
+          and struct.unpack("<f", source.read(0x927A44, 4))[0] == 0.5
+          and struct.unpack("<f", source.read(0xA710D0, 4))[0] == 100.0,
+          "the original: select_lod's `mulss xmm0,[0x927a44]` (0.5) before param2 is compared (0x16f2b1), "
+          "the screen factor's `fmul dword [0xa710d0]` (100) after pow (0x3a9b0) and before the store at +58h")
+    for va, old, offset, _ in P.FOV_LOD_HOOKS:
+        stub = image.read(P.LATE_JOIN_VA + offset, 32)
+        times = b"\xf3\x0f\x59\x05" if old[0] == 0xF3 else b"\xd8\x0d"
+        expected = old + b"\x83\x3d" + pack(k) + b"\x00" + bytes([0x74, len(times) + 4]) + times + pack(k) + b"\xc3"
+        check(source.read(va, len(old)) == old and before.read(va, len(old)) == old and stub.startswith(expected)
+              and set(stub[len(expected):]) <= {0xCC},
+              f"{va:#x}: calls {P.LATE_JOIN_VA + offset:#x}: `{old.hex()}`, then by k ({k:#x}) when it is not 0, ret; "
+              "the original and the build without the late join keep the instruction")
+    body = image.read(P.SECTION_VA, P.late_join_state_va(open(P.late_join_bin(), "rb").read()) - P.SECTION_VA)
+    found = [m.start() for m in re.finditer(re.escape(pack(k)), body)]
+    entry = P.LATE_JOIN_VA + P.FOV_PROJECTION_OFFSET
+    texts = [plain(t) for _, _, t in ndisasm(image.read(entry, 0xC0), entry)]
+    store = texts.index(f"fstp [{k:#x}]") if f"fstp [{k:#x}]" in texts else -1
+    check(len(found) == 5 and store > 0 and texts[:store].count("fptan") == 2 and "fcmovbe st1" in texts[:store]
+          and "call 0xeee30" in texts[store + 1:],
+          f"k ({k:#x}) is named five times in .srp: written by fov_projection alone (after its two fptan and the "
+          "clamp to 1, before the matrix builder's call), read by the two scales")
+    check(P.FOV_LOD_STATE_OFFSET >= P.TAB_LIST_STATE_OFFSET + P.TAB_LIST_STATE_SIZE
+          and P.FOV_LOD_STATE_OFFSET % 4 == 0
+          and P.FOV_LOD_STATE_OFFSET + P.FOV_LOD_STATE_SIZE <= P.LATE_JOIN_STATE_SIZE,
+          f"k is at {P.FOV_LOD_STATE_OFFSET:#x} of the state page, aligned, after the other states "
+          "(the scoreboard's the last)")
+    hits = [hit for va, old, _, _ in P.FOV_LOD_HOOKS for hit in aimed_inside(original, va, len(old), 0x82)
+            if not (va <= hit < va + len(old)) and starts_instruction(source, hit)]
+    check(not hits, "no rel32 branch of .text, no rel8 branch near them and no 4-byte value aims inside the two sites"
+          + "".join(f"\n          {a:#x}" for a in hits))
+    relocated = sorted(va for kind, va in source.relocations().values() if kind == 3
+                       and any(va + 4 > site and va < site + len(old) for site, old, _, _ in P.FOV_LOD_HOOKS))
+    check(relocated == P.FOV_LOD_RELOCS, "the original has a base relocation under each site, at its constant's "
+          f"address ({', '.join(f'{va:#x}' for va in P.FOV_LOD_RELOCS)}), disabled in the build")
 
 
 # A battery's usable-object vtables: can_use at +30h, get_transform at +44h.
@@ -3697,8 +3764,10 @@ def test_late_join(original, without, server, source):
                (headers.size_of_image_at, 4), (headers.checksum_at, 4), (headers.security_at, 4),
                (headers.table + 40 * 7 + 8, 4), (headers.table + 40 * 7 + 16, 4), (headers.table + 40 * 8, 40)]
     # The entries of the relocation table that are disabled (scene::remove_model's
-    # branch, uro_fov's least, the pickup's distance, the lobby camera's least).
-    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC, P.PICKUP_RELOC, *P.WEAPON_PREVIEW_RELOCS}
+    # branch, uro_fov's least, the pickup's distance, the lobby camera's least,
+    # the two constants of patch 40).
+    disabled = {P.REMOVE_MODEL_VA + 2, P.FOV_MINIMUM_RELOC, P.PICKUP_RELOC, *P.WEAPON_PREVIEW_RELOCS,
+                *P.FOV_LOD_RELOCS}
     ranges += [(at, 2) for at, (kind, va) in before.relocations().items()
                if kind == 3 and va in disabled]
     allowed = bytearray(raw)
@@ -3717,7 +3786,8 @@ def test_late_join(original, without, server, source):
               and rows[0][2] == LATE_JOIN_TEXT[va] and all(text == "nop" for _, _, text in rows[1:])
               and sum(len(code_hex) // 2 for _, code_hex, _ in rows) == len(old),
               f"{va:#x}: `{rows[0][2]}` + {len(rows) - 1} nop")
-    for va, old, offset, opcode in P.LATE_JOIN_HOOKS + ((P.LATE_JOIN_READY_VA, P.HOOKS[0][1], P.LATE_JOIN_READY_OFFSET, 0xE9),):
+    for va, old, offset, opcode in P.LATE_JOIN_HOOKS + P.FOV_LOD_HOOKS + \
+            ((P.LATE_JOIN_READY_VA, P.HOOKS[0][1], P.LATE_JOIN_READY_OFFSET, 0xE9),):
         rows = rows_at(va, len(old))
         word = "call" if opcode == 0xE8 else "jmp"
         check(Image(original).read(va, len(old)) == old and rows[0][2].startswith(word)
@@ -3768,7 +3838,8 @@ def test_late_join(original, without, server, source):
     # lobby camera's three loads of its least distance.
     fov_sites = {va for va, _, _ in P.FOV_PATCHES}
     with_address = {P.REMOVE_MODEL_VA, P.PICKUP_HOOKS[0][0]} | fov_sites | \
-        {va for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS if old[:3] == b"\xf3\x0f\x10"}
+        {va for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS if old[:3] == b"\xf3\x0f\x10"} | \
+        {va for va, _, _, _ in P.FOV_LOD_HOOKS}
     kept = [(lo, hi) for lo, hi in sites if lo not in with_address]
     under_kept = [va for kind, va in Image(original).relocations().values()
                   if kind == 3 and any(va + 4 > lo and va < hi for lo, hi in kept)]
@@ -3784,7 +3855,8 @@ def test_late_join(original, without, server, source):
           "no base relocation is under a late-join site but those of scene::remove_model's branch "
           f"({P.REMOVE_MODEL_VA + 2:#x}), of uro_fov's least ({P.FOV_MINIMUM_RELOC:#x}) and of the pickup's "
           f"distance ({P.PICKUP_RELOC:#x}) and of the lobby camera's least "
-          f"({', '.join(f'{va:#x}' for va in P.WEAPON_PREVIEW_RELOCS)}), which are disabled, "
+          f"({', '.join(f'{va:#x}' for va in P.WEAPON_PREVIEW_RELOCS)}) and of patch 40's two constants "
+          f"({', '.join(f'{va:#x}' for va in P.FOV_LOD_RELOCS)}), which are disabled, "
           f"and of the field-of-view option's name "
           f"({option:#x}, an address for an address), which stays; the rest of the table is the build's without it")
 
@@ -3792,6 +3864,7 @@ def test_late_join(original, without, server, source):
     test_statistics_count(original, image, before)
     test_pregame_progress(original, image, before)
     test_fov(original, image, before)
+    test_fov_lod(original, image, before)
     test_pickup(original, image, before)
     test_weapon_random(original, image, before)
     test_kit_state(original, image, before)

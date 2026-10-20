@@ -345,6 +345,16 @@ Patches:
   `online` is set (tab_row, late_join_026g.asm), the shown list is made
   again when those places change (tab_shown, at 0x23B421), and the
   refresh leaves the other places alone (0x23B447..0x23B476 in place);
+- a model is measured as the original's 65 degrees would see it at a wider
+  field of view (patch 40, with the late join, client_patch.md section
+  3.37, docs/notes/fov_lod.md). select_lod (0x16EEC0) hides a static model
+  of screen-size LOD below a share of the screen, and the screen factor
+  (0x158D80) drops small shadow casters: both through the projection, so
+  at uro_fov 100 models went out at about half the distance.
+  fov_projection keeps k = max(1, tan(A/2) / tan(65 z/2)) in the state
+  page; select_lod's x0.5 (0x16F2A4) and the factor's x100 (0x1590AF)
+  call fov_lod_scale and fov_screen_scale, which multiply by k after the
+  original's constant (k is 1 at 65 and less, and through a scope);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -1417,6 +1427,32 @@ FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
                bytes.fromhex("c7055465aa00") + struct.pack("<f", FOV_MIN) + b"\x90")
 FOV_MINIMUM_RELOC = 0x85AE0D
 FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
+# The high-FOV LOD compensation (patch 40; client_patch.md section 3.37,
+# ../docs/notes/fov_lod.md). The game measures a model by its size on the
+# screen, through the projection the camera gave: a static model's LOD
+# (static_render_model_instance::select_lod 0x16EEC0: type 1, half the
+# larger NDC extent of its box, LOD 3 below param2 draws nothing, 0x16F46A)
+# and each surface's screen factor (render_surface_instance::
+# calculate_screen_factor 0x158D80: the share of the screen times 100; the
+# shader LOD, the sun's shadow casters 0x176340, spot shadows, rain
+# occluders). They were tuned at 65 degrees or less. A wider angle makes a
+# model smaller on the screen, so it lost detail and went out sooner: at
+# 100 at 0.53 of the distance (tan 32.5 / tan 50). fov_projection
+# (late_join_026g.asm) keeps k = max(1, tan(A/2) / tan(65 z/2)) at
+# FOV_LOD_STATE_OFFSET of the state page, A its angle and 65 z the
+# original's at that zoom. The two constants' instructions call
+# fov_lod_scale and fov_screen_scale, which do the original's
+# multiplication and then by k; with the page still zero (before the first
+# projection) they leave the original's. Each site held the constant's
+# address: its base relocation is disabled (FOV_LOD_RELOCS). Rendering
+# only: nothing a match computes reads either value.
+FOV_LOD_HOOKS = (
+    (0x16F2A4, bytes.fromhex("f30f5905447a9200"), 1760, 0xE8),  # select_lod's `mulss xmm0,[0x927A44]` (0.5)
+    (0x1590AF, bytes.fromhex("d80dd010a700"), 1792, 0xE8),      # the screen factor's `fmul dword [0xA710D0]` (100)
+)
+FOV_LOD_RELOCS = [0x1590B1, 0x16F2A8]
+FOV_LOD_STATE_OFFSET = 0xE50                  # after the scoreboard's (TAB_LIST_STATE_OFFSET)
+FOV_LOD_STATE_SIZE = 4
 
 # A battery under the floor (patch 23, pickup_below_026g.asm at
 # PICKUP_VA): client_patch.md section 3.23.
@@ -1831,6 +1867,19 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         va, expected, _ = FOV_MINIMUM
         if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
             sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
+        if FOV_LOD_STATE_OFFSET < TAB_LIST_STATE_OFFSET + TAB_LIST_STATE_SIZE \
+                or FOV_LOD_STATE_OFFSET + FOV_LOD_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the FOV LOD scale does not fit after the scoreboard's state")
+        k_address = struct.pack("<I", late_join_state_va(late_join) + FOV_LOD_STATE_OFFSET)
+        for va, expected, offset, opcode in FOV_LOD_HOOKS:
+            stub = late_join[offset:offset + 32]
+            if stub[:len(expected)] != expected or stub.count(k_address) != 2:
+                sys.exit(f"the late join's code at {offset} is not patch 40's scale "
+                         f"(its k at {late_join_state_va(late_join) + FOV_LOD_STATE_OFFSET:#x})")
+            patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
+        if sorted(neutralize_relocs(data, [(va, va + len(expected)) for va, expected, _, _ in FOV_LOD_HOOKS])) \
+                != FOV_LOD_RELOCS:
+            sys.exit("the base relocations under the FOV LOD sites are not where they were read")
         pickup = open(pickup_bin(), "rb").read()
         if len(cave) > PICKUP_OFFSET or PICKUP_OFFSET + len(pickup) > LATE_JOIN_OFFSET:
             sys.exit("the upload code and the pickup code do not fit before the late join")
@@ -2086,7 +2135,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "a weapon's upgrade window shows the weapon, "
                      "the commit_suicide key (K) kills one's own player, "
                      "the scoreboard shows the places in the match and none whose player left, "
-                     "a spot has no cooldown and a battery's body spots it"
+                     "a spot has no cooldown and a battery's body spots it, "
+                     "a model's LOD and screen factor at a wider field of view are the original's"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

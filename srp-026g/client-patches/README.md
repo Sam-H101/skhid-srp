@@ -60,6 +60,7 @@ release's. The "Result" row is the build of the revision named in it.
 | `late_join_026g.py` | Builds those two files (`--write-bin`), says whether they are what the sources give on this machine (`--check-bin`), or builds an exe straight from the sources for work on the code. Needs nasm, a C compiler for x86 and GNU ld |
 | `check_late_join_026g.py`, `test_late_join_runtime_026g.c` | Checks of the late-join code: the first runs the patched machine code on made-up objects (needs Unicorn 2.1.4), the second the C bookkeeping under the sanitizers |
 | `check_fov_026g.py` | Runs the original and patch 22's camera projection, the game's matrix builder included, and compares the matrices (needs Unicorn) |
+| `check_fov_lod_026g.py` | Runs patch 40 (a model's LOD and screen factor at a wider field of view are the original's): the projection's k at several settings and zooms, the game's select_lod and screen factor of the original and the build on made-up models (needs Unicorn) |
 | `pickup_below_026g.asm`, `pickup_below_026g.section.bin` | The source of patch 23's code and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_pickup_below_026g.py` | Runs the original and patch 23's use scan on made-up ray hits (needs Unicorn) |
 | `replay_seek_026g.asm`, `replay_seek_026g.section.bin` | The source of patch 26's code (a replay's seek empties the weapons' sound queues) and that code assembled, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
@@ -2254,6 +2255,69 @@ huds (places leaving, entering, a late joiner, nobody, the list hidden, a
 list made by the install, a player back under the same name);
 `check_revision6_026g.py` and `check_late_join_026g.py` pass with it.
 **Not run in a game.**
+
+### 40. A model's LOD and screen factor at a wider field of view are the original's (the next release's revision)
+
+The report: "with a high FOV some models disappear" (patch 22's setting).
+The note with the rules and the table: `../docs/notes/fov_lod.md`.
+
+Not the frustum: every culling frustum of the game is made from the
+camera's real projection. The game measures a model by its size on the
+screen, through the projection, with thresholds tuned at the stock 65
+degrees (a zoom only narrows it):
+
+- `static_render_model_instance::select_lod` (0x16EEC0): a static model
+  whose `lod_switching.type` is 1 is drawn not at all (LOD 3) when half its
+  box's larger NDC extent is under `param2`. In the retail `resources.db`,
+  281 static models with LODs are of that type; 20 have a `param2` one sees
+  (church_interior_details on Rudnya 0.2, Cologne's floor-vegetation corners
+  0.15 and hoist 0.1, Mamayev Kurgan's base_a_mod_ 0.15 and base_b 0.07, a
+  ladder 0.05, the Kamaz trucks 0.025, transformers 0.015, the UAZs, a
+  flagpole and a ladder 0.01). On London (patch 14) 110 models are type 1
+  with `param0` 0.2 to 0.9: at a wide angle a piece of a big room under
+  that share of the screen falls to its LOD1, which leaves out whole
+  surfaces (floors, bars, walls), the owner's "a third of the screen"; the
+  correction of select_lod fixes it (`docs/notes/fov_lod.md`). Whether LOD 3
+  really draws nothing is doubtful (a model there usually falls back to
+  LOD 2 or 1, ibid.);
+- `render_surface_instance::calculate_screen_factor` (0x158D80): the share
+  of the screen times 100, for the shader LOD and the small casters dropped
+  from the sun's and spot lights' shadows and rain occlusion.
+
+A wider angle makes a model smaller on the screen: it lost detail and went
+out sooner, at tan 32.5 / tan(F/2) of the distance (0.76 at 80, 0.53 at
+100; a Kamaz side-on at 16:9 about 130 m at 65, 70 m at 100).
+
+**The patch.** Only in the builds with the late join. `fov_projection`
+(late_join_026g.asm) also keeps k = max(1, tan(A/2) / tan(65 z/2)) at +E50h
+of the late join's state page, A the angle it passes (bit for bit patch
+22's) and 65 z the stock angle at the same zoom: 1.0 at 65 and less and
+through a full scope, 1.317 at 80, 1.871 at 100 unaimed. select_lod's
+`mulss xmm0,[0x927A44]` (0.5, 0x16F2A4, 8 bytes) and the screen factor's
+`fmul dword [0xA710D0]` (100, 0x1590AF, 6 bytes) become a call and nops to
+`fov_lod_scale` and `fov_screen_scale` (late join +6E0h, +700h): the original
+instruction, then the same by k when k is not 0 (the zeroed page before the
+first projection), `ret`. The two relocations under them are disabled. At
+65 and less every value is the original's bit for bit (x 1.0). At a wide
+angle the game draws within a distance what 65 draws there, in a wider
+view; k also reaches the shadow passes' LOD, a little more shadow detail.
+
+**Revisions.** Rendering only: nothing a match computes reads a LOD or a
+screen factor (collision and hits use the physics shapes), so it needs no
+row in `../crates/session/src/v026g/simulation_changes.tsv`, and games with
+and without it play together. `../docs/notes/client_patch.md` section 3.37
+has the proof.
+
+Checked: `selftest_026g.py` check 40 (and checks 15 and 23);
+`check_fov_lod_026g.py` runs the projection at 50 to 100 and five zooms (k
+is exactly 1 at 65 and less and through a scope), the game's select_lod on
+a Kamaz-sized box (out at 113.7 m at 65 in the original, and at every
+setting in the build; with k zeroed, 87.4 m at 80 and 62.5 m at 100) and
+its screen factor (the original's at 20, 60 and 150 m). Against the build of
+`main` bee9dc3, the default build differs in the two sites (file 0x15E6A4,
+0x1484AF), two relocation entries (0xB71E47, 0xB728AD), fov_projection's
+code (0xC4BC60..0xC4BCED), the two scales (0xC4C0E0..0xC4C115) and the PE
+checksum, and in nothing else (compared byte by byte). **Not run in a game.**
 
 ## Not ported, not done
 
