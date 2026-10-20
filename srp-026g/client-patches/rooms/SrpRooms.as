@@ -12,6 +12,7 @@ package
     import flash.events.MouseEvent;
     import flash.events.TimerEvent;
     import flash.external.ExternalInterface;
+    import flash.geom.ColorTransform;
     import flash.geom.Matrix;
     import flash.geom.Point;
     import flash.geom.Rectangle;
@@ -56,6 +57,14 @@ package
         public static const VOTE_SECS:int = 15;
         public static const GOLD:uint = 0xE0A64E;
         public static const RED:uint = 0xE0533F;
+        // A member of a room sees where it is (the owner's of 2026-10-19:
+        // players did not know they were in one): the top menu's tab and
+        // the switch to a better room in this, Play turned red (it leaves).
+        public static const YELLOW:uint = 0xFFD23F;
+        // The colours as transforms, for drawn parts (the tab's icon, the
+        // game's buttons): yellow and red over their own shading.
+        private static const YELLOW_TINT:ColorTransform = new ColorTransform(1, 0.82, 0.25, 1, 60, 45, 0, 0);
+        private static const RED_TINT:ColorTransform = new ColorTransform(1, 0.3, 0.25, 1, 70, 0, 0, 0);
         public static const LIGHT:uint = 0xE8EEF2;
         public static const GREY:uint = 0x93A3AF;
         public static const DIM:uint = 0x5F707C;
@@ -123,6 +132,7 @@ package
                 "Drużyny są losowane na starcie meczu."],
             "code": ["code", "код", "код", "Code", "kod"],
             "leave": ["Leave", "Вийти", "Выйти", "Verlassen", "Opuść"],
+            "leaveRoom": ["Leave room", "Вийти з кімнати", "Выйти из комнаты", "Raum verlassen", "Opuść pokój"],
             "joinMatch": ["Join match", "Увійти в матч", "Войти в матч", "Match beitreten", "Dołącz do meczu"],
             "joinIn": ["Into the match in %S s, or now with Join match", "У матч за %S с, або зараз: «Увійти в матч»",
                 "В матч через %S с, или сейчас: «Войти в матч»", "Ins Match in %S s, oder jetzt: Match beitreten",
@@ -491,7 +501,8 @@ package
             return false;
         }
 
-        // The end of LobbyMenu.set_play_button_enabled: Play stays off in a room.
+        // The end of LobbyMenu.set_play_button_enabled: in a room or a room's
+        // queue Play is our Leave (on); otherwise the game's own word.
         public static function playState(lobby:*):void
         {
             // A hook: nothing of it may throw into the game's code.
@@ -526,6 +537,24 @@ package
                 // its search, is never run from this button.
                 if (me == null)
                     return false;
+                // In a room it is "Leave room" (red): out of the room.
+                if (me.leavesRoom())
+                {
+                    me._playAskedAt = getTimer();
+                    me.applyPlay();
+                    me.ask(LEAVE, 1);
+                    me._fastUntil = getTimer() + 5000;
+                    return true;
+                }
+                // In a room's queue it is "Leave queue" (red): out of it.
+                if (me.leavesQueue())
+                {
+                    me._playAskedAt = getTimer();
+                    me.applyPlay();
+                    me.ask(UNQUEUE, 1);
+                    me._fastUntil = getTimer() + 5000;
+                    return true;
+                }
                 me.quickPlay();
                 return true;
             }
@@ -698,6 +727,7 @@ package
             topIcon();
             overPanels();
             alertNear();
+            applyPlay(true);
         }
 
         // While open, ours is the lobby's top child: the lobby adds its own
@@ -776,11 +806,35 @@ package
                 }
                 art.visible = false;
                 _topIcon.alpha = art.alpha;
-                _topIcon.transform.colorTransform = art.transform.colorTransform;
+                _topIcon.transform.colorTransform = marked() ? YELLOW_TINT : art.transform.colorTransform;
+                topColour(tab.textField as TextField);
             }
             catch (e:Error)
             {
             }
+        }
+
+        // The tab's label: yellow while we are in a room, its own colour
+        // otherwise (the tab sets it again on each state: ours each frame).
+        private var _topText:TextField;
+        private var _topTextColour:uint;
+
+        private function topColour(field:TextField):void
+        {
+            if (field == null)
+                return;
+            if (field != _topText)
+            {
+                _topText = field;
+                _topTextColour = field.textColor;
+            }
+            if (marked())
+            {
+                if (field.textColor != YELLOW)
+                    field.textColor = YELLOW;
+            }
+            else if (field.textColor == YELLOW)
+                field.textColor = _topTextColour;
         }
 
         private function show(value:Boolean):void
@@ -889,23 +943,113 @@ package
             }
         }
 
-        private function applyPlay():void
+        // In a room, Play is "Leave room", red, and takes us out of it (the
+        // owner's of 2026-10-19); but when our row says we play the room's
+        // match, yet we are here (the game started anew), it is Play and
+        // takes us back to our seat.
+        private function leavesRoom():Boolean
+        {
+            if (_room == null)
+                return false;
+            for (var i:int = 0; i < _room.members.length; i++)
+                if (_room.members[i].me && _room.members[i].inMatch)
+                    return false;
+            return true;
+        }
+
+        // In no room but in a full room's queue: Play is "Leave queue", red,
+        // and takes us out of the queue (the owner's of 2026-10-20).
+        private function leavesQueue():Boolean
+        {
+            return _room == null && _queueKey != 0;
+        }
+
+        // The Rooms tab is yellow while we are in a room or a room's queue
+        // (the owner's of 2026-10-20).
+        private function marked():Boolean
+        {
+            return _room != null || _queueKey != 0;
+        }
+
+        // A button's art tinted, its label not: the text stays white, as
+        // PLAY's (the owner's of 2026-10-20). Every part of the button but
+        // the one that holds its text field takes the tint.
+        private static function skinTint(btn:*, tint:ColorTransform):void
+        {
+            var box:DisplayObjectContainer = btn as DisplayObjectContainer;
+            if (box == null)
+                return;
+            box.transform.colorTransform = new ColorTransform();
+            var field:DisplayObject = null;
+            try
+            {
+                field = btn.textField as DisplayObject;
+            }
+            catch (err:Error)
+            {
+            }
+            for (var i:int = 0; i < box.numChildren; i++)
+            {
+                var part:DisplayObject = box.getChildAt(i);
+                if (field != null && (part == field
+                    || (part is DisplayObjectContainer && DisplayObjectContainer(part).contains(field))))
+                    continue;
+                part.transform.colorTransform = tint;
+            }
+        }
+
+        // The game's own label of Play, while ours is on it, and ours.
+        private var _playLabel:String = null;
+        private var _ourPlayLabel:String = null;
+
+        // `each`: the frame's call, which leaves the game's own Play enabled as
+        // the game sets it (only our Leave is kept on).
+        private function applyPlay(each:Boolean = false):void
         {
             if (_lobby == null)
                 return;
             try
             {
-                // Grey in a room, and from a press until its answer (6 s at
-                // most); the game's own word otherwise.
+                var btn:* = _lobby.statusPanel.playBtn;
+                var leaving:Boolean = leavesRoom();
+                var queued:Boolean = !leaving && leavesQueue();
+                // Grey from a press until its answer (6 s at most). Leave room
+                // and Leave queue need none of the game's Play conditions (a
+                // squad's member, a kit the game refuses): on whatever the
+                // game's Play is. Play: the game's own word.
                 var asking:Boolean = _playAskedAt != 0 && getTimer() - _playAskedAt < 6000;
-                // Our row says we play the room's match, yet we are here (the
-                // game started anew): Play takes us back to our seat.
-                var seat:Boolean = false;
-                if (_room != null)
-                    for (var i:int = 0; i < _room.members.length; i++)
-                        if (_room.members[i].me && _room.members[i].inMatch)
-                            seat = true;
-                _lobby.statusPanel.playBtn.enabled = (_room == null || seat) && !asking && _nativePlay;
+                if (leaving || queued || !each)
+                {
+                    var on:Boolean = !asking && (leaving || queued || _nativePlay);
+                    if (btn.enabled != on)
+                        btn.enabled = on;
+                }
+                // In the case of the game's own label (its Play is in capitals).
+                var native:String = _playLabel != null ? _playLabel : String(btn.label);
+                var label:String = say(leaving ? "leaveRoom" : "leaveQueue");
+                if (native != "" && native == native.toUpperCase())
+                    label = label.toUpperCase();
+                if (leaving || queued)
+                {
+                    // The game sets its own label again (its language): ours
+                    // over it each time.
+                    if (btn.label != label)
+                    {
+                        if (_playLabel == null)
+                            _playLabel = btn.label;
+                        btn.label = label;
+                    }
+                    _ourPlayLabel = label;
+                    skinTint(btn, RED_TINT);
+                }
+                else if (_playLabel != null)
+                {
+                    if (btn.label == _ourPlayLabel)
+                        btn.label = _playLabel;
+                    _playLabel = null;
+                    _ourPlayLabel = null;
+                    skinTint(btn, new ColorTransform());
+                }
             }
             catch (e:Error)
             {
@@ -938,8 +1082,7 @@ package
                 if (_shown)
                     render();
             }
-            // No answer to Play within 6 s: Play is back (the room, if any,
-            // greys it again when its state comes). Silence never drops the
+            // No answer to Play (or Leave) within 6 s: the button is back. Silence never drops the
             // room: during a match the lobby may not answer, and the next
             // answer says where we are.
             if (_playAskedAt != 0 && _now - _playAskedAt >= 6000)
@@ -2513,6 +2656,7 @@ package
                 var to:Object = room.switchTo;
                 buttons.push([say("switchTo"), onSwitch, to]);
                 var made:Array = footer(buttons);
+                made[made.length - 1].transform.colorTransform = YELLOW_TINT;
                 // Two buttons leave room for what the switch is; three do not.
                 if (buttons.length < 3)
                 {
