@@ -1,4 +1,4 @@
-# A player's equipment from the Rankings
+# A player's equipment from the Rankings (and the rooms' lists)
 
 The rules the code follows. Code: `client-patches/player_gear_026g.py`,
 `player_gear/SrpPlayerGear.as`, `player_gear/PatchPlayerGear.java`; the lobby's
@@ -34,5 +34,6 @@ should be able to go to rankings and rmb to do the same", "for every single play
   is given up).
 - **Nothing to show** (no such place or account): no answer, no window (the game has no "nothing
   to show" message for `93`).
+- **The rooms' lists** use the same menu and window (`SrpPlayerGear.menu`; `rooms.md`): a member of the Rooms list's side panel by its account (`GEAR_BY_ACCOUNT`; only a member of a room now is answered), a member of the asker's own room by its place and the state's serial (`GEAR_IN_ROOM`).
 - **Older movies:** never ask. An older server does not answer (no window opens).
 - **Release:** a lobby movie (resources.db patch) and the server; the server first.

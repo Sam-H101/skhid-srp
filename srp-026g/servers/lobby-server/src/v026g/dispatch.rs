@@ -148,6 +148,18 @@ impl Core<'_> {
                 player_id: lobby::GEAR_BY_PLACE,
                 match_id: place,
             } => self.ranked_gear(who, place),
+            // `3D 00 <GEAR_BY_ACCOUNT> <account>`: the kits of a member of a
+            // room the list shows (`rooms`); nobody else's.
+            M::QueryPlayerDetails {
+                player_id: lobby::GEAR_BY_ACCOUNT,
+                match_id: account_id,
+            } => self.listed_member_gear(who, account_id),
+            // `3D 00 <GEAR_IN_ROOM> <place + 20 × check>`: the kits of a
+            // member of the asker's room (`rooms`).
+            M::QueryPlayerDetails {
+                player_id: lobby::GEAR_IN_ROOM,
+                match_id,
+            } => self.room_member_gear(who, match_id),
             // `3D 00 <player> <match>`: the kits of a row of that screen,
             // for a player of the match.
             M::QueryPlayerDetails {

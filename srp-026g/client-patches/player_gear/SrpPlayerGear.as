@@ -27,9 +27,14 @@ package
     {
         // The request's `player` (`3D 00 <how> <player>`, as srp's History
         // asks for a replay): its `match` is then the place of a row of the
-        // ranking (1 the first; srp's lobby::GEAR_BY_PLACE).
+        // ranking (1 the first; srp's lobby::GEAR_BY_PLACE), an account's
+        // id (lobby::GEAR_BY_ACCOUNT, the Rooms list's members) or a place
+        // of the asker's room with its check (lobby::GEAR_IN_ROOM, the
+        // room's window; rooms/SrpRooms.as reads these by name).
         public static const BY_PLACE:uint = 0xFFFFFF03;
-        // The server answers at once or never (no such place): an ask with
+        public static const BY_ACCOUNT:uint = 0xFFFFFF02;
+        public static const BY_ROOM_PLACE:uint = 0xFFFFFF04;
+        // The server answers at once or never (no such place or member): an ask with
         // no answer by then is taken as unanswered.
         private static const WAIT_MS:int = 3000;
         // The ask in flight: its name and when it was sent. One at a time:
