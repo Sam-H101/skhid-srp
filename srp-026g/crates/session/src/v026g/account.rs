@@ -182,6 +182,9 @@ pub struct Account {
     /// map (`maps::MapMode::level`), by map; the matchmaker draws the maps
     /// its players played less more often ([`super::matchmaking`]).
     pub map_plays: Vec<(u8, u32)>,
+    /// The settings of the last room it made by hand, its create window's
+    /// start ([`super::room_settings`]); none before its first.
+    pub room_settings: Option<super::room_settings::RoomSettings>,
 }
 
 /// The level reached with `total` experience, where it starts and where
@@ -246,12 +249,13 @@ impl Account {
             quest_cooldowns: Vec::new(),
             next_quest_instance: 1,
             tutorial_step: 0,
-            tutorial_done: false,
+            tutorial_done: true,
             extras: super::extras::Extras {
-                tutorial_flags: super::tutorial::NEW_ACCOUNT,
+                tutorial_flags: super::tutorial::ALL_DONE,
                 ..Default::default()
             },
             map_plays: Vec::new(),
+            room_settings: None,
         };
         for worn in &loadout.items {
             let Some(entry) = dictionary.item(worn.dict_id) else {
@@ -270,6 +274,22 @@ impl Account {
             account.kits[0].slots[slot] = Some(KitSlot { item_id, count });
         }
         account
+    }
+
+    /// Puts units of a stack into the inventory: onto the stack owned, else
+    /// as a new one. Returns its item id.
+    pub fn add_to_stack(&mut self, dict_id: u16, units: u32) -> u32 {
+        match self
+            .inventory
+            .iter_mut()
+            .find(|item| item.dict_id == dict_id)
+        {
+            Some(owned) => {
+                owned.condition_or_stack = owned.condition_or_stack.saturating_add(units);
+                owned.item_id
+            }
+            None => self.add_item(dict_id, units),
+        }
     }
 
     /// A new instance into the inventory; returns its id.

@@ -39,8 +39,12 @@ given), LIKELY or GUESS.
 | [replay_watch.md](replay_watch.md) | "Watch replay" from the lobby's History, the server side: conversion at match end, the lobby's `R1` answers and `9E` link, the download tokens, `/replays/<token>`, what is and is not reachable over HTTP |
 | [password-reset.md](password-reset.md) | The admin's password reset while srp runs: the page's Password tab (confirm step), a script's one POST and its answers, the curl from the jump host, the owner's rule (2026-10-18) |
 | [launcher.md](launcher.md) | The game's launcher (`survarium_launcher.exe`): how it starts, its registry values, the pipe to its updater and every message on it, PLAY, the page, the buttons, the language. What was built from it: ../../client-patches/launcher/README.md |
+| [fall_damage.md](fall_damage.md) | Fall damage: the formula, the values (fatal_damage 1.0 as in 0.27, the owner, 2026-10-19), the lethal heights stock and now |
+| [battery_pickup.md](battery_pickup.md) | The battery pick-up 20 % faster: take_time 0.6 -> 0.5 (the owner, 2026-10-20), why the animation plays faster and is not cut, what the release needs |
 | [damage_calculator.md](damage_calculator.md) | The site's damage calculator (`/damage`): the owner's rules for it, the data it is built from, how it is served and kept up to date |
 | [maps_tab.md](maps_tab.md) | The site's Maps tab (`/maps`): spawns, batteries, chargers, containers and artefacts on every map; the owner's rules, rebuilt per release |
+| [spotting.md](spotting.md) | Spotting: no cooldown, a battery's body and its use box both spot it, the markers (the owner, 2026-10-19; exe patch 38) |
+| [fov_lod.md](fov_lod.md) | Models at a high field of view: why they went out sooner (LOD and screen factor by size on the screen), the scale table, the fix (exe patch 40) |
 | [launcher_updater.md](launcher_updater.md) | The game's own updater (`survarium_updater.exe`), which the Skhid launcher does not use: its arguments, what it said on the pipe, what it did on the network |
 | [../DEPLOY.md](../DEPLOY.md) | The Docker files for the 0.26g server beside the live 0.21d one (ports table), certificates, the players' overlay. Nothing is deployed |
 
@@ -97,13 +101,10 @@ Every setting has a default; none is needed on a dev PC.
   `SRP_LOG_KEEP_DAYS` (default 14): older files are deleted. The compose
   file sets it to `/srv/srp/data/logs`, in the data volume (since
   2026-10-12: a container's own output is gone at every update).
-- `SRP_MATCH_GATHER_SECONDS` (default 60), `SRP_MATCH_FILL_PLAYERS` (10),
-  `SRP_MATCH_QUIET_SECONDS` (30), `SRP_MATCH_MIN_PLAYERS` (4),
-  `SRP_MATCH_JOIN_EXTENSION_SECONDS` (30), `SRP_MATCH_MAX_COUNTDOWN_SECONDS`
-  (120): the queue. A match needs 4 players on two sides (a squad is one
-  side and waits for somebody who is not of it); the countdown starts with
-  the 4th (matchmaking.md §3). For a quick test:
-  `SRP_MATCH_GATHER_SECONDS=5 SRP_MATCH_MIN_PLAYERS=2 SRP_MATCH_JOIN_EXTENSION_SECONDS=0`.
+- Matches: every PvP match is a room's (the players' "servers", since
+  2026-10-17; `lobby.md` §2.16.3): Play puts a player into one, its vote
+  and wait start its match, and who comes while it is played goes into it.
+  `SRP_ROOMS_MAX` (50), `SRP_ROOMS_EXTRA_MAPS` (none).
 - `SRP_LOBBY_LINK_TIMEOUT_SECONDS` (default 30),
   `SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS` (120),
   `SRP_LOBBY_SESSION_GRACE_SECONDS` (60): a silent client's lobby link
@@ -114,29 +115,20 @@ Every setting has a default; none is needed on a dev PC.
   srp, and so does one under the newest patch of the game data): a game
   whose exe says an older patch revision is refused at its sign-in (0x22)
   and its sessions from before a restart in the lobby (client_patch.md §6).
-- `SRP_QUEUE_CHAT` (default on), `SRP_QUEUE_CHAT_NAME` (default none): lines in
-  the general chat when somebody joins or leaves the search and when a match
-  starts, with whom (social.md §9.7).
 - `SRP_MATCH_MODES` (default `2,3,4`), `SRP_MATCH_MAPS` (default: every
-  playable map, 72 of them): a match gets a map drawn, more likely the
-  less its players played it (`SRP_MATCH_MAP_SKEW`, default 1, 0 to 4), and
-  a mode and weather at random, so for a first test name one, e.g.
+  playable map, 72 of them): a room's pool by default, and what a clan
+  team's match is drawn from, so for a first test name one, e.g.
   `SRP_MATCH_MAPS=117` (Team Deathmatch on level_01).
 - `SRP_BALANCE_PLAYER` (default 12), `SRP_BALANCE_PLAYER_LEVEL` (1.5),
   `SRP_BALANCE_RATING` (4), `SRP_BALANCE_TRUST_MATCHES` (5): what a player
   counts for when the sides of a match are made (`matchmaking.md` §8).
   `SRP_BALANCE_RATED_PLAYERS` (4): the fewest players a match must have
   had in it to move the balance rating (§8.3).
-  `SRP_BALANCE_BATTERY_LEAD` (0.55), `SRP_BALANCE_TICKET_LEAD` (0.2),
-  `SRP_BALANCE_DRAMATIC_LEAD` (2.5), `SRP_LATE_JOIN_PATIENCE_SECONDS` (60),
-  `SRP_GROWING_MIN_PLAYERS` (2), `SRP_GROWING_GATHER_SECONDS` (120): the
-  queue of the games that join matches being played, patch revision 5 or
-  later (`matchmaking.md` §9).
+  `SRP_BALANCE_BATTERY_LEAD` (0.55), `SRP_BALANCE_TICKET_LEAD` (0.2):
+  what a lead counts for when a player comes into a match being played
+  (`matchmaking.md` §9).
   `SRP_SQUADS` (default on; `off`: no squads), `SRP_SQUADS_OFF_TEXT`
   (`social.md` §9.4).
-- `SRP_MATCH_TEAM_SIZE` (default 8), `SRP_MATCH_SEARCH_STEP_SECONDS`
-  (default 4): the sides of a match and how fast a waiting player's range
-  of levels grows (`matchmaking.md`).
 - `SRP_EXPERIENCE_RATE` (default 2), `SRP_MONEY_RATE` (percent; unset:
   150 to 220 by the match's level), `SRP_REPUTATION_RATE` (percent,
   default 120): the rewards (`results.md` §10, §13; how long progression
@@ -318,14 +310,11 @@ Known gaps a live session will meet:
   window; `/exchange` only says so). Never seen
   with a real client: whether an account pushed again outside a sign-in,
   and the operator's text (0xA5), show as expected is open.
-- Premium, the shop's bundles, the daily bonus, the tutorial, a nickname
-  change, autobuy and auto-repair are there (`premium.md`) and were never
-  seen with a real client, but for the start of the tutorial (2026-10-12:
-  it stopped at "choose a weapon" because `46 0A` was not answered with
-  the inventory; fixed, `premium.md` §5.1). **A new account gets the
-  client's tutorial and the daily bonus window at its sign-in: "Skip
-  tutorial" gets out of the tutorial at any step; `SRP_TUTORIAL=off`
-  keeps it away.**
+- Premium, the shop's bundles, the daily bonus, a nickname change,
+  autobuy and auto-repair are there (`premium.md`). **There is no
+  tutorial since 2026-10-19** (`premium.md` §5): a new account gets the
+  daily bonus window at its sign-in, and starts with 10 000 silver and
+  500 gold.
 - **The lobby on a screen wider than 16:9** (seen 2026-10-12 at 3440x1440:
   the top bar's parts overlap). The lobby SWF is drawn for 1920x1080 and
   has two paths split at aspect 1.85 (`LobbyMenu.onStageResize`: scale by

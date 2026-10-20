@@ -9,7 +9,7 @@ use survarium::v026g::match_msgs::late_join::PATCH_REVISION as LATE_JOIN_REVISIO
 
 /// A lobby that asks for patch revision 4.
 fn checking() -> World {
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     world.core.settings.min_patch_revision = 4;
     world
 }
@@ -29,12 +29,12 @@ fn nobody_is_checked_unless_the_server_is_told_to() {
     let settings = Settings::local("127.0.0.1:0");
     assert_eq!(settings.min_patch_revision, 0);
 
-    let mut world = World::new(Duration::ZERO);
+    let mut world = World::new();
     let old = game_of(&mut world, "Old", 0);
     assert!(world.client(old).model.is_signed_in());
+    // Its Play is not refused (it is too old for a room: `rooms_tests`).
     world.ask(old, request::play(1));
     assert_eq!(denial(&world.take(old), id::PLAY), None);
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
 }
 
 #[test]
@@ -69,19 +69,15 @@ fn a_game_that_is_new_enough_signs_in_and_plays() {
         world.ask(client, request::play(1));
         assert_eq!(denial(&world.take(client), id::PLAY), None);
     }
-    // The two of them are a match.
-    assert_eq!(world.store.matchmaking().match_count(), 1);
 
-    // A newer one plays too, in the queue of its kind.
+    // A newer one plays in a room, and so does the newest patch.
     let newer = game_of(&mut world, "Newer", 5);
-    world.ask(newer, request::play(1));
-    assert_eq!(denial(&world.take(newer), id::PLAY), None);
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
-
-    // The experimental late-join exe is over any least revision.
     let late = game_of(&mut world, "Late", LATE_JOIN_REVISION);
-    world.ask(late, request::play(1));
-    assert_eq!(denial(&world.take(late), id::PLAY), None);
+    for client in [newer, late] {
+        world.ask(client, request::play(1));
+        assert_eq!(denial(&world.take(client), id::PLAY), None);
+        assert!(world.core.rooms.of(world.ids[client].0).is_some());
+    }
     world.assert_clean();
 }
 
@@ -93,7 +89,6 @@ fn a_test_bot_is_never_checked() {
     assert!(world.client(bot).model.is_signed_in());
     world.ask(bot, request::play(1));
     assert_eq!(denial(&world.take(bot), id::PLAY), None);
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
 }
 
 #[test]

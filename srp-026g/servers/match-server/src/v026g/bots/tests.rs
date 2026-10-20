@@ -933,7 +933,6 @@ fn soak_tuned(
                 note.time, note.place as i64, note.text
             );
         }
-        let Outcome { notes: _, .. } = &out;
         eprintln!(
             "winner {:?} at {} s; kills {:?}; delivered {:?}; stolen {}; hits {} of {} shots, {} into a wall short of the target, {} at a hidden target; {:.1} sight and aim rays per bot a second; least moved {:.0} m; stuck notes {}",
             out.winner,
@@ -1266,7 +1265,7 @@ fn a_goal_one_bot_found_no_way_to_is_left_by_its_team() {
     let near = goal + Vec3::new(1.0, 0.0, 0.0);
     learn_no_way(&mut team, &[(near, 40_000 + NO_WAY_KEEP_MS)], 41_000);
     assert_eq!(team, vec![(goal, 40_000 + TEAM_NO_WAY_KEEP_MS)]);
-    assert!(TEAM_NO_WAY_KEEP_MS >= 3 * NO_WAY_KEEP_MS);
+    const { assert!(TEAM_NO_WAY_KEEP_MS >= 3 * NO_WAY_KEEP_MS) };
 }
 
 /// A bot standing right on a battery steps off it and takes it (it
@@ -2382,7 +2381,7 @@ fn real_bot_cost() {
                 }
             }
             let mut top: Vec<_> = plays.into_iter().collect();
-            top.sort_by(|a, b| b.1.cmp(&a.1));
+            top.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             eprintln!("  notes: {:?}", &top[..top.len().min(24)]);
             eprintln!(
                 "  stood with a goal and no route: {stood_ticks} of {goal_ticks} bot ticks ({:.1} %); delivered {:?}; points {:?}, stolen {}",
@@ -2426,7 +2425,7 @@ fn real_bot_cost() {
                 eprintln!("  stolen log: {line}");
             }
             let mut by: Vec<_> = stood_by.into_iter().collect();
-            by.sort_by(|a, b| b.1.cmp(&a.1));
+            by.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             eprintln!("  stood by play: {:?}", &by[..by.len().min(8)]);
             let rows: Vec<String> = by_play
                 .iter()
@@ -2539,12 +2538,9 @@ fn standing(time: u32, x: f32, alive: bool) -> Fix {
     }
 }
 
-/// Which bot gives its place up to a late joiner (`Bots::to_give_way`): a
-/// dead one first, else the one farthest from the fight; never a carrier,
-/// never a living one of a side that can no longer respawn; and one that
-/// left is forgotten by the others.
+/// A bot that left is forgotten by the others.
 #[test]
-fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
+fn a_bot_that_left_is_forgotten() {
     use survarium::v026g::maps::mode;
     // A human of team 0 at x = 0; team 1's bots at 5, 40 and 30 m.
     let teams = [0, 1, 1, 1];
@@ -2562,41 +2558,9 @@ fn the_bot_that_gives_way_is_dead_or_far_from_the_fight_and_carries_nothing() {
     for place in 0..4 {
         bots.entered(place, true, 100);
     }
-    let world = |bots: &mut Bots, time: u32, alive: [bool; 4]| {
-        for (place, x) in [0.0, 5.0, 40.0, 30.0].into_iter().enumerate() {
-            bots.fixed(place, standing(time, x, alive[place]), Some(1.0));
-        }
-    };
-    world(&mut bots, 1_000, [true; 4]);
-    let candidates = [1, 2, 3];
-    assert_eq!(bots.to_give_way(&candidates, 1_000), Some(2));
-    // Bot 2 picks up the battery lying at its feet: bot 3 goes instead.
-    let lying = Vec3::new(40.0, 0.3, 0.0);
-    bots.facts(WorldFacts {
-        time: 1_000,
-        batteries: vec![BatteryState::Free(lying)],
-        ..WorldFacts::default()
-    });
-    bots.facts(WorldFacts {
-        time: 2_000,
-        batteries: vec![BatteryState::Carried(None)],
-        ..WorldFacts::default()
-    });
-    assert_eq!(bots.to_give_way(&candidates, 2_000), Some(3));
-    // Bot 1, nearest the fight, is dead: it goes first.
-    world(&mut bots, 3_000, [true, false, true, true]);
-    assert_eq!(bots.to_give_way(&candidates, 3_000), Some(1));
-    // Its side can no longer respawn: only the dead one may go, and with
-    // none dead, none.
-    bots.facts(WorldFacts {
-        time: 4_000,
-        can_respawn: Some([true, false]),
-        ..WorldFacts::default()
-    });
-    assert_eq!(bots.to_give_way(&candidates, 4_000), Some(1));
-    world(&mut bots, 5_000, [true; 4]);
-    assert_eq!(bots.to_give_way(&candidates, 5_000), None);
-
+    for (place, x) in [0.0, 5.0, 40.0, 30.0].into_iter().enumerate() {
+        bots.fixed(place, standing(1_000, x, true), Some(1.0));
+    }
     // Bot 3 leaves: it is forgotten, and no partner of anyone.
     bots.bots[1].as_mut().unwrap().partner = Some(3);
     bots.entered(3, false, 6_000);

@@ -16,11 +16,9 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use session::LockExt;
-use session::v026g::matches_now::Phase;
 use session::v026g::{quests, rewards, rules, tutorial, wire};
 use survarium::v026g::lobby::requests::{ClientMessage, id};
 use survarium::v026g::lobby::{self, NameRefusal, Ranked, important};
-use survarium::v026g::maps;
 
 use super::core::{Core, Who};
 
@@ -253,9 +251,11 @@ impl Core<'_> {
             } => self.choose_modifier(who, item_id, old_modification_id, new_modification_id),
             // The item, its donor, and whether gold pays.
             M::Craft { a0, a1, flag } => self.craft(who, a0, a1, flag),
-            // The tutorial's "choose a weapon" step waits for the inventory
-            // (`shop`).
-            M::TutorialWeaponChosen => self.tutorial_choose_weapon(who),
+            // No client runs the tutorial (`session::v026g::tutorial`): its
+            // steps are not answered.
+            M::TutorialWeaponChosen | M::TutorialStep { .. } | M::SkipTutorial => {
+                log::info!("{}: a tutorial step, but there is no tutorial", who.name);
+            }
 
             // ---- the shop (0x47) ----
             M::Buy {
@@ -414,9 +414,6 @@ impl Core<'_> {
                     }
                 }
             }
-            // The tutorial's steps and their awards (`shop`).
-            M::TutorialStep { step } => self.tutorial_step(who, step),
-            M::SkipTutorial => self.skip_tutorial(who),
 
             // ---- chat, friends (0x4C..=0x50) ----
             M::ChatText {
@@ -449,9 +446,6 @@ impl Core<'_> {
             }
             M::ImportantRead { message_id, answer } => self.important_read(who, message_id, answer),
         }
-        // Inventory moves, purchases into slots, and kit changes can all
-        // change the search level. Preserve the wait when it is unchanged.
-        self.refresh_search_levels(now);
     }
 
     /// The answer to a skills request: a refusal's text, then the skills as
@@ -542,7 +536,7 @@ impl Core<'_> {
             // came after this one signed in pushed its last rows out. `9D`
             // with `show` off stores the same flags and runs no tutorial
             // (0x27136E).
-            let recount = tutorial::message(&who.account.locked(), false);
+            let recount = tutorial::message(false);
             self.send(who.addr, recount);
             if let Some(player) = self.player_mut(who.addr) {
                 player.ranked_sent = ranking.len() as u32;
@@ -566,18 +560,17 @@ impl Core<'_> {
     /// `3B 00 <start> <count>` with a start of [`lobby::RESERVED_START`] or
     /// more: srp's own requests, which only its changed lobby movie makes
     /// (the stock ranking page asks for no index past the count of ranked
-    /// players). [`lobby::MATCHES_START`] is answered with the matches being
-    /// played now (`matches_now`), `JOIN_START + key` with what came of the
-    /// JOIN button of that match (`join`), [`lobby::PVB_STATUS_START`] and
+    /// players). [`lobby::PVB_STATUS_START`] and
     /// a start from [`lobby::PVB_CHOOSE_BASE`] to
     /// [`lobby::PVB_CHOOSE_LAST`] with the status and the choice of a
-    /// match against bots (`pvb`), [`lobby::REPLAY_START`] with the asker's
+    /// match against bots (`pvb`), a rooms' start (`lobby::rooms::ROOMS_FIRST`
+    /// to `ROOMS_LAST`) with a room request (`rooms`),
+    /// [`lobby::REPLAY_START`] with the asker's
     /// own "Watch replay" answer (`replay`); any other gets no answer.
     /// Nothing of the ranking is read, sent or kept for them.
     fn reserved_ranking(&mut self, who: &Who, start: u32, count: u8, now: Instant) {
-        if start == lobby::MATCHES_START {
-            let list = self.matches_now(who, count, now);
-            self.send_made(who.addr, list);
+        if let Some(request) = lobby::rooms::room_request(start, count) {
+            self.room_request(who, request, now);
             return;
         }
         if start == lobby::PVB_STATUS_START {
@@ -592,97 +585,10 @@ impl Core<'_> {
             self.replay_poll(who, now);
             return;
         }
-        let key = start.wrapping_sub(lobby::JOIN_START);
-        if (1..=lobby::JOIN_KEY_MAX).contains(&key) {
-            self.join_request(who, key, now);
-            return;
-        }
         log::debug!(
             "{} asked for the reserved ranking start {start}: not answered",
             who.name
         );
-    }
-
-    /// The matches being played now, for the "matches now" window of the
-    /// changed lobby movie ([`lobby::matches_now`]): the ones the
-    /// launcher's page lists, with the score it shows
-    /// (`session::v026g::matches_now`), the oldest first, each with its
-    /// listing key (given here to a match the lobby did not make itself).
-    /// `count` is the most the window wants; the header counts them all.
-    ///
-    /// `join` is the asker's own: whether its JOIN would put it into the
-    /// match at once, and if not why (`join`, [`Core::join_fit`];
-    /// [`lobby::JoinCode::Unknown`] for a match the lobby did not make).
-    /// `match_level` is the match's, as its rewards take it. Cheap enough to be asked
-    /// by every open window every few seconds: one look at the match
-    /// server's registry, and for a match that takes players its admission,
-    /// its sides and what the asker counts for.
-    fn matches_now(
-        &mut self,
-        who: &Who,
-        count: u8,
-        now: Instant,
-    ) -> Result<lobby::ServerMessage, lobby::WireError> {
-        let all = self.host.open_matches(now);
-        // The keys of matches that are over go.
-        let matches = &self.matches;
-        self.listing.retain(|match_id| {
-            all.iter().any(|each| each.match_id == match_id)
-                || matches
-                    .values()
-                    .any(|running| running.ticket.match_id == match_id)
-        });
-        let open: Vec<_> = all
-            .into_iter()
-            .filter(|each| each.phase.is_listed())
-            .collect();
-        let keys: Vec<u32> = open
-            .iter()
-            .map(|each| self.listing.key(each.match_id))
-            .collect();
-        let most = usize::from(count).min(lobby::MATCHES_NOW_ROWS);
-        let rows: Vec<lobby::MatchNow> = open
-            .iter()
-            .zip(keys)
-            .take(most)
-            .map(|(each, key)| {
-                // No match is made of a map the dictionary lacks.
-                let (level, mode) =
-                    maps::map_mode(each.map_id).map_or((0, 0), |map| (map.level, map.mode));
-                // A match the lobby did not make itself (it was started
-                // again while the match went on) takes nobody from it.
-                let running = self
-                    .matches
-                    .iter()
-                    .find(|(_, running)| running.ticket.match_id == each.match_id);
-                lobby::MatchNow {
-                    level,
-                    mode,
-                    phase: match each.phase {
-                        Phase::Gathering => lobby::MatchPhase::Gathering,
-                        Phase::Countdown => lobby::MatchPhase::Countdown,
-                        // One that is over is not listed.
-                        Phase::Playing | Phase::Over => lobby::MatchPhase::Playing,
-                    },
-                    players: each.players,
-                    score: each
-                        .standing
-                        .filter(|(_, age)| each.phase.shows_score(*age))
-                        .map(|(points, _)| points),
-                    played: each
-                        .played
-                        .filter(|_| each.phase == Phase::Playing)
-                        .map(|played| played.as_secs().min(u32::MAX.into()) as u32),
-                    join: running.map_or(lobby::JoinCode::Unknown, |(&id, running)| {
-                        self.join_fit(who, id, running, now)
-                            .map_or_else(|(code, _)| code, |_| lobby::JoinCode::Yes)
-                    }),
-                    key,
-                    match_level: Some(each.match_level),
-                }
-            })
-            .collect();
-        lobby::matches_now(open.len() as u32, &rows)
     }
 }
 

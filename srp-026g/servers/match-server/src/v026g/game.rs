@@ -621,6 +621,13 @@ struct Peer {
     resources_loaded: bool,
     installed_roster: usize,
     preparing: Option<LoadingProfile>,
+    /// Since when it loads: from its connection (a game that never gets as
+    /// far as its port probe loads too), until it has loaded.
+    loading_since: Option<Instant>,
+    /// It loaded past `late_join::LOADING_GRACE`: newcomers no longer wait
+    /// for it, and if it loads without a place taken meanwhile it is let
+    /// go, to come again with the whole roster (`late_join`).
+    left_behind: bool,
     /// When it was last asked for an upload and has not given one since:
     /// the only time its upload is taken, but for the initial world.
     asked: Option<Instant>,
@@ -875,6 +882,9 @@ pub(crate) struct Game {
     /// respawns a live player in the chosen kit where it stands. At most as
     /// many lives more than its deaths: [`PlayerResult::kit_changes`].
     kit_changes: Vec<u16>,
+    /// By place: whether a game of it loading long is left behind
+    /// (`late_join::LOADING_GRACE`).
+    load_waits: Vec<late_join::LoadWait>,
     /// The end has come: waiting for a last snapshot since then.
     ending: Option<(Instant, MatchEnd)>,
     finished_at: Option<Instant>,
@@ -893,9 +903,6 @@ pub(crate) struct Game {
     /// The server's bots that walk the map, with `SRP_MAPDATA_DIR`
     /// ([`driven`], stage 2).
     walkers: Option<driven::Walkers>,
-    /// Bots that owe their place to a late joiner and could not leave yet
-    /// ([`driven`], "Giving way").
-    owed: Vec<driven::Owed>,
     result: Option<MatchResult>,
     result_made: bool,
     /// The players who left by their own word (0xE0) and were not asked
@@ -939,6 +946,7 @@ impl Game {
             state: None,
             best_streaks: vec![0; players],
             kit_changes: vec![0; players],
+            load_waits: vec![late_join::LoadWait::First; players],
             ending: None,
             finished_at: None,
             empty_since: Some(now),
@@ -955,7 +963,6 @@ impl Game {
             recording: None,
             drives: Self::new_drives(&formed),
             walkers,
-            owed: Vec::new(),
             formed,
         }
     }
@@ -1136,6 +1143,16 @@ impl Game {
             .position(|peer| peer.as_ref().is_some_and(|peer| peer.addr == addr))
     }
 
+    /// The session of the client that was at place `index` and is gone
+    /// (it left, or timed out) while its link is still kept.
+    pub fn gone_session(&self, index: usize) -> Option<u32> {
+        self.peers
+            .get(index)?
+            .as_ref()
+            .filter(|peer| peer.stage == Stage::Gone)
+            .map(|peer| peer.session_id)
+    }
+
     /// The sessions of the clients connected.
     pub fn sessions(&self) -> Vec<u32> {
         self.peers
@@ -1165,6 +1182,18 @@ impl Game {
         }
         if self.peers[index].is_some() {
             self.leave(index, now);
+        }
+        // A place it left before, from this address (it left by its own
+        // word and came again as a new place): that link is done with, and
+        // the address is this place's.
+        for (other, slot) in self.peers.iter_mut().enumerate() {
+            if other != index
+                && slot
+                    .as_ref()
+                    .is_some_and(|peer| peer.addr == addr && peer.stage == Stage::Gone)
+            {
+                *slot = None;
+            }
         }
         self.reset_catchup(index, true);
         log::info!(
@@ -1197,6 +1226,8 @@ impl Game {
             resources_loaded: false,
             installed_roster: 0,
             preparing: None,
+            loading_since: Some(now),
+            left_behind: false,
             asked: None,
             asked_clock: None,
             unanswered_since: None,
@@ -1356,9 +1387,13 @@ impl Game {
             ClientMessage::Ready => {
                 if peer.stage == Stage::Loading {
                     peer.resources_loaded = true;
+                    peer.loading_since = None;
                     // The client set its own generation to 0xFF with it.
                     peer.generation = Generation::AT_READY;
                     log::info!("Match {:#x}: player {index} has loaded", self.id);
+                    if self.loaded_behind(index, now) {
+                        return;
+                    }
                     if self.returns(index) {
                         self.enter_early(index, now);
                     }
@@ -6028,17 +6063,6 @@ impl Game {
         self.settings.clock_correction = on;
     }
 
-    /// Every roster change so far: its tick, the place, entered (else
-    /// left).
-    pub fn roster_events(&self) -> &[(u32, usize, bool)] {
-        &self.events
-    }
-
-    /// How many bots owe their place to a late joiner and have not left.
-    pub fn bots_owing(&self) -> usize {
-        self.owed.len()
-    }
-
     /// Whether the client is in a resync (`Peer::resync_from`), and
     /// whether its replay went.
     pub fn resync_state(&self, index: usize) -> (bool, bool) {
@@ -6074,11 +6098,6 @@ impl Game {
         self.peers[index].as_ref().map_or((0, false), |peer| {
             (peer.wrong_worlds, peer.wrong_world_asked.is_some())
         })
-    }
-
-    /// Syncs of the client's resync done again for its replay.
-    pub fn replay_redos(&self, index: usize) -> u32 {
-        self.peers[index].as_ref().map_or(0, |peer| peer.replay_redos)
     }
 
     /// As if the client's resync had been done again for its replay

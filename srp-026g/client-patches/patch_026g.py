@@ -66,6 +66,8 @@ USAGE (this script never touches the source exe):
     (checked in; STATE is 0xE20 of the late join's state page, checked)
     (checked in). The commit_suicide key comes from suicide_key_026g.asm:
         nasm -f bin -DCAVE=0xA425980 suicide_key_026g.asm -o suicide_key_026g.section.bin
+    (checked in). A spot's hit on a battery's body comes from spot_026g.asm:
+        nasm -f bin -DCAVE=0xA4257C0 spot_026g.asm -o spot_026g.section.bin
     (checked in). The late-join code is late_join_026g.section.bin, checked in too; it is
     made by `late_join_026g.py --write-bin`, which needs nasm, a C compiler
     for x86 and GNU ld (--late-join-bin=<file> names another one).
@@ -298,6 +300,15 @@ Patches:
   simulation still reads as a hit on one's own head (0x2D8BC1). Its last
   action call (0x242196) calls suicide_key_026g.asm at 0x980 of `.srp`
   first, which sets bit 24 on the key going down;
+- a spot has no cooldown, and a hit on a battery's body spots it (patch 38,
+  with the late join, client_patch.md section 3.35, docs/notes/spotting.md):
+  base_player::apply_new_input (0x2D86E0) set the spotter's
+  m_time_left_to_try_spot_in_ms (+34Ch) to 3000 at every spot, hit or miss
+  (0x2D87C1); it is set to 0, so the next press spots again. A ray hit on a
+  battery's rigid body (group 0A18h) found neither a player nor a geometry
+  through its owner (victory_item_core+58h, vtable 0xA13EEC) and spotted
+  nothing; 0x2D8A0F jumps to spot_026g.asm at 0x7C0 of `.srp`, which spots
+  the battery through its spottable interface (+54h), as its use box does;
 - a baked camouflage/decal texture that is no longer in the baker's list
   is baked again instead of stopping the game (patch 35, with the late
   join, client_patch.md section 3.33). The baker keeps a list of the
@@ -325,6 +336,25 @@ Patches:
   MiB, matching the launcher (patch 37, with the late join). Only the two
   default-only immediates change; explicit numeric options keep their native
   branches. See README section 37 for the crash evidence and its limits;
+- the scoreboard (Tab) shows a row for the places in the match and none for
+  a place whose player left (patch 39, with the late join, client_patch.md
+  section 3.36; the rules: docs/notes/tab-list-left-places.md): its rows
+  are put in by place in the hud's initialize_match (0x234880) and were
+  never taken out, so a player who left kept a grey row, and one who came
+  back had a second. The row goes in only for a place whose kd_stats
+  `online` is set (tab_row, late_join_026g.asm), the shown list is made
+  again when those places change (tab_shown, at 0x23B421), and the
+  refresh leaves the other places alone (0x23B447..0x23B476 in place);
+- a model is measured as the original's 65 degrees would see it at a wider
+  field of view (patch 40, with the late join, client_patch.md section
+  3.37, docs/notes/fov_lod.md). select_lod (0x16EEC0) hides a static model
+  of screen-size LOD below a share of the screen, and the screen factor
+  (0x158D80) drops small shadow casters: both through the projection, so
+  at uro_fov 100 models went out at about half the distance.
+  fov_projection keeps k = max(1, tan(A/2) / tan(65 z/2)) in the state
+  page; select_lod's x0.5 (0x16F2A4) and the factor's x100 (0x1590AF)
+  call fov_lod_scale and fov_screen_scale, which multiply by k after the
+  original's constant (k is 1 at 65 and less, and through a scope);
 - the option B snapshot upload: two 5-byte jumps (0x27AEA1 in
   on_match_ready, 0x27A505 in the 0xF6 case of on_match_packet_received)
   into the upload code, and the upload code itself:
@@ -482,7 +512,7 @@ HASH_INTERVAL_MS = 50                         # = one tick
 # its "Release revision <n>" commit), never a feature change: a release
 # builds with --revision=<n>, the live exe's + 1, which changes the revision
 # byte alone, and records <n> here once it went out.
-REVISION = 23
+REVISION = 25
 # The first revision whose default build takes the lobby's replay link
 # (REPLAY_LINK): the server's replay rule asks for it
 # (session::v026g::replays::MIN_REVISION).
@@ -919,6 +949,91 @@ SUICIDE_KEY_VA = SECTION_VA + SUICIDE_KEY_OFFSET
 ACTION_STATE_VA = 0x242460                    # player_input_handler: the state of a buffered action
 SUICIDE_KEY_HOOK = (0x242196, bytes.fromhex("e8c5020000"), 0, 0xE8)
 
+# The scoreboard (Tab) shows the places in the match and no place whose
+# player left (patch 39, README; client_patch.md section 3.36; the rules:
+# docs/notes/tab-list-left-places.md). A place is in the match from the
+# server's 0xE9 for it to its 0xEA (a leave by the player's own word, 0xE0,
+# or a link the server gave up on): kd_stats_rule's `online` (+114h + 8 x
+# place; set by on_player_entered_match 0x3239F0, cleared by
+# on_player_left_match 0x323A00, which game_world_core's 0x2D2040 calls for
+# every rule; in every game at the same tick, and in the worlds), copied
+# into the hud's state (hud+0C0h + 8 x place) every tick by
+# fill_match_hud_state 0x323980. The game made the scoreboard's rows once,
+# in the hud's initialize_match (0x234880, again after a late join's
+# install: rebuild_lists), for every place below the count, and greyed a
+# row whose place was not in (set_online_player); none was ever taken out,
+# so a player who left kept a grey row and one who came back as a new
+# place had two. The code is the late join's (late_join_026g.asm), its one
+# dword at TAB_LIST_STATE_OFFSET of the late join's state page:
+# - 0x23537A in 0x234880's first loop, where a row goes into the
+#   scoreboard's array by SetElement(data, place, row) (`lea eax,[esp+58h]`
+#   / `push eax` / `mov eax,[esp+138h]` / `push ebx` / `push eax` / `call
+#   edx`), calls tab_row: the row goes in at the array's end (PushBack, the
+#   interface's vtable+3Ch) when the place is in the match, and the dword
+#   becomes -1 (a list made);
+# - 0x23B421 in update_ui (0x23B200), `cmp byte [edi+0BAh],0` before the
+#   rows are refreshed, calls tab_shown: while the list is shown, when the
+#   places in the match are not the mask the dword holds, the three lists
+#   are made again (rebuild_lists; lists_hook ends that run as it ends the
+#   install's) and the dword is that mask; it sets the flags as the `cmp`;
+# - the refresh's loop body (0x23B447..0x23B476: set_online_player and
+#   list_update_player for every place below the count) is rewritten in
+#   place: a place not in the match is left alone. Same calls, same
+#   arguments otherwise (list_update_player's place from ebx's low byte,
+#   which it reads alone, instead of the byte stored at [esp+14h]).
+# No site holds an address: no base relocation under them. Nothing a match
+# computes: the hud's lists only.
+TAB_LIST_STATE_OFFSET = 0xE40
+TAB_LIST_STATE_SIZE = 4
+TAB_ROW_OFFSET, TAB_SHOWN_OFFSET = 2480, 3600
+TAB_LIST_HOOKS = (
+    (0x23537A, bytes.fromhex("8d442458" "50" "8b842438010000" "53" "50" "ffd2"), TAB_ROW_OFFSET, 0xE8),
+    (0x23B421, bytes.fromhex("80bfba00000000"), TAB_SHOWN_OFFSET, 0xE8),
+)
+# The first bytes of the two entries: `call get_state` (to 2304) and `or
+# dword [eax+TAB_LIST_STATE_OFFSET],-1`; `cmp byte [edi+0BAh],0`.
+TAB_ROW_START = b"\xE8" + struct.pack("<i", 2304 - TAB_ROW_OFFSET - 5) + b"\x83\x88" + \
+    struct.pack("<I", TAB_LIST_STATE_OFFSET) + b"\xFF"
+TAB_SHOWN_START = bytes.fromhex("80bfba00000000")
+TAB_LIST_LOOP_VA = 0x23B447
+TAB_LIST_LOOP = (TAB_LIST_LOOP_VA,
+                 bytes.fromhex("0fb6c3" "8bd0" "0fb684c7c0000000" "69d2fc450000" "03ca" "50" "8d4148" "83c108"
+                               "57" "e887f3ffff" "8b4c2414" "51" "e8bdb8ffff" "fec3" "ebb5"),
+                 # movzx eax,bl / imul edx,eax,45FCh / movzx eax,byte [edi+eax*8+0C0h] / test al,al /
+                 # jz .next / add ecx,edx / push eax / lea eax,[ecx+48h] / add ecx,8 / push edi /
+                 # call 0x23A7F0 / push ebx / call 0x236D30 / .next: inc bl / jmp short 0x23B42C / nop / nop
+                 bytes.fromhex("0fb6c3" "69d0fc450000" "0fb684c7c0000000" "84c0" "7415" "01d1" "50" "8d4148"
+                               "83c108" "57" "e885f3ffff" "53" "e8bfb8ffff" "fec3" "ebb7" "9090"))
+
+# Spotting (patch 38, README; client_patch.md section 3.35; the rules:
+# ../docs/notes/spotting.md). base_player::apply_new_input (0x2D86E0): an
+# input with bit 28 (the spot key going down, 0x2421A6) and the spotter's
+# m_time_left_to_try_spot_in_ms (+34Ch) at 0 casts a 100 m ray (0xA710D0)
+# from the eye and spots the first spottable hit before a walkable and
+# hittable stop. The field became 3000 at every attempt, hit or miss
+# (0x2D87C1), and the player's tick counts it down (0x2DAB44, to 0 at the
+# least); a spawn sets it to 0 (0x2DAE6B) and the snapshot keeps it
+# (base_player::serialize 0x2DB34D, read back at 0x2DB95C). SPOT_COOLDOWN
+# puts 0 there: the field is 0 at every tick, in every game, and in every
+# snapshot. A number, not an address: no base relocation under it.
+# The walk asks a spottable hit's owner (+0Ch of the hit object) for a
+# player (slot 2) and then for a geometry (slot 1, at 0x2D8A0F). A
+# battery's rigid body (group 0A18h, 0x301CF5) has the owner
+# victory_item_core+58h, vtable 0xA13EEC (written by the two constructors
+# alone, 0x30011D and 0x3004EA), whose slots 1 and 2 return 0; its use box
+# answers through slot 1. SPOT_HOOK jumps to spot_026g.asm at SPOT_OFFSET
+# of `.srp` (after the shared upgrades' code, before the pickup code): for
+# that owner it spots the battery through its spottable interface at +54h
+# (vtable 0xA13EE0: set_spotted 0x301C40, can_be_spotted_by 0x301CA0) and
+# ends the walk as a spotted target does (0x2D888F); any other owner goes
+# on to 0x2D8A14 as before. No base relocation under the site.
+SPOT_COOLDOWN = (0x2D87C1, bytes.fromhex("c7874c030000b80b0000"), bytes.fromhex("c7874c03000000000000"))
+SPOT_OFFSET = 0x7C0
+SPOT_VA = SECTION_VA + SPOT_OFFSET
+SPOT_HOOK = (0x2D8A0F, bytes.fromhex("8b0e8b490c"), 0, 0xE9)
+SPOT_OWNER_VTABLE = 0xA13EEC                  # victory_item_core at +58h: its rigid body's owner
+SPOT_EXITS = (0x2D888F, 0x2D8A8F, 0x2D8A14)   # spotted; not spotted, the next hit; the original
+
 # "Watch replay" (patch revision 14, client_patch.md section 3.27). The
 # lobby movie's ExternalInterface call video_tutorial_link_clicked is the
 # delegate {lobby ui, 0x28CDA0} (registered at 0x283053; the name is entry
@@ -1312,6 +1427,32 @@ FOV_MINIMUM = (0x85AE06, bytes.fromhex("0f57c0f30f11055465aa00"),
                bytes.fromhex("c7055465aa00") + struct.pack("<f", FOV_MIN) + b"\x90")
 FOV_MINIMUM_RELOC = 0x85AE0D
 FOV_PATCHES = (FOV_OPTION_NAME, FOV_MINIMUM)
+# The high-FOV LOD compensation (patch 40; client_patch.md section 3.37,
+# ../docs/notes/fov_lod.md). The game measures a model by its size on the
+# screen, through the projection the camera gave: a static model's LOD
+# (static_render_model_instance::select_lod 0x16EEC0: type 1, half the
+# larger NDC extent of its box, LOD 3 below param2 draws nothing, 0x16F46A)
+# and each surface's screen factor (render_surface_instance::
+# calculate_screen_factor 0x158D80: the share of the screen times 100; the
+# shader LOD, the sun's shadow casters 0x176340, spot shadows, rain
+# occluders). They were tuned at 65 degrees or less. A wider angle makes a
+# model smaller on the screen, so it lost detail and went out sooner: at
+# 100 at 0.53 of the distance (tan 32.5 / tan 50). fov_projection
+# (late_join_026g.asm) keeps k = max(1, tan(A/2) / tan(65 z/2)) at
+# FOV_LOD_STATE_OFFSET of the state page, A its angle and 65 z the
+# original's at that zoom. The two constants' instructions call
+# fov_lod_scale and fov_screen_scale, which do the original's
+# multiplication and then by k; with the page still zero (before the first
+# projection) they leave the original's. Each site held the constant's
+# address: its base relocation is disabled (FOV_LOD_RELOCS). Rendering
+# only: nothing a match computes reads either value.
+FOV_LOD_HOOKS = (
+    (0x16F2A4, bytes.fromhex("f30f5905447a9200"), 1760, 0xE8),  # select_lod's `mulss xmm0,[0x927A44]` (0.5)
+    (0x1590AF, bytes.fromhex("d80dd010a700"), 1792, 0xE8),      # the screen factor's `fmul dword [0xA710D0]` (100)
+)
+FOV_LOD_RELOCS = [0x1590B1, 0x16F2A8]
+FOV_LOD_STATE_OFFSET = 0xE50                  # after the scoreboard's (TAB_LIST_STATE_OFFSET)
+FOV_LOD_STATE_SIZE = 4
 
 # A battery under the floor (patch 23, pickup_below_026g.asm at
 # PICKUP_VA): client_patch.md section 3.23.
@@ -1698,6 +1839,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         for site in MEMORY_DEFAULTS:
             patch(data, *site)
             sites.append((site[0], site[0] + len(site[1])))
+        patch(data, *SPOT_COOLDOWN)
+        sites.append((SPOT_COOLDOWN[0], SPOT_COOLDOWN[0] + len(SPOT_COOLDOWN[1])))
         patch(data, *REPLAY_REATTACH_THUNK)
         sites.append((REPLAY_REATTACH_THUNK[0], REPLAY_REATTACH_THUNK[0] + len(REPLAY_REATTACH_THUNK[1])))
         # An address: its relocation stays.
@@ -1724,6 +1867,19 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         va, expected, _ = FOV_MINIMUM
         if neutralize_relocs(data, [(va, va + len(expected))]) != [FOV_MINIMUM_RELOC]:
             sys.exit(f"{va:#x}: the base relocation under uro_fov's least is not where it was read")
+        if FOV_LOD_STATE_OFFSET < TAB_LIST_STATE_OFFSET + TAB_LIST_STATE_SIZE \
+                or FOV_LOD_STATE_OFFSET + FOV_LOD_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the FOV LOD scale does not fit after the scoreboard's state")
+        k_address = struct.pack("<I", late_join_state_va(late_join) + FOV_LOD_STATE_OFFSET)
+        for va, expected, offset, opcode in FOV_LOD_HOOKS:
+            stub = late_join[offset:offset + 32]
+            if stub[:len(expected)] != expected or stub.count(k_address) != 2:
+                sys.exit(f"the late join's code at {offset} is not patch 40's scale "
+                         f"(its k at {late_join_state_va(late_join) + FOV_LOD_STATE_OFFSET:#x})")
+            patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
+        if sorted(neutralize_relocs(data, [(va, va + len(expected)) for va, expected, _, _ in FOV_LOD_HOOKS])) \
+                != FOV_LOD_RELOCS:
+            sys.exit("the base relocations under the FOV LOD sites are not where they were read")
         pickup = open(pickup_bin(), "rb").read()
         if len(cave) > PICKUP_OFFSET or PICKUP_OFFSET + len(pickup) > LATE_JOIN_OFFSET:
             sys.exit("the upload code and the pickup code do not fit before the late join")
@@ -1860,6 +2016,21 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
         patch(data, va, expected, hook_bytes(SUICIDE_KEY_VA, va, expected, offset, opcode))
         if neutralize_relocs(data, [(va, va + len(expected))]):
             sys.exit("a base relocation under the suicide key's hook")
+        if late_join[TAB_ROW_OFFSET:TAB_ROW_OFFSET + len(TAB_ROW_START)] != TAB_ROW_START \
+                or late_join[TAB_SHOWN_OFFSET:TAB_SHOWN_OFFSET + len(TAB_SHOWN_START)] != TAB_SHOWN_START:
+            sys.exit("late_join_026g.section.bin: the scoreboard's entries (tab_row, tab_shown) or its state are "
+                     "not where patch_026g.py puts them")
+        if WARMUP_KEYS_STATE_OFFSET + WARMUP_KEYS_STATE_SIZE > TAB_LIST_STATE_OFFSET \
+                or TAB_LIST_STATE_OFFSET + TAB_LIST_STATE_SIZE > LATE_JOIN_STATE_SIZE:
+            sys.exit("the scoreboard's state is not between the warmup keys' and the page's end")
+        sites = []
+        for va, expected, offset, opcode in TAB_LIST_HOOKS:
+            patch(data, va, expected, late_join_hook(va, expected, offset, opcode))
+            sites.append((va, va + len(expected)))
+        patch(data, *TAB_LIST_LOOP)
+        sites.append((TAB_LIST_LOOP_VA, TAB_LIST_LOOP_VA + len(TAB_LIST_LOOP[1])))
+        if neutralize_relocs(data, sites):
+            sys.exit("a base relocation under a site of the scoreboard's rows")
         for site in (MOUNT_QUERY, MOUNTED):
             patch(data, *site)
             if neutralize_relocs(data, [(site[0], site[0] + len(site[1]))]):
@@ -1896,12 +2067,26 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             patch(data, va, expected, hook_bytes(SHARED_UPGRADES_VA, va, expected, offset, opcode))
             if neutralize_relocs(data, [(va, va + len(expected))]):
                 sys.exit(f"{va:#x}: a base relocation under a hook of the shared upgrades")
+        spot = open(spot_bin(), "rb").read()
+        if SHARED_UPGRADES_OFFSET + len(shared_upgrades) > SPOT_OFFSET or SPOT_OFFSET + len(spot) > PICKUP_OFFSET:
+            sys.exit("the shared upgrades' code, the spot code and the pickup code do not fit")
+        # It begins `mov ecx,[esi]; mov ecx,[ecx+0Ch]` (the five bytes it
+        # replaces) and leaves by its three jumps.
+        exits = [SPOT_VA + at + 5 + struct.unpack_from("<i", spot, at + 1)[0]
+                 for at in range(len(spot) - 4) if spot[at] == 0xE9]
+        if spot[:5] != SPOT_HOOK[1] or exits != list(SPOT_EXITS):
+            sys.exit(f"spot_026g.section.bin was assembled for another address: -DCAVE={SPOT_VA:#x}")
+        va, expected, offset, opcode = SPOT_HOOK
+        patch(data, va, expected, hook_bytes(SPOT_VA, va, expected, offset, opcode))
+        if neutralize_relocs(data, [(va, va + len(expected))]):
+            sys.exit("a base relocation under the spot's hook")
 
     if mode == "section":
         if late_join is not None:
             cave = cave + b"\xCC" * (REPLAY_LINK_OFFSET - len(cave)) + replay_link
             cave = cave + b"\xCC" * (MOUNT_PATCHES_OFFSET - len(cave)) + mount_patches
             cave = cave + b"\xCC" * (SHARED_UPGRADES_OFFSET - len(cave)) + shared_upgrades
+            cave = cave + b"\xCC" * (SPOT_OFFSET - len(cave)) + spot
             cave = cave + b"\xCC" * (PICKUP_OFFSET - len(cave)) + pickup
             cave = cave + b"\xCC" * (SUICIDE_KEY_OFFSET - len(cave)) + suicide_key
             cave = cave + b"\xCC" * (WARMUP_KEYS_OFFSET - len(cave)) + warmup_keys
@@ -1948,7 +2133,10 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the archive reads' order is a strict weak ordering, "
                      f"the ai arena is {AI_ARENA_SIZE >> 20} MiB, "
                      "a weapon's upgrade window shows the weapon, "
-                     "the commit_suicide key (K) kills one's own player"
+                     "the commit_suicide key (K) kills one's own player, "
+                     "the scoreboard shows the places in the match and none whose player left, "
+                     "a spot has no cooldown and a battery's body spots it, "
+                     "a model's LOD and screen factor at a wider field of view are the original's"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 
@@ -1983,6 +2171,10 @@ def stale_dll_bin():
 
 def mount_patches_bin():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "mount_patches_026g.section.bin")
+
+
+def spot_bin():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "spot_026g.section.bin")
 
 
 def pickup_bin():

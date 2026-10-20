@@ -71,15 +71,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    let gather = match session::gather_window_from_env() {
-        Ok(gather) => gather,
-        Err(error) => {
-            log::error!("srp: {error}");
-            std::process::exit(1);
-        }
-    };
-    // Accounts are loaded before any server can sign one in.
-    let store = match SessionStore::from_env(gather) {
+    // Accounts are loaded before any server can sign one in. (The store's
+    // queue is the 0.21d lobby's, which srp does not run: its window is
+    // the default.)
+    let store = match SessionStore::from_env(session::DEFAULT_GATHER_WINDOW) {
         Ok(store) => Arc::new(store),
         Err(error) => {
             log::error!("srp: cannot load the accounts: {error}");

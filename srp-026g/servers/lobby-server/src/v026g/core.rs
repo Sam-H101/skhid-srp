@@ -71,12 +71,9 @@ pub(super) struct Player<'a> {
     /// The game's language, as `4F` and `45` give it (0 English, 1
     /// Russian, 2 Ukrainian, 3 German, 4 Polish); `None` before either.
     pub language: Option<u8>,
-    /// When it pressed Play, while it waits.
+    /// Since when it waits for a match (a clan team's wait) or is sent to
+    /// one, while it does.
     pub queued_since: Option<Instant>,
-    /// When its join was last said in the general chat, and whether that
-    /// join is still to be answered by a leave line (`queue_chat`).
-    pub queue_line: Option<Instant>,
-    pub queue_announced: bool,
     /// The order id of its Play (0x85), which `31` gives back.
     pub order_id: u32,
     /// The match (the queue's id) it was sent to, while it lasts.
@@ -209,12 +206,6 @@ pub(super) struct Core<'a> {
     /// die of one (`show_results`). A lobby started anew knows of none, so
     /// a game that outlived it is shown no screen until its next match.
     pub sent_to_match: HashSet<u32>,
-    /// The places held for the players whose JOIN was granted, by account:
-    /// their Play puts them into that match (`join`).
-    pub holds: HashMap<u32, super::join::Hold>,
-    /// The listing keys of the matches, which JOIN names a match by
-    /// (`join`).
-    pub listing: super::join::Listing,
     /// The choices of a match against bots held for the players' Play, by
     /// account, kept a while after they ran out (`pvb`).
     pub pvb_holds: HashMap<u32, super::pvb::Hold>,
@@ -223,6 +214,17 @@ pub(super) struct Core<'a> {
     pub pvb_launching: HashMap<u32, super::pvb::Choice>,
     /// "Watch replay" (`replay`): the process's replays, if srp gave them.
     pub replays: Option<&'a Replays>,
+    /// The rooms (`rooms`).
+    pub rooms: session::v026g::rooms::Rooms,
+    /// The room matches being made, by the queue's match id: the map their
+    /// vote chose (`rooms`, `play::launch`).
+    pub room_launching: HashMap<u32, u8>,
+    /// Why a request or a Play left the account outside a room, said once
+    /// with its next room state (`rooms`).
+    pub room_codes: HashMap<u32, survarium::v026g::lobby::rooms::RoomCode>,
+    /// When a member who came while its room's match is played goes into
+    /// it (`rooms::LATE_JOIN_WAIT` after it came, or at once on its ask).
+    pub room_join_at: HashMap<u32, Instant>,
 }
 
 impl<'a> Core<'a> {
@@ -262,14 +264,16 @@ impl<'a> Core<'a> {
             clan: Default::default(),
             away: HashMap::new(),
             sent_to_match: HashSet::new(),
-            holds: HashMap::new(),
             // A key is not one a match of the lobby before a restart had,
             // which a window still open may name: the keys start at the
             // time.
-            listing: super::join::Listing::new(quests::now() as u32),
             pvb_holds: HashMap::new(),
             pvb_launching: HashMap::new(),
             replays: None,
+            rooms: Default::default(),
+            room_launching: HashMap::new(),
+            room_codes: HashMap::new(),
+            room_join_at: HashMap::new(),
         }
     }
 
@@ -546,7 +550,9 @@ impl<'a> Core<'a> {
                     link.transport.kick(now);
                 }
             } else {
-                self.sign_out(old, "its account signed in again", now);
+                // Its game started anew (closed, crashed): a new session, but
+                // the same player, whose room keeps it.
+                self.sign_out(old, "its account signed in again", now, false);
             }
         }
 
@@ -558,7 +564,7 @@ impl<'a> Core<'a> {
             .or(still_in_match)
             .filter(|id| self.matches.contains_key(id));
 
-        let game = self.accounts.get_or_create(account_id, &login_name);
+        let (game, made) = self.accounts.sign_up(account_id, &login_name);
         let unix = quests::now();
         // A test bot (`SRP_BOT_ACCOUNTS`) starts no run of bonus days.
         let bot = self.accounts.is_bot(account_id);
@@ -574,6 +580,9 @@ impl<'a> Core<'a> {
                 bonus::visit(&mut game, unix, &mut self.rng);
             }
             let notices = quests::refresh(&mut game, unix, &mut self.rng);
+            // A new account's first quests are part of its start: in its
+            // quest window, no message for each (no window at sign-up).
+            let notices = if made { Vec::new() } else { notices };
             (game.name.clone(), notices)
         };
         self.accounts.mark_dirty(account_id);
@@ -634,8 +643,6 @@ impl<'a> Core<'a> {
             channel_ids: [0; 10],
             language: None,
             queued_since: None,
-            queue_line: None,
-            queue_announced: false,
             order_id: 0,
             in_match,
             connect: None,
@@ -719,10 +726,16 @@ impl<'a> Core<'a> {
 
     // ------------------------------------------------------------- the end
 
-    /// The player of a link is no more: out of the queue, not ready in its
-    /// squad, and (unless its game goes on with another link) its session
-    /// ended. The link itself stays for the transport to finish.
+    /// The player of a link is no more: out of its clan team's wait, and
+    /// (unless its game goes on with another link) its session and its
+    /// room ended. The link itself stays for the transport to finish.
     pub fn retire(&mut self, addr: SocketAddr, why: &str, end_session: bool) {
+        self.retire_link(addr, why, end_session, end_session);
+    }
+
+    /// [`Self::retire`], its room ended or not apart from its session (an
+    /// account that signed in again from a game started anew keeps it).
+    fn retire_link(&mut self, addr: SocketAddr, why: &str, end_session: bool, room_ends: bool) {
         let Some(link) = self.links.get_mut(&addr) else {
             return;
         };
@@ -733,14 +746,13 @@ impl<'a> Core<'a> {
         if self.by_account.get(&player.account_id) == Some(&addr) {
             self.by_account.remove(&player.account_id);
         }
-        // A place held for its JOIN is free again.
-        self.holds.remove(&player.account_id);
-        self.leave_queue_said(player.session_id, &player.name, player.queue_announced);
-        self.store.squads().set_ready(player.account_id, false);
         // Nor in its clan team, which it leaves with its session.
         self.clan_link_gone(player.account_id, end_session);
         if let Some(account) = self.store.account(player.account_id) {
             account.locked().play = None;
+        }
+        if room_ends {
+            self.room_gone(player.account_id);
         }
         if end_session {
             // It leaves its squad with it; a seat in a match is kept by the
@@ -758,8 +770,10 @@ impl<'a> Core<'a> {
     /// Sign a player out from this side: `AA` (the client goes to its login
     /// screen with `st_login_menu_status_sign_in_already_online`), then the
     /// disconnect.
-    pub fn sign_out(&mut self, addr: SocketAddr, why: &str, now: Instant) {
-        self.retire(addr, why, true);
+    /// `room_ends`: its room ends with it (not for an account that signed in
+    /// again).
+    pub fn sign_out(&mut self, addr: SocketAddr, why: &str, now: Instant, room_ends: bool) {
+        self.retire_link(addr, why, true, room_ends);
         if let Some(link) = self.links.get_mut(&addr) {
             let serial = link.push(lobby::signed_out());
             link.stage = Stage::Leaving {
@@ -882,14 +896,14 @@ impl<'a> Core<'a> {
             })
             .collect();
         for addr in ended {
-            self.sign_out(addr, "its session ended", now);
+            self.sign_out(addr, "its session ended", now, true);
         }
 
         self.check_matches(now);
-        self.holds.retain(|_, hold| hold.until > now);
         self.log_predictions(now);
         self.collect_away(now);
         self.clan_matches(now);
+        self.room_tick(now);
         let online = self.online_counts();
         let accounts = self.accounts.len();
         if accounts != self.ranked.0 {
@@ -912,7 +926,7 @@ impl<'a> Core<'a> {
             // a match: the client has its lobby again when it is back.
             if player.in_match.is_none() && player.ranked_sent != ranked {
                 let count = lobby::base_info(ranked, &player.name);
-                let recount = tutorial::message(&player.account.locked(), false);
+                let recount = tutorial::message(false);
                 self.send(addr, count);
                 self.send(addr, recount);
                 if let Some(player) = self.player_mut(addr) {

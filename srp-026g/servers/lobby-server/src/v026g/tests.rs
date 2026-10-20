@@ -1,7 +1,7 @@
 //! Tests of the 0.26g lobby, against the real store, accounts and rules
 //! and a scripted client (`client`):
 //! - `core_tests`: the lobby's core with clients in memory and a clock the
-//!   test moves, so a gather window or a timeout takes no time;
+//!   test moves, so a room's wait or a timeout takes no time;
 //! - `udp_tests`: the whole server over real localhost UDP.
 
 use super::test_client as client;
@@ -31,15 +31,13 @@ pub(super) struct TestHost {
     pub open: Mutex<HashSet<u32>>,
     pub fail: AtomicBool,
     pub admitting: Mutex<HashSet<u32>>,
-    pub remaining: Mutex<std::collections::HashMap<u32, std::time::Duration>>,
     pub rejecting: Mutex<HashSet<u32>>,
+    /// Why a match not admitting takes nobody, when the test says.
+    pub closed: Mutex<std::collections::HashMap<u32, session::matchmaking_policy::Closed>>,
     /// How a match stands, when the test says: who is in it and the score.
     pub live: Mutex<std::collections::HashMap<u32, super::LiveView>>,
     /// Every place given to a new session: `(match, account, session)`.
     pub reseated: Mutex<Vec<(u32, u32, u32)>>,
-    /// The matches the match server has, as the test says they are: what
-    /// the players' list of the matches is made of.
-    pub listed: Mutex<Vec<super::OpenMatch>>,
 }
 
 /// Where the test host says its matches are.
@@ -97,22 +95,19 @@ impl MatchHost for TestHost {
         self.live.locked().get(&match_id).copied()
     }
 
-    fn admission_remaining(
+    fn admits(&self, match_id: u32, _: std::time::Instant) -> bool {
+        self.admitting.locked().contains(&match_id)
+    }
+
+    fn closed(
         &self,
         match_id: u32,
         _: std::time::Instant,
-    ) -> Option<std::time::Duration> {
-        self.admitting.locked().contains(&match_id).then(|| {
-            self.remaining
-                .locked()
-                .get(&match_id)
-                .copied()
-                .unwrap_or(std::time::Duration::from_secs(600))
-        })
-    }
-
-    fn open_matches(&self, _: std::time::Instant) -> Vec<super::OpenMatch> {
-        self.listed.locked().clone()
+    ) -> Option<session::matchmaking_policy::Closed> {
+        if self.admitting.locked().contains(&match_id) {
+            return None;
+        }
+        self.closed.locked().get(&match_id).copied()
     }
 
     fn is_open(&self, match_id: u32) -> bool {
@@ -203,5 +198,4 @@ fn the_maps_played_are_playable_ones_of_the_modes_asked_for() {
 
     let settings = Settings::local("127.0.0.1:0");
     assert_eq!(settings.maps, all);
-    assert!(settings.search_step.get() > 0);
 }

@@ -499,7 +499,7 @@ fn the_pages_are_the_026g_ones() {
 }
 
 #[test]
-fn public_stats_count_players_queue_and_hosted_matches() {
+fn public_stats_count_players_rooms_and_hosted_matches() {
     let mut world = world();
     // The endpoint is public even with the admin disabled.
     world.web.token = None;
@@ -507,7 +507,7 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     let stats = || world.web.route(&get("/api/stats"), "t");
     assert_eq!(
         stats().body,
-        r#"{"online":0,"registered":0,"matches":0,"queued":0,"last_match_ends_in":0}"#
+        r#"{"online":0,"registered":0,"matches":0,"rooms":0,"in_rooms":0,"queued":0,"last_match_ends_in":0}"#
     );
     let account = world.player("player-a", "test-password");
     let session = world.web.store.create_session(account);
@@ -517,24 +517,14 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     // Multiple connections for one account count once.
     assert_eq!(
         stats().body,
-        r#"{"online":1,"registered":1,"matches":0,"queued":0,"last_match_ends_in":0}"#
+        r#"{"online":1,"registered":1,"matches":0,"rooms":0,"in_rooms":0,"queued":0,"last_match_ends_in":0}"#
     );
-    world.web.store.matchmaking().queue(
-        &[session::Player {
-            session_id: session,
-            account_id: account,
-            profile_id: 1,
-        }],
-        false,
-        Instant::now(),
-    );
-    drop(hold);
-    drop(second_hold);
-    // A player waiting without a lobby connection remains present.
-    assert_eq!(
-        stats().body,
-        r#"{"online":1,"registered":1,"matches":0,"queued":1,"last_match_ends_in":0}"#
-    );
+    // The rooms as the lobby last counted them.
+    world.web.store.set_room_counts(session::RoomCounts {
+        rooms: 2,
+        in_rooms: 3,
+        queued: 1,
+    });
     world
         .told
         .matches
@@ -544,13 +534,14 @@ fn public_stats_count_players_queue_and_hosted_matches() {
     assert_eq!(response.content_type.as_str(), "application/json");
     assert_eq!(
         response.body,
-        r#"{"online":1,"registered":1,"matches":2,"queued":1,"last_match_ends_in":0}"#
+        r#"{"online":1,"registered":1,"matches":2,"rooms":2,"in_rooms":3,"queued":1,"last_match_ends_in":0}"#
     );
-    assert_eq!(world.web.store.match_count(), 0); // Use the host, not formed queue rosters.
-    world.web.store.matchmaking().leave_queue(session);
+    assert_eq!(world.web.store.match_count(), 0); // Use the host, not formed rosters.
+    drop(hold);
+    drop(second_hold);
     assert_eq!(
         stats().body,
-        r#"{"online":0,"registered":1,"matches":2,"queued":0,"last_match_ends_in":0}"#
+        r#"{"online":0,"registered":1,"matches":2,"rooms":2,"in_rooms":3,"queued":1,"last_match_ends_in":0}"#
     );
     assert_eq!(
         world.web.route(&post("/api/stats", &[]), "t").status,
@@ -587,7 +578,7 @@ fn public_stats_say_when_the_last_match_ends_at_the_latest() {
     ];
     assert_eq!(
         stats(),
-        r#"{"online":0,"registered":0,"matches":3,"queued":0,"last_match_ends_in":300}"#
+        r#"{"online":0,"registered":0,"matches":3,"rooms":0,"in_rooms":0,"queued":0,"last_match_ends_in":300}"#
     );
     // One that has its result is about to go; one still loading has its
     // whole wait, countdown and match time ahead (5 + 20 + 900 s).
@@ -612,7 +603,7 @@ fn public_stats_say_when_the_last_match_ends_at_the_latest() {
     *world.told.live.locked() = vec![live(crate::LivePhase::Over, None)];
     assert_eq!(
         stats(),
-        r#"{"online":0,"registered":0,"matches":3,"queued":0,"last_match_ends_in":0}"#
+        r#"{"online":0,"registered":0,"matches":3,"rooms":0,"in_rooms":0,"queued":0,"last_match_ends_in":0}"#
     );
 }
 
@@ -645,7 +636,7 @@ fn public_stats_http_has_json_headers_and_ignores_language() {
     assert!(headers.contains(&format!("\r\nContent-Length: {}\r\n", body.len())));
     assert_eq!(
         body,
-        r#"{"online":0,"registered":0,"matches":0,"queued":0,"last_match_ends_in":0}"#
+        r#"{"online":0,"registered":0,"matches":0,"rooms":0,"in_rooms":0,"queued":0,"last_match_ends_in":0}"#
     );
 }
 
@@ -1056,7 +1047,9 @@ fn every_file_the_maps_name_is_served() {
 
 #[test]
 fn the_maps_and_the_calculator_are_built_from_the_offered_patches() {
-    // release/release.sh refuses a release otherwise; this says so on a PR.
+    // A live release rebuilds both pages from the patches it offers and its
+    // record commits them with release/patches.tsv (release/build-site); this
+    // fails a PR that changes one without the other.
     let rows = |text: &str| -> Vec<(String, String)> {
         text.lines()
             .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
@@ -1073,11 +1066,11 @@ fn the_maps_and_the_calculator_are_built_from_the_offered_patches() {
     let maps = rows(include_str!("../../maps/built-from.tsv"));
     assert_eq!(
         maps, offered,
-        "rebuild the Maps tab: srp-026g/scripts/maps-tab/README.md"
+        "the Maps tab is built from other patches than release/patches.tsv: rebuild it with build.py (srp-026g/scripts/maps-tab/README.md)"
     );
     let calculator = rows(include_str!("../../damage/built-from.tsv"));
     assert_eq!(
         calculator, offered,
-        "rebuild the calculator: srp-026g/scripts/damage-calc/README.md (build_site.py)"
+        "the calculator is built from other patches than release/patches.tsv: rebuild it with build_site.py (srp-026g/scripts/damage-calc/README.md)"
     );
 }

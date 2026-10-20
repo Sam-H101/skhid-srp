@@ -57,6 +57,9 @@ use survarium::v026g::prices;
 const MAP: u8 = 117;
 /// The longest any one step may take.
 const SOON: Duration = Duration::from_secs(10);
+/// From Play by two players to their room's match: its vote (15 s), the
+/// wait of the room Play makes (30 s), and a little more.
+const ROOM_MATCH: Duration = Duration::from_secs(55);
 /// The match's end: the servers run with their real timings (a world is
 /// asked for every 5 s and checked against 2.5 s of hash reports, and the
 /// end is told 3 s after the rule had it).
@@ -105,33 +108,24 @@ fn setup() {
 }
 
 /// srp's servers over a database in `dir`, as `main` starts them, on free
-/// ports. `gather` is the queue's window (`SRP_MATCH_GATHER_SECONDS`).
-fn start(dir: &Path, gather: Duration) -> Stack {
-    start_with_bots(dir, gather, &[])
+/// ports.
+fn start(dir: &Path) -> Stack {
+    start_with_bots(dir, &[])
 }
 
 /// As [`start`], with `SRP_BOT_ACCOUNTS` naming `bots`.
-fn start_with_bots(dir: &Path, gather: Duration, bots: &[&str]) -> Stack {
-    start_with(dir, gather, bots, |_| {})
+fn start_with_bots(dir: &Path, bots: &[&str]) -> Stack {
+    start_with(dir, bots, |_| {})
 }
 
 /// As [`start_with_bots`], the options changed by `change` last.
-fn start_with(
-    dir: &Path,
-    gather: Duration,
-    bots: &[&str],
-    change: impl FnOnce(&mut Options),
-) -> Stack {
+fn start_with(dir: &Path, bots: &[&str], change: impl FnOnce(&mut Options)) -> Stack {
     setup();
     let store = SessionStore::with_repository(
-        gather,
+        session::DEFAULT_GATHER_WINDOW,
         Box::new(session::persist::open_in(dir).expect("the database")),
     )
     .expect("the accounts");
-    // Two players are enough, and a press of Play adds nothing: the
-    // scripted clients are two, not four (`SRP_MATCH_MIN_PLAYERS`).
-    store.set_start_rules(2, Duration::ZERO, Duration::from_secs(3600));
-    store.matchmaking().set_growing_rules(gather, 1.0);
     let accounts = GameAccounts::with_repository(Box::new(
         SqliteGameRepository::open_in(dir).expect("the 0.26g tables"),
     ))
@@ -141,9 +135,6 @@ fn start_with(
     // One map, so the scripted simulation knows its mode
     // (`SRP_MATCH_MAPS`).
     options.lobby.maps = vec![MAP];
-    // A player alone goes into a match of two at once: the scripted
-    // clients are three (`SRP_LATE_JOIN_PATIENCE_SECONDS`).
-    options.lobby.late_join_patience = Duration::ZERO;
     options.bots = session::v026g::bots::parse(&bots.join(","));
     change(&mut options);
     Stack::start(Arc::new(store), Arc::new(accounts), options).expect("the servers")
@@ -196,12 +187,11 @@ fn socket() -> UdpSocket {
 }
 
 impl Game {
-    /// Signed in at the login server; its lobby link is started.
+    /// Signed in at the login server as a game of the newest patch (the
+    /// late join's: only such a game plays in rooms); its lobby link is
+    /// started.
     fn signed_in(stack: &Stack, name: &'static str, password: &str) -> Self {
-        Self::signed_in_revision(stack, name, password, 0)
-    }
-
-    fn signed_in_revision(stack: &Stack, name: &'static str, password: &str, revision: u8) -> Self {
+        let revision = survarium::v026g::match_msgs::late_join::PATCH_REVISION;
         let reply =
             srp::bot::sign_in_with_revision(stack.login_addr, name, password, revision).unwrap();
         let (session, lobby_addr) = accepted(&reply);
@@ -437,7 +427,7 @@ fn held(stack: &Stack, name: &str) -> (u32, u32, u32) {
 #[test]
 fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     let dir = temp_dir("match");
-    let stack = start(&dir, Duration::from_secs(1));
+    let stack = start(&dir);
 
     // ---- 1. Two new names sign in over TLS: the accounts are made, each
     // answer has a session and the lobby's UDP address.
@@ -468,7 +458,15 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     }
     let start_money = told(&alice);
     assert_eq!(start_money, held(&stack, "E2eAlice"));
-    assert_eq!(start_money.2, 0);
+    // A new account's start (there is no tutorial).
+    assert_eq!(
+        (start_money.0, start_money.1),
+        (
+            session::v026g::tutorial::SIGNUP_SILVER,
+            session::v026g::tutorial::SIGNUP_GOLD
+        )
+    );
+    assert_eq!(start_money.2, session::v026g::tutorial::experience());
 
     // ---- 3. Alice buys something the shop sells her now: `83 47 00`, the
     // inventory, the account and the money.
@@ -526,8 +524,8 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     }
     alice.assert_clean();
 
-    // ---- 4. Both press Play: the queue gathers them (a second of window),
-    // the lobby makes the match at the match server, and each is told
+    // ---- 4. Both press Play: one room has them, its vote and its wait
+    // run, the lobby makes the match at the match server, and each is told
     // "match found" and then where to connect (0x82).
     alice.take();
     bob.take();
@@ -535,7 +533,7 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
     bob.ask(request::play(1));
     until(
         &mut [&mut alice, &mut bob],
-        SOON,
+        ROOM_MATCH,
         "connect_to_match",
         |games| {
             games
@@ -718,43 +716,6 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
         live.time_left
             .is_some_and(|left| left > Duration::from_secs(900))
     );
-    // The lobby lists the same for its "matches now" window, asked with the
-    // ranking's request and the start no ranking page has: the header with
-    // the count, then the match: Rudnya (level 1), Team Deathmatch (mode
-    // 4), its countdown running (phase 1), a player a team, no score and no
-    // time played before play, the asker not taken into it (and why: it is
-    // in that match, code 8), the match's listing key, and its match level
-    // (the mean of its players' levels: 0 for new accounts).
-    alice.take();
-    alice.ask(request::ranking(survarium::v026g::lobby::MATCHES_START, 32));
-    until(
-        &mut [&mut alice, &mut bob],
-        SOON,
-        "the lobby's list of the matches",
-        |games| games[0].has(|message| matches!(message, Decoded::EloList(_))),
-    );
-    let list = alice
-        .find(|message| match message {
-            Decoded::EloList(rows) => Some(rows.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(list.len(), 2);
-    assert_eq!(list[0], ("M2;1".to_owned(), 2_000_000_000, 0, 0));
-    assert_eq!((list[1].1, list[1].2, list[1].3), (2_000_000_001, 0, 0));
-    let fields: Vec<&str> = list[1].0.split(';').collect();
-    assert_eq!(fields.len(), 11, "{}", list[1].0);
-    assert_eq!(
-        (&fields[..9], fields[10]),
-        (&["1", "4", "1", "1", "1", "-", "-", "-", "8"][..], "0"),
-        "{}",
-        list[1].0
-    );
-    let key = fields[9]
-        .parse::<u32>()
-        .unwrap_or_else(|_| panic!("{}", list[1].0));
-    assert!((1..=survarium::v026g::lobby::JOIN_KEY_MAX).contains(&key));
-
     // ---- 9. The match ends by its mode's rule: Bob's team has no tickets
     // and nobody alive. (The rule is set to "in play" on both clients at
     // once: the shortcut past the 20 s countdown.) The server reads it
@@ -977,7 +938,7 @@ fn two_new_players_sign_in_shop_play_a_match_and_are_paid() {
 #[test]
 fn a_player_whose_match_link_broke_goes_back_in_without_a_restart() {
     let dir = temp_dir("back");
-    let stack = start(&dir, Duration::from_secs(1));
+    let stack = start(&dir);
     let mut alice = Game::signed_in(&stack, "E2eBackAlice", "alice-password-1");
     let mut bob = Game::signed_in(&stack, "E2eBackBob", "bob-password-2");
     until(
@@ -998,7 +959,7 @@ fn a_player_whose_match_link_broke_goes_back_in_without_a_restart() {
     };
     until(
         &mut [&mut alice, &mut bob],
-        SOON,
+        ROOM_MATCH,
         "connect_to_match",
         |games| games.iter().all(|game| sent_to(game).is_some()),
     );
@@ -1081,11 +1042,11 @@ fn a_player_whose_match_link_broke_goes_back_in_without_a_restart() {
 /// Seen live on 2026-10-12: a player left a match of two by the menu,
 /// pressed Play and was sent back to the match it had just left. The game
 /// says that it leaves (0xE0 on the match link, then `31 .. 01` to the
-/// lobby); Play then queues the player for another match.
+/// lobby); Play then leaves it in its room, for the room's next match.
 #[test]
-fn a_player_who_left_its_match_is_queued_for_another_one() {
+fn a_player_who_left_its_match_is_not_sent_back_to_it() {
     let dir = temp_dir("quit");
-    let stack = start(&dir, Duration::from_secs(1));
+    let stack = start(&dir);
     let mut alice = Game::signed_in(&stack, "E2eQuitAlice", "alice-password-1");
     let mut bob = Game::signed_in(&stack, "E2eQuitBob", "bob-password-2");
     until(
@@ -1106,7 +1067,7 @@ fn a_player_who_left_its_match_is_queued_for_another_one() {
     };
     until(
         &mut [&mut alice, &mut bob],
-        SOON,
+        ROOM_MATCH,
         "connect_to_match",
         |games| games.iter().all(|game| sent_to(game).is_some()),
     );
@@ -1157,70 +1118,31 @@ fn a_player_who_left_its_match_is_queued_for_another_one() {
         |games| queue_state(games[0]) == Some(ClientState::Lobby),
     );
 
-    // She presses Play: she waits in the queue, alone in it, for longer
-    // than a match takes to gather. Her match goes on without her.
+    // She presses Play: she is in her room, which waits for its match to
+    // end; she is not sent back. Her match goes on without her.
     alice.take();
     alice.ask(request::play(1));
-    until(&mut [&mut alice, &mut bob], SOON, "the queue", |games| {
-        matches!(
-            queue_state(games[0]),
-            Some(ClientState::InQueue {
-                place: 1,
-                queue_total: 1,
-                ..
-            })
-        )
-    });
+    until(
+        &mut [&mut alice, &mut bob],
+        SOON,
+        "the lobby state",
+        |games| queue_state(games[0]) == Some(ClientState::Lobby),
+    );
     run_for(&mut [&mut alice, &mut bob], Duration::from_millis(2_500));
     assert!(!alice.has(|message| matches!(message, Decoded::ConnectToMatch { .. })));
     assert!(stack.registry.is_open(match_id));
     assert_eq!(stack.registry.match_count(), 1);
     assert!(!bob.of_match().closed);
-
-    // Somebody else presses Play: the two get a match of their own, while
-    // the one she left still runs.
-    let mut carol = Game::signed_in(&stack, "E2eQuitCarol", "carol-password-3");
-    until(
-        &mut [&mut alice, &mut bob, &mut carol],
-        SOON,
-        "Carol's sign-in pushes",
-        |games| in_lobby(games[2]),
-    );
-    carol.take();
-    carol.ask(request::play(1));
-    until(
-        &mut [&mut alice, &mut bob, &mut carol],
-        SOON,
-        "another match",
-        |games| sent_to(games[0]).is_some() && sent_to(games[2]).is_some(),
-    );
-    let second = sent_to(&alice).unwrap();
-    assert_ne!(second, match_id);
-    assert_eq!(sent_to(&carol), Some(second));
-    assert_eq!(stack.registry.match_count(), 2);
-    alice.connect_to_match(stack.match_addr);
-    carol.connect_to_match(stack.match_addr);
-    until(
-        &mut [&mut alice, &mut bob, &mut carol],
-        SOON,
-        "the new match's static info",
-        |games| {
-            games[0].of_match().model.options.is_some()
-                && games[2].of_match().model.options.is_some()
-        },
-    );
-    assert_eq!(alice.static_id, static_id(second));
-    assert!(stack.registry.is_open(match_id));
-    for game in [&alice, &bob, &carol] {
+    for game in [&alice, &bob] {
         game.assert_clean();
     }
     stack.stop();
 }
 
 #[test]
-fn a_wrong_password_is_refused_and_a_player_alone_waits_in_the_queue() {
+fn a_wrong_password_is_refused_and_a_player_alone_waits_in_a_room() {
     let dir = temp_dir("solo");
-    let stack = start(&dir, Duration::ZERO);
+    let stack = start(&dir);
 
     // The first sign-in of a name registers it with its password.
     let mut carol = Game::signed_in(&stack, "E2eCarol", "carol-password-1");
@@ -1274,47 +1196,21 @@ fn a_wrong_password_is_refused_and_a_player_alone_waits_in_the_queue() {
         assert!(stranger.lobby.decoded.is_empty());
     }
 
-    // Carol, alone, presses Play: she waits in the queue, whatever the
-    // window (it starts with the second player), and no match is made.
+    // Carol, alone, presses Play: a room is made for her, her client is
+    // told it is in the lobby (where the movie shows the room), and no
+    // match is made.
     until(&mut [&mut carol], SOON, "the sign-in pushes", |games| {
         in_lobby(games[0])
     });
     carol.take();
     carol.ask(request::play(1));
-    until(&mut [&mut carol], SOON, "the queue", |games| {
-        matches!(
-            queue_state(games[0]),
-            Some(ClientState::InQueue {
-                place: 1,
-                queue_total: 1,
-                ..
-            })
-        )
-    });
-    run_for(&mut [&mut carol], Duration::from_millis(3_500));
-    assert!(matches!(
-        queue_state(&carol),
-        Some(ClientState::InQueue {
-            place: 1,
-            queue_total: 1,
-            current_wait_seconds,
-            ..
-        }) if current_wait_seconds >= 2
-    ));
-    assert!(!carol.has(|message| matches!(message, Decoded::ConnectToMatch { .. })));
-    assert_eq!(stack.registry.match_count(), 0);
-    assert_eq!(stack.store.match_count(), 0);
-
-    // She leaves the queue: back in the lobby.
-    let order = match queue_state(&carol) {
-        Some(ClientState::InQueue { order_id, .. }) => order_id,
-        other => panic!("{other:?}"),
-    };
-    carol.take();
-    carol.ask(request::leave(order, false));
     until(&mut [&mut carol], SOON, "the lobby state", |games| {
         queue_state(games[0]) == Some(ClientState::Lobby)
     });
+    run_for(&mut [&mut carol], Duration::from_millis(3_500));
+    assert!(!carol.has(|message| matches!(message, Decoded::ConnectToMatch { .. })));
+    assert_eq!(stack.registry.match_count(), 0);
+    assert_eq!(stack.store.match_count(), 0);
     carol.assert_clean();
     stack.stop();
 }
@@ -1345,7 +1241,7 @@ impl BotRun {
             once,
             kit: None,
             drive,
-            revision: 0,
+            revision: survarium::v026g::match_msgs::late_join::PATCH_REVISION,
         };
         let print: srp::bot::Print = {
             let lines = lines.clone();
@@ -1407,17 +1303,17 @@ fn solo_and_bot_into_a_match(stack: &Stack, bot: &BotRun) -> (Game, u32, [u8; 2]
         in_lobby(games[0])
     });
     // The bot registers itself, signs in at the lobby, presses Play and
-    // waits: a match needs two.
-    until(&mut [&mut solo], SOON, "the bot in the queue", |_| {
-        bot.said("in the queue: place 1 of 1").is_some()
+    // waits in the room that makes for it: a match needs two.
+    until(&mut [&mut solo], SOON, "the bot in its room", |_| {
+        bot.said(": 1 in it").is_some()
     });
     assert_eq!(stack.registry.match_count(), 0);
     assert_eq!(stack.store.registered_accounts(), 2);
 
-    // The player presses Play: the queue has its two.
+    // The player presses Play: into the bot's room, which has its two.
     solo.take();
     solo.ask(request::play(1));
-    until(&mut [&mut solo], SOON, "connect_to_match", |games| {
+    until(&mut [&mut solo], ROOM_MATCH, "connect_to_match", |games| {
         games[0].has(|message| matches!(message, Decoded::ConnectToMatch { .. }))
     });
     let (match_id, team) = solo
@@ -1487,7 +1383,7 @@ fn end_by_the_modes_rule(solo: &mut Game, places: [u8; 2], teams: [u8; 2]) {
 fn one_player_and_the_test_bot_play_a_match_to_the_results() {
     let dir = temp_dir("bot");
     // `SRP_BOT_ACCOUNTS=bot-1`.
-    let stack = start_with_bots(&dir, Duration::from_secs(1), &["bot-1"]);
+    let stack = start_with_bots(&dir, &["bot-1"]);
     let bot = BotRun::start(&stack, "bot-1", true);
     let (mut solo, match_id, places, teams) = solo_and_bot_into_a_match(&stack, &bot);
     let bot_id = account_id(&stack, "bot-1");
@@ -1557,7 +1453,7 @@ fn one_player_and_the_test_bot_play_a_match_to_the_results() {
         "signed in at the login server",
         "in the lobby",
         "pressed Play",
-        "in the queue",
+        "in room",
         "a match is found",
         "goes to match",
         "took the static info",
@@ -1596,7 +1492,7 @@ fn one_player_and_the_test_bot_play_a_match_to_the_results() {
 fn a_driving_bot_s_inputs_reach_the_player_s_game_in_time() {
     use srp::drive::key;
     let dir = temp_dir("bot-drive");
-    let stack = start_with_bots(&dir, Duration::from_secs(1), &["bot-1"]);
+    let stack = start_with_bots(&dir, &["bot-1"]);
     let bot = BotRun::start_with(&stack, "bot-1", true, true);
     let (mut solo, _match_id, places, _teams) = solo_and_bot_into_a_match(&stack, &bot);
     let bot_place = places[1];
@@ -1648,7 +1544,7 @@ fn a_driving_bot_s_inputs_reach_the_player_s_game_in_time() {
 fn without_the_setting_the_bot_is_a_player_as_any_other() {
     let dir = temp_dir("nobot");
     // No `SRP_BOT_ACCOUNTS`: what the servers do by default.
-    let stack = start(&dir, Duration::from_secs(1));
+    let stack = start(&dir);
     let bot = BotRun::start(&stack, "bot-1", false);
     let (mut solo, match_id, places, teams) = solo_and_bot_into_a_match(&stack, &bot);
     let bot_id = account_id(&stack, "bot-1");
@@ -1676,14 +1572,11 @@ fn without_the_setting_the_bot_is_a_player_as_any_other() {
 
 #[test]
 fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
-    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
     let dir = temp_dir("late-join");
-    let stack = start(&dir, Duration::from_secs(1));
-    let mut alice =
-        Game::signed_in_revision(&stack, "LateAlice", "test-password-1", PATCH_REVISION);
-    let mut bob = Game::signed_in_revision(&stack, "LateBob", "test-password-2", PATCH_REVISION);
-    let mut charlie =
-        Game::signed_in_revision(&stack, "LateCharlie", "test-password-3", PATCH_REVISION);
+    let stack = start(&dir);
+    let mut alice = Game::signed_in(&stack, "LateAlice", "test-password-1");
+    let mut bob = Game::signed_in(&stack, "LateBob", "test-password-2");
+    let mut charlie = Game::signed_in(&stack, "LateCharlie", "test-password-3");
     until(
         &mut [&mut alice, &mut bob, &mut charlie],
         SOON,
@@ -1700,7 +1593,7 @@ fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
     bob.ask(request::play(1));
     until(
         &mut [&mut alice, &mut bob, &mut charlie],
-        SOON,
+        ROOM_MATCH,
         "initial match",
         |games| games[..2].iter().all(|g| ticket(g).is_some()),
     );
@@ -1732,9 +1625,10 @@ fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
     );
     let syncs = [alice.of_match().model.syncs, bob.of_match().model.syncs];
     charlie.ask(request::play(1));
+    // Into the room first: the match 15 s later (`LATE_JOIN_WAIT`).
     until(
         &mut [&mut alice, &mut bob, &mut charlie],
-        SOON,
+        SOON + Duration::from_secs(15),
         "newcomer ticket",
         |games| ticket(games[2]).is_some(),
     );
@@ -1806,9 +1700,9 @@ fn a_new_login_joins_a_running_match_through_the_lobby_and_receives_results() {
     stack.stop();
 }
 
-/// The rows of the last `91` whose first row is at or past `place`: the
-/// lobby's list of the matches (2 000 000 000) or a JOIN answer
-/// (2 100 000 000), never a ranking page.
+/// The rows of the last `91` whose first row is at `place`: an answer to
+/// one of srp's own requests (`lobby::RESERVED_START` on), never a
+/// ranking page.
 fn reserved_rows(game: &Game, place: u32) -> Option<Vec<(String, u32, u16, i16)>> {
     game.find(|message| match message {
         Decoded::EloList(rows) if rows.first().is_some_and(|row| row.1 == place) => {
@@ -1818,229 +1712,14 @@ fn reserved_rows(game: &Game, place: u32) -> Option<Vec<(String, u32, u16, i16)>
     })
 }
 
-/// The JOIN button of the "matches now" window against the real servers:
-/// a match one side of which counts for far more is listed with JOIN on
-/// for a new player; of two who press it, one has the place held and the
-/// other is told the match is full; the first one's Play puts it into
-/// that match at once (the match server reserves its place and admits
-/// nobody else until it is in), and it enters the match as a late joiner.
-#[test]
-fn a_join_from_the_matches_list_puts_a_player_into_an_uneven_match_at_once() {
-    use survarium::v026g::lobby::{JOIN_START, MATCHES_START};
-    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
-    let dir = temp_dir("join");
-    let stack = start(&dir, Duration::from_secs(1));
-    let mut alice =
-        Game::signed_in_revision(&stack, "JoinAlice", "test-password-1", PATCH_REVISION);
-    let mut bob = Game::signed_in_revision(&stack, "JoinBob", "test-password-2", PATCH_REVISION);
-    let mut charlie =
-        Game::signed_in_revision(&stack, "JoinCharlie", "test-password-3", PATCH_REVISION);
-    let mut dave = Game::signed_in_revision(&stack, "JoinDave", "test-password-4", PATCH_REVISION);
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "login pushes",
-        |games| games.iter().all(|g| in_lobby(g)),
-    );
-    // Alice's balance rating is high and trusted: her side counts for far
-    // more than Bob's, a player alone.
-    stack
-        .accounts
-        .get(account_id(&stack, "JoinAlice"))
-        .unwrap()
-        .locked()
-        .balance = session::v026g::balance::Balance {
-        rating: 50_000,
-        matches: 1_000,
-    };
-    let ticket = |game: &Game| {
-        game.find(|message| match message {
-            Decoded::ConnectToMatch { match_id, .. } => Some(*match_id),
-            _ => None,
-        })
-    };
-    alice.ask(request::play(1));
-    bob.ask(request::play(1));
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "the match",
-        |games| games[..2].iter().all(|g| ticket(g).is_some()),
-    );
-    let match_id = ticket(&alice).unwrap();
-    alice.connect_to_match(stack.match_addr);
-    bob.connect_to_match(stack.match_addr);
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "the profiles",
-        |games| {
-            games[..2]
-                .iter()
-                .all(|g| g.of_match().model.options.is_some())
-        },
-    );
-    alice.of_match_mut().ready();
-    bob.of_match_mut().ready();
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "the entry",
-        |games| games[..2].iter().all(|g| g.of_match().entered().len() == 2),
-    );
-    // Past the countdown: the match server admits late joiners in play.
-    run_for(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        Duration::from_secs(22),
-    );
-
-    // Charlie and Dave open the window: JOIN is on for each.
-    for game in [&mut charlie, &mut dave] {
-        game.take();
-        game.ask(request::ranking(MATCHES_START, 32));
-    }
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "the lists of the matches",
-        |games| {
-            games[2..]
-                .iter()
-                .all(|g| reserved_rows(g, MATCHES_START).is_some())
-        },
-    );
-    let list = reserved_rows(&charlie, MATCHES_START).unwrap();
-    assert_eq!(reserved_rows(&dave, MATCHES_START).unwrap(), list);
-    assert_eq!(list[0].0, "M2;1");
-    let fields: Vec<&str> = list[1].0.split(';').collect();
-    assert_eq!(&fields[..5], ["1", "4", "2", "1", "1"], "{}", list[1].0);
-    assert_eq!(fields[8], "1", "JOIN is on: {}", list[1].0);
-    let key: u32 = fields[9].parse().unwrap();
-    assert_eq!(fields.len(), 11, "{}", list[1].0);
-
-    // Both press it at once: Charlie's place is held, Dave's is not.
-    let join_answer = |game: &Game| {
-        reserved_rows(game, JOIN_START).map(|rows| {
-            assert_eq!(rows.len(), 1);
-            rows[0].0.clone()
-        })
-    };
-    for game in [&mut charlie, &mut dave] {
-        game.take();
-        game.ask(request::ranking(JOIN_START + key, 1));
-    }
-    until(
-        &mut [&mut alice, &mut bob, &mut charlie, &mut dave],
-        SOON,
-        "the JOIN answers",
-        |games| games[2..].iter().all(|g| join_answer(g).is_some()),
-    );
-    let answers = [join_answer(&charlie).unwrap(), join_answer(&dave).unwrap()];
-    let ok = format!("J1;ok;{key};1");
-    // Another player is joining (4).
-    let full = format!("J1;full;{key};4");
-    // The lobby reads one message at a time; either may come first.
-    assert!(
-        answers == [ok.clone(), full.clone()] || answers == [full.clone(), ok.clone()],
-        "{answers:?}"
-    );
-    let (mut first, mut second) = if answers[0] == ok {
-        (charlie, dave)
-    } else {
-        (dave, charlie)
-    };
-
-    // The one with the place presses Play: sent to that match at once.
-    first.take();
-    first.ask(request::play(1));
-    until(
-        &mut [&mut alice, &mut bob, &mut first, &mut second],
-        SOON,
-        "the joiner's ticket",
-        |games| ticket(games[2]).is_some(),
-    );
-    assert_eq!(ticket(&first), Some(match_id));
-    assert_eq!(stack.registry.match_count(), 1);
-    assert_eq!(stack.store.matchmaking().queued_players(), 0);
-    // While it is on its way in the match server admits nobody: the match
-    // is in play with time left, so another player is joining (4).
-    second.take();
-    second.ask(request::ranking(JOIN_START + key, 1));
-    until(
-        &mut [&mut alice, &mut bob, &mut first, &mut second],
-        SOON,
-        "the second JOIN answer",
-        |games| join_answer(games[3]).is_some(),
-    );
-    assert_eq!(join_answer(&second).unwrap(), full);
-
-    // It enters the match as any late joiner.
-    first.connect_to_match(stack.match_addr);
-    until(
-        &mut [&mut alice, &mut bob, &mut first, &mut second],
-        SOON,
-        "the joiner's profiles",
-        |games| games[2].of_match().model.options.is_some(),
-    );
-    assert_eq!(first.of_match().model.local_index, Some(2));
-    first.of_match_mut().ready();
-    until(
-        &mut [&mut alice, &mut bob, &mut first, &mut second],
-        SOON,
-        "the joiner entered",
-        |games| {
-            games[..3]
-                .iter()
-                .all(|g| g.of_match().entered().contains(&2))
-        },
-    );
-    // Once it is in, the match admits again; with the joiner on Bob's side
-    // a fourth player would make the sides two against two, or one against
-    // three: neither, and the second is told the match is full: the sides
-    // would count no more alike with it (2).
-    let deadline = Instant::now() + SOON;
-    loop {
-        second.take();
-        second.ask(request::ranking(JOIN_START + key, 1));
-        until(
-            &mut [&mut alice, &mut bob, &mut first, &mut second],
-            SOON,
-            "a later JOIN answer",
-            |games| join_answer(games[3]).is_some(),
-        );
-        let answer = join_answer(&second).unwrap();
-        if answer != full {
-            assert_eq!(answer, format!("J1;full;{key};2"));
-            break;
-        }
-        assert!(Instant::now() < deadline, "the match never admitted again");
-        run_for(
-            &mut [&mut alice, &mut bob, &mut first, &mut second],
-            Duration::from_millis(200),
-        );
-    }
-    for game in [&alice, &bob, &first, &second] {
-        game.assert_clean();
-    }
-    stack.stop();
-}
-
-/// "Player vs Bots" against the real servers: a player opens the match
-/// settings (the status), chooses 6 v 6 on the map the scripted clients
-/// play (Team Deathmatch on level_01), presses Play and is in a match at
-/// once, alone, with 11 of the server's bots: 5 on its side, 6 against it.
-/// The bots enter once its game is in; the match ends by the mode's rule
-/// in its world, and it is paid as a match against bots is (no daily
-/// bonus, no rating moved).
 #[test]
 fn a_player_against_the_servers_bots_plays_a_match_to_the_results() {
     use survarium::v026g::lobby::{PVB_STATUS_START, pvb_choice_start};
-    use survarium::v026g::match_msgs::late_join::PATCH_REVISION;
     let dir = temp_dir("pvb");
-    let stack = start_with(&dir, Duration::from_secs(1), &[], |options| {
+    let stack = start_with(&dir, &[], |options| {
         options.lobby.pvb.enabled = true;
     });
-    let mut solo = Game::signed_in_revision(&stack, "E2ePvb", "pvb-password-1", PATCH_REVISION);
+    let mut solo = Game::signed_in(&stack, "E2ePvb", "pvb-password-1");
     until(&mut [&mut solo], SOON, "the sign-in pushes", |games| {
         in_lobby(games[0])
     });

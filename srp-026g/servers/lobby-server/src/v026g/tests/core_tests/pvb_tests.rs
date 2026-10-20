@@ -6,12 +6,11 @@
 use session::v026g::account::KitSlot;
 use session::v026g::{matchmaking, quests};
 use survarium::v026g::item_params::item_params;
-use survarium::v026g::lobby::{JOIN_START, PVB_CHOOSE_BASE, PVB_STATUS_START, pvb_choice_start};
+use survarium::v026g::lobby::{PVB_CHOOSE_BASE, PVB_STATUS_START, pvb_choice_start};
+use survarium::v026g::match_msgs::late_join::FIRST_REVISION;
 
-use super::matches_now_tests::{answered, growing, joins_now};
 use super::*;
-use crate::v026g::join::JOIN_REFUSED;
-use crate::v026g::pvb::{self, Config, MAPS};
+use crate::v026g::pvb::{self, Config, MAPS, PLAY_REFUSED};
 
 /// A lobby with the mode on, at most `max_matches` matches against bots.
 fn world_with(max_matches: usize) -> World {
@@ -21,7 +20,7 @@ fn world_with(max_matches: usize) -> World {
         max_matches,
         ..Config::default()
     };
-    World::with_settings(Duration::from_secs(60), settings)
+    World::with_settings(settings)
 }
 
 /// An ammo of `level` (`match_making_level`): in the Mosin's second ammo
@@ -40,7 +39,7 @@ fn ammo_of_level(level: u8) -> u16 {
 }
 
 /// The player's equipment level becomes `level`.
-fn with_gear(world: &mut World, index: usize, level: u8) {
+pub(super) fn with_gear(world: &mut World, index: usize, level: u8) {
     world.change(index, |account| {
         let item_id = account.add_item(ammo_of_level(level), 30);
         account.kits[0].slots[9] = Some(KitSlot { item_id, count: 30 });
@@ -105,7 +104,7 @@ fn play_vs_bots(world: &mut World, index: usize, size: u8, map_id: u8) -> (u32, 
 #[test]
 fn gear_5_gets_an_8_v_8_with_15_bots_on_the_map_chosen() {
     let mut world = world_with(5);
-    let alice = growing(&mut world, "Alice");
+    let alice = world.connect("Alice");
     with_gear(&mut world, alice, 5);
     let (header, maps) = status(&mut world, alice);
     assert_eq!(header, "B1;0;5;5;6.8.10;8;61;0;5");
@@ -153,9 +152,9 @@ fn gear_5_gets_an_8_v_8_with_15_bots_on_the_map_chosen() {
         .unwrap();
     assert!(running.vs_bots && running.fixed_teams);
     assert_eq!(running.map_id, 61);
-    // The play counts towards no map rotation, and nobody waits.
+    // The play counts towards no map rotation, and no room has the player.
     assert!(world.account(alice).map_plays.is_empty());
-    assert_eq!(world.store.matchmaking().queued_players(), 0);
+    assert!(world.core.rooms.of(world.ids[alice].0).is_none());
     // It is one of the five now.
     let (header, maps) = status(&mut world, alice);
     assert_eq!(header, "B1;4;5;5;6.8.10;8;61;1;5");
@@ -168,7 +167,7 @@ fn gear_5_gets_an_8_v_8_with_15_bots_on_the_map_chosen() {
 fn every_size_has_its_bots_on_both_sides() {
     let mut world = world_with(5);
     for (n, size) in pvb::SIZES.into_iter().enumerate() {
-        let player = growing(&mut world, &format!("P{n}"));
+        let player = world.connect(&format!("P{n}"));
         let (ticket, _) = play_vs_bots(&mut world, player, size, 117);
         let made = world.host.made.locked();
         let (_, setup) = made.iter().find(|(id, _)| *id == ticket).unwrap();
@@ -186,11 +185,11 @@ fn every_size_has_its_bots_on_both_sides() {
 }
 
 /// Equipment level 6 is over the most (5): refused with code 1 and both
-/// levels, in the status and the choice; the Play then queues as ever.
+/// levels, in the status and the choice; the Play then goes into a room.
 #[test]
 fn gear_6_is_refused_with_code_1_and_its_level() {
     let mut world = world_with(5);
-    let bob = growing(&mut world, "Bob");
+    let bob = world.connect("Bob");
     with_gear(&mut world, bob, 6);
     let (header, maps) = status(&mut world, bob);
     assert_eq!(header, "B1;1;6;5;6.8.10;8;61;0;5");
@@ -198,23 +197,23 @@ fn gear_6_is_refused_with_code_1_and_its_level() {
     assert_eq!(choose(&mut world, bob, 8, 61), "B2;no;1;6;5;0;5");
     assert!(world.core.pvb_holds.is_empty());
     world.ask(bob, request::play(1));
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
+    assert!(world.core.rooms.of(world.ids[bob].0).is_some());
     assert!(world.host.made.locked().is_empty());
 }
 
 /// In a squad: code 2. The mode off: code 6. A size or map not offered
 /// (London, another weather, a size of none): code 10. An old game: code
-/// 5. Waiting in the queue: code 3.
+/// 5.
 #[test]
 fn every_refusal_says_its_code() {
     let mut world = world_with(5);
-    let alice = growing(&mut world, "Alice");
-    let bob = growing(&mut world, "Bob");
+    let alice = world.connect("Alice");
+    let bob = world.connect("Bob");
     form_squad(&mut world, alice, bob);
     assert!(status(&mut world, alice).0.starts_with("B1;2;0;5;"));
     assert_eq!(choose(&mut world, alice, 8, 61), "B2;no;2;0;5;0;5");
 
-    let carol = growing(&mut world, "Carol");
+    let carol = world.connect("Carol");
     for (size, map_id) in [(8, 181), (8, 62), (7, 61), (12, 61)] {
         assert_eq!(
             choose(&mut world, carol, size, map_id),
@@ -222,14 +221,11 @@ fn every_refusal_says_its_code() {
             "{size} on {map_id}"
         );
     }
-    let standard = world.connect("Standard");
-    assert!(status(&mut world, standard).0.starts_with("B1;5;"));
-    world.ask(carol, request::play(1));
-    assert!(status(&mut world, carol).0.starts_with("B1;3;"));
-    assert_eq!(choose(&mut world, carol, 8, 61), "B2;no;3;0;5;0;5");
+    let old = world.connect_revision("Old", FIRST_REVISION - 1);
+    assert!(status(&mut world, old).0.starts_with("B1;5;"));
 
     world.core.settings.pvb.enabled = false;
-    let dave = growing(&mut world, "Dave");
+    let dave = world.connect("Dave");
     let (header, maps) = status(&mut world, dave);
     assert_eq!(header, "B1;6;0;5;6.8.10;8;61;0;5");
     assert!(maps.iter().all(|row| row.ends_with(";0")));
@@ -245,10 +241,10 @@ fn the_sixth_bot_match_is_refused_with_code_7() {
     let mut world = world_with(5);
     let mut tickets = Vec::new();
     for (n, &map_id) in MAPS.iter().enumerate().take(5) {
-        let player = growing(&mut world, &format!("P{n}"));
+        let player = world.connect(&format!("P{n}"));
         tickets.push(play_vs_bots(&mut world, player, 6, map_id).0);
     }
-    let sixth = growing(&mut world, "Sixth");
+    let sixth = world.connect("Sixth");
     let (header, maps) = status(&mut world, sixth);
     assert_eq!(header, "B1;7;0;5;6.8.10;8;61;5;5");
     assert!(maps.iter().all(|row| row.ends_with(";0")), "{maps:?}");
@@ -258,7 +254,7 @@ fn the_sixth_bot_match_is_refused_with_code_7() {
     // A choice held counts too: with four running, one held leaves none.
     world.host.open.locked().remove(&tickets[0]);
     world.advance(Duration::from_secs(2));
-    let seventh = growing(&mut world, "Seventh");
+    let seventh = world.connect("Seventh");
     assert_eq!(choose(&mut world, seventh, 6, 61), "B2;ok;6;61");
     assert!(
         status(&mut world, sixth)
@@ -271,65 +267,45 @@ fn the_sixth_bot_match_is_refused_with_code_7() {
     play_vs_bots(&mut world, sixth, 6, 61);
 }
 
-/// A Play whose choice ran out within 30 s is refused and never queued;
-/// one later is an ordinary Play.
+/// A Play whose choice ran out within 30 s is refused and goes into no
+/// room; one later is an ordinary Play.
 #[test]
-fn a_play_after_its_choice_ran_out_is_not_queued() {
+fn a_play_after_its_choice_ran_out_goes_into_no_room() {
     let mut world = world_with(5);
-    let alice = growing(&mut world, "Alice");
+    let alice = world.connect("Alice");
+    let account = world.ids[alice].0;
     assert_eq!(choose(&mut world, alice, 8, 61), "B2;ok;8;61");
     world.advance(pvb::HOLD + Duration::from_secs(1));
     world.take(alice);
     world.ask(alice, request::play(1));
     let decoded = world.take(alice);
-    assert_eq!(denial(&decoded, 0x2F).as_deref(), Some(JOIN_REFUSED));
+    assert_eq!(denial(&decoded, 0x2F).as_deref(), Some(PLAY_REFUSED));
     assert_eq!(sent_to_match(&decoded), None);
-    assert_eq!(world.store.matchmaking().queued_players(), 0);
+    assert!(world.core.rooms.of(account).is_none());
     assert!(world.host.made.locked().is_empty());
-    // The choice is used up: the next Play is the queue's.
+    // The choice is used up: the next Play is a room's.
     world.ask(alice, request::play(1));
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
+    assert!(world.core.rooms.of(account).is_some());
     assert!(world.host.made.locked().is_empty());
-    world.ask(alice, request::leave(1, false));
-    assert_eq!(world.store.matchmaking().queued_players(), 0);
-
-    // Past the 30 s, a choice that ran out is forgotten.
-    assert_eq!(choose(&mut world, alice, 8, 61), "B2;ok;8;61");
-    world.advance(pvb::HOLD + pvb::EXPIRED_REFUSED + Duration::from_secs(1));
-    world.ask(alice, request::play(1));
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
 }
 
-/// A match against bots never takes a late joiner: the queue's late joins
-/// pass it by, its row says code 7 and its JOIN is refused with it.
+/// A match against bots never takes a late joiner: another player's Play
+/// goes into a room of its own, never into it.
 #[test]
 fn a_running_bot_match_takes_no_late_joiner() {
     let mut world = world_with(5);
-    world.core.listing = crate::v026g::join::Listing::new(0);
-    let alice = growing(&mut world, "Alice");
+    let alice = world.connect("Alice");
     let (ticket, _) = play_vs_bots(&mut world, alice, 6, 61);
     // The match server would admit.
     world.host.admitting.locked().insert(ticket);
-    *world.host.listed.locked() = vec![crate::v026g::OpenMatch {
-        match_id: ticket,
-        map_id: 61,
-        phase: session::v026g::matches_now::Phase::Playing,
-        players: [6, 6],
-        standing: Some(([0, 0], Duration::ZERO)),
-        played: Some(Duration::from_secs(60)),
-        match_level: 0,
-    }];
-    let bob = growing(&mut world, "Bob");
-    assert_eq!(joins_now(&mut world, bob), [(7, 1)]);
-    assert_eq!(one_row(&mut world, bob, JOIN_START + 1).0, "J1;gone;1;7");
+    let bob = world.connect("Bob");
     world.ask(bob, request::play(1));
     world.advance(Duration::from_secs(3));
     assert_eq!(sent_to_match(&world.take(bob)), None);
+    assert!(world.core.rooms.of(world.ids[bob].0).is_some());
     let made = world.host.made.locked();
     assert_eq!(made.len(), 1);
     assert_eq!(made[0].1.players.len(), 12);
-    drop(made);
-    assert_eq!(world.store.matchmaking().queued_players(), 1);
 }
 
 /// The match's end pays the player at half (`rewards`, the
@@ -337,7 +313,7 @@ fn a_running_bot_match_takes_no_late_joiner() {
 #[test]
 fn a_bot_match_is_settled_as_one() {
     let mut world = world_with(5);
-    let alice = growing(&mut world, "Alice");
+    let alice = world.connect("Alice");
     let (ticket, _) = play_vs_bots(&mut world, alice, 6, 61);
     world.end_match(ticket, 0);
     let report = world.results.find(ticket).expect("settled");

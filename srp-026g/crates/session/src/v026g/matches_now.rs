@@ -1,8 +1,7 @@
-//! What players are shown of the matches being played now. The launcher's
-//! page lists them (`web-server`, its "Matches now" tab) and so does the
-//! lobby (`lobby-server`, the "matches now" window of the changed lobby
-//! movie): the rules of which match is listed and which score is told are
-//! here, once, so that the two never say different things.
+//! What players are shown of the matches being played now, on the
+//! launcher's page (`web-server`, its "Matches now" tab): which match is
+//! listed and which score is told. (The lobby's own list of them, with its
+//! JOIN, went with the queue: the owner's of 2026-10-17.)
 
 use std::time::Duration;
 

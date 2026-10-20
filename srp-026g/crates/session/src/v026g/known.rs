@@ -26,11 +26,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use survarium::v026g::awards::{Awards, name as award};
+use survarium::v026g::awards::Awards;
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::game_data::GameDataError;
 use survarium::v026g::lobby::ItemDescr;
-use survarium::v026g::lobby::tutorial_model;
 use survarium::v026g::modifications::Modifications;
 use survarium::v026g::quests::Quests;
 use survarium::v026g::tables::{self, Named};
@@ -201,26 +200,18 @@ pub fn named_items() -> Vec<Named> {
         ("quests::GRENADE", super::quests::GRENADE),
     ];
     named.extend(
-        super::tutorial::CHOICE
+        super::tutorial::SIGNUP_AMMO
             .iter()
-            .map(|&name| ("tutorial::CHOICE", name)),
+            .map(|&(name, _)| ("tutorial::SIGNUP_AMMO", name)),
     );
     named
 }
 
-/// The awards the tutorial pays by name (`super::tutorial`).
-const AWARDS: [&str; 4] = [
-    award::TUTORIAL_COMPLETED,
-    award::ITEM_NOTES,
-    award::BATTLE_NOTES,
-    award::GAME_WORLD_TUTORIAL,
-];
-
 /// What the code of the lobby's rules names of the game's data, all in
 /// the data of this process ([`survarium::v026g::game_data::shared`]):
 /// the items of [`named_items`], the dict ids of silver and gold the
-/// rewards and the daily bonus give, the tutorial's weapons at the ids the
-/// client highlights, and the awards the tutorial pays. Else an error that
+/// rewards and the daily bonus give, and the tutorial's awards a new
+/// account is given. Else an error that
 /// lists every one it lacks: srp does not start (`survarium`'s own names
 /// are checked by `game_data::init`, `tables::named_items`). Each is
 /// otherwise looked up when used, and one the data lacks would be
@@ -240,21 +231,8 @@ pub fn check_code() -> Result<(), GameDataError> {
             missing.push(format!("{place} dict id {dict_id}"));
         }
     }
-    for (name, dict_id) in super::tutorial::CHOICE
-        .into_iter()
-        .zip(tutorial_model::CHOICE)
-    {
-        let found = dictionary.item_named(name).map(|item| item.dict_id);
-        if found.is_some_and(|found| found != dict_id) {
-            missing.push(format!(
-                "tutorial::CHOICE {name} at dict id {dict_id} (the client's; the data has it at \
-                 {})",
-                found.unwrap_or_default()
-            ));
-        }
-    }
     let awards = Awards::shared();
-    for name in AWARDS {
+    for name in super::tutorial::AWARDS {
         if !awards.awards.iter().any(|(award, _)| award == name) {
             missing.push(format!("tutorial award {name}"));
         }

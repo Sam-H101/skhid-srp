@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use session::matchmaking_policy::Closed;
 use survarium::v026g::dictionary::Dictionary;
 use survarium::v026g::maps::{self, MapMode};
 use survarium::v026g::match_msgs::MAX_PLAYERS;
@@ -213,8 +214,6 @@ pub(crate) struct Live {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
-    /// [`LiveMatch::giving_way`].
-    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -251,12 +250,6 @@ pub struct LiveMatch {
     pub players: [u8; 2],
     /// The same by roster place: bit `i` is place `i`.
     pub present: u32,
-    /// By roster place: the server's own bots in the match that give their
-    /// place up to a late joiner whose side needs the room
-    /// (`session::matchmaking_policy::bot_gives_way`, `game/driven.rs`);
-    /// none with `SRP_BOTS_GIVE_WAY=off`. One that owes its place already
-    /// and has not left yet is not among them.
-    pub giving_way: u32,
     /// Each team's kills in the newest trusted snapshot.
     pub kills: [u16; 2],
     /// Since play began.
@@ -266,9 +259,6 @@ pub struct LiveMatch {
     pub time_left: Option<Duration>,
     /// `None` until a world was trusted.
     pub standing: Option<LiveStanding>,
-    /// The row of `match_levels_dict` its rewards are multiplied by
-    /// ([`MatchSetup::match_level`]), fixed when it was made.
-    pub match_level: u16,
 }
 
 #[derive(Default)]
@@ -276,7 +266,9 @@ struct Inner {
     matches: HashMap<u32, std::sync::Arc<Formed>>,
     seats: HashMap<u32, Seat>,
     last_id: u32,
-    admitting: HashMap<u32, std::time::Instant>,
+    /// A growing roster's admission as the match last said it: until when
+    /// it takes a joiner, or why it takes none.
+    admitting: HashMap<u32, Result<Instant, Closed>>,
     live: HashMap<u32, Live>,
 }
 
@@ -544,22 +536,17 @@ impl MatchRegistry {
         if players.len() > MAX_PLAYERS - formed.places.len() {
             return Err(JoinError::Full);
         }
-        if !inner
-            .admitting
-            .get(&match_id)
-            .is_some_and(|deadline| std::time::Instant::now() < *deadline)
-        {
+        if !open_at(inner.admitting.get(&match_id), Instant::now()) {
             return Err(JoinError::Unavailable);
         }
+        // An account whose place in this match has no seat any more (it
+        // left by its own word) comes as a new place, its old one gone for
+        // good (the owner's of 2026-10-19); one with a seat anywhere, never.
         let mut sessions = HashSet::new();
         let mut accounts = HashSet::new();
         for player in &players {
             if !sessions.insert(player.session_id)
                 || !accounts.insert(player.account_id)
-                || formed
-                    .places
-                    .iter()
-                    .any(|place| place.account_id == player.account_id)
                 || inner.seats.contains_key(&player.session_id)
                 || inner.seats.values().any(|seat| {
                     inner
@@ -606,7 +593,8 @@ impl MatchRegistry {
         }
         let count = next.places.len() - first;
         inner.matches.insert(match_id, std::sync::Arc::new(next));
-        inner.admitting.remove(&match_id);
+        // Closed until the match says otherwise of the grown roster.
+        inner.admitting.insert(match_id, Err(Closed::Joining));
         log::info!(
             "Match {match_id:#x}: reserved {count} new places from {first}; waiting for resource preparation"
         );
@@ -619,11 +607,13 @@ impl MatchRegistry {
 
     /// Do not let an observation of an older roster reopen admission after
     /// the lobby has concurrently reserved the next place.
+    /// `admission`: until when it takes a joiner, or why it takes none
+    /// (`Game::admission`).
     pub(crate) fn set_admitting(
         &self,
         match_id: u32,
         roster: usize,
-        deadline: Option<std::time::Instant>,
+        admission: Result<Instant, Closed>,
     ) {
         let mut inner = self.inner();
         if inner
@@ -631,25 +621,25 @@ impl MatchRegistry {
             .get(&match_id)
             .is_some_and(|m| m.growing_roster && m.places.len() == roster)
         {
-            if let Some(deadline) = deadline {
-                inner.admitting.insert(match_id, deadline);
-            } else {
-                inner.admitting.remove(&match_id);
-            }
+            inner.admitting.insert(match_id, admission);
         }
     }
 
-    /// Time remaining while new reservations are allowed. The absolute deadline
+    /// Whether new reservations are allowed at `now`. The absolute deadline
     /// also closes admission if the match thread stops publishing updates.
-    pub fn admission_remaining(
-        &self,
-        match_id: u32,
-        now: std::time::Instant,
-    ) -> Option<std::time::Duration> {
-        let inner = self.inner();
-        let deadline = *inner.admitting.get(&match_id)?;
-        (now < deadline)
-            .then(|| deadline.duration_since(now) + session::matchmaking_policy::JOIN_CUTOFF)
+    pub fn admits(&self, match_id: u32, now: Instant) -> bool {
+        open_at(self.inner().admitting.get(&match_id), now)
+    }
+
+    /// Why the match takes no new reservation at `now`, as it last said;
+    /// past its deadline, [`Closed::LastSeconds`]. `None`: it takes one, or
+    /// it has said nothing (not a growing roster, not polled yet, or over).
+    pub fn closed(&self, match_id: u32, now: Instant) -> Option<Closed> {
+        match self.inner().admitting.get(&match_id)? {
+            Ok(deadline) if now < *deadline => None,
+            Ok(_) => Some(Closed::LastSeconds),
+            Err(closed) => Some(*closed),
+        }
     }
 
     /// The place a session has in a match that is not over.
@@ -676,9 +666,10 @@ impl MatchRegistry {
     /// The account's place in the match is now `session_id`'s: the player
     /// signed in again while the match goes on, and its client signs its
     /// match connection (0xD8) with the new session. The session it was
-    /// seated under has no place any more. `None`, and nothing changed,
-    /// when the match is not open, the account has no place in it, or the
-    /// session is seated elsewhere.
+    /// seated under has no place any more. Of an account's places in the
+    /// match (it left one and came again) its latest: the others are gone
+    /// for good. `None`, and nothing changed, when the match is not open,
+    /// the account has no place in it, or the session is seated elsewhere.
     pub fn reseat(&self, match_id: u32, account_id: u32, session_id: u32) -> Option<Seat> {
         let mut inner = self.inner();
         let place = inner
@@ -686,7 +677,7 @@ impl MatchRegistry {
             .get(&match_id)?
             .places
             .iter()
-            .position(|place| place.account_id == account_id)?;
+            .rposition(|place| place.account_id == account_id)?;
         let seat = Seat {
             match_id,
             place: place as u8,
@@ -707,7 +698,9 @@ impl MatchRegistry {
     /// while it lingers for its clients to hear the end.
     pub(crate) fn free_seats(&self, match_id: u32) {
         let mut inner = self.inner();
-        inner.admitting.remove(&match_id);
+        if inner.admitting.contains_key(&match_id) {
+            inner.admitting.insert(match_id, Err(Closed::Ending));
+        }
         inner.seats.retain(|_, seat| seat.match_id != match_id);
     }
 
@@ -764,12 +757,10 @@ impl MatchRegistry {
                 phase: LivePhase::Gathering,
                 players,
                 present: (1_u32 << formed.places.len().min(31)) - 1,
-                giving_way: 0,
                 kills: [0; 2],
                 played: None,
                 time_left: None,
                 standing: None,
-                match_level: formed.match_level,
             };
         };
         let since = now.saturating_duration_since(live.at);
@@ -779,7 +770,6 @@ impl MatchRegistry {
             phase: live.phase,
             players: live.players,
             present: live.present,
-            giving_way: live.giving_way,
             kills: live.kills,
             played: live.played.map(|played| played + since),
             time_left: live.time_left.map(|left| left.saturating_sub(since)),
@@ -788,7 +778,6 @@ impl MatchRegistry {
                 winner: standing.winner,
                 age: age + since,
             }),
-            match_level: formed.match_level,
         }
     }
 
@@ -809,6 +798,11 @@ impl MatchRegistry {
         inner.seats.retain(|_, seat| seat.match_id != match_id);
         inner.matches.remove(&match_id)
     }
+}
+
+/// Whether an admission as the match said it takes a joiner at `now`.
+fn open_at(admission: Option<&Result<Instant, Closed>>, now: Instant) -> bool {
+    matches!(admission, Some(Ok(deadline)) if now < *deadline)
 }
 
 /// A number that differs from run to run, for the first match id.

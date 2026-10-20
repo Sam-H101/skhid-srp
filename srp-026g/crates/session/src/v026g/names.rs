@@ -92,7 +92,6 @@ pub fn rename(
         }
     };
     account.name = cap_name(name);
-    super::tutorial::nickname_chosen(account);
     Ok(paid)
 }
 

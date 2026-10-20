@@ -78,8 +78,8 @@ pub fn check_game_data(
     lobby::check_min_patch_revision(min_patch_revision, data)
 }
 
-/// How far a match is, as the page and the lobby's list of the matches
-/// have it: both go by `session::v026g::matches_now`.
+/// How far a match is, as the launcher's page has it
+/// (`session::v026g::matches_now`).
 fn phase(phase: matches::LivePhase) -> session::v026g::matches_now::Phase {
     use session::v026g::matches_now::Phase;
     match phase {
@@ -164,15 +164,22 @@ impl MatchHost for RegistryHost {
         self.0.join_running_group(match_id, players).is_ok()
     }
 
-    fn admission_remaining(&self, match_id: u32, now: std::time::Instant) -> Option<Duration> {
-        self.0.admission_remaining(match_id, now)
+    fn admits(&self, match_id: u32, now: std::time::Instant) -> bool {
+        self.0.admits(match_id, now)
+    }
+
+    fn closed(
+        &self,
+        match_id: u32,
+        now: std::time::Instant,
+    ) -> Option<session::matchmaking_policy::Closed> {
+        self.0.closed(match_id, now)
     }
 
     fn live(&self, match_id: u32, now: std::time::Instant) -> Option<lobby::LiveView> {
         let live = self.0.live_match(match_id, now)?;
         Some(lobby::LiveView {
             present: live.present,
-            giving_way: live.giving_way,
             points: live.standing.map(|standing| standing.points),
             kills: live.kills,
             played: live
@@ -185,24 +192,6 @@ impl MatchHost for RegistryHost {
                 live.time_left
             },
         })
-    }
-
-    fn open_matches(&self, now: std::time::Instant) -> Vec<lobby::OpenMatch> {
-        self.0
-            .live_matches(now)
-            .into_iter()
-            .map(|live| lobby::OpenMatch {
-                match_id: live.match_id,
-                map_id: live.map_id,
-                phase: phase(live.phase),
-                players: live.players,
-                standing: live
-                    .standing
-                    .map(|standing| (standing.points, standing.age)),
-                played: live.played,
-                match_level: live.match_level,
-            })
-            .collect()
     }
 
     fn is_open(&self, match_id: u32) -> bool {
@@ -289,7 +278,9 @@ impl Settler {
     /// One finished match: called on the match server's thread, before its
     /// clients hear the end.
     pub fn match_ended(&mut self, result: matches::MatchResult) {
-        let result = match_result(result);
+        // Each account's latest place: one it left and came back from is
+        // nobody's (the rewards take the same, `settle`).
+        let result = match_result(result).latest_places();
         let match_id = result.match_id;
         let terms = Terms::at(quests::now());
         match self

@@ -137,7 +137,7 @@ fn assert_same_items(world: &mut World, index: usize) {
 
 #[test]
 fn a_sign_in_brings_the_craft_tables() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let tables = world.take(alice).into_iter().find_map(|message| {
         if let Decoded::CraftTables {
@@ -159,7 +159,7 @@ fn a_sign_in_brings_the_craft_tables() {
 
 #[test]
 fn a_camouflage_and_decals_go_on_a_vest() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let vest = give(&mut world, alice, "edge_torso_2", &[]);
     let camo = give(&mut world, alice, "camo_city", &[]);
@@ -236,7 +236,7 @@ fn a_camouflage_and_decals_go_on_a_vest() {
 /// vest refreshes the owner's kit, and the squadmate's cache of it when
 /// there is a squad, and leaves it on the spare.
 fn sharing_camouflage_with_a_spare_vest(with_squad: bool) {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let observer = with_squad.then(|| world.connect("Alice"));
     let actor = world.connect("Bob");
     let source = give(&mut world, actor, "edge_torso_2", &[]);
@@ -360,7 +360,7 @@ fn shared_camouflage_taken_off_refreshes_the_squadmate() {
 
 #[test]
 fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let vests = [
         give(&mut world, alice, "edge_torso_2", &[]),
@@ -443,7 +443,7 @@ fn one_camouflage_on_three_vests_comes_off_one_and_goes_with_its_sale() {
 /// cut short (the owner's "неможливо перемістити приціл").
 #[test]
 fn a_client_without_patch_30_takes_an_upgrade_off_its_first_holder() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let first = give(&mut world, alice, "edge_torso_2", &[]);
     let second = give(&mut world, alice, "bm_torso_1", &[]);
@@ -479,7 +479,7 @@ fn a_scope_is_refused_while_the_game_data_has_no_variant() {
     use survarium::v026g::prices;
     use survarium::v026g::scopes::ScopeFits;
     assert!(ScopeFits::shared().is_empty());
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let svd = give(&mut world, alice, "svd", &[]);
     let rifle = give(&mut world, alice, "ak_74m", &[]);
@@ -508,7 +508,7 @@ fn a_scope_is_refused_while_the_game_data_has_no_variant() {
 
 #[test]
 fn a_modification_is_rerolled_and_chosen() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, |account| {
         account.generic_money = 100_000;
@@ -639,7 +639,7 @@ fn a_modification_is_rerolled_and_chosen() {
 
 #[test]
 fn an_item_is_crafted_with_a_donor() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     world.change(alice, |account| account.premium_money = 500);
     let rifle = give(&mut world, alice, "ak_74m", &[2000]);
@@ -688,7 +688,7 @@ fn an_item_is_crafted_with_a_donor() {
 
 #[test]
 fn defects_are_repaired_in_time_or_at_once() {
-    let mut world = World::new(Duration::from_secs(60));
+    let mut world = World::new();
     let alice = world.connect("Alice");
     let rifle = give(&mut world, alice, "ak_74m", &[]);
     let spare = give(&mut world, alice, "ak_74m", &[]);

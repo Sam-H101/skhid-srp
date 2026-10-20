@@ -65,8 +65,9 @@ the bot sends key-down actions as one-tick pulses.
 
 Batteries (code): taking one from the ground on use is instant (0x3007E0),
 and so are putting one in and stealing from a container (0x31CC40); the
-battery config's `take_time: 0.6` is LIKELY the hands-up animation before it
-is in hand. Only resupply zones (`resupply_time_in_ms`), artefact
+battery config's `take_time` (0.6, 0.5 from content-edit battery-pickup-1) is
+the length the hands-up animation is time-scaled to (PROVEN,
+`battery_pickup.md`); the bots plan with no pick-up time. Only resupply zones (`resupply_time_in_ms`), artefact
 containers (`artefacts_search_time_sec`) and defusing a trap need use held.
 A carrier's speed is ×0.95 (`movement_speed_modifier: -0.05`, read at
 0x30016D; speed = max(0, 1 + sum of modifiers), 0x2D5AE0): 3.325 m/s
@@ -183,10 +184,11 @@ the archive's index: a loader must follow them.
 1. Bot places made by the server (no account, no session, never timed out,
    never a voter), entered once a real client is live; the inputs go
    straight to the relay. **Built 2026-10-14, not run with a real game:**
-   - `SRP_SERVER_BOTS=<n>` (lobby, default 0, testing only) puts `n` bots
-     into each match made, after its players, each on the side with fewer
-     places (`play::server_bot`): name `Bot-<n>`, clan tag `BOT`, the
-     kit of its role, session and account 0, no seat.
+   - `SRP_SERVER_BOTS=<n>` (lobby, testing only) put `n` bots into each
+     match made, after its players, each on the side with fewer places:
+     name `Bot-<n>`, clan tag `BOT`, the kit of its role, session and
+     account 0, no seat. **Removed 2026-10-17** with the queue (the
+     owner's): the server's bots play only "Player vs Bots" (§8).
    - **The bots' kit** (`survarium::v026g::loadouts`; `BOT_KIT`:
      item, slot, count, input bit, what every role wears; `BotRole`,
      `BotRole::gear()`, `bot_kit(role)`, `bot_kit_items(role)`,
@@ -427,9 +429,9 @@ the archive's index: a loader must follow them.
      hidden one; with the kick switched off in both the bots and the
      stand-in 17.5 %, 35 and 14 (before, with the old lift and the 150 ms
      rate: 19.9 %, 25 and 13 of 6,419).
-   - A local test with one game and 7 bots: `SRP_SERVER_BOTS=7`,
-     `SRP_MATCH_TEAM_SIZE=4`, `SRP_MATCH_MIN_PLAYERS=1`,
-     `SRP_MAPDATA_DIR` set (and `SRP_BOT_ROUTES` for play 17's routes).
+   - A local test with one game and 7 bots: "Player vs Bots" 4 v 4
+     (`SRP_PVB=on`), `SRP_MAPDATA_DIR` set (and `SRP_BOT_ROUTES` for play
+     17's routes).
    - Human routes on the real maps (a test run with the private files):
      174 routes over 8 maps and 3 modes, all 992 points on a floor, 891 of
      them open to the side (the rest in the enemy's spawn area), every
@@ -447,8 +449,10 @@ new place. Every place ever used counts toward the 20 of a match, so bots
 should fill a match to a modest size: with 20 places used, a bot leaving
 lets nobody in.
 
-**Giving way** (built 2026-10-14; `SRP_BOTS_GIVE_WAY`, match server,
-default on; the rules in `game/driven.rs`):
+**Giving way** (built 2026-10-14; `SRP_BOTS_GIVE_WAY`, match server;
+**removed 2026-10-17** with the server's bots in PvP matches: a match
+against bots takes no late joiner, so no bot ever gave way in one; kept
+for the record):
 - Who makes room: when late joiners are let in (their 0xE9 scheduled),
   each in the order of its place takes the place of a server's bot of its
   side if the side has one in the match and, with the joiner, would have
@@ -505,8 +509,7 @@ chosen in srp's changed lobby movie ("Player vs Bots"; the wire is
 - **The match.** The player alone on team 0 and 2N − 1 of the server's
   bots (stage 1's places, `play::server_bot`), N − 1 on its side: 6, 8 or
   10 a side, on one of 16 maps (the day of each level, batteries and Team
-  Deathmatch). Its teams are fixed: no late joiner, so no bot ever gives
-  its place up (`SRP_BOTS_GIVE_WAY` has nothing to do in it).
+  Deathmatch). Its teams are fixed: no late joiner.
   `MatchSetup::vs_bots` marks it for the match server and the rewards.
 - **One witness.** The player's game is the only one that simulates: its
   uploads are trusted on its word alone (one voucher, as with a test bot),

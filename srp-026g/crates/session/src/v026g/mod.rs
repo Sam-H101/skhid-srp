@@ -17,9 +17,8 @@
 //!   the order the client needs.
 //! - [`persist`]: the repositories (SQLite tables `g26_*` in `srp.db`,
 //!   memory).
-//! - [`matches_now`]: which of the matches being played is listed for the
-//!   players, and which score is told: one rule for the launcher's page
-//!   and the lobby's list.
+//! - [`matches_now`]: which of the matches being played the launcher's page
+//!   lists, and which score it tells.
 //! - [`replays`]: "Watch replay": the conversions waiting, each player's
 //!   latest ask, and the download tokens the lobby gives and the web page
 //!   takes.
@@ -47,6 +46,8 @@ pub mod pvb;
 pub mod quests;
 pub mod replays;
 pub mod rewards;
+pub mod room_settings;
+pub mod rooms;
 pub mod rules;
 pub mod tutorial;
 pub mod wire;
@@ -276,8 +277,9 @@ impl GameAccounts {
         self.accounts.locked().get(&account_id).cloned()
     }
 
-    /// The account with this id; at its first 0.26g sign-in it is made, with
-    /// the game's starting state ([`Account::new`]) under `name`.
+    /// The account with this id; made with the game's starting state
+    /// ([`Account::new`]) under `name` if it has none (a sign-in makes it
+    /// with [`Self::sign_up`]).
     pub fn get_or_create(&self, account_id: u32, name: &str) -> Arc<Mutex<Account>> {
         let mut accounts = self.accounts.locked();
         if let Some(account) = accounts.get(&account_id) {
@@ -288,6 +290,19 @@ impl GameAccounts {
         drop(accounts);
         self.mark_dirty(account_id);
         account
+    }
+
+    /// The account with this id; at its first 0.26g sign-in it is made, as
+    /// [`Self::get_or_create`] makes it, and given what the tutorial it no
+    /// longer has paid ([`tutorial::signup_grant`]). Whether it was made
+    /// now.
+    pub fn sign_up(&self, account_id: u32, name: &str) -> (Arc<Mutex<Account>>, bool) {
+        let made = !self.accounts.locked().contains_key(&account_id);
+        let account = self.get_or_create(account_id, name);
+        if made {
+            tutorial::signup_grant(&mut account.locked());
+        }
+        (account, made)
     }
 
     /// How many accounts have 0.26g state.
@@ -564,8 +579,14 @@ mod tests {
             assert_eq!(rifle.condition_or_stack, FULL_CONDITION);
             assert_eq!(rifle.modifications, [(2110, false)]);
             let vest = account.item(vest).unwrap();
-            assert_eq!((vest.condition_or_stack, vest.repair_time), (FULL_CONDITION, 0));
-            assert_eq!(account.item(whole).unwrap().condition_or_stack, FULL_CONDITION);
+            assert_eq!(
+                (vest.condition_or_stack, vest.repair_time),
+                (FULL_CONDITION, 0)
+            );
+            assert_eq!(
+                account.item(whole).unwrap().condition_or_stack,
+                FULL_CONDITION
+            );
             assert_eq!(account.item(rounds).unwrap().condition_or_stack, 90);
         }
         // Nothing left to mend.
@@ -743,12 +764,10 @@ mod tests {
         assert!(repository.get(5).unwrap().item(lost).is_some());
 
         // The data has them again (here: they are taken out): it loads.
-        let mut alice = alice;
         alice.inventory.retain(|item| item.item_id != lost);
         alice.inventory[0].modifications.pop();
         alice.extras.bonus.reward_dict = 0;
         repository.save(5, &alice).unwrap();
-        let mut bob = bob;
         bob.inventory.retain(|item| item.dict_id != 9999);
         bob.quest_cooldowns.clear();
         repository.save(6, &bob).unwrap();

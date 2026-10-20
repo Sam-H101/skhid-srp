@@ -3,7 +3,13 @@ bits 32
 %ifndef CAVE
 %error CAVE is required
 %endif
+; Patch 39's one dword in the state page (patch_026g.py's
+; TAB_LIST_STATE_OFFSET): the places the scoreboard was last made with.
+%define TAB_ROWS 0xe40
 org CAVE
+; Patch 40's k, a float (0 until the first projection): FOV_LOD_STATE_OFFSET
+; of the state page (patch_026g.py), after the scoreboard's TAB_ROWS.
+FOV_LOD_K equ STATE_VA + 0xE50
 
 ; eax=core, [esp+4]=slot, ret 4. Used for initial and appended slots.
 ; Separate ID ranges keep world IDs independent of the initial roster size.
@@ -158,6 +164,12 @@ times 576-($-$$) db 0xcc
 ; uro_fov unaimed, nearly it with iron sights, the original's 65 * 0.25
 ; through a 4x scope whatever the setting, and between them a slide that
 ; follows the aim. Only xmm0 of the XMM registers is written, as before.
+; Patch 40: it also keeps k = max(1, tan(A/2) / tan(65 z/2)), A the angle
+; it passes, 65 z the original's at the same zoom, at FOV_LOD_K of the
+; state page, for fov_lod_scale and fov_screen_scale below. k is exactly 1
+; at uro_fov 65 or less (A = 65 z + 0, the same two tangents) and through
+; a full scope; 1.87 unaimed at 100. The x87 stack is empty again before
+; the call, as it was.
 fov_projection:
     mov eax, [esp+8]
     push esi
@@ -178,9 +190,25 @@ fov_projection:
     fmulp st1, st0
     fxch st1
     fmul dword [fov_stock]
-    faddp st1, st0
+    fld st0
+    faddp st2, st0
+    fld st1
     fmul dword [fov_radians]
     fstp dword [esp]
+    fmul dword [fov_half]
+    fptan
+    fstp st0
+    fxch st1
+    fmul dword [fov_half]
+    fptan
+    fstp st0
+    fdivrp st1, st0
+    fld1
+    fxch st1
+    fcomi st0, st1
+    fcmovbe st0, st1
+    fstp st1
+    fstp dword [FOV_LOD_K]
     movss xmm0, [esp]
     fld dword [eax]
     fdiv dword [eax+4]
@@ -194,6 +222,7 @@ fov_scope:   dd 0.25
 fov_blend:   dd 1.3333334
 fov_stock:   dd 65.0
 fov_radians: dd 0.017453292
+fov_half:    dd 0.008726646
 
 times 768-($-$$) db 0xcc
 ; Native boost member callback: ecx=context, [esp+4]=queries_result.
@@ -444,6 +473,36 @@ ready_hook:
     popad
     jmp UPLOAD_READY
 
+times 1760-($-$$) db 0xcc
+; Patch 40: the high-FOV LOD compensation. The game measures a model by
+; its size on the screen, through the projection: a static model's LOD
+; (static_render_model_instance::select_lod 0x16EEC0, type 1, LOD 3 draws
+; nothing) and every surface's screen factor (0x158D80: shader LOD, sun
+; and spot shadow casters, rain occluders). At a wider angle a model is
+; smaller on the screen, so it went down in LOD and out at a shorter
+; distance than the original's 65 degrees. Both multiply by k
+; (fov_projection above) after the original's own constant, so they see
+; the model as the original at the same zoom would. Before the first
+; projection the page is zero, and they keep the original's value.
+; select_lod's `mulss xmm0,[0x927A44]` (0.5, 0x16F2A4) calls here.
+fov_lod_scale:
+    mulss xmm0, [0x927A44]
+    cmp dword [FOV_LOD_K], 0
+    je .stock
+    mulss xmm0, [FOV_LOD_K]
+.stock:
+    ret
+
+times 1792-($-$$) db 0xcc
+; calculate_screen_factor's `fmul dword [0xA710D0]` (100, 0x1590AF) calls here.
+fov_screen_scale:
+    fmul dword [0xA710D0]
+    cmp dword [FOV_LOD_K], 0
+    je .stock
+    fmul dword [FOV_LOD_K]
+.stock:
+    ret
+
 times 1856-($-$$) db 0xcc
 ; E4 case of on_match_packet_received: esi=NC, ebx=reader.
 prepare_hook:
@@ -572,6 +631,40 @@ client_destroyed_hook:
     mov ebp, esp
     and esp, -8
     jmp 0x219e66
+
+times 2480-($-$$) db 0xcc
+; The scoreboard has a row for a place that is in the match, and for no
+; other (patch 39; ../docs/notes/tab-list-left-places.md): a place whose
+; player left, by its own word or by a link the server gave up on, is not
+; shown. 0x23537A in 0x234880's first loop, where a place's row is put
+; into the scoreboard's array (root.list_set_players): `lea eax,[esp+58h]`
+; / `push eax` / `mov eax,[esp+138h]` / `push ebx` / `push eax` / `call
+; edx`, the array's SetElement (its interface's vtable+34h) with the place
+; (ebx) as the index. ecx is the array's interface ([esp+12Ch]), its data
+; at [esp+134h], the row at [esp+58h], the hud at [esp+5E8h] (here 4 more
+; each). The row goes in at the array's end (PushBack, vtable+3Ch, as the
+; enemies' ids are put in at 0x234F2D) when the place is in the match:
+; kd_stats_rule's `online` (on_player_entered_match 0x3239F0 sets it,
+; on_player_left_match 0x323A00 clears it, for the server's 0xE9 and 0xEA,
+; in every game of the match at the same tick; a world brings it), which
+; fill_match_hud_state 0x323980 copies into the hud's state at +0C0h +
+; 8 x place every tick. A list made: the mask kept in the state page is
+; none (-1), so the next update of the shown list makes the lists again
+; with the places of then (tab_shown), which keeps the mask after its own
+; run.
+tab_row:
+    call get_state
+    or dword [eax+TAB_ROWS], -1
+    mov eax, [esp+0x5ec]          ; the hud
+    cmp byte [eax+ebx*8+0xc0], 0
+    je .not_in_match
+    lea eax, [esp+0x5c]           ; the row
+    push eax
+    push dword [esp+0x13c]        ; the array's data
+    mov edx, [ecx]
+    call [edx+0x3c]               ; PushBack
+.not_in_match:
+    ret
 
 %ifdef TEST_SESSION
 times 2560-($-$$) db 0xcc
@@ -842,7 +935,12 @@ lists_hook:
     pop ecx
     add ecx, install_context.rebuild_return-.pc
     cmp [esp+0x5e4], ecx
+    je .rebuilt
+    ; ... or the one in tab_shown (patch 39).
+    add ecx, tab_shown.rebuilt-install_context.rebuild_return
+    cmp [esp+0x5e4], ecx
     jne .start_of_match
+.rebuilt:
     xor esi, esi                  ; as the function's end has it
     jmp 0x2363ca
 .start_of_match:
@@ -882,6 +980,56 @@ box_hook:
     jmp .copy
 align 4, db 0xcc
 .box: dd -1.0, -1.0, -1.0, 1.0, 1.0, 1.0
+
+times 3600-($-$$) db 0xcc
+; Patch 39 (tab_row above): 0x23B421 in game_world_ui::update_ui (0x23B200,
+; edi = the hud), when the hud's state has changed, before the players'
+; rows are refreshed while the list is shown: `cmp byte [edi+0BAh],0` (the
+; `jz 23B477h` after the call stays and takes its flags from here). While
+; the list is shown, the places in the match now (the hud's +0C0h + 8 x
+; place, for the count the loop after this reads) are set against the
+; mask the lists were last made with (TAB_ROWS of the state page); when
+; they differ, the three lists are made again (rebuild_lists, as the late
+; join's install has them made, with the options the hud's were made
+; with, [hud+1Ch]) and the mask is kept. A list made by anything else
+; leaves the mask at -1 (tab_row). The loop after this refreshes only the
+; rows of places in the match (patch_026g.py's TAB_LIST_LOOP).
+tab_shown:
+    cmp byte [edi+0xba], 0
+    je .hidden
+    pushad
+    mov eax, [edi+0x18]
+    mov eax, [eax+0x4d4c]
+    mov eax, [eax+0x124]          ; the options, as 0x23B42C..0x23B435 read them
+    movzx ecx, byte [eax+0x577b5] ; the places
+    cmp ecx, 20
+    jbe .places
+    mov ecx, 20                   ; the hud's state has twenty
+.places:
+    xor edx, edx
+.place:
+    dec ecx
+    js .counted
+    cmp byte [edi+ecx*8+0xc0], 0
+    je .place
+    bts edx, ecx
+    jmp .place
+.counted:
+    call get_state
+    lea esi, [eax+TAB_ROWS]
+    cmp [esi], edx
+    je .same
+    push edx
+    push dword [edi+0x1c]
+    push edi
+    call rebuild_lists
+.rebuilt:
+    pop dword [esi]
+.same:
+    popad
+    cmp byte [edi+0xba], 0
+.hidden:
+    ret
 
 times 3712-($-$$) db 0xcc
 ; 0x316EA0 in the respawn rule's spawn 0x316DA0 (slot +5Ch of every respawn

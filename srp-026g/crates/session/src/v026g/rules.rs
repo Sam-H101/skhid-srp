@@ -749,16 +749,6 @@ pub fn set_active_kit(account: &mut Account, kit_id: u32, now: u64) -> Result<()
     Ok(())
 }
 
-/// `4B 01`: the tutorial step the client reports done (1..=4).
-pub fn tutorial_step(account: &mut Account, step: u8) {
-    account.tutorial_step = account.tutorial_step.max(step);
-}
-
-/// `4B 02`: the tutorial was skipped.
-pub fn skip_tutorial(account: &mut Account) {
-    account.tutorial_done = true;
-}
-
 /// The slots of the two weapons (the client's table at 0x9266A0).
 const WEAPON_SLOTS: [usize; 2] = [7, 10];
 /// The slots whose ammo counts for either weapon (the client's table at
@@ -1025,10 +1015,7 @@ mod tests {
         // Its weight counts once.
         let pistol_weight =
             account.kit_weight(&account.kits[0]) - item_params(suit.dict_id).unwrap().weight;
-        assert!(
-            (0.0..2.0).contains(&pistol_weight),
-            "{pistol_weight}"
-        );
+        assert!((0.0..2.0).contains(&pistol_weight), "{pistol_weight}");
         // A weapon slot is not covered.
         let pistol_item = account.item(pistol.unwrap().item_id).unwrap().clone();
         put_on(&mut account, &covers, &[relocation(&pistol_item, 7, 10, 1)]);
@@ -2132,11 +2119,6 @@ mod tests {
         assert_eq!(account.active_kit, 2);
         set_autobuy(&mut account, true);
         assert!(account.autobuy);
-        tutorial_step(&mut account, 3);
-        tutorial_step(&mut account, 2);
-        assert_eq!(account.tutorial_step, 3);
-        skip_tutorial(&mut account);
-        assert!(account.tutorial_done);
     }
 
     #[test]

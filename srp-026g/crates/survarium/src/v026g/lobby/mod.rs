@@ -43,6 +43,7 @@ pub mod client_rules;
 pub mod push;
 pub mod requests;
 pub mod results;
+pub mod rooms;
 pub mod social;
 pub mod tutorial_model;
 

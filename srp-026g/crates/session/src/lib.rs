@@ -39,10 +39,9 @@ mod squads;
 pub mod v026g;
 pub use bans::{Ban, IpBan, Net};
 pub use matchmaking::{
-    DEFAULT_GATHER_WINDOW, DEFAULT_TEAM_SIZE, FormedMatch, Level, LevelRules,
-    MAX_PLAYERS_PER_MATCH, Matchmaking, Player, QueuePool, QueueState, QueuedGroup, STRENGTH_SCALE,
-    Seat, fill_from_env, gather_window_from_env, growing_start_rules_from_env,
-    leveled_start_rules_from_env, quiet_from_env,
+    DEFAULT_GATHER_WINDOW, FormedMatch, Level, MAX_PLAYERS_PER_MATCH, Matchmaking, Player,
+    QueuePool, QueueState, STRENGTH_SCALE, Seat, fill_from_env, gather_window_from_env,
+    quiet_from_env,
 };
 use persist::{AccountRecord, AccountRepository, PersistError, StoredSession};
 pub use reports::{MatchReport, Reports};
@@ -344,6 +343,10 @@ struct Writer {
     sessions: HashMap<u32, Instant>,
 }
 
+/// A banned account in [`SessionStore::bans`]: id, user name, shown name,
+/// ban, last address.
+pub type BannedAccount = (u32, String, String, Ban, Option<IpAddr>);
+
 /// Maps sign-ins to shared accounts. Cheap to clone behind an `Arc`.
 ///
 /// Lock order: `sessions` is never held while the matchmaking is asked;
@@ -379,6 +382,8 @@ pub struct SessionStore {
     /// between.
     #[cfg(test)]
     test_hook: Mutex<Option<(HookPoint, TestHook)>>,
+    /// The rooms as the lobby last counted them, for the site.
+    room_counts: Mutex<RoomCounts>,
 }
 
 /// What a test runs at a [`HookPoint`].
@@ -395,31 +400,22 @@ enum HookPoint {
     SessionInserted,
 }
 
+/// The rooms (the players' "servers") as the lobby counts them on each of
+/// its ticks: what the site shows of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoomCounts {
+    /// Rooms that exist.
+    pub rooms: usize,
+    /// Players in a room.
+    pub in_rooms: usize,
+    /// Players in a full room's queue.
+    pub queued: usize,
+}
+
 impl SessionStore {
     /// A store whose queue gathers players for the default window.
     pub fn new() -> Self {
         Self::with_gather_window(DEFAULT_GATHER_WINDOW)
-    }
-
-    /// [`Self::with_gather_window`] with the start rules of the leveled
-    /// queue set (`Matchmaking::with_start_rules`), for tests.
-    pub fn with_start_rules(
-        gather: Duration,
-        min_players: usize,
-        extension: Duration,
-        longest: Duration,
-    ) -> Self {
-        let mut store = Self::with_gather_window(gather);
-        store.matchmaking = store
-            .matchmaking
-            .with_start_rules(min_players, extension, longest);
-        store
-    }
-
-    /// The start rules of the leveled queue (`Matchmaking::set_start_rules`).
-    pub fn set_start_rules(&self, min_players: usize, extension: Duration, longest: Duration) {
-        self.matchmaking
-            .set_start_rules(min_players, extension, longest);
     }
 
     /// A store whose queue gathers players for `gather` before a match
@@ -440,6 +436,7 @@ impl SessionStore {
             next_hold_id: AtomicU64::new(1),
             limits: limits::Limits::default(),
             maintenance_at: Mutex::new(None),
+            room_counts: Mutex::new(RoomCounts::default()),
             registrations_open: AtomicBool::new(true),
             #[cfg(test)]
             test_hook: Mutex::new(None),
@@ -1495,8 +1492,7 @@ impl SessionStore {
     /// with [`SignInError::Banned`].
     pub fn account_ban(&self, account_id: u32) -> Option<Ban> {
         let account = self.account(account_id)?;
-        let ban = account.locked().ban_at(unix_now()).cloned();
-        ban
+        account.locked().ban_at(unix_now()).cloned()
     }
 
     /// The ban of `ip`, if one holds now.
@@ -1634,7 +1630,7 @@ impl SessionStore {
 
     /// The bans in force: accounts (id, user name, shown name, ban, last
     /// address), then addresses. Ones that ran out are left out.
-    pub fn bans(&self) -> (Vec<(u32, String, String, Ban, Option<IpAddr>)>, Vec<IpBan>) {
+    pub fn bans(&self) -> (Vec<BannedAccount>, Vec<IpBan>) {
         let now = unix_now();
         let accounts: Vec<_> = self.accounts.locked().values().cloned().collect();
         let mut banned: Vec<_> = accounts
@@ -1791,6 +1787,15 @@ impl SessionStore {
 
     /// The minutes left to it, rounded up, as the clients are told: `None`
     /// when none is planned, 0 once its time has come.
+    /// The lobby's count of its rooms ([`RoomCounts`]).
+    pub fn set_room_counts(&self, counts: RoomCounts) {
+        *self.room_counts.locked() = counts;
+    }
+
+    pub fn room_counts(&self) -> RoomCounts {
+        *self.room_counts.locked()
+    }
+
     pub fn minutes_to_maintenance(&self) -> Option<u32> {
         let at = self.maintenance_at()?;
         let left = at.saturating_sub(unix_now());

@@ -72,7 +72,9 @@ mod tests {
         repository.save_result("report:7", "seven").unwrap();
         repository.save_result("report:8", "eight").unwrap();
         // A key is one row: written again, it is replaced.
-        repository.save_result("state", "{\"reports\":[7]}").unwrap();
+        repository
+            .save_result("state", "{\"reports\":[7]}")
+            .unwrap();
         repository.delete_result("report:8").unwrap();
         repository.delete_result("report:9").unwrap();
         drop(repository);

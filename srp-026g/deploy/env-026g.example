@@ -83,12 +83,7 @@ RUST_LOG=info
 
 # Optional game settings (srp's defaults when left out; see SRP-026G.md):
 # SRP_REGISTRATION=closed
-# SRP_MATCH_GATHER_SECONDS=60
 # SRP_MATCH_MODES=2,3,4
-# The most players of a side (1 to 10), and how many seconds of waiting
-# widen a player's range of levels by one (raise it on a full server).
-# SRP_MATCH_TEAM_SIZE=8
-# SRP_MATCH_SEARCH_STEP_SECONDS=4
 # What a player counts for when the sides of a match are made, in gear
 # levels: by being there (with an odd count the side with a player more has
 # this much more, so the stronger players are the side of fewer), for a
@@ -102,21 +97,15 @@ RUST_LOG=info
 # to move the balance rating: 4 leaves out one against one and two against
 # one. 1: every match moves it.
 # SRP_BALANCE_RATED_PLAYERS=4
-# Games of patch revision 5 or later join matches that are being played.
-# A match of theirs starts with this many players, this long after the
-# second one pressed Play, and takes who comes later:
-# SRP_GROWING_MIN_PLAYERS=2
-# SRP_GROWING_GATHER_SECONDS=120
-# A player who joins goes where the sides then count most alike: the
-# players in the match, what they count for (above), and the lead. What a
-# battery and a ticket of lead count for, in players; the lead, in players,
-# from which the side that trails may get two players more than the other
-# (5 batteries, 13 tickets); and how long a player who would make an even
-# match uneven waits for another before it goes in:
+# A player who comes into a room while its match is played goes into the
+# match on the side with fewer players; of two alike in that, the side it
+# played on before in that match; then the side that counts for less: what
+# its players count for (above), and the lead. So the lead only decides
+# between sides with as many players, for a joiner that has no side of its
+# own in that match yet. What a battery and a ticket of lead
+# count for, in players:
 # SRP_BALANCE_BATTERY_LEAD=0.55
 # SRP_BALANCE_TICKET_LEAD=0.2
-# SRP_BALANCE_DRAMATIC_LEAD=2.5
-# SRP_LATE_JOIN_PATIENCE_SECONDS=60
 # No squads: an invite is refused, and its sender is told in a message box.
 # SRP_SQUADS=off
 # SRP_SQUADS_OFF_TEXT=Squads are switched off on this server.
@@ -135,10 +124,6 @@ RUST_LOG=info
 # SRP_LOBBY_MATCH_LINK_TIMEOUT_SECONDS=120
 # SRP_LOBBY_SESSION_GRACE_SECONDS=60
 # SRP_MATCH_MAPS=
-# How much the map draw leans to the maps a match's players played less:
-# a map 5 or more plays behind their most-played one weighs 1 + this (0:
-# every map alike; 0 to 4).
-# SRP_MATCH_MAP_SKEW=1
 # What a match pays: its experience times this (1 is the original's pace;
 # the owner's choice: 2).
 # SRP_EXPERIENCE_RATE=2
@@ -185,6 +170,15 @@ RUST_LOG=info
 # SRP_PVB_MAX_MATCHES=5
 # SRP_PVB_PAY=0.5
 # SRP_PVB_STALL_S=60
+
+# Rooms, the players' "servers": made, listed and joined in the changed
+# lobby movie, a match after match in each, its map voted on
+# (servers/lobby-server/src/v026g/rooms.rs, docs/notes/lobby.md 2.16.3).
+# Every PvP match is a room's, and Play puts a player into one. The most
+# rooms at once, and the playable maps_dict ids a creator may add besides
+# SRP_MATCH_MAPS.
+# SRP_ROOMS_MAX=50
+# SRP_ROOMS_EXTRA_MAPS=
 # The bots' maps (docs/notes/player_bots_mapdata.md section 6): the
 # <project>.mapdata files, copied by hand into the data volume (game data:
 # never into a repository). Compose default /srv/srp/data/mapdata; `off`:

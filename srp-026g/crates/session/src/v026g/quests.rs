@@ -675,7 +675,14 @@ mod tests {
             ..scale
         };
         assert_eq!(raised.of(100, 100), (200, 126));
-        assert_eq!(Scale { doubled: true, ..raised }.of(100, 100), (200, 252));
+        assert_eq!(
+            Scale {
+                doubled: true,
+                ..raised
+            }
+            .of(100, 100),
+            (200, 252)
+        );
         assert_eq!(
             Scale {
                 reputation_share: 1.2,
