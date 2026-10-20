@@ -1743,8 +1743,8 @@ fn room_rules(lang: Lang, squads: bool) -> String {
             ),
         ),
         lang.tr(
-            "Join a room while its match is played: you see the room, then go into the match (on the weaker side) until its last 30 s. After a match everyone is back in the room.",
-            "Хто приєднується до кімнати під час матчу, бачить кімнату, а потім потрапляє в матч (на слабшу сторону) — до його останніх 30 с. Після матчу всі повертаються в кімнату.",
+            "Join a room while its match is played: you see the room, then go into the match (on the side with fewer players) until its last 30 s. After a match everyone is back in the room.",
+            "Хто приєднується до кімнати під час матчу, бачить кімнату, а потім потрапляє в матч (на сторону, де менше гравців) — до його останніх 30 с. Після матчу всі повертаються в кімнату.",
         ),
         lang.tr(
             "Teams are balanced by gear, level and past results.",

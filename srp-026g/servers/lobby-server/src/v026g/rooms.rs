@@ -23,9 +23,10 @@
 //! - **Late.** A member in the lobby while the room's match is played sees
 //!   the room first and goes into it `LATE_JOIN_WAIT` later (or at once on
 //!   its ask) if the match admits players (from its countdown until
-//!   `LOAD_MARGIN` is left), on the side that counts for less
-//!   (`matchmaking_policy::place_weaker`); otherwise it waits for the next
-//!   match.
+//!   `LOAD_MARGIN` is left), on the side with fewer players in it; of two
+//!   alike in that, the side it played on in that match before, then the
+//!   one that counts for less (`matchmaking_policy::place_joiner`);
+//!   otherwise it waits for the next match.
 //! - **After.** The match over, its players are in the lobby again and in
 //!   the room, whose next vote and wait begin.
 //! - **Play.** Play with nothing else chosen puts the player into an open
@@ -1125,7 +1126,23 @@ impl Core<'_> {
             players: 1,
             strength: i64::from(ready.strength),
         };
-        let Some(placement) = policy::place_weaker(sides, worth, &rule) else {
+        // One who played this match before (left it, or its game was gone
+        // for good) goes back to its side when the sides have as many
+        // players: the side of its latest place in the roster, which keeps
+        // every place, given up or not.
+        let previous = self
+            .store
+            .matchmaking()
+            .formed_match(match_id)
+            .and_then(|formed| {
+                formed
+                    .seats
+                    .iter()
+                    .rev()
+                    .find(|seat| seat.player.account_id == account_id)
+                    .map(|seat| seat.team)
+            });
+        let Some(placement) = policy::place_joiner(sides, worth, previous, &rule) else {
             return;
         };
         let team = placement.assignments.first().map_or(0, |(_, team)| *team);

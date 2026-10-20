@@ -51,7 +51,10 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
 - **Late joins:** a member who comes during the room's match (by Play, Join, its queue or a
   switch) sees the room first: who is in it and at what levels, to switch or make its own;
   it goes into the match 15 s later, or at once with "Join match". It goes in on the
-  weaker side, from its countdown on (the first seconds too) until 30 s (`LOAD_MARGIN`) are
+  side with fewer players in the match; of two alike in that, on the side it played on in
+  that match before (it left, or its game was gone for good); then on the weaker one (the
+  owner's of 2026-10-19: players, then the previous team, then the balance; after a 4 v 8
+  by strength), from its countdown on (the first seconds too) until 30 s (`LOAD_MARGIN`) are
   left of it; one who comes later waits in the same room and plays its next match.
 - **In the match (Tab list), to do:** a lost player's row stays grey for the 90 s; one who
   left to the lobby, or is lost past the 90 s, has its row removed; coming back after the

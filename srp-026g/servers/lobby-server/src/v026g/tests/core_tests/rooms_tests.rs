@@ -12,6 +12,7 @@ use survarium::v026g::lobby::rooms::{
 
 use super::pvb_tests::with_gear;
 use super::*;
+use crate::v026g::LiveView;
 
 /// Fields of the state's header (`S1;R;<key>;<level>;<max level>;<size>;
 /// <wait>;<phase>;<secs>;<owner>;<pool>;<members>;<serial>;<pin>`).
@@ -909,4 +910,117 @@ fn one_who_leaves_the_match_by_its_own_word_is_out_of_the_room_and_may_come_agai
     assert_eq!(bob_report.player_id, 3);
     assert_eq!(report.stats.rows.len(), 2);
     world.assert_clean();
+}
+
+/// A room match of four that has started: the room's key, the match's
+/// ticket and lobby id, and the four clients.
+fn room_match_of_four(world: &mut World) -> (u32, u32, u32, [usize; 4]) {
+    let players = ["Alice", "Bob", "Carol", "Dave"].map(|name| world.connect(name));
+    let key = create(world, players[0], spec(6), None);
+    for &player in &players[1..] {
+        rows(world, player, ROOM_JOIN_BASE + key, 1);
+    }
+    world.advance(VOTE_AND_WAIT);
+    let (ticket, _) = sent_to_match(&world.take(players[0])).expect("a match");
+    for &player in &players[1..] {
+        assert!(sent_to_match(&world.take(player)).is_some());
+    }
+    let (&id, running) = world
+        .core
+        .matches
+        .iter()
+        .find(|(_, running)| running.ticket.match_id == ticket)
+        .unwrap();
+    assert_eq!(running.seats.len(), 4);
+    (key, ticket, id, players)
+}
+
+/// The roster place and team of the client's player in the match.
+fn seat_of(world: &World, id: u32, player: usize) -> (usize, u8) {
+    let session = world.ids[player].1;
+    let seats = &world.core.matches[&id].seats;
+    let place = seats.iter().position(|&(s, _)| s == session).unwrap();
+    (place, seats[place].1)
+}
+
+/// The player leaves the match by its own word, then (the match showing
+/// `present`) joins the room again and goes into the match: its new team.
+fn leave_and_come_back(
+    world: &mut World,
+    (key, ticket, id): (u32, u32, u32),
+    player: usize,
+    present: u32,
+) -> u8 {
+    let account = world.ids[player].0;
+    assert_eq!(world.store.matchmaking().leave_match(account), Some(id));
+    world.ask(player, request::leave(1, true));
+    world.advance(Duration::from_secs(1));
+    world.host.live.locked().insert(
+        ticket,
+        LiveView {
+            present,
+            points: None,
+            kills: [0, 0],
+            played: Some(Duration::from_secs(60)),
+            time_left: Some(Duration::from_secs(600)),
+        },
+    );
+    world.host.admitting.locked().insert(ticket);
+    rows(world, player, ROOM_JOIN_BASE + key, 1);
+    world.take(player);
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(player)).expect("back into the match");
+    assert_eq!(sent, ticket);
+    let seats = &world.core.matches[&id].seats;
+    assert_eq!(seats.len(), 5);
+    assert_eq!(seats[4].0, world.ids[player].1);
+    seats[4].1
+}
+
+/// The owner's of 2026-10-19 (players, then the previous team, then the
+/// balance): one who comes back into its room's match goes, of two sides
+/// with as many players in it, to the side it played on.
+#[test]
+fn one_who_comes_back_into_the_match_goes_to_its_side_when_the_players_are_alike() {
+    let mut world = World::new();
+    let (key, ticket, id, players) = room_match_of_four(&mut world);
+    // A player of team 1 leaves, and one of team 0 is out of the match too
+    // (its game gone): 1 v 1 in it. The players are alike, so the balance
+    // alone would send the one coming back to team 0.
+    let leaver = players[1..]
+        .iter()
+        .copied()
+        .find(|&player| seat_of(&world, id, player).1 == 1)
+        .unwrap();
+    let other = players
+        .iter()
+        .copied()
+        .find(|&player| seat_of(&world, id, player).1 == 0)
+        .unwrap();
+    let present =
+        0b1111 & !(1 << seat_of(&world, id, leaver).0) & !(1 << seat_of(&world, id, other).0);
+    let team = leave_and_come_back(&mut world, (key, ticket, id), leaver, present);
+    assert_eq!(team, 1);
+}
+
+/// Players come first: one who comes back goes to the side with fewer
+/// players in the match, though it played on the other.
+#[test]
+fn one_who_comes_back_goes_to_the_side_with_fewer_players_whatever_its_team() {
+    let mut world = World::new();
+    let (key, ticket, id, players) = room_match_of_four(&mut world);
+    let leaver = players[1..]
+        .iter()
+        .copied()
+        .find(|&player| seat_of(&world, id, player).1 == 1)
+        .unwrap();
+    // Team 0's two are out of the match: 0 v 1 without it.
+    let mut present = 0b1111 & !(1 << seat_of(&world, id, leaver).0);
+    for &player in &players {
+        if seat_of(&world, id, player).1 == 0 {
+            present &= !(1 << seat_of(&world, id, player).0);
+        }
+    }
+    let team = leave_and_come_back(&mut world, (key, ticket, id), leaver, present);
+    assert_eq!(team, 0);
 }
