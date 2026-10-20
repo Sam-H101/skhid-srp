@@ -7,6 +7,10 @@ The owner's rule and what it changes. Data: `gameplay/players/default.player`
 - **Decision (the owner, 2026-10-19):** `fatal_damage` 1.0 as in 0.27: the
   0.27d0 value, kept by every later build (0.28a2, 0.28d0, 0.31a2, 0.46c2,
   0.69d: `i32:1`). 0.20e to 0.26g have `f32:1.5`. Nothing else changes.
+- **0.27's changes only (the owner, 2026-10-20):** this takes what 0.27 changed
+  in falls and nothing a later version (0.30 and on) changed. A fall value that
+  differs only from 0.28 on is not taken here; a later version's changes would
+  be a decision of their own.
 - **Values:** `fatal_damage` 1.5 -> 1 (written as `i32:1`, the 0.27 encoding;
   the loader takes i32 or f32). Unchanged: `harmless_height` 5, `fatal_height`
   10, `gravity` 9.8, `soft_landing_height` 1.8, `noiseless_height` 1.
