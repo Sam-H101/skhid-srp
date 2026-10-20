@@ -31,6 +31,8 @@ while Continue keeps you in the same 'Upgrade' window").
   the donor slot empty: drop another copy and upgrade again.
 - **Continue on an item that cannot be upgraded any more** (three modifications, or not craftable):
   it closes, as Exit.
+- **Order:** Continue left, Exit right, as the game's own dialogs put the accepting button left
+  and Cancel right (owner 2026-10-20: do as the other menus).
 - **A refused craft** (`cannot_craft_item`): the window closes by itself, as before; no buttons.
 - **Words:** the game's own "Exit" (`btn_exit_label`) and "Continue" (`btn_go_to_online_store`, the
   store dialog's Continue), in every game language.

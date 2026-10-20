@@ -65,6 +65,8 @@ package
             accept.label = LocalizationData.getName("btn_go_to_online_store");
             cancel.visible = true;
             accept.enabled = true;
+            // The game's order (MessageApply, MessageAsk, MessageExit): the
+            // accepting button left, Cancel right.
             var middle:Number = window.width / 2;
             accept.x = middle - accept.width - 4;
             cancel.x = middle + 4;
