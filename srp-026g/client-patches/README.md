@@ -455,7 +455,8 @@ The input is the live lobby movie (`flash_movies/lobby_menu.swf` of
 new `resources.db.patch_<n>`, as for the rooms:
 
 ```sh
-python buy_gold_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+# development only (a step of build_lobby_026g.py, which builds the movie that ships)
+python buy_gold_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --step-only
 ```
 
 The build is deterministic (sha256 `b7cf70a8…` with FFDec 25.1.3). Tests:
@@ -479,7 +480,8 @@ gold with 5,500 silver: 10,000 in Pay becomes 5,500, 100 in Receive becomes
 whole gold: with 5,550 silver, anything over 5,500 becomes 5,500.
 
 ```sh
-python exchange_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+# development only (a step of build_lobby_026g.py, which builds the movie that ships)
+python exchange_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --step-only
 ```
 
 The input is the movie with Get Gold (`b7cf70a8…`); the build is
@@ -516,7 +518,8 @@ The input is the movie of the exchange update (`f900cc8b…`); the build is
 deterministic (`45452c50…` with FFDec 25.1.3):
 
 ```sh
-python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+# development only (a step of build_lobby_026g.py, which builds the movie that ships)
+python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --step-only
 ```
 
 Tests: `python -m unittest test_buy_modified`. Not in a release yet.
@@ -551,7 +554,8 @@ The input is the movie of Buy on owned items (`45452c50…`); the build is
 deterministic (`1091a19d…` with FFDec 25.1.3):
 
 ```sh
-python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+# development only (a step of build_lobby_026g.py, which builds the movie that ships)
+python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --step-only
 ```
 
 Tests: `python -m unittest test_craft_menu`. Not in a release yet.
@@ -567,27 +571,47 @@ for the next resource patch (built on `1091a19d…`, the craft window's movie: `
 deterministic with FFDec 25.1.3); this does not change the executable or reserve a
 release revision.
 
-## Class updates (the rooms window after revision 24)
+## Building the lobby movie (one driver)
 
-`class_update_026g.py` puts a changed srp class into the newest lobby movie:
-FFDec compiles its source anew over the class of that name the movie has
-(`class_update/ReplaceClass.java`). Only that class's ABC block changes; every
-method of every other class and every other script's initializer is checked
-byte for byte, and every constant keeps its value. A method defined twice in
-the source is refused (FFDec keeps the last).
+The lobby movie is one file (`flash_movies/lobby_menu.swf`), and a patch that
+carries it replaces the players' movie whole. So it is built one way only:
+`build_lobby_026g.py` starts from revision 23's movie (`flash_movies/lobby_menu.swf`
+of `resources.db.patch_23`, sha256 `12f0ee1d…`) and applies every lobby change
+the repository holds, in order, as `patch_026g.py` does for the exe:
 
-The rooms window (`rooms/SrpRooms.as`) changes after revision 24 go out this
-way, never by `rooms_026g.py` again: that builds on revision 23's movie and
-would drop the lobby patches made on top of it (Get Gold to Optics). The
-first one is #212 (the map vote runs until the match starts; the create
-form's wait hint gone): built on `2e4cb7d2…` (Optics) into `ed14345f…`,
-deterministic with FFDec 25.1.3:
+1. the rooms window (`rooms_026g.py`, today's `rooms/SrpRooms.as`, #212 in it);
+2. Get Gold opens the exchange (`buy_gold_026g.py`, #213);
+3. the exchange window's amounts (`exchange_update_026g.py`, #214);
+4. Buy on owned items (`buy_modified_026g.py`, #215);
+5. the craft window's menu and buttons (`craft_menu_026g.py`, #216);
+6. Optics in a weapon's menu (`scope_context_menu_026g.py`, #217).
+
+A change of a step's source is built in by building again; a new lobby change
+is a new entry of `STEPS`. Never ship a movie made by running one step alone
+on some movie: it would lack the steps not run. Each step checks its own work
+(every method it does not change byte for byte); the steps' own lists of known
+inputs name the movies they were first built on, and the driver checks the
+base instead.
 
 ```sh
-python class_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --class SrpRooms
+python build_lobby_026g.py <patch_23's lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
 ```
 
-Tests: `python -m unittest test_class_update`. Not in a release yet.
+Each step's own script refuses to write a movie unless given `--step-only`
+(a development build of that one step). The driver's result must be
+`RESULT_SHA256`, the movie last checked: a changed source or FFDec gives
+another, refused until `RESULT_SHA256` is set to it on purpose (`--any-result`
+for development). The login hint and the exchange's first build are frozen in
+the base (a change of theirs needs a new base); the exchange's later changes
+are a step.
+
+The build of 2026-10-20 (`main` with #212): sha256 `8841ba5c…`, deterministic
+with FFDec 25.1.3. Its 881 scripts decompile byte for byte to those of the
+movie the owner tested with #212 (`ed14345f…`, made the long way: the rooms
+class compiled over Optics' movie); the bytecode is laid out differently (the
+rooms class compiled first), the non-script tags are the base's in both (every
+step keeps them). Tests: `python -m unittest test_build_lobby`. Not in a
+release yet.
 
 ## What each patch does
 

@@ -38,8 +38,8 @@ def transplant(original, edited):
     return result
 
 
-def build_movie(original, ffdec, java, javac, work):
-    if hashlib.sha256(original).hexdigest() not in MOVIE_SHA256S:
+def build_movie(original, ffdec, java, javac, work, known=True):
+    if known and hashlib.sha256(original).hexdigest() not in MOVIE_SHA256S:
         raise ValueError("Not a known live lobby movie (or already patched)")
     version, header, tags = swf.unpack(original)
     code = work / "code.swf"
@@ -61,7 +61,11 @@ def main():
     parser.add_argument("--ffdec", required=True, type=Path)
     parser.add_argument("--java", default="java")
     parser.add_argument("--javac", default="javac")
+    parser.add_argument("--step-only", action="store_true",
+                        help="write this one step's movie (development); a release ships build_lobby_026g.py's movie only")
     args = parser.parse_args()
+    if not args.step_only:
+        parser.error("this is one step of the lobby movie; a movie of it alone lacks the other steps. Build the movie with build_lobby_026g.py (or pass --step-only for a development build)")
     if args.output.exists() or args.output.is_symlink():
         parser.error("Output already exists; choose a new path")
     with tempfile.TemporaryDirectory(prefix="srp-scope-context-") as temporary:

@@ -34,7 +34,13 @@ Ask, in this order:
    game's format, named for the release's revision, below; how it was made
    doesn't matter). A folder of files at the paths the game reads them from
    (`gameplay/items/...`) is packed into one by
-   `release/build-patch <folder> <rev>`.
+   `release/build-patch <folder> <rev>`. **The lobby movie**
+   (`flash_movies/lobby_menu.swf`), when any lobby change is new since the
+   last release, is built by `srp-026g/client-patches/build_lobby_026g.py`
+   alone (every lobby change, in order, on revision 23's movie; README
+   "Building the lobby movie"), never by running one lobby step on some
+   movie: a patch replaces the movie whole, so a movie missing a step drops
+   that change for the players.
 2. **Any server-code change?** `release.sh` compares main's `srp-026g`
    build inputs with the target's tree and builds the image when they
    differ; the owner may know better (`--server-code yes|no`).
