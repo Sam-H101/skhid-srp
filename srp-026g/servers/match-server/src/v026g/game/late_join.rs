@@ -3,6 +3,7 @@
 //! clocks, histories and normal input relay while this state machine waits.
 
 use super::*;
+use session::matchmaking_policy::Closed;
 use survarium::v026g::match_msgs::late_join::{Prepare, Prepared, Proposal, Status};
 use survarium::v026g::match_msgs::{MAX_PLAYERS, id};
 
@@ -193,36 +194,65 @@ impl Game {
         self.record_note(note, now);
     }
 
+    #[cfg(test)]
     pub(crate) fn admitting(&self) -> bool {
-        self.growing_roster()
-            && self.players() < MAX_PLAYERS
-            // From the countdown on (the owner's of 2026-10-18: the first
-            // seconds of a room's match take joiners too), not while it
-            // waits for its players.
-            && matches!(
-                self.rule.state,
-                rules::state::COUNTDOWN | rules::state::IN_PROCESS
-            )
-            && self.mode_end_at.is_none()
-            && self.ending.is_none()
-            && self.finished_at.is_none()
-            && self.live() > 0
-            // One pending reservation at a time; a newcomer that failed by
-            // itself (`failed_alone`) is settled (its place is installed on,
-            // as one whose player left), and closes nothing. A place no game
-            // could install closes the match to joiners: none after it can
-            // be.
-            && self
-                .admissions
-                .iter()
-                .flatten()
-                .all(|a| a.entered() || a.failed_alone)
-            && self
-                .peers
-                .iter()
-                .flatten()
-                .filter(|p| p.stage != Stage::Gone && !p.left_behind)
-                .all(|p| p.resources_loaded && p.installed_roster == self.players())
+        self.growing_roster() && self.closed_to_joiners().is_none()
+    }
+
+    /// Why the match takes no late joiner now, the first reason that
+    /// holds; `None`: it takes one (its time limit aside,
+    /// [`Self::admission`]). Meaningful for a growing roster only.
+    pub(crate) fn closed_to_joiners(&self) -> Option<Closed> {
+        if self.mode_end_at.is_some() || self.ending.is_some() || self.finished_at.is_some() {
+            return Some(Closed::Ending);
+        }
+        if self.players() >= MAX_PLAYERS {
+            return Some(Closed::Full);
+        }
+        // One pending reservation at a time; a newcomer that failed by
+        // itself (`failed_alone`) is settled (its place is installed on, as
+        // one whose player left), and closes nothing.
+        if self
+            .admissions
+            .iter()
+            .flatten()
+            .any(|a| !a.entered() && !a.failed())
+        {
+            return Some(Closed::Joining);
+        }
+        // A place no game could install closes the match to joiners: none
+        // after it can be. No more players go in, as when it is full.
+        if self
+            .admissions
+            .iter()
+            .flatten()
+            .any(Admission::install_stopped)
+        {
+            return Some(Closed::Full);
+        }
+        // From the countdown on (the owner's of 2026-10-18: the first
+        // seconds of a room's match take joiners too), not while it waits
+        // for its players.
+        if !matches!(
+            self.rule.state,
+            rules::state::COUNTDOWN | rules::state::IN_PROCESS
+        ) || self.live() == 0
+        {
+            return Some(Closed::Loading);
+        }
+        let mut peers = self
+            .peers
+            .iter()
+            .flatten()
+            .filter(|p| p.stage != Stage::Gone && !p.left_behind);
+        if peers.clone().any(|p| !p.resources_loaded) {
+            return Some(Closed::Loading);
+        }
+        // Loaded, a game still installing a place: its joiner is on its way.
+        if peers.any(|p| p.installed_roster != self.players()) {
+            return Some(Closed::Joining);
+        }
+        None
     }
 
     /// Whether the place at `index` waits for `peer` to enter: a game in
@@ -268,18 +298,26 @@ impl Game {
     /// Until when a late joiner is taken: the time limit less
     /// `LOAD_MARGIN` (30 s, the owner's of 2026-10-19), while the match
     /// [admits](Self::admitting) players.
+    #[cfg(test)]
     pub(crate) fn admission_deadline(&self, now: Instant) -> Option<Instant> {
-        if !self.admitting() {
-            return None;
+        self.admission(now).ok()
+    }
+
+    /// [`Self::admission_deadline`], or why there is none: what the lobby
+    /// tells a room's waiting member.
+    pub(crate) fn admission(&self, now: Instant) -> Result<Instant, Closed> {
+        if let Some(closed) = self.closed_to_joiners() {
+            return Err(closed);
         }
-        let remaining = Duration::from_millis(u64::from(
-            self.rule.time_limit_at()?.saturating_sub(self.clock(now)),
-        ));
-        let open_for = remaining.checked_sub(session::matchmaking_policy::LOAD_MARGIN)?;
-        if open_for.is_zero() {
-            return None;
-        }
-        now.checked_add(open_for)
+        let Some(limit) = self.rule.time_limit_at() else {
+            return Err(Closed::Loading);
+        };
+        let remaining = Duration::from_millis(u64::from(limit.saturating_sub(self.clock(now))));
+        remaining
+            .checked_sub(session::matchmaking_policy::LOAD_MARGIN)
+            .filter(|open_for| !open_for.is_zero())
+            .and_then(|open_for| now.checked_add(open_for))
+            .ok_or(Closed::LastSeconds)
     }
 
     /// Failed newcomers can queue elsewhere. Their descriptors remain

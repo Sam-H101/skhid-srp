@@ -42,13 +42,15 @@ import scope_context_menu_026g
 # matches list, the exchange and the login hint, before the rooms.
 BASE_SHA256 = "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b"
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
-# The movie the steps make (FFDec 25.1.3), last checked: in the game by the
-# owner (2026-10-20), with the rooms' Leave room / Leave queue (red, white
-# text) and the yellow tab in a room or a queue (#211: the owner checked
-# d7907536; then the review fixes: no double-click into Play, Leave on
-# whatever the game says of Play). Set it anew, on
-# purpose, when a step changes.
-RESULT_SHA256 = "a56cd0edc847cb7b4066d38d0cfb664b9b558cdf7c898960e1e1e36b33921ab0"
+# The movie the steps make (FFDec 25.1.3). Set it anew, on purpose, when a
+# step changes. 57258f9e (#209, 2026-10-20): the rooms window tells a member
+# waiting during its room's match why it cannot go in (`J;-1;<why>`); NOT yet
+# checked in the game. Before it, a56cd0ed was checked in the game by the
+# owner (2026-10-20): the rooms' Leave room / Leave queue (red, white text)
+# and the yellow tab in a room or a queue (#211: the owner checked d7907536;
+# then the review fixes: no double-click into Play, Leave on whatever the
+# game says of Play).
+RESULT_SHA256 = "57258f9ed5391dadf080fbbbd30dc438c2267e5f3db50630d5f37ce03e683a55"
 # Every lobby change, in the order they are built (each on the one before).
 STEPS = [
     ("the rooms window (rooms/SrpRooms.as)", rooms_026g),

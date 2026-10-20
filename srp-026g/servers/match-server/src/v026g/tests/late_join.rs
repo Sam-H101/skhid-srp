@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::v026g::JoinError;
+use session::matchmaking_policy::Closed;
 use survarium::v026g::match_msgs::late_join::{Prepare, Prepared, Status};
 use survarium::v026g::match_msgs::{ServerMessage, id, rules::state};
 
@@ -42,7 +43,7 @@ fn admission_closes_at_the_end_of_the_match_and_stale_publications_expire() {
     // No game-loop update is needed to reject a reservation after its deadline.
     bench
         .registry
-        .set_admitting(bench.match_id, 2, Some(Instant::now()));
+        .set_admitting(bench.match_id, 2, Ok(Instant::now()));
     assert_eq!(
         bench.registry.join_running(bench.match_id, player(2)),
         Err(JoinError::Unavailable)
@@ -471,7 +472,7 @@ fn registry_admission_is_atomic_and_rejects_invalid_profiles() {
     bench.registry.set_admitting(
         bench.match_id,
         2,
-        Some(bench.now() + Duration::from_secs(600)),
+        Ok(bench.now() + Duration::from_secs(600)),
     );
     assert_eq!(
         bench.registry.join_running(bench.match_id, player(3)),
@@ -1395,9 +1396,13 @@ fn a_game_still_loading_after_thirty_seconds_holds_no_joiner_back() {
     bench.addrs[1].set_port(43_001);
     bench.clients[1].connect();
     assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
-    // Loading: no joiner is taken for now.
+    // Loading: no joiner is taken for now, and the lobby is told why.
     bench.run(1_000);
     assert!(!bench.game().admitting());
+    assert_eq!(
+        bench.registry.closed(bench.match_id, bench.now()),
+        Some(Closed::Loading)
+    );
     bench.run_long(27_000);
     assert!(!bench.game().admitting());
     bench.run_long(3_000);
@@ -1411,5 +1416,45 @@ fn a_game_still_loading_after_thirty_seconds_holds_no_joiner_back() {
     assert!(bench.clients[1].model.options.is_some());
     assert_eq!(bench.clients[0].model.syncs, 1);
     assert_eq!(bench.game().resyncs(0), 0);
+    bench.assert_no_faults();
+}
+
+/// Why the match takes nobody, as the lobby reads it (`closed`, the owner's
+/// of 2026-10-20: a room's waiting member is told): a joiner on its way in
+/// from its reservation until it entered, nothing while it takes one, the
+/// last 30 s, and its end.
+#[test]
+fn the_registry_says_why_a_match_takes_no_joiner() {
+    let mut bench = running();
+    let id = bench.match_id;
+    assert_eq!(bench.registry.closed(id, bench.now()), None);
+    let place = reserve(&mut bench);
+    assert_eq!(
+        bench.registry.closed(id, bench.now()),
+        Some(Closed::Joining)
+    );
+    bench.run(1_000);
+    assert_eq!(
+        bench.registry.closed(id, bench.now()),
+        Some(Closed::Joining)
+    );
+    bench.join(place);
+    assert!(bench.until(2_000, |b| b.clients[0].entered().contains(&(place as u8))));
+    assert!(bench.until(1_000, |b| b.registry.closed(id, b.now()).is_none()));
+    // Its last 30 s: past the deadline, without the match saying more.
+    let deadline = bench.game().admission_deadline(bench.now()).unwrap();
+    assert_eq!(bench.game().admission(deadline), Err(Closed::LastSeconds));
+    assert_eq!(
+        bench.registry.closed(id, deadline),
+        Some(Closed::LastSeconds)
+    );
+    // Its mode's rule ends it (enough play for ten batteries first).
+    bench.run_long(110_000);
+    let at = bench.clock() / 50 * 50 + 100;
+    for client in &mut bench.clients {
+        client.sim.points_from = Some((at, [10, 3]));
+    }
+    assert!(bench.until(15_000, |b| b.registry.closed(id, b.now())
+        == Some(Closed::Ending)));
     bench.assert_no_faults();
 }

@@ -379,6 +379,31 @@ pub struct RoomView {
     /// put into it, unless it asks first ([`ROOM_JOIN_MATCH`]); none when it
     /// is in it, or the match takes nobody now.
     pub join_in: Option<u32>,
+    /// The asker waits in its room while the match is played and the match
+    /// takes nobody now: why (none with [`Self::join_in`]).
+    pub join_hold: Option<JoinHold>,
+}
+
+/// Why a member waiting in its room cannot go into the room's match being
+/// played now (the owner's of 2026-10-20: players are told why). The third
+/// field of `J;-1;<why>` in [`room_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum JoinHold {
+    /// Another player is on its way into the match: one at a time.
+    Joining = 1,
+    /// A game of the match is loading; joining opens when it has loaded,
+    /// or within 30 s.
+    Loading = 2,
+    /// 30 s or less are left of it: the member plays the next match.
+    LastSeconds = 3,
+    /// Its side is full (the room's size a side), or the match takes no
+    /// more places.
+    Full = 4,
+    /// A maintenance is within 30 min: nobody goes into a match.
+    Maintenance = 5,
+    /// The match is ending (its mode's rule, or its result).
+    Ending = 6,
 }
 
 /// A room to switch to (`W` row of [`room_state`]).
@@ -485,8 +510,10 @@ pub fn room_list(
 ///   gone for now), a row `W;<key>;<max level>;<players>;<size>;<name>` when
 ///   a room of a lower max level would take the asker now ([`RoomSwitch`]),
 ///   a row `J;<seconds>` when the asker waits to go into its room's match
-///   being played ([`RoomView::join_in`]), and `L;<map_id>`, the last
-///   match's map (0: none).
+///   being played ([`RoomView::join_in`]), or `J;-1;<why>` when it waits
+///   and the match takes nobody now ([`JoinHold`]; a movie that reads only
+///   the seconds takes -1 as no row), and `L;<map_id>`, the last match's
+///   map (0: none).
 pub fn room_state(
     room: Option<&RoomView>,
     code: RoomCode,
@@ -540,6 +567,8 @@ pub fn room_state(
     }));
     if let Some(secs) = room.join_in {
         names.push(format!("J;{secs}"));
+    } else if let Some(why) = room.join_hold {
+        names.push(format!("J;-1;{}", why as u8));
     }
     if let Some(switch) = &room.switch {
         names.push(format!(

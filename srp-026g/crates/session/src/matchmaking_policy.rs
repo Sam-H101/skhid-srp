@@ -15,6 +15,26 @@ use std::time::Duration;
 /// hazard 10, is a game that never loaded a match).
 pub const LOAD_MARGIN: Duration = Duration::from_secs(30);
 
+/// Why a match being played takes no late joiner now, as the match server
+/// knows it (`match.md` §32, §33). A room's waiting member is told it
+/// (`rooms.md`, late joins).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closed {
+    /// A joiner is on its way in: its place is reserved and not entered
+    /// yet, or a game of the match is still installing it. One at a time.
+    Joining,
+    /// A game of the match is loading (at its start, or one that came
+    /// again), for 30 s at most (the match server's `LOADING_GRACE`), or
+    /// the match has not begun its countdown.
+    Loading,
+    /// [`LOAD_MARGIN`] or less is left of it.
+    LastSeconds,
+    /// It is ending: its mode's rule has its end, or it has its result.
+    Ending,
+    /// Every roster place of it is taken.
+    Full,
+}
+
 /// A side of a match being played, or a joiner: its players and what they
 /// count for together beside being there (their strengths, in
 /// `crate::matchmaking::STRENGTH_SCALE`s).

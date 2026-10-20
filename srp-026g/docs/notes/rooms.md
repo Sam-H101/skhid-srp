@@ -56,6 +56,17 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   owner's of 2026-10-19: players, then the previous team, then the balance; after a 4 v 8
   by strength), from its countdown on (the first seconds too) until 30 s (`LOAD_MARGIN`) are
   left of it; one who comes later waits in the same room and plays its next match.
+- **Why it cannot go in now** (the owner's of 2026-10-20: players see why): the window's
+  banner shows one line instead of the 15 s (`J;-1;<why>`, `lobby.md` §2.16.3); once the match
+  takes players again the seconds are back, and one whose 15 s are over goes in at once.
+  - another joiner on its way in (one at a time): "Another player is joining the match; you go in after." (1)
+  - a game of the match loading (at its start, or one that came again; 30 s at most, `match.md` §33):
+    "A player's game is loading; joining opens in a moment." (2)
+  - 30 s or less left: "Under 30 s left: you'll play the next match." (3)
+  - the side it would go to full (the room's size), or no place left in the match: "The match is full." (4)
+  - a maintenance within 30 min: "Server maintenance soon: no new joins." (5)
+  - the match ending (its mode's rule, its result): "The match is ending: you'll play the next one." (6)
+  - its own kit or gear unfit: the red mark's text, as before a match (no seconds either).
 - **In the match (Tab list), to do:** a lost player's row stays grey for the 90 s; one who
   left to the lobby, or is lost past the 90 s, has its row removed; coming back after the
   90 s is a new person (a new place, fresh state).

@@ -1024,3 +1024,100 @@ fn one_who_comes_back_goes_to_the_side_with_fewer_players_whatever_its_team() {
     let team = leave_and_come_back(&mut world, (key, ticket, id), leaver, present);
     assert_eq!(team, 0);
 }
+
+/// The `J` row of a state: `J;<seconds>`, or `J;-1;<why>`.
+fn join_row(state: &[String]) -> Option<&str> {
+    state
+        .iter()
+        .find(|row| row.starts_with("J;"))
+        .map(String::as_str)
+}
+
+/// The owner's of 2026-10-20: a member waiting in its room while the
+/// room's match is played, and the match takes nobody now, is told why
+/// (`J;-1;<why>`, `JoinHold`): another joiner on its way in, a game
+/// loading, the last 30 s, the end, a full side, a maintenance. Its own 15 s
+/// over, it goes in once joining opens again, and is shown the seconds
+/// again.
+#[test]
+fn a_member_who_cannot_go_into_the_match_is_told_why() {
+    use session::matchmaking_policy::Closed;
+    let mut world = World::new();
+    let (key, ticket, id, _) = room_match_of_four(&mut world);
+    let erin = world.connect("Erin");
+    // The match server says why it takes nobody now.
+    let held = [
+        (Closed::Joining, "J;-1;1"),
+        (Closed::Loading, "J;-1;2"),
+        (Closed::LastSeconds, "J;-1;3"),
+        (Closed::Full, "J;-1;4"),
+        (Closed::Ending, "J;-1;6"),
+    ];
+    world.host.closed.locked().insert(ticket, Closed::Loading);
+    let joined = rows(&mut world, erin, ROOM_JOIN_BASE + key, 1);
+    assert_eq!(join_row(&joined), Some("J;-1;2"), "{joined:?}");
+    for (closed, row) in held {
+        world.host.closed.locked().insert(ticket, closed);
+        let state = state(&mut world, erin);
+        assert_eq!(join_row(&state), Some(row), "{closed:?}: {state:?}");
+    }
+    // Held past her 15 s, she stays in the room.
+    world.host.closed.locked().insert(ticket, Closed::Joining);
+    world.advance(Duration::from_secs(16));
+    assert!(sent_to_match(&world.take(erin)).is_none());
+    // The match says nothing: no reason, and no seconds.
+    world.host.closed.locked().clear();
+    assert_eq!(join_row(&state(&mut world, erin)), None);
+    // Its sides full (6 a side, the room's size): the lobby's own reason,
+    // whatever the match server says.
+    world.host.admitting.locked().insert(ticket);
+    let seats = world.core.matches[&id].seats.clone();
+    {
+        let running = world.core.matches.get_mut(&id).unwrap();
+        for team in [0, 1] {
+            let more = 6 - seats.iter().filter(|seat| seat.1 == team).count();
+            for n in 0..more {
+                running
+                    .seats
+                    .push((9000 + u32::from(team) * 100 + n as u32, team));
+                running.strengths.push(0);
+                running.names.push(String::new());
+            }
+        }
+    }
+    let full = state(&mut world, erin);
+    assert_eq!(join_row(&full), Some("J;-1;4"), "{full:?}");
+    world.advance(Duration::from_secs(2));
+    assert!(sent_to_match(&world.take(erin)).is_none());
+    // A place frees on a side: joining opens, the seconds are back, and
+    // she goes in.
+    {
+        let running = world.core.matches.get_mut(&id).unwrap();
+        running.seats.truncate(seats.len());
+        running.strengths.truncate(seats.len());
+        running.names.truncate(seats.len());
+    }
+    let open = state(&mut world, erin);
+    assert_eq!(join_row(&open), Some("J;0"), "{open:?}");
+    world.advance(Duration::from_secs(1));
+    let (sent, _) = sent_to_match(&world.take(erin)).expect("Erin goes in");
+    assert_eq!(sent, ticket);
+}
+
+/// A maintenance within 30 min: a member waiting in its room while the
+/// match is played is told nobody goes in now; with the seconds it would
+/// have otherwise.
+#[test]
+fn a_member_waiting_while_a_maintenance_is_near_is_told_so() {
+    let mut world = World::new();
+    let (key, ticket, _, _) = room_match_of_four(&mut world);
+    let erin = world.connect("Erin");
+    world.host.admitting.locked().insert(ticket);
+    let joined = rows(&mut world, erin, ROOM_JOIN_BASE + key, 1);
+    assert_eq!(join_row(&joined), Some("J;15"), "{joined:?}");
+    world
+        .store
+        .set_maintenance(Some(session::v026g::quests::now() + 20 * 60));
+    let state = state(&mut world, erin);
+    assert_eq!(join_row(&state), Some("J;-1;5"), "{state:?}");
+}

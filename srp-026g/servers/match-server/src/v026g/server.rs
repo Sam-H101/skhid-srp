@@ -461,7 +461,7 @@ impl Server {
                 }
             }
             self.registry
-                .set_admitting(game.id, game.roster_size(), game.admission_deadline(now));
+                .set_admitting(game.id, game.roster_size(), game.admission(now));
             if tell_live {
                 self.registry.set_live(game.id, game.live_now(now));
             }
