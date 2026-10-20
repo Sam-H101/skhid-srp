@@ -82,6 +82,8 @@ release's. The "Result" row is the build of the revision named in it.
 | `read_order_026g.asm`, `read_order_026g.bin` | The source of patch 33 (the order of the archive reads is a strict weak ordering) and that code assembled at 0x10BCC0, the 0x1A0 bytes of `hdd_manager_sorting_predicate` it replaces, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
 | `check_read_order_026g.py` | Runs the original's and patch 33's predicate, with the game's own path, string and offset helpers, and the game's own sort on made-up read queries over several archives (needs Unicorn) |
 | `suicide_key_026g.asm`, `suicide_key_026g.section.bin` | The source of patch 34's code (the commit_suicide key kills one's own player) and that code assembled for 0x980 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `spot_026g.asm`, `spot_026g.section.bin` | The source of patch 38's code (a spot's hit on a battery's body spots the battery) and that code assembled for 0x7C0 of `.srp`, which `patch_026g.py` reads. Assembling the source again gives the same bytes |
+| `check_spot_026g.py` | Runs the original's and patch 38's input apply (the spot and its wait, the player's tick's countdown) with the game's own spottable code of players and batteries on made-up ray hits (needs Unicorn) |
 | `check_suicide_key_026g.py` | Runs the original's and patch 34's last action call of the input builder, with the game's own event buffer code, on made-up input handlers (needs Unicorn) |
 | `check_tab_list_026g.py` | Runs the original's and patch 39's refresh of the scoreboard's rows (update_ui 0x23B421..0x23B477), with the game's own list code of initialize_match made again, on made-up huds whose places enter and leave (needs Unicorn) |
 | `check_kit_change_026g.py` | Runs the original and patch 31's respawn rule tick, with the places' tick and the game's own spawn, the view of a kit change, the hud's update of the local player, mouse moves and the mouse's buttons through the game world's input handler and the warmup mode's step on made-up objects (needs Unicorn) |
@@ -2146,6 +2148,67 @@ With the smaller pool and one player, ten fresh-process loads and ten calls to
 the native resource reload routine did not reproduce the failure. Memory use
 settled after the second reload. That stress test does not exercise full
 lobby-to-match transitions. The exact reported intermittent crash remains open.
+
+### 38. Spotting: no cooldown, a battery's body spots it (the next release's revision)
+
+The owner's decision (2026-10-19), on "battery marking sometimes works,
+sometimes doesn't": no spot cooldown at all, and a hit on a battery's body
+counts. The rules: `../docs/notes/spotting.md`.
+
+A spot is input bit 28, set by the input builder when the spot key goes
+down (0x2421A6; holding the key sends no more). Every game applies it in
+`base_player::apply_new_input` (0x2D86E0): with the spotter's
+`m_time_left_to_try_spot_in_ms` (+34Ch) at 0 it casts a 100 m ray from the
+eye and walks the hits in order, spotting the first spottable one (group
+800h) whose owner gives a player (an enemy: 10 s marked) or a geometry
+whose first spottable says yes (a battery's use box
+`!victory_item_collision!`); a hit that is walkable after a hittable one
+ends the walk. Two faults made a spot of a battery fail:
+
+- the wait was set to 3000 ms at every press, hit or miss (0x2D87C1): a
+  miss, or a ray that met the battery's body, blocked the next press for
+  3 s;
+- the battery's rigid body (group 0A18h, 0x301CF5) is spottable and
+  hittable, but its owner (victory_item_core+58h, vtable 0xA13EEC) returns
+  neither a player nor a geometry: it spotted nothing, kept its hittable
+  bit in the walk's mask, and the floor behind it then ended the walk
+  before the use box.
+
+**The patch.** Only in the builds with the late join. The wait's immediate
+at 0x2D87C1 becomes 0 (two bytes): the field is 0 at every tick, so every
+press spots, and every snapshot saves 0 (the countdown 0x2DAB44 keeps 0, a
+spawn sets 0). And 0x2D8A0F, where the walk asks the owner for a geometry,
+jumps to `spot_026g.asm` (50 bytes at `.srp`+7C0h, after the shared
+upgrades' code, before the pickup code): for a battery's body owner it asks
+the battery's spottable interface (+54h, vtable 0xA13EE0) and spots it as
+the use box's path does (can_be_spotted_by 0x301CA0, set_spotted 0x301C40:
+the spotter's team bit into +1A4h, event 4 to the match statistics) and
+ends the walk; any other owner goes on as before.
+
+**Pressing again.** A spot of a battery one's team already sees sets no
+new bit and raises the statistics' event again, as the stock game did after
+its 3 s; only the battery's first spotter gets the spot award, once. A spot
+of an enemy marks them for 10 s again. A press is one ray; the identical
+input of the next tick (the key held, the mouse still) is not applied again.
+
+**Revisions.** It changes what a match computes (every game runs every
+player's spot): a game with it and one without part at the first spot
+(the wait, +34Ch, is saved with the player), so a server asks for the release's
+revision, and `../crates/session/src/v026g/simulation_changes.tsv` has its
+`next` row. `../docs/notes/client_patch.md` section 3.35 has the proof.
+
+Checked: `selftest_026g.py` check 38 (and check 15's layout of `.srp`'s
+first page); `check_spot_026g.py` runs the original's and the build's input
+apply on made-up hits with the game's own spottable code: a miss and the
+next press, one press held, a press every tick, a battery's body alone, the
+body before the floor and the use box, the use box alone and first, the
+other team's bit, a battery already spotted, a wall before it, an enemy, a
+teammate (alone and before an enemy), a wall before an enemy, a spottable
+hit with no owner behind it; the wait is 0 after every tick in the build.
+Against the build of `main` 7cb1e45, the default build differs in the two
+bytes at file 0x2C7BC7, the five of the hook at file 0x2C7E0F, the 50 bytes
+of code at file 0xC4B1C0 and the PE checksum, and in nothing else (compared
+byte by byte). **Not run in a game.**
 
 ### 39. The Tab list shows the places in the match, none whose player left (the next release's revision)
 

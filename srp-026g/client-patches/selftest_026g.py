@@ -309,6 +309,25 @@ without the late join, as patch revision 4 was, which check 15 builds on):
     0xe21c0`, after the arena 0xA967D8's vtable store; only byte 0x1E8CD1
     differs (04h -> 40h); "ai" is named there alone; no relocation under
     the instruction, no branch of the initializer into it.
+38. the same build: spotting (patch 38). In base_player::apply_new_input
+    (0x2D86E0) the original's spot block: bit 28 of the input (set by the
+    input builder on the spot key going down, 0x2421A6), the wait +34Ch
+    at 0, a 100 m ray (0xA710D0) with filter 80Ah, the wait set to 3000
+    at 0x2D87C1 before the ray is cast, the hits walked with the owner's
+    slot 2 (a player) and, at 0x2D8A0F, slot 1 (a geometry); the wait
+    counted down by the player's tick (0x2DAB44) and kept by
+    base_player::serialize (0x2DB34D) and its read (0x2DB95C).
+    victory_item_core's vtables: +54h 0xA13EE0 (set_spotted 0x301C40,
+    can_be_spotted_by 0x301CA0, `mov al,1`), +58h 0xA13EEC, the rigid
+    body's owner (0x301CC0, group 0A18h at 0x301CF5), whose slots 1 and 2
+    are 0x300040 `xor eax,eax; ret`, stored by the two constructors alone.
+    The build: `mov dword [edi+0x34c],0x0` at 0x2D87C1 (two bytes
+    differ), and 0x2D8A0F a jump to spot_026g.section.bin at SPOT_VA,
+    which leaves only to 0x2D888F, 0x2D8A8F and 0x2D8A14, calls only
+    through the battery's vtable, holds one absolute value (0xA13EEC) and
+    whose branches inside land on instructions; the build without the
+    late join keeps both; no relocation under the sites and nothing aims
+    inside them. check_spot_026g.py runs it.
 """
 
 import ctypes
@@ -504,6 +523,13 @@ def test_bins():
         fresh = open(out, "rb").read()
     check(fresh == open(P.suicide_key_bin(), "rb").read(),
           f"{os.path.basename(P.suicide_key_bin())} is current ({len(fresh)} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out.bin")
+        subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.SPOT_VA:#x}",
+                        os.path.join(HERE, "spot_026g.asm"), "-o", out], check=True, timeout=60)
+        fresh = open(out, "rb").read()
+    check(fresh == open(P.spot_bin(), "rb").read(),
+          f"{os.path.basename(P.spot_bin())} is current ({len(fresh)} bytes)")
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.bin")
         subprocess.run([tool("nasm"), "-f", "bin", f"-DCAVE={P.REPLAY_LINK_VA:#x}",
@@ -1308,7 +1334,8 @@ def late_join_sites():
         [(va, len(old)) for va, old, _ in P.MEMORY_DEFAULTS] + \
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
         [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))] + \
-        [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))]
+        [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))] + \
+        [(P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))]
 
 
 def pickup_sites():
@@ -2970,6 +2997,94 @@ def test_suicide_key(original, image, before):
           "relocation) and no base relocation is under it" + "".join(f", {h:#x}" for h in hits + under))
 
 
+def test_spot(original, image, before):
+    """Check 38: spotting (patch 38, SPOT_*). check_spot_026g.py runs the
+    input apply with the game's own spottable code on made-up hits."""
+    stock = Image(original)
+    start, end = 0x2D86E0, 0x2D8AC8
+    rows = ndisasm(stock.read(start, end - start), start)
+    at = {address: text for address, _, text in rows}
+    check([at.get(a) for a in (0x2D877C, 0x2D8782, 0x2D8787, 0x2D878F, 0x2D8795, 0x2D87A1, 0x2D87A7, 0x2D87AC,
+                               0x2D87C1, 0x2D87E1, 0x2D87EB)]
+          == ["mov eax,[edi+0x330]", "shr eax,byte 0x1c", "test al,0x1", "cmp [edi+0x34c],esi", "jnz near 0x2d88b1",
+              "fld dword [dword 0xa710d0]", "push dword 0x80a", "push dword 0xffff",
+              "mov dword [edi+0x34c],0xbb8", "mov edx,[edx+0x4c]", "call edx"]
+          and stock.read(0xA710D0, 4) == struct.pack("<f", 100.0)
+          and stock.read(0x2421A6, 10) == bytes.fromhex("818b3c03000000000010"),
+          "the original's spot: bit 28 (the input builder's on the key going down, 0x2421A6), the wait +34Ch at "
+          "0, a 100 m ray (0xa710d0) with filter 80Ah; the wait is 3000 at 0x2D87C1 before the ray, hit or miss")
+    check([at.get(a) for a in (0x2D8839, 0x2D884E, 0x2D885C, 0x2D8872, 0x2D888D, 0x2D888F, 0x2D8A0F, 0x2D8A11,
+                               0x2D8A14, 0x2D8A16, 0x2D8A1F, 0x2D8A41, 0x2D8A58, 0x2D8A65, 0x2D8A8F, 0x2D8AA7)]
+          == ["test dword [esp+0x10],0x800", "mov eax,[edx+0x8]", "jz near 0x2d8a0f", "call eax", "call eax",
+              "xor esi,esi", "mov ecx,[esi]", "mov ecx,[ecx+0xc]", "mov edx,[ecx]", "mov eax,[edx+0x4]",
+              "jz 0x2d8a8f", "call 0x2dc390", "call eax", "call eax", "and dword [esp+0x10],0xf7ff",
+              "jz near 0x2d888f"],
+          "the hits' walk: a spottable (800h) hit's owner slot 2 (a player, spotted at 0x2D888D), else at 0x2D8A0F "
+          "slot 1 (a geometry, its first spottable spotted at 0x2D8A65); not spotted: 800h out of the mask "
+          "(0x2D8A8F); the end 0x2D888F")
+    countdown = ndisasm(stock.read(0x2DAB44, 0x25), 0x2DAB44)
+    check([text for _, _, text in countdown][:10] == ["mov eax,[ebx+0x34c]", "cmp eax,ebp", "jna 0x2dab5d", "pop edi",
+                                                     "sub eax,ebp", "pop ebp", "mov [ebx+0x34c],eax", "pop ebx",
+                                                     "pop ecx", "ret 0x4"]
+          and stock.read(0x2DAB5D, 10) == bytes.fromhex("5f33c05d89834c030000")
+          and stock.read(0x2DB34D, 6) == bytes.fromhex("8d834c030000") and stock.read(0x2DB354, 1) == b"\xE8"
+          and stock.read(0x2DB95C, 6) == bytes.fromhex("898b4c030000")
+          and stock.read(0x2DAE6B, 6) == bytes.fromhex("899e4c030000"),
+          "the wait: counted down by the player's tick to 0 at the least (0x2DAB44), kept by "
+          "base_player::serialize (0x2DB34D) and read back (0x2DB95C), reset at a spawn (0x2DAE6B)")
+    u32 = lambda va: struct.unpack("<I", stock.read(va, 4))[0]
+    stores = [P.TEXT_VA + m.start() - P.TEXT_FILE - 3 for m in re.finditer(re.escape(struct.pack("<I", P.SPOT_OWNER_VTABLE)), original)
+              if P.TEXT_FILE <= m.start() < P.TEXT_FILE + P.TEXT_VSIZE]
+    check(rtti_name(stock, 0xA13EE0) == (".?AVvictory_item_core@survarium@@", 0x54)
+          and rtti_name(stock, P.SPOT_OWNER_VTABLE) == (".?AVvictory_item_core@survarium@@", 0x58)
+          and (u32(0xA13EE0), u32(0xA13EE4)) == (0x301C40, 0x301CA0) and stock.read(0x301CA0, 5) == bytes.fromhex("b001c20400")
+          and stock.read(0x301C95, 3) == bytes.fromhex("c20400")
+          and u32(P.SPOT_OWNER_VTABLE + 4) == u32(P.SPOT_OWNER_VTABLE + 8) == 0x300040
+          and stock.read(0x300040, 3) == bytes.fromhex("33c0c3")
+          and stores == [0x30011D, 0x3004EA]
+          and stock.read(0x30011D, 3) == bytes.fromhex("c74358") and stock.read(0x3004EA, 3) == bytes.fromhex("c74558")
+          and stock.read(0x301CC0, 3) == bytes.fromhex("8d4658") and stock.read(0x301CCD, 3) == bytes.fromhex("89410c")
+          and stock.read(0x301CF5, 10) == bytes.fromhex("6818040000" "68180a0000"),
+          "victory_item_core: +54h 0xa13ee0 (set_spotted 0x301c40, can_be_spotted_by 0x301ca0 `mov al,1`, both "
+          "`ret 4`), +58h 0xa13eec, its rigid body's owner (0x301cc0, group 0a18h at 0x301cf5), slots 1 and 2 "
+          f"0x300040 `xor eax,eax; ret`, stored by the two constructors alone ({', '.join(hex(a) for a in stores)})")
+    va, old, new = P.SPOT_COOLDOWN
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new
+          and ndisasm(new, va)[0][2] == "mov dword [edi+0x34c],0x0"
+          and [i for i in range(len(old)) if old[i] != new[i]] == [6, 7],
+          f"{va:#x}: `mov dword [edi+0x34c],0xbb8` in the original and the build without the late join, "
+          "`mov dword [edi+0x34c],0x0` here (two bytes differ)")
+    va, old, offset, opcode = P.SPOT_HOOK
+    hook = P.hook_bytes(P.SPOT_VA, va, old, offset, opcode)
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(hook)) == hook,
+          f"{va:#x}: `mov ecx,[esi]; mov ecx,[ecx+0xc]` in the original and the build without the late join, "
+          f"`jmp {P.SPOT_VA:#x}` here")
+    code = open(P.spot_bin(), "rb").read()
+    check(image.read(P.SPOT_VA, len(code)) == code,
+          f"the code at {P.SPOT_VA:#x} is spot_026g.section.bin ({len(code)} bytes)")
+    listing = [row for row in ndisasm(code, P.SPOT_VA) if row[2] != "int3"]
+    inside = lambda target: P.SPOT_VA <= target < P.SPOT_VA + len(code)
+    targets = {branch_target(text) for _, _, text in listing if branch_target(text) is not None}
+    starts = {address for address, _, _ in listing}
+    texts = [text for _, _, text in listing]
+    calls = [text for text in texts if text.startswith("call")]
+    absolute = [text for text in texts if re.search(r"0x[0-9a-f]{5,}", text) and branch_target(text) is None]
+    check({t for t in targets if not inside(t)} == set(P.SPOT_EXITS) and all(t in starts for t in targets if inside(t))
+          and texts[:2] == ["mov ecx,[esi]", "mov ecx,[ecx+0xc]"] and calls == ["call [eax+0x4]", "call [eax]"]
+          and absolute == [f"cmp dword [ecx],{P.SPOT_OWNER_VTABLE:#x}"]
+          and set(code[listing[-1][0] - P.SPOT_VA + 5:]) <= {0xCC},
+          "the code begins with the two instructions it replaces, leaves only to 0x2d888f, 0x2d8a8f and 0x2d8a14, "
+          "calls only the battery's can_be_spotted_by and set_spotted through its vtable, holds one absolute "
+          "value (0xa13eec), every branch inside lands on an instruction, int3 after it")
+    for va, size in ((P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))):
+        hits = aimed_inside(original, va, size, 0x80)
+        spelled = [va + i for i in range(1, size) if original.find(struct.pack("<I", va + i)) != -1]
+        under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + size]
+        check(len(hits) == len(spelled) and not under,
+              f"{va:#x}: nothing aims inside the site and no base relocation is under it"
+              + "".join(f", {h:#x}" for h in hits + under))
+
+
 def imports(image):
     """{IAT slot VA: (dll, function)} of the import table and the delay-load
     table (its addresses are VAs in this exe)."""
@@ -3480,10 +3595,12 @@ def test_late_join(original, without, server, source):
     # The first page's pieces, in order, none overlapping the next.
     link = open(P.replay_link_bin(), "rb").read()
     shared = open(P.shared_upgrades_bin(), "rb").read()
+    spot = open(P.spot_bin(), "rb").read()
     pieces = [(0, len(first_page), "the build without the late join's first page"),
               (P.REPLAY_LINK_OFFSET, len(link), "the replay link code"),
               (P.MOUNT_PATCHES_OFFSET, len(mount_patches), "the patches' mount"),
               (P.SHARED_UPGRADES_OFFSET, len(shared), "the shared upgrades' code"),
+              (P.SPOT_OFFSET, len(spot), "the spot code"),
               (P.PICKUP_OFFSET, len(pickup), "the pickup code"),
               (P.SUICIDE_KEY_OFFSET, len(suicide_key), "the suicide key"),
               (P.WARMUP_KEYS_OFFSET, len(warmup_keys), "the warmup keys"),
@@ -3508,7 +3625,9 @@ def test_late_join(original, without, server, source):
           and body[P.MOUNT_PATCHES_OFFSET:P.MOUNT_PATCHES_OFFSET + len(mount_patches)] == mount_patches
           and set(body[P.MOUNT_PATCHES_OFFSET + len(mount_patches):P.SHARED_UPGRADES_OFFSET]) <= {0xCC}
           and body[P.SHARED_UPGRADES_OFFSET:P.SHARED_UPGRADES_OFFSET + len(shared)] == shared
-          and set(body[P.SHARED_UPGRADES_OFFSET + len(shared):P.PICKUP_OFFSET]) <= {0xCC}
+          and set(body[P.SHARED_UPGRADES_OFFSET + len(shared):P.SPOT_OFFSET]) <= {0xCC}
+          and body[P.SPOT_OFFSET:P.SPOT_OFFSET + len(spot)] == spot
+          and set(body[P.SPOT_OFFSET + len(spot):P.PICKUP_OFFSET]) <= {0xCC}
           and body[P.PICKUP_OFFSET:P.PICKUP_OFFSET + len(pickup)] == pickup
           and set(body[P.PICKUP_OFFSET + len(pickup):P.SUICIDE_KEY_OFFSET]) <= {0xCC}
           and body[P.SUICIDE_KEY_OFFSET:P.SUICIDE_KEY_OFFSET + len(suicide_key)] == suicide_key
@@ -3535,7 +3654,8 @@ def test_late_join(original, without, server, source):
           and set(body[P.WEAPON_PREVIEW_OFFSET + len(weapon_preview):]) <= {0xCC},
           f"its first page is the build's without the late join ({len(first_page)} bytes, then int3) with the "
           f"replay link code at +{P.REPLAY_LINK_OFFSET:#x}, the patches' mount at +{P.MOUNT_PATCHES_OFFSET:#x}, "
-          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the pickup code at +{P.PICKUP_OFFSET:#x}, "
+          f"the shared upgrades' code at +{P.SHARED_UPGRADES_OFFSET:#x}, the spot code at +{P.SPOT_OFFSET:#x}, "
+          f"the pickup code at +{P.PICKUP_OFFSET:#x}, "
           f"the suicide key at +{P.SUICIDE_KEY_OFFSET:#x}, the warmup keys at +{P.WARMUP_KEYS_OFFSET:#x}, the seek "
           f"code at +{P.SEEK_CLEAR_OFFSET:#x}, the warmup camera's limits at +{P.WARMUP_LIMITS_OFFSET:#x}, the forward effect's scrolling at +{P.FORWARD_SCROLL_OFFSET:#x}, "
           f"the weapon preview's draw at +{P.WEAPON_DRAW_OFFSET:#x}, the warmup look at +{P.WARMUP_LOOK_OFFSET:#x}, "
@@ -3696,6 +3816,7 @@ def test_late_join(original, without, server, source):
     test_weapon_preview(original, image, before)
     test_suicide_key(original, image, before)
     test_tab_list(original, image, before)
+    test_spot(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
     test_hash_interval(original, image, "section")

@@ -970,6 +970,7 @@ va	status	ref_021d	name
 0x0026b1b0	reviewed	0x0019b33b	survarium::messaging_client::read_important_message
 0x0026cff0	reviewed	0x001a55c0	survarium::lobby_menu::on_mouse_key_action
 0x0026d090	reviewed	0x001a5606	survarium::lobby_menu::on_mouse_move
+0x0026daa0	reviewed	0x0019c24e	survarium::base_game_statistics_handler::on_victory_item_event
 0x0026e4e0	reviewed	0x0019c69c	survarium::player_result_brief::deserialize
 0x0026e610	reviewed	0x0019c790	survarium::match_stats::deserialize
 0x0026f060	reviewed	0x0019cc81	survarium::lobby_client::lobby_client
@@ -1059,6 +1060,8 @@ va	status	ref_021d	name
 0x002d9b90	reviewed	0x001d524b	survarium::base_player::hit_impl
 0x002daf60	reviewed	0x001d5e96	survarium::base_player::serialize
 0x002db490	reviewed	0x001d61a3	survarium::base_player::deserialize
+0x002dc0b0	reviewed	0x001d6811	survarium::base_player::set_spotted
+0x002dc0c0	reviewed	0x001d681e	survarium::base_player::can_be_spotted_by
 0x002df0d0	reviewed	0x001e1421	survarium::weapon_core::weapon_core
 0x002df550	reviewed	0x001e18ef	survarium::weapon_core::`scalar deleting destructor'
 0x002df570	reviewed	0x001e190b	survarium::weapon_core::~weapon_core
@@ -1143,6 +1146,8 @@ va	status	ref_021d	name
 0x002ffdf0	reviewed	0x001e6f9f	survarium::inventory_item::serialize
 0x002fff10	reviewed	0x001e703d	survarium::inventory_item::deserialize
 0x00300710	reviewed	0x001e739d	survarium::victory_item_core::can_use
+0x00301c40	reviewed	0x001e7f5f	survarium::victory_item_core::set_spotted
+0x00301ca0	reviewed	0x00145450	survarium::victory_item_core::can_be_spotted_by
 0x00303da0	reviewed	0x001ec610	survarium::grenade_core::serialize
 0x00303f80	reviewed	0x001ec765	survarium::grenade_core::deserialize
 0x003052e0	reviewed	0x001ea2e5	survarium::booby_trap_core::serialize
@@ -1263,6 +1268,7 @@ va	status	ref_021d	name
 0x0032fee0	reviewed	0x0020761f	survarium::transition_helper::serialize
 0x0032ff70	reviewed	0x002076b4	survarium::transition_helper::deserialize
 0x003312f0	reviewed	0x002078c0	survarium::dispersion_calculator::serialize
+0x00334ac0	reviewed	0x00204e28	survarium::victory_item_event_manager::on_event
 0x00334dc0	reviewed	0x00204fac	survarium::victory_item_event_manager::serialize
 0x00334fb0	reviewed	0x002050e9	survarium::victory_item_event_manager::deserialize
 0x003353c0	reviewed	0x00205334	survarium::intermediate_shared_statistics::serialize
