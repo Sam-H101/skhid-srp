@@ -765,7 +765,7 @@ impl Core<'_> {
     /// still may come: in the lobby (its game there, in no room, not in a
     /// match), its equipment within the max level. Straight into a match
     /// being played. One who may not is out of the queue.
-    fn room_admit_queues(&mut self, now: Instant) {
+    fn room_admit_queues(&mut self) {
         // Near a maintenance nobody may come: the queues wait, to be told
         // (code 9) when their rooms are disbanded.
         if self.maintenance_is_near() {
@@ -918,7 +918,7 @@ impl Core<'_> {
         if self.rooms.is_empty() {
             return;
         }
-        self.room_admit_queues(now);
+        self.room_admit_queues();
         // A maintenance is near: no room plays another match. A room not
         // playing ends now; one playing plays its match out and ends with it
         // (`room_match_over`), the owner's of 2026-10-17.
