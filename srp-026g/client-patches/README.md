@@ -2273,7 +2273,13 @@ degrees (a zoom only narrows it):
   (church_interior_details on Rudnya 0.2, Cologne's floor-vegetation corners
   0.15 and hoist 0.1, Mamayev Kurgan's base_a_mod_ 0.15 and base_b 0.07, a
   ladder 0.05, the Kamaz trucks 0.025, transformers 0.015, the UAZs, a
-  flagpole and a ladder 0.01);
+  flagpole and a ladder 0.01). On London (patch 14) 110 models are type 1
+  with `param0` 0.2 to 0.9: at a wide angle a piece of a big room under
+  that share of the screen falls to its LOD1, which leaves out whole
+  surfaces (floors, bars, walls), the owner's "a third of the screen"; the
+  correction of select_lod fixes it (`docs/notes/fov_lod.md`). Whether LOD 3
+  really draws nothing is doubtful (a model there usually falls back to
+  LOD 2 or 1, ibid.);
 - `render_surface_instance::calculate_screen_factor` (0x158D80): the share
   of the screen times 100, for the shader LOD and the small casters dropped
   from the sun's and spot lights' shadows and rain occlusion.

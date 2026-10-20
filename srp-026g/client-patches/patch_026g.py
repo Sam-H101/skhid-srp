@@ -2136,7 +2136,7 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
                      "the commit_suicide key (K) kills one's own player, "
                      "the scoreboard shows the places in the match and none whose player left, "
                      "a spot has no cooldown and a battery's body spots it, "
-                     "a model's LOD and screen factor at a wider field of view the original's"
+                     "a model's LOD and screen factor at a wider field of view are the original's"
                      if late_join is not None else "")
                   + (f", default login server {server}" if server is not None else ""))
 

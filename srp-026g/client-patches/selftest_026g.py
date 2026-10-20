@@ -1692,7 +1692,7 @@ def test_fov_lod(original, image, before):
     texts = [plain(t) for _, _, t in ndisasm(image.read(entry, 0xC0), entry)]
     store = texts.index(f"fstp [{k:#x}]") if f"fstp [{k:#x}]" in texts else -1
     check(len(found) == 5 and store > 0 and texts[:store].count("fptan") == 2 and "fcmovbe st1" in texts[:store]
-          and texts.index("call 0xeee30") > store,
+          and "call 0xeee30" in texts[store + 1:],
           f"k ({k:#x}) is named five times in .srp: written by fov_projection alone (after its two fptan and the "
           "clamp to 1, before the matrix builder's call), read by the two scales")
     check(P.FOV_LOD_STATE_OFFSET >= P.TAB_LIST_STATE_OFFSET + P.TAB_LIST_STATE_SIZE

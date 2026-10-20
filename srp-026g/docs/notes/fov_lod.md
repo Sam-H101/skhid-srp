@@ -22,6 +22,21 @@ check: `client-patches/check_fov_lod_026g.py`.
     - Mamayev Kurgan: base_a_mod_ (0.15), base_b (0.07);
     - School, Vostok and Vector Laboratory: Kamaz trucks (0.025), UAZs (0.01),
       the flagpole (0.01), ladders.
+  - **London** (level_09, skhid's patch 14; seen by the owner, 2026-10-20: models about a
+    third of the screen lost their floors, bars and walls at a wide FOV, and patch 40 fixed
+    it): 110 of its models are type 1 with `param0` 0.2 to 0.9 (mostly 0.4) and `param2`
+    0.001. What happens there is the LOD0 -> LOD1 switch at `param0`, not LOD 3: a box under
+    40 % of the screen at 65 is under it sooner at 100 (x0.53: boxes of 21 to 40 % of the 100
+    degree screen), and London's LOD1 meshes leave out whole surfaces (the Gherkin's parking:
+    11 surfaces -> 5, its bars, lamps and doors gone; building 10's indoor pieces: 16 -> 3,
+    11 -> 2, 13 -> 6). Only select_lod's correction fixes it (Unicorn, the game's select_lod
+    on 81 London placements, 64 800 views: equal to 65 in every one); the screen factor
+    plays no part. The pop at 65 (from further away) is London's content, not the FOV.
+  - **LOD 3 "drawn not at all" is doubtful (LIKELY):** `get_surfaces` (0x16F3E6) falls back
+    from a LOD while its surface count is 0, and LOD 3's count (byte +3 of
+    `model_lods_descriptor`) is never written by the cooker (0x124E50..0x125044) in memory
+    dlmalloc does not zero: a model at LOD 3 is usually drawn with LOD 2 or 1. The figures
+    above (281 / 20) are of the base db alone.
   - `render_surface_instance::calculate_screen_factor` (0x158D80), every surface: the
     share of the screen times 100. It picks the shader LOD and drops small casters from
     the sun's and spot lights' shadows and from rain occlusion.
