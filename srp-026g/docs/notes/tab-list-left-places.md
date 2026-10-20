@@ -5,7 +5,7 @@ The rules the code and the tests follow. Code: `client-patches/late_join_026g.as
 `client_patch.md` section 3.36; the test: `check_tab_list_026g.py`. The owner's rules: 2026-10-18
 (rooms: `rooms.md`, "In the match (Tab list)") and 2026-10-19 ("once they leave their previous
 entry should be removed"). Patch 43 (own row gold): `patch_026g.py` `TAB_SELF`, README patch 43,
-`client_patch.md` section 3.38, `check_tab_self_026g.py`; the owner 2026-10-20.
+`client_patch.md` section 3.40, `check_tab_self_026g.py`; the owner 2026-10-20.
 
 - **What the list is:** the in-match scoreboard (Tab, the hud movie's `root.list_set_players`).
   It has a row for every roster place that is *in the match* now, and for no other.

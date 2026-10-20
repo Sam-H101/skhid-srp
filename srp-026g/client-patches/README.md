@@ -2389,7 +2389,8 @@ or the name), and only while the journal records (the journal's flag
 default, so since then no hud has known its player's name and no row was
 gold.
 
-**The patch.** In the builds with the late join, 0x1F9478 `test eax,eax`
+**The patch.** In every full build (with and without the late join, and
+`--cave=hash-mismatch`), as patch 14's default is, 0x1F9478 `test eax,eax`
 (`85 C0`) becomes `jmp short 0x1F9487` (`EB 0D`): past the journal's two
 tests, the name is given whatever the journal does. Two bytes; no address
 and no base relocation under them, nothing jumps into them. The movie is
@@ -2398,14 +2399,16 @@ not changed.
 Rendering only: the hud's lists (and its chat, which keeps the name too).
 Nothing a match computes: no row in
 `../crates/session/src/v026g/simulation_changes.tsv`; games with and
-without it play together. `../docs/notes/client_patch.md` section 3.38.
+without it play together. `../docs/notes/client_patch.md` section 3.40.
 
 Checked: `selftest_026g.py` check 43; `check_tab_self_026g.py` runs
-on_activate's end (0x1F9395..0x1F949D) with the game's own has_bandwidth,
-lobby_client, string code and memcpy on a made-up world: with the journal
+on_activate's end (0x1F9395..0x1F949D) with the game's own network client
+(vtable 0x9FFB14: +20h, lobby_client), string code and memcpy on a
+made-up world, for the builds with and without the late join and over
+on_hash_mismatch: with the journal
 off the original gives no name and the build "[clan] name" (or the name);
-recording, both the same; played back, the build alone; without bandwidth,
-neither. Against the build of `main` b97133d (revision 25's exe,
+recording, both the same; played back, the build alone; when the network client's +20h
+says no, neither. Against the build of `main` b97133d (revision 25's exe,
 `12006dd9…a8b4`) the default build differs in file 0x1E8878..0x1E8879 and
 the PE checksum, and in nothing else (compared byte by byte). **Not run in
 a game.**

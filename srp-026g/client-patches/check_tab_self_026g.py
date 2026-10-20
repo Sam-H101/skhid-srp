@@ -4,12 +4,13 @@ the hud learns its player's name, with Unicorn (2.1.4).
 
     python check_tab_self_026g.py <original survarium.exe>
 
-The exe is built as patch_026g.py builds it (with the late join) and
-without the late join; the original is run the same way. on_activate runs
-from 0x1F9395 (the network client's has_bandwidth test) to 0x1F949D on a
-made-up game world: a game whose network client (+53ACh) is a network
-client of the game's own vtable 0x9FFB14 (has_bandwidth 0x372420 and
-lobby_client 0x219960 run as they are), its lobby client's clan and name
+The exe is built as patch_026g.py builds it (with the late join), without
+the late join and over on_hash_mismatch; the original is run the same way.
+on_activate runs from 0x1F9395 (the network client's vtable +20h test) to
+0x1F949D on a made-up game world: a game whose network client (+53ACh) is a
+network client of the game's own vtable 0x9FFB14 (+20h 0x372420, `mov
+al,1`, and lobby_client 0x219960 run as they are), its lobby client's
+clan and name
 (lobby client +1E5650h, +1E55D0h), the chat handler (+5398h), and the
 journal's flag (0xA8394C) and use ([0xA83948]). The game's own string code
 runs (the lengths, memcpy 0x424580, the copy 0x1F53D0); stubs: the CRT's
@@ -27,7 +28,7 @@ colour (hud.swf; the rule: ../docs/notes/tab-list-left-places.md):
   a clan, to the chat handler set_mode gave the hud's movie;
 - the journal recording (the stock default): both give the same name;
 - a journal played back: the original gives none, the build the name;
-- a network client without bandwidth: neither calls set_mode or gives a
+- a network client whose +20h says no: neither calls set_mode or gives a
   name, as before.
 The stack is as the original leaves it in every case.
 """
@@ -42,7 +43,7 @@ import patch_026g as base
 
 START, END = 0x1F9395, 0x1F949D
 SET_MODE, SET_NAME, SNPRINTF = 0x209430, 0x209AC0, 0x4257D8
-NETWORK_CLIENT_VTABLE = 0x9FFB14              # +20h has_bandwidth 0x372420, +3Ch lobby_client 0x219960
+NETWORK_CLIENT_VTABLE = 0x9FFB14              # +20h 0x372420 (mov al,1), +3Ch lobby_client 0x219960
 JOURNAL_FLAG, JOURNAL_USE = 0xA8394C, 0xA83948
 LOBBY_CLIENT = 0x1E0                          # network client +1E0h (0x219960)
 CLAN, NAME = 0x1E5650, 0x1E55D0               # in the lobby client
@@ -70,7 +71,7 @@ class World:
         if bandwidth:
             self.word(NET, NETWORK_CLIENT_VTABLE)
         else:
-            # The same vtable, has_bandwidth saying no.
+            # The same vtable, +20h saying no.
             emu.mem_write(OFFLINE_VTABLE, bytes(emu.mem_read(NETWORK_CLIENT_VTABLE, 0x40)))
             self.word(OFFLINE_VTABLE + 0x20, NO_BANDWIDTH)
             emu.mem_write(NO_BANDWIDTH, b"\x30\xC0\xC3")       # xor al,al / ret
@@ -150,11 +151,12 @@ def main():
     late_join = open(base.late_join_bin(), "rb").read()
     patched, _ = base.build(original, "section", code, None, late_join)
     before, _ = base.build(original, "section", code, None, None)
+    mismatch, _ = base.build(original, "hash-mismatch", open(base.default_bin("hash-mismatch"), "rb").read())
     va, old, new = base.TAB_SELF
     at = base.file_offset(va)
-    assert original[at:at + 2] == old and before[at:at + 2] == old and patched[at:at + 2] == new
-    stock, built, without = run(original), run(patched), run(before)
-    assert without == stock, "the build without the late join is not the original here"
+    assert original[at:at + 2] == old and all(image[at:at + 2] == new for image in (patched, before, mismatch))
+    stock, built = run(original), run(patched)
+    assert run(before) == built and run(mismatch) == built, "the other builds do not give the name as this one"
 
     mode = [(WORLD + 0x204, CHAT, 1)]               # set_mode(the world's movie, chat, game mode)
     for result in (stock, built):
@@ -170,7 +172,7 @@ def main():
 
     print("patch 43: with the journal off (the players' games) the original never gives the hud its player's "
           "name; the build gives \"[clan] name\" or the name; recording, both give it; played back, the build "
-          "alone; without bandwidth neither; the stack as the original leaves it")
+          "alone; when +20h says no neither; every full build the same; the stack as the original leaves it")
 
 
 if __name__ == "__main__":

@@ -143,7 +143,10 @@ Patches:
   assertion (0x40141). The default of -record_journal, the text "1" given
   to the option object 0xA9D628 by its initializer at 0x851CC7
   (`mov eax,9DB51Ch`), becomes the exe's own "0" at 0x9DBF0C: no journal
-  is made unless -record_journal=1 asks for one;
+  is made unless -record_journal=1 asks for one. game_world::on_activate
+  gave the hud its player's name only while the journal recorded: 0x1F9478
+  `test eax,eax` becomes `jmp short 1F9487h` (patch 43, TAB_SELF), so the
+  Tab list's own row is gold again;
 - the late join (patch revision 5; the default build only, not
   --cave=hash-mismatch): a player enters a match that is being played.
   The game keeps room for twenty players from the first connection (three
@@ -1006,7 +1009,7 @@ TAB_LIST_LOOP = (TAB_LIST_LOOP_VA,
                                "83c108" "57" "e885f3ffff" "53" "e8bfb8ffff" "fec3" "ebb7" "9090"))
 
 # The player's own row in the Tab list is gold (patch 43, README;
-# client_patch.md section 3.38; the rule: ../docs/notes/tab-list-left-places.md).
+# client_patch.md section 3.40; the rule: ../docs/notes/tab-list-left-places.md).
 # hud.swf's PlayerListRenderer gives the row whose `isLocal` is set the name
 # colour Colors.PLAYER (0xF1E545), the one CombatLogItem gives the kill
 # list's own name (who_team / victim_team 2); PlayerList sets `isLocal` on
@@ -1020,7 +1023,8 @@ TAB_LIST_LOOP = (TAB_LIST_LOOP_VA,
 # default, so no hud has had its player's name since. TAB_SELF makes
 # `test eax,eax` / `jz` a `jmp short 1F9487h` past the two tests: the name
 # is given whatever the journal does. The two addresses (and their base
-# relocations) are not under the two bytes. The hud's lists and chat only.
+# relocations) are not under the two bytes. Every full build, as JOURNAL_DEFAULT.
+# The hud's lists and chat only.
 TAB_SELF = (0x1F9478, bytes.fromhex("85c0"), bytes.fromhex("eb0d"))
 
 # Spotting (patch 38, README; client_patch.md section 3.35; the rules:
@@ -1803,6 +1807,10 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
     rewritten.append((MOUNT_NO_ROOT[0], MOUNT_NO_ROOT[0] + len(MOUNT_NO_ROOT[1])))
     # Not in `rewritten`: the relocation of this address must stay active.
     patch(data, *JOURNAL_DEFAULT)
+    # Every build: the hud gets its player's name, which patch 14's default
+    # had withheld (patch 43; no relocation under the two bytes).
+    patch(data, *TAB_SELF)
+    rewritten.append((TAB_SELF[0], TAB_SELF[0] + len(TAB_SELF[1])))
     if mode == "hash-mismatch":
         if len(cave) > HASH_MISMATCH_SIZE:
             sys.exit(f"the cave code is {len(cave)} bytes; {HASH_MISMATCH_SIZE} fit")
@@ -2047,8 +2055,6 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             sites.append((va, va + len(expected)))
         patch(data, *TAB_LIST_LOOP)
         sites.append((TAB_LIST_LOOP_VA, TAB_LIST_LOOP_VA + len(TAB_LIST_LOOP[1])))
-        patch(data, *TAB_SELF)
-        sites.append((TAB_SELF[0], TAB_SELF[0] + len(TAB_SELF[1])))
         if neutralize_relocs(data, sites):
             sys.exit("a base relocation under a site of the scoreboard's rows")
         for site in (MOUNT_QUERY, MOUNTED):

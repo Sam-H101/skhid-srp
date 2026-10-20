@@ -2502,7 +2502,6 @@ va	status	ref_021d	name
 0x00372420	inferred-medium	0x00228365	survarium::weapon_core_melee_state::is_ready_for_transition
 0x00372420	inferred-medium	0x00228365	survarium::weapon_core_shotgun_reload_finish_substate::is_ready_for_transition
 0x00372420	inferred-medium	0x00228365	survarium::weapon_core_shotgun_reload_state::is_ready_for_transition
-0x00372420	inferred-medium		survarium::network_client::has_bandwidth
 0x00372430	inferred-medium	0x0022e005	vostok::particle::create_action_by_index
 0x00372a80	inferred-medium	0x0022e471	vostok::particle::particle_system::load_lod_actions_binary
 0x00372b50	inferred-medium	0x0022e51b	vostok::particle::particle_system::load_binary

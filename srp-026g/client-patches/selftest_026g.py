@@ -654,6 +654,9 @@ def allowed_ranges(original, mode, cave_size, server=None):
     # The journal default's imm32 changes and keeps its relocation: it is
     # an allowed range, and not a rewritten one (test_start_up_folder).
     ranges.append((P.file_offset(P.JOURNAL_DEFAULT_VA + 1), 4))
+    # Patch 43 gives back what that default withheld (test_tab_self).
+    ranges.append((P.file_offset(P.TAB_SELF[0]), len(P.TAB_SELF[1])))
+    rewritten.append((P.TAB_SELF[0], P.TAB_SELF[0] + len(P.TAB_SELF[1])))
     if server is not None:
         va, old = P.DEFAULT_SERVER_HOOK
         ranges.append((P.file_offset(va), len(old)))
@@ -984,9 +987,14 @@ def test_start_up_folder(original, image, mode):
     va, old, new = P.MOUNT_NO_ROOT
     journal_va, journal_old, journal_new = P.JOURNAL_DEFAULT
     if mode == "cert-only":
-        check(image.read(va, len(old)) == old and image.read(journal_va, 5) == journal_old,
-              "cert-only: mounter::finish and the journal's default are the original's")
+        check(image.read(va, len(old)) == old and image.read(journal_va, 5) == journal_old
+              and image.read(P.TAB_SELF[0], len(P.TAB_SELF[1])) == P.TAB_SELF[1],
+              "cert-only: mounter::finish, the journal's default and on_activate's name (patch 43) are the "
+              "original's")
         return
+    check(image.read(P.TAB_SELF[0], len(P.TAB_SELF[2])) == P.TAB_SELF[2],
+          f"{P.TAB_SELF[0]:#x}: patch 43's `jmp short` with the journal off by default: on_activate gives the hud "
+          "its player's name (test_tab_self)")
     # mounter::finish from the read of the mount's root to its `ret 0Ch`.
     start, end = 0x46B04, 0x46B3D
     tail = ["mov eax,[eax+0x34]", "test eax,eax", "jnz 0x46b0f", "xor ecx,ecx", "jmp short 0x46b12",
@@ -1348,7 +1356,6 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
         [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))] + \
-        [(P.TAB_SELF[0], len(P.TAB_SELF[1]))] + \
         [(P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.FOV_LOD_HOOKS]
 
@@ -3287,13 +3294,14 @@ def test_tab_list(original, image, before):
 def test_tab_self(original, image, before):
     """Check 43: the player's own row in the Tab list is gold (patch 43,
     TAB_SELF): game_world::on_activate gives the hud its player's name
-    whatever the journal does. check_tab_self_026g.py runs it."""
+    whatever the journal does. check_tab_self_026g.py runs it. Every full
+    build has it, as it has patch 14's default (test_start_up_folder)."""
     stock = Image(original)
     rows = lambda blob, at, size: [text for _, _, text in ndisasm(blob.read(at, size), at)]
     va, old, new = P.TAB_SELF
-    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
-          f"{va:#x}: the original's `{old.hex()}` (test eax,eax) in the original and the build without the late "
-          f"join, `{new.hex()}` (jmp short) here")
+    check(stock.read(va, len(old)) == old and before.read(va, len(new)) == new == image.read(va, len(new)),
+          f"{va:#x}: the original's `{old.hex()}` (test eax,eax), `{new.hex()}` (jmp short) here and in the "
+          "build without the late join")
     guard = ["mov eax,[0xa8394c]", "test eax,eax", "jz 0x1f949d", "mov ecx,[dword 0xa83948]",
              "cmp dword [ecx],byte +0x1", "jnz 0x1f949d", "mov edx,[esi+0x9c]", "mov eax,[edx+0x5398]", "push eax",
              "lea edi,[esp+0x24]", "call 0x209ac0", "mov ecx,[dword 0xa8394c]"]
@@ -3326,7 +3334,7 @@ def test_tab_self(original, image, before):
           and image.read(P.JOURNAL_DEFAULT_VA, 5) == P.JOURNAL_DEFAULT[2],
           "the flag [0xa8394c] is set by journaling's start (0xEB310) for a use other than 0 alone, and the "
           "build's journal is off by default (patch 14): without the patch the call never comes")
-    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 4 < v < va + len(old)]
     found = aimed_inside(original, va, len(old), 0x82)
     check(not under and not found and sorted(v for kind, v in stock.relocations().values()
                                                if kind == 3 and 0x1F9473 <= v < 0x1F9487) == [0x1F9474, 0x1F947E],
