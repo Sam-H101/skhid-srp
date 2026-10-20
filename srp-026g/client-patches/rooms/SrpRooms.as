@@ -966,6 +966,33 @@ package
             return _room != null || _queueKey != 0;
         }
 
+        // A button's art tinted, its label not: the text stays white, as
+        // PLAY's (the owner's of 2026-10-20). Every part of the button but
+        // the one that holds its text field takes the tint.
+        private static function skinTint(btn:*, tint:ColorTransform):void
+        {
+            var box:DisplayObjectContainer = btn as DisplayObjectContainer;
+            if (box == null)
+                return;
+            box.transform.colorTransform = new ColorTransform();
+            var field:DisplayObject = null;
+            try
+            {
+                field = btn.textField as DisplayObject;
+            }
+            catch (err:Error)
+            {
+            }
+            for (var i:int = 0; i < box.numChildren; i++)
+            {
+                var part:DisplayObject = box.getChildAt(i);
+                if (field != null && (part == field
+                    || (part is DisplayObjectContainer && DisplayObjectContainer(part).contains(field))))
+                    continue;
+                part.transform.colorTransform = tint;
+            }
+        }
+
         // The game's own label of Play, while ours is on it, and ours.
         private var _playLabel:String = null;
         private var _ourPlayLabel:String = null;
@@ -1001,7 +1028,7 @@ package
                         btn.label = label;
                     }
                     _ourPlayLabel = label;
-                    btn.transform.colorTransform = RED_TINT;
+                    skinTint(btn, RED_TINT);
                 }
                 else if (_playLabel != null)
                 {
@@ -1009,7 +1036,7 @@ package
                         btn.label = _playLabel;
                     _playLabel = null;
                     _ourPlayLabel = null;
-                    btn.transform.colorTransform = new ColorTransform();
+                    skinTint(btn, new ColorTransform());
                 }
             }
             catch (e:Error)
