@@ -102,6 +102,7 @@ mod away;
 mod clans;
 mod core;
 mod dispatch;
+mod gear;
 mod items;
 mod patch_check;
 mod play;

@@ -521,7 +521,7 @@ All PROVEN there, at the sender addresses given in that file. In short:
 ## 5. Results, social, clan (summary; details in `results.md` and `social.md`)
 
 - **0x97 match stats** (was 36 13): the header gains an unused u32, two u32 team params and a u8 game_mode; each title name and player row gains a clan tag (row 0x50 → 0x60, still ≤ 20 rows); `player_result_full` is completely redesigned (score components, daily/premium bonus blocks, Elo before/after, quest money/rep, per-profile play time, one dropped item). After showing it the client sends `3C 00`. (results.md §1)
-- **0x93** (was 36 0E): a full result, discarded, then an account body (§2.5) used to show the clicked player's equipment. (results.md §2)
+- **0x93** (was 36 0E): a full result, discarded, then an account body (§2.5) used to show the clicked player's equipment. (results.md §2) srp's changed movie asks for it from the Rankings too (`3D 00 <GEAR_BY_PLACE> <place>`, `GEAR_BY_PLACE` = 0xFFFF_FF03): any account's kits as they are now (`player_gear.md`).
 - **0x98 drop, 0x99 daily bonus, 0x9B craft tables**: new (results.md §3–4).
 - **Chat 0xA2/0xA3/0xA4**: a clan tag (≤ 15) after the sender name; friendship replies other than lists 7/8/9 are now parsed as search lists, so **the 0.21d `u8 result` reply crashes the client**; the client no longer asks for its friend/ignore lists, so the server pushes `A3 07`/`A3 08`. (social.md §1)
 - **Squad 0xA1**: same layout; the second byte is the commander index; a soldier's Play is locked while the commander is ready; the commander needs ≥ n−1 ready. (social.md §2)

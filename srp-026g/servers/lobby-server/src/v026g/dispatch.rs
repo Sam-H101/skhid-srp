@@ -142,6 +142,12 @@ impl Core<'_> {
                 player_id: lobby::REPLAY_ASK,
                 match_id,
             } => self.replay_ask(who, match_id, now),
+            // `3D 00 <GEAR_BY_PLACE> <place>`: the kits of a row of the
+            // Rankings window (`gear`), any player's.
+            M::QueryPlayerDetails {
+                player_id: lobby::GEAR_BY_PLACE,
+                match_id: place,
+            } => self.ranked_gear(who, place),
             // `3D 00 <player> <match>`: the kits of a row of that screen,
             // for a player of the match.
             M::QueryPlayerDetails {
@@ -554,6 +560,16 @@ impl Core<'_> {
                 rating_before: row.3,
             })
             .collect();
+        // Who each row of the page is: a right-click on it asks for that
+        // account's kits by its place (`gear`), whatever moved since.
+        if let Some(player) = self.player_mut(who.addr) {
+            if start == 0 {
+                player.ranked_shown.clear();
+            }
+            for (index, row) in ranking[from..to].iter().enumerate() {
+                player.ranked_shown.insert((from + index) as u32 + 1, row.0);
+            }
+        }
         self.send_made(who.addr, lobby::elo_list(from as u32, &rows));
     }
 

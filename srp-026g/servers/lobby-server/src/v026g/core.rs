@@ -88,6 +88,10 @@ pub(super) struct Player<'a> {
     pub money_sent: (u32, u32),
     /// The count of ranked players the client's ranking page has.
     pub ranked_sent: u32,
+    /// The account of each place (1 the first) of the ranking rows it was
+    /// sent since its page last opened: a right-click on a row asks by the
+    /// place (`gear`).
+    pub ranked_shown: HashMap<u32, u32>,
     /// The online counts the client was last sent, and when (`None`: only
     /// with the sign-in's pushes).
     pub online_sent: (u32, u32, u32),
@@ -650,6 +654,7 @@ impl<'a> Core<'a> {
             squad_serial: None,
             money_sent: balance,
             ranked_sent: ranking.len() as u32,
+            ranked_shown: HashMap::new(),
             online_sent: online,
             online_at: None,
             friends_sent: Vec::new(),
