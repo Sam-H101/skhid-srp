@@ -32,6 +32,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   played puts it into the same match as a late join (15 s or "Join match") as a new place,
   fresh (new index, zero stats), never its old one; only an account's latest place in a match
   counts (results, rewards, ratings, quests, map plays), the place it left for nothing.
+- **After a match (the owner's of 2026-10-20):** the results screen opens over the room's
+  window: closing the results shows the room, not the lobby. A player in no room sees the
+  lobby after them, as before.
 - **Before each match:** once the minimum of players who can play is in, a vote on 3 cards
   (map + weather + mode) for the room's time to start: 15 s and the owner's wait together,
   10 s more after a match (players come back from results first), always whole, a full
