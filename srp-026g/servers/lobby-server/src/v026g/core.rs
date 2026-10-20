@@ -88,6 +88,11 @@ pub(super) struct Player<'a> {
     pub money_sent: (u32, u32),
     /// The count of ranked players the client's ranking page has.
     pub ranked_sent: u32,
+    /// The ranking pages it was sent, newest last, as (the index of the
+    /// first row, the account of each row): a right-click on a row asks by
+    /// its place, which resolves to what the page (or a cached tab of it)
+    /// showed there (`gear`). The last `gear::PAGES_KEPT` only.
+    pub ranked_shown: Vec<(u32, Vec<u32>)>,
     /// The online counts the client was last sent, and when (`None`: only
     /// with the sign-in's pushes).
     pub online_sent: (u32, u32, u32),
@@ -650,6 +655,7 @@ impl<'a> Core<'a> {
             squad_serial: None,
             money_sent: balance,
             ranked_sent: ranking.len() as u32,
+            ranked_shown: Vec::new(),
             online_sent: online,
             online_at: None,
             friends_sent: Vec::new(),
