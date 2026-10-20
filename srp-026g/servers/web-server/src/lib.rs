@@ -183,7 +183,7 @@ struct Stats {
 enum Form {
     None,
     Home(Stats),
-    Admin(AdminView),
+    Admin(Box<AdminView>),
     /// The 0.26g page's "not found".
     None26,
     /// The 0.26g page's `/exchange`: in the game now, in the launcher's
@@ -631,11 +631,12 @@ impl Web {
             self.replay(&mut stream, &request, Instant::now());
             return;
         }
-        if request.path == "/download" && matches!(request.method.as_str(), "GET" | "HEAD") {
-            if let Some(file) = available_download() {
-                self.download(&mut stream, &request, file);
-                return;
-            }
+        if request.path == "/download"
+            && matches!(request.method.as_str(), "GET" | "HEAD")
+            && let Some(file) = available_download()
+        {
+            self.download(&mut stream, &request, file);
+            return;
         }
         if let Some(file) = resource_request(
             self.game.is_some(),
@@ -961,7 +962,7 @@ impl Web {
                 "",
             ),
             ("GET", path) if self.is_admin_page(path, request) => {
-                page(request.lang, Form::Admin(AdminView::default()), "")
+                page(request.lang, Form::Admin(Box::default()), "")
             }
             ("POST", path) if self.is_admin_page(path, request) => self.admin(request, peer),
             _ => Response {
@@ -1007,7 +1008,7 @@ impl Web {
                 g26,
                 ..AdminView::default()
             };
-            page(lang, Form::Admin(view), &message)
+            page(lang, Form::Admin(Box::new(view)), &message)
         };
         match self.check_token(request, peer) {
             Ok(()) => {}
@@ -1050,7 +1051,7 @@ impl Web {
             admin_text: self.game.as_ref().and_then(|game| game.lobby.admin_text()),
             reset,
         };
-        page(lang, Form::Admin(view), &message)
+        page(lang, Form::Admin(Box::new(view)), &message)
     }
 
     /// The admin token of `request`, checked: a wrong one counts towards

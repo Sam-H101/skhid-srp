@@ -763,12 +763,10 @@ mod tests {
         assert!(repository.get(5).unwrap().item(lost).is_some());
 
         // The data has them again (here: they are taken out): it loads.
-        let mut alice = alice;
         alice.inventory.retain(|item| item.item_id != lost);
         alice.inventory[0].modifications.pop();
         alice.extras.bonus.reward_dict = 0;
         repository.save(5, &alice).unwrap();
-        let mut bob = bob;
         bob.inventory.retain(|item| item.dict_id != 9999);
         bob.quest_cooldowns.clear();
         repository.save(6, &bob).unwrap();

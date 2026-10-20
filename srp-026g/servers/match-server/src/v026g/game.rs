@@ -6100,11 +6100,6 @@ impl Game {
         })
     }
 
-    /// Syncs of the client's resync done again for its replay.
-    pub fn replay_redos(&self, index: usize) -> u32 {
-        self.peers[index].as_ref().map_or(0, |peer| peer.replay_redos)
-    }
-
     /// As if the client's resync had been done again for its replay
     /// `redos` times.
     #[cfg(test)]
