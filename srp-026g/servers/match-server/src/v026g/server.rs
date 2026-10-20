@@ -457,7 +457,7 @@ impl Server {
             datagrams.extend(game.poll(now));
             for (place, account_id) in game.take_rejected_joins() {
                 if self.registry.release_place(game.id, place) {
-                    self.store.matchmaking().give_up_seat(account_id);
+                    self.store.matchmaking().join_failed(account_id);
                 }
             }
             self.registry

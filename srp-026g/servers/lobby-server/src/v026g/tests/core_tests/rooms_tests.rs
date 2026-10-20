@@ -1121,3 +1121,60 @@ fn a_member_waiting_while_a_maintenance_is_near_is_told_so() {
     let state = state(&mut world, erin);
     assert_eq!(join_row(&state), Some("J;-1;5"), "{state:?}");
 }
+
+/// Live, 2026-10-19 (room 2168): a member that went into its room's match
+/// late and was let go before it entered (its game never came, left, or did
+/// not catch up; the match server gives its seat up) stayed marked in the
+/// match, without its `J` row, and waited out the whole match. Now it waits
+/// in the room again, is told when it goes in, and goes in at its next turn
+/// as a new place.
+#[test]
+fn a_member_whose_late_join_fails_waits_in_its_room_again_and_goes_in_later() {
+    let mut world = World::new();
+    let (key, ticket, id, _) = room_match_of_four(&mut world);
+    let erin = world.connect("Erin");
+    let (erin_account, erin_session) = world.ids[erin];
+    world.host.admitting.locked().insert(ticket);
+    let joined = rows(&mut world, erin, ROOM_JOIN_BASE + key, 1);
+    assert_eq!(join_row(&joined), Some("J;15"), "{joined:?}");
+    world.take(erin);
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(erin)).expect("Erin goes in");
+    assert_eq!(sent, ticket);
+    assert_eq!(world.store.matchmaking().seat(erin_session), Some((id, 4)));
+    let room = world.core.rooms.get(key).unwrap();
+    assert!(room.in_match.contains(&erin_account));
+
+    // The match server lets her go before she entered (her game did not
+    // come in 20 s) and takes joiners again; her game is back in the lobby.
+    world.advance(Duration::from_secs(20));
+    assert_eq!(
+        world.store.matchmaking().join_failed(erin_account),
+        Some(id)
+    );
+    world.host.admitting.locked().insert(ticket);
+    world.ask(erin, request::leave(1, true));
+    world.advance(Duration::from_secs(1));
+    let room = world.core.rooms.get(key).unwrap();
+    assert!(room.members.contains(&erin_account));
+    assert!(!room.in_match.contains(&erin_account));
+    let waiting = state(&mut world, erin);
+    let row = join_row(&waiting).expect("her J row");
+    assert!(!row.starts_with("J;-1"), "{waiting:?}");
+
+    // At her next turn she goes in again, as a new place.
+    world.take(erin);
+    world.advance(Duration::from_secs(16));
+    let (sent, _) = sent_to_match(&world.take(erin)).expect("Erin goes in again");
+    assert_eq!(sent, ticket);
+    assert_eq!(world.store.matchmaking().seat(erin_session), Some((id, 5)));
+    assert!(
+        world
+            .core
+            .rooms
+            .get(key)
+            .unwrap()
+            .in_match
+            .contains(&erin_account)
+    );
+}

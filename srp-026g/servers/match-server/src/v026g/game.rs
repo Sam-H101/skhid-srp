@@ -882,6 +882,9 @@ pub(crate) struct Game {
     /// respawns a live player in the chosen kit where it stands. At most as
     /// many lives more than its deaths: [`PlayerResult::kit_changes`].
     kit_changes: Vec<u16>,
+    /// By place: whether a game of it loading long is left behind
+    /// (`late_join::LOADING_GRACE`).
+    load_waits: Vec<late_join::LoadWait>,
     /// The end has come: waiting for a last snapshot since then.
     ending: Option<(Instant, MatchEnd)>,
     finished_at: Option<Instant>,
@@ -943,6 +946,7 @@ impl Game {
             state: None,
             best_streaks: vec![0; players],
             kit_changes: vec![0; players],
+            load_waits: vec![late_join::LoadWait::First; players],
             ending: None,
             finished_at: None,
             empty_since: Some(now),

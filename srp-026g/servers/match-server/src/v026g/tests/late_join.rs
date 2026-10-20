@@ -1458,3 +1458,163 @@ fn the_registry_says_why_a_match_takes_no_joiner() {
         == Some(Closed::Ending)));
     bench.assert_no_faults();
 }
+
+/// 1 v 1: a newcomer waits on a game that does not install its place, which
+/// is not let go for it (it is half the match); the newcomer runs out by its
+/// own time and fails alone. Its place is settled: the game still to install
+/// it holds the match closed no longer (it held it `Joining` to its end), and
+/// the next joiner goes in once that game installs both places.
+#[test]
+fn a_place_that_failed_alone_does_not_hold_the_match_closed() {
+    let mut bench = running();
+    bench.clients[1].auto_prepare = false;
+    let place = reserve(&mut bench);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    bench.run_long(61_000);
+    assert!(bench.clients[place].disconnected);
+    assert!(!bench.clients[1].disconnected);
+    assert!(
+        bench.until(2_000, |b| b.game().admitting()),
+        "{:?}",
+        bench.game().admission(bench.now())
+    );
+    // The slow game installs at last: the next joiner goes in.
+    bench.clients[1].auto_prepare = true;
+    let next = reserve(&mut bench);
+    bench.join(next);
+    assert!(bench.until(5_000, |b| b.clients[0].entered().contains(&(next as u8))));
+    assert!(!bench.clients[0].entered().contains(&(place as u8)));
+    bench.assert_no_faults();
+}
+
+/// The game that did not install a place says it cannot only after the
+/// place's newcomer failed alone: its install stops as when that came
+/// first (no proposal is sent again, and the match takes nobody: `Full`),
+/// whatever the order. Until now the proposal went every second to the end
+/// of the match.
+#[test]
+fn a_game_that_cannot_install_a_place_that_failed_alone_stops_its_install() {
+    let mut bench = running();
+    bench.clients[1].auto_prepare = false;
+    let place = reserve(&mut bench);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    bench.run_long(61_000);
+    assert!(bench.clients[place].disconnected);
+    let prepare = bench.clients[1].prepares[0].clone();
+    bench.clients[1].prepared(&prepare, Status::Failed);
+    bench.run(1_000);
+    let received = bench.clients[1].prepares_received;
+    bench.run_long(5_000);
+    assert_eq!(bench.clients[1].prepares_received, received);
+    assert_eq!(bench.game().admission(bench.now()), Err(Closed::Full));
+    assert_eq!(
+        bench.registry.closed(bench.match_id, bench.now()),
+        Some(Closed::Full)
+    );
+    assert_eq!(&bench.stages()[..2], "LL");
+    bench.assert_no_faults();
+}
+
+/// A slow machine loading the match from its start (the owner's players
+/// have slow disks: game starts of minutes) is never left behind: the
+/// match takes no joiner until it has loaded, and it plays.
+#[test]
+fn a_game_loading_the_match_from_its_start_is_waited_for() {
+    let mut bench = Bench::growing(3, MAP_BATTERIES, Settings::default());
+    bench.join(0);
+    bench.join(2);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
+    bench.run_long(40_000);
+    assert!(matches!(
+        bench.game().rule_state(),
+        state::COUNTDOWN | state::IN_PROCESS
+    ));
+    assert_eq!(bench.game().admission(bench.now()), Err(Closed::Loading));
+    bench.clients[1].ready();
+    assert!(
+        bench.until(10_000, |b| b.stages() == "LLL"),
+        "{}",
+        bench.stages()
+    );
+    assert!(!bench.clients[1].disconnected);
+    assert!(bench.until(2_000, |b| b.game().admitting()));
+    bench.assert_no_faults();
+}
+
+/// A game let go once for loading behind (a joiner went in while it
+/// loaded) is not left behind again: on its next load joiners wait for it,
+/// and it plays. Until now a slow machine was let go on every load while
+/// joiners kept coming.
+#[test]
+fn a_game_let_go_for_loading_behind_is_waited_for_on_its_next_load() {
+    const NEW_SESSION: u32 = 0x2001;
+    let mut bench = running_three();
+    bench.clients[1].drop_link();
+    assert!(bench.until(5_000, |b| b.clients[0].left().contains(&1)));
+    assert!(
+        bench
+            .registry
+            .reseat(bench.match_id, 101, NEW_SESSION)
+            .is_some()
+    );
+    bench.clients[1] = Client::growing(NEW_SESSION, 3, MAP_BATTERIES);
+    bench.addrs[1].set_port(43_001);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
+    bench.run_long(31_000);
+    assert!(bench.until(1_000, |b| b.game().admitting()));
+    let place = reserve(&mut bench);
+    bench.join(place);
+    assert!(bench.until(2_000, |b| b.clients[0].entered().contains(&(place as u8))));
+    bench.clients[1].ready();
+    assert!(bench.until(2_000, |b| b.clients[1].disconnected));
+    // It comes again, as slow: this time it is waited for.
+    let roster = bench.clients.len();
+    bench.clients[1] = Client::growing(NEW_SESSION, roster, MAP_BATTERIES);
+    bench.addrs[1].set_port(43_002);
+    bench.clients[1].connect();
+    assert!(bench.until(1_000, |b| b.clients[1].model.options.is_some()));
+    bench.run_long(40_000);
+    assert_eq!(bench.game().admission(bench.now()), Err(Closed::Loading));
+    bench.clients[1].ready();
+    assert!(
+        bench.until(10_000, |b| b.stages() == "LLLL"),
+        "{}",
+        bench.stages()
+    );
+    assert!(!bench.clients[1].disconnected);
+    bench.assert_no_faults();
+}
+
+/// A newcomer whose game comes again (it crashed and loads anew) waits from
+/// its new load: a game slow to install its place gets its 15 s
+/// (`INSTALL_GRACE`) from then, not from the old wait, and is let go after.
+#[test]
+fn a_newcomer_that_loads_again_gives_the_games_their_install_grace_again() {
+    let mut bench = running_three();
+    bench.clients[1].auto_prepare = false;
+    let place = reserve(&mut bench);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.clients[place].ready();
+    bench.run_long(10_000);
+    // Its game crashes and comes again; it loads 2 s later.
+    bench.clients[place] = Client::growing(session_of(place), place + 1, MAP_BATTERIES);
+    bench.addrs[place].set_port(42_000 + place as u16);
+    bench.clients[place].connect();
+    assert!(bench.until(1_000, |b| b.clients[place].model.options.is_some()));
+    bench.run(2_000);
+    bench.clients[place].ready();
+    // 15 s from its first wait are over, not from this one.
+    bench.run_long(12_000);
+    assert!(!bench.clients[1].disconnected);
+    assert!(bench.until(5_000, |b| b.clients[1].disconnected));
+    assert!(bench.until(10_000, |b| b.clients[0].entered().contains(&(place as u8))));
+    assert!(!bench.clients[place].disconnected);
+    bench.assert_no_faults();
+}

@@ -820,6 +820,30 @@ impl Core<'_> {
         }
     }
 
+    /// A member that went into its room's match late and was let go before
+    /// it entered (`Matchmaking::join_failed`: its game never came, left,
+    /// or did not catch up) waits in the room again: it is told when it
+    /// goes in, and goes in at its next turn. Live, 2026-10-19 (room 2168):
+    /// one such member stayed marked in the match and waited out all of it.
+    fn room_failed_joins(&mut self) {
+        for (match_id, account_id) in self.store.matchmaking().take_failed_joins() {
+            let Some(key) = self.rooms.of(account_id).and_then(|room| {
+                (matches!(room.stage, Stage::InMatch { match_id: id, .. } if id == match_id)
+                    && room.in_match.contains(&account_id))
+                .then_some(room.key)
+            }) else {
+                continue;
+            };
+            self.rooms.join_failed(key, account_id);
+            // Its next turn: `LATE_JOIN_WAIT` from now.
+            self.room_join_at.remove(&account_id);
+            log::info!(
+                "{}: did not get into match {match_id:#x}; it waits in room {key} again",
+                self.name_of(account_id).unwrap_or_default()
+            );
+        }
+    }
+
     /// The room's match is over.
     pub(super) fn room_match_over(&mut self, match_id: u32) {
         self.room_launching.remove(&match_id);
@@ -890,6 +914,7 @@ impl Core<'_> {
             queued: self.rooms.queued_total(),
         });
         self.room_left_matches();
+        self.room_failed_joins();
         if self.rooms.is_empty() {
             return;
         }

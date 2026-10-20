@@ -731,6 +731,14 @@ impl Rooms {
         }
     }
 
+    /// A member that went into the room's running match late was let go
+    /// before it entered: it waits in the room again.
+    pub fn join_failed(&mut self, key: u32, account_id: u32) {
+        if let Some(room) = self.rooms.get_mut(&key) {
+            room.in_match.remove(&account_id);
+        }
+    }
+
     /// The room's match (the queue's id) is over: everyone is back, and the
     /// room waits for the next one (the next tick starts its vote).
     pub fn match_over(&mut self, match_id: u32) -> Option<u32> {

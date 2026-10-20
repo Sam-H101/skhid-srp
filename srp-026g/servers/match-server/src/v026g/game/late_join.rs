@@ -43,8 +43,25 @@ const INSTALL_GRACE: Duration = Duration::from_secs(15);
 /// lacks. Measured live (2026-10-19, 294 loads, connection to "has loaded"):
 /// 4.2 s in the middle, 8.4 s at the 90th percentile, 15.2 s at the 99th,
 /// 16.3 s at most. Past it, it is left behind (`Peer::left_behind`): loaded
-/// later without a place taken meanwhile, it is let go to come again.
+/// later without a place taken meanwhile, it is let go to come again. Only
+/// a game that loads its place again ([`LoadWait`]).
 const LOADING_GRACE: Duration = Duration::from_secs(30);
+
+/// By place: whether a game of it still loading past [`LOADING_GRACE`] is
+/// left behind. The owner's players have slow disks (game starts of
+/// minutes): a slow machine is waited for on the match's first load, and
+/// is let go for loading behind once at most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LoadWait {
+    /// Its first load of the match (an initial place, from the start):
+    /// waited for.
+    First,
+    /// It loaded before (its game came again): left behind past the grace.
+    Again,
+    /// Let go once for loading behind (`loaded_behind`): waited for from
+    /// then on.
+    Always,
+}
 
 pub(super) struct LoadingProfile {
     proposal: Proposal,
@@ -185,6 +202,7 @@ impl Game {
             self.peers.push(None);
             self.best_streaks.push(0);
             self.kit_changes.push(0);
+            self.load_waits.push(LoadWait::First);
             self.push_driven_place(formed.places[place].team);
             self.admissions.push(Some(Admission::new(now)));
         }
@@ -249,10 +267,23 @@ impl Game {
             return Some(Closed::Loading);
         }
         // Loaded, a game still installing a place: its joiner is on its way.
-        if peers.any(|p| p.installed_roster != self.players()) {
+        // A place whose newcomer failed alone is settled: a game that has
+        // not installed it yet holds no joiner back (the next one waits for
+        // that game, `drop_slow_games`).
+        if peers
+            .any(|p| (p.installed_roster..self.players()).any(|place| !self.failed_alone(place)))
+        {
             return Some(Closed::Joining);
         }
         None
+    }
+
+    /// The newcomer of the place at `index` failed by itself: the place is
+    /// settled, and installed on as one whose player left.
+    fn failed_alone(&self, index: usize) -> bool {
+        self.admissions[index]
+            .as_ref()
+            .is_some_and(|a| a.failed() && a.failed_alone)
     }
 
     /// Whether the place at `index` waits for `peer` to enter: a game in
@@ -277,6 +308,10 @@ impl Game {
         let Some(peer) = self.peers[index].as_mut() else {
             return false;
         };
+        let wait = &mut self.load_waits[index];
+        if *wait == LoadWait::First {
+            *wait = LoadWait::Again;
+        }
         let behind = std::mem::replace(&mut peer.left_behind, false);
         let missing = peer.installed_roster < self.formed.places.len()
             && !self.admissions[peer.installed_roster]
@@ -287,10 +322,11 @@ impl Game {
         }
         log::warn!(
             "Match {:#x}: player {index} loaded without the places taken since it connected; it \
-             is let go, to come again with the whole roster",
+             is let go, to come again with the whole roster; its next load is waited for",
             self.id
         );
         peer.transport.disconnect(now);
+        self.load_waits[index] = LoadWait::Always;
         self.leave(index, now);
         true
     }
@@ -415,6 +451,8 @@ impl Game {
             admission.forget_wrong();
             if new_connection {
                 admission.phase = AdmissionPhase::Preparing;
+                // Its new game waits from its own load ([`INSTALL_GRACE`]).
+                admission.waiting_since = None;
             }
         }
     }
@@ -462,8 +500,15 @@ impl Game {
                     self.id,
                     ack.proposal.place
                 );
+                // Its install stops, whether its newcomer failed alone
+                // before or not: the same end as when this came first. One
+                // already failed (and maybe rejected to the lobby) keeps
+                // its phase: it is not rejected twice.
                 if let Some(admission) = &mut self.admissions[usize::from(ack.proposal.place)] {
-                    admission.phase = AdmissionPhase::Failed;
+                    if !admission.failed() {
+                        admission.phase = AdmissionPhase::Failed;
+                    }
+                    admission.failed_alone = false;
                 }
             }
         }
@@ -677,10 +722,12 @@ impl Game {
             // Loading this long, it holds no joiner back: neither a place
             // taken nor one waiting (live, 2026-10-19: a game that signed in
             // again every minute and never loaded closed the match to
-            // joiners for most of each minute).
+            // joiners for most of each minute). Not on the place's first
+            // load, nor once it was let go for it ([`LoadWait`]).
             if peer.stage != Stage::Gone
                 && !peer.resources_loaded
                 && !peer.left_behind
+                && self.load_waits[index] == LoadWait::Again
                 && peer
                     .loading_since
                     .is_some_and(|since| now.saturating_duration_since(since) >= LOADING_GRACE)
