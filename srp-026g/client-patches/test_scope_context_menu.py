@@ -28,7 +28,7 @@ class ScopeContextMenuTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "lobby_menu.swf"
             output.write_bytes(b"keep")
-            with mock.patch("sys.argv", ["scope_context_menu_026g.py", "unused", str(output), "--ffdec=unused"]):
+            with mock.patch("sys.argv", ["scope_context_menu_026g.py", "unused", str(output), "--ffdec=unused", "--step-only"]):
                 with self.assertRaises(SystemExit):
                     patch.main()
             self.assertEqual(output.read_bytes(), b"keep")

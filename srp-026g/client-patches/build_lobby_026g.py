@@ -14,10 +14,19 @@ again; a new lobby change is a new entry of STEPS.
 The input is `flash_movies/lobby_menu.swf` of `resources.db.patch_23` (revision
 23, BASE_SHA256); the output is the movie for the next resources.db.patch_<n>
 (`srp-game-data pack`). Each step checks its own work (every method it does not
-change byte for byte, no non-script tag changed). Requires a JDK and JPEXS
-FFDec (tested with 25.1.3). No game assets are stored in this repository.
+change byte for byte, no non-script tag changed). The result must be
+RESULT_SHA256, the movie last checked: a change of a source or of FFDec gives
+another, which the build refuses until RESULT_SHA256 is set to it on purpose
+(--any-result builds it anyway, for development). Requires a JDK and JPEXS
+FFDec 25.1.3. No game assets are stored in this repository.
+
+Frozen in the base: the login hint (login_hint_026g.py) and the exchange's
+first build (exchange_026g.py) are in revision 23's movie already; a change of
+theirs needs a new base, not a step. The exchange's later changes are a step
+(exchange_update_026g.py).
 """
 import argparse
+import contextlib
 import hashlib
 from pathlib import Path
 import tempfile
@@ -33,6 +42,9 @@ import scope_context_menu_026g
 # matches list, the exchange and the login hint, before the rooms.
 BASE_SHA256 = "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b"
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
+# The movie the steps make (FFDec 25.1.3), last checked: main with #212
+# (2026-10-20). Set it anew, on purpose, when a step changes.
+RESULT_SHA256 = "8841ba5c3168c785e0d4af09e3640926ab0ff185f5fc5ccbcd5f9de3e876664d"
 # Every lobby change, in the order they are built (each on the one before).
 STEPS = [
     ("the rooms window (rooms/SrpRooms.as)", rooms_026g),
@@ -44,7 +56,7 @@ STEPS = [
 ]
 
 
-def build(original, ffdec, java="java", javac="javac", work=None, report=print):
+def build(original, ffdec, java="java", javac="javac", work=None, report=print, any_result=False):
     """The movie of every step on `original` (revision 23's), and each step's
     sha256 on the way."""
     digest = hashlib.sha256(original).hexdigest()
@@ -54,8 +66,9 @@ def build(original, ffdec, java="java", javac="javac", work=None, report=print):
         raise ValueError(f"Not revision 23's lobby movie (sha256 {digest}): the steps are built on that one")
     movie = original
     hashes = []
-    with tempfile.TemporaryDirectory(prefix="srp-lobby-") as temporary:
-        root = Path(work) if work else Path(temporary)
+    scratch = contextlib.nullcontext(work) if work else tempfile.TemporaryDirectory(prefix="srp-lobby-")
+    with scratch as temporary:
+        root = Path(temporary)
         for number, (name, step) in enumerate(STEPS, 1):
             folder = root / f"step{number}"
             folder.mkdir(parents=True, exist_ok=True)
@@ -64,6 +77,10 @@ def build(original, ffdec, java="java", javac="javac", work=None, report=print):
             movie = step.build_movie(movie, ffdec, java, javac, folder, known=False)
             hashes.append(hashlib.sha256(movie).hexdigest())
             report(f"{number}. {name}: sha256 {hashes[-1]}")
+    if not any_result and hashes[-1] != RESULT_SHA256:
+        raise ValueError(f"The movie is {hashes[-1]}, not RESULT_SHA256 ({RESULT_SHA256}): a step's source or "
+                         "FFDec changed. Check the movie (in the game), then set RESULT_SHA256 to it; "
+                         "--any-result builds it anyway")
     return movie, hashes
 
 
@@ -75,10 +92,13 @@ def main():
     parser.add_argument("--ffdec", required=True, type=Path, help="path to ffdec.jar")
     parser.add_argument("--java", default="java")
     parser.add_argument("--javac", default="javac")
+    parser.add_argument("--any-result", action="store_true",
+                        help="write the movie even if it is not RESULT_SHA256 (development)")
     args = parser.parse_args()
     if args.output.exists() or args.output.is_symlink():
         parser.error("Output already exists; choose a new path")
-    movie, _ = build(args.source.read_bytes(), args.ffdec.resolve(), args.java, args.javac)
+    movie, _ = build(args.source.read_bytes(), args.ffdec.resolve(), args.java, args.javac,
+                     any_result=args.any_result)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("xb") as output:
         output.write(movie)

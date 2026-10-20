@@ -156,9 +156,9 @@ remain in the original menu method.
 Build an extracted movie for the next resource patch (JDK and FFDec 25.1.3):
 
 ```sh
+# development only: this one step; the movie that ships is build_lobby_026g.py's
 python3 srp-026g/client-patches/scope_context_menu_026g.py \
-  /path/to/released/lobby_menu.swf /path/to/overlay/flash_movies/lobby_menu.swf \
-  --ffdec /path/to/ffdec.jar
+  <the craft window's movie> /tmp/step.swf --ffdec /path/to/ffdec.jar --step-only
 python3 -m unittest discover -s srp-026g/client-patches -p test_scope_context_menu.py
 ```
 
@@ -169,9 +169,10 @@ its hash in the README) and refuses unknown or already patched inputs and existi
 outputs. The work of 2026-10-18 (built on revisions 19/20, never merged) was
 taken up again then. It changes one ABC block, verifies every
 unrelated existing method is byte-identical, and transplants that block into the
-original movie without round-tripping its Scaleform graphics. Publish the output
-as `flash_movies/lobby_menu.swf` in the next resource patch; do not replace an
-already published patch. No executable, protocol or simulation change is needed.
+original movie without round-tripping its Scaleform graphics. It is step 6 of
+`build_lobby_026g.py` (README "Building the lobby movie"): the movie that ships is
+that driver's, never this step's output alone (it would lack the steps not run);
+do not replace an already published patch. No executable, protocol or simulation change is needed.
 
 Validation of the first version (2026-10-18; the build of 2026-10-20 on the newer
 movie is checked in the game separately): built against both released input movies with FFDec

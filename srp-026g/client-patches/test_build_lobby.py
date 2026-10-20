@@ -36,7 +36,7 @@ class BuildLobbyTests(unittest.TestCase):
             for p in patches:
                 p.start()
             try:
-                movie, hashes = lobby.build(base, None, report=lambda _: None)
+                movie, hashes = lobby.build(base, None, report=lambda _: None, any_result=True)
             finally:
                 for p in patches:
                     p.stop()
@@ -60,6 +60,32 @@ class BuildLobbyTests(unittest.TestCase):
         before_base = {'exchange_026g', 'login_hint_026g'}
         steps = {module.__name__ for _, module in lobby.STEPS}
         self.assertEqual(builders - before_base - steps, set())
+
+    def test_a_result_other_than_the_checked_one_is_refused(self):
+        base = b'revision 23'
+        patches = [mock.patch.object(module, 'build_movie', lambda m, *a, **k: m + b'+')
+                   for _, module in lobby.STEPS]
+        with mock.patch.object(lobby, 'BASE_SHA256', hashlib.sha256(base).hexdigest()):
+            for p in patches:
+                p.start()
+            try:
+                with self.assertRaisesRegex(ValueError, 'not RESULT_SHA256'):
+                    lobby.build(base, None, report=lambda _: None)
+            finally:
+                for p in patches:
+                    p.stop()
+
+    def test_every_step_alone_refuses_to_write_a_movie(self):
+        # A movie of one step lacks the others: only --step-only writes one.
+        for _, module in lobby.STEPS:
+            with self.subTest(module.__name__), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / 'lobby_menu.swf'
+                with mock.patch('sys.argv', [module.__name__, 'unused', str(output), '--ffdec=unused']), \
+                        mock.patch.object(module, 'build_movie') as build, \
+                        self.assertRaises(SystemExit):
+                    module.main()
+                build.assert_not_called()
+                self.assertFalse(output.exists())
 
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary:
