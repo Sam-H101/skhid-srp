@@ -65,8 +65,9 @@ def build_movie(original, ffdec, java, javac, work, known=True):
     replacements = [t for t in hint.unpack(edited.read_bytes())[2] if t[0] == 82]
     before = [t for t in tags if t[0] == 82]
     changed = sum(a != b for a, b in zip(before, replacements))
-    if len(before) != len(replacements) or changed != 1:
-        raise ValueError(f"Expected the inventory list's ABC block alone to change, got {changed}")
+    # The inventory list's block and the craft window's (one if they share it).
+    if len(before) != len(replacements) or not 1 <= changed <= 2:
+        raise ValueError(f"Expected the inventory list's and the craft window's ABC blocks to change, got {changed}")
     replacement_iter = iter(replacements)
     updated = [next(replacement_iter) if t[0] == 82 else t for t in tags]
     result = hint.pack(version, header, updated)

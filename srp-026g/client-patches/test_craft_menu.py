@@ -35,5 +35,13 @@ class CraftMenuTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b'existing movie')
 
 
+    def test_a_method_defined_twice_is_refused(self):
+        with self.assertRaisesRegex(ValueError, 'buy'):
+            patch.check_source('function buy():void {}\nfunction buy():void {}')
+        patch.check_source('function get x():int {}\nfunction set x(v:int):void {}')
+
+    def test_the_helper_defines_each_method_once(self):
+        patch.check_source((HERE / 'craft_menu' / 'SrpCraftMenu.as').read_text(encoding='utf-8'))
+
 if __name__ == '__main__':
     unittest.main()

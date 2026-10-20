@@ -1,8 +1,10 @@
-// Compile SrpCraftMenu into the inventory list's ABC block; in
-// InventoryList.showContextMenu `this._inventoryLocked` becomes
-// `SrpCraftMenu.locked(this._inventoryLocked, this, activeItem)`: five
-// instructions after its getproperty, no jump added. Every other method
-// stays byte for byte.
+// Compile SrpCraftMenu into the inventory list's ABC block, and:
+//   InventoryList.showContextMenu  `this._inventoryLocked` becomes
+//       `SrpCraftMenu.locked(this._inventoryLocked, this, activeItem)`: five
+//       instructions after its getproperty, no jump added;
+//   MessageCraftItem.fillCraftedItem  ends with
+//       `SrpCraftMenu.result(this, result)`.
+// Every other method stays byte for byte.
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
@@ -17,7 +19,8 @@ import com.jpexs.decompiler.flash.tags.Tag;
 
 public class PatchCraftMenu {
     private static final int GETPROPERTY = 0x66, IFFALSE = 0x12, GETLEX = 0x60, SWAP = 0x2b,
-        GETLOCAL0 = 0xd0, GETLOCAL1 = 0xd1, CALLPROPERTY = 0x46;
+        GETLOCAL0 = 0xd0, GETLOCAL1 = 0xd1, GETLOCAL2 = 0xd2, CALLPROPERTY = 0x46, CALLPROPVOID = 0x4f,
+        RETURNVOID = 0x47;
     private static final String CLASS = "survarium.controls.InventoryList";
 
     private static String name(ABC abc, int multiname) {
@@ -86,24 +89,50 @@ public class PatchCraftMenu {
         menu.setCode(code);
         menu.getCode().checkValidOffsets(menu);
         ((Tag) abc.parentTag).setModified(true);
+
+        // MessageCraftItem.fillCraftedItem ends with SrpCraftMenu.result(this, result).
+        String window = "survarium.messages.MessageCraftItem";
+        int windowBlock = -1;
+        for (int i = 0; i < blocks; i++)
+            if (swf.getAbcList().get(i).getABC().findClassByName(window) >= 0) {
+                if (windowBlock >= 0) throw new IOException("Two " + window + " classes");
+                windowBlock = i;
+            }
+        if (windowBlock < 0) throw new IOException("Missing " + window);
+        ABC windowAbc = swf.getAbcList().get(windowBlock).getABC();
+        MethodBody filled = windowAbc.findBodyByClassAndName("MessageCraftItem", "fillCraftedItem");
+        if (filled == null) throw new IOException("Missing MessageCraftItem.fillCraftedItem");
+        AVM2Code fill = filled.getCode();
+        int end = fill.code.size() - 1;
+        if (fill.code.get(end).definition.instructionCode != RETURNVOID || filled.exceptions.length != 0)
+            throw new IOException("Unexpected fillCraftedItem layout");
+        int[][] call = {{GETLEX, windowAbc.constants.getPublicQnameId("SrpCraftMenu", true)}, {GETLOCAL0}, {GETLOCAL2},
+            {CALLPROPVOID, windowAbc.constants.getPublicQnameId("result", true), 2}};
+        for (int[] ins : call)
+            fill.insertInstruction(end++, new AVM2Instruction(0, ins[0], Arrays.copyOfRange(ins, 1, ins.length)), filled);
+        filled.max_stack = Math.max(filled.max_stack, 3);
+        filled.setCode(fill);
+        filled.getCode().checkValidOffsets(filled);
+        ((Tag) windowAbc.parentTag).setModified(true);
         try (OutputStream out = Files.newOutputStream(Path.of(args[2]))) { swf.saveTo(out); }
 
         SWF saved;
         try (InputStream in = Files.newInputStream(Path.of(args[2]))) { saved = new SWF(in, true); }
         if (saved.getAbcList().get(block).getABC().findClassByName("SrpCraftMenu") < 0)
             throw new IOException("Missing SrpCraftMenu");
-        int index = abc.bodies.indexOf(menu), changed = 0;
+        int index = abc.bodies.indexOf(menu), fillIndex = windowAbc.bodies.indexOf(filled), changed = 0;
         for (int b = 0; b < blocks; b++) {
             List<MethodBody> bodies = saved.getAbcList().get(b).getABC().bodies;
             if (b != block && bodies.size() != originals.get(b).size())
                 throw new IOException("Method count changed in block " + b);
             for (int i = 0; i < originals.get(b).size(); i++)
                 if (!Arrays.equals(originals.get(b).get(i), bodies.get(i).getCodeBytes())) {
-                    if (b != block || i != index) throw new IOException("Unrelated method changed: block " + b + " method " + i);
+                    boolean expected = (b == block && i == index) || (b == windowBlock && i == fillIndex);
+                    if (!expected) throw new IOException("Unrelated method changed: block " + b + " method " + i);
                     changed++;
                 }
         }
-        if (changed != 1) throw new IOException("showContextMenu did not change");
-        System.out.println("Craft window: right-click gives Buy and Sell");
+        if (changed != 2) throw new IOException("Expected showContextMenu and fillCraftedItem changed, got " + changed);
+        System.out.println("Craft window: right-click gives Buy and Sell; a result offers Continue and Exit");
     }
 }
