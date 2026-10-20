@@ -752,6 +752,19 @@ pub const REPLAY_ASK: u32 = 0xFFFF_FF01;
 /// movie (since 2026-10-20). Answered with `93` as a results screen's row is
 /// ([`player_details`]), from the account as it is now. A results screen's
 /// rows are numbered from 1 by their place in the match: none is this high.
+/// The `player` of a `3D 00 <player> <account>` that asks for the
+/// equipment of that account, as [`GEAR_BY_PLACE`] asks by a ranking place:
+/// a right-click on a member in the Rooms list's side panel or in the
+/// asker's room (the rooms' member rows give the account, `lobby.md`
+/// §2.16.3; since 2026-10-20).
+pub const GEAR_BY_ACCOUNT: u32 = 0xFFFF_FF02;
+/// The `player` of a `3D 00 <player> <place + 20 × check>` that asks for the
+/// equipment of the member at that place (0 to 19) of the asker's own room,
+/// a right-click on it in the room's window; `check` is the room state's
+/// `serial` modulo 495, as a kick's (`rooms::member_gear`), and one from an
+/// older list (a member came or went since) gets no answer (since
+/// 2026-10-20).
+pub const GEAR_IN_ROOM: u32 = 0xFFFF_FF04;
 pub const GEAR_BY_PLACE: u32 = 0xFFFF_FF03;
 /// The first field of the row of [`replay_answer`].
 pub const REPLAY_ANSWER_VERSION: &str = "R1";

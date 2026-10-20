@@ -119,5 +119,39 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   the window hidden (not the match start's 15).
 - **Site:** the launcher shows rooms and players in rooms; `/api/stats` has `rooms`,
   `in_rooms`, `queued` (in room queues).
-- **Deferred:** the Rooms list's visibility (members of the selected room, "Full · N in
-  queue", header totals; no friend or clan markers): after rooms are solid.
+- **The list's side panel: who is in the room** (the owner's of 2026-10-20: "down there is
+  enough space for a list of players", "below state"; "it should also show a player level in
+  room people list preview"; "make sure we properly handle long names"):
+  - Below State: the chosen room's members, each with its equipment level (the room view's)
+    in a column of its own, then its name. Grey while its game is gone (`away`), red with the
+    red mark when its kit or gear cannot play, white for the player itself, gold in the room's
+    match. While the room plays, the side of each player in the match (a bar of the side's
+    colour; side 1 left, side 2 right; those not in the match where there is room).
+  - Up to 20: one column while they fit at 18 a row; two otherwise (always two while it
+    plays). Rows share the space (12 to 22 high, the font 12 to 14); the map's render is made
+    up to 60 lower for a full room; nothing goes past the panel.
+  - **Long names** (up to 63 bytes, Cyrillic and other wide letters): the list gets them whole;
+    a name too wide for its place is cut by its width in the panel's own font and ends with
+    "…" (the game's bold Calibri has it); the level is never covered. The room view's names
+    the same way, its "(owner)" kept whole; the state's rows cut a name past 32 bytes and end
+    it with "…". No hover with the full name (the movie's lists have no tooltips).
+  - Anyone may ask, of any room, a room with a PIN too: names are no secret (a PIN keeps
+    the door, not the names). Asked when a room is chosen, then every 3 s (the list's pace).
+  - **Friends and clan:** not marked. The owner's: only "in exactly the same way it would
+    have been done before rooms by original developers", and the original game marks no
+    friend or clan member in any of its player lists (the results list: the player yellow
+    0xF1E545, its squad green 0xB3EA97, the enemy squad's icon red; the squad list: the
+    leader yellow; the friends and clan lists, the rankings and the lobby chat: no friend or
+    clan colour; a clan shows only as its "[tag] " before a name in chat and in the friends
+    list). Sources: the 0.26g movie's `PlayerListRenderer.updateData`,
+    `SquadListRender`, `FriendListRender.updateText`, `ClanListRenderer`,
+    `RankingItemRenderer`, `LobbyChat.get_styled_text`, `Colors`; `VictoryScreen.showContextMenu`
+    hard-codes "not a friend".
+- **A player's equipment from the rooms' lists** (the owner's of 2026-10-20: "after match in
+  match overview you can rmb to see the players equipments", wanted in the rooms' lists too):
+  a right-click on a member, in the list's side panel or in the room's window, opens the game's
+  right-click menu with "Show player's information" and the game's own window with its kits,
+  as the Rankings do (`player_gear.md`). The results screen itself opens that window on a
+  double-click (its right-click menu has no such item). Any member, online or not; a place
+  of the room's window from an older list (a member came or went since) gives nothing.
+- **Deferred:** "Full · N in queue" and the list's header totals: after rooms are solid.

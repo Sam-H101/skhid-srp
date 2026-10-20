@@ -44,7 +44,10 @@ import scope_context_menu_026g
 BASE_SHA256 = "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b"
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
 # The movie the steps make (FFDec 25.1.3). Set it anew, on purpose, when a
-# step changes. d3f81436 (2026-10-20): a right-click on a row of the
+# step changes. NEWHASH (2026-10-20): the Rooms list's side panel lists
+# the chosen room's members, and a right-click on a member (there or in the
+# room's window) shows its kits (7fe79086, then the review fixes); not yet
+# checked in the game. Before it, d3f81436 (2026-10-20): a right-click on a row of the
 # Rankings shows that player's kits (player_gear_026g.py; 929f3f0a, then the
 # review fixes: one ask in flight, the menu item a closure); not yet checked
 # in the game. Before it, 88fa657a (2026-10-20): the create window starts
