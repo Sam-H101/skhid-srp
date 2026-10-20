@@ -160,8 +160,9 @@ jobs:
           for ws in srp-0100b srp-021d srp-026g; do
             cp "artifacts/$ws-srp/srp" "assets/$ws-srp"
           done
-          cp artifacts/client/* assets/
-          cd assets && sha256sum srp-0100b-srp srp-021d-srp srp-026g-srp >> SHA256SUMS && cat SHA256SUMS
+          cp artifacts/client/BugTrap.dll artifacts/client/updater_skhid.exe assets/
+          cd assets
+          sha256sum srp-0100b-srp srp-021d-srp srp-026g-srp BugTrap.dll updater_skhid.exe | tee SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: assets/*
