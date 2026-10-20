@@ -459,6 +459,38 @@ package
             return true;
         }
 
+        // The start of LobbyMenu.show_victory_screen (a match's results): a
+        // player in a room gets the room's window opened first, so the
+        // results screen goes over it and closing them shows the room (the
+        // owner's of 2026-10-20). Out of a room: nothing.
+        public static function afterMatch():void
+        {
+            // A hook: nothing of it may throw into the game's code.
+            try
+            {
+                if (me != null && me._room != null && !me._shown)
+                    me.show(true);
+            }
+            catch (err:Error)
+            {
+            }
+        }
+
+        // The results screen is up (over our window, after a match): Esc and
+        // the list's keys are its, not ours.
+        private function resultsUp():Boolean
+        {
+            try
+            {
+                var screen:DisplayObject = _lobby != null ? _lobby["victory_screen"] as DisplayObject : null;
+                return screen != null && screen.visible && screen.stage != null;
+            }
+            catch (err:Error)
+            {
+            }
+            return false;
+        }
+
         // The end of LobbyMenu.set_play_button_enabled: Play stays off in a room.
         public static function playState(lobby:*):void
         {
@@ -558,7 +590,7 @@ package
             // A hook: nothing of it may throw into the game's code.
             try
             {
-                return me != null && me._shown;
+                return me != null && me._shown && !me.resultsUp();
             }
             catch (err:Error)
             {
@@ -572,7 +604,7 @@ package
             // A hook: nothing of it may throw into the game's code.
             try
             {
-                if (me == null || !me._shown || MainScene.activePop != null)
+                if (me == null || !me._shown || MainScene.activePop != null || me.resultsUp())
                     return false;
                 me.show(false);
                 return true;
@@ -1845,7 +1877,8 @@ package
         {
             try
             {
-                if (!_shown || _view != "list" || (e.keyCode != 13 && e.keyCode != 38 && e.keyCode != 40))
+                if (!_shown || _view != "list" || (e.keyCode != 13 && e.keyCode != 38 && e.keyCode != 40)
+                    || resultsUp())
                     return;
                 var focus:TextField = stage != null ? stage.focus as TextField : null;
                 if (focus != null && focus != _joinPin && focus.text.length > 0)

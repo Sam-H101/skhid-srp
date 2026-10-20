@@ -605,7 +605,9 @@ for development). The login hint and the exchange's first build are frozen in
 the base (a change of theirs needs a new base); the exchange's later changes
 are a step.
 
-The build of 2026-10-20 (`main` with #212): sha256 `8841ba5c…`, deterministic
+Since the rooms' window under a match's results (2026-10-20): `RESULT_SHA256` is
+`57f73166…` (the owner checked `d41b9655…` in the game; then #219's review fixes). The first build of 2026-10-20 (`main` with
+#212): sha256 `8841ba5c…`, deterministic
 with FFDec 25.1.3. Its 881 scripts decompile byte for byte to those of the
 movie the owner tested with #212 (`ed14345f…`, made the long way: the rooms
 class compiled over Optics' movie); the bytecode is laid out differently (the

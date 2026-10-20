@@ -42,9 +42,11 @@ import scope_context_menu_026g
 # matches list, the exchange and the login hint, before the rooms.
 BASE_SHA256 = "12f0ee1dae4301d18405e956678ad1c9aa2c975ce2639c408722f5708548856b"
 RETAIL_SHA256 = "ab6f22d80d32fa4928403d19e3e054bd5316b2370e2550cefec0c9d22b959850"
-# The movie the steps make (FFDec 25.1.3), last checked: main with #212
-# (2026-10-20). Set it anew, on purpose, when a step changes.
-RESULT_SHA256 = "8841ba5c3168c785e0d4af09e3640926ab0ff185f5fc5ccbcd5f9de3e876664d"
+# The movie the steps make (FFDec 25.1.3), last checked: the rooms' window
+# under a match's results (the owner checked d41b9655 in the game, 2026-10-20;
+# this adds #219's review fixes: Esc and the list's keys left to the results,
+# afterMatch guarded). Set it anew, on purpose, when a step changes.
+RESULT_SHA256 = "57f73166558740171ee2f98352e8fe1843d766a18b5c86111a29ae67699d914c"
 # Every lobby change, in the order they are built (each on the one before).
 STEPS = [
     ("the rooms window (rooms/SrpRooms.as)", rooms_026g),
