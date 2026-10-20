@@ -52,6 +52,8 @@ package
         public static const CREATE:int = FIRST + 10000000;
         public static const LAST:int = FIRST + 19999999;
         public static const WAITS:Array = [15, 20, 25, 30, 35, 40, 45, 50, 55, 60];
+        // The vote's own time before the wait (srp's rooms::VOTE).
+        public static const VOTE_SECS:int = 15;
         public static const GOLD:uint = 0xE0A64E;
         public static const RED:uint = 0xE0533F;
         public static const LIGHT:uint = 0xE8EEF2;
@@ -91,22 +93,18 @@ package
             "map": ["Map", "Карта", "Карта", "Karte", "Mapa"],
             "state": ["State", "Стан", "Состояние", "Status", "Stan"],
             "size": ["Team size", "Розмір команд", "Размер команд", "Teamgröße", "Rozmiar drużyn"],
-            "wait": ["Wait after the vote", "Очікування після голосування", "Ожидание после голосования", "Wartezeit nach der Wahl",
-                "Czekanie po głosowaniu"],
+            "wait": ["Time to start", "Час до старту", "Время до старта", "Zeit bis zum Start", "Czas do startu"],
             "pin": ["PIN", "PIN", "PIN", "PIN", "PIN"],
             "pinHint": ["4 digits; empty: an open room", "4 цифри; порожньо: відкрита кімната",
                 "4 цифры; пусто: открытая комната", "4 Ziffern; leer: offener Raum", "4 cyfry; puste: pokój otwarty"],
-            "waitHint": ["Then: 15 s map vote, this wait, the match.", "Далі: 15 с голосування, це очікування, матч.",
-                "Затем: 15 с голосования, это ожидание, матч.", "Dann: 15 s Kartenwahl, diese Wartezeit, das Match.",
-                "Potem: 15 s głosowania, to czekanie, mecz."],
             "minPlayers": ["Players to start", "Гравців для старту", "Игроков для старта", "Spieler zum Start",
                 "Graczy do startu"],
             "voting": ["Map vote", "Голосування", "Голосование", "Kartenwahl", "Głosowanie"],
-            "voteNow": ["Vote for the next map: click a card. The wait starts when the vote ends.",
-                "Голосуйте за наступну карту: клацніть картку. Очікування почнеться після голосування.",
-                "Голосуйте за следующую карту: нажмите карточку. Ожидание начнётся после голосования.",
-                "Stimme für die nächste Karte: klicke eine Karte. Danach beginnt die Wartezeit.",
-                "Zagłosuj na następną mapę: kliknij kartę. Czekanie zacznie się po głosowaniu."],
+            "voteNow": ["Vote for the next map: click a card. The match starts on the winner when the time is up.",
+                "Голосуйте за наступну карту: клацніть картку. Коли час вийде, матч почнеться на переможниці.",
+                "Голосуйте за следующую карту: нажмите карточку. Когда время выйдет, матч начнётся на победителе.",
+                "Stimme für die nächste Karte: klicke eine Karte. Ist die Zeit um, beginnt das Match auf der Gewinnerin.",
+                "Zagłosuj na następną mapę: kliknij kartę. Gdy czas minie, mecz zacznie się na zwycięskiej."],
             "nextMap": ["Next", "Далі", "Далее", "Als Nächstes", "Następna"],
             "pin4": ["The PIN is 4 digits.", "PIN — це 4 цифри.", "PIN — это 4 цифры.", "Die PIN hat 4 Ziffern.",
                 "PIN ma 4 cyfry."],
@@ -667,6 +665,7 @@ package
             watchWindows();
             topIcon();
             overPanels();
+            alertNear();
         }
 
         // While open, ours is the lobby's top child: the lobby adds its own
@@ -1094,10 +1093,10 @@ package
                     "pool": int(head[10]), "serial": int(head[12]), "pin": head[13] == "1", "next": int(head[14]), "min": int(head[15]),
                     "cards": [], "members": [], "last": 0, "switchTo": null, "joinIn": -1};
                 _roomAt = getTimer();
-                // The vote chose the map: the game's alert (6, its important
-                // message's), not the match's own start (15), the owner's.
-                if (was != null && was.key == _room.key && was.phase == 3 && _room.phase == 1)
-                    gameSound(6);
+                // A new vote (another room, or after its match): its alert
+                // may sound again (`alertNear`).
+                if (was == null || was.key != _room.key || was.phase != 3)
+                    _alerted = false;
                 for (var k:int = 1; k < rows.length; k++)
                 {
                     var r:Array = fields(rows[k]);
@@ -1698,11 +1697,12 @@ package
                 text(row, String(room.level), tw * cols[1], 10, tw * 0.09, 17, LIGHT);
                 text(row, levelText(room.max), tw * cols[2], 10, tw * 0.09, 17, LIGHT);
                 var e:Object = entry(room.map);
-                text(row, e != null ? levelName(e.level) + " · " + weatherName(e.weather) : "",
-                    tw * cols[3], 10, tw * 0.27, 15, GREY);
+                // No card leads alone yet (a tie, no votes): the start draws one.
+                text(row, e != null ? levelName(e.level) + " · " + weatherName(e.weather)
+                    : room.phase == 3 ? say("voting") : "", tw * cols[3], 10, tw * 0.27, 15, GREY);
                 text(row, room.players + " / " + room.size * 2, tw * cols[4], 10, tw * 0.10, 17, LIGHT);
                 _stateCells[String(room.key)] = text(row, phaseText(room), tw * cols[5], 10, tw * 0.16, 15,
-                    room.phase == 2 ? GOLD : room.phase == 1 ? 0x8FD18F : GREY);
+                    room.phase == 2 ? GOLD : room.phase == 3 || room.phase == 1 ? 0x8FD18F : GREY);
                 row.buttonMode = true;
                 row.mouseChildren = false;
                 row.name = String(room.key);
@@ -1924,9 +1924,7 @@ package
             slider(y, say("max"), "max");
             y += SLIDER_H;
             slider(y, say("wait"), "wait");
-            y += SLIDER_H;
-            text(_content, say("waitHint"), 14, y, FORM_W - 14, 13, GREY);
-            y += 30;
+            y += SLIDER_H + 12;
             // The modes: the two kinds of protective device apart, and team
             // deathmatch; a mode out takes all its entries out of the pool.
             text(_content, say("modes").toUpperCase(), 14, y, 260, 12, DIM);
@@ -2178,8 +2176,19 @@ package
 
         private function stopText(what:String, v:int):String
         {
-            return what == "wait" ? (v >= 60 ? "1 " + say("min") : v + " " + say("sec")) : what == "size" || what == "min" ? v + " v " + v
+            return what == "wait" ? startText(v) : what == "size" || what == "min" ? v + " v " + v
                 : levelText(v);
+        }
+
+        // The time to start a wait makes: the vote's own 15 s and the wait
+        // (the owner's of 2026-10-19: the vote runs until the match starts,
+        // its time added to the wait; 30 s at the least).
+        private function startText(wait:int):String
+        {
+            var all:int = wait + VOTE_SECS;
+            if (all < 60)
+                return all + " " + say("sec");
+            return int(all / 60) + " " + say("min") + (all % 60 != 0 ? " " + (all % 60) + " " + say("sec") : "");
         }
 
         // A slider's places: the values it stops at, in order.
@@ -2500,6 +2509,25 @@ package
             return 0;
         }
 
+        // The vote's alert: the game's (6, its important message's), not
+        // the match's own start (15), the owner's; once a vote, when 10 s
+        // or less are left of it (the vote runs until the match starts, the
+        // owner's of 2026-10-19), also with the window hidden.
+        private var _alerted:Boolean = false;
+        private static const ALERT_SECS:int = 10;
+
+        private function alertNear():void
+        {
+            if (_room == null || _room.phase != 3 || _alerted)
+                return;
+            var left:int = _room.secs - int((getTimer() - _roomAt) / 1000);
+            if (left <= ALERT_SECS)
+            {
+                _alerted = true;
+                gameSound(6);
+            }
+        }
+
         // The countdown, kept moving between the server's answers.
         private function banner():void
         {
@@ -2552,7 +2580,7 @@ package
                 return;
             }
             var left:int = _room.secs - int((getTimer() - _roomAt) / 1000);
-            var tail:String = _room.phase == 1 ? clock(left)
+            var tail:String = _room.phase == 1 || _room.phase == 3 ? clock(left)
                 : _room.phase == 2 ? say("inMatch") : _room.members.length + "/" + _room.size * 2;
             setTab(say("room") + " " + tail);
         }

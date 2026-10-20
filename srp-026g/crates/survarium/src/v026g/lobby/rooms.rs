@@ -234,11 +234,14 @@ pub fn room_request(start: u32, count: u8) -> Option<RoomRequest> {
 pub enum RoomPhase {
     /// Fewer than two who can play: nothing runs.
     Waiting = 0,
-    /// The vote chose the map; the room's wait runs, `secs` is what is left.
+    /// Not sent since 2026-10-19 (the vote runs until the match starts);
+    /// kept so the lobby movies of revision 24 and before read the wire.
+    /// It was: the vote chose the map; the room's wait runs.
     Countdown = 1,
     /// Its match is being played; `secs` is how long it has been.
     InMatch = 2,
-    /// The vote's own 15 s run; `secs` is what is left.
+    /// The vote, open until the match starts: its 15 s and the room's wait
+    /// together; `secs` is what is left.
     Vote = 3,
 }
 
@@ -364,7 +367,8 @@ pub struct RoomView {
     pub members: Vec<Member>,
     /// The map of its last match; 0: none yet.
     pub last_map: u8,
-    /// The map the vote chose, during the wait after it; 0: none.
+    /// Always 0 since 2026-10-19 (no map is fixed before the start); kept
+    /// so the lobby movies of revision 24 and before read the wire.
     pub next_map: u8,
     /// The players it needs before its vote begins (2, 4 or 6).
     pub min_players: u8,

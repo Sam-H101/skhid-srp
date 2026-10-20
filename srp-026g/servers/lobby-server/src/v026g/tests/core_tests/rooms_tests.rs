@@ -117,10 +117,8 @@ fn a_room_counts_down_from_two_and_plays_the_card_voted_for() {
 
     let list = rows(&mut world, bob, ROOMS_LIST, 32);
     assert_eq!(list[0], "S1;L;1;0");
-    assert_eq!(
-        list[1],
-        format!("{key};0;0;6;1;0;0;{};0;Alice", cards(&alone)[0])
-    );
+    // No vote yet: no map (the start would draw one).
+    assert_eq!(list[1], format!("{key};0;0;6;1;0;0;0;0;Alice"));
     let joined = rows(&mut world, bob, ROOM_JOIN_BASE + key, 1);
     assert_eq!(header(&joined)[MEMBERS], "2");
     assert_eq!(header(&joined)[OWNER], "0", "Bob does not own it");
@@ -144,16 +142,24 @@ fn a_room_counts_down_from_two_and_plays_the_card_voted_for() {
         voted.contains(&format!("C;1;{};2;1", voted_cards[1])),
         "{voted:?}"
     );
+    // The list shows the card that leads alone.
+    let map_of = |list: &[String]| list[1].split(';').nth(7).unwrap().to_owned();
+    let list = rows(&mut world, bob, ROOMS_LIST, 32);
+    assert_eq!(map_of(&list), voted_cards[1].to_string());
 
-    // The vote is over: its winner is the next map, and the wait runs.
+    // Past the vote's 15 s it is still open, through the wait, until the
+    // match starts (the owner's of 2026-10-19); no map is fixed before.
     world.advance(Duration::from_secs(15));
     let waiting = state(&mut world, alice);
-    assert_eq!(header(&waiting)[PHASE], "1", "the wait: {waiting:?}");
-    assert_eq!(header(&waiting)[NEXT], voted_cards[1].to_string());
-    // Its vote is shut.
+    assert_eq!(header(&waiting)[PHASE], "3", "still the vote: {waiting:?}");
+    assert_eq!(header(&waiting)[NEXT], "0");
+    rows(&mut world, alice, ROOM_VOTE_BASE + 2, 1);
+    // One vote each: a tie, no map in the list (the start draws one).
+    let list = rows(&mut world, bob, ROOMS_LIST, 32);
+    assert_eq!(map_of(&list), "0");
     let late = rows(&mut world, bob, ROOM_VOTE_BASE + 2, 1);
     assert!(
-        late.contains(&format!("C;1;{};2;1", voted_cards[1])),
+        late.contains(&format!("C;2;{};2;1", voted_cards[2])),
         "{late:?}"
     );
     world.take(alice);
@@ -164,7 +170,10 @@ fn a_room_counts_down_from_two_and_plays_the_card_voted_for() {
     assert_eq!(to_alice.0, to_bob.0);
     assert_ne!(to_alice.1, to_bob.1, "one a side");
     let setup = world.host.made.locked().last().unwrap().1.clone();
-    assert_eq!(setup.map_id, voted_cards[1]);
+    assert_eq!(
+        setup.map_id, voted_cards[2],
+        "the vote's winner when it started"
+    );
     assert_eq!(setup.players.len(), 2, "no bots");
     assert!(!setup.vs_bots);
     world.advance(Duration::from_secs(1));
@@ -183,7 +192,7 @@ fn a_room_counts_down_from_two_and_plays_the_card_voted_for() {
     world.advance(Duration::from_secs(2));
     let after = state(&mut world, alice);
     assert_eq!(header(&after)[PHASE], "3", "the next vote: {after:?}");
-    assert_eq!(after.last().unwrap(), &format!("L;{}", voted_cards[1]));
+    assert_eq!(after.last().unwrap(), &format!("L;{}", voted_cards[2]));
     assert_eq!(cards(&after).len(), 3);
 }
 
@@ -544,8 +553,14 @@ fn a_room_whose_match_cannot_be_made_tries_again() {
             "left searching: {decoded:?}"
         );
     }
-    assert_eq!(header(&state(&mut world, alice))[PHASE], "1");
+    // The vote and the wait again, whole.
+    assert_eq!(header(&state(&mut world, alice))[PHASE], "3");
     world.host.fail.store(false, Ordering::Relaxed);
+    world.advance(Duration::from_secs(16));
+    assert!(
+        sent_to_match(&world.take(alice)).is_none(),
+        "the 30 s at the least"
+    );
     world.advance(Duration::from_secs(16));
     assert!(sent_to_match(&world.take(alice)).is_some());
     assert!(sent_to_match(&world.take(bob)).is_some());

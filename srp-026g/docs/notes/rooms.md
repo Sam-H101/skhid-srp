@@ -9,8 +9,8 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   Matches tab and its JOIN, the skewed map draw and PvP server bots are gone. Play vs Bots
   and clan-team matches stay (clan matches: a uniform random map, no bots).
 - **Making one:** team size 6 v 6 to 10 v 10; players to start 1 v 1 to 3 v 3; max level
-  (equipment cap; 0 = any; never below the maker's own gear); the wait after the vote 15 s
-  to 1 min; an optional 4-digit PIN; a pool of maps (with modes: Protective device,
+  (equipment cap; 0 = any; never below the maker's own gear); the time to start, 30 s to
+  1 min 15 s (the 15 s vote and a wait of 15 s to 1 min; shown as the whole); an optional 4-digit PIN; a pool of maps (with modes: Protective device,
   Protective device: chargers, Team Deathmatch; experimental maps addable). Named after its
   maker; never changed once made. No level is chosen: the room's level is its members'
   match level.
@@ -32,11 +32,14 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   played puts it into the same match as a late join (15 s or "Join match") as a new place,
   fresh (new index, zero stats), never its old one; only an account's latest place in a match
   counts (results, rewards, ratings, quests, map plays), the place it left for nothing.
-- **Before each match:** once the minimum of players who can play is in, a 15 s vote on 3
-  cards (map + weather + mode; 25 s after a match: players come back from results first);
-  votes may change; most votes wins, a tie or none drawn at random. Then the owner's wait,
-  always whole, a full room too; the vote is shut during it, its map marked. Fewer members
-  than the minimum stop both; a member changing kit stops nothing.
+- **Before each match:** once the minimum of players who can play is in, a vote on 3 cards
+  (map + weather + mode) for the room's time to start: 15 s and the owner's wait together,
+  10 s more after a match (players come back from results first), always whole, a full
+  room too. The vote is open until the match starts (the owner's of 2026-10-19: its time
+  adds to the wait, nothing is fixed before the start); votes may change; the match starts
+  on the card with most votes then, a tie or none drawn at random. Fewer members than the
+  minimum stop it; a member changing kit stops nothing. A match that could not be made
+  gives the room its wait again, the vote open, its votes kept.
 - **Who plays:** a member whose kit can't play (no weapon, too little ammo) or whose
   equipment is over the max level is marked red, counts for nothing, and is taken out of the
   room when the match starts without it (code 13 / 12); it may rejoin.
@@ -70,8 +73,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   Ranking while the lobby loads); the window fills the Character + Inventory area, the
   inventory's header and close button; × and Esc hide it; opening another lobby window hides
   it. The bottom bar's Matches tab is hidden.
-- **Sounds:** the game's click on every control; its alert (6) when the vote chooses the map
-  (not the match start's 15).
+- **Sounds:** the game's click on every control; its alert (6) once a vote, 10 s before the
+  match starts (the vote's last seconds; the vote runs until the start, 2026-10-19), also with
+  the window hidden (not the match start's 15).
 - **Site:** the launcher shows rooms and players in rooms; `/api/stats` has `rooms`,
   `in_rooms`, `queued` (in room queues).
 - **Deferred:** the Rooms list's visibility (members of the selected room, "Full · N in

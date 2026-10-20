@@ -548,10 +548,9 @@ impl Core<'_> {
             members,
             last_map: room.last_map,
             min_players: room.needs() as u8,
-            next_map: match room.stage {
-                Stage::Countdown { map_id, .. } => map_id,
-                _ => 0,
-            },
+            // The vote is open until the match starts: no map is fixed
+            // before (the cards show the votes).
+            next_map: 0,
             switch: self.room_switch(who, room),
             join_in: self.room_join_in(who, room, now),
         })
@@ -645,18 +644,12 @@ impl Core<'_> {
             .all()
             .map(|room| {
                 let (phase, secs) = phase_of(room, now);
+                // Before its match: the card that leads alone, or none (a
+                // tie or no votes is drawn at the start, so no map is shown
+                // that may not be played).
                 let map_id = match room.stage {
                     Stage::InMatch { .. } => room.last_map,
-                    Stage::Countdown { map_id, .. } => map_id,
-                    _ => {
-                        let tally = room.tally();
-                        tally
-                            .iter()
-                            .enumerate()
-                            .max_by_key(|(index, votes)| (**votes, std::cmp::Reverse(*index)))
-                            .and_then(|(index, _)| room.cards.get(index).copied())
-                            .unwrap_or(0)
-                    }
+                    _ => room.leading().unwrap_or(0),
                 };
                 RoomRow {
                     key: room.key,
@@ -1182,10 +1175,6 @@ fn phase_of(room: &model::Room, now: Instant) -> (RoomPhase, u32) {
         Stage::Waiting => (RoomPhase::Waiting, 0),
         Stage::Vote { until } => (
             RoomPhase::Vote,
-            until.saturating_duration_since(now).as_secs() as u32,
-        ),
-        Stage::Countdown { until, .. } => (
-            RoomPhase::Countdown,
             until.saturating_duration_since(now).as_secs() as u32,
         ),
         Stage::InMatch { since, .. } => (
