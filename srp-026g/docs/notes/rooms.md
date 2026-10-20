@@ -136,7 +136,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
     the same way, its "(owner)" kept whole; the state's rows cut a name past 32 bytes and end
     it with "…". No hover with the full name (the movie's lists have no tooltips).
   - Anyone may ask, of any room, a room with a PIN too: names are no secret (a PIN keeps
-    the door, not the names). Asked when a room is chosen, then every 3 s (the list's pace).
+    the door, not the names). Asked when a room is chosen, then every 3 s, whatever else the
+    window polls (in a room or a queue too). In the room's window the movie asks for its own
+    room's, for the whole names of a right-click there.
   - **Friends and clan:** not marked. The owner's: only "in exactly the same way it would
     have been done before rooms by original developers", and the original game marks no
     friend or clan member in any of its player lists (the results list: the player yellow
@@ -152,6 +154,9 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
   a right-click on a member, in the list's side panel or in the room's window, opens the game's
   right-click menu with "Show player's information" and the game's own window with its kits,
   as the Rankings do (`player_gear.md`). The results screen itself opens that window on a
-  double-click (its right-click menu has no such item). Any member, online or not; a place
-  of the room's window from an older list (a member came or went since) gives nothing.
+  double-click (its right-click menu has no such item). Any member, online or not. Only a
+  member of a room now is answered by account (`GEAR_BY_ACCOUNT`): an account in no room
+  gives nothing, so account ids cannot be walked for anyone's kits. A place of the room's
+  window from an older list (a member came or went since) gives nothing. The window's title is
+  the whole name (from the room's member rows), not the state's cut one.
 - **Deferred:** "Full · N in queue" and the list's header totals: after rooms are solid.

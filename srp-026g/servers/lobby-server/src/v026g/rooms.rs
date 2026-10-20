@@ -565,6 +565,25 @@ impl Core<'_> {
         }
     }
 
+    /// `3D 00 <GEAR_BY_ACCOUNT> <account>`: the kits of a member of a room
+    /// now, as the list's side panel shows them to anyone (`S1;G`, a PIN
+    /// room's too). Any other account (in no room, or none at all) gets no
+    /// answer: account ids cannot be walked for anyone's kits.
+    pub(super) fn listed_member_gear(&mut self, who: &Who, account_id: u32) {
+        if self
+            .rooms
+            .all()
+            .any(|room| room.members.contains(&account_id))
+        {
+            self.send_gear(who, account_id, account_id);
+        } else {
+            log::info!(
+                "{} asked for the kits of account {account_id}: in no room",
+                who.name
+            );
+        }
+    }
+
     /// `3D 00 <GEAR_IN_ROOM> <place + 20 × check>`: the kits of the member
     /// at that place of the asker's room, if the check is its serial's now
     /// (a member came or went since its list was drawn: no answer).

@@ -1406,7 +1406,8 @@ fn a_member_list_gives_long_names_whole() {
 
 /// A right-click on a member (the list's side panel, by its account; the
 /// room's own window, by its place and the state's serial): its kits as
-/// they are now, for any player; a place from an older list, nothing.
+/// they are now; an account in no room or a place from an older list,
+/// nothing.
 #[test]
 fn a_member_shows_its_kits_from_the_list_and_from_the_room() {
     use survarium::v026g::lobby::rooms::member_gear;
@@ -1437,16 +1438,18 @@ fn a_member_shows_its_kits_from_the_list_and_from_the_room() {
     world.take(carol);
     world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, account));
     assert_eq!(gear(&mut world, carol), [("Bob".to_owned(), kits)]);
-    // An offline account (never signed in since the start) the same.
-    let (offline, _) = world.accounts.sign_up(900_001, "Offline");
-    let offline_kits = offline.locked().kits.len();
-    world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, 900_001));
-    assert_eq!(
-        gear(&mut world, carol),
-        [("Offline".to_owned(), offline_kits)]
-    );
-    // No such account: no answer.
-    world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, 12_345_678));
+    // Alice, the PIN room's owner, the same (its members are shown to
+    // anyone).
+    let alice_id: u32 = seen[1][9].parse().unwrap();
+    world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, alice_id));
+    assert_eq!(gear(&mut world, carol).len(), 1);
+    // An account in no room: no answer, whether it exists or not, online
+    // or not (account ids cannot be walked).
+    world.accounts.sign_up(900_001, "Offline");
+    let carol_id = world.ids[carol].0;
+    for account in [900_001, carol_id, 12_345_678] {
+        world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, account));
+    }
     assert!(gear(&mut world, carol).is_empty());
     // Alice, in her room's window: Bob at place 1 of the state.
     let serial: u32 = header(&state(&mut world, alice))[12].parse().unwrap();
@@ -1474,6 +1477,9 @@ fn a_member_shows_its_kits_from_the_list_and_from_the_room() {
         request::player_details(GEAR_IN_ROOM, member_gear(0, serial)),
     );
     assert!(gear(&mut world, alice).is_empty());
+    // Bob, out of the room, is in no list now.
+    world.ask(carol, request::player_details(GEAR_BY_ACCOUNT, account));
+    assert!(gear(&mut world, carol).is_empty());
     // Carol, in no room, has no room's places.
     world.ask(
         carol,

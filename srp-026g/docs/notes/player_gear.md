@@ -34,6 +34,6 @@ should be able to go to rankings and rmb to do the same", "for every single play
   is given up).
 - **Nothing to show** (no such place or account): no answer, no window (the game has no "nothing
   to show" message for `93`).
-- **The rooms' lists** use the same menu and window (`SrpPlayerGear.menu`; `rooms.md`): a member of the Rooms list's side panel by its account (`GEAR_BY_ACCOUNT`), a member of the asker's own room by its place and the state's serial (`GEAR_IN_ROOM`).
+- **The rooms' lists** use the same menu and window (`SrpPlayerGear.menu`; `rooms.md`): a member of the Rooms list's side panel by its account (`GEAR_BY_ACCOUNT`; only a member of a room now is answered), a member of the asker's own room by its place and the state's serial (`GEAR_IN_ROOM`).
 - **Older movies:** never ask. An older server does not answer (no window opens).
 - **Release:** a lobby movie (resources.db patch) and the server; the server first.

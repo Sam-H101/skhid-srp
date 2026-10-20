@@ -1087,6 +1087,12 @@ package
         private function ask(start:int, count:int):void
         {
             _askedAt = getTimer();
+            send(start, count);
+        }
+
+        // A request that does not count as the state's poll (`_askedAt`).
+        private function send(start:int, count:int):void
+        {
             try
             {
                 ExternalInterface.call("request_players_range", start, count);
@@ -1136,7 +1142,9 @@ package
                     _listAt = _now;
                     ask(LIST, 32);
                 }
-                else if (_shown && _view == "list")
+                // The members at their own pace, whatever the state's poll
+                // (in a room, queued or not).
+                if (_shown && (_view == "list" || _view == "room"))
                     askMembers(false);
             }
             tabLabel();
@@ -1991,10 +1999,21 @@ package
             var picH:int = 150 - int(Math.max(0, Math.min(60, need - (bottom - 52 - 150 - above))));
             if (e != null)
             {
-                var pic:Bitmap = render_(e.level, e.weather, SIDE_W, picH);
+                // Made (and kept) at its full height, its middle shown: one
+                // render a map and weather, whatever the room's players.
+                // (A mask over a Sprite, as scrollBox's.)
+                var crop:Shape = new Shape();
+                crop.graphics.beginFill(0x000000, 1);
+                crop.graphics.drawRect(x, 52, SIDE_W, picH);
+                crop.graphics.endFill();
+                _content.addChild(crop);
+                var framed:Sprite = new Sprite();
+                var pic:Bitmap = render_(e.level, e.weather, SIDE_W, 150);
                 pic.x = x;
-                pic.y = 52;
-                _content.addChild(pic);
+                pic.y = 52 - int((150 - picH) / 2);
+                framed.addChild(pic);
+                _content.addChild(framed);
+                framed.mask = crop;
             }
             var y:Number = 52 + picH + 12;
             text(_content, room.name, x + 16, y, SIDE_W - 32, 20, 0xFFFFFF);
@@ -2051,9 +2070,11 @@ package
         // The height the list has below the facts.
         private var _membersH:Number = 150;
 
+        // The room chosen in the list; in the room's window, our own (its
+        // whole names, for a right-click on a member there).
         private function askMembers(now:Boolean):void
         {
-            var room:Object = chosenRoom();
+            var room:Object = _view == "room" ? _room : chosenRoom();
             if (room == null)
                 return;
             var t:int = getTimer();
@@ -2061,7 +2082,8 @@ package
                 return;
             _membersKey = room.key;
             _membersAt = t;
-            ask(MEMBERS + room.key, 1);
+            // Not `ask`: the state's poll keeps its own pace.
+            send(MEMBERS + room.key, 1);
         }
 
         // `S1;G;<key>;<members>`, then two rows a member: `P;<i>;<gear>;
@@ -2072,7 +2094,8 @@ package
         private function takeMembers(head:Array, rows:Array):void
         {
             var key:int = int(head[2]);
-            if (key != _selKey)
+            // Only the room asked last (the list's choice or our own).
+            if (key != _membersKey)
                 return;
             var list:Array = [];
             var sig:String = "";
@@ -2186,7 +2209,7 @@ package
                 nameX = 46;
             }
             fitName(text(row, "", nameX, top, w - nameX, size, memberColour(m)), m.name, "");
-            _listHits.push({"control": row, "name": m.name, "how": GEAR_BY_ACCOUNT, "player": m.account});
+            _listHits.push({"control": row, "name": m.name, "how": "BY_ACCOUNT", "player": m.account});
         }
 
         // A member's name: grey while its game is gone (`away`), red when its
@@ -2236,11 +2259,24 @@ package
         // information", and its window with the member's kits (srp's
         // SrpPlayerGear, the Rankings' step: player_gear_026g.py); the
         // request names the member by its account (`S1;G`) or by its place
-        // in our room's state and its serial (as a kick does).
-        private static const GEAR_BY_ACCOUNT:uint = 0xFFFFFF02;
-        private static const GEAR_IN_ROOM:uint = 0xFFFFFF04;
+        // in our room's state and its serial (as a kick does). A hit's `how`
+        // names SrpPlayerGear's constant (BY_ACCOUNT, BY_ROOM_PLACE): that
+        // class is compiled in by a later step, so it is looked up at the
+        // click.
         private var _listHits:Array = [];
         private var _roomHits:Array = [];
+
+        // The whole name of the member at that place of our room (the state
+        // cuts a long one at 32 bytes and ends it with "…"): from our room's
+        // member rows (`S1;G`) when they have it, else the state's.
+        private function wholeName(place:int, cut:String):String
+        {
+            if (_room == null || _seen == null || _seen.key != _room.key || place >= _seen.members.length)
+                return cut;
+            var whole:String = String(_seen.members[place].name);
+            var head:String = cut.charAt(cut.length - 1) == DOTS ? cut.substr(0, cut.length - 1) : cut;
+            return whole.substr(0, head.length) == head ? whole : cut;
+        }
 
         private function onContentClick(e:MouseEvent):void
         {
@@ -2257,7 +2293,8 @@ package
                     if (control.stage == null || !control.hitTestPoint(e.stageX, e.stageY, false))
                         continue;
                     var gear:Object = getDefinitionByName("SrpPlayerGear");
-                    gear.menu(String(hit.name), uint(hit.player), uint(hit.how));
+                    var nick:String = hit.place != null ? wholeName(int(hit.place), String(hit.name)) : String(hit.name);
+                    gear.menu(nick, uint(hit.player), uint(gear[hit.how]));
                     return;
                 }
             }
@@ -2991,7 +3028,7 @@ package
                 hitArea.graphics.drawRect(mx, my, colW - 10, rowH);
                 hitArea.graphics.endFill();
                 inner.addChild(hitArea);
-                _roomHits.push({"control": hitArea, "name": member.name, "how": GEAR_IN_ROOM,
+                _roomHits.push({"control": hitArea, "name": member.name, "place": m, "how": "BY_ROOM_PLACE",
                     "player": m + 20 * (int(room.serial) % 495)});
                 text(inner, String(member.gear), mx, my + mid + 1, 26, 14, member.fit == 2 ? RED : DIM, "right");
                 // A red mark: this kit cannot play the next match as it is
