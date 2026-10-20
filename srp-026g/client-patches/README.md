@@ -567,6 +567,28 @@ for the next resource patch (built on `1091a19d…`, the craft window's movie: `
 deterministic with FFDec 25.1.3); this does not change the executable or reserve a
 release revision.
 
+## Class updates (the rooms window after revision 24)
+
+`class_update_026g.py` puts a changed srp class into the newest lobby movie:
+FFDec compiles its source anew over the class of that name the movie has
+(`class_update/ReplaceClass.java`). Only that class's ABC block changes; every
+method of every other class and every other script's initializer is checked
+byte for byte, and every constant keeps its value. A method defined twice in
+the source is refused (FFDec keeps the last).
+
+The rooms window (`rooms/SrpRooms.as`) changes after revision 24 go out this
+way, never by `rooms_026g.py` again: that builds on revision 23's movie and
+would drop the lobby patches made on top of it (Get Gold to Optics). The
+first one is #212 (the map vote runs until the match starts; the create
+form's wait hint gone): built on `2e4cb7d2…` (Optics) into `ed14345f…`,
+deterministic with FFDec 25.1.3:
+
+```sh
+python class_update_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar --class SrpRooms
+```
+
+Tests: `python -m unittest test_class_update`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each

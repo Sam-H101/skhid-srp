@@ -97,11 +97,6 @@ package
             "pin": ["PIN", "PIN", "PIN", "PIN", "PIN"],
             "pinHint": ["4 digits; empty: an open room", "4 цифри; порожньо: відкрита кімната",
                 "4 цифры; пусто: открытая комната", "4 Ziffern; leer: offener Raum", "4 cyfry; puste: pokój otwarty"],
-            "waitHint": ["The map vote runs all that time; the match starts on its winner.",
-                "Голосування за карту йде весь цей час; матч почнеться на переможниці.",
-                "Голосование за карту идёт всё это время; матч начнётся на победителе.",
-                "Die Kartenwahl läuft die ganze Zeit; das Match beginnt auf der Gewinnerin.",
-                "Głosowanie na mapę trwa cały ten czas; mecz zacznie się na zwycięskiej."],
             "minPlayers": ["Players to start", "Гравців для старту", "Игроков для старта", "Spieler zum Start",
                 "Graczy do startu"],
             "voting": ["Map vote", "Голосування", "Голосование", "Kartenwahl", "Głosowanie"],
@@ -1929,9 +1924,7 @@ package
             slider(y, say("max"), "max");
             y += SLIDER_H;
             slider(y, say("wait"), "wait");
-            y += SLIDER_H;
-            text(_content, say("waitHint"), 14, y, FORM_W - 14, 13, GREY);
-            y += 30;
+            y += SLIDER_H + 12;
             // The modes: the two kinds of protective device apart, and team
             // deathmatch; a mode out takes all its entries out of the pool.
             text(_content, say("modes").toUpperCase(), 14, y, 260, 12, DIM);
