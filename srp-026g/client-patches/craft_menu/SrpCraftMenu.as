@@ -24,9 +24,11 @@ package
         {
             // Only the craft window's lock: a list locked otherwise, or not
             // locked, is as before.
+            if (!value)
+                return false;
             var window:* = craftWindow(list);
-            if (!value || window == null)
-                return Boolean(value);
+            if (window == null)
+                return true;
             var item:Object = slot != null ? slot.data : null;
             if (item == null || !(item.enabled || item.canBuy))
                 return true;
@@ -83,7 +85,8 @@ package
             // The item as the inventory has it now, upgraded; one with three
             // modifications, or that cannot be crafted, ends here as Exit.
             var item:ItemData = list.getInventoryItem(main.itemId);
-            if (item == null || item.rank >= 3 || !ItemFactory.isItemCraftable(item))
+            // As the game's own Upgrade entry: owned and enabled.
+            if (item == null || !item.enabled || item.rank >= 3 || !ItemFactory.isItemCraftable(item))
                 return;
             list.setPrimaryItem(item);
             list.dispatchEvent(new Event(Events.CRAFFT_ITEM));

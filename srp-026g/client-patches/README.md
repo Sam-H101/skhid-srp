@@ -545,7 +545,7 @@ just closes. The words are the game's: `btn_exit_label` and
 `btn_go_to_online_store` ("Continue").
 
 The input is the movie of Buy on owned items (`45452c50…`); the build is
-deterministic (`f8009d13…` with FFDec 25.1.3):
+deterministic (`1091a19d…` with FFDec 25.1.3):
 
 ```sh
 python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar

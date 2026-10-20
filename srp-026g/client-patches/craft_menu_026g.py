@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Right-click in the craft window's list gives Buy and Sell.
+"""The craft window: right-click Buy and Sell; Continue and Exit after an upgrade.
 
     python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec <ffdec.jar>
 
 The craft window ("Upgrade": two items of a kind make a better one) locks the
 inventory list, and a locked list gave no right-click menu. While it is open,
-right-click on an item of the list now gives Buy and Sell only, by the list's
-own rules for them (craft_menu/SrpCraftMenu.as); everywhere else the menu is
-as before. InventoryList.showContextMenu reads its lock through the helper
-(craft_menu/PatchCraftMenu.java).
+right-click on an item of the list now gives Buy and Sell only
+(craft_menu/SrpCraftMenu.as); everywhere else the menu is as before.
+InventoryList.showContextMenu reads its lock through the helper. Its result,
+which had one button (Ready), has Continue (the window again for the same
+item) and Exit; MessageCraftItem.fillCraftedItem ends with a call to the
+helper (craft_menu/PatchCraftMenu.java).
 
 The input is the live lobby movie as a file (or the newest one built for the
 next patch); the output is a new movie for a new resources.db.patch_<n>
-(`srp-game-data pack`). One method changes and a class is added; every other
+(`srp-game-data pack`). Two methods change and a class is added; every other
 method is checked byte for byte. Requires a JDK and JPEXS FFDec (tested with
 25.1.3). No game assets are stored in this repository.
 """
