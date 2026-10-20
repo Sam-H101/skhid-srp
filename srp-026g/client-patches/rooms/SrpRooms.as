@@ -501,7 +501,8 @@ package
             return false;
         }
 
-        // The end of LobbyMenu.set_play_button_enabled: Play stays off in a room.
+        // The end of LobbyMenu.set_play_button_enabled: in a room or a room's
+        // queue Play is our Leave (on); otherwise the game's own word.
         public static function playState(lobby:*):void
         {
             // A hook: nothing of it may throw into the game's code.
@@ -539,6 +540,8 @@ package
                 // In a room it is "Leave room" (red): out of the room.
                 if (me.leavesRoom())
                 {
+                    me._playAskedAt = getTimer();
+                    me.applyPlay();
                     me.ask(LEAVE, 1);
                     me._fastUntil = getTimer() + 5000;
                     return true;
@@ -546,6 +549,8 @@ package
                 // In a room's queue it is "Leave queue" (red): out of it.
                 if (me.leavesQueue())
                 {
+                    me._playAskedAt = getTimer();
+                    me.applyPlay();
                     me.ask(UNQUEUE, 1);
                     me._fastUntil = getTimer() + 5000;
                     return true;
@@ -722,7 +727,7 @@ package
             topIcon();
             overPanels();
             alertNear();
-            applyPlay();
+            applyPlay(true);
         }
 
         // While open, ours is the lobby's top child: the lobby adds its own
@@ -997,21 +1002,28 @@ package
         private var _playLabel:String = null;
         private var _ourPlayLabel:String = null;
 
-        private function applyPlay():void
+        // `each`: the frame's call, which leaves the game's own Play enabled as
+        // the game sets it (only our Leave is kept on).
+        private function applyPlay(each:Boolean = false):void
         {
             if (_lobby == null)
                 return;
             try
             {
                 var btn:* = _lobby.statusPanel.playBtn;
-                // Grey from a press until its answer (6 s at most); the
-                // game's own word otherwise.
-                var asking:Boolean = _playAskedAt != 0 && getTimer() - _playAskedAt < 6000;
-                var on:Boolean = !asking && _nativePlay;
-                if (btn.enabled != on)
-                    btn.enabled = on;
                 var leaving:Boolean = leavesRoom();
                 var queued:Boolean = !leaving && leavesQueue();
+                // Grey from a press until its answer (6 s at most). Leave room
+                // and Leave queue need none of the game's Play conditions (a
+                // squad's member, a kit the game refuses): on whatever the
+                // game's Play is. Play: the game's own word.
+                var asking:Boolean = _playAskedAt != 0 && getTimer() - _playAskedAt < 6000;
+                if (leaving || queued || !each)
+                {
+                    var on:Boolean = !asking && (leaving || queued || _nativePlay);
+                    if (btn.enabled != on)
+                        btn.enabled = on;
+                }
                 // In the case of the game's own label (its Play is in capitals).
                 var native:String = _playLabel != null ? _playLabel : String(btn.label);
                 var label:String = say(leaving ? "leaveRoom" : "leaveQueue");
@@ -1070,8 +1082,7 @@ package
                 if (_shown)
                     render();
             }
-            // No answer to Play within 6 s: Play is back (the room, if any,
-            // greys it again when its state comes). Silence never drops the
+            // No answer to Play (or Leave) within 6 s: the button is back. Silence never drops the
             // room: during a match the lobby may not answer, and the next
             // answer says where we are.
             if (_playAskedAt != 0 && _now - _playAskedAt >= 6000)
