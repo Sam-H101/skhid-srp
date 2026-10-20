@@ -35,6 +35,10 @@
 //!   room (the one nearest its level, however far, then the fullest), or makes
 //!   one for it (8 v 8, any max level, 30 s, the whole pool), and answers
 //!   with the lobby state: the movie shows the room.
+//! - **Remembered.** A room made by hand (a create, not Play) is its maker's
+//!   next create window, kept with the account (`room_remember`; not the
+//!   PIN; the owner's of 2026-10-20); the window asks for it fitted to the
+//!   pool and the maker's equipment now (`room_settings::form`).
 //! - A member whose game is gone (crashed, killed, its link silent) keeps
 //!   its place while its session is kept: the link's 30 s and the session's
 //!   60 s, about 90 s in all (the owner's of 2026-10-18); then it leaves the
@@ -57,6 +61,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use session::matchmaking_policy::{self as policy, Closed, Worth};
+use session::v026g::room_settings::{self, RoomSettings};
 use session::v026g::rooms::{self as model, Due, Refused, Spec, Stage};
 use session::v026g::{matchmaking, quests, rules};
 use session::{LockExt, QueuePool};
@@ -263,6 +268,17 @@ impl Core<'_> {
                 let entries = self.room_entries();
                 self.send_made(who.addr, wire::room_pool(&entries, page));
             }
+            // The create window's start: the asker's last room made by hand,
+            // fitted to the pool and its equipment now.
+            RoomRequest::Form => {
+                let entries = self.room_entries();
+                let form = {
+                    let account = who.account.locked();
+                    let gear = matchmaking::gear_level(&account, quests::now());
+                    room_settings::form(account.room_settings.as_ref(), &entries, gear)
+                };
+                self.send_made(who.addr, wire::room_form(&form));
+            }
             RoomRequest::Bits { chunk, bits } => {
                 let entries = self.rooms.draft(who.account_id, chunk, bits, now);
                 self.send_made(who.addr, wire::bits_answer(chunk, entries));
@@ -386,7 +402,10 @@ impl Core<'_> {
                 let code = match self.room_fit(who) {
                     Err(code) => code,
                     Ok(()) => match self.room_create(who, spec, now) {
-                        Ok(_) => RoomCode::None,
+                        Ok(key) => {
+                            self.room_remember(who, key);
+                            RoomCode::None
+                        }
                         Err(refused) => code_of(refused),
                     },
                 };
@@ -445,6 +464,29 @@ impl Core<'_> {
             if spec.pin { "" } else { "no " }
         );
         Ok(key)
+    }
+
+    /// A room made by hand: its settings are its maker's create window's
+    /// start from now on, kept with the account (the owner's of
+    /// 2026-10-20). Not its PIN. A room Play makes keeps nothing.
+    fn room_remember(&self, who: &Who, key: u32) {
+        let Some(room) = self.rooms.get(key) else {
+            return;
+        };
+        let spec = room.spec;
+        let settings = RoomSettings::of_room(
+            spec.size,
+            spec.min_players / 2,
+            spec.max_level,
+            spec.wait,
+            &room.pool,
+            &self.room_entries(),
+        );
+        let mut account = who.account.locked();
+        if account.room_settings.as_ref() != Some(&settings) {
+            account.room_settings = Some(settings);
+            self.accounts.mark_dirty(who.account_id);
+        }
     }
 
     /// Play for a game whose movie has rooms: into an open room, or a

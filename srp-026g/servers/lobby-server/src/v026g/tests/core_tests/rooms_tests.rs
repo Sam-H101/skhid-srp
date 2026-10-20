@@ -6,8 +6,9 @@
 use session::v026g::matchmaking;
 use session::v026g::rooms::Stage;
 use survarium::v026g::lobby::rooms::{
-    ROOM_JOIN_BASE, ROOM_JOIN_MATCH, ROOM_LEAVE, ROOM_PIN_BASE, ROOM_PLAY, ROOM_QUEUE_BASE,
-    ROOM_STATE, ROOM_UNQUEUE, ROOM_VOTE_BASE, ROOMS_LIST, RoomSpec, create_start, kick_start,
+    ROOM_FORM, ROOM_JOIN_BASE, ROOM_JOIN_MATCH, ROOM_LEAVE, ROOM_PIN_BASE, ROOM_PLAY,
+    ROOM_QUEUE_BASE, ROOM_STATE, ROOM_UNQUEUE, ROOM_VOTE_BASE, ROOMS_LIST, RoomSpec, bits_start,
+    create_start, kick_start,
 };
 
 use super::pvb_tests::with_gear;
@@ -795,6 +796,99 @@ fn an_older_game_plays_in_no_room() {
     assert!(world.core.rooms.of(world.ids[old].0).is_none());
     assert_eq!(state(&mut world, old), ["S1;N;7;0;0"]);
     assert!(world.host.made.locked().is_empty());
+}
+
+/// The create window's answer: its header's fields and the `maps_dict` ids
+/// it puts in (tile in, mode not out).
+fn form(world: &mut World, index: usize) -> (Vec<String>, Vec<u8>) {
+    let rows = rows(world, index, ROOM_FORM, 1);
+    let header = header(&rows);
+    let modes_off: Vec<u8> = header[7]
+        .split(',')
+        .filter(|mode| !mode.is_empty())
+        .map(|mode| mode.parse().unwrap())
+        .collect();
+    let mut tiles_on = Vec::new();
+    for (chunk, row) in rows[1..].iter().enumerate() {
+        let fields: Vec<&str> = row.split(';').collect();
+        assert_eq!(fields[..2], ["E", &chunk.to_string()]);
+        let bits: u32 = fields[2].parse().unwrap();
+        tiles_on.extend((0..20).map(|b| bits & 1 << b != 0));
+    }
+    let chosen = world
+        .core
+        .room_entries()
+        .iter()
+        .zip(tiles_on)
+        .filter(|(entry, on)| *on && !modes_off.contains(&entry.mode))
+        .map(|(entry, _)| entry.map_id)
+        .collect();
+    (header[2..7].to_vec(), chosen)
+}
+
+/// A room made by hand is its maker's next create window (the owner's of
+/// 2026-10-20): its team size, players to start, max level, wait and pool,
+/// not its PIN; a max level under the maker's equipment now is raised to
+/// it. With none made, the defaults; a room Play made keeps nothing.
+#[test]
+fn a_room_made_by_hand_starts_its_makers_next_create_window() {
+    let mut world = World::new();
+    let alice = world.connect("Alice");
+    let entries = world.core.room_entries();
+    let regular: Vec<u8> = entries
+        .iter()
+        .filter(|entry| !entry.extra)
+        .map(|entry| entry.map_id)
+        .collect();
+    assert!(entries.len() >= 3, "{entries:?}");
+    let defaults = (
+        ["0", "8", "1", "0", "30"].map(str::to_owned).to_vec(),
+        regular.clone(),
+    );
+    assert_eq!(form(&mut world, alice), defaults);
+    world.ask(alice, request::play(1));
+    world.advance(Duration::from_millis(100));
+    assert_eq!(header(&state(&mut world, alice))[1], "R");
+    assert_eq!(form(&mut world, alice), defaults);
+    assert!(world.account(alice).room_settings.is_none());
+
+    // By hand: the first and third entries, 9 v 9 from 2 v 2, max level 3,
+    // a wait of 45 s, a PIN.
+    rows(&mut world, alice, bits_start(0, 0b101), 1);
+    create(
+        &mut world,
+        alice,
+        RoomSpec {
+            size: 9,
+            min_side: 2,
+            max_level: 3,
+            wait: 45,
+            pin: false,
+        },
+        Some(1234),
+    );
+    let (fields, chosen) = form(&mut world, alice);
+    assert_eq!(fields, ["1", "9", "2", "3", "45"]);
+    // The pool as made: the window's tiles and modes give it back (an entry
+    // of the same map, weather and mode would come with it).
+    let made: Vec<u8> = world
+        .core
+        .rooms
+        .of(world.ids[alice].0)
+        .unwrap()
+        .pool
+        .clone();
+    assert_eq!(made, [entries[0].map_id, entries[2].map_id]);
+    assert_eq!(chosen, made);
+    assert!(world.account(alice).room_settings.is_some());
+    // Equipment over the max level now: the window offers its level.
+    with_gear(&mut world, alice, 5);
+    assert_eq!(form(&mut world, alice).0, ["1", "9", "2", "5", "45"]);
+    // Play's room after it keeps what the hand made.
+    rows(&mut world, alice, ROOM_LEAVE, 1);
+    world.ask(alice, request::play(1));
+    world.advance(Duration::from_millis(100));
+    assert_eq!(form(&mut world, alice).1, made);
 }
 
 /// A full room's queue (the owner's of 2026-10-17): who is in no room waits
