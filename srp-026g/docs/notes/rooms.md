@@ -19,12 +19,12 @@ The rules the code and the tests follow, the owner's of 2026-10-16 to 10-19. Cod
     hand is its maker's next create window, kept with the account in srp.db (restarts,
     reinstalls, other PCs): team size, players to start, max level, time to start, the
     map/weather tiles and the modes. Not the PIN: typed each time (the owner may change
-    that). A room Play made keeps nothing. Nothing kept: the defaults below.
+    that). A room Play made keeps nothing. Nothing kept: the defaults (8 v 8, from 1 v 1,
+    any max level, 30 s, every mode, the pool without the experimental maps).
   - Fitted when the window opens: a map or mode no longer offered is dropped; one added
     later is in (an experimental one out); the max level never below the maker's gear now;
     other values within today's ranges; nothing of the pool left: the default pool.
-  - **Defaults** (a button of the window): 8 v 8, from 1 v 1, any max level, 30 s wait,
-    every mode, the pool without the experimental maps; kept only once a room is made.
+  - No button puts the defaults back (the owner's of 2026-10-20: "no need for that").
 - **Play:** goes straight into a room, no search shown: of the open rooms that let the player
   in, the one nearest its level however far (too few online to leave anyone out), then the
   fullest; no squad, friend or clan preference; none: a new room for it (8 v 8, any max level, 30 s, the whole pool, from

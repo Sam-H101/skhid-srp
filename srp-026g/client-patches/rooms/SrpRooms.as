@@ -91,7 +91,6 @@ package
             "create": ["Create", "Створити", "Создать", "Erstellen", "Utwórz"],
             "new": ["New room", "Нова кімната", "Новая комната", "Neuer Raum", "Nowy pokój"],
             "back": ["Back", "Назад", "Назад", "Zurück", "Wstecz"],
-            "defaults": ["Defaults", "Типові", "По умолчанию", "Standard", "Domyślne"],
             "join": ["Join", "Увійти", "Войти", "Beitreten", "Dołącz"],
             "none": ["No rooms yet. Make one, or press Play.", "Кімнат ще немає. Створіть або натисніть «Грати».",
                 "Комнат пока нет. Создайте или нажмите «Играть».", "Noch keine Räume. Erstelle einen oder drücke Spielen.",
@@ -2181,10 +2180,9 @@ package
                 y += 30;
             }
             message(_h - FOOT_H - 30);
-            var made:Array = footer([[say("back"), onBack, null], [say("defaults"), onDefaults, null],
-                [say("create"), onCreate, null]]);
+            var made:Array = footer([[say("back"), onBack, null], [say("create"), onCreate, null]]);
             // No map chosen: nothing to make, the button is off.
-            made[2].enabled = poolChosen();
+            made[1].enabled = poolChosen();
             renderPool();
         }
 
@@ -2586,20 +2584,6 @@ package
             }
         }
 
-        // What the window has with nothing kept: 8 v 8 from 1 v 1, any max
-        // level, a wait of 30 s, every mode, the server's pool with the
-        // experimental maps out. Kept only when a room is made with it.
-        private function onDefaults(e:Event):void
-        {
-            _size = 8;
-            _minSide = 1;
-            _max = 0;
-            _wait = 30;
-            _modesOff = {};
-            defaultPool();
-            _code = 0;
-            render();
-        }
 
         // A new creator starts with the server's pool, the experimental maps out.
         private function defaultPool():void
