@@ -1,5 +1,5 @@
-// Compile SrpRooms into the bottom panel's ABC block and add seven calls to
-// it; nothing else changes. The hooks:
+// Compile SrpRooms into the bottom panel's ABC block and add calls to it;
+// nothing else changes. The hooks:
 //   BottomPanel.createMatchesTab  end    SrpRooms.attach(this)
 //   BottomPanel.placeMatchesTab   end    SrpRooms.place(this)
 //   BottomPanel.resizeTab         end    SrpRooms.resize(this)
