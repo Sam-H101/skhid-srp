@@ -2,8 +2,9 @@
 # (srp-0100b, srp-021d, srp-026g), the players' BugTrap.dll and
 # updater_skhid.exe (cross-built for i686 Windows with rust-lld), and, on
 # `main` and on every tag pushed, the 0.26g server's Docker image into this
-# repository's packages (ghcr.io). Nothing here deploys: the live host is updated by
-# release/release.sh, the test host by deploy-test.yml.
+# repository's packages (ghcr.io); on a tag, also all of the builds as assets
+# of that tag's GitHub release. Nothing here deploys: the live host is updated
+# by release/release.sh, the test host by deploy-test.yml.
 #
 # Nightly Rust, as srp-026g/flake.nix: the workspaces' scripts use
 # #![feature(...)] gates and the client programs build core with build-std.
@@ -139,3 +140,29 @@ jobs:
             ${{ steps.name.outputs.image }}:${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # On a tag, the servers' and client's builds as assets of that tag's GitHub
+  # release (created if the tag has none yet; files already there are
+  # replaced). Each server's `srp` is renamed after its workspace.
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [server, client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - run: |
+          mkdir -p assets
+          for ws in srp-0100b srp-021d srp-026g; do
+            cp "artifacts/$ws-srp/srp" "assets/$ws-srp"
+          done
+          cp artifacts/client/* assets/
+          cd assets && sha256sum srp-0100b-srp srp-021d-srp srp-026g-srp >> SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          fail_on_unmatched_files: true
