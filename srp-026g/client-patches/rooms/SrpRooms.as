@@ -169,6 +169,26 @@ package
                 "Ваше снаряжение выше макс. уровня: снизьте, иначе на старте вы выйдете из комнаты.",
                 "Deine Ausrüstung liegt über der max. Stufe: senke sie, sonst verlässt du beim Start den Raum.",
                 "Twój ekwipunek przekracza maks. poziom: obniż go, inaczej na starcie opuścisz pokój."],
+            // Why a member waiting in its room cannot go into the match now
+            // (`J;-1;<why>`, the owner's of 2026-10-20).
+            "joinWhy1": ["Another player is joining the match; you go in after.",
+                "Інший гравець заходить у матч; ви — після нього.", "Другой игрок заходит в матч; вы — после него.",
+                "Ein anderer Spieler betritt das Match; du kommst danach.", "Inny gracz dołącza do meczu; ty wchodzisz po nim."],
+            "joinWhy2": ["A player's game is loading; joining opens in a moment.",
+                "Гра одного з гравців завантажується; вхід відкриється за мить.",
+                "Игра одного из игроков загружается; вход откроется через мгновение.",
+                "Das Spiel eines Spielers lädt; Beitreten gleich wieder möglich.",
+                "Gra jednego z graczy się wczytuje; dołączenie za chwilę."],
+            "joinWhy3": ["Under 30 s left: you'll play the next match.", "Лишилося менше 30 с: ви зіграєте наступний матч.",
+                "Осталось меньше 30 с: вы сыграете следующий матч.", "Weniger als 30 s übrig: du spielst das nächste Match.",
+                "Zostało mniej niż 30 s: zagrasz następny mecz."],
+            "joinWhy4": ["The match is full.", "Матч заповнений.", "Матч заполнен.", "Das Match ist voll.", "Mecz jest pełny."],
+            "joinWhy5": ["Server maintenance soon: no new joins.", "Скоро технічні роботи: нові входи закрито.",
+                "Скоро технические работы: новые входы закрыты.", "Bald Wartung: keine neuen Beitritte.",
+                "Wkrótce przerwa techniczna: brak nowych wejść."],
+            "joinWhy6": ["The match is ending: you'll play the next one.", "Матч завершується: ви зіграєте наступний.",
+                "Матч завершается: вы сыграете следующий.", "Das Match endet: du spielst das nächste.",
+                "Mecz się kończy: zagrasz następny."],
             "lateHint": ["Who joins now sees the room, then goes into the match.", "Хто зайде зараз, побачить кімнату, потім потрапить у матч.",
                 "Кто зайдёт сейчас, увидит комнату, потом попадёт в матч.", "Wer jetzt beitritt, sieht den Raum, dann geht es ins Match.",
                 "Kto dołączy teraz, zobaczy pokój, potem trafi do meczu."],
@@ -1266,7 +1286,7 @@ package
                 _room = {"key": int(head[2]), "level": int(head[3]), "max": int(head[4]), "size": int(head[5]),
                     "wait": int(head[6]), "phase": int(head[7]), "secs": int(head[8]), "owner": head[9] == "1",
                     "pool": int(head[10]), "serial": int(head[12]), "pin": head[13] == "1", "next": int(head[14]), "min": int(head[15]),
-                    "cards": [], "members": [], "last": 0, "switchTo": null, "joinIn": -1};
+                    "cards": [], "members": [], "last": 0, "switchTo": null, "joinIn": -1, "joinWhy": 0};
                 _roomAt = getTimer();
                 // A new vote (another room, or after its match): its alert
                 // may sound again (`alertNear`).
@@ -1282,7 +1302,11 @@ package
                             "inMatch": r[5] == "1", "fit": int(r[6]), "away": r[7] == "1",
                             "name": r.slice(8).join(";")});
                     else if (r[0] == "J")
+                    {
+                        // `J;<seconds>`, or `J;-1;<why>`: it cannot go in now.
                         _room.joinIn = int(r[1]);
+                        _room.joinWhy = r.length > 2 ? int(r[2]) : 0;
+                    }
                     else if (r[0] == "W")
                         _room.switchTo = {"key": int(r[1]), "max": int(r[2]), "players": int(r[3]),
                             "size": int(r[4]), "name": r.slice(5).join(";")};
@@ -2731,10 +2755,13 @@ package
             {
                 _bannerLabel.text = say("playing").toUpperCase();
                 _banner.text = clock(_room.secs + passed);
-                // Waiting to go into it: the seconds left, counted here.
+                // Waiting to go into it: the seconds left, counted here; or
+                // why it cannot go in now; or its own kit or gear.
+                var why:String = "joinWhy" + _room.joinWhy;
                 _bannerHint.text = _room.joinIn >= 0
                     ? say("joinIn").split("%S").join(String(Math.max(0, _room.joinIn - passed)))
-                    : say("lateHint");
+                    : TEXT[why] != null ? say(why)
+                    : unfit != "" ? unfit : say("lateHint");
             }
             else
             {

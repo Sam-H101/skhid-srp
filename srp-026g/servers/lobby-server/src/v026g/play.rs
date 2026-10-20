@@ -71,6 +71,11 @@ pub trait MatchHost: Send + Sync {
     fn admits(&self, _match_id: u32, _now: Instant) -> bool {
         false
     }
+    /// Why the match takes no late joiner now, when it says: what a room's
+    /// waiting member is told. `None` when it takes one, or does not say.
+    fn closed(&self, _match_id: u32, _now: Instant) -> Option<policy::Closed> {
+        None
+    }
     /// How the match stands now. `None`: it is over, or the host does not
     /// say; its whole roster is then taken to be in it, with no lead.
     fn live(&self, _match_id: u32, _now: Instant) -> Option<LiveView> {
