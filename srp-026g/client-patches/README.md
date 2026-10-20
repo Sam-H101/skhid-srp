@@ -518,6 +518,41 @@ python buy_modified_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/
 
 Tests: `python -m unittest test_buy_modified`. Not in a release yet.
 
+## The craft window: Buy and Sell, Continue and Exit
+
+`craft_menu_026g.py`: right-click on an item in the craft window's list
+("Upgrade") gives Buy and Sell only, and its result offers Continue and Exit (the rules: `docs/notes/craft-menu.md`).
+The window locks the inventory list (`lockControls(true)`), and
+`InventoryList.showContextMenu` ended at once on a locked list. Its read of
+the lock, `this._inventoryLocked`, becomes `SrpCraftMenu.locked(this._inventoryLocked,
+this, activeItem)`: five instructions after the `getproperty`, no jump added.
+While the list is locked and a `MessageCraftItem` is on the lobby, the helper
+shows its own menu (Buy by the list's rule; Sell for an owned item, not the
+item being upgraded or the donor the window holds) and returns true, so the
+method ends; otherwise it returns the lock as it was. Buy goes as the item
+card's (the dictionary id, the shop's price, the shop's seller); Sell through
+the list's public `sellItem`.
+
+After an upgrade the window's result had one button, Ready, which closed it.
+`MessageCraftItem.fillCraftedItem` now ends with `SrpCraftMenu.result(this,
+result)`: the window's Cancel shows again as Exit (the lobby already closes
+the window on it, as on Ready), and the Ready button becomes Continue, side
+by side. Continue closes the window as Exit does, puts the main item (as the
+inventory has it now) on the item card (`setPrimaryItem`) and sends the
+list's `craft_item` event, which opens the Upgrade window for it again with
+an empty donor slot; an item with three modifications, or not craftable,
+just closes. The words are the game's: `btn_exit_label` and
+`btn_go_to_online_store` ("Continue").
+
+The input is the movie of Buy on owned items (`45452c50…`); the build is
+deterministic (`1091a19d…` with FFDec 25.1.3):
+
+```sh
+python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to/ffdec.jar
+```
+
+Tests: `python -m unittest test_craft_menu`. Not in a release yet.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
