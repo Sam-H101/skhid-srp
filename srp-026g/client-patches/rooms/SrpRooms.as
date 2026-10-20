@@ -459,6 +459,16 @@ package
             return true;
         }
 
+        // The start of LobbyMenu.show_victory_screen (a match's results): a
+        // player in a room gets the room's window opened first, so the
+        // results screen goes over it and closing them shows the room (the
+        // owner's of 2026-10-20). Out of a room: nothing.
+        public static function afterMatch():void
+        {
+            if (me != null && me._room != null && !me._shown)
+                me.show(true);
+        }
+
         // The end of LobbyMenu.set_play_button_enabled: Play stays off in a room.
         public static function playState(lobby:*):void
         {
