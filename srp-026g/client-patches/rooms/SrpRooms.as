@@ -543,6 +543,13 @@ package
                     me._fastUntil = getTimer() + 5000;
                     return true;
                 }
+                // In a room's queue it is "Leave queue" (red): out of it.
+                if (me.leavesQueue())
+                {
+                    me.ask(UNQUEUE, 1);
+                    me._fastUntil = getTimer() + 5000;
+                    return true;
+                }
                 me.quickPlay();
                 return true;
             }
@@ -794,7 +801,7 @@ package
                 }
                 art.visible = false;
                 _topIcon.alpha = art.alpha;
-                _topIcon.transform.colorTransform = _room != null ? YELLOW_TINT : art.transform.colorTransform;
+                _topIcon.transform.colorTransform = marked() ? YELLOW_TINT : art.transform.colorTransform;
                 topColour(tab.textField as TextField);
             }
             catch (e:Error)
@@ -816,7 +823,7 @@ package
                 _topText = field;
                 _topTextColour = field.textColor;
             }
-            if (_room != null)
+            if (marked())
             {
                 if (field.textColor != YELLOW)
                     field.textColor = YELLOW;
@@ -945,8 +952,23 @@ package
             return true;
         }
 
-        // The game's own label of Play, while ours is on it.
+        // In no room but in a full room's queue: Play is "Leave queue", red,
+        // and takes us out of the queue (the owner's of 2026-10-20).
+        private function leavesQueue():Boolean
+        {
+            return _room == null && _queueKey != 0;
+        }
+
+        // The Rooms tab is yellow while we are in a room or a room's queue
+        // (the owner's of 2026-10-20).
+        private function marked():Boolean
+        {
+            return _room != null || _queueKey != 0;
+        }
+
+        // The game's own label of Play, while ours is on it, and ours.
         private var _playLabel:String = null;
+        private var _ourPlayLabel:String = null;
 
         private function applyPlay():void
         {
@@ -962,27 +984,31 @@ package
                 if (btn.enabled != on)
                     btn.enabled = on;
                 var leaving:Boolean = leavesRoom();
+                var queued:Boolean = !leaving && leavesQueue();
                 // In the case of the game's own label (its Play is in capitals).
                 var native:String = _playLabel != null ? _playLabel : String(btn.label);
-                var label:String = say("leaveRoom");
+                var label:String = say(leaving ? "leaveRoom" : "leaveQueue");
                 if (native != "" && native == native.toUpperCase())
                     label = label.toUpperCase();
-                if (leaving)
+                if (leaving || queued)
                 {
                     // The game sets its own label again (its language): ours
                     // over it each time.
                     if (btn.label != label)
                     {
-                        _playLabel = btn.label;
+                        if (_playLabel == null)
+                            _playLabel = btn.label;
                         btn.label = label;
                     }
+                    _ourPlayLabel = label;
                     btn.transform.colorTransform = RED_TINT;
                 }
                 else if (_playLabel != null)
                 {
-                    if (btn.label == label)
+                    if (btn.label == _ourPlayLabel)
                         btn.label = _playLabel;
                     _playLabel = null;
+                    _ourPlayLabel = null;
                     btn.transform.colorTransform = new ColorTransform();
                 }
             }
