@@ -1005,6 +1005,24 @@ TAB_LIST_LOOP = (TAB_LIST_LOOP_VA,
                  bytes.fromhex("0fb6c3" "69d0fc450000" "0fb684c7c0000000" "84c0" "7415" "01d1" "50" "8d4148"
                                "83c108" "57" "e885f3ffff" "53" "e8bfb8ffff" "fec3" "ebb7" "9090"))
 
+# The player's own row in the Tab list is gold (patch 43, README;
+# client_patch.md section 3.38; the rule: ../docs/notes/tab-list-left-places.md).
+# hud.swf's PlayerListRenderer gives the row whose `isLocal` is set the name
+# colour Colors.PLAYER (0xF1E545), the one CombatLogItem gives the kill
+# list's own name (who_team / victim_team 2); PlayerList sets `isLocal` on
+# the row of the name `root.set_local_player` gave. In a match only
+# game_world::on_activate (0x1F9340) gives it: after chat_handler::set_mode
+# it makes the name as the rows have it ("[clan] name", or the name) and
+# calls chat_handler::set_local_player_name (0x209AC0) on the hud, but only
+# while the journal records: `mov eax,[0A8394Ch]` / `test eax,eax` / `jz` /
+# `mov ecx,[0A83948h]` / `cmp dword [ecx],1` / `jnz`, the journal's flag
+# and its use (1 record). Patch 14 (revision 4) turned the journal off by
+# default, so no hud has had its player's name since. TAB_SELF makes
+# `test eax,eax` / `jz` a `jmp short 1F9487h` past the two tests: the name
+# is given whatever the journal does. The two addresses (and their base
+# relocations) are not under the two bytes. The hud's lists and chat only.
+TAB_SELF = (0x1F9478, bytes.fromhex("85c0"), bytes.fromhex("eb0d"))
+
 # Spotting (patch 38, README; client_patch.md section 3.35; the rules:
 # ../docs/notes/spotting.md). base_player::apply_new_input (0x2D86E0): an
 # input with bit 28 (the spot key going down, 0x2421A6) and the spotter's
@@ -2029,6 +2047,8 @@ def build(original, mode, code=None, server=None, late_join=None, revision=None)
             sites.append((va, va + len(expected)))
         patch(data, *TAB_LIST_LOOP)
         sites.append((TAB_LIST_LOOP_VA, TAB_LIST_LOOP_VA + len(TAB_LIST_LOOP[1])))
+        patch(data, *TAB_SELF)
+        sites.append((TAB_SELF[0], TAB_SELF[0] + len(TAB_SELF[1])))
         if neutralize_relocs(data, sites):
             sys.exit("a base relocation under a site of the scoreboard's rows")
         for site in (MOUNT_QUERY, MOUNTED):

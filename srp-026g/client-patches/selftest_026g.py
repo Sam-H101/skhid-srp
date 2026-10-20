@@ -1348,6 +1348,7 @@ def late_join_sites():
         [(va, len(old)) for va, old, _, _ in P.WEAPON_PREVIEW_HOOKS] + \
         [(P.WEAPON_DRAW_HOOK[0], len(P.WEAPON_DRAW_HOOK[1]))] +         [(P.SUICIDE_KEY_HOOK[0], len(P.SUICIDE_KEY_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.TAB_LIST_HOOKS] + [(P.TAB_LIST_LOOP_VA, len(P.TAB_LIST_LOOP[1]))] + \
+        [(P.TAB_SELF[0], len(P.TAB_SELF[1]))] + \
         [(P.SPOT_COOLDOWN[0], len(P.SPOT_COOLDOWN[1])), (P.SPOT_HOOK[0], len(P.SPOT_HOOK[1]))] + \
         [(va, len(old)) for va, old, _, _ in P.FOV_LOD_HOOKS]
 
@@ -3283,6 +3284,56 @@ def test_tab_list(original, image, before):
           "that is a pointer) and no base relocation is under them" + "".join(f", {h:#x}" for h in found + under))
 
 
+def test_tab_self(original, image, before):
+    """Check 43: the player's own row in the Tab list is gold (patch 43,
+    TAB_SELF): game_world::on_activate gives the hud its player's name
+    whatever the journal does. check_tab_self_026g.py runs it."""
+    stock = Image(original)
+    rows = lambda blob, at, size: [text for _, _, text in ndisasm(blob.read(at, size), at)]
+    va, old, new = P.TAB_SELF
+    check(stock.read(va, len(old)) == old == before.read(va, len(old)) and image.read(va, len(new)) == new,
+          f"{va:#x}: the original's `{old.hex()}` (test eax,eax) in the original and the build without the late "
+          f"join, `{new.hex()}` (jmp short) here")
+    guard = ["mov eax,[0xa8394c]", "test eax,eax", "jz 0x1f949d", "mov ecx,[dword 0xa83948]",
+             "cmp dword [ecx],byte +0x1", "jnz 0x1f949d", "mov edx,[esi+0x9c]", "mov eax,[edx+0x5398]", "push eax",
+             "lea edi,[esp+0x24]", "call 0x209ac0", "mov ecx,[dword 0xa8394c]"]
+    check(rows(stock, 0x1F9473, 0x30) == guard,
+          "the original: 0x1F9473 calls chat_handler::set_local_player_name (0x209AC0) with the chat handler "
+          "(game+5398h) and the name at [esp+24h] only when the journal's flag [0xa8394c] is set and its use "
+          "[[0xa83948]] is 1 (record)")
+    check(rows(image, 0x1F9473, 0x30) == guard[:1] + ["jmp short 0x1f9487"] + guard[2:],
+          "here `jmp short 0x1f9487` past the two tests; the call and what follows are the original's")
+    # The name it gives is the rows' name: "[clan] name" (the format at
+    # 0x9FB140), or the name, from the lobby client (+1E5650h the clan,
+    # +1E55D0h the name), as initialize_match makes a row's from the place's
+    # profile (+48h the clan, +8 the name).
+    activate = rows(stock, 0x1F93A1, 0xD2)
+    initialize = rows(stock, 0x23506F, 0x40)
+    check(stock.read(0x9FB140, 8) == b"[%s] %s\0"
+          and "add eax,0x1e5650" in activate and "add eax,0x1e55d0" in activate
+          and activate.count("push dword 0x9fb140") == 1 and activate.count("call 0x1f53d0") == 1
+          and "call 0x209430" in activate
+          and initialize[0] == "lea ecx,[esi+0x48]" and "add esi,byte +0x8" in initialize
+          and "push dword 0x9fb140" in initialize,
+          "on_activate (after chat_handler::set_mode 0x209430) makes the name as the rows have it: \"[%s] %s\" "
+          "(0x9FB140) of the lobby client's clan and name, or the name; initialize_match's row name is the same "
+          "format of the place's clan (+48h) and name (+8)")
+    check(rows(stock, 0x209AF9, 0xA) == ["push dword 0x9fe534", "call 0x511600"]
+          and stock.read(0x9FE534, 22) == b"root.set_local_player\0",
+          "0x209AC0 invokes root.set_local_player (0x9FE534) on the chat handler's movie, the hud in a match")
+    check(rows(stock, 0xEB377, 7) == ["mov eax,0xa8394c", "xchg [eax],edx"] and rows(stock, 0xEB372, 5) == ["mov edx,0x1"]
+          and rows(stock, 0xEB317, 4) == ["test esi,esi", "jz 0xeb37e"]
+          and image.read(P.JOURNAL_DEFAULT_VA, 5) == P.JOURNAL_DEFAULT[2],
+          "the flag [0xa8394c] is set by journaling's start (0xEB310) for a use other than 0 alone, and the "
+          "build's journal is off by default (patch 14): without the patch the call never comes")
+    under = [v for kind, v in stock.relocations().values() if kind == 3 and va - 3 < v < va + len(old)]
+    found = aimed_inside(original, va, len(old), 0x82)
+    check(not under and not found and sorted(v for kind, v in stock.relocations().values()
+                                               if kind == 3 and 0x1F9473 <= v < 0x1F9487) == [0x1F9474, 0x1F947E],
+          "no base relocation under the two bytes (the two addresses' are at 0x1F9474 and 0x1F947E) and nothing "
+          "aims at the second byte" + "".join(f", {h:#x}" for h in found + under))
+
+
 def test_replay_link(original, image, before):
     """"Watch replay" (patch revision 14, REPLAY_LINK_HOOK): the lobby's
     video_tutorial_link_clicked opened its link buffer with ShellExecuteA;
@@ -3889,6 +3940,7 @@ def test_late_join(original, without, server, source):
     test_weapon_preview(original, image, before)
     test_suicide_key(original, image, before)
     test_tab_list(original, image, before)
+    test_tab_self(original, image, before)
     test_spot(original, image, before)
     test_revision(original, image, "section", P.REVISION, late_join=True)
     test_revision_override(original, data, server)
