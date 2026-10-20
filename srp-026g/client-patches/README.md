@@ -553,6 +553,17 @@ python craft_menu_026g.py <lobby_menu.swf> <new lobby_menu.swf> --ffdec=/path/to
 
 Tests: `python -m unittest test_craft_menu`. Not in a release yet.
 
+## Weapon scope context menu
+
+`scope_context_menu_026g.py` adds the existing localized **Optics** action to a
+compatible weapon's right-click menu, in the inventory or an equipped slot. It
+opens the scope editor already shipped in revision 19. Armor still opens its
+camouflage/decal editor. See [weapon_scopes.md §5](../docs/notes/weapon_scopes.md#5-weapon-right-click-menu)
+for the build command and validation. The output is a `lobby_menu.swf` replacement
+for the next resource patch (built on `1091a19d…`, the craft window's movie: `2e4cb7d2…`,
+deterministic with FFDec 25.1.3); this does not change the executable or reserve a
+release revision.
+
 ## What each patch does
 
 Addresses are virtual addresses in the original exe. The evidence for each
