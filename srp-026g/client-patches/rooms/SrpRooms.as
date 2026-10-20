@@ -43,6 +43,9 @@ package
         public static const PLAY:int = FIRST + 6;
         public static const UNQUEUE:int = FIRST + 7;
         public static const JOIN_MATCH:int = FIRST + 8;
+        // The create window's start: the player's last room made by hand,
+        // kept by the server (the owner's of 2026-10-20).
+        public static const SETTINGS:int = FIRST + 9;
         public static const QUEUE:int = FIRST + 200000;
         public static const VOTE:int = FIRST + 3;
         public static const POOL:int = FIRST + 10;
@@ -1241,8 +1244,31 @@ package
                 if (_pool.length < _poolTotal && rows.length > 1)
                     ask(POOL + page + 1, 31);
                 else
+                {
                     defaultPool();
+                    // Settings that came before the pool: now they can be read.
+                    if (_saved != null)
+                        applySaved();
+                }
                 if (_view == "create" || _view == "room")
+                    render();
+            }
+            else if (kind == "F")
+            {
+                // `S1;F;<saved>;<size>;<min side>;<max level>;<wait>;<modes off>`,
+                // then `E;<chunk>;<bits>`: a pool entry's tile is in by its bit.
+                var bits:Array = [];
+                for (var fb:int = 1; fb < rows.length; fb++)
+                {
+                    var fe:Array = fields(rows[fb]);
+                    if (fe[0] == "E" && fe.length > 2)
+                        bits[int(fe[1])] = uint(fe[2]);
+                }
+                _saved = {"size": int(head[3]), "min": int(head[4]), "max": int(head[5]), "wait": int(head[6]),
+                    "modesOff": head.length > 7 && head[7] != "" ? String(head[7]).split(",") : [], "bits": bits};
+                if (_poolTotal >= 0 && _pool.length >= _poolTotal)
+                    applySaved();
+                if (_shown && _view == "create")
                     render();
             }
             else if (kind == "K" || kind == "B")
@@ -2519,6 +2545,46 @@ package
             return tiles;
         }
 
+        // The create window as the server says it starts (`_saved`, the
+        // player's last room made by hand, fitted to the pool and its
+        // equipment now): the sliders, the modes, and a tile out unless an
+        // entry of it is in. A value out of a slider's range leaves it as it is.
+        private var _saved:Object = null;
+
+        private function applySaved():void
+        {
+            var s:Object = _saved;
+            _saved = null;
+            if (stops("size").indexOf(s.size) >= 0)
+                _size = s.size;
+            if (stops("min").indexOf(s.min) >= 0)
+                _minSide = s.min;
+            if (stops("wait").indexOf(s.wait) >= 0)
+                _wait = s.wait;
+            if (s.max >= 0 && s.max <= 15)
+                _max = s.max;
+            _modesOff = {};
+            for (var m:int = 0; m < s.modesOff.length; m++)
+                _modesOff[String(s.modesOff[m])] = true;
+            var on:Object = {};
+            var i:int;
+            for (i = 0; i < _pool.length; i++)
+            {
+                var p:Object = _pool[i];
+                var chunk:uint = uint(s.bits[int(p.index / 20)]);
+                if ((chunk & (1 << (p.index % 20))) != 0)
+                    on[p.level + "_" + p.weather] = true;
+            }
+            _off = {};
+            for (i = 0; i < _pool.length; i++)
+            {
+                var key:String = _pool[i].level + "_" + _pool[i].weather;
+                if (on[key] != true)
+                    _off[key] = true;
+            }
+        }
+
+
         // A new creator starts with the server's pool, the experimental maps out.
         private function defaultPool():void
         {
@@ -2835,6 +2901,10 @@ package
             _makePinText = "";
             if (_poolTotal < 0)
                 ask(POOL, 31);
+            // The settings of the player's last room made by hand (the
+            // defaults with none): the window starts with them. Not the PIN.
+            _saved = null;
+            ask(SETTINGS, 1);
             render();
         }
 
